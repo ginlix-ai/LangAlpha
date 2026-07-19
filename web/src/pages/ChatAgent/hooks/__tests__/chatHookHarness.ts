@@ -17,7 +17,10 @@ export function apiMockModule() {
     getWorkflowStatus: vi.fn().mockResolvedValue({ can_reconnect: false, status: 'completed' }),
     getReportBackStatus: vi.fn().mockResolvedValue({ pending_report_back: false, report_back_run_id: null }),
     reconnectToWorkflowStream: vi.fn().mockResolvedValue({ disconnected: false, aborted: false }),
-    streamSubagentTaskEvents: vi.fn().mockResolvedValue(undefined),
+    // Default: a mux socket that connects and stays silent (never resolves),
+    // like a live stream with no frames. Tests that feed subagent frames
+    // drive the REAL v2 client through captureMuxConnections below.
+    openThreadMuxStream: vi.fn(() => new Promise<void>(() => {})),
     fetchThreadTurns: vi.fn().mockResolvedValue({ turns: [], retry_checkpoint_id: null }),
     submitFeedback: vi.fn(),
     removeFeedback: vi.fn(),
@@ -49,6 +52,43 @@ export function threadStatus(over: Record<string, unknown> = {}) {
     active_tasks: [],
     ...over,
   };
+}
+
+/** One captured mux socket: cursors sent on connect, and a line feeder. */
+export interface MuxConnection {
+  threadId: string;
+  cursors: string | null;
+  /** Feed raw SSE text (one or more frames, blank-line terminated). */
+  push: (sse: string) => void;
+  /** Server-side close: resolves the transport promise (client reconnects). */
+  close: () => void;
+  signal: AbortSignal;
+}
+
+/** Capture every openThreadMuxStream connection so tests can drive the real
+ * v2 mux client with wire-shaped frames (chan_open / task frames / chan_close). */
+export function captureMuxConnections(mockOpen: Mock): MuxConnection[] {
+  const conns: MuxConnection[] = [];
+  mockOpen.mockImplementation(
+    (
+      threadId: string,
+      cursors: string | null,
+      onLine: (line: string) => void,
+      signal: AbortSignal,
+    ) =>
+      new Promise<void>((resolve) => {
+        conns.push({
+          threadId,
+          cursors,
+          push: (sse: string) => {
+            for (const line of sse.split('\n')) onLine(line);
+          },
+          close: resolve,
+          signal,
+        });
+      }),
+  );
+  return conns;
 }
 
 /** One captured watchThread subscription: thread, callbacks, abort controller. */

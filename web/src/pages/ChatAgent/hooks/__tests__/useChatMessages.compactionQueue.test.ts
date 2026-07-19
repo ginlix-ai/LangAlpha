@@ -40,7 +40,7 @@ vi.mock('../../utils/api', () => ({
   replayThreadHistory: vi.fn(),
   getWorkflowStatus: vi.fn().mockResolvedValue({ can_reconnect: false, status: 'completed' }),
   reconnectToWorkflowStream: vi.fn(),
-  streamSubagentTaskEvents: vi.fn(),
+  openThreadMuxStream: vi.fn(() => new Promise<void>(() => {})),
   fetchThreadTurns: vi.fn(),
   submitFeedback: vi.fn(),
   removeFeedback: vi.fn(),

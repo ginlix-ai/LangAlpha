@@ -1,33 +1,45 @@
 /**
- * Client for the multiplexed thread stream (`GET /threads/{id}/stream`).
+ * Client for the multiplexed thread stream, v2 contract
+ * (`GET /threads/{id}/stream?contract=v2` — STREAM_CONTRACT_V2.md).
  *
- * One socket carries every background-task channel (and the watch channel,
- * unconsumed until the client watch migrates). Task subscriptions are
- * promises that resolve ONLY on `chan_close {reason:"terminal"}` — a socket
- * drop reconnects with per-channel `(epoch, entryId)` cursors instead of
- * being mistaken for task completion, which is the false-terminal bug the
- * per-task-socket transport had by construction.
+ * One socket carries a run-scoped channel per open run (main lane + every
+ * subagent task run) plus the watch relay. Channels are keyed by `run_id`;
+ * frames carry their cursor in-band (`data.seq` = the run stream's entry id),
+ * so a socket drop reconnects with `run:<run_id>#<entry_id>` cursors and the
+ * server resumes each channel exclusively after them.
  *
- * Cursor discipline: cursors are recorded only from live task frames'
- * composite ids (`chan@epoch#entry#logical`); control frames never advance
- * them, and nothing from history replay can reach this map.
+ * Delivery is at-least-once: a channel re-pushed in replay mode (new socket,
+ * resync, reconcile rescan) resends from 0, and the per-run applied
+ * high-water drops everything already handed to the sink. Closure is
+ * positive — `run_end` / `chan_close {reason:"terminal"}` from row truth —
+ * never inferred from socket loss or retry exhaustion.
+ *
+ * The consumer is one thread-level sink, not per-task subscriptions: task
+ * frames are self-describing (`agent: "task:<id>"` routes inside the hook),
+ * so frames arriving before any card exists apply immediately instead of
+ * being buffered.
  */
 import { openThreadMuxStream } from './api';
 
-export function muxStreamEnabled(): boolean {
-  return import.meta.env.VITE_MUX_STREAM === '1';
+type SSEEventObj = Record<string, unknown>;
+
+export interface ThreadMuxSink {
+  /** A task-lane content frame, shaped like a v1 SSE event object
+   * (`event`, `agent`, `_eventId`, …) for the hook's dispatch switchboard. */
+  onTaskEvent: (event: SSEEventObj) => void;
+  /** The task's current run reached terminal (run_end or ledger-row truth)
+   * and no other run of the task is open. Fires only from server-side
+   * closure — never from detach or socket loss. */
+  onTaskRunClosed: (taskId: string, outcome: string | null) => void;
 }
 
-type SSEEventObj = Record<string, unknown>;
-type ProcessEvent = (event: SSEEventObj) => void;
-
-interface TaskChannel {
-  processEvent: ProcessEvent;
-  epoch: string | null;
-  entryId: string | null;
+interface RunChannel {
+  runId: string;
+  lane: string; // "main" | "task:<taskId>"
+  cursor: string | null; // last entry id received (reconnect resume point)
+  applied: string | null; // last entry id delivered to the sink (dedup)
   closed: boolean;
-  resolve: () => void;
-  promise: Promise<void>;
+  outcome: string | null; // from run_end payload or chan_close row truth
 }
 
 interface ParsedFrame {
@@ -36,11 +48,6 @@ interface ParsedFrame {
   data: string | null;
 }
 
-/** Frames arriving before the client subscribes to their task (server-side
- * nudge discovery can beat the artifact card): buffered per task, flushed on
- * subscribe, dropped past the cap (history replay reconciles). */
-const PRE_SUB_BUFFER_MAX = 200;
-const MAX_RETRIES = 10;
 const CONTROL_EVENTS = new Set([
   'chan_open',
   'chan_close',
@@ -52,14 +59,21 @@ const CONTROL_EVENTS = new Set([
   'error',
 ]);
 
+/** Numeric major-minor comparison of Redis stream entry ids ("1784-3"). */
+function entryAfter(a: string, b: string): boolean {
+  const [aMaj, aMin] = a.split('-').map(Number);
+  const [bMaj, bMin] = b.split('-').map(Number);
+  if (aMaj !== bMaj) return aMaj > bMaj;
+  return (aMin || 0) > (bMin || 0);
+}
+
+function taskIdFromLane(lane: string): string | null {
+  return lane.startsWith('task:') ? lane.slice(5) || null : null;
+}
+
 export class ThreadStreamMux {
-  private channels = new Map<string, TaskChannel>();
-  private preSubBuffers = new Map<string, SSEEventObj[]>();
-  // Tasks whose terminal close beat the subscriber (fast-settling task while
-  // another channel keeps the socket alive): the server sends nothing further
-  // for them on this socket, so a late openTask must flush the buffer and
-  // resolve immediately instead of waiting forever.
-  private closedPreSub = new Set<string>();
+  private runs = new Map<string, RunChannel>();
+  private sink: ThreadMuxSink | null = null;
   private controller: AbortController | null = null;
   private running = false;
   private retry = 0;
@@ -73,62 +87,30 @@ export class ThreadStreamMux {
     private onDispose: () => void,
   ) {}
 
-  /** Subscribe to a task channel. Resolves on terminal close (or abort). */
-  openTask(
-    taskId: string,
-    processEvent: ProcessEvent,
-    signal: AbortSignal,
-  ): Promise<void> {
-    const existing = this.channels.get(taskId);
-    if (existing) return existing.promise;
-    if (this.closedPreSub.has(taskId)) {
-      this.closedPreSub.delete(taskId);
-      const buffered = this.preSubBuffers.get(taskId);
-      this.preSubBuffers.delete(taskId);
-      for (const ev of buffered ?? []) {
-        try {
-          processEvent(ev);
-        } catch (e) {
-          console.warn(`[mux:${this.threadId}] processEvent threw for ${taskId}`, e);
-        }
-      }
-      return Promise.resolve();
-    }
-    let resolve!: () => void;
-    const promise = new Promise<void>((r) => {
-      resolve = r;
-    });
-    const chan: TaskChannel = {
-      processEvent,
-      epoch: null,
-      entryId: null,
-      closed: false,
-      resolve,
-      promise,
-    };
-    this.channels.set(taskId, chan);
-    const buffered = this.preSubBuffers.get(taskId);
-    if (buffered) {
-      this.preSubBuffers.delete(taskId);
-      for (const ev of buffered) this.deliver(taskId, chan, ev);
-    }
-    signal.addEventListener('abort', () => this.leaveTask(taskId), {
-      once: true,
-    });
+  /** Register (or replace) the thread-level sink and keep the socket up.
+   * The socket stays open while attached even with zero channels — the
+   * control lane is what discovers newly spawned runs push-style. */
+  attach(sink: ThreadMuxSink): void {
+    if (this.disposed) return;
+    this.sink = sink;
     this.ensureRunning();
-    return promise;
   }
 
-  /** Client-side unsubscribe (navigation/teardown): resolves the task's
-   * promise WITHOUT marking anything completed — the caller distinguishes
-   * abort from terminal via its own signal. */
-  leaveTask(taskId: string): void {
-    const chan = this.channels.get(taskId);
-    if (!chan) return;
-    this.channels.delete(taskId);
-    chan.closed = true;
-    chan.resolve();
-    if (this.channels.size === 0) this.controller?.abort();
+  /** Client teardown (navigation/unmount). Never marks anything completed. */
+  detach(): void {
+    this.sink = null;
+    this.dispose();
+  }
+
+  /** Short task ids with an open (non-closed) run channel. */
+  openTaskIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const chan of this.runs.values()) {
+      if (chan.closed) continue;
+      const taskId = taskIdFromLane(chan.lane);
+      if (taskId) ids.add(taskId);
+    }
+    return ids;
   }
 
   private ensureRunning(): void {
@@ -138,7 +120,7 @@ export class ThreadStreamMux {
   }
 
   private async loop(): Promise<void> {
-    while (!this.disposed && this.channels.size > 0) {
+    while (!this.disposed && this.sink) {
       this.controller = new AbortController();
       const aborted = this.controller.signal;
       try {
@@ -150,46 +132,39 @@ export class ThreadStreamMux {
         );
         this.retry = 0;
       } catch (err: unknown) {
-        if ((err as { name?: string })?.name !== 'AbortError') {
+        const e = err as { name?: string; status?: number };
+        if (e?.name !== 'AbortError') {
           console.warn(`[mux:${this.threadId}]`, err);
         }
+        // A definitive HTTP rejection (bad request/auth/gone) can't heal by
+        // retrying; transient failures and server-side timeouts reconnect.
+        if (e?.status && e.status >= 400 && e.status <= 404) break;
       }
       this.flushBlock();
-      if (this.disposed || this.channels.size === 0) break;
+      if (this.disposed || !this.sink) break;
       if (aborted.aborted && !this.forceReconnect) break;
       this.forceReconnect = false;
       this.retry += 1;
-      if (this.retry > MAX_RETRIES) {
-        // Degraded parity with the old transport: give up and let callers
-        // treat the tasks as done rather than spinning forever.
-        console.error(
-          `[mux:${this.threadId}] reconnect budget exhausted; resolving ${this.channels.size} channel(s)`,
-        );
-        for (const taskId of [...this.channels.keys()]) this.leaveTask(taskId);
-        break;
-      }
       await new Promise((r) =>
         setTimeout(r, Math.min(1000 * 2 ** (this.retry - 1), 16000)),
       );
     }
     this.running = false;
-    if (this.channels.size === 0) this.dispose();
+    if (!this.sink) this.dispose();
   }
 
   private dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.controller?.abort();
-    this.preSubBuffers.clear();
-    this.closedPreSub.clear();
     this.onDispose();
   }
 
   private cursorParam(): string | null {
     const parts: string[] = [];
-    for (const [taskId, chan] of this.channels) {
-      if (chan.epoch && chan.entryId) {
-        parts.push(`task:${taskId}@${chan.epoch}#${chan.entryId}`);
+    for (const chan of this.runs.values()) {
+      if (!chan.closed && chan.cursor) {
+        parts.push(`run:${chan.runId}#${chan.cursor}`);
       }
     }
     return parts.length ? parts.join(',') : null;
@@ -226,110 +201,127 @@ export class ThreadStreamMux {
       this.onControl(event, payload);
       return;
     }
-    const composite = id ? parseCompositeId(id) : null;
-    if (!composite) return; // unroutable frame
-    payload.event = event || 'message_chunk';
-    if (composite.logical !== null) payload._eventId = composite.logical;
-    const chan = this.channels.get(composite.taskId);
-    if (chan) {
-      chan.epoch = composite.epoch;
-      chan.entryId = composite.entryId;
-      this.deliver(composite.taskId, chan, payload);
-    } else {
-      const buf = this.preSubBuffers.get(composite.taskId) ?? [];
-      if (buf.length < PRE_SUB_BUFFER_MAX) {
-        buf.push(payload);
-        this.preSubBuffers.set(composite.taskId, buf);
-      }
+    if (typeof payload.run_id === 'string' && typeof payload.seq === 'string') {
+      this.onRunFrame(payload);
     }
   }
 
-  private deliver(taskId: string, chan: TaskChannel, ev: SSEEventObj): void {
+  // ---- frame handling ----------------------------------------------------
+
+  private onRunFrame(frame: SSEEventObj): void {
+    const runId = frame.run_id as string;
+    const entryId = frame.seq as string;
+    const lane = typeof frame.lane === 'string' ? frame.lane : '';
+    const chan = this.getOrCreateRun(runId, lane);
+    chan.cursor = entryId;
+    const ftype = typeof frame.type === 'string' ? frame.type : 'message_chunk';
+    if (ftype === 'run_end') {
+      const p = frame.payload as { outcome?: unknown } | null;
+      if (p && typeof p.outcome === 'string') chan.outcome = p.outcome;
+      return; // closure is delivered via the chan_close that follows
+    }
+    if (ftype === 'lane_open') return; // channel metadata, not content
+    if (chan.lane === 'main') return; // foreground POST owns the main lane
+    const taskId = taskIdFromLane(chan.lane);
+    if (!taskId) return;
+    // At-least-once transport: drop frames at or below the applied
+    // high-water (a replayed channel resends from 0 after resync/re-attach).
+    if (chan.applied && !entryAfter(entryId, chan.applied)) return;
+    chan.applied = entryId;
+    // The payload is the captured record {seq, event, data}; project it to
+    // the v1 SSE event shape the hook's handlers consume.
+    const record = frame.payload as
+      | { seq?: unknown; event?: unknown; data?: unknown }
+      | null;
+    const ev: SSEEventObj = {
+      ...((record?.data as SSEEventObj) ?? {}),
+      event: ftype,
+      thread_id: this.threadId,
+    };
+    if (typeof record?.seq === 'number') ev._eventId = record.seq;
     try {
-      chan.processEvent(ev);
+      this.sink?.onTaskEvent(ev);
     } catch (e) {
-      console.warn(`[mux:${this.threadId}] processEvent threw for ${taskId}`, e);
+      console.warn(`[mux:${this.threadId}] onTaskEvent threw for ${taskId}`, e);
     }
   }
 
   private onControl(event: string, data: SSEEventObj): void {
     if (event === 'chan_open') {
-      const taskId = taskIdFromChan(data.chan);
-      if (!taskId) return;
-      const chan = this.channels.get(taskId);
-      if (chan && typeof data.epoch === 'string') {
-        if (chan.epoch !== null && chan.epoch !== data.epoch) {
-          // Stream re-incarnated (task resume): stale cursor is unusable.
-          chan.entryId = null;
-        }
-        chan.epoch = data.epoch;
-      }
+      const runId = runIdFromChanName(data.chan);
+      if (!runId) return;
+      const lane = typeof data.lane === 'string' ? data.lane : '';
+      const chan = this.getOrCreateRun(runId, lane);
+      chan.closed = false;
       return;
     }
     if (event === 'chan_close') {
-      const taskId = taskIdFromChan(data.chan);
-      if (!taskId) return;
-      const chan = this.channels.get(taskId);
-      if (data.reason === 'terminal' && !chan) {
-        // Terminal beat the subscriber: keep the buffered frames for the late
-        // openTask (which flushes them and resolves without waiting).
-        this.closedPreSub.add(taskId);
-        return;
-      }
-      this.preSubBuffers.delete(taskId);
-      if (chan && data.reason === 'resync_required') {
-        // Contract §Retention: our resume cursor is unserviceable on an
-        // active stream. Drop it and force one reconnect — the channel
-        // re-attaches in replay mode from 0 instead of starving until the
-        // next natural socket cycle.
-        chan.entryId = null;
+      const runId = runIdFromChanName(data.chan);
+      if (!runId) return;
+      const chan = this.runs.get(runId);
+      if (!chan || chan.closed) return;
+      if (data.reason === 'resync_required') {
+        // Our cursor points below a lost head. Drop the cursor and force one
+        // reconnect: the channel re-attaches in replay mode from 0, and the
+        // kept applied high-water turns the replay into dedup — a bounded
+        // hole at worst, never duplicated content.
+        chan.closed = true;
+        chan.cursor = null;
         this.forceReconnect = true;
         this.controller?.abort();
         return;
       }
-      if (chan && data.reason === 'terminal') {
-        this.channels.delete(taskId);
+      if (data.reason === 'unknown_run') {
+        this.runs.delete(runId);
+        return;
+      }
+      if (data.reason === 'terminal') {
         chan.closed = true;
-        chan.resolve();
-        if (this.channels.size === 0) this.controller?.abort();
+        if (typeof data.outcome === 'string') chan.outcome = data.outcome;
+        const taskId = taskIdFromLane(chan.lane);
+        // A drained predecessor run closing while the task's live successor
+        // is open is not task-terminal.
+        if (taskId && !this.openTaskIds().has(taskId)) {
+          try {
+            this.sink?.onTaskRunClosed(taskId, chan.outcome);
+          } catch (e) {
+            console.warn(
+              `[mux:${this.threadId}] onTaskRunClosed threw for ${taskId}`,
+              e,
+            );
+          }
+        }
       }
       return;
     }
-    if (event === 'resync_required') {
-      console.info(`[mux:${this.threadId}] resync_required`, data);
-      return;
+    // resync_required (bare notice), transport_error, timeout: the server
+    // closes the socket after these — the loop reconnects with cursors.
+    // watch_snapshot / workflow_started / error: watch relay, unconsumed
+    // here (the report-back watch has its own transport until M8).
+  }
+
+  private getOrCreateRun(runId: string, lane: string): RunChannel {
+    let chan = this.runs.get(runId);
+    if (!chan) {
+      chan = {
+        runId,
+        lane,
+        cursor: null,
+        applied: null,
+        closed: false,
+        outcome: null,
+      };
+      this.runs.set(runId, chan);
+    } else if (lane && !chan.lane) {
+      chan.lane = lane;
     }
-    // transport_error / timeout: the server closes the socket after these —
-    // the read loop ends and the reconnect loop re-attaches with cursors.
-    // watch_snapshot / workflow_started / error: watch channel frames,
-    // unconsumed until the client watch migrates onto the mux (M2b).
+    return chan;
   }
 }
 
-function taskIdFromChan(chan: unknown): string | null {
-  if (typeof chan !== 'string' || !chan.startsWith('task:')) return null;
-  return chan.slice(5) || null;
-}
-
-function parseCompositeId(
-  id: string,
-): { taskId: string; epoch: string; entryId: string; logical: number | null } | null {
-  // task:<id>@<epoch>#<entryId>#<logical|->
-  if (!id.startsWith('task:')) return null;
-  const at = id.indexOf('@');
-  if (at < 0) return null;
-  const taskId = id.slice(5, at);
-  const rest = id.slice(at + 1);
-  const [epoch, entryId, logicalRaw] = rest.split('#');
-  if (!taskId || !epoch || !entryId) return null;
-  const logical =
-    logicalRaw && logicalRaw !== '-' ? parseInt(logicalRaw, 10) : NaN;
-  return {
-    taskId,
-    epoch,
-    entryId,
-    logical: Number.isNaN(logical) ? null : logical,
-  };
+function runIdFromChanName(chan: unknown): string | null {
+  if (typeof chan !== 'string' || !chan.startsWith('run:')) return null;
+  return chan.slice(4) || null;
 }
 
 // ---- per-thread registry --------------------------------------------------
@@ -345,4 +337,9 @@ export function getThreadMux(threadId: string): ThreadStreamMux {
     muxByThread.set(threadId, mux);
   }
   return mux;
+}
+
+/** Existing mux for the thread, without creating one (for passive reads). */
+export function peekThreadMux(threadId: string): ThreadStreamMux | null {
+  return muxByThread.get(threadId) ?? null;
 }

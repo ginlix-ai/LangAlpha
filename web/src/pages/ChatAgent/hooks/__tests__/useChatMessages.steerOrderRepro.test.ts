@@ -36,7 +36,7 @@ vi.mock('../../utils/api', () => ({
   }),
   getReportBackStatus: vi.fn().mockResolvedValue({ pending_report_back: false, report_back_run_id: null }),
   reconnectToWorkflowStream: vi.fn().mockResolvedValue({ disconnected: false, aborted: false }),
-  streamSubagentTaskEvents: vi.fn().mockResolvedValue(undefined),
+  openThreadMuxStream: vi.fn(() => new Promise<void>(() => {})),
   fetchThreadTurns: vi.fn().mockResolvedValue({ turns: [], retry_checkpoint_id: null }),
   submitFeedback: vi.fn(),
   removeFeedback: vi.fn(),

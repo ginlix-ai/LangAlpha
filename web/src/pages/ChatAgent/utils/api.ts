@@ -1021,8 +1021,8 @@ export async function fetchThreadTurns(threadId: string) {
  */
 /**
  * Raw line-oriented reader for the multiplexed thread stream
- * (`GET /threads/{id}/stream`). The mux client parses SSE blocks itself —
- * it needs the composite `chan@epoch#entry#logical` id line that
+ * (`GET /threads/{id}/stream?contract=v2`). The mux client parses SSE blocks
+ * itself — it needs the `run:<run_id>#<entry_id>` cursor id line that
  * streamFetch's parser would mangle — so this helper only owns transport:
  * base URL, auth headers, abort, and line splitting.
  * Resolves on server close; throws on HTTP error or network failure.
@@ -1035,12 +1035,15 @@ export async function openThreadMuxStream(
 ): Promise<void> {
   if (!threadId) throw new Error('Thread ID is required');
   const authHeaders = await getAuthHeaders();
-  const qs = cursors ? `?cursors=${encodeURIComponent(cursors)}` : '';
-  const res = await fetch(`${baseURL}/api/v1/threads/${threadId}/stream${qs}`, {
-    method: 'GET',
-    headers: { ...authHeaders },
-    signal,
-  });
+  const qs = cursors ? `&cursors=${encodeURIComponent(cursors)}` : '';
+  const res = await fetch(
+    `${baseURL}/api/v1/threads/${threadId}/stream?contract=v2${qs}`,
+    {
+      method: 'GET',
+      headers: { ...authHeaders },
+      signal,
+    },
+  );
   if (!res.ok) {
     const err: Error & { status?: number } = new Error(
       `mux stream HTTP ${res.status}`,
@@ -1060,22 +1063,6 @@ export async function openThreadMuxStream(
     for (const line of lines) onLine(line);
   }
   if (buffer) onLine(buffer);
-}
-
-export async function streamSubagentTaskEvents(
-  threadId: string,
-  taskId: string,
-  onEvent: (event: Record<string, unknown>) => void,
-  signal: AbortSignal
-) {
-  if (!threadId) throw new Error('Thread ID is required');
-  if (!taskId) throw new Error('Task ID is required');
-  const authHeaders = await getAuthHeaders();
-  await streamFetch(
-    `/api/v1/threads/${threadId}/tasks/${taskId}`,
-    { method: 'GET', headers: { ...authHeaders }, signal },
-    onEvent
-  );
 }
 
 /**

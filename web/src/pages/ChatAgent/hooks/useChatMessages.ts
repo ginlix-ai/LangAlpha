@@ -10,8 +10,8 @@ import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { useUser } from '@/hooks/useUser';
-import { sendChatMessageStream, sendRetryStream, replayThreadHistory, getWorkflowStatus, getReportBackStatus, reconnectToWorkflowStream, sendHitlResponse, streamSubagentTaskEvents, fetchThreadTurns, submitFeedback, removeFeedback, getThreadFeedback, cancelWorkflow } from '../utils/api';
-import { getThreadMux, muxStreamEnabled } from '../utils/threadStreamMux';
+import { sendChatMessageStream, sendRetryStream, replayThreadHistory, getWorkflowStatus, getReportBackStatus, reconnectToWorkflowStream, sendHitlResponse, fetchThreadTurns, submitFeedback, removeFeedback, getThreadFeedback, cancelWorkflow } from '../utils/api';
+import { getThreadMux, peekThreadMux, type ThreadMuxSink } from '../utils/threadStreamMux';
 import type { WorkflowStatusResponse, ReportBackStatusResponse } from '../utils/api';
 // Imported from the dependency-free signal module (not `../utils/api`) so this
 // keeps decoding wire status even in the hook tests that fully mock `../utils/api`.
@@ -889,11 +889,12 @@ export function useChatMessages(
     historyLoadingRef,
     reconnectToStream: (opts) => reconnectToStreamRef.current(opts),
     requestHistoryReload: () => setReloadTrigger((n) => n + 1),
-    // Producer-undecided grace: while per-task subagent streams are open, an
-    // idle /status read must not tear the watch down (tail report-backs only
-    // become pending once their subagent completes). Deferred call — the ref
-    // is declared below and initialized before any watch event can fire.
-    hasOpenProducers: () => subagentStreamsRef.current.size > 0,
+    // Producer-undecided grace: while subagent run channels are open on the
+    // thread mux, an idle /status read must not tear the watch down (tail
+    // report-backs only become pending once their subagent completes).
+    // Deferred call — the helper is declared below and initialized before
+    // any watch event can fire.
+    hasOpenProducers: () => muxOpenTaskIds().size > 0,
   });
   // `arm` is identity-stable (facade over a latest-impl ref), so callbacks that
   // dispatch through it can dep on it without churning per render — the whole
@@ -922,8 +923,17 @@ export function useChatMessages(
   // Map tool call IDs (from main agent's task tool calls) to agent_ids for routing subagent events
   const toolCallIdToTaskIdMapRef = useRef(new Map<string, string>()); // Map<toolCallId, agentId>
 
-  // Per-task SSE connections: taskId → AbortController
-  const subagentStreamsRef = useRef(new Map<string, AbortController>());
+  // The CURRENT stream processor for subagent frames off the thread mux.
+  // Send, reconnect and HITL resume each install theirs at attach time, so
+  // task frames always route through live refs instead of a stale closure.
+  const subagentProcessEventRef = useRef<((event: SSEEvent) => void) | null>(null);
+
+  // Open subagent run channels, from mux truth (empty when no mux exists).
+  const muxOpenTaskIds = (): Set<string> => {
+    const tid = threadIdRef.current;
+    const mux = tid ? peekThreadMux(tid) : null;
+    return mux ? mux.openTaskIds() : new Set<string>();
+  };
 
   // Track completed task IDs to prevent reactivation by stale artifact events
   const completedTaskIdsRef = useRef(new Set<string>());
@@ -2703,13 +2713,12 @@ export function useChatMessages(
         }
       }
 
-      // Now open per-task SSE streams for active subagents. Per-task endpoints
-      // replay from their own Redis buffer so no events are lost.
+      // Attach the thread mux for live subagent frames. The server seeds a
+      // channel per open run and replays each immutable per-run stream from
+      // 0, so no events are lost.
       if (activeTasks.length > 0) {
-        console.log('[Reconnect] Opening per-task streams for active tasks:', activeTasks);
-        for (const taskId of activeTasks) {
-          openSubagentStream(tid, taskId, processEvent);
-        }
+        console.log('[Reconnect] Attaching thread mux for active tasks:', activeTasks);
+        attachSubagentMux(tid, processEvent);
       }
     } catch (err: unknown) {
       // User stop aborted the reader — stopWorkflow owns teardown; bail before
@@ -3054,8 +3063,8 @@ export function useChatMessages(
         await reconnectToStream({ activeTasks: status.active_tasks || [], runId: status.run_id ?? null, resetCursor: true });
       } else if (status.active_tasks && status.active_tasks.length > 0) {
         // Main workflow completed but subagent tasks still running.
-        // Reopen per-task SSE streams so cards stay live after refresh.
-        console.log('[Reconnect] Main workflow done, reopening per-task streams for active subagents:', status.active_tasks);
+        // Attach the thread mux so cards stay live after refresh.
+        console.log('[Reconnect] Main workflow done, attaching mux for active subagents:', status.active_tasks);
         const dummyAssistantId = `assistant-subagent-reconnect-${Date.now()}`;
         const refs = {
           contentOrderCounterRef,
@@ -3090,8 +3099,8 @@ export function useChatMessages(
               isReconnect: true,
             });
           }
-          openSubagentStream(threadId, taskId, processEvent);
         }
+        attachSubagentMux(threadId, processEvent);
         setHasActiveSubagents(true);
       } else {
         // Workflow is not active. Inline subagent cards are already born with
@@ -3116,7 +3125,10 @@ export function useChatMessages(
     return () => {
       cancelled = true;
       historyLoadingRef.current = false;
-      closeAllSubagentStreams();
+      // Thread switch/unmount: tear the mux down without marking anything
+      // completed, and drop the processor so no stale closure can fire.
+      if (threadId) peekThreadMux(threadId)?.detach();
+      subagentProcessEventRef.current = null;
       subagentStateRefsRef.current = {};
     };
     // Note: loadConversationHistory is not in deps because it uses workspaceId and threadId from closure
@@ -3136,8 +3148,8 @@ export function useChatMessages(
    * stamp.
    */
   const markAllSubagentTasksCompleted = () => {
-    // Skip tasks with open per-task SSE streams (still active)
-    const activeShortIds = new Set(subagentStreamsRef.current.keys());
+    // Skip tasks with an open run channel on the thread mux (still active)
+    const activeShortIds = muxOpenTaskIds();
 
     setMessages((prev) => {
       let anyChanged = false;
@@ -3170,77 +3182,53 @@ export function useChatMessages(
   };
 
   /**
-   * Open a dedicated per-task SSE stream for a subagent.
-   * Events from the stream are routed through processEvent (same handler as the main stream).
-   * Idempotent — skips if a stream is already open for this taskId.
-   *
-   * @param {string} tid - Thread ID
-   * @param {string} shortTaskId - The 6-char task identifier (e.g., 'k7Xm2p')
-   * @param {Function} processEvent - The event processor (from createStreamEventProcessor)
+   * Thread-level sink for the v2 mux. Task frames route through the CURRENT
+   * stream processor (last attach wins), and run closure — run_end or
+   * ledger-row truth, never socket loss — carries the completion lifecycle
+   * that per-task stream teardown used to signal.
    */
-  const openSubagentStream = (tid: string, shortTaskId: string, processEvent: (event: SSEEvent) => void) => {
-    if (subagentStreamsRef.current.has(shortTaskId)) return; // already open
-    const controller = new AbortController();
-    subagentStreamsRef.current.set(shortTaskId, controller);
-
-    // Mux transport: one shared socket per thread; the promise resolves on
-    // chan_close {terminal} (or our own abort) — a network drop reconnects
-    // with cursors inside the mux instead of resolving, so the completion
-    // lifecycle below no longer fires on mere socket loss.
-    const streamDone = muxStreamEnabled()
-      ? getThreadMux(tid).openTask(shortTaskId, processEvent, controller.signal)
-      : streamSubagentTaskEvents(tid, shortTaskId, processEvent, controller.signal);
-
-    streamDone
-      .catch((err) => {
-        if (err.name !== 'AbortError') {
-          console.error(`[SubagentStream:${shortTaskId}]`, err);
-        }
-      })
-      .finally(() => {
-        // Strict ownership: this finalizer acts only while its own controller
-        // is still the mapped one. A resume that replaced the entry (the
-        // successor owns the lifecycle) or a teardown that cleared the map
-        // (closeAllSubagentStreams — the caller did its own state cleanup)
-        // both mean someone else took responsibility; terminalizing here
-        // would mark a live resumed or intentionally-aborted task completed.
-        if (subagentStreamsRef.current.get(shortTaskId) !== controller) return;
-        subagentStreamsRef.current.delete(shortTaskId);
-        completedTaskIdsRef.current.add(shortTaskId);
-        // Per-task stream close = task completion signal
-        if (updateSubagentCard) {
-          updateSubagentCard(`task:${shortTaskId}`, { status: 'completed', isActive: false });
-        }
-        // Flip the chat-card status for the just-closed task. The function
-        // skips tasks whose stream is still in subagentStreamsRef (active),
-        // so calling on every close marks only the just-finished one.
-        markAllSubagentTasksCompleted();
-        // Workflow-level cleanup only when ALL streams have closed.
-        if (subagentStreamsRef.current.size === 0) {
-          setHasActiveSubagents(false);
-          if (inactivateAllSubagents) inactivateAllSubagents();
-        }
-        // The natural report-back discovery moment: a tail task that just
-        // settled has its notification turn enqueued about now. Ensure the
-        // watch is armed and poke a reconcile; an idle read on this source
-        // never disarms (the enqueue may still be in flight — the `cleared`
-        // or dispatch wake is authoritative). Skip client-initiated aborts
-        // (navigation/teardown — arming would steal the keyed watch) and
-        // mid-turn closes (inline delivery, no report-back due).
-        if (!controller.signal.aborted && !isStreamingRef.current) {
-          armReportBackWatch(tid, null, 'taskStreamEnd');
-        }
-      });
+  const muxSink: ThreadMuxSink = {
+    onTaskEvent: (ev) => {
+      subagentProcessEventRef.current?.(ev as SSEEvent);
+    },
+    onTaskRunClosed: (shortTaskId, outcome) => {
+      completedTaskIdsRef.current.add(shortTaskId);
+      // Positive closure from the run ledger: honor a cancelled outcome
+      // instead of guessing 'completed' from stream teardown.
+      if (updateSubagentCard) {
+        updateSubagentCard(`task:${shortTaskId}`, {
+          status: outcome === 'cancelled' ? 'cancelled' : 'completed',
+          isActive: false,
+        });
+      }
+      // Flip the chat-card status for the just-closed task (its channel is
+      // already closed, so the mux truth skips only the still-active ones).
+      markAllSubagentTasksCompleted();
+      // Workflow-level cleanup only when ALL run channels have closed.
+      if (muxOpenTaskIds().size === 0) {
+        setHasActiveSubagents(false);
+        if (inactivateAllSubagents) inactivateAllSubagents();
+      }
+      // The natural report-back discovery moment: a tail task that just
+      // settled has its notification turn enqueued about now. Ensure the
+      // watch is armed and poke a reconcile; an idle read on this source
+      // never disarms (the enqueue may still be in flight — the `cleared`
+      // or dispatch wake is authoritative). Skip mid-turn closes (inline
+      // delivery, no report-back due).
+      if (!isStreamingRef.current) {
+        armReportBackWatch(threadIdRef.current, null, 'taskStreamEnd');
+      }
+    },
   };
 
   /**
-   * Abort all open per-task subagent streams.
+   * Keep the thread's v2 mux attached with the current stream processor.
+   * Idempotent; the mux discovers runs itself (attach seeds + control lane),
+   * so callers never name a task.
    */
-  const closeAllSubagentStreams = () => {
-    for (const [, controller] of subagentStreamsRef.current) {
-      controller.abort();
-    }
-    subagentStreamsRef.current.clear();
+  const attachSubagentMux = (tid: string, processEvent: (event: SSEEvent) => void) => {
+    subagentProcessEventRef.current = processEvent;
+    getThreadMux(tid).attach(muxSink);
   };
 
   /**
@@ -3274,11 +3262,10 @@ export function useChatMessages(
     currentMessageRef.current = null;
     releaseStreamOwnership();
 
-    const hasOpenStreams = subagentStreamsRef.current.size > 0;
+    const hasOpenStreams = muxOpenTaskIds().size > 0;
     if (!hasOpenStreams) {
       if (inactivateAllSubagents) inactivateAllSubagents();
       markAllSubagentTasksCompleted();
-      closeAllSubagentStreams();
     }
     setHasActiveSubagents(hasOpenStreams);
 
@@ -3371,7 +3358,7 @@ export function useChatMessages(
     // Finalize each active subagent card: close its open reasoning block and
     // mark its last streaming message complete. Per-task state lives in
     // subagentStateRefsRef, separate from the main message refs.
-    const activeShortIds = new Set(subagentStreamsRef.current.keys());
+    const activeShortIds = muxOpenTaskIds();
     for (const shortId of activeShortIds) {
       const agentId = `task:${shortId}`;
       const taskRefs = subagentStateRefsRef.current[agentId];
@@ -3491,12 +3478,13 @@ export function useChatMessages(
       markTranscriptPersisted();
     }
 
-    // (c) Abort per-task subagent streams (they belong to THIS turn). Leave the
+    // (c) The thread mux stays attached: the backend cancel finalizes this
+    // turn's task runs, and their terminal frames flip the cards to their
+    // real outcome (cancelled) instead of a client-side guess. Leave the
     // report-back watch running: this flash-thread cancel does not stop the
     // background PTC analyses on their own threads, so their summaries should
     // still surface live. The aborted reader's finally clears isStreamingRef, so
     // the watch's next reconcile can attach the next head run or drain.
-    closeAllSubagentStreams();
 
     // (d) Tell the backend to hard-cancel: one retry, then a visible error
     // toast so a failed cancel doesn't silently diverge UI from backend.
@@ -4214,7 +4202,7 @@ export function useChatMessages(
             }
             if (!alreadyCompleted) {
               const currentThreadId = (event.thread_id || threadIdRef.current) as string;
-              openSubagentStream(currentThreadId, task_id as string, processEvent);
+              attachSubagentMux(currentThreadId, processEvent);
             }
           } else if (action === 'resume') {
             // Resume: reactivate the card and reattach the stream. The
@@ -4238,15 +4226,10 @@ export function useChatMessages(
               });
             }
 
-            // Abort existing stream before opening new one (race condition safety)
-            const existingController = subagentStreamsRef.current.get(task_id as string);
-            if (existingController) {
-              existingController.abort();
-              subagentStreamsRef.current.delete(task_id as string);
-            }
-
+            // The resumed run announces itself on the control lane and the
+            // mux admits its channel — no per-task abort/reopen dance.
             const currentThreadId = (event.thread_id || threadIdRef.current) as string;
-            openSubagentStream(currentThreadId, task_id as string, processEvent);
+            attachSubagentMux(currentThreadId, processEvent);
           } else if (action === 'update') {
             if (updateSubagentCard) {
               updateSubagentCard(agentId, { steeringMessage: prompt || payload.description });

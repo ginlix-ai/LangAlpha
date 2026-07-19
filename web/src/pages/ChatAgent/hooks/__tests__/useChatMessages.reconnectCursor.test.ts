@@ -82,7 +82,7 @@ vi.mock('../../utils/api', () => ({
     is_shared: false,
   }),
   reconnectToWorkflowStream: vi.fn().mockResolvedValue({ disconnected: false }),
-  streamSubagentTaskEvents: vi.fn(),
+  openThreadMuxStream: vi.fn(() => new Promise<void>(() => {})),
   fetchThreadTurns: vi.fn().mockResolvedValue({ turns: [], retry_checkpoint_id: null }),
   submitFeedback: vi.fn(),
   removeFeedback: vi.fn(),

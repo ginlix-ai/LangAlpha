@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
 import { act, waitFor } from '@testing-library/react';
 import { renderHookWithProviders } from '@/test/utils';
-import { settleMountEffect, threadStatus, captureWatchCalls } from './chatHookHarness';
+import { settleMountEffect, threadStatus, captureWatchCalls, captureMuxConnections } from './chatHookHarness';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (k: string) => k }),
@@ -31,7 +31,7 @@ vi.mock('../utils/threadStorage', () => ({
 
 vi.mock('../../utils/api', async () => (await import('./chatHookHarness')).apiMockModule());
 
-import { getWorkflowStatus, getReportBackStatus, replayThreadHistory, reconnectToWorkflowStream, watchThread, sendChatMessageStream, streamSubagentTaskEvents } from '../../utils/api';
+import { getWorkflowStatus, getReportBackStatus, replayThreadHistory, reconnectToWorkflowStream, watchThread, sendChatMessageStream, openThreadMuxStream } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';
 import { REPORT_BACK_IDLE_MAX_REARMS } from '../useReportBackWatch';
 import { queryKeys } from '@/lib/queryKeys';
@@ -1428,28 +1428,33 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
     expect(watchCalls[0].controller.signal.aborted).toBe(true);
   });
 
-  it('tail load: live subagents alone arm the watch, and a task-stream close never disarms it', async () => {
+  it('tail load: live subagents alone arm the watch, and a task-run close never disarms it', async () => {
     // The mid-run refresh case: main turn done, subagent still writing, no
     // pendingness yet. The load must arm from active_tasks; the later
-    // task-stream close pokes a reconcile whose idle read (the report-back
-    // enqueue may still be in flight) must NOT tear the watch down — the
-    // dispatch wake that follows attaches the turn.
-    let closeStream!: () => void;
-    (streamSubagentTaskEvents as Mock).mockImplementation(
-      () => new Promise<void>((res) => { closeStream = res; }),
-    );
+    // task-run terminal close pokes a reconcile whose idle read (the
+    // report-back enqueue may still be in flight) must NOT tear the watch
+    // down — the dispatch wake that follows attaches the turn.
+    const muxConns = captureMuxConnections(openThreadMuxStream as Mock);
     mockStatus.mockResolvedValue(threadStatus({ active_tasks: ['t9'] }));
     const watchCalls = captureWatch();
 
     const { result } = renderHookWithProviders(() => useChatMessages('ws-rb', 'th-rb'));
     await waitFor(() => expect(mockWatch).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(result.current.awaitingReportBack).toBe(true));
+    await waitFor(() => expect(muxConns.length).toBe(1));
+    await act(async () => {
+      muxConns[0].push(
+        'event: chan_open\ndata: {"chan":"run:r9","lane":"task:t9","mode":"replay"}\n\n',
+      );
+    });
 
-    // The task settles; /status still reads idle with no live writers (its
-    // outbox row hasn't landed yet).
+    // The task settles (terminal close from row truth); /status still reads
+    // idle with no live writers (its outbox row hasn't landed yet).
     mockStatus.mockResolvedValue(threadStatus({}));
     await act(async () => {
-      closeStream();
+      muxConns[0].push(
+        'event: chan_close\ndata: {"chan":"run:r9","reason":"terminal","outcome":"completed"}\n\n',
+      );
       await new Promise((r) => setTimeout(r, 0));
     });
     expect(result.current.awaitingReportBack).toBe(true);
