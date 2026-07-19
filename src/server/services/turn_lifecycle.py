@@ -210,6 +210,11 @@ class TurnCoordinator:
             started_at=row["created_at"],
             guard=guard,
         )
+        # Announce the durably-born run on the thread's control lane so an
+        # attached mux admits the main-lane channel push-style (best-effort).
+        from src.server.services.thread_control_stream import announce_run_started
+
+        await announce_run_started(thread_id, run_id)
         return handle
 
     # --------------------------------------------------------------- FINALIZE

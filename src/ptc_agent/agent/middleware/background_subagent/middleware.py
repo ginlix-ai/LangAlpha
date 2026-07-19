@@ -334,6 +334,7 @@ async def _run_background_task(
                 if task.cancelled
                 else ("completed" if ledger_status == "completed" else "error")
             )
+            run_finalized = False
             if run_ledger is not None and task.task_run_id:
                 try:
                     finalized = await run_ledger.finalize_task_run(
@@ -343,7 +344,12 @@ async def _run_background_task(
                         # A user cancel is not a failure — don't let the
                         # unwind path's default failure text ride the row.
                         failure=None if task.cancelled else ledger_failure,
+                        # run_end is appended below, AFTER the steering
+                        # sweep — its steering_returned frames must precede
+                        # the terminal frame, and nothing may follow it.
+                        defer_run_end=True,
                     )
+                    run_finalized = True
                     row_status = (finalized.get("run") or {}).get("status")
                     if row_status:
                         terminal_status = str(row_status)
@@ -370,6 +376,24 @@ async def _run_background_task(
             # that re-check status can no longer enqueue behind the sweep).
             if task.task_run_id:
                 await _return_unconsumed_steering(registry, task)
+            # The cursor-bearing run_end closes the v2 run stream — only
+            # after a durable CAS (a still-open row must stay probe-visible)
+            # and only on a healthy transport: a torn stream resolves via
+            # the ledger backstop + replay, never reads as complete.
+            if run_finalized and not task.redis_write_failed:
+                try:
+                    await run_ledger.append_run_end(
+                        task.task_run_id,
+                        task_id=task.task_id,
+                        outcome=terminal_status,
+                    )
+                except Exception:
+                    logger.warning(
+                        "subagent_run_end_append_failed",
+                        task_id=task.task_id,
+                        task_run_id=task.task_run_id,
+                        exc_info=True,
+                    )
             # Seal the per-task stream LAST. Content spills XADD with
             # explicit ``{seq}-0`` ids and Redis rejects ids behind the
             # sentinel's auto-generated (timestamp) id — a sentinel written

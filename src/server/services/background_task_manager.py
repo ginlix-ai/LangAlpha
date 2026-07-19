@@ -1198,7 +1198,12 @@ class BackgroundTaskManager:
     """
 
     async def _delete_task_keys_if_owned(
-        self, cache, thread_id: str, task_id: str, response_id: str
+        self,
+        cache,
+        thread_id: str,
+        task_id: str,
+        response_id: str,
+        task_run_id: Optional[str] = None,
     ) -> None:
         if not getattr(cache, "enabled", False) or cache.client is None:
             return
@@ -1213,6 +1218,16 @@ class BackgroundTaskManager:
                 response_id,
                 self._TASK_STREAM_RETENTION_SECONDS,
             )
+            if task_run_id:
+                # Run-scoped retire: the archive owns the transcript now, so
+                # the collected run's v2 stream drops from attach-grace to
+                # the retention window. Keyed by THAT run's id, it can never
+                # touch a successor's stream — the stale-collector hazard the
+                # v1 keys need the Lua ownership guard for doesn't exist.
+                await cache.client.expire(
+                    f"subagent:stream:{thread_id}:{task_run_id}",
+                    self._TASK_STREAM_RETENTION_SECONDS,
+                )
         except Exception:
             logger.warning(
                 f"[SubagentCleanup] owned-retire failed for "
@@ -1525,7 +1540,11 @@ class BackgroundTaskManager:
                 async with task.redis_spill_lock:
                     if task.collector_response_id == response_id:
                         await self._delete_task_keys_if_owned(
-                            cache, thread_id, task.task_id, response_id
+                            cache,
+                            thread_id,
+                            task.task_id,
+                            response_id,
+                            task_run_id=task.task_run_id,
                         )
             logger.info(
                 "task_heavy_refs_released",

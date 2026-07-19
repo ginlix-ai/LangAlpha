@@ -62,17 +62,25 @@ present in the snapshot.
 
 ## Discovery
 
-Ledger rows do not notify connected consumers. A per-thread **control lane** announces
-`task_run_started{task_run_id}` push-style; periodic ledger reconciliation is the
-backstop. `lane_open` alone is not discoverable (it lives inside the stream it
-announces).
+Ledger rows do not notify connected consumers. A per-thread **control lane**
+(`subagent:control:{thread_id}`, a bounded Redis stream) announces
+`run_started{run_id}` for root turns and `task_run_started{task_run_id}` for task
+runs push-style; because it is a stream, an attaching mux reads the backlog — there
+is no subscribe-after-snapshot race. It is MAXLEN-trimmed and best-effort; periodic
+ledger reconciliation is the backstop. `lane_open` alone is not discoverable (it
+lives inside the stream it announces).
 
 ## Terminal semantics
 
 - `run_end` is written **only after** the terminal status is durably committed
-  (commit-then-signal). The append is an **outbox effect** — idempotent at
-  `last_seq + 1` — so a worker dying between CAS and XADD is healed by the drainer or
-  the recovery scanner, never by consumer timeout heuristics.
+  (commit-then-signal), and — on the owning worker — only after the steering sweep, so
+  `steering_returned` frames precede it and nothing follows it. The append is
+  idempotent by last-frame inspection; recovery finalizers (scanner, admission abort)
+  append it together with their CAS. A worker dying between CAS and XADD is healed by
+  ledger reconciliation — a terminal row whose stream lacks `run_end` closes the
+  channel from row truth, never by consumer timeout heuristics.
+- A run torn by transport loss gets **no** `run_end`: a stream with an undetectable
+  hole must resolve through the resync path, never read as complete.
 - The legacy two-empty-round handshake and task sentinel remain in force for streams
   that predate v2 and for the main compatibility stream until root turns adopt v2
   `run_end`; they are deleted per-consumer at cutover, not globally.

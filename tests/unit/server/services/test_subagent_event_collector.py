@@ -225,3 +225,48 @@ async def test_xrange_failure_yields_nothing_does_not_raise(monkeypatch) -> None
 
     out = [rec async for rec in iter_subagent_events_full("thread-x", task)]
     assert out == []
+
+
+# ---------------------------------------------------------------------------
+# M6-D: collector retire stamps the run-scoped v2 key
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retire_stamps_the_run_scoped_v2_key():
+    """The v1 keys are task-scoped and need the Lua ownership guard; the v2
+    stream is keyed by the collected run's id, so its retention tightening
+    is unconditional — a stale collector can only ever touch its own run."""
+    from src.server.services.background_task_manager import BackgroundTaskManager
+
+    btm = BackgroundTaskManager.__new__(BackgroundTaskManager)
+    cache = MagicMock()
+    cache.enabled = True
+    cache.client = MagicMock()
+    cache.client.eval = AsyncMock(return_value=1)
+    cache.client.expire = AsyncMock(return_value=True)
+
+    await btm._delete_task_keys_if_owned(
+        cache, "t-1", "abc123", "resp-1", task_run_id="run-9"
+    )
+
+    cache.client.expire.assert_awaited_once_with(
+        "subagent:stream:t-1:run-9", btm._TASK_STREAM_RETENTION_SECONDS
+    )
+
+
+@pytest.mark.asyncio
+async def test_retire_without_a_run_id_stamps_nothing_extra():
+    """Pre-ledger tasks have no run-scoped stream to retire."""
+    from src.server.services.background_task_manager import BackgroundTaskManager
+
+    btm = BackgroundTaskManager.__new__(BackgroundTaskManager)
+    cache = MagicMock()
+    cache.enabled = True
+    cache.client = MagicMock()
+    cache.client.eval = AsyncMock(return_value=1)
+    cache.client.expire = AsyncMock()
+
+    await btm._delete_task_keys_if_owned(cache, "t-1", "abc123", "resp-1")
+
+    cache.client.expire.assert_not_awaited()

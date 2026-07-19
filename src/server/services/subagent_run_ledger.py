@@ -3,7 +3,7 @@
 Server-side façade the background-subagent middleware calls through the
 registry (`registry.run_ledger`, same injection pattern as
 `result_resolver`). Owns the three things the SQL layer doesn't: predecessor
-resolution for resume chains, the v2 shadow stream's lane_open/run_end
+resolution for resume chains, the v2 per-run stream's lane_open/run_end
 anchors (STREAM_CONTRACT_V2.md), and the best-effort final checkpoint pin.
 Admission failures surface as TaskRunRejected (defined next to the registry
 so ptc_agent code can catch it without importing server modules).
@@ -108,18 +108,58 @@ class SubagentRunLedger:
                 existing=e.successor,
             ) from e
 
-        await self._append_v2_frame(
-            task_run_id,
-            lane=f"task:{task_id}",
-            frame_type="lane_open",
-            payload={
-                "task_run_id": task_run_id,
-                "task_id": task_id,
-                "cause": cause,
-                "launch_tool_call_id": launch_tool_call_id,
-                "description": description,
-                "subagent_type": subagent_type,
-            },
+        try:
+            await self._append_v2_frame(
+                task_run_id,
+                lane=f"task:{task_id}",
+                frame_type="lane_open",
+                payload={
+                    "task_run_id": task_run_id,
+                    "task_id": task_id,
+                    "cause": cause,
+                    "launch_tool_call_id": launch_tool_call_id,
+                    "description": description,
+                    "subagent_type": subagent_type,
+                },
+                required=True,
+            )
+        except Exception as e:
+            # An anchorless stream must not start: without lane_open no
+            # reader can causally order this run. Settle the just-born row
+            # here rather than strand it for the scanner to reap.
+            try:
+                await sr_db.finalize_task_run_idempotent(
+                    task_run_id=task_run_id,
+                    status="error",
+                    failure={
+                        "error": f"lane_open append failed: {e}",
+                        "error_type": "transport_lost",
+                    },
+                    final_checkpoint_id=None,
+                )
+            except Exception:
+                logger.warning(
+                    f"[subagent_ledger] could not settle run {task_run_id} "
+                    f"after lane_open failure; scanner will reap it",
+                    exc_info=True,
+                )
+            raise TaskRunRejected(
+                "subagent event transport unavailable (lane_open failed)"
+            ) from e
+
+        # Push-style discovery: lane_open lives inside the stream it
+        # announces, so attached consumers learn of the run here. Best
+        # effort — ledger reconciliation is the backstop.
+        from src.server.services.thread_control_stream import (
+            announce_task_run_started,
+        )
+
+        await announce_task_run_started(
+            self.thread_id,
+            task_run_id=task_run_id,
+            task_id=task_id,
+            cause=cause,
+            parent_run_id=parent_run_id,
         )
         return str(run_row["task_run_id"])
 
@@ -132,10 +172,16 @@ class SubagentRunLedger:
         *,
         task_id: Optional[str] = None,
         failure: Optional[Dict[str, Any]] = None,
+        defer_run_end: bool = False,
     ) -> Dict[str, Any]:
         """One CAS to terminal, then the cursor-bearing run_end append
         (commit-then-signal). Idempotent: losing the CAS returns the
-        survivor row and appends nothing."""
+        survivor row and appends nothing.
+
+        ``defer_run_end=True`` is for the run wrapper, whose steering sweep
+        must land between the CAS and run_end — it appends via
+        ``append_run_end`` after the sweep. Recovery paths keep the default
+        immediate append (they have no sweep)."""
         final_checkpoint_id = (
             await self._read_task_checkpoint_tip(task_id) if task_id else None
         )
@@ -147,13 +193,14 @@ class SubagentRunLedger:
         )
         if result["applied"]:
             run = result["run"]
-            await self._append_v2_frame(
-                task_run_id,
-                lane=f"task:{run['task_id']}",
-                frame_type="run_end",
-                payload={"outcome": run["status"]},
-                terminal=True,
-            )
+            if not defer_run_end:
+                await self._append_v2_frame(
+                    task_run_id,
+                    lane=f"task:{run['task_id']}",
+                    frame_type="run_end",
+                    payload={"outcome": run["status"]},
+                    terminal=True,
+                )
             if run["status"] == "completed" and run.get("parent_run_id"):
                 # The report-back job committed with the CAS; wake the
                 # drainer so a tail completion notifies promptly instead of
@@ -165,6 +212,40 @@ class SubagentRunLedger:
                 except Exception:
                     pass
         return result
+
+    async def append_run_end(
+        self, task_run_id: str, *, task_id: str, outcome: str
+    ) -> None:
+        """Cursor-bearing terminal frame for the wrapper's deferred path —
+        appended after the steering sweep so steering_returned frames
+        precede it and nothing follows it. Idempotent by last-frame
+        inspection, so it is safe to race a recovery finalizer."""
+        try:
+            from src.utils.cache.redis_cache import get_cache_client
+
+            cache = get_cache_client()
+            if not (getattr(cache, "enabled", False) and cache.client):
+                return
+            key = v2_stream_key(self.thread_id, task_run_id)
+            last = await cache.client.xrevrange(key, count=1)
+            if last and last[0][1].get(b"type") == b"run_end":
+                return
+        except Exception:
+            # An unreadable tail falls through to the append: a duplicate
+            # run_end is inert (readers close on the first), a missing one
+            # costs every reader the reconciliation backstop.
+            logger.warning(
+                f"[subagent_ledger] run_end idempotence read failed for "
+                f"task_run={task_run_id}; appending anyway",
+                exc_info=True,
+            )
+        await self._append_v2_frame(
+            task_run_id,
+            lane=f"task:{task_id}",
+            frame_type="run_end",
+            payload={"outcome": outcome},
+            terminal=True,
+        )
 
     async def mark_result_delivered(self, task_run_id: str) -> bool:
         return await sr_db.mark_result_delivered(task_run_id)
@@ -227,12 +308,13 @@ class SubagentRunLedger:
         frame_type: str,
         payload: Dict[str, Any],
         terminal: bool = False,
+        required: bool = False,
     ) -> None:
-        """Shadow-phase v2 append: best-effort while the stream has no
-        readers (M3–M5); the retention/transport_lost contract engages at
-        mux-v2 cutover. seq is the XADD id — Redis-side by construction.
-        TTL is refreshed per append during shadow so an abandoned stream
-        can't leak; terminal appends leave the attach-grace TTL in place.
+        """Contract-grade v2 append (STREAM_CONTRACT_V2.md): active streams
+        carry no TTL — the attach-grace clock starts only at a terminal
+        append. ``required`` propagates failure to the caller (lane_open:
+        an anchorless stream must not start); other frames stay best-effort
+        with the ledger row as the durable truth. seq is the XADD id.
         """
         try:
             from src.config.settings import get_redis_ttl_workflow_events
@@ -240,6 +322,9 @@ class SubagentRunLedger:
 
             cache = get_cache_client()
             if not (getattr(cache, "enabled", False) and cache.client):
+                # No Redis, no stream transport contract — a no-cache
+                # deployment runs tasks without streams, so even required
+                # frames are skipped rather than refused.
                 return
             key = v2_stream_key(self.thread_id, task_run_id)
             await cache.client.xadd(
@@ -253,8 +338,11 @@ class SubagentRunLedger:
                     ).encode(),
                 },
             )
-            await cache.client.expire(key, get_redis_ttl_workflow_events())
+            if terminal:
+                await cache.client.expire(key, get_redis_ttl_workflow_events())
         except Exception:
+            if required:
+                raise
             logger.warning(
                 f"[subagent_ledger] v2 {frame_type} append failed for "
                 f"task_run={task_run_id}",

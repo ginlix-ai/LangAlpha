@@ -634,11 +634,13 @@ class BackgroundTaskRegistry:
                     ),
                     timeout=_SPILL_TIMEOUT_SECONDS,
                 )
-                # v2 shadow dual-write (STREAM_CONTRACT_V2.md): the immutable
+                # v2 dual-write (STREAM_CONTRACT_V2.md): the immutable
                 # per-run stream, keyed by ledger identity. Same lock hold so
                 # per-run frame order matches append order; seq is the XADD
-                # id (Redis-side). Best-effort while readerless — its own
-                # failure must not trip the v1 circuit breaker.
+                # id (Redis-side). Contract-grade: a hole in the canonical
+                # per-run stream opens the circuit like a v1 failure — the
+                # run tears as error(transport_lost) rather than a reader
+                # ever being served a stream with a silent gap.
                 if success and task.task_run_id:
                     v2_key = f"subagent:stream:{self.thread_id}:{task.task_run_id}"
                     try:
@@ -660,8 +662,11 @@ class BackgroundTaskRegistry:
                             timeout=_SPILL_TIMEOUT_SECONDS,
                         )
                     except Exception:
+                        task.redis_write_failed = True
                         logger.warning(
-                            "subagent_v2_spill_failed",
+                            "subagent_event_spill_failed",
+                            phase="v2_pipeline",
+                            tool_call_id=task.tool_call_id,
                             task_id=task.task_id,
                             task_run_id=task.task_run_id,
                             seq=record.get("seq"),

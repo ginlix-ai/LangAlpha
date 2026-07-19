@@ -481,6 +481,64 @@ async def test_quota_breach_opens_the_spill_circuit(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_v2_dual_write_failure_opens_the_circuit(monkeypatch) -> None:
+    """The per-run v2 stream is canonical at mux-v2 cutover: a failed frame
+    is a hole readers can't detect (opaque XADD ids), so it must tear the
+    run as error(transport_lost) — never a stream served as complete."""
+    fake_cache = MagicMock()
+    fake_cache.enabled = True
+    fake_cache.client = MagicMock()
+    fake_cache.client.xadd = AsyncMock(side_effect=RuntimeError("v2 down"))
+    fake_cache.pipelined_event_buffer = AsyncMock(return_value=(True, 1))
+    monkeypatch.setattr(
+        "src.utils.cache.redis_cache.get_cache_client", lambda: fake_cache
+    )
+    monkeypatch.setattr(
+        "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
+    )
+
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.task_run_id = "run-42"
+
+    await registry.append_captured_event(task.tool_call_id, _event(1))
+    assert task.redis_write_failed is True
+
+
+@pytest.mark.asyncio
+async def test_v2_dual_write_lands_on_the_run_scoped_key(monkeypatch) -> None:
+    fake_cache = MagicMock()
+    fake_cache.enabled = True
+    fake_cache.client = MagicMock()
+    fake_cache.client.xadd = AsyncMock(return_value=b"1-0")
+    fake_cache.pipelined_event_buffer = AsyncMock(return_value=(True, 1))
+    monkeypatch.setattr(
+        "src.utils.cache.redis_cache.get_cache_client", lambda: fake_cache
+    )
+    monkeypatch.setattr(
+        "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
+    )
+
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.task_run_id = "run-42"
+
+    await registry.append_captured_event(task.tool_call_id, _event(1))
+
+    assert task.redis_write_failed is False
+    (key, fields), _ = fake_cache.client.xadd.await_args
+    assert key == "subagent:stream:thread-x:run-42"
+    assert fields[b"run_id"] == b"run-42"
+    assert fields[b"lane"] == f"task:{task.task_id}".encode()
+    # Active v2 streams carry no TTL — the content path never expires them.
+    fake_cache.client.expire.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_at_quota_write_does_not_open_the_circuit(monkeypatch) -> None:
     fake_cache = MagicMock()
     fake_cache.enabled = True

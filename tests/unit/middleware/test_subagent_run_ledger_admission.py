@@ -66,7 +66,8 @@ class FakeLedger:
         return self.admit
 
     async def finalize_task_run(
-        self, task_run_id, status, *, task_id=None, failure=None
+        self, task_run_id, status, *, task_id=None, failure=None,
+        defer_run_end=False,
     ):
         self.finalized.append((task_run_id, status, failure))
         self.journal.append(("finalize", task_run_id, status))
@@ -74,6 +75,9 @@ class FakeLedger:
             "applied": True,
             "run": {"task_run_id": task_run_id, "status": status},
         }
+
+    async def append_run_end(self, task_run_id, *, task_id, outcome):
+        self.journal.append(("run_end", task_run_id, outcome))
 
     async def mark_result_delivered(self, task_run_id) -> bool:
         return True
@@ -399,3 +403,57 @@ async def test_captured_records_carry_task_run_identity():
 
     record = registry._spill_record_to_redis.await_args.args[1]
     assert record["task_run"] == "run-uuid-3"
+
+
+# ---------------------------------------------------------------------------
+# M6-A: run_end resequenced past the steering sweep (CAS -> sweep -> run_end)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_end_appends_after_the_sweep(monkeypatch):
+    """steering_returned frames must precede the terminal frame, and
+    nothing may follow run_end — so the wrapper defers it past the sweep."""
+    journal: list = []
+    ledger = FakeLedger(admit="run-uuid-9", journal=journal)
+    mw = _middleware(FakeOwner(journal=journal), ledger)
+    mw.registry.write_task_meta = AsyncMock()
+
+    async def _sweep(_registry, _task):
+        journal.append(("sweep",))
+
+    from ptc_agent.agent.middleware.background_subagent import middleware as mwmod
+
+    monkeypatch.setattr(mwmod, "_return_unconsumed_steering", _sweep)
+
+    await mw.awrap_tool_call(_request({"description": "d", "prompt": "p"}), _ok_handler)
+    await mw.registry._tasks["tc-1"].asyncio_task
+
+    assert journal.index(("finalize", "run-uuid-9", "completed")) < journal.index(
+        ("sweep",)
+    )
+    assert journal.index(("sweep",)) < journal.index(
+        ("run_end", "run-uuid-9", "completed")
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_end_skipped_when_the_stream_is_torn(monkeypatch):
+    """An open circuit means the v2 stream has a hole readers can't detect —
+    run_end must not seal it as complete; the ledger probe + replay resolve."""
+    journal: list = []
+    ledger = FakeLedger(journal=journal)
+    mw = _middleware(FakeOwner(), ledger)
+    mw.registry.write_task_meta = AsyncMock()
+
+    async def _torn_handler(_request):
+        mw.registry._tasks["tc-1"].redis_write_failed = True
+        return ToolMessage(content="done", tool_call_id="tc-1", name="Task")
+
+    await mw.awrap_tool_call(
+        _request({"description": "d", "prompt": "p"}), _torn_handler
+    )
+    await mw.registry._tasks["tc-1"].asyncio_task
+
+    assert ledger.finalized  # the CAS still lands (error/transport_lost)
+    assert not any(entry[0] == "run_end" for entry in journal)
