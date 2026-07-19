@@ -29,7 +29,7 @@ logger = structlog.get_logger(__name__)
 # re-uploaded to a reused sandbox. Folding this constant into the tool_modules
 # version makes a bump force the regenerated client onto every workspace on its
 # next sync. See ptc_sandbox._compute_sandbox_manifest.
-MCP_CLIENT_CODEGEN_VERSION = "2"
+MCP_CLIENT_CODEGEN_VERSION = "3"
 
 # Aggregate per-execution ceiling on result_body bytes emitted BY THE GENERATED
 # CLIENT, interpolated into it. This keeps a cooperative run's trace small (per
@@ -121,10 +121,9 @@ def _discover_sse(server_name: str) -> list:
     url, headers = _resolve_sse(config, server_name, discovery=True)
     req = {"jsonrpc": "2.0", "id": _get_next_message_id(),
            "method": "tools/list", "params": {}}
-    with httpx.Client(timeout=30.0) as client:
-        response = client.post(url, json=req, headers=headers)
-        response.raise_for_status()
-        result = response.json()
+    result = _streamable_http_request(url, headers, req, server_name)
+    if not result:
+        raise RuntimeError(f"{server_name}: no response for tools/list")
     if "error" in result:
         raise RuntimeError(f"tools/list error: {result['error']}")
     return (result.get("result") or {}).get("tools", [])
@@ -146,6 +145,75 @@ if __name__ == "__main__":
         sys.exit(0)
     print("usage: mcp_client.py discover <server_name> <output_path>", file=sys.stderr)  # noqa: T201
     sys.exit(2)
+'''
+
+
+# Streamable-HTTP transport (MCP 2025-03-26+). Inserted verbatim into the
+# generated client via {streamable_block} (single braces, NOT f-string
+# interpolated). Accepts JSON or SSE responses, parses whichever the server
+# returns, and carries Mcp-Session-Id across initialize -> tools/*. Backward-
+# compatible with servers that answer a plain POST with application/json.
+_STREAMABLE_HTTP_SOURCE = '''
+_sse_session_ids: dict = {}            # server_name -> Mcp-Session-Id
+_MCP_PROTOCOL_VERSION = "2025-06-18"
+
+
+def _parse_sse_for_id(response, want_id):
+    """Return the JSON-RPC message with id == want_id from an SSE response, or
+    the first message carrying a result/error when nothing matches."""
+    fallback = None
+    for raw in response.iter_lines():
+        line = raw.decode() if isinstance(raw, (bytes, bytearray)) else raw
+        if not line or not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            msg = json.loads(data)
+        except ValueError:
+            continue
+        if not isinstance(msg, dict):
+            continue
+        if want_id is not None and msg.get("id") == want_id:
+            return msg
+        if fallback is None and ("result" in msg or "error" in msg):
+            fallback = msg
+    return fallback
+
+
+def _streamable_http_request(url, headers, payload, server_name, is_init=False):
+    """One streamable-HTTP round trip. Returns the parsed JSON-RPC response
+    dict, or None for a notification (202 / empty body). Transport errors
+    raise; JSON-RPC errors are returned inside the dict for the caller."""
+    req_headers = dict(headers or {})
+    req_headers.setdefault("Content-Type", "application/json")
+    req_headers["Accept"] = "application/json, text/event-stream"
+    _sid = _sse_session_ids.get(server_name)
+    if _sid:
+        req_headers["Mcp-Session-Id"] = _sid
+    if not is_init:
+        req_headers["MCP-Protocol-Version"] = _MCP_PROTOCOL_VERSION
+    want_id = payload.get("id") if isinstance(payload, dict) else None
+    with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+        with client.stream("POST", url, json=payload, headers=req_headers) as response:
+            new_sid = response.headers.get("mcp-session-id")
+            if new_sid:
+                _sse_session_ids[server_name] = new_sid
+            if response.status_code == 202:
+                return None
+            response.raise_for_status()
+            ctype = response.headers.get("content-type", "")
+            if "text/event-stream" in ctype:
+                msg = _parse_sse_for_id(response, want_id)
+                if msg is None and want_id is not None:
+                    raise RuntimeError("no JSON-RPC response in SSE stream from " + repr(server_name))
+                return msg
+            response.read()
+            body = (response.text or "").strip()
+            if not body:
+                return None
+            return json.loads(body)
 '''
 
 
@@ -905,7 +973,7 @@ def _resolve_sse(config, server_name, *, discovery=False):
             sse_call_resolve = (
                 "\n        url, _headers = _resolve_sse(config, server_name)\n"
             )
-            sse_post_kwargs = ", headers=_headers"
+            sse_headers_expr = "_headers"
         else:
             sse_init_resolve = (
                 "\n    # Resolve environment variables in URL\n"
@@ -924,7 +992,7 @@ def _resolve_sse(config, server_name, *, discovery=False):
                 "\n"
                 "        url = re.sub(r'\\$\\{([^}]+)\\}', resolve_env, url)\n"
             )
-            sse_post_kwargs = ""
+            sse_headers_expr = "{}"
 
         # Discovery entrypoint + CLI. Emitted only when a workspace server is
         # present so builtin-only clients stay byte-identical. Discovery lists a
@@ -950,6 +1018,8 @@ def _resolve_sse(config, server_name, *, discovery=False):
             discovery_param = ""
             discovery_doc = ""
             discovery_doc_sse = ""
+
+        streamable_block = _STREAMABLE_HTTP_SOURCE
 
         return f'''"""
 MCP Client for sandbox environment.
@@ -982,6 +1052,7 @@ _sse_sessions: dict[str, bool] = {{}}  # server_name -> initialized
 # MCP server configurations
 _SERVER_CONFIGS = {servers_dict}
 {vault_block}
+{streamable_block}
 # Per-execution running sum of emitted result_body bytes. Each execute_code runs
 # in a FRESH interpreter process — both the Daytona and Docker providers spawn a
 # new `python` per code_run (a one-shot run, NOT a persistent kernel/session), so
@@ -1165,7 +1236,7 @@ def _start_mcp_server(server_name: str{discovery_param}) -> subprocess.Popen:
         "id": _get_next_message_id(),
         "method": "initialize",
         "params": {{
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": "2025-06-18",
             "capabilities": {{}},
             "clientInfo": {{
                 "name": "open-ptc-client",
@@ -1226,7 +1297,7 @@ def _initialize_sse_server(server_name: str{discovery_param}) -> None:
         "id": _get_next_message_id(),
         "method": "initialize",
         "params": {{
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": "2025-06-18",
             "capabilities": {{}},
             "clientInfo": {{
                 "name": "open-ptc-client",
@@ -1236,21 +1307,21 @@ def _initialize_sse_server(server_name: str{discovery_param}) -> None:
     }}
 
     try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(url, json=init_request{sse_post_kwargs})
-            response.raise_for_status()
-            result = response.json()
+        result = _streamable_http_request(
+            url, {sse_headers_expr}, init_request, server_name, is_init=True
+        )
+        if result and "error" in result:
+            msg = f"MCP initialization failed: {{result['error']}}"
+            raise RuntimeError(msg)
 
-            if "error" in result:
-                msg = f"MCP SSE initialization failed: {{result['error']}}"
-                raise RuntimeError(msg)
-
-            # Send initialized notification
-            initialized_notif = {{
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized"
-            }}
-            client.post(url, json=initialized_notif{sse_post_kwargs})
+        # Tell the server we're ready (notification — no response expected)
+        initialized_notif = {{
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }}
+        _streamable_http_request(
+            url, {sse_headers_expr}, initialized_notif, server_name
+        )
 
         _sse_sessions[server_name] = True
 
@@ -1291,11 +1362,12 @@ def _call_mcp_tool_sse(server_name: str, tool_name: str, arguments: dict[str, An
             }}
         }}
 
-        # Send request via HTTP POST
-        with httpx.Client(timeout=60.0) as client:
-            response = client.post(url, json=request{sse_post_kwargs})
-            response.raise_for_status()
-            result = response.json()
+        # Send request via streamable-HTTP transport
+        result = _streamable_http_request(
+            url, {sse_headers_expr}, request, server_name
+        )
+        if result is None:
+            raise RuntimeError("MCP server returned no response for tools/call")
 
         # Check for errors
         if "error" in result:
