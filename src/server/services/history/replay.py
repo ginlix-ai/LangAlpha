@@ -33,6 +33,7 @@ import asyncio
 import inspect
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -124,7 +125,6 @@ _MODEL_FALLBACK_FIELDS = (
     "status_code",
     "attempts_on_from",
 )
-
 
 class CheckpointReplayUnavailable(Exception):
     """Checkpoint history cannot faithfully cover this thread's replay."""
@@ -354,19 +354,48 @@ async def _build_and_backfill(
             turn_items.append(credit_item)
 
         if _has_unresolved_sandbox_images(turn_items) and stored_events:
-            # Non-derivable image URLs live only in the stored events for this
-            # turn — replay it from storage wholesale (subagent events are
-            # interleaved in the stored stream, so they're covered too).
-            # Copy the nested ``data`` too (like build_sse_replay_items): _enrich
-            # stamps into it, and the source dicts are the request's pristine
-            # ``sse_events`` rows.
-            turn_items = [
-                {"event": e["event"], "data": dict(e["data"])}
-                for e in stored_events
-                if _valid_stored(e)
-            ]
+            # Non-derivable image URLs live only in the stored events for
+            # this turn — replay the MAIN lane from storage wholesale. The
+            # task lane keeps the normal path's contract exactly, via the
+            # same merge: projection is the transcript authority for the
+            # agents it claimed (the checkpoint outranks every stored shape
+            # — collector full copy, user-stop partial snapshot, legacy
+            # interleave), while _merge_stored_payloads supplies what the
+            # checkpoint can't — stored-preferred signal rows anchored in
+            # position, evicted tool results restored from the fuller
+            # stored copy — and stored transcript rows serve only as
+            # anchors, never duplicates. Stored rows outside the claimed
+            # lanes replay verbatim: main rows, task-scoped custom
+            # artifacts (the projector never emits task artifacts), and
+            # unclaimed agents' rows (in_progress, cascade-truncated,
+            # unclaimed legacy — nothing projected, nothing to merge).
+            # Copy the nested ``data`` (like build_sse_replay_items):
+            # _enrich stamps into it, and the source dicts are the
+            # request's pristine ``sse_events`` rows.
+            projected_task_agents = {
+                agent
+                for i in task_items
+                if (agent := str((i.get("data") or {}).get("agent", "")))
+            }
+            claimed_rows: list[dict[str, Any]] = []
+            verbatim_rows: list[dict[str, Any]] = []
+            for e in stored_events:
+                if not _valid_stored(e):
+                    continue
+                agent = str((e.get("data") or {}).get("agent", ""))
+                if agent in projected_task_agents and e["event"] != "artifact":
+                    claimed_rows.append(e)
+                else:
+                    verbatim_rows.append(
+                        {"event": e["event"], "data": dict(e["data"])}
+                    )
+            turn_items = verbatim_rows + _merge_stored_payloads(
+                task_items, claimed_rows, task_lane.turn_lossy_lanes
+            )
         else:
-            turn_items = _merge_stored_payloads(turn_items, stored_events)
+            turn_items = _merge_stored_payloads(
+                turn_items, stored_events, task_lane.turn_lossy_lanes
+            )
 
         _fill_token_thresholds(turn_items)
         # Terminal error: never in stored events (persisted before it is
@@ -388,7 +417,35 @@ async def _build_and_backfill(
         # its task-ns writes never move this turn's tail, so a partial entry
         # would never be invalidated. Rebuild-per-read until the task's
         # stream finalizes, then the next read caches the full transcript.
-        if not await projection_cache.task_streams_live(thread_id, turn_task_ids):
+        #
+        # Same discipline while a settled lane's archive is still owed: the
+        # collector races the refresh-at-finalize, and it never invalidates
+        # this cache. A lossy lane's capture-only rows and the fuller stored
+        # copy behind a projected eviction pointer exist only in that
+        # archive — caching before it lands would freeze the loss for the
+        # cache TTL. A stored transcript-class row clears the debt: those
+        # classes are written only by the atomic archive writers (collector,
+        # stop drain), never by the live root path.
+        awaiting_archive = set(task_lane.turn_lossy_lanes)
+        for i in turn_items:
+            d = i.get("data") or {}
+            agent = str(d.get("agent", ""))
+            if (
+                i.get("event") == "tool_call_result"
+                and agent.startswith("task:")
+                and isinstance(d.get("content"), str)
+                and d["content"].startswith(_EVICTED_RESULT_PREFIX)
+            ):
+                awaiting_archive.add(agent)
+        if awaiting_archive:
+            awaiting_archive -= {
+                str((e.get("data") or {}).get("agent", ""))
+                for e in stored_events or []
+                if _valid_stored(e) and e["event"] in _ARCHIVE_EVIDENCE_EVENTS
+            }
+        if not awaiting_archive and not await projection_cache.task_streams_live(
+            thread_id, turn_task_ids
+        ):
             cacheable.append((turn_index, turn.tail_checkpoint_id, segment))
 
     items.extend(await task_lane.trailing_items())
@@ -739,13 +796,37 @@ def _valid_stored(event: Any) -> bool:
 # both streams enumerate the same messages when keyed on these.
 _ANCHORABLE_CONTENT_TYPES = frozenset({"reasoning_signal", "reasoning", "text"})
 
+# Task-run terminals where the live capture can exceed the checkpoint: a run
+# that raised or was killed mid-write streamed output whose message never
+# committed. completed/interrupted runs end on a committed boundary, and a
+# completed run's archive may hold phantom partials from a mid-stream model
+# retry — resurrecting those would double-render.
+_LOSSY_TERMINAL_STATUSES = frozenset({"error", "cancelled"})
+
+# Only these classes prove a lane's archive landed: the collector and the
+# stop drain both replay the captured stream from its start (the opener is
+# always first), while the live root path persists a task's custom
+# artifacts — and nothing else — before any archive write, so an artifact
+# row is not evidence.
+_ARCHIVE_EVIDENCE_EVENTS = frozenset(
+    {"user_message", "message_chunk", "tool_calls", "tool_call_result"}
+)
+
+# Image targets are rewritten between capture and checkpoint (sandbox path
+# -> durable URL; the checkpoint rewrite sees whole messages while the
+# archive rewrite scans row fragments), so copy-matching must ignore them.
+_IMAGE_MD_RE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+
 
 def _lane(agent: Any) -> str:
     return agent if isinstance(agent, str) and agent.startswith("task:") else "main"
 
 
-def _message_lane_ordinals(items: list[dict[str, Any]]) -> dict[str, int]:
-    """Ordinal of each message within its lane, over anchorable-content messages.
+def _message_lane_ordinals(
+    items: list[dict[str, Any]],
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Ordinal of each message within its lane, over anchorable-content
+    messages, plus the per-lane message count.
 
     Message ids differ between the streams (live chunks carry ``lc_run--…`` run
     ids, checkpointed messages the provider id), so a chunk can't anchor by id.
@@ -767,7 +848,7 @@ def _message_lane_ordinals(items: list[dict[str, Any]]) -> dict[str, int]:
         lane = _lane(data.get("agent"))
         ordinal_by_id[message_id] = counters.get(lane, 0)
         counters[lane] = ordinal_by_id[message_id] + 1
-    return ordinal_by_id
+    return ordinal_by_id, counters
 
 
 def _anchor_key(
@@ -838,7 +919,9 @@ async def _resolve_widget_data_refs(turn_items: list[dict[str, Any]]) -> None:
 
 
 def _merge_stored_payloads(
-    turn_items: list[dict[str, Any]], stored_events: list[dict[str, Any]]
+    turn_items: list[dict[str, Any]],
+    stored_events: list[dict[str, Any]],
+    resurrect_lanes: set[str] | frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Merge non-derivable stored events into a projected turn, in position.
 
@@ -850,6 +933,12 @@ def _merge_stored_payloads(
     Passthrough events (context_window, provenance, …) insert after the
     projected position of their nearest preceding stored anchor, reproducing
     their original mid-turn placement instead of piling up at the end.
+
+    ``resurrect_lanes``: lanes whose claimed run died mid-write. Their stored
+    rows beyond everything the checkpoint enumerates (see
+    ``_is_lost_transcript_row``) are real output the user saw live that no
+    checkpoint holds — replayed after the lane's last projected item instead
+    of being dropped as unanchored.
     """
     stored = [e for e in stored_events if _valid_stored(e)]
     if not stored:
@@ -869,8 +958,13 @@ def _merge_stored_payloads(
 
     _restore_evicted_results(turn_items, stored)
 
-    projected_ordinals = _message_lane_ordinals(turn_items)
-    stored_ordinals = _message_lane_ordinals(stored)
+    projected_ordinals, projected_lane_counts = _message_lane_ordinals(turn_items)
+    stored_ordinals, _ = _message_lane_ordinals(stored)
+    committed_stored_ids = (
+        _misaligned_committed_ids(turn_items, stored, resurrect_lanes)
+        if resurrect_lanes
+        else set()
+    )
 
     index_by_key: dict[tuple, int] = {}
     for idx, item in enumerate(turn_items):
@@ -880,12 +974,29 @@ def _merge_stored_payloads(
             # (e.g. both reasoning-signal items share one key).
             index_by_key[key] = idx
 
+    last_lane_index: dict[str, int] = {}
+    for idx, item in enumerate(turn_items):
+        last_lane_index[_lane(item["data"].get("agent"))] = idx
+
     inserts_after: dict[int, list[dict[str, Any]]] = {}
     anchor_idx = -1  # before the first projected item
     for event in stored:
         key = _anchor_key(event["event"], event["data"], stored_ordinals)
         if key is not None and key in index_by_key:
             anchor_idx = index_by_key[key]
+            continue
+        if _is_lost_transcript_row(
+            event, key, stored_ordinals, projected_lane_counts,
+            resurrect_lanes, last_lane_index, committed_stored_ids,
+        ):
+            # Anchor the resurrection point too, so following stored rows
+            # (the run's error, further lost rows) keep their relative order.
+            anchor_idx = max(
+                anchor_idx, last_lane_index[_lane(event["data"].get("agent"))]
+            )
+            inserts_after.setdefault(anchor_idx, []).append(
+                {"event": event["event"], "data": dict(event["data"])}
+            )
             continue
         if event["event"] in _PASSTHROUGH_EVENTS or id(event) in extra_widget_ids:
             inserts_after.setdefault(anchor_idx, []).append(
@@ -897,6 +1008,142 @@ def _merge_stored_payloads(
         merged.append(item)
         merged.extend(inserts_after.get(idx, ()))
     return merged
+
+
+def _is_lost_transcript_row(
+    event: dict[str, Any],
+    key: tuple | None,
+    stored_ordinals: dict[str, int],
+    projected_lane_counts: dict[str, int],
+    resurrect_lanes: set[str] | frozenset[str],
+    last_lane_index: dict[str, int],
+    committed_stored_ids: set[str],
+) -> bool:
+    """Stored transcript content the checkpoint never committed.
+
+    Reachable only for lanes whose claimed run died mid-write: a message
+    whose lane ordinal lies beyond every projected message, or a tool round
+    with no projected twin, was streamed live but never checkpointed.
+    Anchored rows never reach here (they are consumed as duplicates),
+    empty-content chunks (the stop path's synthetic close) stay dropped,
+    and a misaligned committed copy (``committed_stored_ids``) is the
+    checkpointed message wearing a shifted ordinal, not lost output.
+    """
+    data = event["data"]
+    lane = _lane(data.get("agent"))
+    if lane not in resurrect_lanes or lane not in last_lane_index:
+        return False
+    if event["event"] == "message_chunk":
+        content = data.get("content")
+        message_id = data.get("id")
+        return (
+            isinstance(content, str)
+            and bool(content)
+            and data.get("content_type") in _ANCHORABLE_CONTENT_TYPES
+            and message_id in stored_ordinals
+            and stored_ordinals[message_id] >= projected_lane_counts.get(lane, 0)
+            and message_id not in committed_stored_ids
+        )
+    if event["event"] in ("tool_calls", "tool_call_result"):
+        return key is not None
+    return False
+
+
+def _misaligned_committed_ids(
+    turn_items: list[dict[str, Any]],
+    stored: list[dict[str, Any]],
+    resurrect_lanes: set[str] | frozenset[str],
+) -> set[str]:
+    """Stored message ids that are a checkpointed message's shifted copy.
+
+    A phantom partial (a model attempt that failed before an in-run retry)
+    shifts a lane's stored ordinals, so a committed message's stored copy
+    can land beyond the projected count and look trailing. Alignment is the
+    match-maximizing in-order pairing (LCS) of stored messages against
+    projected messages: a phantom can never consume a projected slot a real
+    copy needs, and occurrences stay distinct — a stored message repeating
+    a projected text beyond the pairing is lost output, not a copy. Ties
+    break toward the earliest stored message, so the copy is the first
+    occurrence and later repeats resurrect.
+    """
+    projected = _lane_message_signatures(turn_items, resurrect_lanes)
+    committed: set[str] = set()
+    for lane, stored_msgs in _lane_message_signatures(stored, resurrect_lanes).items():
+        lane_projected = projected.get(lane, [])
+        if not lane_projected:
+            continue
+        n, m = len(stored_msgs), len(lane_projected)
+        # dp[i][j] = most pairs matchable from stored_msgs[i:] x lane_projected[j:]
+        dp = [[0] * (m + 1) for _ in range(n + 1)]
+        for i in range(n - 1, -1, -1):
+            for j in range(m - 1, -1, -1):
+                best = max(dp[i + 1][j], dp[i][j + 1])
+                if stored_msgs[i][1] == lane_projected[j][1]:
+                    best = max(best, 1 + dp[i + 1][j + 1])
+                dp[i][j] = best
+        i = j = 0
+        while i < n and j < m:
+            if (
+                stored_msgs[i][1] == lane_projected[j][1]
+                and 1 + dp[i + 1][j + 1] == dp[i][j]
+            ):
+                committed.add(stored_msgs[i][0])
+                i += 1
+                j += 1
+            elif dp[i + 1][j] >= dp[i][j + 1]:
+                i += 1
+            else:
+                j += 1
+    return committed
+
+
+def _lane_message_signatures(
+    rows: list[dict[str, Any]],
+    lanes: set[str] | frozenset[str],
+) -> dict[str, list[tuple[str, str]]]:
+    """Per lane, ordered (message_id, signature) pairs for content matching.
+
+    The signature is the message's accumulated text with image targets
+    normalized; text-less messages fall back to reasoning. Text alone
+    decides when present — reasoning persistence is provider-dependent, so
+    a reasoning mismatch (or coincidental match) must not override it.
+    """
+    order: dict[str, list[str]] = {}
+    content: dict[tuple[str, str], str] = {}
+    lane_of: dict[str, str] = {}
+    for row in rows:
+        if row["event"] != "message_chunk":
+            continue
+        data = row["data"]
+        message_id, content_type = data.get("id"), data.get("content_type")
+        if not message_id or content_type not in ("text", "reasoning"):
+            continue
+        chunk = data.get("content")
+        if not isinstance(chunk, str):
+            continue
+        lane = _lane(data.get("agent"))
+        if lane not in lanes:
+            continue
+        if message_id not in lane_of:
+            lane_of[message_id] = lane
+            order.setdefault(lane, []).append(message_id)
+        group = (message_id, content_type)
+        content[group] = content.get(group, "") + chunk
+    return {
+        lane: [
+            (
+                message_id,
+                _IMAGE_MD_RE.sub(
+                    r"![\1]",
+                    text
+                    if (text := content.get((message_id, "text"))) is not None
+                    else content.get((message_id, "reasoning"), ""),
+                ),
+            )
+            for message_id in ids
+        ]
+        for lane, ids in order.items()
+    }
 
 
 def _restore_evicted_results(
@@ -1031,6 +1278,11 @@ class _TaskLaneProjector:
         # run the projection skipped (its skip decision and this watermark
         # must share one snapshot).
         self.claimed_watermarks: dict[str, float] = {}
+        # Lanes claimed in the CURRENT turn whose run died mid-write
+        # (_LOSSY_TERMINAL_STATUSES): the stored copy may hold output the
+        # checkpoint never committed, so the merge may resurrect their
+        # trailing rows. Reset by each project_for_turn call.
+        self.turn_lossy_lanes: set[str] = set()
 
     @staticmethod
     def _launches_in(turn: Any) -> list[tuple[str, str, str | None, str | None]]:
@@ -1180,6 +1432,7 @@ class _TaskLaneProjector:
         run must not be cached)."""
         items: list[dict[str, Any]] = []
         launched: set[str] = set()
+        self.turn_lossy_lanes = set()
         for task_id, _action, prompt, run_id in self._launches_in(turn):
             runs = self._tasks.get(task_id)
             if runs is None:
@@ -1216,6 +1469,8 @@ class _TaskLaneProjector:
                 self.claimed_watermarks[task_id] = (
                     started if prev is None else max(prev, started)
                 )
+            if status in _LOSSY_TERMINAL_STATUSES:
+                self.turn_lossy_lanes.add(task_agent)
             if not runs.attributed:
                 # Namespace-scoped signals (compaction, model fallback) are
                 # not per-run; they ride with the first projected run.

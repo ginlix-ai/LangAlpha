@@ -700,3 +700,20 @@ async def test_text_event_bumps_last_updated_at_with_new_path() -> None:
     snapshot = task.last_updated_at
     await registry.append_captured_event(task.tool_call_id, _event(1))
     assert task.last_updated_at == snapshot
+
+
+@pytest.mark.asyncio
+async def test_cancelled_task_appends_are_dropped() -> None:
+    """A killed task's streams are final: appends from writers surviving the
+    bounded unwind are dropped, so post-kill output can't outrun the stop
+    drain's high-water into the live stream or the archive."""
+    registry = BackgroundTaskRegistry()
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    await registry.append_captured_event(task.tool_call_id, _event(0))
+    task.cancelled = True
+    await registry.append_captured_event(task.tool_call_id, _event(1))
+
+    assert task.captured_event_seq == 1
+    assert task.captured_event_count == 1

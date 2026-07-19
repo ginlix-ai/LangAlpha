@@ -645,6 +645,1238 @@ async def test_unresolved_images_fall_back_to_stored(monkeypatch):
     assert "response_id" not in stored[0]["data"]
 
 
+async def test_wholesale_fallback_preserves_task_lane_and_watermark(monkeypatch):
+    """The unresolved-image wholesale substitution replaces only the MAIN
+    lane: the stored root archive has no task frames (the per-task channel
+    owns them), so the projected task transcript must survive and the
+    watermark stamped on the stored artifact must stay truthful."""
+    from datetime import datetime, timezone
+
+    started = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    task_artifact = {
+        "task_id": "tsk1",
+        "action": "init",
+        "description": "d",
+        "prompt": "p",
+        "task_run_id": "run-1",
+    }
+    turn_msgs = [
+        AIMessage(content="![chart](work/chart.png)", id="ai-1"),
+        AIMessage(
+            content="",
+            id="ai-2",
+            tool_calls=[{"name": "Task", "args": {}, "id": "tc-t"}],
+        ),
+        ToolMessage(
+            content="dispatched",
+            tool_call_id="tc-t",
+            name="Task",
+            id="tm-1",
+            additional_kwargs={"task_artifact": task_artifact},
+        ),
+    ]
+    reader = _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, turn_msgs)]),
+        task_messages=[AIMessage(content="task answer", id="sub-ai-1")],
+    )
+    reader.aget_task_run_stamps = AsyncMock(return_value=["run-1"])
+    monkeypatch.setattr(
+        "src.server.services.history.replay.sr_db.list_runs_for_thread",
+        AsyncMock(
+            return_value=[
+                {
+                    "task_run_id": "run-1",
+                    "status": "completed",
+                    "started_at": started,
+                }
+            ]
+        ),
+    )
+    stored = [
+        {
+            "event": "message_chunk",
+            "data": {
+                "content": "![chart](https://cdn/rewritten.png)",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "artifact",
+            "data": {
+                "artifact_type": "task",
+                "artifact_id": "task:tsk1",
+                "agent": "main",
+                "payload": {
+                    "task_id": "tsk1",
+                    "action": "init",
+                    "task_run_id": "run-1",
+                },
+            },
+        },
+    ]
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+    main_chunks = [
+        i["data"]["content"]
+        for i in items
+        if i["event"] == "message_chunk" and i["data"].get("agent") != "task:tsk1"
+    ]
+    assert "![chart](https://cdn/rewritten.png)" in main_chunks
+    # The projected task transcript survived the substitution.
+    assert [
+        i["data"]["content"]
+        for i in items
+        if i["event"] == "message_chunk" and i["data"].get("agent") == "task:tsk1"
+    ] == ["task answer"]
+    # And the stored artifact carries a truthful watermark.
+    artifacts = [
+        i
+        for i in items
+        if i["event"] == "artifact" and i["data"].get("artifact_type") == "task"
+    ]
+    assert len(artifacts) == 1
+    assert (
+        artifacts[0]["data"]["payload"]["projected_run_started_ms"]
+        == started.timestamp() * 1000.0
+    )
+
+
+async def test_wholesale_fallback_dedups_legacy_interleaved_archive(monkeypatch):
+    """Pre-mux archives interleaved task frames in the root stream. The
+    projection is the transcript authority for claimed agents (as on the
+    normal path), so the stored duplicate rows are dropped — single render,
+    from the checkpoint."""
+    task_artifact = {
+        "task_id": "tsk1",
+        "action": "init",
+        "description": "d",
+        "prompt": "p",
+    }
+    turn_msgs = [
+        AIMessage(content="![chart](work/chart.png)", id="ai-1"),
+        AIMessage(
+            content="",
+            id="ai-2",
+            tool_calls=[{"name": "Task", "args": {}, "id": "tc-t"}],
+        ),
+        ToolMessage(
+            content="dispatched",
+            tool_call_id="tc-t",
+            name="Task",
+            id="tm-1",
+            additional_kwargs={"task_artifact": task_artifact},
+        ),
+    ]
+    _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, turn_msgs)]),
+        task_messages=[AIMessage(content="projected copy", id="sub-ai-1")],
+    )
+    stored = [
+        {
+            "event": "message_chunk",
+            "data": {
+                "content": "![chart](https://cdn/rewritten.png)",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "message_chunk",
+            "data": {
+                "content": "stored task copy",
+                "content_type": "text",
+                "agent": "task:tsk1",
+            },
+        },
+    ]
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+    assert [
+        i["data"]["content"]
+        for i in items
+        if i["event"] == "message_chunk" and i["data"].get("agent") == "task:tsk1"
+    ] == ["projected copy"]
+
+
+async def test_wholesale_fallback_tool_only_archive_renders_once(monkeypatch):
+    """A collector-replaced archive for a run with no model text carries the
+    opener/tool frames but zero message_chunk rows. The projection claims the
+    agent, so the stored duplicates are dropped and the transcript renders
+    once (no double opener, no duplicate tools); the stored error row has no
+    projected counterpart and survives."""
+    task_artifact = {
+        "task_id": "tsk1",
+        "action": "init",
+        "description": "d",
+        "prompt": "p",
+    }
+    turn_msgs = [
+        AIMessage(content="![chart](work/chart.png)", id="ai-1"),
+        AIMessage(
+            content="",
+            id="ai-2",
+            tool_calls=[{"name": "Task", "args": {}, "id": "tc-t"}],
+        ),
+        ToolMessage(
+            content="dispatched",
+            tool_call_id="tc-t",
+            name="Task",
+            id="tm-1",
+            additional_kwargs={"task_artifact": task_artifact},
+        ),
+    ]
+    _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, turn_msgs)]),
+        task_messages=[
+            HumanMessage(content="p", id="sub-h-1"),
+            AIMessage(
+                content="",
+                id="sub-ai-1",
+                tool_calls=[{"name": "bash", "args": {"cmd": "ls"}, "id": "tc-s"}],
+            ),
+            ToolMessage(
+                content="files", tool_call_id="tc-s", name="bash", id="sub-tm-1"
+            ),
+        ],
+    )
+    stored = [
+        {
+            "event": "message_chunk",
+            "data": {
+                "content": "![chart](https://cdn/rewritten.png)",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "user_message",
+            "data": {"agent": "task:tsk1", "role": "user", "content": "p"},
+        },
+        {
+            "event": "tool_calls",
+            "data": {
+                "agent": "task:tsk1",
+                "role": "assistant",
+                "tool_calls": [{"name": "bash", "args": {"cmd": "ls"}, "id": "tc-s"}],
+            },
+        },
+        {
+            "event": "tool_call_result",
+            "data": {
+                "agent": "task:tsk1",
+                "role": "assistant",
+                "tool_call_id": "tc-s",
+                "content": "files",
+            },
+        },
+        {
+            "event": "error",
+            "data": {"agent": "task:tsk1", "error": "model call failed"},
+        },
+    ]
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+    task_rows = [
+        i for i in items if (i["data"] or {}).get("agent") == "task:tsk1"
+    ]
+    # Exactly one opener and one tool round — the projected copy; the stored
+    # error row has no projected twin and inserts after its stored anchor
+    # (the tool result), keeping its original mid-transcript position.
+    assert [i["event"] for i in task_rows] == [
+        "user_message",
+        "tool_calls",
+        "tool_call_result",
+        "error",
+    ]
+    # The transcript rows are the projected ones (checkpoint message ids),
+    # not the stored copies.
+    assert [i["data"].get("id") for i in task_rows[:3]] == [
+        "sub-h-1",
+        "sub-ai-1",
+        "sub-tm-1",
+    ]
+
+
+async def test_wholesale_fallback_stop_snapshot_does_not_evict_projection(
+    monkeypatch,
+):
+    """A user-stop drain appends a PARTIAL task snapshot to the root archive
+    (drained rows up to a high-water mark + a synthetic ``stopped`` close),
+    bypassing the collector — transcript-class rows without completeness.
+    The projection claims the cancelled run from the checkpoint, which holds
+    the full transcript: it must render, and the partial stored rows must
+    not evict it."""
+    from datetime import datetime, timezone
+
+    started = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    task_artifact = {
+        "task_id": "tsk1",
+        "action": "init",
+        "description": "d",
+        "prompt": "p",
+        "task_run_id": "run-1",
+    }
+    turn_msgs = [
+        AIMessage(content="![chart](work/chart.png)", id="ai-1"),
+        AIMessage(
+            content="",
+            id="ai-2",
+            tool_calls=[{"name": "Task", "args": {}, "id": "tc-t"}],
+        ),
+        ToolMessage(
+            content="dispatched",
+            tool_call_id="tc-t",
+            name="Task",
+            id="tm-1",
+            additional_kwargs={"task_artifact": task_artifact},
+        ),
+    ]
+    reader = _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, turn_msgs)]),
+        task_messages=[
+            HumanMessage(content="p", id="sub-h-1"),
+            AIMessage(content="partial answer plus the checkpointed tail", id="sub-ai-1"),
+        ],
+    )
+    reader.aget_task_run_stamps = AsyncMock(return_value=["run-1"])
+    monkeypatch.setattr(
+        "src.server.services.history.replay.sr_db.list_runs_for_thread",
+        AsyncMock(
+            return_value=[
+                {
+                    "task_run_id": "run-1",
+                    "status": "cancelled",
+                    "started_at": started,
+                }
+            ]
+        ),
+    )
+    stored = [
+        {
+            "event": "message_chunk",
+            "data": {
+                "content": "![chart](https://cdn/rewritten.png)",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "artifact",
+            "data": {
+                "artifact_type": "task",
+                "artifact_id": "task:tsk1",
+                "agent": "main",
+                "payload": {
+                    "task_id": "tsk1",
+                    "action": "init",
+                    "task_run_id": "run-1",
+                },
+            },
+        },
+        {
+            "event": "user_message",
+            "data": {"agent": "task:tsk1", "role": "user", "content": "p"},
+        },
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "role": "assistant",
+                "content": "partial answer",
+                "content_type": "text",
+            },
+        },
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "task:tsk1:stopped",
+                "role": "assistant",
+                "content": "",
+                "content_type": "text",
+                "finish_reason": "stopped",
+            },
+        },
+    ]
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+    # The full checkpointed transcript renders, once; the partial snapshot
+    # rows (opener, truncated chunk, synthetic close) are gone.
+    assert [
+        i["data"].get("content")
+        for i in items
+        if i["event"] == "message_chunk" and i["data"].get("agent") == "task:tsk1"
+    ] == ["partial answer plus the checkpointed tail"]
+    assert [
+        i["data"].get("id")
+        for i in items
+        if i["event"] == "user_message" and i["data"].get("agent") == "task:tsk1"
+    ] == ["sub-h-1"]
+    # The launch artifact keeps the ledger-exact watermark — truthful, the
+    # transcript is in the payload.
+    task_artifacts = [
+        i
+        for i in items
+        if i["event"] == "artifact" and i["data"].get("artifact_type") == "task"
+    ]
+    assert len(task_artifacts) == 1
+    assert (
+        task_artifacts[0]["data"]["payload"]["projected_run_started_ms"]
+        == started.timestamp() * 1000.0
+    )
+
+
+def _wholesale_task_turn():
+    """A turn launching tsk1 whose main lane has an unresolved sandbox image
+    (activates the wholesale branch)."""
+    task_artifact = {
+        "task_id": "tsk1",
+        "action": "init",
+        "description": "d",
+        "prompt": "p",
+    }
+    return [
+        AIMessage(content="![chart](work/chart.png)", id="ai-1"),
+        AIMessage(
+            content="",
+            id="ai-2",
+            tool_calls=[{"name": "Task", "args": {}, "id": "tc-t"}],
+        ),
+        ToolMessage(
+            content="dispatched",
+            tool_call_id="tc-t",
+            name="Task",
+            id="tm-1",
+            additional_kwargs={"task_artifact": task_artifact},
+        ),
+    ]
+
+
+async def test_wholesale_fallback_restores_evicted_task_results(monkeypatch):
+    """The task checkpoint holds only the eviction pointer for a large tool
+    result; the stored copy holds the fuller content. The wholesale branch
+    must apply the same restore as the normal path — projection authority
+    must not discard stored content the checkpoint genuinely lacks."""
+    _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, _wholesale_task_turn())]),
+        task_messages=[
+            HumanMessage(content="p", id="sub-h-1"),
+            AIMessage(
+                content="",
+                id="sub-ai-1",
+                tool_calls=[{"name": "bash", "args": {"cmd": "x"}, "id": "tc-1"}],
+            ),
+            ToolMessage(
+                content=_EVICTION_POINTER,
+                tool_call_id="tc-1",
+                name="bash",
+                id="sub-tm-1",
+            ),
+        ],
+    )
+    stored = [
+        {
+            "event": "message_chunk",
+            "data": {
+                "content": "![chart](https://cdn/rewritten.png)",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "tool_call_result",
+            "data": {
+                "agent": "task:tsk1",
+                "role": "assistant",
+                "tool_call_id": "tc-1",
+                "content": "the full captured result",
+                "content_type": "text",
+            },
+        },
+    ]
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+    results = [
+        i
+        for i in items
+        if i["event"] == "tool_call_result"
+        and i["data"].get("agent") == "task:tsk1"
+    ]
+    assert len(results) == 1
+    assert results[0]["data"]["content"] == "the full captured result"
+
+
+async def test_wholesale_fallback_task_signals_render_once_in_position(
+    monkeypatch,
+):
+    """Stored task-scoped signal rows (steering_delivered here) are the
+    preferred copy — the projected twin is dropped and the stored row is
+    anchored at its original mid-transcript position, exactly as on the
+    normal path. Two copies would advance the client's run grouping twice."""
+    _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, _wholesale_task_turn())]),
+        task_messages=[
+            HumanMessage(content="p", id="sub-h-1"),
+            AIMessage(content="before steering", id="sub-ai-1"),
+            HumanMessage(
+                content="[Steering from User]\nfocus on X",
+                id="sub-h-2",
+                additional_kwargs={
+                    "lc_source": "steering",
+                    "steering_delivered": {"count": 1, "content": "focus on X"},
+                },
+            ),
+            AIMessage(content="after steering", id="sub-ai-2"),
+        ],
+    )
+    stored = [
+        {
+            "event": "message_chunk",
+            "data": {
+                "content": "![chart](https://cdn/rewritten.png)",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "live-1",
+                "content": "before steering",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "steering_delivered",
+            "data": {
+                "agent": "task:tsk1",
+                "count": 1,
+                "content": "focus on X",
+                "stored_marker": True,
+            },
+        },
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "live-2",
+                "content": "after steering",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+    ]
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+    task_rows = [
+        i for i in items if (i["data"] or {}).get("agent") == "task:tsk1"
+    ]
+    steering = [i for i in task_rows if i["event"] == "steering_delivered"]
+    # Exactly one — the stored copy, in position between the two chunks.
+    assert len(steering) == 1
+    assert steering[0]["data"].get("stored_marker") is True
+    kinds = [
+        (i["event"], i["data"].get("content"))
+        for i in task_rows
+        if i["event"] in ("message_chunk", "steering_delivered")
+    ]
+    assert kinds == [
+        ("message_chunk", "before steering"),
+        ("steering_delivered", "focus on X"),
+        ("message_chunk", "after steering"),
+    ]
+
+
+def _ledgered_run(monkeypatch, reader, status):
+    """Stamp-aligned single run 'run-1' with the given terminal status."""
+    from datetime import datetime, timezone
+
+    started = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    reader.aget_task_run_stamps = AsyncMock(return_value=["run-1"])
+    monkeypatch.setattr(
+        "src.server.services.history.replay.sr_db.list_runs_for_thread",
+        AsyncMock(
+            return_value=[
+                {
+                    "task_run_id": "run-1",
+                    "status": status,
+                    "started_at": started,
+                }
+            ]
+        ),
+    )
+    return started
+
+
+def _ledgered_task_turn():
+    """_wholesale_task_turn with the launch stamped task_run_id=run-1."""
+    msgs = _wholesale_task_turn()
+    msgs[-1].additional_kwargs["task_artifact"]["task_run_id"] = "run-1"
+    return msgs
+
+
+_ERRORED_RUN_STORED_TASK_ROWS = [
+    {
+        "event": "user_message",
+        "data": {"agent": "task:tsk1", "role": "user", "content": "p"},
+    },
+    {
+        "event": "message_chunk",
+        "data": {
+            "agent": "task:tsk1",
+            "id": "lc-1",
+            "content": "The answer is",
+            "content_type": "text",
+            "role": "assistant",
+        },
+    },
+    {
+        "event": "message_chunk",
+        "data": {
+            "agent": "task:tsk1",
+            "id": "lc-1",
+            "content": " incomplete",
+            "content_type": "text",
+            "role": "assistant",
+        },
+    },
+    {
+        "event": "error",
+        "data": {"agent": "task:tsk1", "error": "model call failed"},
+    },
+]
+
+
+async def test_wholesale_fallback_errored_run_partial_text_survives(monkeypatch):
+    """A model call that raises mid-stream leaves partial text in the capture
+    that the checkpoint never committed (only the opener checkpointed). For
+    the errored run's lane the merge resurrects those trailing stored chunks
+    after the projected opener — text the user saw live must survive reload."""
+    reader = _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, _ledgered_task_turn())]),
+        task_messages=[HumanMessage(content="p", id="sub-h-1")],
+    )
+    _ledgered_run(monkeypatch, reader, "error")
+    stored = [
+        {
+            "event": "message_chunk",
+            "data": {
+                "content": "![chart](https://cdn/rewritten.png)",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        *_ERRORED_RUN_STORED_TASK_ROWS,
+    ]
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+    task_rows = [
+        i for i in items if (i["data"] or {}).get("agent") == "task:tsk1"
+    ]
+    assert [(i["event"], i["data"].get("content")) for i in task_rows] == [
+        ("user_message", "p"),
+        ("message_chunk", "The answer is"),
+        ("message_chunk", " incomplete"),
+        ("error", None),
+    ]
+    # The single opener is the projected one.
+    assert task_rows[0]["data"].get("id") == "sub-h-1"
+
+
+async def test_normal_path_errored_run_partial_text_survives(monkeypatch):
+    """Same resurrection on the normal (no unresolved image) path — the fix
+    lives in the shared merge, not the wholesale branch."""
+    msgs = _ledgered_task_turn()
+    msgs[0] = AIMessage(content="plain main text", id="ai-1")
+    reader = _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, msgs)]),
+        task_messages=[HumanMessage(content="p", id="sub-h-1")],
+    )
+    _ledgered_run(monkeypatch, reader, "error")
+    stored = list(_ERRORED_RUN_STORED_TASK_ROWS)
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+    chunks = [
+        i["data"]["content"]
+        for i in items
+        if i["event"] == "message_chunk" and i["data"].get("agent") == "task:tsk1"
+    ]
+    assert chunks == ["The answer is", " incomplete"]
+
+
+async def test_completed_run_phantom_partials_stay_dropped(monkeypatch):
+    """A completed run can leave phantom partials in the capture (a model
+    attempt that failed mid-stream before an in-run retry re-streamed the
+    full text). Resurrection is off for completed runs — replaying the
+    phantom beside the checkpointed message would double-render."""
+    msgs = _ledgered_task_turn()
+    msgs[0] = AIMessage(content="plain main text", id="ai-1")
+    reader = _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, msgs)]),
+        task_messages=[
+            HumanMessage(content="p", id="sub-h-1"),
+            AIMessage(content="the full final text", id="sub-ai-1"),
+        ],
+    )
+    _ledgered_run(monkeypatch, reader, "completed")
+    stored = [
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-phantom",
+                "content": "the full",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-final",
+                "content": "the full final text",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+    ]
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+    chunks = [
+        i["data"]["content"]
+        for i in items
+        if i["event"] == "message_chunk" and i["data"].get("agent") == "task:tsk1"
+    ]
+    assert chunks == ["the full final text"]
+
+
+async def test_errored_run_committed_copy_is_not_resurrected(monkeypatch):
+    """A phantom partial in an errored run shifts stored lane ordinals: the
+    committed message's stored copy lands beyond the projected count and
+    looks trailing. Content matching marks it as the checkpointed message's
+    duplicate — only genuinely capture-only output resurrects, once."""
+    msgs = _ledgered_task_turn()
+    msgs[0] = AIMessage(content="plain main text", id="ai-1")
+    reader = _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, msgs)]),
+        task_messages=[
+            HumanMessage(content="p", id="sub-h-1"),
+            AIMessage(content="the full final text", id="sub-ai-1"),
+        ],
+    )
+    _ledgered_run(monkeypatch, reader, "error")
+    stored = [
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-phantom",
+                "content": "the full fin",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-committed",
+                "content": "the full final text",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-tail",
+                "content": "and then it died",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+    ]
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+    chunks = [
+        i["data"]["content"]
+        for i in items
+        if i["event"] == "message_chunk" and i["data"].get("agent") == "task:tsk1"
+    ]
+    # The committed copy renders once (projected); the capture-only tail
+    # survives; the phantom stays consumed.
+    assert chunks == ["the full final text", "and then it died"]
+
+
+def _cache_probe(monkeypatch):
+    """Absorb cache writes; return the list of cached tail checkpoint ids."""
+    from src.server.services.history import replay as replay_module
+
+    async def fake_statuses(thread_id, task_ids):
+        return {}
+
+    async def fake_live(thread_id, task_ids):
+        return False
+
+    cached: list[str] = []
+
+    async def fake_store(thread_id, tail_checkpoint_id, items):
+        cached.append(tail_checkpoint_id)
+
+    async def fake_delete(thread_id, tail_checkpoint_ids):
+        pass
+
+    monkeypatch.setattr(replay_module, "resolve_task_statuses", fake_statuses)
+    monkeypatch.setattr(
+        replay_module.projection_cache, "task_streams_live", fake_live
+    )
+    monkeypatch.setattr(replay_module.projection_cache, "store_turn", fake_store)
+    monkeypatch.setattr(replay_module.projection_cache, "delete_turns", fake_delete)
+    return cached
+
+
+async def test_lossy_lane_awaiting_collector_stays_uncacheable(monkeypatch):
+    """The collector races the refresh-at-finalize and never invalidates the
+    projection cache: an errored run's turn built before the captured rows
+    reach Postgres must stay uncacheable (rebuild per read), else the
+    opener-only build freezes the loss for the cache TTL. Once the lane has
+    stored rows the atomic collector write has landed and the turn caches."""
+    cached = _cache_probe(monkeypatch)
+    msgs = _ledgered_task_turn()
+    msgs[0] = AIMessage(content="plain main text", id="ai-1")
+    turn = _turn(0, msgs)
+    turn.tail_checkpoint_id = "tail-0"
+    reader = _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[turn]),
+        task_messages=[HumanMessage(content="p", id="sub-h-1")],
+    )
+    _ledgered_run(monkeypatch, reader, "error")
+
+    # Archive not yet written: no task-lane stored rows -> uncacheable.
+    await build_checkpoint_replay_items(THREAD, [_query(0)], {0: _response(0)})
+    assert cached == []
+
+    # Collector landed: lane rows present -> cacheable again.
+    stored = list(_ERRORED_RUN_STORED_TASK_ROWS)
+    await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+    assert cached == ["tail-0"]
+
+
+async def test_evicted_pointer_awaiting_collector_stays_uncacheable(monkeypatch):
+    """Same race, completed run: the checkpoint holds only the eviction
+    pointer and the fuller stored result exists only in the collector's
+    pending archive — caching the pointer build would freeze it."""
+    cached = _cache_probe(monkeypatch)
+    msgs = _ledgered_task_turn()
+    msgs[0] = AIMessage(content="plain main text", id="ai-1")
+    turn = _turn(0, msgs)
+    turn.tail_checkpoint_id = "tail-0"
+    reader = _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[turn]),
+        task_messages=[
+            HumanMessage(content="p", id="sub-h-1"),
+            AIMessage(
+                content="",
+                id="sub-ai-1",
+                tool_calls=[{"name": "bash", "args": {"cmd": "x"}, "id": "tc-1"}],
+            ),
+            ToolMessage(
+                content=_EVICTION_POINTER,
+                tool_call_id="tc-1",
+                name="bash",
+                id="sub-tm-1",
+            ),
+        ],
+    )
+    _ledgered_run(monkeypatch, reader, "completed")
+
+    await build_checkpoint_replay_items(THREAD, [_query(0)], {0: _response(0)})
+    assert cached == []
+
+
+async def test_task_custom_artifact_does_not_clear_archive_gate(monkeypatch):
+    """Task custom artifacts (todo/ui) are written to the root archive LIVE,
+    before any collector runs — an artifact row is lane presence, not
+    archive evidence. Only transcript-class rows (which the atomic archive
+    writers alone produce) clear the awaiting-archive debt."""
+    cached = _cache_probe(monkeypatch)
+    msgs = _ledgered_task_turn()
+    msgs[0] = AIMessage(content="plain main text", id="ai-1")
+    turn = _turn(0, msgs)
+    turn.tail_checkpoint_id = "tail-0"
+    reader = _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[turn]),
+        task_messages=[HumanMessage(content="p", id="sub-h-1")],
+    )
+    _ledgered_run(monkeypatch, reader, "error")
+    artifact_only = [
+        {
+            "event": "artifact",
+            "data": {
+                "artifact_type": "todo_list",
+                "artifact_id": "todo-1",
+                "agent": "task:tsk1",
+                "payload": {"todos": []},
+            },
+        }
+    ]
+
+    await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, list(artifact_only))}
+    )
+    assert cached == []
+
+    # Transcript rows present -> the archive landed -> cacheable.
+    await build_checkpoint_replay_items(
+        THREAD,
+        [_query(0)],
+        {0: _response(0, artifact_only + list(_ERRORED_RUN_STORED_TASK_ROWS))},
+    )
+    assert cached == ["tail-0"]
+
+
+async def test_repeated_text_capture_only_message_resurrects(monkeypatch):
+    """Identical content is not identity: a NEW capture-only message whose
+    text repeats an earlier checkpointed message (agent loops emit repeated
+    status texts) must still resurrect. Alignment consumes each projected
+    message once, in order — only the first stored occurrence is the copy."""
+    msgs = _ledgered_task_turn()
+    msgs[0] = AIMessage(content="plain main text", id="ai-1")
+    reader = _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, msgs)]),
+        task_messages=[
+            HumanMessage(content="p", id="sub-h-1"),
+            AIMessage(content="Still working", id="sub-ai-1"),
+        ],
+    )
+    _ledgered_run(monkeypatch, reader, "error")
+    stored = [
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-copy",
+                "content": "Still working",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-new",
+                "content": "Still working",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+    ]
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+    task_chunks = [
+        (i["data"].get("id"), i["data"]["content"])
+        for i in items
+        if i["event"] == "message_chunk" and i["data"].get("agent") == "task:tsk1"
+    ]
+    # The projected message renders once; the distinct repeated message
+    # resurrects under its own id.
+    assert task_chunks == [
+        ("sub-ai-1", "Still working"),
+        ("lc-new", "Still working"),
+    ]
+
+
+async def test_rewritten_image_copy_is_not_resurrected(monkeypatch):
+    """The checkpoint copy of a message carries the durable image URL while
+    the archive copy keeps the sandbox path split across token fragments
+    (the row-level archive rewrite can't see fragmented markdown). Matching
+    normalizes image targets, so the shifted committed copy is still
+    recognized and only genuinely lost output resurrects."""
+    msgs = _ledgered_task_turn()
+    msgs[0] = AIMessage(content="plain main text", id="ai-1")
+    reader = _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, msgs)]),
+        task_messages=[
+            HumanMessage(content="p", id="sub-h-1"),
+            AIMessage(
+                content="Here: ![chart](https://cdn/chart.png) done",
+                id="sub-ai-1",
+            ),
+        ],
+    )
+    _ledgered_run(monkeypatch, reader, "error")
+    stored = [
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-phantom",
+                "content": "Here",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-copy",
+                "content": "Here: ![chart](work/",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-copy",
+                "content": "chart.png) done",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-tail",
+                "content": "and then it died",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+    ]
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+    chunks = [
+        i["data"]["content"]
+        for i in items
+        if i["event"] == "message_chunk" and i["data"].get("agent") == "task:tsk1"
+    ]
+    assert chunks == [
+        "Here: ![chart](https://cdn/chart.png) done",
+        "and then it died",
+    ]
+
+
+async def test_phantom_matching_later_text_does_not_displace_copies(monkeypatch):
+    """A phantom whose text equals a LATER committed message must not consume
+    that message's alignment slot: the pairing maximizes in-order matches,
+    so both real copies align and nothing double-renders."""
+    msgs = _ledgered_task_turn()
+    msgs[0] = AIMessage(content="plain main text", id="ai-1")
+    reader = _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, msgs)]),
+        task_messages=[
+            HumanMessage(content="p", id="sub-h-1"),
+            AIMessage(content="foo", id="sub-ai-1"),
+            AIMessage(content="bar", id="sub-ai-2"),
+        ],
+    )
+    _ledgered_run(monkeypatch, reader, "error")
+    stored = [
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-phantom",
+                "content": "bar",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-copy-a",
+                "content": "foo",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-copy-b",
+                "content": "bar",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+    ]
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+    task_chunks = [
+        (i["data"].get("id"), i["data"]["content"])
+        for i in items
+        if i["event"] == "message_chunk" and i["data"].get("agent") == "task:tsk1"
+    ]
+    assert task_chunks == [("sub-ai-1", "foo"), ("sub-ai-2", "bar")]
+
+
+async def test_wholesale_fallback_task_custom_artifact_is_not_ownership(monkeypatch):
+    """A post-mux archive can hold a task-scoped CUSTOM artifact (todo/
+    file-op/ui, agent task:<id>) while the task's message frames stay on the
+    per-task channel. That row is not transcript evidence: the projected
+    transcript must survive, the stored artifact must still render, and the
+    launch artifact keeps its truthful watermark."""
+    from datetime import datetime, timezone
+
+    started = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    task_artifact = {
+        "task_id": "tsk1",
+        "action": "init",
+        "description": "d",
+        "prompt": "p",
+        "task_run_id": "run-1",
+    }
+    turn_msgs = [
+        AIMessage(content="![chart](work/chart.png)", id="ai-1"),
+        AIMessage(
+            content="",
+            id="ai-2",
+            tool_calls=[{"name": "Task", "args": {}, "id": "tc-t"}],
+        ),
+        ToolMessage(
+            content="dispatched",
+            tool_call_id="tc-t",
+            name="Task",
+            id="tm-1",
+            additional_kwargs={"task_artifact": task_artifact},
+        ),
+    ]
+    reader = _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, turn_msgs)]),
+        task_messages=[AIMessage(content="task answer", id="sub-ai-1")],
+    )
+    reader.aget_task_run_stamps = AsyncMock(return_value=["run-1"])
+    monkeypatch.setattr(
+        "src.server.services.history.replay.sr_db.list_runs_for_thread",
+        AsyncMock(
+            return_value=[
+                {
+                    "task_run_id": "run-1",
+                    "status": "completed",
+                    "started_at": started,
+                }
+            ]
+        ),
+    )
+    stored = [
+        {
+            "event": "message_chunk",
+            "data": {
+                "content": "![chart](https://cdn/rewritten.png)",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "artifact",
+            "data": {
+                "artifact_type": "task",
+                "artifact_id": "task:tsk1",
+                "agent": "main",
+                "payload": {
+                    "task_id": "tsk1",
+                    "action": "init",
+                    "task_run_id": "run-1",
+                },
+            },
+        },
+        {
+            "event": "artifact",
+            "data": {
+                "artifact_type": "todo_list",
+                "artifact_id": "todo-1",
+                "agent": "task:tsk1",
+                "payload": {"todos": []},
+            },
+        },
+    ]
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+    # The projected task transcript survived despite the stored custom artifact.
+    assert [
+        i["data"]["content"]
+        for i in items
+        if i["event"] == "message_chunk" and i["data"].get("agent") == "task:tsk1"
+    ] == ["task answer"]
+    # The stored custom artifact still renders alongside it.
+    assert [
+        i["data"]["artifact_id"]
+        for i in items
+        if i["event"] == "artifact" and i["data"].get("artifact_type") == "todo_list"
+    ] == ["todo-1"]
+    # And the launch artifact keeps the ledger-exact watermark.
+    task_artifacts = [
+        i
+        for i in items
+        if i["event"] == "artifact" and i["data"].get("artifact_type") == "task"
+    ]
+    assert len(task_artifacts) == 1
+    assert (
+        task_artifacts[0]["data"]["payload"]["projected_run_started_ms"]
+        == started.timestamp() * 1000.0
+    )
+
+
 async def test_subagent_transcript_projected_once_with_image_map(monkeypatch):
     task_artifact = {"task_id": "tsk1", "action": "init", "description": "d", "prompt": "p"}
     turn_msgs = [

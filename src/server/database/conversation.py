@@ -1563,6 +1563,30 @@ async def create_response(
         raise
 
 
+async def get_sse_events(
+    conversation_response_id: str,
+) -> Optional[List[Dict[str, Any]]]:
+    """Current sse_events for a response, or None if the row is missing.
+
+    Lets a rewriting archiver rebase on the row as it exists at write time —
+    concurrent atomic appends (``append_sse_event``) land between a
+    composer's snapshot and its replacement write.
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT sse_events FROM conversation_responses
+                WHERE conversation_response_id = %s
+                """,
+                (conversation_response_id,),
+            )
+            row = await cur.fetchone()
+    if row is None:
+        return None
+    return row["sse_events"] or []
+
+
 async def update_sse_events(
     conversation_response_id: str,
     sse_events: List[Dict[str, Any]],

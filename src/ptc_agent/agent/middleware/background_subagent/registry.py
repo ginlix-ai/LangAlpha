@@ -467,6 +467,12 @@ class BackgroundTaskRegistry:
             task = self._tasks.get(tool_call_id)
             if not task:
                 return
+            # A killed task's streams are final: the stop drain reads the
+            # high-water after the kill, so a writer surviving the bounded
+            # unwind must not append past it — output beyond the snapshot
+            # would be visible live yet absent from every durable store.
+            if task.cancelled:
+                return
 
             task.captured_event_seq += 1
             seq = task.captured_event_seq

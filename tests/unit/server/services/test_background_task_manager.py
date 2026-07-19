@@ -756,10 +756,12 @@ class TestStopPathFlushGating:
 class TestStopTeardownOrdering:
 
     @pytest.mark.asyncio
-    async def test_drain_runs_before_cancel_run_tasks(self):
-        """_teardown_subagents_on_stop drains killed-subagent events (only the
-        stopped run's tasks) and stashes them on metadata, and the drain
-        happens BEFORE cancel_run_tasks drops the run's registry entries."""
+    async def test_cancel_run_tasks_runs_before_drain(self):
+        """_teardown_subagents_on_stop kills the run's tasks BEFORE draining:
+        the drain's high-water is read at drain start, so a pre-kill snapshot
+        would miss frames emitted between snapshot and kill — output the live
+        stream already delivered. The task list is snapshotted pre-kill (the
+        kill drops registry entries) and only the stopped run's tasks drain."""
         btm = _make_btm()
 
         order: list[str] = []
@@ -798,7 +800,7 @@ class TestStopTeardownOrdering:
         ), patch.object(btm, "_drain_killed_subagent_events", side_effect=fake_drain):
             await btm._teardown_subagents_on_stop("t-order", "r-order")
 
-        assert order == ["drain", "cancel_run_tasks"]
+        assert order == ["cancel_run_tasks", "drain"]
         # Prior-turn tasks are excluded: their events belong to their own
         # response, not the stopped one.
         assert drained_tasks == [own_task]
@@ -997,6 +999,94 @@ class TestDrainReasoningClose:
         ]
         # Only the original complete survives — no synthetic duplicate.
         assert len(completes) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_recovered_events_skips_synthetic_close(self):
+        """A task with captured events whose XRANGE recovered nothing gets NO
+        synthetic rows: a transcript-class row is the replay cache gate's
+        archive evidence, and a bare close would vouch for a snapshot that
+        isn't there. The lane stays uncacheable instead."""
+        btm = _make_btm()
+
+        async def empty_iter(thread_id, task):
+            return
+            yield  # pragma: no cover
+
+        with patch(
+            "src.server.services.background_task_manager.iter_subagent_events_full",
+            side_effect=empty_iter,
+        ):
+            merged = await btm._drain_killed_subagent_events(
+                "t-x", [self._task("abc", 3)]
+            )
+
+        assert merged == []
+
+
+class TestPersistCollectedEvents:
+
+    @pytest.mark.asyncio
+    async def test_rebase_preserves_concurrent_appends(self):
+        """Each write attempt rebases on the row as it exists at write time:
+        rows appended since the compose (context_window) survive, and the
+        collected tasks' earlier live rows are replaced, not duplicated."""
+        btm = _make_btm()
+        main = [
+            {"event": "message_chunk", "data": {"agent": "ptc", "content": "m"}}
+        ]
+        stale_task_row = {
+            "event": "artifact",
+            "data": {"agent": "task:abc", "artifact_type": "todo_list"},
+        }
+        cw_row = {"event": "context_window", "data": {"agent": "ptc"}}
+        captured = [
+            {"event": "message_chunk", "data": {"agent": "task:abc", "content": "t"}}
+        ]
+
+        writes: list = []
+
+        async def fake_update(**kwargs):
+            writes.append(kwargs["sse_events"])
+            return True
+
+        with patch(
+            "src.server.database.conversation.get_sse_events",
+            new=AsyncMock(return_value=main + [stale_task_row, cw_row]),
+        ), patch(
+            "src.server.database.conversation.update_sse_events",
+            new=AsyncMock(side_effect=fake_update),
+        ):
+            ok = await btm._persist_collected_events(
+                main, captured, "resp-1", "t-x", "ws", "u"
+            )
+
+        assert ok is True
+        assert writes == [main + [cw_row] + captured]
+
+    @pytest.mark.asyncio
+    async def test_double_failure_returns_false(self):
+        """Both write attempts failing returns False so callers skip stream
+        retirement — the Redis capture streams are the only remaining source
+        of the transcript after a failed archive write."""
+        btm = _make_btm()
+
+        with patch(
+            "src.server.database.conversation.get_sse_events",
+            new=AsyncMock(return_value=[]),
+        ), patch(
+            "src.server.database.conversation.update_sse_events",
+            new=AsyncMock(side_effect=RuntimeError("db down")),
+        ), patch("asyncio.sleep", new=AsyncMock()):
+            ok = await btm._persist_collected_events(
+                [],
+                [{"event": "message_chunk", "data": {"agent": "task:abc"}}],
+                "resp-1",
+                "t-x",
+                "ws",
+                "u",
+            )
+
+        assert ok is False
 
 
 # ---------------------------------------------------------------------------
