@@ -116,6 +116,19 @@ function McpServerRowImpl({
           >
             {isBuiltin ? 'built-in' : 'workspace'}
           </span>
+          {server.tool_deny && server.tool_deny.length > 0 && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wide"
+              style={{
+                color: 'var(--color-text-tertiary)',
+                backgroundColor: 'var(--color-bg-default)',
+                border: '1px solid var(--color-border-muted)',
+              }}
+              title={`Gated tools (never callable): ${server.tool_deny.join(', ')}`}
+            >
+              {server.tool_deny.length} gated
+            </span>
+          )}
         </div>
 
         {/* Lifecycle (verify + apply) + tool count */}

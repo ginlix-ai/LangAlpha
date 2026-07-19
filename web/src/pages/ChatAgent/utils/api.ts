@@ -1317,6 +1317,30 @@ export async function getVaultSecrets(workspaceId: string) {
   return data.secrets;
 }
 
+// --- Robinhood Agentic Trading MCP connect ---
+
+export interface RobinhoodStatus {
+  connected: boolean;
+  expires_at: string | null;
+  trading_enabled: boolean;
+  server_name: string;
+}
+
+export async function getRobinhoodStatus(workspaceId: string): Promise<RobinhoodStatus> {
+  const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/robinhood/status`);
+  return data;
+}
+
+/** Start the OAuth flow; returns the authorize URL to open in a popup. */
+export async function initiateRobinhood(workspaceId: string): Promise<{ authorize_url: string }> {
+  const { data } = await api.post(`/api/v1/workspaces/${workspaceId}/robinhood/initiate`);
+  return data;
+}
+
+export async function disconnectRobinhood(workspaceId: string): Promise<void> {
+  await api.delete(`/api/v1/workspaces/${workspaceId}/robinhood`);
+}
+
 export async function createVaultSecret(workspaceId: string, body: { name: string; value: string; description?: string }) {
   const { data } = await api.post(`/api/v1/workspaces/${workspaceId}/vault/secrets`, body);
   return data;
@@ -1636,6 +1660,8 @@ export interface EffectiveServer {
   instruction: string;
   tool_exposure_mode: string | null;
   discovery_uses_secrets?: boolean;
+  /** Tool names hard-gated off this server (never advertised or callable). */
+  tool_deny?: string[];
   command: string | null;
   args: string[];
   url: string | null;

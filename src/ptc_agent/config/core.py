@@ -187,6 +187,12 @@ class MCPServerConfig(BaseModel):
     # Workspace servers are untrusted: vault-only secret resolution, neutral prompt framing.
     source: Literal["builtin", "workspace"] = "builtin"
     discovery_uses_secrets: bool = False  # workspace servers: resolve vault secrets during discovery (default off = secret-less probe)
+    # Per-server hard gate: tool names that must NEVER be exposed. Denied tools
+    # are filtered out of both wrapper generation AND documentation in the
+    # sandbox, so the model can neither see nor call them (e.g. keep Robinhood's
+    # place/cancel order tools off by default). Removing tools only — it cannot
+    # escalate — so it is safe to honor even on untrusted workspace servers.
+    tool_deny: list[str] = Field(default_factory=list)
 
 
 class MCPConfig(BaseModel):

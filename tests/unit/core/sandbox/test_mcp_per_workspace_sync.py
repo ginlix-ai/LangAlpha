@@ -692,3 +692,65 @@ class TestDiscoverUserMcpSchemas:
             [_user("alpha", transport="http", url="https://a.test")]
         )
         assert call_order.index("upload_client") < call_order.index("discover")
+
+
+# ---------------------------------------------------------------------------
+# tool_deny — hard gate: denied tools never reach the sandbox (no wrapper, no doc)
+# ---------------------------------------------------------------------------
+
+
+class TestToolDenyHardGate:
+    """A server's ``tool_deny`` list removes those tools from BOTH the generated
+    wrapper module and the per-tool docs, so the model can neither call nor see
+    them (e.g. Robinhood's place/cancel order tools, off by default)."""
+
+    @pytest.mark.asyncio
+    async def test_denied_tools_absent_from_module_and_docs(self):
+        from ptc_agent.core.mcp_registry import MCPToolInfo
+
+        server = _user(
+            "robinhood",
+            transport="http",
+            url="https://agent.robinhood.com/mcp/trading",
+            headers={"Authorization": "Bearer ${vault:ROBINHOOD_TOKEN}"},
+            tool_deny=["place_equity_order", "cancel_equity_order"],
+        )
+        sandbox = _make_sandbox(_make_config(servers=[server]))
+        sandbox._work_dir = "/home/workspace"
+        sandbox.runtime = MagicMock()
+        sandbox.als_directory = AsyncMock(return_value=[])
+
+        schema = {"type": "object", "properties": {}}
+        tools = [
+            MCPToolInfo("get_portfolio", "Read portfolio", schema, "robinhood"),
+            MCPToolInfo("place_equity_order", "Place an order", schema, "robinhood"),
+            MCPToolInfo("cancel_equity_order", "Cancel an order", schema, "robinhood"),
+        ]
+        sandbox.mcp_registry = MagicMock()
+        sandbox.mcp_registry.get_all_tools = MagicMock(
+            return_value={"robinhood": tools}
+        )
+
+        captured: dict = {}
+
+        async def fake_runtime_call(func, *args, **kwargs):
+            if func is sandbox.runtime.upload_files:
+                captured["batch"] = args[0]
+            return None
+
+        sandbox._runtime_call = fake_runtime_call
+
+        await sandbox._install_tool_modules()
+
+        batch = {path: content.decode() for content, path in captured["batch"]}
+        module = batch["/home/workspace/tools/robinhood.py"]
+        # Allowed read tool present; both trade tools gone from the wrapper.
+        assert "get_portfolio" in module
+        assert "place_equity_order" not in module
+        assert "cancel_equity_order" not in module
+
+        # And no doc file is advertised for the denied tools.
+        doc_paths = [p for p in batch if "/tools/docs/robinhood/" in p]
+        assert any("get_portfolio" in p for p in doc_paths)
+        assert not any("place_equity_order" in p for p in doc_paths)
+        assert not any("cancel_equity_order" in p for p in doc_paths)
