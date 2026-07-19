@@ -159,7 +159,7 @@ While PTC excels at complex work like multi-step data processing, financial mode
 - **Company overview** with real-time quotes, price performance, key financial metrics, analyst consensus, and revenue breakdown
 - **SEC filings** (10-K, 10-Q, 8-K) with earnings call transcripts and formatted markdown for citation
 - **Market indices** and **sector performance** for broad market context
-- **Web search** (Tavily, Serper, Bocha) — manifest-driven provider selection with tiered depth (fast lookup to deep research), plus image search and AI research modes, selectable per user — and **web crawling** with circuit breaker fault tolerance
+- **Web search** (Tavily, Serper, Bocha, Exa, Parallel) — manifest-driven provider selection with tiered depth (fast lookup to deep research), plus image search and AI research modes, selectable per user — and **web fetch** with a zero-key built-in crawler plus optional provider delegation (Firecrawl and others), guarded by per-provider circuit breakers, alongside opt-in **site crawling** (WebCrawl/WebMap)
 
 **MCP servers** for raw data consumed through PTC code execution:
 
@@ -452,7 +452,8 @@ For the full experience, the wizard will prompt you for optional keys — or add
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
 | `DAYTONA_API_KEY`                    | Persistent cloud sandboxes with cross-session workspace support ([daytona.io](https://www.daytona.io/))                 |
 | `FMP_API_KEY`                        | High-quality fundamentals, macro, SEC filings, options ([free tier available](https://site.financialmodelingprep.com/)) |
-| `SERPER_API_KEY` or `TAVILY_API_KEY` | Web search                                                                                                              |
+| `SERPER_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`, or `PARALLEL_API_KEY` | Web search (any one enables it)                                                     |
+| `FIRECRAWL_API_KEY`                  | Upgraded web fetch and site crawling (the built-in crawler needs no key)                                                |
 | `LANGSMITH_API_KEY`                  | LangSmith tracing for LangGraph runs                                                                                    |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`        | OpenTelemetry traces and metrics to any OTLP backend (Jaeger, Grafana Tempo, Datadog, Honeycomb, ...)                   |
 | `SANDBOX_PROVIDER`                   | Override the sandbox provider (`daytona` or `docker`); auto-detected from `DAYTONA_API_KEY` when unset                  |
