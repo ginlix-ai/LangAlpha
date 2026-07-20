@@ -204,16 +204,30 @@ class GinlixMCPClient:
                     },
                     timeout=10,
                 )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    tokens["access_token"] = data["access_token"]
-                    if data.get("refresh_token"):
-                        tokens["refresh_token"] = data["refresh_token"]
-                    _save_tokens(tokens)
-                    return data["access_token"]
+                if resp.status_code != 200:
+                    # A non-200 is not an exception, so without this a misrouted
+                    # or rejected refresh fails completely silently.
+                    logger.warning(
+                        "Token refresh rejected: HTTP %s %s",
+                        resp.status_code,
+                        resp.text[:200],
+                    )
+                    return None
+                data = resp.json()
         except Exception as exc:
             logger.warning("Token refresh failed: %s", exc)
-        return None
+            return None
+
+        tokens["access_token"] = data["access_token"]
+        if data.get("refresh_token"):
+            tokens["refresh_token"] = data["refresh_token"]
+        try:
+            _save_tokens(tokens)
+        except Exception as exc:  # noqa: BLE001
+            # The token is valid regardless; a failed write only costs the next
+            # process one more refresh, so never discard it over this.
+            logger.warning("Token file write failed: %s", exc)
+        return data["access_token"]
 
     # -- shared helpers ------------------------------------------------------
 

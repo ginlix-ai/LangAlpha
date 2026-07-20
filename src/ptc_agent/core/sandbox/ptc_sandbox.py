@@ -188,7 +188,12 @@ class PTCSandbox:
     SNAPSHOT_PYTHON_VERSION = SNAPSHOT_PYTHON_VERSION
     DEFAULT_DEPENDENCIES = DEFAULT_DEPENDENCIES
 
-    TOKEN_FRESHNESS_SECONDS = 25 * 60  # 25 min (access token TTL is 30 min)
+    # Fallback only, for a mint response that carries no expires_in. The live
+    # threshold derives from it (see _token_needs_refresh): the TTL is set
+    # platform-side, so hardcoding it here lets the two drift apart silently.
+    TOKEN_FRESHNESS_SECONDS = 10 * 60
+    # Re-upload once the sandbox's copy is this far through the token's life.
+    TOKEN_REFRESH_FRACTION = 0.6
 
     def __init__(
         self, config: CoreConfig, mcp_registry: MCPRegistry | None = None
@@ -581,13 +586,17 @@ class PTCSandbox:
         if not tokens or not self.runtime:
             return
 
+        # Sandboxes are remote, so these must stay publicly reachable even when
+        # the host reaches the same services over a private address.
+        public_base = os.getenv("PUBLIC_API_BASE_URL", "").rstrip("/")
+
         token_data = json.dumps(
             {
                 "access_token": tokens["access_token"],
                 "refresh_token": tokens["refresh_token"],
                 "client_id": tokens["client_id"],
-                "auth_service_url": os.getenv("AUTH_SERVICE_URL", ""),
-                "ginlix_data_url": os.getenv("GINLIX_DATA_URL", ""),
+                "auth_service_url": public_base or os.getenv("AUTH_SERVICE_URL", ""),
+                "ginlix_data_url": public_base or os.getenv("GINLIX_DATA_URL", ""),
             }
         )
 
@@ -1653,10 +1662,16 @@ class PTCSandbox:
             return True
         if remote_token_mod.get("workspace_id") != (workspace_id or ""):
             return True
-        # Re-mint if older than freshness threshold
+        # Re-mint once the remote copy is most of the way through its life.
+        ttl = tokens.get("expires_in") or 0
+        threshold = (
+            ttl * PTCSandbox.TOKEN_REFRESH_FRACTION
+            if ttl > 0
+            else PTCSandbox.TOKEN_FRESHNESS_SECONDS
+        )
         minted_at = remote_token_mod.get("minted_at", 0)
         age = time.time() - minted_at
-        if age > PTCSandbox.TOKEN_FRESHNESS_SECONDS:
+        if age > threshold:
             return True
         return False
 
