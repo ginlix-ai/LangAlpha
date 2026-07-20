@@ -78,6 +78,22 @@ FEATURES: dict[str, FeatureSpec] = {
             "turns while a watch list is active."
         ),
     ),
+    "site_crawl": FeatureSpec(
+        key="site_crawl",
+        label="Site crawling (experimental)",
+        description=(
+            "Gives the agent WebMap and WebCrawl tools: list a site's URLs, "
+            "then crawl whole sections into workspace files for multi-page "
+            "research (docs sites, filing archives)."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_IN,
+        tradeoffs=(
+            "Crawling bills per delivered page up to the call's page limit, "
+            "so a broad crawl costs more than targeted fetches. Experimental — "
+            "behavior and pricing may change."
+        ),
+    ),
 }
 
 

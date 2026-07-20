@@ -1,0 +1,355 @@
+{
+  "providers": {
+    "tavily": {
+      "display_name": "Tavily",
+      "env_key": "TAVILY_API_KEY",
+      "capabilities": {
+        "search": {
+          "tracking_name": "TavilySearchTool",
+          "default_level": "standard",
+          "levels": [
+            {
+              "name": "ultra_fast",
+              "display_name": "Ultra Fast",
+              "credits": 8,
+              "native_params": {
+                "search_depth": "ultra-fast"
+              }
+            },
+            {
+              "name": "fast",
+              "display_name": "Fast",
+              "credits": 8,
+              "native_params": {
+                "search_depth": "fast"
+              }
+            },
+            {
+              "name": "standard",
+              "display_name": "Standard",
+              "credits": 8,
+              "native_params": {
+                "search_depth": "basic"
+              }
+            },
+            {
+              "name": "deep",
+              "display_name": "Deep",
+              "credits": 16,
+              "native_params": {
+                "search_depth": "advanced"
+              }
+            }
+          ]
+        },
+        "fetch": {
+          "tracking_name": "TavilyFetchTool",
+          "default_level": "standard",
+          "max_batch_size": 20,
+          "levels": [
+            {
+              "name": "standard",
+              "display_name": "Standard",
+              "credits": 1,
+              "native_params": {}
+            }
+          ]
+        },
+        "research": {
+          "tracking_name": "TavilyResearchTool",
+          "default_level": "standard",
+          "levels": [
+            {
+              "name": "standard",
+              "display_name": "Standard",
+              "credits": 880,
+              "native_params": {
+                "model": "mini"
+              }
+            },
+            {
+              "name": "deep",
+              "display_name": "Deep",
+              "credits": 2000,
+              "native_params": {
+                "model": "pro"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "serper": {
+      "display_name": "Serper",
+      "env_key": "SERPER_API_KEY",
+      "capabilities": {
+        "search": {
+          "tracking_name": "SerperSearchTool",
+          "default_level": "standard",
+          "levels": [
+            {
+              "name": "standard",
+              "display_name": "Standard",
+              "credits": 1,
+              "native_params": {}
+            }
+          ]
+        }
+      }
+    },
+    "bocha": {
+      "display_name": "Bocha",
+      "env_key": "BOCHA_API_KEY",
+      "capabilities": {
+        "search": {
+          "tracking_name": "BochaSearchTool",
+          "default_level": "standard",
+          "levels": [
+            {
+              "name": "standard",
+              "display_name": "Standard",
+              "credits": 8,
+              "native_params": {}
+            }
+          ]
+        }
+      }
+    },
+    "exa": {
+      "display_name": "Exa",
+      "env_key": "EXA_API_KEY",
+      "capabilities": {
+        "search": {
+          "tracking_name": "ExaSearchTool",
+          "default_level": "standard",
+          "levels": [
+            {
+              "name": "fast",
+              "display_name": "Fast",
+              "credits": 7,
+              "native_params": {
+                "search_type": "fast"
+              }
+            },
+            {
+              "name": "standard",
+              "display_name": "Standard",
+              "credits": 7,
+              "native_params": {
+                "search_type": "auto"
+              }
+            },
+            {
+              "name": "deep",
+              "display_name": "Deep",
+              "credits": 12,
+              "native_params": {
+                "search_type": "deep"
+              }
+            }
+          ]
+        },
+        "fetch": {
+          "tracking_name": "ExaFetchTool",
+          "default_level": "standard",
+          "max_batch_size": 100,
+          "levels": [
+            {
+              "name": "standard",
+              "display_name": "Standard",
+              "credits": 2,
+              "native_params": {}
+            }
+          ]
+        },
+        "research": {
+          "tracking_name": "ExaResearchTool",
+          "default_level": "standard",
+          "levels": [
+            {
+              "name": "standard",
+              "display_name": "Standard",
+              "credits": 12,
+              "native_params": {
+                "search_type": "deep"
+              }
+            },
+            {
+              "name": "deep",
+              "display_name": "Deep",
+              "credits": 15,
+              "native_params": {
+                "search_type": "deep-reasoning"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "parallel": {
+      "display_name": "Parallel",
+      "env_key": "PARALLEL_API_KEY",
+      "capabilities": {
+        "search": {
+          "tracking_name": "ParallelSearchTool",
+          "default_level": "standard",
+          "levels": [
+            {
+              "name": "fast",
+              "display_name": "Fast",
+              "credits": 5,
+              "native_params": {
+                "mode": "turbo"
+              }
+            },
+            {
+              "name": "standard",
+              "display_name": "Standard",
+              "credits": 5,
+              "native_params": {
+                "mode": "basic"
+              }
+            },
+            {
+              "name": "deep",
+              "display_name": "Deep",
+              "credits": 5,
+              "native_params": {
+                "mode": "advanced"
+              }
+            }
+          ]
+        },
+        "fetch": {
+          "tracking_name": "ParallelFetchTool",
+          "default_level": "standard",
+          "max_batch_size": 20,
+          "levels": [
+            {
+              "name": "standard",
+              "display_name": "Standard",
+              "credits": 1,
+              "native_params": {}
+            }
+          ]
+        },
+        "research": {
+          "tracking_name": "ParallelResearchTool",
+          "default_level": "standard",
+          "levels": [
+            {
+              "name": "fast",
+              "display_name": "Fast",
+              "credits": 5,
+              "native_params": {
+                "processor": "lite"
+              }
+            },
+            {
+              "name": "standard",
+              "display_name": "Standard",
+              "credits": 10,
+              "native_params": {
+                "processor": "base"
+              }
+            },
+            {
+              "name": "deep",
+              "display_name": "Deep",
+              "credits": 25,
+              "native_params": {
+                "processor": "core"
+              }
+            },
+            {
+              "name": "pro",
+              "display_name": "Pro",
+              "credits": 100,
+              "native_params": {
+                "processor": "pro"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "firecrawl": {
+      "display_name": "Firecrawl",
+      "env_key": "FIRECRAWL_API_KEY",
+      "capabilities": {
+        "fetch": {
+          "tracking_name": "FirecrawlFetchTool",
+          "default_level": "standard",
+          "max_batch_size": 1,
+          "levels": [
+            {
+              "name": "standard",
+              "display_name": "Standard",
+              "credits": 1,
+              "native_params": {
+                "proxy": "auto"
+              }
+            },
+            {
+              "name": "stealth",
+              "display_name": "Stealth",
+              "credits": 5,
+              "native_params": {
+                "proxy": "stealth"
+              }
+            }
+          ]
+        },
+        "crawl": {
+          "tracking_name": "FirecrawlCrawlTool",
+          "default_level": "standard",
+          "levels": [
+            {
+              "name": "standard",
+              "display_name": "Standard",
+              "credits": 1,
+              "native_params": {}
+            }
+          ]
+        },
+        "map": {
+          "tracking_name": "FirecrawlMapTool",
+          "default_level": "map",
+          "levels": [
+            {
+              "name": "map",
+              "display_name": "Map",
+              "credits": 1,
+              "native_params": {}
+            }
+          ]
+        }
+      }
+    },
+    "inhouse": {
+      "display_name": "Built-in",
+      "env_key": null,
+      "capabilities": {
+        "fetch": {
+          "tracking_name": "WebFetchTool",
+          "default_level": "standard",
+          "max_batch_size": 8,
+          "levels": [
+            {
+              "name": "standard",
+              "display_name": "Standard",
+              "credits": 0,
+              "native_params": {}
+            }
+          ]
+        }
+      }
+    }
+  },
+  "auxiliary_tools": {
+    "TavilySearchImages": {
+      "credits_per_use": 16,
+      "search_type": "advanced"
+    }
+  }
+}

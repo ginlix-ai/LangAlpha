@@ -352,6 +352,7 @@ class ProvenanceMiddleware(AgentMiddleware):
             for source in sources:
                 self._verify_source_sha(source)
                 source.result_snippet = self._redact_snippet(source.result_snippet)
+                source.title = self._redact_snippet(source.title)
                 try:
                     writer(build_provenance_event(source))
                 except Exception:
@@ -505,7 +506,7 @@ class ProvenanceMiddleware(AgentMiddleware):
                 identifier=url,
                 timestamp=timestamp,
                 title=item.get("title"),
-                provider=None,  # provider not exposed in artifact
+                provider=artifact.get("search_engine"),
                 tool_call_id=tool_call_id,
                 args=redact_args(request.tool_call.get("args")),
                 result_sha256=sha256,
@@ -518,10 +519,17 @@ class ProvenanceMiddleware(AgentMiddleware):
     def _extract_web_fetch(
         self, request: Any, result: Any
     ) -> Iterator[ProvenanceSource]:
-        """Identifier comes from args["url"] — the result is a bare string."""
-        url = (request.tool_call.get("args") or {}).get("url")
+        """Provider/title/cache-state come from the tool's artifact; the
+        content string is only fingerprinted. A pure cache hit has no serving
+        provider, so it surfaces as ``cache``."""
+        artifact = getattr(result, "artifact", None)
+        artifact = artifact if isinstance(artifact, dict) else {}
+        url = artifact.get("url") or (request.tool_call.get("args") or {}).get("url")
         if not url:
             return
+        provider = artifact.get("provider")
+        if provider is None and artifact.get("source") == "cache":
+            provider = "cache"
         content = getattr(result, "content", result)
         sha256, size, snippet, body = fingerprint_result_with_body(content)
         yield ProvenanceSource(
@@ -529,6 +537,8 @@ class ProvenanceMiddleware(AgentMiddleware):
             source_type="web_fetch",
             identifier=url,
             timestamp=_now_iso(),
+            title=artifact.get("title"),
+            provider=provider,
             tool_call_id=request.tool_call.get("id"),
             args=redact_args(request.tool_call.get("args")),
             result_sha256=sha256,

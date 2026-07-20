@@ -23,7 +23,7 @@ Compose:
 git clone https://github.com/ginlix-ai/langalpha.git
 cd langalpha
 cp .env.example .env
-make config   # interactive wizard: LLM, data, sandbox, and search providers
+make config   # interactive wizard: LLM, data, sandbox, web search, and web fetch
 make up       # build + start the full stack
 ```
 

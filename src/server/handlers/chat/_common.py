@@ -38,7 +38,7 @@ from src.server.utils.skill_context import (
     detect_slash_commands,
     parse_skill_contexts,
 )
-from src.tools.fetch import fetch_llm_client_override, fetch_model_override
+from src.tools.web.fetch import fetch_llm_client_override, fetch_model_override
 from src.utils.tracking import TokenTrackingManager
 from src.tools.decorators import ToolUsageTracker
 from src.server.dependencies.usage_limits import release_burst_slot

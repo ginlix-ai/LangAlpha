@@ -808,10 +808,10 @@ async def list_models():
     """
     from src.llms.llm import get_configured_llm_models, LLM
     from src.server.app import setup
-    from src.tools.search_manifest import (
-        get_search_providers,
-        resolve_depth_tier,
-        resolve_provider_tier,
+    from src.tools.web.manifest import (
+        CAPABILITY_SEARCH,
+        providers_with_capability,
+        resolve_min_tier,
     )
 
     models = get_configured_llm_models()
@@ -824,18 +824,19 @@ async def list_models():
     search_providers = {
         name: {
             "display_name": spec.display_name,
-            "min_tier": resolve_provider_tier(spec),
-            "default_depth": spec.default_depth,
+            "min_tier": resolve_min_tier(cap),
+            "default_depth": cap.default_level,
             "depths": [
                 {
-                    "name": d.name,
-                    "display_name": d.display_name,
-                    "min_tier": resolve_depth_tier(d),
+                    "name": lv.name,
+                    "display_name": lv.display_name,
+                    "min_tier": resolve_min_tier(lv),
                 }
-                for d in spec.depths
+                for lv in cap.levels
             ],
         }
-        for name, spec in get_search_providers().items()
+        for name, spec in providers_with_capability(CAPABILITY_SEARCH).items()
+        if (cap := spec.capability(CAPABILITY_SEARCH)) is not None
     }
     return {
         "models": {

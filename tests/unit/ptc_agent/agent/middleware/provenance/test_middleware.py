@@ -49,6 +49,7 @@ def middleware():
 async def test_web_search_one_event_per_url_shared_tool_call_id(middleware):
     artifact = {
         "type": "web_search",
+        "search_engine": "exa",
         "results": [
             {"url": "https://example.com/a", "title": "Alpha"},
             {"url": "https://example.com/b", "title": "Beta"},
@@ -66,6 +67,7 @@ async def test_web_search_one_event_per_url_shared_tool_call_id(middleware):
         "https://example.com/b",
     ]
     assert [e["title"] for e in emitted] == ["Alpha", "Beta"]
+    assert {e["provider"] for e in emitted} == {"exa"}
     assert {e["source_type"] for e in emitted} == {"web_search"}
     assert {e["tool_call_id"] for e in emitted} == {"ws-1"}
     assert all(e["result_sha256"] for e in emitted)
@@ -112,6 +114,71 @@ async def test_web_fetch_no_url_no_event(middleware):
         _result(content="x"),
         emitted,
     )
+    assert emitted == []
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_provider_and_title_from_artifact(middleware):
+    artifact = {
+        "type": "web_fetch",
+        "url": "https://docs.test/page",
+        "title": "Docs Page",
+        "provider": "parallel",
+        "source": "live",
+    }
+    emitted = []
+
+    await _run(
+        middleware,
+        _make_request("WebFetch", {"url": "https://docs.test/page", "prompt": "p"}),
+        _result(content="excerpts", artifact=artifact),
+        emitted,
+    )
+
+    assert len(emitted) == 1
+    assert emitted[0]["provider"] == "parallel"
+    assert emitted[0]["title"] == "Docs Page"
+    assert emitted[0]["identifier"] == "https://docs.test/page"
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_cache_hit_surfaces_as_cache_provider(middleware):
+    artifact = {
+        "type": "web_fetch",
+        "url": "https://docs.test/page",
+        "title": None,
+        "provider": None,
+        "source": "cache",
+    }
+    emitted = []
+
+    await _run(
+        middleware,
+        _make_request("WebFetch", {"url": "https://docs.test/page", "prompt": "p"}),
+        _result(content="extracted", artifact=artifact),
+        emitted,
+    )
+
+    assert emitted[0]["provider"] == "cache"
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_error_artifact_not_recorded(middleware):
+    # The "[timeout] Failed to fetch ..." content doesn't match the error
+    # prefixes, so the artifact's error marker must be what skips the record.
+    artifact = {"type": "web_fetch", "url": "https://x.test/y", "error": "timeout"}
+    emitted = []
+
+    await _run(
+        middleware,
+        _make_request("WebFetch", {"url": "https://x.test/y", "prompt": "p"}),
+        _result(
+            content="[timeout] Failed to fetch https://x.test/y: timed out",
+            artifact=artifact,
+        ),
+        emitted,
+    )
+
     assert emitted == []
 
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.tools.crawler.backend import CrawlOutput
+from src.tools.web.inhouse.backend import CrawlOutput
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -22,7 +22,7 @@ class TestPdfExtractorLive:
     """Test PdfExtractor against a real public PDF."""
 
     async def test_fetch_public_pdf(self):
-        from src.tools.crawler.extractors.pdf import PdfExtractor
+        from src.tools.web.inhouse.extractors.pdf import PdfExtractor
 
         extractor = PdfExtractor()
         try:
@@ -48,7 +48,7 @@ class TestYouTubeExtractorLive:
     """Test YouTubeExtractor against a known video with captions."""
 
     async def test_fetch_transcript(self):
-        from src.tools.crawler.extractors.youtube import YouTubeExtractor
+        from src.tools.web.inhouse.extractors.youtube import YouTubeExtractor
 
         extractor = YouTubeExtractor()
         try:
@@ -75,7 +75,7 @@ class TestTwitterExtractorLive:
     """Test TwitterExtractor against a known public tweet via FixTweet."""
 
     async def test_fetch_tweet(self):
-        from src.tools.crawler.extractors.twitter import TwitterExtractor
+        from src.tools.web.inhouse.extractors.twitter import TwitterExtractor
 
         extractor = TwitterExtractor()
         try:
@@ -103,7 +103,7 @@ class TestRouterLive:
     """Test ContentRouter dispatching to extractors and fallback."""
 
     async def test_pdf_through_router(self):
-        from src.tools.crawler.router import ContentRouter
+        from src.tools.web.inhouse.content_router import ContentRouter
 
         router = ContentRouter()
         try:
@@ -119,7 +119,7 @@ class TestRouterLive:
 
     async def test_html_falls_through(self):
         """HTML URL with no matching extractor falls through to ScraplingCrawler."""
-        from src.tools.crawler.router import ContentRouter
+        from src.tools.web.inhouse.content_router import ContentRouter
 
         router = ContentRouter()
         try:

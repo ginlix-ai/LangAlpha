@@ -451,9 +451,9 @@ async def update_preferences(
         other_pref.get("search_provider") is not None
         or other_pref.get("search_depth") is not None
     ):
-        from src.tools.search_manifest import get_search_providers
+        from src.tools.web.manifest import CAPABILITY_SEARCH, providers_with_capability
 
-        providers = get_search_providers()
+        providers = providers_with_capability(CAPABILITY_SEARCH)
 
         sp = other_pref.get("search_provider")
         if sp is not None and (not isinstance(sp, str) or sp not in providers):
@@ -468,10 +468,14 @@ async def update_preferences(
             # in this payload, or any provider when none is being set (the
             # effective provider isn't known at write time).
             if isinstance(sp, str) and sp in providers:
-                valid_depths = {d.name for d in providers[sp].depths}
+                valid_depths = {
+                    lv.name for lv in providers[sp].capability(CAPABILITY_SEARCH).levels
+                }
             else:
                 valid_depths = {
-                    d.name for spec in providers.values() for d in spec.depths
+                    lv.name
+                    for spec in providers.values()
+                    for lv in spec.capability(CAPABILITY_SEARCH).levels
                 }
             if not isinstance(sd, str) or sd not in valid_depths:
                 raise HTTPException(

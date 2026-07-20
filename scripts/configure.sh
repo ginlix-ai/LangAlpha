@@ -80,6 +80,22 @@ set_search_api() {
     sed "s|^search_api:.*|search_api: ${1}|" "$CONFIG" > "$tmp" && mv "$tmp" "$CONFIG"
 }
 
+set_fetch_chain() {
+    local tmp="${CONFIG}.tmp.$$"
+    if grep -q '^fetch_chain:' "$CONFIG"; then
+        sed "s|^fetch_chain:.*|fetch_chain: [${1}, inhouse]|" "$CONFIG" > "$tmp" && mv "$tmp" "$CONFIG"
+    else
+        awk -v line="fetch_chain: [${1}, inhouse]" '
+            { print }
+            /^search_api:/ {
+                print ""
+                print "# Fetch delegation chain — tried in order; inhouse is the zero-key fallback"
+                print line
+            }
+        ' "$CONFIG" > "$tmp" && mv "$tmp" "$CONFIG"
+    fi
+}
+
 set_storage_provider() {
     local value="$1"
     awk -v val="$value" '
@@ -145,6 +161,26 @@ elif mode == 'models':
     fam = {p} | {k for k, c in pc.items() if c.get('parent_provider') == p}
     for m in sorted(n for n, v in md.items() if v.get('provider') in fam and 'embedding' not in n):
         print(m)
+PYEOF
+}
+
+WEB_MANIFEST="$REPO_ROOT/src/tools/manifest/web_providers.json"
+
+# List web providers exposing a capability (search|fetch), sorted by display name
+_web_providers() {
+    python3 - "$WEB_MANIFEST" "$1" <<'PYEOF'
+import json, sys
+path, cap = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    data = json.load(f)
+rows = []
+for key, spec in data['providers'].items():
+    env = spec.get('env_key')
+    if not env or cap not in spec.get('capabilities', {}):
+        continue
+    rows.append((spec.get('display_name', key), key, env))
+for name, key, env in sorted(rows, key=lambda r: r[0].lower()):
+    print(f'{key}\t{name}\t{env}')
 PYEOF
 }
 
@@ -336,35 +372,70 @@ esac
 # 4. Web Search
 # ---------------------------------------------------------------------------
 header "Web Search (optional)"
+
+_wsp=(); _wsp_names=(); _wsp_envs=()
+while IFS=$'\t' read -r key name env; do
+    _wsp+=("$key"); _wsp_names+=("$name"); _wsp_envs+=("$env")
+done < <(_web_providers search)
+
 printf "  ${BOLD}1${NC}) None — skip for now\n"
-printf "  ${BOLD}2${NC}) Serper (serper.dev)\n"
-printf "  ${BOLD}3${NC}) Tavily (tavily.com)\n"
+for i in "${!_wsp[@]}"; do
+    printf "  ${BOLD}%d${NC}) %s\n" "$((i+2))" "${_wsp_names[$i]}"
+done
 printf "\n"
 search=$(prompt_choice "Choice" "1")
 
-case $search in
-    1)
-        info "No web search configured — agent will rely on financial data tools only."
-        ;;
-    2)
-        key=$(prompt_secret "SERPER_API_KEY")
-        [ -n "$key" ] && set_env "SERPER_API_KEY" "$key"
-        set_search_api "serper"
-        success "Serper configured"
-        ;;
-    3)
-        key=$(prompt_secret "TAVILY_API_KEY")
-        [ -n "$key" ] && set_env "TAVILY_API_KEY" "$key"
-        set_search_api "tavily"
-        success "Tavily configured"
-        ;;
-    *)
-        info "Skipping search config."
-        ;;
-esac
+_search_key_env=""
+if [ "$search" -ge 2 ] 2>/dev/null && [ "$search" -le $((${#_wsp[@]} + 1)) ]; then
+    s_idx=$((search - 2))
+    key=$(prompt_secret "${_wsp_envs[$s_idx]}")
+    if [ -n "$key" ]; then
+        set_env "${_wsp_envs[$s_idx]}" "$key"
+        _search_key_env="${_wsp_envs[$s_idx]}"
+    fi
+    set_search_api "${_wsp[$s_idx]}"
+    success "${_wsp_names[$s_idx]} configured"
+else
+    info "No web search configured — agent will rely on financial data tools only."
+fi
 
 # ---------------------------------------------------------------------------
-# 5. Cloud Storage (optional — for chart image uploads)
+# 5. Web Fetch (optional)
+# ---------------------------------------------------------------------------
+header "Web Fetch (optional)"
+printf "  WebFetch works out of the box with the built-in crawler.\n"
+printf "  A provider key upgrades extraction (JS-heavy pages, anti-bot sites);\n"
+printf "  the built-in crawler stays as the zero-key fallback.\n\n"
+
+_wfp=(); _wfp_names=(); _wfp_envs=()
+while IFS=$'\t' read -r key name env; do
+    _wfp+=("$key"); _wfp_names+=("$name"); _wfp_envs+=("$env")
+done < <(_web_providers fetch)
+
+printf "  ${BOLD}1${NC}) Built-in only (default)\n"
+for i in "${!_wfp[@]}"; do
+    printf "  ${BOLD}%d${NC}) %s\n" "$((i+2))" "${_wfp_names[$i]}"
+done
+printf "\n"
+fetch=$(prompt_choice "Choice" "1")
+
+if [ "$fetch" -ge 2 ] 2>/dev/null && [ "$fetch" -le $((${#_wfp[@]} + 1)) ]; then
+    f_idx=$((fetch - 2))
+    f_env="${_wfp_envs[$f_idx]}"
+    if [ "$f_env" = "$_search_key_env" ]; then
+        info "Reusing the ${f_env} you just entered"
+    else
+        key=$(prompt_secret "$f_env")
+        [ -n "$key" ] && set_env "$f_env" "$key"
+    fi
+    set_fetch_chain "${_wfp[$f_idx]}"
+    success "${_wfp_names[$f_idx]} fetch — chain: [${_wfp[$f_idx]}, inhouse]"
+else
+    info "Using the built-in fetcher only."
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Cloud Storage (optional — for chart image uploads)
 # ---------------------------------------------------------------------------
 header "Cloud Storage (optional)"
 printf "  Used to upload chart images so the agent can share them in responses.\n\n"
@@ -398,7 +469,7 @@ case $storage in
 esac
 
 # ---------------------------------------------------------------------------
-# 6. Infrastructure (PostgreSQL + Redis)
+# 7. Infrastructure (PostgreSQL + Redis)
 # ---------------------------------------------------------------------------
 header "Infrastructure (PostgreSQL + Redis)"
 printf "  ${BOLD}1${NC}) Docker Compose — start PostgreSQL and Redis in containers (default)\n"

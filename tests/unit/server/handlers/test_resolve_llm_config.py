@@ -1512,7 +1512,7 @@ class TestSearchProviderPreference:
     @pytest.mark.asyncio
     async def test_unknown_provider_ignored_without_tier_check(self, base_config, monkeypatch):
         """An unknown engine string is rejected at the validity check, BEFORE the
-        tier gate — so platform membership is never fetched and nothing raises."""
+        search tier gate — no tier fetch happens, and nothing raises."""
         from src.server.handlers.chat.llm_config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
@@ -1534,7 +1534,7 @@ class TestSearchProviderPreference:
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
 
-        # Validity check fails first → search_api untouched, tier never consulted.
+        # Validity check fails first → search_api untouched, tier never fetched.
         assert config.search_api == "tavily"
         tier_mock.assert_not_awaited()
 
@@ -1603,8 +1603,8 @@ class TestSearchProviderPreference:
 
     @pytest.mark.asyncio
     async def test_no_search_provider_pref_leaves_config_untouched(self, base_config, monkeypatch):
-        """No ``search_provider`` pref at all → search_api unchanged and the
-        tier gate is never consulted (the whole block is skipped)."""
+        """No ``search_provider`` pref at all → search_api unchanged; the search
+        block is skipped entirely and nothing resolves the tier."""
         from src.server.handlers.chat.llm_config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
@@ -1623,12 +1623,13 @@ class TestSearchProviderPreference:
             config = await resolve_llm_config(base_config, "user-1", None, False)
 
         assert config.search_api == "tavily"
-        tier_mock.assert_not_awaited()
+        tier_mock.assert_not_awaited()  # no search tier check; crawl not opted in
 
     @pytest.mark.asyncio
     async def test_non_string_provider_ignored_without_tier_check(self, base_config, monkeypatch):
         """A non-string pref value (reachable via the untyped JSONB field) is
-        treated as invalid — ignored with no TypeError and no tier fetch."""
+        treated as invalid — ignored with no TypeError and no search-gate
+        tier fetch."""
         from src.server.handlers.chat.llm_config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
@@ -1651,7 +1652,7 @@ class TestSearchProviderPreference:
             config = await resolve_llm_config(base_config, "user-1", None, False)
 
         assert config.search_api == "tavily"
-        tier_mock.assert_not_awaited()
+        tier_mock.assert_not_awaited()  # no search tier check; crawl not opted in
 
 
 class TestSearchDepthPreference:
@@ -1735,7 +1736,8 @@ class TestSearchDepthPreference:
         self, base_config, monkeypatch
     ):
         """A level name the effective provider doesn't declare is rejected at
-        the membership check, BEFORE any tier fetch."""
+        the membership check, BEFORE the search-gate tier fetch (the crawl
+        gate's shared resolve is the only one)."""
         from src.server.handlers.chat.llm_config import resolve_llm_config
 
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
@@ -1750,7 +1752,7 @@ class TestSearchDepthPreference:
             config = await resolve_llm_config(base_config, "user-1", None, False)
 
         assert config.search_depth == "standard"
-        tier_mock.assert_not_awaited()
+        tier_mock.assert_not_awaited()  # no search tier check; crawl not opted in
 
     @pytest.mark.asyncio
     async def test_depth_validated_against_resolved_provider(self, base_config, monkeypatch):
@@ -1800,10 +1802,14 @@ class TestSearchDepthPreference:
         the tier is still fetched only once."""
         from src.server.handlers.chat.llm_config import resolve_llm_config
 
+        from src.tools.web.manifest import LevelSpec
+
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
         monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
+        # Raise the bar for depth levels only; provider/crawl capabilities stay open.
         monkeypatch.setattr(
-            "src.tools.search_manifest.resolve_depth_tier", lambda depth: 2
+            "src.tools.web.manifest.resolve_min_tier",
+            lambda spec: 2 if isinstance(spec, LevelSpec) else 0,
         )
         tier_mock = AsyncMock(return_value=1)
         monkeypatch.setattr(
@@ -1834,4 +1840,72 @@ class TestSearchDepthPreference:
             config = await resolve_llm_config(base_config, "user-1", None, False)
 
         assert config.search_depth == "standard"
+        tier_mock.assert_not_awaited()  # no search tier check; crawl not opted in
+
+
+# ---------------------------------------------------------------------------
+# Crawl tool tier gate
+# ---------------------------------------------------------------------------
+
+
+def _crawl_min_tier() -> int:
+    from src.config.tool_settings import get_crawl_provider
+    from src.tools.web.manifest import CAPABILITY_CRAWL, get_capability, resolve_min_tier
+
+    return resolve_min_tier(get_capability(get_crawl_provider(), CAPABILITY_CRAWL))
+
+
+class TestCrawlFeatureGate:
+    """WebCrawl/WebMap require the site_crawl opt-in; opted-in platform users
+    must additionally meet the crawl capability's min_tier."""
+
+    def _patches(self, prefs):
+        mock_mc = _mock_model_config()
+        return (
+            patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value=prefs),
+            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        )
+
+    async def _resolve(self, base_config, monkeypatch, host_mode, tier, opted_in):
+        from src.server.handlers.chat.llm_config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", host_mode)
+        tier_mock = AsyncMock(return_value=tier)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+        prefs = {"feature_overrides": {"site_crawl": True}} if opted_in else {}
+        p1, p2, p3 = self._patches(prefs)
+        with p1, p2, p3:
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+        return config, tier_mock
+
+    @pytest.mark.asyncio
+    async def test_off_without_opt_in_and_skips_tier_fetch(self, base_config, monkeypatch):
+        config, tier_mock = await self._resolve(
+            base_config, monkeypatch, "platform", _crawl_min_tier(), opted_in=False
+        )
+        assert config.feature_enabled("site_crawl") is False
         tier_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_opted_in_platform_below_tier_disables_crawl(self, base_config, monkeypatch):
+        config, _ = await self._resolve(
+            base_config, monkeypatch, "platform", _crawl_min_tier() - 1, opted_in=True
+        )
+        assert config.feature_enabled("site_crawl") is False
+
+    @pytest.mark.asyncio
+    async def test_opted_in_platform_at_tier_keeps_crawl(self, base_config, monkeypatch):
+        config, _ = await self._resolve(
+            base_config, monkeypatch, "platform", _crawl_min_tier(), opted_in=True
+        )
+        assert config.feature_enabled("site_crawl") is True
+
+    @pytest.mark.asyncio
+    async def test_opted_in_oss_mode_never_tier_gated(self, base_config, monkeypatch):
+        config, _ = await self._resolve(
+            base_config, monkeypatch, "oss", _crawl_min_tier() - 1, opted_in=True
+        )
+        assert config.feature_enabled("site_crawl") is True
