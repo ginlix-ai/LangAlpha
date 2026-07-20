@@ -832,6 +832,13 @@ async def test_sweep_deletes_only_after_every_entry_is_surfaced():
 
     order: list[str] = []
     payload = '{"content": "c", "expected_task_run_id": "run-9", "input_id": "i1"}'
+    task = _live_task("run-9")
+
+    def _surface(*_a, **_k):
+        # Mirror the real append: seq advances before the spill — the
+        # sweep's landed-check reads it to decide the DEL is safe.
+        task.captured_event_seq += 1
+        order.append("surface")
 
     client = SimpleNamespace(
         lrange=AsyncMock(
@@ -841,11 +848,8 @@ async def test_sweep_deletes_only_after_every_entry_is_surfaced():
     )
     cache = SimpleNamespace(enabled=True, client=client)
     registry = SimpleNamespace(
-        append_captured_event=AsyncMock(
-            side_effect=lambda *a: order.append("surface")
-        )
+        append_event_for_task=AsyncMock(side_effect=_surface)
     )
-    task = _live_task("run-9")
 
     with patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=cache
@@ -853,6 +857,9 @@ async def test_sweep_deletes_only_after_every_entry_is_surfaced():
         await _return_unconsumed_steering(registry, task)
 
     assert order == ["read", "surface", "delete"]
+    # Identity-exact: the sweep passes the task OBJECT, never re-resolves
+    # by tool_call_id (the entry may be evicted or the id reused).
+    assert registry.append_event_for_task.await_args.args[0] is task
 
 
 @pytest.mark.asyncio
@@ -867,7 +874,7 @@ async def test_sweep_keeps_the_queue_when_the_spill_tears_mid_sweep():
     payload = '{"content": "c", "expected_task_run_id": "run-9", "input_id": "i1"}'
     task = _live_task("run-9")
 
-    async def _torn_append(*_a):
+    async def _torn_append(*_a, **_k):
         task.redis_write_failed = True
 
     client = SimpleNamespace(
@@ -875,7 +882,35 @@ async def test_sweep_keeps_the_queue_when_the_spill_tears_mid_sweep():
         delete=AsyncMock(),
     )
     cache = SimpleNamespace(enabled=True, client=client)
-    registry = SimpleNamespace(append_captured_event=AsyncMock(side_effect=_torn_append))
+    registry = SimpleNamespace(append_event_for_task=AsyncMock(side_effect=_torn_append))
+
+    with patch(
+        "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+    ):
+        await _return_unconsumed_steering(registry, task)
+
+    client.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sweep_withholds_delete_when_appends_do_not_land():
+    """Landed-check backstop: if the appends fail to advance the seq
+    counter (whatever the cause), the frames never reached the archive —
+    the DEL must be withheld so the queue survives as the TTL record of
+    acknowledged input."""
+    from ptc_agent.agent.middleware.background_subagent.middleware import (
+        _return_unconsumed_steering,
+    )
+
+    payload = '{"content": "c", "expected_task_run_id": "run-9", "input_id": "i1"}'
+    task = _live_task("run-9")
+    client = SimpleNamespace(
+        lrange=AsyncMock(return_value=[payload]),
+        delete=AsyncMock(),
+    )
+    cache = SimpleNamespace(enabled=True, client=client)
+    # An append that returns without advancing the seq counter.
+    registry = SimpleNamespace(append_event_for_task=AsyncMock())
 
     with patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=cache
@@ -897,7 +932,7 @@ async def test_sweep_skips_entirely_when_the_circuit_is_already_open():
     task.redis_write_failed = True
     client = SimpleNamespace(lrange=AsyncMock(), delete=AsyncMock())
     cache = SimpleNamespace(enabled=True, client=client)
-    registry = SimpleNamespace(append_captured_event=AsyncMock())
+    registry = SimpleNamespace(append_event_for_task=AsyncMock())
 
     with patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=cache
@@ -906,4 +941,4 @@ async def test_sweep_skips_entirely_when_the_circuit_is_already_open():
 
     client.lrange.assert_not_awaited()
     client.delete.assert_not_awaited()
-    registry.append_captured_event.assert_not_awaited()
+    registry.append_event_for_task.assert_not_awaited()

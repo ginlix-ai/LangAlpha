@@ -366,7 +366,6 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     initialThreadId,
     null,                       // updateTodoListCard
     null,                       // updateSubagentCard
-    null,                       // inactivateAllSubagents
     null,                       // finalizePendingTodos
     null,                       // onOnboardingRelatedToolComplete
     null,                       // onFileArtifact

@@ -279,6 +279,26 @@ async def test_inflight_active_turn_replays_as_stub(monkeypatch):
     assert [i["event"] for i in turn3_items] == ["user_message"]
 
 
+async def test_user_message_run_id_stamped_only_when_terminal(monkeypatch):
+    # Terminal turns' user_message carries the run id so a reloading client
+    # can mark those runs rendered (report-back refresh dedup). The active
+    # turn's stub must NOT carry it — the frontend attaches to the live run,
+    # and a stamped id would suppress the attach that streams it.
+    turns = [_turn(i, [AIMessage(content=f"a{i}", id=f"ai-{i}")]) for i in range(3)]
+    _mock_reader(monkeypatch, ThreadHistory(thread_id=THREAD, turns=turns))
+    responses = {i: _response(i) for i in range(3)}
+    responses[3] = _response(3, status="streaming")
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(i) for i in range(4)], responses
+    )
+    stamps = {
+        i["data"]["turn_index"]: i["data"].get("run_id")
+        for i in items
+        if i["event"] == "user_message"
+    }
+    assert stamps == {0: "resp-0", 1: "resp-1", 2: "resp-2", 3: None}
+
+
 async def test_inflight_windowed_keeps_absolute_pairing(monkeypatch):
     # Regression for the live-proven mislabel: ?limit=N during a streaming
     # turn must not staple the previous turn's answer under the active turn's
@@ -1765,6 +1785,73 @@ async def test_phantom_matching_later_text_does_not_displace_copies(monkeypatch)
         if i["event"] == "message_chunk" and i["data"].get("agent") == "task:tsk1"
     ]
     assert task_chunks == [("sub-ai-1", "foo"), ("sub-ai-2", "bar")]
+
+
+async def test_distinct_image_targets_do_not_collide(monkeypatch):
+    """Two image-only messages sharing alt text but pointing at DIFFERENT
+    files must keep distinct signatures — target normalization keeps the
+    basename (the rewrite preserves it), it does not strip the target.
+    Stripping would collapse phantom and both copies into one signature,
+    mispair the alignment, and resurrect the second copy as a duplicate."""
+    msgs = _ledgered_task_turn()
+    msgs[0] = AIMessage(content="plain main text", id="ai-1")
+    reader = _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, msgs)]),
+        task_messages=[
+            HumanMessage(content="p", id="sub-h-1"),
+            AIMessage(content="![chart](https://cdn/x1/a.png)", id="sub-ai-1"),
+            AIMessage(content="![chart](https://cdn/x2/b.png)", id="sub-ai-2"),
+        ],
+    )
+    _ledgered_run(monkeypatch, reader, "error")
+    stored = [
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-phantom",
+                "content": "![chart](work/p.png)",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-copy-a",
+                "content": "![chart](work/a.png)",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:tsk1",
+                "id": "lc-copy-b",
+                "content": "![chart](work/b.png)",
+                "content_type": "text",
+                "role": "assistant",
+            },
+        },
+    ]
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+    task_chunks = [
+        (i["data"].get("id"), i["data"]["content"])
+        for i in items
+        if i["event"] == "message_chunk" and i["data"].get("agent") == "task:tsk1"
+    ]
+    # Both projected messages render once; the phantom (within the projected
+    # lane count) is suppressed and neither copy resurrects.
+    assert task_chunks == [
+        ("sub-ai-1", "![chart](https://cdn/x1/a.png)"),
+        ("sub-ai-2", "![chart](https://cdn/x2/b.png)"),
+    ]
 
 
 async def test_wholesale_fallback_task_custom_artifact_is_not_ownership(monkeypatch):

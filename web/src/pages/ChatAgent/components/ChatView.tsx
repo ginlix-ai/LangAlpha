@@ -12,7 +12,7 @@ import { useFeatureEnabled } from '@/hooks/useFeatures';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { updateCurrentUser } from '../../Dashboard/utils/api';
-import { getWorkspace, summarizeThread, offloadThread, getPreviewUrl, getThreadShareStatus, updateThreadSharing } from '../utils/api';
+import { getWorkspace, summarizeThread, offloadThread, getPreviewUrl, getThreadShareStatus, updateThreadSharing, getSubagentTaskStatus } from '../utils/api';
 import { buildSharedServeUrl, buildWsfilesUrl } from './viewers/html/wsfilesUrl';
 import ShareReportLinkModal from './ShareReportLinkModal';
 import { toast } from '@/components/ui/use-toast';
@@ -35,7 +35,7 @@ import {
   isManualCompactionInFlight,
 } from '../utils/compactionControl';
 import { countToolCalls } from '../utils/subagentMetrics';
-import { deriveSubagentStatus } from '../utils/subagentStatus';
+import { deriveSubagentStatus, isTerminalStatus } from '../utils/subagentStatus';
 import { type SubagentTokenUsage, ZERO_USAGE } from '../utils/tokenUsage';
 import {
   resolveSubagentTelemetry as resolveSubagentTelemetryPure,
@@ -153,6 +153,8 @@ interface AgentInfo {
   prompt?: string;
   type: string;
   status: string;
+  /** Ledger failure reason for an errored task (shown in the detail header). */
+  error?: string;
   toolCalls: number;
   tokenUsage: SubagentTokenUsage;
   currentTool: string;
@@ -172,6 +174,7 @@ interface SubagentUpdateData {
   isHistory: boolean;
   isActive: boolean;
   status?: string;
+  error?: string;
   currentTool?: string;
   messages?: SubagentMessage[];
   tokenUsage?: SubagentTokenUsage;
@@ -184,6 +187,7 @@ interface SubagentInfo {
   prompt?: string;
   type?: string;
   status?: string;
+  error?: string;
 }
 
 interface SlashCommand {
@@ -610,7 +614,6 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     cards,
     updateTodoListCard,
     updateSubagentCard,
-    inactivateAllSubagents,
     finalizePendingTodos,
     clearSubagentCards,
   } = useCardState();
@@ -772,7 +775,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     reconnectIfStaleRun,
     getSubagentHistory,
     resolveSubagentIdToAgentId,
-  } = useChatMessages(workspaceId, threadId, updateTodoListCard as (todoData: Record<string, unknown>) => void, updateSubagentCard, inactivateAllSubagents, finalizePendingTodos, handleOnboardingRelatedToolComplete, handleFileArtifact, handleOpenPreviewFromStream, agentMode, clearSubagentCards, handleWorkspaceCreated, 'web');
+  } = useChatMessages(workspaceId, threadId, updateTodoListCard as (todoData: Record<string, unknown>) => void, updateSubagentCard, finalizePendingTodos, handleOnboardingRelatedToolComplete, handleFileArtifact, handleOpenPreviewFromStream, agentMode, clearSubagentCards, handleWorkspaceCreated, 'web');
 
   // The model the NEXT send will actually use: the chat input's live
   // selection, falling back to its initializer (thread's last model, then the
@@ -1331,7 +1334,11 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
           description: (sd?.description as string) || '',
           prompt: (sd?.prompt as string) || '',
           type: (sd?.type as string) || 'general-purpose',
-          status: (sd?.status as string) || 'active',
+          // Missing status = not-yet-known → 'initializing' (deriveSubagentStatus
+          // promotes it to running once messages exist); never default to a live
+          // 'active' that would paint a status-less card as Running.
+          status: (sd?.status as string) || 'initializing',
+          error: sd?.error as string | undefined,
           toolCalls: countToolCalls(sd?.messages as SubagentMessage[] | undefined),
           tokenUsage: (sd?.tokenUsage as SubagentTokenUsage | undefined) ?? ZERO_USAGE,
           currentTool: (sd?.currentTool as string) || '',
@@ -1997,10 +2004,18 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     const existingDescription = cards[cardId]?.subagentData?.description;
     const existingPrompt = cards[cardId]?.subagentData?.prompt;
     const existingType = cards[cardId]?.subagentData?.type;
+    const existingStatus = cards[cardId]?.subagentData?.status;
     const finalDescription = history?.description || existingDescription || overrides.description || '';
     const finalPrompt = history?.prompt || existingPrompt || overrides.prompt || '';
     const finalType = history?.type || existingType || overrides.type || 'general-purpose';
-    const finalStatus = history?.status || overrides.status || 'completed';
+    // A card that already settled terminal is authoritative: never downgrade it to
+    // a stale non-terminal history value (a history entry can still read 'running'
+    // when the ledger hasn't refreshed locally yet). A genuine resume — a separate
+    // code path — is the only thing that reactivates a settled task.
+    const finalStatus = isTerminalStatus(existingStatus)
+      ? existingStatus!
+      : (history?.status || overrides.status || 'completed');
+    const finalError = history?.error || overrides.error;
 
     // Check if card is currently live (active with an open stream)
     const existingCard = cards[cardId]?.subagentData;
@@ -2024,6 +2039,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     } else {
       updateData.status = finalStatus;
       updateData.currentTool = '';
+      if (finalError) updateData.error = finalError;
     }
     if (history) {
       updateData.messages = (history.messages || []) as SubagentMessage[];
@@ -2037,13 +2053,57 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     updateSubagentCard(agentId, updateData);
   }, [updateSubagentCard, getSubagentHistory, cards]);
 
+  // Durable hydration for a clicked task whose local card is ambiguous:
+  // non-terminal (a settled task whose live stream drained while the tab was
+  // backgrounded — the "Initializing" spinner that never resolves), or errored
+  // without a reason (a live transport-loss whose failure text only lives in
+  // the ledger). Resolves the ledger's real terminal state and lands it on the
+  // card. The existing messages ride along so the inactive-card guard treats
+  // this as a content update — authoritative terminal truth must not be dropped
+  // just because the card already settled non-terminally.
+  const hydrateTaskStatusIfStale = useCallback(async (agentId: string) => {
+    if (agentId === 'main' || !threadId || threadId === '__default__') return;
+    const shortId = agentId.startsWith('task:') ? agentId.slice(5) : agentId;
+    if (!shortId) return;
+    const history = getSubagentHistory ? getSubagentHistory(agentId) : null;
+    const card = cards[`subagent-${agentId}`]?.subagentData;
+    const knownStatus = deriveSubagentStatus({
+      status: (history?.status ?? card?.status) as string | undefined,
+      messages: (history?.messages ?? card?.messages) as unknown[] | undefined,
+    });
+    const hasReason = !!(history?.error || card?.error);
+    const isTerminal = knownStatus === 'completed' || knownStatus === 'cancelled' || knownStatus === 'error';
+    // Already have the full terminal picture (incl. a reason for errors) — no fetch.
+    if (isTerminal && (knownStatus !== 'error' || hasReason)) return;
+    try {
+      const res = await getSubagentTaskStatus(threadId, shortId);
+      const s = res?.status;
+      if (s !== 'completed' && s !== 'cancelled' && s !== 'error') return;
+      const existing = cards[`subagent-${agentId}`]?.subagentData;
+      updateSubagentCard(agentId, {
+        agentId,
+        taskId: agentId,
+        status: s,
+        ...(res.error ? { error: res.error } : {}),
+        // Ride along the existing content so the inactive-card guard admits
+        // this authoritative terminal update.
+        messages: (existing?.messages as SubagentMessage[]) || [],
+        isActive: false,
+      });
+    } catch {
+      // Best-effort: a failed hydration leaves the card as-is (a full thread
+      // reload still corrects it via replay stamping).
+    }
+  }, [threadId, getSubagentHistory, cards, updateSubagentCard]);
+
   // Handle sidebar agent selection — refresh card data, then switch tab
   const handleSelectAgent = useCallback((agentId: string) => {
     if (agentId !== 'main') {
       refreshSubagentCard(agentId);
+      void hydrateTaskStatusIfStale(agentId);
     }
     switchAgent(agentId);
-  }, [refreshSubagentCard, switchAgent]);
+  }, [refreshSubagentCard, hydrateTaskStatusIfStale, switchAgent]);
 
   // Open subagent task (navigate to subagent tab) - shared between MessageList and DetailPanel
   const handleOpenSubagentTask = useCallback((subagentInfo: SubagentInfo) => {
@@ -2059,9 +2119,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     }
 
     refreshSubagentCard(agentId, { description, prompt, type, status });
+    void hydrateTaskStatusIfStale(agentId);
 
     switchAgent(agentId);
-  }, [resolveSubagentIdToAgentId, updateSubagentCard, refreshSubagentCard, switchAgent]);
+  }, [resolveSubagentIdToAgentId, updateSubagentCard, refreshSubagentCard, hydrateTaskStatusIfStale, switchAgent]);
 
   // Handle removing an agent from sidebar (just hide from display, don't affect state)
   const handleRemoveAgent = useCallback((agentId: string) => {

@@ -593,15 +593,17 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
         return msg;
       }
 
-      // If this toolCallId is associated with a subagent task, store the tool call result
-      // but do NOT mark as 'completed' — the Task tool returns immediately ("Task-N started
-      // in background") while the actual subagent is still running. Real completion comes
-      // via the per-task SSE stream closing.
-      // Also propagate description from artifact if the inline card's description is empty.
+      // If this toolCallId is associated with a subagent task, store the tool call result.
+      // A SUCCESSFUL Task returns immediately ("Task-N started in background") while the
+      // subagent keeps running, so its result is NOT terminal — real completion comes via
+      // the per-task SSE stream closing. But a FAILED spawn (admission/setup error, content
+      // prefixed "ERROR") never produces a task artifact or a channel, so no chan_close will
+      // ever arrive to settle it; stamp it 'error' here or the placeholder spins forever.
       if (subagentTasks[toolCallId]) {
         subagentTasks[toolCallId] = {
           ...subagentTasks[toolCallId],
           toolCallResult: result.content,
+          ...(isFailed ? { status: 'error' } : {}),
         };
       }
 

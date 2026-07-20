@@ -20,6 +20,8 @@ interface Agent {
   description?: string;
   type?: string;
   status?: string;
+  /** Ledger failure reason for an errored task — surfaced below the header. */
+  error?: string;
   currentTool?: string;
   toolCalls?: number;
   messages?: AgentMessage[];
@@ -110,12 +112,9 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
   const canSend = !isTerminal && threadId && taskId != null;
 
   const getStatusIcon = (): React.ReactElement => {
-    if (derivedCurrentTool) {
-      return <Loader2 className="h-4 w-4 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />;
-    }
-    if (isActive) {
-      return <Loader2 className="h-4 w-4 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />;
-    }
+    // Terminal outcome wins over the derived current tool: a task reaped
+    // mid-tool-call leaves that call forever "in progress", but the run is
+    // done — it must not still spin.
     if (isCompleted) {
       return <CheckCircle2 className="h-4 w-4" style={{ color: 'var(--color-accent-primary)' }} />;
     }
@@ -125,13 +124,14 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
     if (isError) {
       return <AlertCircle className="h-4 w-4" style={{ color: 'var(--color-danger, #c43d3d)' }} />;
     }
+    if (derivedCurrentTool || isActive) {
+      return <Loader2 className="h-4 w-4 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />;
+    }
     return <Circle className="h-4 w-4" style={{ color: 'var(--color-icon-muted)' }} />;
   };
 
   const getStatusText = (): string => {
-    if (derivedCurrentTool) {
-      return `Running: ${derivedCurrentTool}`;
-    }
+    // Terminal outcome wins over the derived current tool (see getStatusIcon).
     if (isCompleted) {
       if (agent.toolCalls && agent.toolCalls > 0) {
         return `Completed (${agent.toolCalls} tool calls)`;
@@ -143,6 +143,9 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
     }
     if (isError) {
       return 'Failed';
+    }
+    if (derivedCurrentTool) {
+      return `Running: ${derivedCurrentTool}`;
     }
     if (isActive) {
       return 'Running';
@@ -246,6 +249,30 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
           )}
         </div>
       </div>
+
+      {/* Failure reason — the "clue inside" for a Failed card. The status chip
+          alone said Failed with no cause; the ledger's reason lands here. */}
+      {isError && (
+        <div
+          className="flex items-start gap-2 px-4 py-2.5 rounded-lg"
+          style={{
+            backgroundColor: 'var(--color-danger-soft, rgba(196, 61, 61, 0.08))',
+            border: '1px solid var(--color-danger-overlay, rgba(196, 61, 61, 0.25))',
+          }}
+        >
+          <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" style={{ color: 'var(--color-danger, #c43d3d)' }} />
+          <div className="min-w-0">
+            <div className="text-xs font-medium" style={{ color: 'var(--color-danger, #c43d3d)' }}>
+              This agent stopped with an error
+            </div>
+            {agent.error && (
+              <div className="text-xs mt-0.5 break-words" style={{ color: 'var(--color-text-tertiary)' }}>
+                {agent.error}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Expandable instruction input — canSend gates it so an input left
           open when the task reaches terminal (e.g. errors) disappears. */}

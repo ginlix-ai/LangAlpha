@@ -540,7 +540,8 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
       if (subagentTasks[toolCallId]) {
         // Don't set status: 'completed' here — the Task tool returns immediately
         // after spawning, so its tool_call_result doesn't mean the subagent finished.
-        // Final status is set by markAllSubagentTasksCompleted() when workflow ends.
+        // Terminal status arrives per task: the replayed artifact stamp (ledger
+        // truth) or a live chan_close via onTaskRunClosed.
         subagentTasks[toolCallId] = {
           ...subagentTasks[toolCallId],
           result: result.content,

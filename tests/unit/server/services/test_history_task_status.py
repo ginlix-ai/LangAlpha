@@ -11,6 +11,7 @@ import pytest
 
 from src.server.services.history.task_status import (
     collect_task_ids,
+    resolve_task_details,
     resolve_task_statuses,
     stamp_replay_task_status,
     stamp_task_artifact_data,
@@ -101,24 +102,42 @@ class TestResolveTaskStatuses:
 class TestStamping:
     def test_stamp_copies_never_mutates(self):
         data = _artifact("aaa")["data"]
-        stamped = stamp_task_artifact_data(data, {"aaa": "completed"})
+        stamped = stamp_task_artifact_data(
+            data, {"aaa": {"status": "completed", "error": None}}
+        )
         assert stamped["payload"]["status"] == "completed"
         assert "status" not in data["payload"]  # original untouched
         assert stamped is not data
 
+    def test_stamp_errored_task_carries_reason(self):
+        data = _artifact("aaa")["data"]
+        stamped = stamp_task_artifact_data(
+            data, {"aaa": {"status": "error", "error": "transport_lost: boom"}}
+        )
+        assert stamped["payload"]["status"] == "error"
+        assert stamped["payload"]["error"] == "transport_lost: boom"
+
+    def test_stamp_omits_error_key_when_no_reason(self):
+        data = _artifact("aaa")["data"]
+        stamped = stamp_task_artifact_data(
+            data, {"aaa": {"status": "completed", "error": None}}
+        )
+        assert "error" not in stamped["payload"]
+
     def test_non_task_and_unknown_ids_pass_through_identically(self):
         chunk = {"content_type": "text"}
-        assert stamp_task_artifact_data(chunk, {"aaa": "completed"}) is chunk
+        details = {"aaa": {"status": "completed", "error": None}}
+        assert stamp_task_artifact_data(chunk, details) is chunk
         other = _artifact("zzz")["data"]
-        assert stamp_task_artifact_data(other, {"aaa": "completed"}) is other
+        assert stamp_task_artifact_data(other, details) is other
 
     @pytest.mark.asyncio
     async def test_replay_stamp_replaces_positionally(self):
         items = [_artifact("aaa"), {"event": "message_chunk", "data": {"c": 1}}]
         original_artifact = items[0]
         with patch(
-            "src.server.services.history.task_status.resolve_task_statuses",
-            new=AsyncMock(return_value={"aaa": "cancelled"}),
+            "src.server.services.history.task_status.resolve_task_details",
+            new=AsyncMock(return_value={"aaa": {"status": "cancelled", "error": None}}),
         ):
             await stamp_replay_task_status("t", items)
         assert items[0]["data"]["payload"]["status"] == "cancelled"
@@ -130,11 +149,37 @@ class TestStamping:
     async def test_resolution_failure_is_swallowed(self):
         items = [_artifact("aaa")]
         with patch(
-            "src.server.services.history.task_status.resolve_task_statuses",
+            "src.server.services.history.task_status.resolve_task_details",
             new=AsyncMock(side_effect=RuntimeError("redis down")),
         ):
             await stamp_replay_task_status("t", items)  # must not raise
         assert "status" not in items[0]["data"]["payload"]
+
+
+class TestResolveTaskDetails:
+    @pytest.mark.asyncio
+    async def test_error_reason_only_on_error_status(self):
+        ledger = {
+            "err1": {"status": "error", "error": "transport_lost: boom"},
+            "done1": {"status": "completed", "error": None},
+        }
+        with patch(
+            "src.server.database.subagent_runs.get_latest_run_details",
+            new=AsyncMock(return_value=ledger),
+        ):
+            details = await resolve_task_details("t", ["err1", "done1"])
+        assert details["err1"] == {"status": "error", "error": "transport_lost: boom"}
+        assert details["done1"] == {"status": "completed", "error": None}
+
+    @pytest.mark.asyncio
+    async def test_interrupted_maps_to_error_without_reason(self):
+        ledger = {"int1": {"status": "interrupted", "error": None}}
+        with patch(
+            "src.server.database.subagent_runs.get_latest_run_details",
+            new=AsyncMock(return_value=ledger),
+        ):
+            details = await resolve_task_details("t", ["int1"])
+        assert details["int1"] == {"status": "error", "error": None}
 
 
 class TestResolveTaskLiveness:

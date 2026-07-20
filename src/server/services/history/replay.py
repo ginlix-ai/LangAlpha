@@ -58,6 +58,7 @@ from src.server.services.history.projector import (
     messages_to_history_events,
 )
 from src.server.database import subagent_runs as sr_db
+from src.server.database import turn_lifecycle as tl_db
 from src.server.services.history.reader import CheckpointHistoryReader
 from src.server.services.history.task_status import (
     _artifact_task_id,
@@ -312,7 +313,7 @@ async def _build_and_backfill(
         stored_events = _stored_events(response)
 
         segment = [
-            _user_message_item(thread_id, q)
+            _user_message_item(thread_id, q, response)
             for q in queries_by_turn.get(turn_index, [])
         ]
 
@@ -504,10 +505,11 @@ def _stub_turn_items(
     (frontend attaches to the live run via /status + run_id) or a run that
     never checkpointed. The user_message stub — plus the terminal error for an
     errored run — is the whole replay. Never cached."""
-    items = [
-        _user_message_item(thread_id, q) for q in queries_by_turn.get(turn_index, [])
-    ]
     response = responses_by_turn.get(turn_index)
+    items = [
+        _user_message_item(thread_id, q, response)
+        for q in queries_by_turn.get(turn_index, [])
+    ]
     error_item = _error_item(thread_id, response)
     if error_item:
         response_id = (
@@ -599,7 +601,7 @@ def build_sse_replay_items(
         response_id = (
             str(response.get("conversation_response_id")) if response else None
         )
-        items.append(_user_message_item(thread_id, query))
+        items.append(_user_message_item(thread_id, query, response))
         for event in _stored_events(response):
             if not _valid_stored(event):
                 continue
@@ -615,7 +617,11 @@ def build_sse_replay_items(
     return items
 
 
-def _user_message_item(thread_id: str, query: dict[str, Any]) -> dict[str, Any]:
+def _user_message_item(
+    thread_id: str,
+    query: dict[str, Any],
+    response: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     payload = {
         "thread_id": thread_id,
         "turn_index": query.get("turn_index"),
@@ -625,6 +631,15 @@ def _user_message_item(thread_id: str, query: dict[str, Any]) -> dict[str, Any]:
     }
     if query.get("type") == "system":
         payload["query_type"] = "system"
+    # The turn's run id, stamped only once the run is terminal — i.e. when this
+    # replay carries the turn's actual content. The client records it as
+    # "already rendered" so the report-back catch-up never re-attaches a run
+    # whose turn is on screen (a duplicate bubble). A live run's stub must NOT
+    # carry it: its content hasn't rendered, and marking it would suppress the
+    # attach that streams it — hence the positive terminal check (an unknown
+    # or legacy status must not stamp).
+    if response is not None and response.get("status") in tl_db.TERMINAL_STATUSES:
+        payload["run_id"] = str(response.get("conversation_response_id"))
     return {"event": "user_message", "data": payload}
 
 
@@ -814,8 +829,20 @@ _ARCHIVE_EVIDENCE_EVENTS = frozenset(
 
 # Image targets are rewritten between capture and checkpoint (sandbox path
 # -> durable URL; the checkpoint rewrite sees whole messages while the
-# archive rewrite scans row fragments), so copy-matching must ignore them.
-_IMAGE_MD_RE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+# archive rewrite scans row fragments), so copy-matching must not compare
+# them verbatim. The rewrite preserves the file's basename (the storage key
+# ends /{basename}), so normalizing targets to their basename keeps the two
+# copies of one image equal while distinct images stay distinct — stripping
+# the target entirely would collapse every same-alt image into one signature.
+_IMAGE_MD_RE = re.compile(r"!\[([^\]]*)\]\(([^)]*)\)")
+
+
+def _normalize_image_targets(text: str) -> str:
+    def _basename(match: re.Match) -> str:
+        target = match.group(2).split("?", 1)[0].split("#", 1)[0].rstrip("/")
+        return f"![{match.group(1)}]({target.rsplit('/', 1)[-1]})"
+
+    return _IMAGE_MD_RE.sub(_basename, text)
 
 
 def _lane(agent: Any) -> str:
@@ -1133,8 +1160,7 @@ def _lane_message_signatures(
         lane: [
             (
                 message_id,
-                _IMAGE_MD_RE.sub(
-                    r"![\1]",
+                _normalize_image_targets(
                     text
                     if (text := content.get((message_id, "text"))) is not None
                     else content.get((message_id, "reasoning"), ""),

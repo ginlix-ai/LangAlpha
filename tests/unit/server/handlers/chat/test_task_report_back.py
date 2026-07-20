@@ -443,3 +443,97 @@ async def test_status_slice_recents_read_failure_reports_empty():
     # let an otherwise-idle slice authorize the client's teardown.
     assert out["recent_report_back_run_ids"] == []
     assert out["pending_report_back"] is None
+
+
+# ---------------------------------------------------------------------------
+# post-finalize/pre-ack window: an open job whose dispatched run is already
+# terminal joins recents at read time (terminal ⇒ persisted ⇒ replayable),
+# so a reloading client that replayed the turn never re-attaches the run.
+# ---------------------------------------------------------------------------
+
+
+def _open_job_env(recents, run_row):
+    btm = MagicMock()
+    btm.get_live_task_info = AsyncMock(return_value={"active_tasks": []})
+    job = {"payload": {"dispatched_run_id": "run-x"}}
+    return (
+        patch(
+            "src.server.database.hook_outbox.get_open_notification_job",
+            new=AsyncMock(return_value=job),
+        ),
+        patch(
+            "src.server.services.background_task_manager."
+            "BackgroundTaskManager.get_instance",
+            return_value=btm,
+        ),
+        patch(
+            "src.server.database.hook_outbox.get_recent_notification_run_ids",
+            new=AsyncMock(return_value=recents),
+        ),
+        patch("src.server.database.turn_lifecycle.get_run", new=run_row),
+    )
+
+
+@pytest.mark.asyncio
+async def test_open_jobs_terminal_run_joins_recents():
+    from src.server.handlers.chat.task_report_back import (
+        read_task_report_back_status,
+    )
+
+    run_row = AsyncMock(return_value={"status": "completed"})
+    p1, p2, p3, p4 = _open_job_env(["rb-1"], run_row)
+    with p1, p2, p3, p4:
+        out = await read_task_report_back_status("t1")
+
+    assert out["recent_report_back_run_ids"] == ["run-x", "rb-1"]
+    # The pointer stays named — a wake-missed client that never rendered
+    # the turn still attaches it.
+    assert out["report_back_run_id"] == "run-x"
+    assert out["pending_report_back"] is True
+
+
+@pytest.mark.asyncio
+async def test_open_jobs_live_run_stays_out_of_recents():
+    from src.server.handlers.chat.task_report_back import (
+        read_task_report_back_status,
+    )
+
+    run_row = AsyncMock(return_value={"status": "in_progress"})
+    p1, p2, p3, p4 = _open_job_env(["rb-1"], run_row)
+    with p1, p2, p3, p4:
+        out = await read_task_report_back_status("t1")
+
+    assert out["recent_report_back_run_ids"] == ["rb-1"]
+    assert out["report_back_run_id"] == "run-x"
+
+
+@pytest.mark.asyncio
+async def test_terminal_pointer_already_in_recents_not_duplicated():
+    from src.server.handlers.chat.task_report_back import (
+        read_task_report_back_status,
+    )
+
+    run_row = AsyncMock(return_value={"status": "completed"})
+    p1, p2, p3, p4 = _open_job_env(["run-x", "rb-1"], run_row)
+    with p1, p2, p3, p4:
+        out = await read_task_report_back_status("t1")
+
+    assert out["recent_report_back_run_ids"] == ["run-x", "rb-1"]
+    run_row.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_terminal_pointer_row_read_failure_leaves_recents():
+    from src.server.handlers.chat.task_report_back import (
+        read_task_report_back_status,
+    )
+
+    run_row = AsyncMock(side_effect=RuntimeError("db down"))
+    p1, p2, p3, p4 = _open_job_env(["rb-1"], run_row)
+    with p1, p2, p3, p4:
+        out = await read_task_report_back_status("t1")
+
+    # Degrades to today's behavior — the client-side replay dedup still
+    # covers the window.
+    assert out["recent_report_back_run_ids"] == ["rb-1"]
+    assert out["pending_report_back"] is True

@@ -164,6 +164,40 @@ describe('NavigationPanel — hierarchy markers', () => {
   });
 });
 
+describe('NavigationPanel — terminal status badges', () => {
+  // The status badge is the sidebar's only at-a-glance signal. Its icons are
+  // an implementation detail (lucide class names churn), but the SEMANTIC
+  // contract is stable: a genuinely running task spins; a terminal one never
+  // does. This is the regression lock for "an errored task keeps spinning".
+  const rowFor = (id: string): HTMLElement => {
+    const row = screen
+      .getAllByTestId('agent-row')
+      .find((r) => r.dataset.agentRole === 'sub' && r.textContent?.includes(id));
+    return row as HTMLElement;
+  };
+
+  it('spins only for a running task, never for a terminal one', () => {
+    renderPanel({
+      agents: [
+        { id: 'main', name: 'Lead Agent', isMainAgent: true },
+        // A non-terminal status WITH transcript derives to 'active' → spins.
+        { id: 's-run', name: 'Worker', description: 'running-task', status: 'running', messages: [{ role: 'assistant' }], isMainAgent: false },
+        { id: 's-err', name: 'Worker', description: 'errored-task', status: 'error', isMainAgent: false },
+        { id: 's-canc', name: 'Worker', description: 'cancelled-task', status: 'cancelled', isMainAgent: false },
+        { id: 's-done', name: 'Worker', description: 'done-task', status: 'completed', isMainAgent: false },
+      ],
+    });
+
+    expect(rowFor('running-task').querySelector('.animate-spin')).toBeTruthy();
+    // Terminal outcomes must NOT spin — the bug was an errored task spinning forever.
+    expect(rowFor('errored-task').querySelector('.animate-spin')).toBeNull();
+    expect(rowFor('cancelled-task').querySelector('.animate-spin')).toBeNull();
+    expect(rowFor('done-task').querySelector('.animate-spin')).toBeNull();
+    // Every terminal row still renders a status glyph (an svg badge).
+    expect(rowFor('errored-task').querySelector('svg')).toBeTruthy();
+  });
+});
+
 describe('NavigationPanel — workspace render order', () => {
   it('renders workspaces in prop order without hoisting the current one', () => {
     render(

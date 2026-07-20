@@ -49,25 +49,27 @@ def collect_task_ids(items: list[dict]) -> list[str]:
     return list(seen)
 
 
-async def resolve_task_statuses(
+async def resolve_task_details(
     thread_id: str, task_ids: list[str]
-) -> dict[str, str]:
-    """Map each task id to ``running`` / ``completed`` / ``cancelled`` / ``error``.
+) -> dict[str, dict[str, Any]]:
+    """Map each task id to ``{"status", "error"}``.
 
-    The run ledger is the authority (M4): the latest run row's status maps
-    straight to the client vocabulary — a dead worker's in_progress row reads
-    "running" only until the recovery scanner finalizes it. Tasks without a
-    ledgered run (pre-ledger launches, shadow-window damage) fall back to the
-    legacy liveness-probe + meta inference, as does everything on a ledger
-    read failure.
+    ``status`` is ``running`` / ``completed`` / ``cancelled`` / ``error``;
+    ``error`` is the ledger failure message, present only when the client
+    status is ``error`` (None otherwise). The run ledger is the authority
+    (M4): the latest run row's status maps straight to the client vocabulary —
+    a dead worker's in_progress row reads "running" only until the recovery
+    scanner finalizes it. Tasks without a ledgered run (pre-ledger launches,
+    shadow-window damage) fall back to the legacy liveness-probe + meta
+    inference, as does everything on a ledger read failure.
     """
     if not task_ids:
         return {}
     from src.server.database import subagent_runs as sr_db
 
-    ledger: dict[str, str] = {}
+    ledger: dict[str, dict[str, Any]] = {}
     try:
-        ledger = await sr_db.get_latest_run_statuses(thread_id, task_ids)
+        ledger = await sr_db.get_latest_run_details(thread_id, task_ids)
     except Exception:
         logger.warning(
             f"[REPLAY] ledger status read failed for {thread_id}; "
@@ -75,17 +77,33 @@ async def resolve_task_statuses(
             exc_info=True,
         )
 
-    statuses: dict[str, str] = {}
+    details: dict[str, dict[str, Any]] = {}
     legacy_ids: list[str] = []
     for task_id in task_ids:
-        run_status = ledger.get(task_id)
-        if run_status is None:
+        row = ledger.get(task_id)
+        if row is None:
             legacy_ids.append(task_id)
         else:
-            statuses[task_id] = _LEDGER_TO_CLIENT.get(run_status, "error")
+            client_status = _LEDGER_TO_CLIENT.get(row.get("status"), "error")
+            details[task_id] = {
+                "status": client_status,
+                # Only an errored task carries a reason to the client.
+                "error": row.get("error") if client_status == "error" else None,
+            }
     if legacy_ids:
-        statuses.update(await _resolve_legacy_statuses(thread_id, legacy_ids))
-    return statuses
+        for task_id, status in (
+            await _resolve_legacy_statuses(thread_id, legacy_ids)
+        ).items():
+            details[task_id] = {"status": status, "error": None}
+    return details
+
+
+async def resolve_task_statuses(
+    thread_id: str, task_ids: list[str]
+) -> dict[str, str]:
+    """Status-only projection of :func:`resolve_task_details` (legacy callers)."""
+    details = await resolve_task_details(thread_id, task_ids)
+    return {task_id: d["status"] for task_id, d in details.items()}
 
 
 async def _resolve_legacy_statuses(
@@ -123,17 +141,19 @@ async def _resolve_legacy_statuses(
 
 
 def stamp_task_artifact_data(
-    data: Any, statuses: dict[str, str]
+    data: Any, details: dict[str, dict[str, Any]]
 ) -> Any:
-    """Return ``data`` with ``payload.status`` stamped (copies, never mutates —
-    stored/cached event dicts are shared objects)."""
+    """Return ``data`` with ``payload.status`` (and ``payload.error`` when the
+    task errored) stamped — copies, never mutates: stored/cached event dicts
+    are shared objects."""
     task_id = _artifact_task_id(data)
-    if not task_id or task_id not in statuses:
+    if not task_id or task_id not in details:
         return data
-    return {
-        **data,
-        "payload": {**(data.get("payload") or {}), "status": statuses[task_id]},
-    }
+    detail = details[task_id]
+    payload = {**(data.get("payload") or {}), "status": detail["status"]}
+    if detail.get("error"):
+        payload["error"] = detail["error"]
+    return {**data, "payload": payload}
 
 
 async def stamp_replay_task_status(thread_id: str, items: list[dict]) -> None:
@@ -141,12 +161,12 @@ async def stamp_replay_task_status(thread_id: str, items: list[dict]) -> None:
     by positional replacement. Best-effort: a failure leaves the items
     unstamped (the client's live reconciliation still applies)."""
     try:
-        statuses = await resolve_task_statuses(thread_id, collect_task_ids(items))
-        if not statuses:
+        details = await resolve_task_details(thread_id, collect_task_ids(items))
+        if not details:
             return
         for i, item in enumerate(items):
             if isinstance(item, dict):
-                stamped = stamp_task_artifact_data(item.get("data"), statuses)
+                stamped = stamp_task_artifact_data(item.get("data"), details)
                 if stamped is not item.get("data"):
                     items[i] = {**item, "data": stamped}
     except Exception:

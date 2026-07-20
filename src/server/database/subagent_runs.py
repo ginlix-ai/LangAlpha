@@ -582,6 +582,38 @@ async def get_latest_run_statuses(
             return {str(r["task_id"]): str(r["status"]) for r in rows}
 
 
+async def get_latest_run_details(
+    thread_id: str, task_ids: List[str]
+) -> Dict[str, Dict[str, Any]]:
+    """task_id -> {status, error} for tasks that HAVE a ledgered run.
+
+    ``error`` is the human-readable ``failure->>'error'`` message (None for
+    non-errored runs). Same anchoring as :func:`get_latest_run_statuses`;
+    absent task_ids are pre-ledger / shadow-damaged and left to the caller.
+    """
+    if not task_ids:
+        return {}
+    async with qr_db.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT t.task_id, r.status, r.failure->>'error' AS error
+                FROM subagent_tasks t
+                JOIN subagent_runs r ON r.task_run_id = t.latest_run_id
+                WHERE t.thread_id = %s AND t.task_id = ANY(%s)
+                """,
+                (thread_id, list(task_ids)),
+            )
+            rows = await cur.fetchall()
+            return {
+                str(r["task_id"]): {
+                    "status": str(r["status"]),
+                    "error": r["error"],
+                }
+                for r in rows
+            }
+
+
 # ------------------------------------------------------------------ repair
 
 # The lazy global sweep runs unfenced, so it ignores rows younger than this.

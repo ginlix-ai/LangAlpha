@@ -95,6 +95,57 @@ async def test_reset_for_resume_resets_seq_counters_after_redis_clear():
 
 
 @pytest.mark.asyncio
+async def test_reset_for_resume_unseals_cancelled_task():
+    """A stopped task's seal (append_captured_event drops appends while
+    ``cancelled`` is set) must not survive resume — the resumed round is a
+    fresh writer whose capture would otherwise be silently muted."""
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    middleware = BackgroundSubagentMiddleware(registry=registry, enabled=True)
+    task = _make_completed_task()
+    task.cancelled = True
+
+    cache = MagicMock()
+    cache.enabled = True
+    cache.delete = AsyncMock()
+
+    with patch(
+        "src.utils.cache.redis_cache.get_cache_client",
+        return_value=cache,
+    ):
+        await middleware._reset_task_for_resume(task)
+
+    assert task.cancelled is False
+
+
+@pytest.mark.asyncio
+async def test_reset_for_resume_nulls_writer_handles():
+    """The prior round's DONE handles must not survive into the resume's
+    starting window — ``_cancellable`` reads a done handle on a not-completed
+    task as a settling writer and would skip the task, reopening the
+    handle-less cancel gap with a stale-handle variant."""
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    middleware = BackgroundSubagentMiddleware(registry=registry, enabled=True)
+    task = _make_completed_task()
+    stale = MagicMock()
+    stale.done.return_value = True
+    task.asyncio_task = stale
+    task.handler_task = stale
+
+    cache = MagicMock()
+    cache.enabled = True
+    cache.delete = AsyncMock()
+
+    with patch(
+        "src.utils.cache.redis_cache.get_cache_client",
+        return_value=cache,
+    ):
+        await middleware._reset_task_for_resume(task)
+
+    assert task.asyncio_task is None
+    assert task.handler_task is None
+
+
+@pytest.mark.asyncio
 async def test_reset_for_resume_redis_failure_does_not_raise():
     """Cache failure during cleanup must not crash the resume path —
     the new run still proceeds; replay may include stale events."""

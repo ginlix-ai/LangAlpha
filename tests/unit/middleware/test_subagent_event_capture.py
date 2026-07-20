@@ -192,8 +192,9 @@ async def test_redis_spill_exception_sets_flag_no_raise(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_redis_spill_timeout_flips_flag_no_hang(monkeypatch) -> None:
     """A hung pipeline must not pace the subagent: ``asyncio.wait_for`` aborts
-    after ``_SPILL_TIMEOUT_SECONDS`` and trips the circuit so the next append
-    short-circuits without re-entering Redis."""
+    after ``_SPILL_TIMEOUT_SECONDS``; the write is verified against the stream
+    tail (absent here) and retried once, then the circuit trips so the next
+    append short-circuits without re-entering Redis."""
 
     async def hang(**_kwargs):
         await asyncio.sleep(10)
@@ -202,6 +203,7 @@ async def test_redis_spill_timeout_flips_flag_no_hang(monkeypatch) -> None:
     fake_cache = MagicMock()
     fake_cache.enabled = True
     fake_cache.pipelined_event_buffer = AsyncMock(side_effect=hang)
+    fake_cache.client.xrevrange = AsyncMock(return_value=[])
     monkeypatch.setattr("src.utils.cache.redis_cache.get_cache_client", lambda: fake_cache)
     monkeypatch.setattr(
         "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
@@ -220,10 +222,160 @@ async def test_redis_spill_timeout_flips_flag_no_hang(monkeypatch) -> None:
     assert task.redis_write_failed is True
 
     await registry.append_captured_event(task.tool_call_id, _event(1))
-    # Only the first call reached Redis; the circuit-breaker short-circuits
+    # Timeout → tail verify (empty) → one retry → circuit. Only the first
+    # append reached Redis (twice); the circuit-breaker short-circuits
     # subsequent appends so a degraded Redis can't pace subagent execution.
-    assert fake_cache.pipelined_event_buffer.await_count == 1
+    assert fake_cache.pipelined_event_buffer.await_count == 2
     assert task.captured_event_seq == 2
+
+
+@pytest.mark.asyncio
+async def test_redis_spill_timeout_landed_write_recovers(monkeypatch) -> None:
+    """A timed-out write whose entry is at the stream tail LANDED — the run
+    must continue (no circuit, no retry). Guards against the false-positive
+    kill where ``wait_for`` fired on event-loop stall, not Redis."""
+    calls = {"n": 0}
+
+    async def hang_first(**_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            await asyncio.sleep(10)
+        return True, 2
+
+    fake_cache = MagicMock()
+    fake_cache.enabled = True
+    fake_cache.pipelined_event_buffer = AsyncMock(side_effect=hang_first)
+    fake_cache.client.xrevrange = AsyncMock(
+        return_value=[(b"1-1", {b"record": b'{"seq": 1}'})]
+    )
+    monkeypatch.setattr("src.utils.cache.redis_cache.get_cache_client", lambda: fake_cache)
+    monkeypatch.setattr(
+        "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
+    )
+    monkeypatch.setattr(
+        "ptc_agent.agent.middleware.background_subagent.registry._SPILL_TIMEOUT_SECONDS",
+        0.05,
+    )
+
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+
+    await registry.append_captured_event(task.tool_call_id, _event(0))
+    # Tail seq matches the timed-out write → treated as delivered, no retry.
+    assert task.redis_write_failed is False
+    assert fake_cache.pipelined_event_buffer.await_count == 1
+
+    await registry.append_captured_event(task.tool_call_id, _event(1))
+    assert task.redis_write_failed is False
+    assert fake_cache.pipelined_event_buffer.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_redis_spill_timeout_retry_succeeds(monkeypatch) -> None:
+    """A timed-out write that did NOT land gets exactly one retry; a
+    successful retry keeps the transport healthy."""
+    calls = {"n": 0}
+
+    async def hang_first(**_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            await asyncio.sleep(10)
+        return True, 1
+
+    fake_cache = MagicMock()
+    fake_cache.enabled = True
+    fake_cache.pipelined_event_buffer = AsyncMock(side_effect=hang_first)
+    fake_cache.client.xrevrange = AsyncMock(return_value=[])
+    monkeypatch.setattr("src.utils.cache.redis_cache.get_cache_client", lambda: fake_cache)
+    monkeypatch.setattr(
+        "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
+    )
+    monkeypatch.setattr(
+        "ptc_agent.agent.middleware.background_subagent.registry._SPILL_TIMEOUT_SECONDS",
+        0.05,
+    )
+
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+
+    await registry.append_captured_event(task.tool_call_id, _event(0))
+    assert task.redis_write_failed is False
+    assert fake_cache.pipelined_event_buffer.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_redis_spill_v2_timeout_landed_recovers(monkeypatch) -> None:
+    """The v2 per-run XADD gets the same verify-then-retry treatment: a
+    timed-out write found at the v2 stream tail is delivered — no circuit."""
+
+    async def hang(*_args, **_kwargs):
+        await asyncio.sleep(10)
+
+    fake_cache = MagicMock()
+    fake_cache.enabled = True
+    fake_cache.pipelined_event_buffer = AsyncMock(return_value=(True, 1))
+    fake_cache.client.xadd = AsyncMock(side_effect=hang)
+    fake_cache.client.xrevrange = AsyncMock(
+        return_value=[(b"1-1", {b"payload": b'{"seq": 1}'})]
+    )
+    monkeypatch.setattr("src.utils.cache.redis_cache.get_cache_client", lambda: fake_cache)
+    monkeypatch.setattr(
+        "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
+    )
+    monkeypatch.setattr(
+        "ptc_agent.agent.middleware.background_subagent.registry._SPILL_TIMEOUT_SECONDS",
+        0.05,
+    )
+
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.task_run_id = "run-v2"
+
+    await registry.append_captured_event(task.tool_call_id, _event(0))
+    assert task.redis_write_failed is False
+    assert fake_cache.client.xadd.await_count == 1
+    # Verified against the v2 per-run stream key.
+    v2_key = f"subagent:stream:thread-x:{task.task_run_id}"
+    assert fake_cache.client.xrevrange.await_args.args[0] == v2_key
+
+
+@pytest.mark.asyncio
+async def test_redis_spill_v2_timeout_not_landed_trips_circuit(monkeypatch) -> None:
+    """A v2 XADD that times out twice with nothing at the tail is a real
+    transport failure — the circuit opens (phase=v2_pipeline)."""
+
+    async def hang(*_args, **_kwargs):
+        await asyncio.sleep(10)
+
+    fake_cache = MagicMock()
+    fake_cache.enabled = True
+    fake_cache.pipelined_event_buffer = AsyncMock(return_value=(True, 1))
+    fake_cache.client.xadd = AsyncMock(side_effect=hang)
+    fake_cache.client.xrevrange = AsyncMock(return_value=[])
+    monkeypatch.setattr("src.utils.cache.redis_cache.get_cache_client", lambda: fake_cache)
+    monkeypatch.setattr(
+        "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
+    )
+    monkeypatch.setattr(
+        "ptc_agent.agent.middleware.background_subagent.registry._SPILL_TIMEOUT_SECONDS",
+        0.05,
+    )
+
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.task_run_id = "run-v2"
+
+    await registry.append_captured_event(task.tool_call_id, _event(0))
+    assert task.redis_write_failed is True
+    assert fake_cache.client.xadd.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -714,6 +866,28 @@ async def test_cancelled_task_appends_are_dropped() -> None:
     await registry.append_captured_event(task.tool_call_id, _event(0))
     task.cancelled = True
     await registry.append_captured_event(task.tool_call_id, _event(1))
+
+    assert task.captured_event_seq == 1
+    assert task.captured_event_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_task_terminal_append_lands() -> None:
+    """The seal exempts terminal unwind bookkeeping: the steering-return
+    sweep runs inside the bounded unwind (before the stop drain reads its
+    high-water), and dropping its ``steering_returned`` record would erase
+    acknowledged user input — neither delivered nor returned anywhere."""
+    registry = BackgroundTaskRegistry()
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.cancelled = True
+    await registry.append_captured_event(task.tool_call_id, _event(0))
+    await registry.append_captured_event(
+        task.tool_call_id,
+        {"event": "steering_returned", "data": {"agent": "task:x"}},
+        terminal=True,
+    )
 
     assert task.captured_event_seq == 1
     assert task.captured_event_count == 1

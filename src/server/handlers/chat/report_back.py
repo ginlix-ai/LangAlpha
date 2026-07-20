@@ -1759,12 +1759,43 @@ async def watch_wakes(cache, flash_thread_id: str):
 # ---------------------------------------------------------------------------
 
 
+async def recents_with_terminal_pointer(
+    run_id: str | None, recents: list[str]
+) -> list[str]:
+    """Read-time union: a named run that is already terminal joins the recents
+    list. Terminal ⇒ its turn row is persisted, so the recents contract (every
+    listed run is replayable from history) holds — and the post-finalize/
+    pre-ack window (run terminal, job unacked, recents not yet written) stops
+    being invisible to the client's rendered-run dedup. The pointer itself
+    stays named: a wake-missed client that never rendered the turn still
+    attaches it. On a failed row read the list is returned unchanged (today's
+    behavior; the client-side replay dedup still covers the window)."""
+    if not run_id or run_id in recents:
+        return recents
+    try:
+        from src.server.database import turn_lifecycle as tl_db
+
+        run = await tl_db.get_run(run_id)
+    except Exception:
+        logger.warning(
+            f"Terminal-pointer recents check failed for run {run_id}",
+            exc_info=True,
+        )
+        return recents
+    if run is not None and run.get("status") != "in_progress":
+        return [run_id, *recents]
+    return recents
+
+
 async def read_report_back_status(thread_id: str) -> dict:
     """Report-back-only status slice for a flash thread.
 
     The JSON shape is a frontend contract; the recent list is NEWEST FIRST
-    (LPUSH order). On its own Redis-read failure ``pending_report_back`` is
-    ``None`` (unknown — the frontend keeps watching), distinct from an explicit
+    (LPUSH order) and every listed run is terminal — i.e. replayable from
+    history (drained runs by construction; the terminal-pointer union below
+    extends the same guarantee into the post-finalize/pre-teardown window).
+    On its own Redis-read failure ``pending_report_back`` is ``None``
+    (unknown — the frontend keeps watching), distinct from an explicit
     ``False`` (drained).
     """
     pending_report_back: bool | None = False
@@ -1814,9 +1845,10 @@ async def read_report_back_status(thread_id: str) -> dict:
             if members:
                 pending_report_back = True
                 # Resolve the run to attach to from any live per-(flash, ptc)
-                # pointer (written when the report-back run is dispatched).
-                # Never a finished run's id. One MGET vs N serial GETs; values
-                # are raw serialized JSON.
+                # pointer (written when the report-back run is dispatched;
+                # cleared at teardown — so it can briefly name an already-
+                # terminal run). One MGET vs N serial GETs; values are raw
+                # serialized JSON.
                 ptr_keys = [flash_rb_run_key(thread_id, ptc) for ptc in members]
                 for raw in await cache.client.mget(ptr_keys):
                     if raw is None:
@@ -1836,6 +1868,10 @@ async def read_report_back_status(thread_id: str) -> dict:
         pending_report_back = None
         report_back_run_id = None
         recent_report_back_run_ids = []
+
+    recent_report_back_run_ids = await recents_with_terminal_pointer(
+        report_back_run_id, recent_report_back_run_ids
+    )
 
     return {
         "thread_id": thread_id,

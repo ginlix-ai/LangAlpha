@@ -313,6 +313,9 @@ interface SubagentHistoryEntry {
   type: string;
   messages: Record<string, unknown>[];
   status: string;
+  /** Ledger failure reason, present only for an errored task. Surfaced in the
+   *  detail view header so a "Failed" card explains why. */
+  error?: string;
   toolCalls: number;
   tokenUsage: SubagentTokenUsage;
   currentTool: string;
@@ -352,6 +355,8 @@ interface SubagentHistoryData {
   type?: string;
   /** Backend-stamped real task status from replayed task artifacts (running|completed|cancelled). */
   status?: string;
+  /** Backend-stamped ledger failure reason, present only for an errored task. */
+  error?: string;
   /** Build-time stamp: start (epoch ms) of the newest run whose transcript
    *  the projection actually claimed — NOT the ledger's latest run, which
    *  can still be executing and deliberately excluded from the payload. */
@@ -607,7 +612,6 @@ export function useChatMessages(
   initialThreadId: string | null = null,
   updateTodoListCard: ((todoData: Record<string, unknown>, isNew?: boolean) => void) | null = null,
   updateSubagentCard: ((agentId: string, data: Record<string, unknown>) => void) | null = null,
-  inactivateAllSubagents: (() => void) | null = null,
   finalizePendingTodos: (() => void) | null = null,
   onOnboardingRelatedToolComplete: (() => void) | null = null,
   onFileArtifact: ((event: SSEEvent) => void) | null = null,
@@ -858,6 +862,10 @@ export function useChatMessages(
   // over-triggers one corrective reload, while over-counting would suppress a
   // genuinely-needed one.
   const lastRenderedTurnIndexRef = useRef<number | null>(null);
+  // Terminal-run ids the latest history replay rendered; consumed by the
+  // load flow's markRunsRendered call so the report-back catch-up can't
+  // re-attach an already-on-screen turn as a duplicate bubble.
+  const replayedRunIdsRef = useRef<string[]>([]);
   // Ref-based thread ID for use inside closures (avoids stale React state in callbacks)
   const threadIdRef = useRef(threadId);
 
@@ -952,8 +960,13 @@ export function useChatMessages(
     return mux ? mux.openTaskIds() : new Set<string>();
   };
 
-  // Track completed task IDs to prevent reactivation by stale artifact events
-  const completedTaskIdsRef = useRef(new Set<string>());
+  // Terminal outcomes the client has observed live (per-task chan_close), keyed by
+  // short task id. Authoritative and monotonic: once a task settles here, no stale
+  // liveness signal (a reconnect pre-seed off an older /status snapshot, a duplicate
+  // spawn artifact, a stale-history refresh) may revert its card to active. Lives
+  // with the subagent-card projection — cleared only alongside clearSubagentCards()
+  // on a full history-backed reset; a genuine resume deletes just that task's entry.
+  const terminalTaskOutcomesRef = useRef(new Map<string, 'completed' | 'cancelled' | 'error'>());
 
   // Track subagent history loaded from replay so it can be shown lazily
   // Keyed by agent_id. Structure: { [agentId]: { taskId, description, type, messages, status, ... } }
@@ -1145,6 +1158,14 @@ export function useChatMessages(
       // lower the watermark. -1 = replay delivered zero turns.
       let maxReplayedTurnIndex = -1;
 
+      // Run ids of the turns this replay rendered (the server stamps run_id on
+      // a user_message only once its run is terminal — a live run's stub
+      // carries none). Fed to markRunsRendered so the report-back catch-up
+      // never re-attaches a run whose turn is already on screen: the recents
+      // list alone can't cover the post-finalize/pre-ack outbox window, and a
+      // wake-queued id attaches without ever consulting /status.
+      const replayedRunIds: string[] = [];
+
       // Track pending HITL interrupts from history to resolve status on next user_message
       const pendingHistoryInterrupts: HistoryInterruptInfo[] = [];
 
@@ -1331,6 +1352,9 @@ export function useChatMessages(
         // Handle user_message events from history
         // Note: event.content may be empty for HITL resume pairs (plan approval/rejection)
         if (eventType === 'user_message' && hasPairIndex) {
+          if (typeof event.run_id === 'string' && event.run_id) {
+            replayedRunIds.push(event.run_id);
+          }
           // New-turn boundary: the switch suggestion only reflects the most
           // recent turn, so any earlier turn's fallback suggestion is stale.
           setFallbackSuggestion(null);
@@ -1632,6 +1656,8 @@ export function useChatMessages(
             // (payload.status). The top-level `status` is a hardcoded "completed"
             // and MUST be ignored.
             const stampedStatus = payload.status as string | undefined;
+            // Ledger failure reason, stamped only on an errored task artifact.
+            const stampedError = payload.error as string | undefined;
             const stampedRunStartedMs =
               typeof payload.projected_run_started_ms === 'number'
                 ? payload.projected_run_started_ms
@@ -1647,6 +1673,7 @@ export function useChatMessages(
                   prompt: prompt || description || '',
                   type: type || 'general-purpose',
                   status: stampedStatus,
+                  error: stampedError,
                   projectedRunStartedMs: stampedRunStartedMs,
                 });
               } else {
@@ -1655,6 +1682,7 @@ export function useChatMessages(
                 if (prompt && !existing.prompt) existing.prompt = prompt || description || '';
                 if (type && !existing.type) existing.type = type;
                 if (stampedStatus) existing.status = stampedStatus;
+                if (stampedError) existing.error = stampedError;
                 // Monotonic max: artifacts stamp claims-through-their-turn, and
                 // page/artifact processing order must not regress the watermark.
                 if (stampedRunStartedMs != null) {
@@ -2331,6 +2359,7 @@ export function useChatMessages(
               // Prefer the backend-stamped real status; fall back to 'completed'
               // for pre-stamp data or tasks with no replayed task artifact.
               status: taskMetadata?.status || 'completed',
+              error: taskMetadata?.error,
               toolCalls: countToolCalls(finalMessages),
               tokenUsage: tempTokenUsage,
               currentTool: '',
@@ -2361,10 +2390,7 @@ export function useChatMessages(
       // Replay settled (a 404 counts: brand-new thread, zero turns) — record
       // the watermark the reactivation staleness check compares against.
       lastRenderedTurnIndexRef.current = maxReplayedTurnIndex;
-
-      // NOTE: markAllSubagentTasksCompleted() is NOT called here because
-      // loadAndMaybeReconnect will call it after determining whether the
-      // workflow is still active (reconnect case) or truly completed.
+      replayedRunIdsRef.current = replayedRunIds;
 
       // Post-process: update inline cards for steering_accepted actions to show "Updated"
       if (steeredAgentIds.size > 0) {
@@ -2420,7 +2446,7 @@ export function useChatMessages(
    * Reconnects to an in-progress workflow stream after page refresh.
    * Creates an assistant message placeholder and processes live SSE events.
    */
-  const reconnectToStream = async ({ activeTasks = [], runId, resetCursor = false, idleAbortMs, snapshotAtMs }: { activeTasks?: string[]; runId?: string | null; resetCursor?: boolean; idleAbortMs?: number; snapshotAtMs?: number } = {}) => {
+  const reconnectToStream = async ({ activeTasks = [], runId, resetCursor = false, idleAbortMs, snapshotAtMs, resetSubagentProjection = true }: { activeTasks?: string[]; runId?: string | null; resetCursor?: boolean; idleAbortMs?: number; snapshotAtMs?: number; resetSubagentProjection?: boolean } = {}) => {
     // Reconnect targets the LATCHED thread, not the threadId prop. A brand-new
     // chat keeps the prop at '__default__' until the first SSE event updates the
     // route, but Content-Location already latched the real id into threadIdRef.
@@ -2441,11 +2467,24 @@ export function useChatMessages(
 
     console.log('[Reconnect] Starting reconnection for thread:', tid);
 
-    // Clear subagent cards to prevent duplicate content from cache + Redis overlap
-    if (clearSubagentCards) {
-      clearSubagentCards();
+    // Clear subagent cards to prevent duplicate content from cache + Redis
+    // overlap on a HISTORY-backed reconnect (thread-load, cross-thread nav,
+    // post-HITL resume): those replay the whole run, so a stale card would
+    // double up. A report-back attach carries NO subagent replay — it streams
+    // only the synthetic notification turn — so clearing here is pure
+    // collateral: it deletes a still-running sibling's detail card, and if that
+    // sibling is quiet inside a long tool call nothing rebuilds it, leaving its
+    // detail view stuck at "Initializing" while its inline chip reads "Running".
+    // resetSubagentProjection=false (report-back) preserves the live projection.
+    if (resetSubagentProjection) {
+      if (clearSubagentCards) {
+        clearSubagentCards();
+      }
+      // The observed-terminal map shadows the card projection: a history-backed
+      // reset rebuilds status from ledger truth, so the live-closure evidence is
+      // no longer needed (and would otherwise mask a legitimately resumed task).
+      terminalTaskOutcomesRef.current.clear();
     }
-    completedTaskIdsRef.current.clear();
 
     setIsLoading(true);
     setIsReconnecting(true);
@@ -2719,9 +2758,10 @@ export function useChatMessages(
       // Pre-seed subagent cards from history for tasks whose artifact events were
       // cleared from the Redis buffer after the spawning turn persisted to DB.
       // This mirrors the Scenario B pre-seed at lines 1611-1626.
-      // A task the (older) /status snapshot calls active but history already
-      // shows terminal is settled — re-activating its card would wedge it.
-      const liveActiveTasks = activeTasks.filter((t) => !isHistoryTerminalTask(t));
+      // A task the (older) /status snapshot calls active but that is already
+      // settled — terminal in history, or seen closing live this session — must
+      // not be re-activated: no closure would ever arrive to wedge it back down.
+      const liveActiveTasks = activeTasks.filter((t) => !isSettledTask(t));
       if (liveActiveTasks.length > 0 && updateSubagentCard && subagentHistoryRef.current) {
         for (const taskId of liveActiveTasks) {
           const agentId = `task:${taskId}`;
@@ -2877,7 +2917,12 @@ export function useChatMessages(
         }
 
         console.log('[Reconnect] Attempt', attempt + 1, 'of', MAX_RETRIES);
-        await reconnectToStream({ activeTasks: status.active_tasks || [], snapshotAtMs });
+        // Mid-stream disconnect resumes from the retained cursor (no resetCursor),
+        // so it does NOT replay the subagent projection — wiping the cards here
+        // would strand a task spawned earlier in this same (unpersisted) turn with
+        // nothing to rebuild it. Preserve the live projection; the active_tasks
+        // pre-seed below re-asserts anything still running.
+        await reconnectToStream({ activeTasks: status.active_tasks || [], snapshotAtMs, resetSubagentProjection: false });
 
         setIsReconnecting(false);
         return;
@@ -3003,7 +3048,14 @@ export function useChatMessages(
         // The replay rendered every persisted turn, so this load's recents slice
         // is now ON SCREEN. Record it BEFORE arming the watch below, or the
         // recent-runs catch-up would re-attach each run as a duplicate turn.
-        reportBackWatch.markRunsRendered(status.recent_report_back_run_ids);
+        // The replay's own terminal-run ids are recorded too: a run in the
+        // post-finalize/pre-ack outbox window is persisted (and just rendered)
+        // but not yet in recents, while /status still names it — without this,
+        // the arm's seed or a latched wake re-attaches it as a duplicate.
+        reportBackWatch.markRunsRendered([
+          ...(status.recent_report_back_run_ids ?? []),
+          ...replayedRunIdsRef.current,
+        ]);
       }
 
       // Arm the report-back watch BEFORE the reconnect branch below, so it runs
@@ -3100,13 +3152,13 @@ export function useChatMessages(
       } else if (status.can_reconnect) {
         console.log('[Reconnect] Workflow status:', status.status, 'can_reconnect:', status.can_reconnect, 'active_tasks:', status.active_tasks);
         await reconnectToStream({ activeTasks: status.active_tasks || [], runId: status.run_id ?? null, resetCursor: true, snapshotAtMs });
-      } else if ((status.active_tasks || []).some((t) => !isHistoryTerminalTask(t))) {
+      } else if ((status.active_tasks || []).some((t) => !isSettledTask(t))) {
         // Main workflow completed but subagent tasks still running.
         // Attach the thread mux so cards stay live after refresh. Tasks the
-        // stale /status snapshot calls active but history already shows
-        // terminal are settled — never re-activate those cards (the mux
-        // would have no closure to send for them).
-        const muxTasks = (status.active_tasks || []).filter((t) => !isHistoryTerminalTask(t));
+        // stale /status snapshot calls active but that are already settled
+        // (terminal in history, or seen closing live) are never re-activated —
+        // the mux would have no closure to send for them.
+        const muxTasks = (status.active_tasks || []).filter((t) => !isSettledTask(t));
         console.log('[Reconnect] Main workflow done, attaching mux for active subagents:', muxTasks);
         const dummyAssistantId = `assistant-subagent-reconnect-${Date.now()}`;
         const refs = {
@@ -3182,50 +3234,11 @@ export function useChatMessages(
   // live PTC stream coexist); useReportBackWatch owns its own unmount-time
   // teardown, so the thread-load effect above deliberately doesn't touch it.
 
-  /**
-   * Advances still-'running' subagentTasks to 'completed' (leaving terminal
-   * 'cancelled'/'completed' cards untouched). A live safety net for stream-end:
-   * a finished workflow implies its remaining in-flight subagents are done, but
-   * the final completion may not have arrived on the stream. Not used on history
-   * load — replayed cards are born with their real status from the task-artifact
-   * stamp.
-   */
-  const markAllSubagentTasksCompleted = () => {
-    // Skip tasks with an open run channel on the thread mux (still active)
-    const activeShortIds = muxOpenTaskIds();
-
-    setMessages((prev) => {
-      let anyChanged = false;
-      const updated = prev.map((msg) => {
-        if (msg.role !== 'assistant') return msg;
-        const aMsg = msg as AssistantMessage;
-        if (!aMsg.subagentTasks || Object.keys(aMsg.subagentTasks).length === 0) return msg;
-        let changed = false;
-        const updatedTasks = { ...aMsg.subagentTasks };
-        Object.keys(updatedTasks).forEach((toolCallId) => {
-          const agentId = toolCallIdToTaskIdMapRef.current.get(toolCallId);
-          // If the task still has an open per-task stream, skip it
-          if (agentId) {
-            const shortId = agentId.replace('task:', '');
-            if (activeShortIds.has(shortId)) return;
-          }
-
-          // Only advance still-running cards to completed; never overwrite a
-          // terminal 'cancelled' (a stopped subagent) back to 'completed'.
-          if (updatedTasks[toolCallId].status === 'running') {
-            updatedTasks[toolCallId] = { ...updatedTasks[toolCallId], status: 'completed' };
-            changed = true;
-          }
-        });
-        if (changed) anyChanged = true;
-        return changed ? { ...aMsg, subagentTasks: updatedTasks } : msg;
-      });
-      return anyChanged ? updated : prev;
-    });
-  };
-
-  /** Stamp one task's still-'running' inline chips (by mux agent id) with a
-   * non-success terminal status, so the completed-sweep can't paint over it. */
+  /** Stamp one task's still-'running' inline chips (by mux agent id) with its
+   * terminal outcome. The ONLY live path that moves a chip to terminal —
+   * positive per-task closure (run_end / ledger-row truth via chan_close),
+   * never inference from channel absence. Advancing only from 'running'
+   * keeps an earlier cancelled/error stamp from being painted over. */
   const setInlineSubagentTaskStatus = (
     agentId: string,
     status: SubagentTask['status'],
@@ -3270,7 +3283,7 @@ export function useChatMessages(
         const shortId = agentId.startsWith('task:') ? agentId.slice(5) : '';
         const hist = subagentHistoryRef.current?.[agentId];
         if (
-          completedTaskIdsRef.current.has(shortId) ||
+          terminalTaskOutcomesRef.current.has(shortId) ||
           (!!hist?.status && hist.status !== 'running')
         ) {
           return;
@@ -3292,28 +3305,30 @@ export function useChatMessages(
       subagentProcessEventRef.current?.(ev as SSEEvent);
     },
     onTaskRunClosed: (shortTaskId, outcome) => {
-      completedTaskIdsRef.current.add(shortTaskId);
       // Positive closure from the run ledger: honor the real terminal
       // outcome — cancelled and error must not render as success.
       const status =
         outcome === 'cancelled' ? 'cancelled'
         : outcome === 'error' ? 'error'
         : 'completed';
+      // Record the exact outcome so every downstream reactivation guard can seed
+      // the RIGHT terminal status (a failed task must not resurface as completed).
+      terminalTaskOutcomesRef.current.set(shortTaskId, status);
       if (updateSubagentCard) {
         updateSubagentCard(`task:${shortTaskId}`, { status, isActive: false });
       }
-      // Stamp the just-closed task's inline chip with its outcome first —
-      // the sweep below only advances still-'running' chips to completed.
-      if (status !== 'completed') {
-        setInlineSubagentTaskStatus(`task:${shortTaskId}`, status);
-      }
-      // Flip the chat-card status for the just-closed task (its channel is
-      // already closed, so the mux truth skips only the still-active ones).
-      markAllSubagentTasksCompleted();
-      // Workflow-level cleanup only when ALL run channels have closed.
+      // Flip ONLY the just-closed task's inline chips, with its real outcome.
+      // Positive closure per task — never a sweep over siblings: a sibling
+      // with no open channel is not terminal (its chan_open may simply not
+      // have landed yet), and its own closure/ledger stamp will flip it.
+      setInlineSubagentTaskStatus(`task:${shortTaskId}`, status);
+      // Workflow-level flag only when ALL run channels have closed. No status
+      // sweep: each task's card/chip was already stamped terminal by its own
+      // chan_close above (positive closure per task). A blanket
+      // inactivateAllSubagents() here would falsely complete any sibling whose
+      // chan_close merely lagged or dropped.
       if (muxOpenTaskIds().size === 0) {
         setHasActiveSubagents(false);
-        if (inactivateAllSubagents) inactivateAllSubagents();
       }
       // The natural report-back discovery moment: a tail task that just
       // settled has its notification turn enqueued about now. Ensure the
@@ -3348,6 +3363,14 @@ export function useChatMessages(
     const st = subagentHistoryRef.current?.[`task:${shortTaskId}`]?.status;
     return !!st && st !== 'running';
   };
+
+  /** A task is settled — and must never be re-activated by a stale /status
+   * snapshot — if the ledger shows it terminal OR the client already saw its
+   * per-task stream close live this session. The second half is what history
+   * alone misses: a task that closed live but whose ledger the local history
+   * hasn't refreshed to terminal yet. */
+  const isSettledTask = (shortTaskId: string): boolean =>
+    isHistoryTerminalTask(shortTaskId) || terminalTaskOutcomesRef.current.has(shortTaskId);
 
   /**
    * Keep the thread's v2 mux attached with the current stream processor.
@@ -3396,11 +3419,12 @@ export function useChatMessages(
     currentMessageRef.current = null;
     releaseStreamOwnership();
 
+    // Deliberately no status sweep here: card/chip status moves only on
+    // positive evidence (ledger stamp at load, per-task chan_close live).
+    // Absence of an open mux channel is NOT terminality — during the
+    // attach window the mux has no channels at all, and a sweep here would
+    // permanently paint still-running tail tasks as completed.
     const hasOpenStreams = muxOpenTaskIds().size > 0;
-    if (!hasOpenStreams) {
-      if (inactivateAllSubagents) inactivateAllSubagents();
-      markAllSubagentTasksCompleted();
-    }
     setHasActiveSubagents(hasOpenStreams);
 
     // Finalize pending todos as stale
@@ -4321,7 +4345,10 @@ export function useChatMessages(
           }
 
           if (action === 'init') {
-            const alreadyCompleted = completedTaskIdsRef.current.has(task_id as string);
+            // A duplicate/replayed spawn for a task we already saw settle must
+            // resurface with its REAL terminal outcome (completed/cancelled/error),
+            // never a blanket 'completed' that would launder a failure as success.
+            const settledOutcome = terminalTaskOutcomesRef.current.get(task_id as string);
             if (updateSubagentCard) {
               updateSubagentCard(agentId, {
                 agentId,
@@ -4330,11 +4357,15 @@ export function useChatMessages(
                 type: (type || 'general-purpose') as string,
                 description: (description || '') as string,
                 prompt: (prompt || description || '') as string,
-                status: alreadyCompleted ? 'completed' : 'active',
-                isActive: !alreadyCompleted,
+                // A spawn artifact means "requested", not "working" — hold
+                // 'initializing' until the first task event streams (which
+                // promotes via deriveSubagentStatus) so the detail header
+                // matches reality instead of claiming Running with no content.
+                status: settledOutcome ?? 'initializing',
+                isActive: !settledOutcome,
               });
             }
-            if (!alreadyCompleted) {
+            if (!settledOutcome) {
               const currentThreadId = (event.thread_id || threadIdRef.current) as string;
               attachSubagentMux(currentThreadId, processEvent);
             }
@@ -4342,6 +4373,10 @@ export function useChatMessages(
             // Resume: reactivate the card and reattach the stream. The
             // transcript boundary (instruction bubble + run bump) arrives on
             // the task stream itself, as its epoch-opening user_message.
+            // A genuine resume is the ONE legitimate terminal→active transition:
+            // retract the observed terminal outcome so the settled-task guards
+            // stop skipping it (it is live again under a new run).
+            terminalTaskOutcomesRef.current.delete(task_id as string);
             if (updateSubagentCard) {
               // Prefer preserving the original spawn description (already on the card).
               // But after reconnect the card may have been wiped + recreated without a
@@ -5095,7 +5130,11 @@ export function useChatMessages(
     setMessageError(null);
     setFallbackSuggestion(null);
     setHasActiveSubagents(false);
-    completedTaskIdsRef.current.clear();
+    // NB: do NOT clear terminalTaskOutcomesRef here. A fresh send appends a turn
+    // without resetting the subagent-card projection, so a tail subagent that
+    // already settled (this turn or a prior one) must keep its observed terminal
+    // outcome — otherwise a later reconnect off a stale /status snapshot would
+    // re-activate its card. The map is cleared only on a full history-backed reset.
     // Clear the stopped guard so a fresh send can finalize again on stop.
     wasStoppedRef.current = false;
     backgroundReconnectRef.current = false;
@@ -5489,7 +5528,7 @@ export function useChatMessages(
       // assistant bubbles. MessageList hides empty settled bubbles instead.
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, threadId, updateTodoListCard, updateSubagentCard, inactivateAllSubagents, finalizePendingTodos]);
+  }, [workspaceId, threadId, updateTodoListCard, updateSubagentCard, finalizePendingTodos]);
 
   const handleApproveInterrupt = useCallback(() => {
     if (!pendingInterrupt) return;
@@ -5778,7 +5817,10 @@ export function useChatMessages(
     setMessageError(null);
     setFallbackSuggestion(null);
     setHasActiveSubagents(false);
-    completedTaskIdsRef.current.clear();
+    // Like the fresh-send path, do NOT clear terminalTaskOutcomesRef here: a
+    // fork/retry rewrites the turn but does not tear down the subagent-card
+    // projection, and a re-run spawns fresh task ids — stale evidence for the
+    // old ids is harmless, while wiping it could un-settle a live-closed sibling.
     wasStoppedRef.current = false;
     backgroundReconnectRef.current = false;
     acquireStreamOwnership(threadId);

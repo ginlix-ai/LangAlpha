@@ -89,6 +89,13 @@ interface ReconnectToStreamOptions {
   runId?: string | null;
   resetCursor?: boolean;
   idleAbortMs?: number;
+  /**
+   * Whether to wipe the subagent detail-card projection before reattaching.
+   * History-backed reconnects set true (they replay the run and would double
+   * cards); a report-back attach sets false (no subagent replay — a wipe would
+   * only strand a live sibling). See reconnectToStream in useChatMessages.
+   */
+  resetSubagentProjection?: boolean;
 }
 
 export interface UseReportBackWatchParams {
@@ -319,7 +326,11 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
       // idleAbortMs self-limits the catch-up: the per-run stream has no terminal
       // sentinel, so the idle watchdog ends the reader once the summary streamed
       // (or never started). See REPORT_BACK_IDLE_ABORT_MS.
-      await reconnectToStream({ activeTasks, runId, resetCursor: true, idleAbortMs: REPORT_BACK_IDLE_ABORT_MS });
+      // resetSubagentProjection:false — a report-back attach replays only the
+      // synthetic notification turn, never subagent events, so the reader's
+      // subagent-card wipe would only destroy a still-running sibling's live
+      // detail projection with nothing to rebuild it. Preserve it.
+      await reconnectToStream({ activeTasks, runId, resetCursor: true, idleAbortMs: REPORT_BACK_IDLE_ABORT_MS, resetSubagentProjection: false });
       // A zero-content stream end releases currentRunIdRef in the reader's
       // teardown — read that as "never actually rendered" and un-record the run
       // for a bounded retry.

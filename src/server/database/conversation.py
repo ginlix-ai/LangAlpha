@@ -1563,28 +1563,47 @@ async def create_response(
         raise
 
 
-async def get_sse_events(
+async def rebase_sse_events(
     conversation_response_id: str,
-) -> Optional[List[Dict[str, Any]]]:
-    """Current sse_events for a response, or None if the row is missing.
+    drop_agents: set,
+    append_events: List[Dict[str, Any]],
+    fallback_base: List[Dict[str, Any]],
+) -> bool:
+    """Replace a set of agents' rows in sse_events, atomically.
 
-    Lets a rewriting archiver rebase on the row as it exists at write time —
-    concurrent atomic appends (``append_sse_event``) land between a
-    composer's snapshot and its replacement write.
+    One transaction: the row is read under FOR UPDATE, rows whose
+    ``data.agent`` is in ``drop_agents`` are stripped, ``append_events`` are
+    appended, and the result is written before the lock releases — a
+    concurrent ``append_sse_event`` blocks on the row lock and lands on the
+    new value instead of being erased by it. ``fallback_base`` seeds the
+    blob when the row is missing (the write then updates nothing and this
+    returns False).
     """
     async with get_db_connection() as conn:
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                """
-                SELECT sse_events FROM conversation_responses
-                WHERE conversation_response_id = %s
-                """,
-                (conversation_response_id,),
+        async with conn.transaction():
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT sse_events FROM conversation_responses
+                    WHERE conversation_response_id = %s
+                    FOR UPDATE
+                    """,
+                    (conversation_response_id,),
+                )
+                row = await cur.fetchone()
+            base = (
+                (row["sse_events"] or [])
+                if row is not None
+                else list(fallback_base)
             )
-            row = await cur.fetchone()
-    if row is None:
-        return None
-    return row["sse_events"] or []
+            updated_chunks = [
+                c
+                for c in base
+                if str((c.get("data") or {}).get("agent", "")) not in drop_agents
+            ] + append_events
+            return await update_sse_events(
+                conversation_response_id, updated_chunks, conn=conn
+            )
 
 
 async def update_sse_events(

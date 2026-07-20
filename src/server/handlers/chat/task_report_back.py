@@ -89,7 +89,9 @@ async def read_task_report_back_status(thread_id: str) -> dict:
     ``None`` (unknown — the frontend keeps watching). Drained notification
     runs are derived from recently DONE outbox rows — the only recovery for
     a wake published while the client held no subscription, and durable by
-    construction (the ack that closes the job IS the ledger write).
+    construction (the ack that closes the job IS the ledger write) — plus
+    the open job's run when it is already terminal (post-finalize/pre-ack
+    window: the turn is persisted and replayable before the ack lands).
     """
     from src.server.database import hook_outbox as outbox_db
 
@@ -142,6 +144,12 @@ async def read_task_report_back_status(thread_id: str) -> dict:
         # unrendered. Degrade to unknown so the client stays armed.
         if pending is False:
             pending = None
+    # Post-finalize/pre-ack window: the dispatched run can already be terminal
+    # (turn persisted, replayable) while the job is still open — recents would
+    # otherwise be blind to it and a reloading client re-attaches the run.
+    from src.server.handlers.chat.report_back import recents_with_terminal_pointer
+
+    recent_run_ids = await recents_with_terminal_pointer(run_id, recent_run_ids)
     return {
         "thread_id": thread_id,
         "pending_report_back": pending,

@@ -25,9 +25,13 @@ logger = structlog.get_logger(__name__)
 
 # Per-call cap for the durable Redis spill on the subagent hot path. A healthy
 # pipeline acks in <10ms; this cap bounds the worst case so a degraded Redis
-# can't pace subagent execution. After one timeout/failure the per-task circuit
-# stays open for the rest of the run (see ``_spill_record_to_redis``).
-_SPILL_TIMEOUT_SECONDS = 0.5
+# can't pace subagent execution. ``asyncio.wait_for`` measures wall-clock
+# INCLUDING event-loop scheduling delay, so the cap must absorb loop stalls
+# (checkpoint serialization, large json.dumps) — 0.5s fired on a healthy Redis
+# and killed a run whose write had actually landed. On timeout the stream tail
+# is verified (landed ⇒ continue) and the write retried once before the
+# per-task circuit opens for the rest of the run (see ``_spill_record_to_redis``).
+_SPILL_TIMEOUT_SECONDS = 3.0
 
 # Bounded wait for a cancelled task's unwind before its registry entry drops
 # (normal unwind is milliseconds; see ``cancel_run_tasks``).
@@ -338,13 +342,21 @@ class BackgroundTaskRegistry:
         """
         async with self._lock:
             # A same-id re-registration (checkpoint replay re-executing the
-            # tool call) while the previous writer is still alive must not
-            # displace it — check and refusal are atomic under this lock,
-            # and the raise carries the live task for an idempotent answer.
+            # tool call) must not displace a live entry — check and refusal
+            # are atomic under this lock, and the raise carries the live
+            # task for an idempotent answer. "Live" includes a STARTING
+            # entry (not completed, no handles yet): its spawn is awaiting
+            # setup and will publish a writer; replacing it would strand
+            # that writer on an unregistered task while capture routes the
+            # tool_call_id to the replacement. A dead-writer retry re-
+            # registers freely (settle paths stamp completed).
             existing = self._tasks.get(tool_call_id)
-            if existing is not None and any(
-                t is not None and not t.done()
-                for t in (existing.asyncio_task, existing.handler_task)
+            if existing is not None and (
+                not existing.completed
+                or any(
+                    t is not None and not t.done()
+                    for t in (existing.asyncio_task, existing.handler_task)
+                )
             ):
                 raise TaskWriterLive(existing)
 
@@ -453,8 +465,36 @@ class BackgroundTaskRegistry:
                 cleared_count=len(stale_keys),
             )
 
+    async def publish_writer(
+        self, task: "BackgroundTask", factory: "Callable[[], asyncio.Task]"
+    ) -> "asyncio.Task | None":
+        """Atomically create and publish a starting task's writer handle.
+
+        The spawn path awaits setup (admission, meta, opener) between
+        registration and writer creation; a cancel landing in that window
+        stamps the handle-less task cancelled. Check-and-publish under the
+        registry lock — the same lock the cancel loops mutate under — so the
+        race has exactly two outcomes: the writer publishes and the cancel
+        signals it, or the cancel wins and no writer is ever created.
+        Returns None when the cancel won (entry stamped or already dropped).
+        The identity check pins the caller's OWN task object: a cancel that
+        removed the entry followed by a re-registration under the same
+        tool_call_id must not receive the aborted spawn's writer.
+        """
+        async with self._lock:
+            if (
+                self._tasks.get(task.tool_call_id) is not task
+                or task.cancelled
+                or task.completed
+                or task.asyncio_task is not None
+            ):
+                return None
+            asyncio_task = factory()
+            task.asyncio_task = asyncio_task
+            return asyncio_task
+
     async def append_captured_event(
-        self, tool_call_id: str, event: dict[str, Any]
+        self, tool_call_id: str, event: dict[str, Any], *, terminal: bool = False
     ) -> None:
         """Append a captured SSE event to a background task.
 
@@ -462,16 +502,41 @@ class BackgroundTaskRegistry:
         events for per-task SSE replay and post-interrupt persistence. The
         record is best-effort spilled to the per-task Redis Stream; failure
         leaves the seq counter advanced but flips ``redis_write_failed``.
+        An unresolvable tool_call_id drops the append — an evicted task's
+        retired streams must not be recreated by a late writer.
         """
         async with self._lock:
             task = self._tasks.get(tool_call_id)
-            if not task:
-                return
+        if not task:
+            return
+        await self.append_event_for_task(task, event, terminal=terminal)
+
+    async def append_event_for_task(
+        self,
+        task: "BackgroundTask",
+        event: dict[str, Any],
+        *,
+        terminal: bool = False,
+    ) -> None:
+        """Identity-exact append for the terminal settle pipeline.
+
+        The settle paths hold THEIR task object, whose registry entry may
+        already be evicted (cancel teardown) or whose tool_call_id may be
+        reused by a re-registration — resolving by id would drop the frames
+        or write them into the replacement task's streams (stream keys are
+        task_id-scoped, so operating on the object always reaches its own).
+        Retired-stream recreation is safe here: the settle stamps terminal
+        retention on these keys right after.
+        """
+        async with self._lock:
             # A killed task's streams are final: the stop drain reads the
             # high-water after the kill, so a writer surviving the bounded
             # unwind must not append past it — output beyond the snapshot
             # would be visible live yet absent from every durable store.
-            if task.cancelled:
+            # ``terminal`` exempts unwind bookkeeping (steering_returned):
+            # those frames run inside the bounded unwind the drain awaits,
+            # and dropping them would erase acknowledged user input.
+            if task.cancelled and not terminal:
                 return
 
             task.captured_event_seq += 1
@@ -511,6 +576,30 @@ class BackgroundTaskRegistry:
         # Spill OUTSIDE the lock — Redis I/O must not block subsequent appends.
         await self._spill_record_to_redis(task, record)
 
+    @staticmethod
+    async def _stream_tail_seq(cache: Any, stream_key: str, field: bytes) -> int | None:
+        """Seq of the newest entry in a spill stream, or None.
+
+        ``wait_for`` cancels the awaiting coroutine on timeout, but the
+        command may already be on the wire — the tail decides landed
+        (continue) vs lost (retry, then circuit).
+        """
+        try:
+            entries = await asyncio.wait_for(
+                cache.client.xrevrange(stream_key, count=1),
+                timeout=_SPILL_TIMEOUT_SECONDS,
+            )
+            if not entries:
+                return None
+            raw = (entries[0][1] or {}).get(field)
+            if raw is None:
+                return None
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode("utf-8")
+            return int(json.loads(raw)["seq"])
+        except Exception:
+            return None
+
     async def _spill_record_to_redis(
         self, task: BackgroundTask, record: dict[str, Any]
     ) -> None:
@@ -519,8 +608,10 @@ class BackgroundTaskRegistry:
         Writes a single XADD entry with two fields: ``b"event"`` (pre-rendered
         SSE wire string, consumed live by SSE clients) and ``b"record"``
         (JSON record, consumed post-turn by ``iter_subagent_events_full``
-        via XRANGE). Failure flips ``task.redis_write_failed`` (sticky
-        circuit-break) and is silently logged — never raised. Returns
+        via XRANGE). A timed-out write is verified against the stream tail
+        (landed ⇒ continue) and retried once; only then does failure flip
+        ``task.redis_write_failed`` (sticky circuit-break), silently logged —
+        never raised. Returns
         silently when the circuit-break is set, the registry has no
         thread_id (test fixtures), the spill flag is off, or the cache
         client is unavailable.
@@ -628,18 +719,52 @@ class BackgroundTaskRegistry:
                 # stamped at terminal by ``stamp_terminal_retention``), and
                 # MAXLEN is a 2x backstop: the quota check below opens the
                 # circuit before FIFO trim could touch the head.
-                success, seq_count = await asyncio.wait_for(
-                    cache.pipelined_event_buffer(
-                        meta_key=meta_key,
-                        max_size=quota * 2,
-                        ttl=None,
-                        last_event_id=record.get("seq"),
-                        stream_key=stream_key,
-                        stream_event=stream_payload,
-                        stream_record=payload,
-                    ),
-                    timeout=_SPILL_TIMEOUT_SECONDS,
-                )
+                success = False
+                seq_count: int | None = None
+                for attempt in (1, 2):
+                    try:
+                        success, seq_count = await asyncio.wait_for(
+                            cache.pipelined_event_buffer(
+                                meta_key=meta_key,
+                                max_size=quota * 2,
+                                ttl=None,
+                                last_event_id=record.get("seq"),
+                                stream_key=stream_key,
+                                stream_event=stream_payload,
+                                stream_record=payload,
+                            ),
+                            timeout=_SPILL_TIMEOUT_SECONDS,
+                        )
+                        break
+                    except asyncio.TimeoutError:
+                        # The cancelled pipeline may already have executed
+                        # server-side; a landed write must not tear the run.
+                        # seq_count=None skips this record's quota check —
+                        # the next spill re-evaluates it.
+                        if (
+                            await self._stream_tail_seq(cache, stream_key, b"record")
+                            == seq
+                        ):
+                            success, seq_count = True, None
+                            logger.info(
+                                "subagent_event_spill_recovered",
+                                phase="v1_timeout_landed",
+                                tool_call_id=task.tool_call_id,
+                                task_id=task.task_id,
+                                seq=seq,
+                            )
+                            break
+                        if attempt == 1:
+                            logger.warning(
+                                "subagent_event_spill_retry",
+                                phase="v1_timeout",
+                                tool_call_id=task.tool_call_id,
+                                task_id=task.task_id,
+                                seq=seq,
+                                timeout_seconds=_SPILL_TIMEOUT_SECONDS,
+                            )
+                            continue
+                        raise
                 # v2 dual-write (STREAM_CONTRACT_V2.md): the immutable
                 # per-run stream, keyed by ledger identity. Same lock hold so
                 # per-run frame order matches append order; seq is the XADD
@@ -649,34 +774,68 @@ class BackgroundTaskRegistry:
                 # ever being served a stream with a silent gap.
                 if success and task.task_run_id:
                     v2_key = f"subagent:stream:{self.thread_id}:{task.task_run_id}"
-                    try:
-                        # No per-write TTL: the immutable per-run stream is
-                        # active until terminal, when stamp_terminal_retention
-                        # applies the attach-grace TTL.
-                        await asyncio.wait_for(
-                            cache.client.xadd(
-                                v2_key,
-                                {
-                                    b"run_id": task.task_run_id.encode(),
-                                    b"lane": f"task:{task.task_id}".encode(),
-                                    b"type": (
-                                        record.get("event") or "message_chunk"
-                                    ).encode(),
-                                    b"payload": payload.encode("utf-8"),
-                                },
-                            ),
-                            timeout=_SPILL_TIMEOUT_SECONDS,
-                        )
-                    except Exception:
-                        task.redis_write_failed = True
-                        logger.warning(
-                            "subagent_event_spill_failed",
-                            phase="v2_pipeline",
-                            tool_call_id=task.tool_call_id,
-                            task_id=task.task_id,
-                            task_run_id=task.task_run_id,
-                            seq=record.get("seq"),
-                        )
+                    # No per-write TTL: the immutable per-run stream is
+                    # active until terminal, when stamp_terminal_retention
+                    # applies the attach-grace TTL.
+                    v2_fields = {
+                        b"run_id": task.task_run_id.encode(),
+                        b"lane": f"task:{task.task_id}".encode(),
+                        b"type": (record.get("event") or "message_chunk").encode(),
+                        b"payload": payload.encode("utf-8"),
+                    }
+                    for attempt in (1, 2):
+                        try:
+                            await asyncio.wait_for(
+                                cache.client.xadd(v2_key, v2_fields),
+                                timeout=_SPILL_TIMEOUT_SECONDS,
+                            )
+                            break
+                        except asyncio.TimeoutError:
+                            if (
+                                await self._stream_tail_seq(cache, v2_key, b"payload")
+                                == seq
+                            ):
+                                logger.info(
+                                    "subagent_event_spill_recovered",
+                                    phase="v2_timeout_landed",
+                                    tool_call_id=task.tool_call_id,
+                                    task_id=task.task_id,
+                                    task_run_id=task.task_run_id,
+                                    seq=seq,
+                                )
+                                break
+                            if attempt == 1:
+                                logger.warning(
+                                    "subagent_event_spill_retry",
+                                    phase="v2_timeout",
+                                    tool_call_id=task.tool_call_id,
+                                    task_id=task.task_id,
+                                    task_run_id=task.task_run_id,
+                                    seq=seq,
+                                    timeout_seconds=_SPILL_TIMEOUT_SECONDS,
+                                )
+                                continue
+                            task.redis_write_failed = True
+                            logger.warning(
+                                "subagent_event_spill_failed",
+                                phase="v2_pipeline",
+                                tool_call_id=task.tool_call_id,
+                                task_id=task.task_id,
+                                task_run_id=task.task_run_id,
+                                seq=record.get("seq"),
+                            )
+                            break
+                        except Exception:
+                            task.redis_write_failed = True
+                            logger.warning(
+                                "subagent_event_spill_failed",
+                                phase="v2_pipeline",
+                                tool_call_id=task.tool_call_id,
+                                task_id=task.task_id,
+                                task_run_id=task.task_run_id,
+                                seq=record.get("seq"),
+                            )
+                            break
             if not success:
                 task.redis_write_failed = True
                 logger.warning(
@@ -811,13 +970,17 @@ class BackgroundTaskRegistry:
         ``terminal_check`` still closes the stream once the asyncio task
         finishes (just slower).
         """
-        if not self.thread_id:
-            return
-
         async with self._lock:
             task = self._tasks.get(tool_call_id)
-            if not task:
-                return
+        if not task:
+            return
+        await self.append_sentinel_for_task(task)
+
+    async def append_sentinel_for_task(self, task: "BackgroundTask") -> None:
+        """Identity-exact sentinel — see ``append_event_for_task`` for why
+        the settle pipeline must not re-resolve by reusable tool_call_id."""
+        if not self.thread_id:
+            return
 
         if task.redis_write_failed:
             return
@@ -882,7 +1045,7 @@ class BackgroundTaskRegistry:
         except Exception as exc:
             logger.debug(
                 "subagent_stream_end_sentinel_failed",
-                tool_call_id=tool_call_id,
+                tool_call_id=task.tool_call_id,
                 task_id=task.task_id,
                 error=str(exc),
             )
@@ -896,12 +1059,19 @@ class BackgroundTaskRegistry:
         the sentinel — because a torn stream must still expire, not leak.
         Idempotent and best-effort.
         """
-        if not self.thread_id:
-            return
         async with self._lock:
             task = self._tasks.get(tool_call_id)
-            if not task:
-                return
+        if not task:
+            return
+        await self.stamp_terminal_retention_for_task(task)
+
+    async def stamp_terminal_retention_for_task(
+        self, task: "BackgroundTask"
+    ) -> None:
+        """Identity-exact retention stamp — see ``append_event_for_task``
+        for why the settle pipeline must not re-resolve by tool_call_id."""
+        if not self.thread_id:
+            return
         try:
             from src.config.settings import get_redis_ttl_workflow_events
             from src.utils.cache.redis_cache import get_cache_client
@@ -925,7 +1095,7 @@ class BackgroundTaskRegistry:
         except Exception as exc:
             logger.debug(
                 "subagent_terminal_ttl_stamp_failed",
-                tool_call_id=tool_call_id,
+                tool_call_id=task.tool_call_id,
                 error=str(exc),
             )
 
@@ -1210,11 +1380,15 @@ class BackgroundTaskRegistry:
             )
 
     def _cancellable(self, task: "BackgroundTask") -> bool:
-        return (
-            task.asyncio_task is not None
-            and not task.completed
-            and not task.asyncio_task.done()
-        )
+        """Not-completed with a live writer OR no writer handle at all — the
+        latter is a STARTING task (registered, spawn awaits in flight):
+        stamping it seals its capture and the publish fence aborts the
+        pending writer. A done handle on a not-completed task is a finished
+        writer whose done-callback hasn't settled it yet — leave that to
+        settle as what it actually was."""
+        if task.completed:
+            return False
+        return task.asyncio_task is None or not task.asyncio_task.done()
 
     async def cancel_all(self, *, force: bool = False) -> int:
         """Cancel all pending background tasks; returns the count cancelled."""
@@ -1224,22 +1398,24 @@ class BackgroundTaskRegistry:
         cancelled = 0
         async with self._lock:
             for task in self._tasks.values():
-                if task.asyncio_task is None:
+                if not self._cancellable(task):
                     continue
-                if not task.completed and not task.asyncio_task.done():
+                if task.asyncio_task is not None:
                     if force and task.handler_task and not task.handler_task.done():
                         task.handler_task.cancel()
                     task.asyncio_task.cancel()
-                    task.completed = True
-                    task.cancelled = True
-                    task.error = "Cancelled"
-                    task.last_updated_at = time.time()
-                    task.result = {
-                        "success": False,
-                        "error": "Cancelled",
-                        "status": "cancelled",
-                    }
-                    cancelled += 1
+                # else: STARTING task — no writer yet; the stamp seals the
+                # capture and the publish fence aborts the pending spawn.
+                task.completed = True
+                task.cancelled = True
+                task.error = "Cancelled"
+                task.last_updated_at = time.time()
+                task.result = {
+                    "success": False,
+                    "error": "Cancelled",
+                    "status": "cancelled",
+                }
+                cancelled += 1
 
         if cancelled > 0:
             logger.info("Cancelled background tasks", count=cancelled, force=force)
@@ -1269,24 +1445,29 @@ class BackgroundTaskRegistry:
                 if task.spawned_run_id != run_id:
                     continue
                 scoped.append(tool_call_id)
-                if (
-                    task.asyncio_task is not None
-                    and not task.completed
-                    and not task.asyncio_task.done()
-                ):
+                if not self._cancellable(task):
+                    continue
+                if task.asyncio_task is not None:
                     if force and task.handler_task and not task.handler_task.done():
                         task.handler_task.cancel()
                     task.asyncio_task.cancel()
-                    task.completed = True
-                    task.cancelled = True
-                    task.error = "Cancelled"
-                    task.last_updated_at = time.time()
-                    task.result = {
-                        "success": False,
-                        "error": "Cancelled",
-                        "status": "cancelled",
-                    }
-                    cancelled += 1
+                # else: STARTING task — registered but its spawn is still
+                # awaiting setup (admission/meta/opener). There is no writer
+                # to cancel, but the stamp seals its capture and the publish
+                # fence (``publish_writer``) turns the pending spawn into an
+                # abort. Without this the task would be classified
+                # writer-less, dropped, and its later-spawned writer would
+                # run to completion with every append silently discarded.
+                task.completed = True
+                task.cancelled = True
+                task.error = "Cancelled"
+                task.last_updated_at = time.time()
+                task.result = {
+                    "success": False,
+                    "error": "Cancelled",
+                    "status": "cancelled",
+                }
+                cancelled += 1
             # Snapshot the writers before dropping entries: a cancelled task
             # keeps unwinding (checkpoint writes in cleanup sections) after
             # cancel() returns, and the writer-guard tail drain discovers

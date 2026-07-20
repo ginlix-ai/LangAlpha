@@ -1087,6 +1087,22 @@ export async function sendSubagentMessage(threadId: string, taskId: string, cont
 }
 
 /**
+ * Durable terminal state of a single subagent task from the run ledger.
+ * Used to hydrate a stale detail view (a settled task whose live stream
+ * drained while the tab was backgrounded) without a full thread reload.
+ * @returns { task_id, status, error } — status/error null when no ledgered run.
+ */
+export async function getSubagentTaskStatus(
+  threadId: string,
+  taskId: string,
+): Promise<{ task_id: string; status: string | null; error: string | null }> {
+  const { data } = await api.get(
+    `/api/v1/threads/${threadId}/tasks/${taskId}/status`,
+  );
+  return data;
+}
+
+/**
  * List files in a workspace sandbox
  * @param {string} workspaceId
  * @param {string} dirPath - e.g. "results"

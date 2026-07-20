@@ -65,7 +65,16 @@ current_background_token_tracker: contextvars.ContextVar[PerCallTokenTracker | N
 logger = structlog.get_logger(__name__)
 
 
-def _make_task_done_callback(task: BackgroundTask) -> Callable[[asyncio.Task], None]:
+# Strong refs for the fire-and-forget pre-start finalizations below —
+# asyncio holds tasks weakly, and losing one mid-cleanup would leak the
+# ledger row / namespace fence it exists to settle.
+_pre_start_finalizations: set[asyncio.Task] = set()
+
+
+def _make_task_done_callback(
+    task: BackgroundTask,
+    middleware: "BackgroundSubagentMiddleware | None" = None,
+) -> Callable[[asyncio.Task], None]:
     """Build a done_callback that bumps ``last_updated_at`` when the asyncio.Task finishes.
 
     Covers all completion paths (success, failure, cancellation) without
@@ -74,6 +83,22 @@ def _make_task_done_callback(task: BackgroundTask) -> Callable[[asyncio.Task], N
 
     def _on_task_done(_t: asyncio.Task) -> None:
         task.last_updated_at = time.time()
+        # A writer cancelled before its coroutine's first tick never entered
+        # _run_background_task, so the settle finally (ledger CAS, terminal
+        # meta, fence release) never ran. ``handler_task`` is assigned before
+        # the coroutine's first await, so None here is a precise
+        # never-started marker — finalize the run as cancelled-before-spawn.
+        if (
+            middleware is None
+            or not _t.cancelled()
+            or task.handler_task is not None
+        ):
+            return
+        cleanup = asyncio.get_running_loop().create_task(
+            middleware._finalize_cancelled_before_spawn(task)
+        )
+        _pre_start_finalizations.add(cleanup)
+        cleanup.add_done_callback(_pre_start_finalizations.discard)
 
     return _on_task_done
 
@@ -140,12 +165,19 @@ async def _return_unconsumed_steering(
         if not raw_messages:
             return
         ts = time.time()
+        seq_before = task.captured_event_seq
+        appended = 0
         for raw in raw_messages:
             payload = parse_steering_payload(raw)
             if payload is None:
                 continue
-            await registry.append_captured_event(
-                task.tool_call_id,
+            appended += 1
+            # Identity-exact append: this settle may run after cancel
+            # teardown evicted the entry (or its tool_call_id was reused
+            # by a re-registration) — resolving by id would drop the frame
+            # or write it into the replacement task's streams.
+            await registry.append_event_for_task(
+                task,
                 {
                     "event": "steering_returned",
                     "data": {
@@ -156,9 +188,27 @@ async def _return_unconsumed_steering(
                     },
                     "ts": ts,
                 },
+                # A kill seals the task's streams; the returned-input record
+                # is unwind bookkeeping that must land regardless — without
+                # it the accepted instruction is neither delivered nor
+                # returned anywhere durable, and the queue delete below
+                # erases the last copy.
+                terminal=True,
             )
         if task.redis_write_failed:
             return  # a spill tore mid-sweep — keep the queue for the record
+        if task.captured_event_seq - seq_before < appended:
+            # Landed-check: identity-exact appends only skip on the
+            # cancelled/terminal guard, so a seq lag means the frames did
+            # NOT reach the archive — keep the queue as the TTL record
+            # rather than erase acknowledged input nothing surfaced.
+            logger.warning(
+                "unconsumed-steering sweep withheld; appends did not land",
+                task_id=task.task_id,
+                task_run_id=task.task_run_id,
+                pending=appended,
+            )
+            return
         await cache.client.delete(key)
         logger.info(
             "returned unconsumed steering input",
@@ -315,132 +365,159 @@ async def _run_background_task(
         # that case keep the fence (the guard's teardown unlock_all reclaims
         # it) and leave the meta "running" until its TTL — never unfence a
         # possibly-live writer.
-        # Terminal meta is written BEFORE the namespace releases: every meta
-        # write happens while holding N(task:id), so a successor (who can
-        # only acquire after the release) always writes "running" after this
-        # writer's terminal state — never under it.
         if handler_task.done():
-            # Ledger CAS first (durable truth), still under N(task:id) so
-            # finalize-vs-successor ordering matches the meta's guarantee. A
-            # failed CAS is left to orphan recovery — the row stays
-            # in_progress and the released guard makes it provably dead.
-            run_ledger = getattr(registry, "run_ledger", None) if registry else None
-            # Local view of the outcome — superseded by the CAS-returned row
-            # status below: the DB overrides a settle to 'cancelled' when a
-            # durable cancel intent raced it, and a lost CAS returns the
-            # survivor. Meta must mirror the row, not the local request.
-            terminal_status = (
-                "cancelled"
-                if task.cancelled
-                else ("completed" if ledger_status == "completed" else "error")
+            await _settle_terminal_run(
+                task,
+                ledger_status=ledger_status,
+                ledger_failure=ledger_failure,
+                registry=registry,
+                namespace_owner=namespace_owner,
             )
-            run_finalized = False
-            # False only when this coroutine provably lost the terminal CAS
-            # to a recovery finalizer (whose run_end is already appended).
-            # A finalize *exception* keeps it True: the row is still open,
-            # this writer still owns the stream, and recovery will append
-            # run_end after whatever it writes.
-            cas_applied = True
-            if run_ledger is not None and task.task_run_id:
-                try:
-                    finalized = await run_ledger.finalize_task_run(
-                        task.task_run_id,
-                        "cancelled" if task.cancelled else ledger_status,
-                        task_id=task.task_id,
-                        # A user cancel is not a failure — don't let the
-                        # unwind path's default failure text ride the row.
-                        failure=None if task.cancelled else ledger_failure,
-                        # run_end is appended below, AFTER the steering
-                        # sweep — its steering_returned frames must precede
-                        # the terminal frame, and nothing may follow it.
-                        defer_run_end=True,
-                    )
-                    run_finalized = True
-                    cas_applied = bool(finalized.get("applied"))
-                    row_status = (finalized.get("run") or {}).get("status")
-                    if row_status:
-                        terminal_status = str(row_status)
-                except Exception:
-                    logger.warning(
-                        "task-run ledger finalize failed",
-                        task_id=task.task_id,
-                        task_run_id=task.task_run_id,
-                        exc_info=True,
-                    )
-            if registry is not None:
-                try:
-                    await registry.write_task_meta(task, terminal_status)
-                except Exception:
-                    logger.warning(
-                        "terminal task-meta write failed",
-                        task_id=task.task_id,
-                        exc_info=True,
-                    )
-            # Accepted-but-unconsumed steering must not outlive its run: the
-            # sender was told "success", and the run-scoped queue would
-            # otherwise sit in Redis until TTL. Sweep it into
-            # steering_returned events (after the terminal meta, so producers
-            # that re-check status can no longer enqueue behind the sweep).
-            # A lost CAS skips the sweep: the recovery winner's run_end is
-            # already on the stream, and frames appended after it are never
-            # read — worse, they'd bait append_run_end's tail check into a
-            # second terminal frame. That steering TTLs out with the queue.
-            if task.task_run_id and cas_applied:
-                await _return_unconsumed_steering(registry, task)
-            # The cursor-bearing run_end closes the v2 run stream — only
-            # after a durable CAS won by THIS writer (a lost CAS means the
-            # recovery finalizer already appended it; a still-open row must
-            # stay probe-visible) and only on a healthy transport: a torn
-            # stream resolves via the ledger backstop + replay, never reads
-            # as complete.
-            if run_finalized and cas_applied and not task.redis_write_failed:
-                try:
-                    await run_ledger.append_run_end(
-                        task.task_run_id,
-                        task_id=task.task_id,
-                        outcome=terminal_status,
-                    )
-                except Exception:
-                    logger.warning(
-                        "subagent_run_end_append_failed",
-                        task_id=task.task_id,
-                        task_run_id=task.task_run_id,
-                        exc_info=True,
-                    )
-            # Seal the per-task stream LAST. Content spills XADD with
-            # explicit ``{seq}-0`` ids and Redis rejects ids behind the
-            # sentinel's auto-generated (timestamp) id — a sentinel written
-            # at astream-loop exit would make the sweep's steering_returned
-            # spill fail and trip the write circuit-breaker.
-            if registry is not None:
-                try:
-                    await registry.append_sentinel_to_stream(task.tool_call_id)
-                except Exception:
-                    logger.warning(
-                        "subagent_sentinel_write_failed",
-                        task_id=task.task_id,
-                        exc_info=True,
-                    )
-                # Attach-grace TTL starts at terminal (active streams carry
-                # none) — stamped even when redis_write_failed skipped the
-                # sentinel, so a torn stream expires instead of leaking.
-                try:
-                    await registry.stamp_terminal_retention(task.tool_call_id)
-                except Exception:
-                    logger.warning(
-                        "subagent_terminal_ttl_stamp_failed",
-                        task_id=task.task_id,
-                        exc_info=True,
-                    )
-            if namespace_owner is not None:
-                try:
-                    await namespace_owner.release_task_ns(task.task_id)
-                except Exception:
-                    logger.warning(
-                        "task-ns release failed",
-                        task_id=task.task_id,
-                        exc_info=True,
-                    )
+
+
+async def _settle_terminal_run(
+    task: BackgroundTask,
+    *,
+    ledger_status: str,
+    ledger_failure: dict[str, Any] | None,
+    registry: "BackgroundTaskRegistry | None",
+    namespace_owner: Any | None,
+) -> None:
+    """Owner-side terminal pipeline — the one way an admitted run settles.
+
+    Shared by the settling writer and the cancelled-before-spawn paths
+    (publish-fence refusal, writer cancelled before its first tick) so every
+    terminal honors the stream contract: ledger CAS (deferred run_end) →
+    terminal meta → steering sweep → conditional run_end → stream sentinel +
+    retention → fence release. Terminal meta is written BEFORE the namespace
+    releases: every meta write happens while holding N(task:id), so a
+    successor (who can only acquire after the release) always writes
+    "running" after this writer's terminal state — never under it.
+    """
+    # Ledger CAS first (durable truth), still under N(task:id) so
+    # finalize-vs-successor ordering matches the meta's guarantee. A
+    # failed CAS is left to orphan recovery — the row stays
+    # in_progress and the released guard makes it provably dead.
+    run_ledger = getattr(registry, "run_ledger", None) if registry else None
+    # Local view of the outcome — superseded by the CAS-returned row
+    # status below: the DB overrides a settle to 'cancelled' when a
+    # durable cancel intent raced it, and a lost CAS returns the
+    # survivor. Meta must mirror the row, not the local request.
+    terminal_status = (
+        "cancelled"
+        if task.cancelled
+        else ("completed" if ledger_status == "completed" else "error")
+    )
+    run_finalized = False
+    # False only when this coroutine provably lost the terminal CAS
+    # to a recovery finalizer (whose run_end is already appended).
+    # A finalize *exception* keeps it True: the row is still open,
+    # this writer still owns the stream, and recovery will append
+    # run_end after whatever it writes.
+    cas_applied = True
+    if run_ledger is not None and task.task_run_id:
+        try:
+            finalized = await run_ledger.finalize_task_run(
+                task.task_run_id,
+                "cancelled" if task.cancelled else ledger_status,
+                task_id=task.task_id,
+                # A user cancel is not a failure — don't let the
+                # unwind path's default failure text ride the row.
+                failure=None if task.cancelled else ledger_failure,
+                # run_end is appended below, AFTER the steering
+                # sweep — its steering_returned frames must precede
+                # the terminal frame, and nothing may follow it.
+                defer_run_end=True,
+            )
+            run_finalized = True
+            cas_applied = bool(finalized.get("applied"))
+            row_status = (finalized.get("run") or {}).get("status")
+            if row_status:
+                terminal_status = str(row_status)
+        except Exception:
+            logger.warning(
+                "task-run ledger finalize failed",
+                task_id=task.task_id,
+                task_run_id=task.task_run_id,
+                exc_info=True,
+            )
+    if registry is not None:
+        try:
+            await registry.write_task_meta(task, terminal_status)
+        except Exception:
+            logger.warning(
+                "terminal task-meta write failed",
+                task_id=task.task_id,
+                exc_info=True,
+            )
+    # Accepted-but-unconsumed steering must not outlive its run: the
+    # sender was told "success", and the run-scoped queue would
+    # otherwise sit in Redis until TTL. Sweep it into
+    # steering_returned events (after the terminal meta, so producers
+    # that re-check status can no longer enqueue behind the sweep).
+    # A lost CAS skips the sweep: the recovery winner's run_end is
+    # already on the stream, and frames appended after it are never
+    # read — worse, they'd bait append_run_end's tail check into a
+    # second terminal frame. That steering TTLs out with the queue.
+    if task.task_run_id and cas_applied:
+        await _return_unconsumed_steering(registry, task)
+    # The cursor-bearing run_end closes the v2 run stream — only
+    # after a durable CAS won by THIS writer (a lost CAS means the
+    # recovery finalizer already appended it; a still-open row must
+    # stay probe-visible) and only on a healthy transport: a torn
+    # stream resolves via the ledger backstop + replay, never reads
+    # as complete.
+    if run_finalized and cas_applied and not task.redis_write_failed:
+        try:
+            await run_ledger.append_run_end(
+                task.task_run_id,
+                task_id=task.task_id,
+                outcome=terminal_status,
+            )
+        except Exception:
+            logger.warning(
+                "subagent_run_end_append_failed",
+                task_id=task.task_id,
+                task_run_id=task.task_run_id,
+                exc_info=True,
+            )
+    # Seal the per-task stream LAST. Content spills XADD with
+    # explicit ``{seq}-0`` ids and Redis rejects ids behind the
+    # sentinel's auto-generated (timestamp) id — a sentinel written
+    # at astream-loop exit would make the sweep's steering_returned
+    # spill fail and trip the write circuit-breaker.
+    if registry is not None:
+        # Identity-exact stream ops: this settle may outlive the task's
+        # registry entry (cancel teardown eviction, tool_call_id reuse) —
+        # id-resolving variants would no-op or hit the replacement task.
+        try:
+            await registry.append_sentinel_for_task(task)
+        except Exception:
+            logger.warning(
+                "subagent_sentinel_write_failed",
+                task_id=task.task_id,
+                exc_info=True,
+            )
+        # Attach-grace TTL starts at terminal (active streams carry
+        # none) — stamped even when redis_write_failed skipped the
+        # sentinel, so a torn stream expires instead of leaking.
+        try:
+            await registry.stamp_terminal_retention_for_task(task)
+        except Exception:
+            logger.warning(
+                "subagent_terminal_ttl_stamp_failed",
+                task_id=task.task_id,
+                exc_info=True,
+            )
+    if namespace_owner is not None:
+        try:
+            await namespace_owner.release_task_ns(task.task_id)
+        except Exception:
+            logger.warning(
+                "task-ns release failed",
+                task_id=task.task_id,
+                exc_info=True,
+            )
 
 
 class BackgroundSubagentMiddleware(AgentMiddleware):
@@ -693,6 +770,21 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 )
         await self._release_task_ns(task.task_id)
 
+    async def _finalize_cancelled_before_spawn(self, task: BackgroundTask) -> None:
+        """A stop won the publish race: the admitted run never spawned (or
+        its writer was cancelled before its first tick). Settle through the
+        same owner terminal pipeline as a real writer — an abbreviated
+        finalize would skip the steering sweep (acknowledged input lost
+        before run_end), append run_end onto a torn stream, and leave the
+        opener's stream without its sentinel/retention stamp."""
+        await _settle_terminal_run(
+            task,
+            ledger_status="cancelled",
+            ledger_failure=None,
+            registry=self.registry,
+            namespace_owner=self.namespace_owner,
+        )
+
     async def _append_run_opener(self, task: BackgroundTask, prompt: str) -> None:
         """First stream entry of a run's epoch: the instruction that launched
         it (spawn and resume alike) — the live counterpart of the checkpointed
@@ -733,6 +825,16 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         """
         await self.registry.reclaim_for_resume(task)
         task.completed = False
+        # Unseal: append_captured_event drops appends while ``cancelled`` is
+        # set (killed streams are final) — the resumed round is a fresh
+        # writer and must not inherit the seal.
+        task.cancelled = False
+        # Drop the prior round's settled handles: until the publish fence
+        # installs the new writer this is a STARTING task, and a stale done
+        # handle would make the cancel paths misread it as a finished writer
+        # awaiting its done-callback (unstampable) instead.
+        task.asyncio_task = None
+        task.handler_task = None
         task.result = None
         task.result_seen = False
         task.error = None
@@ -1221,14 +1323,17 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                         task, "running", fenced=self.namespace_owner is not None
                     )
                     await self._append_run_opener(task, prompt)
-                    asyncio_task = create_task_with_context(
-                        _run_background_task(
-                            task, handler, request, subagent_token_tracker,
-                            "Resumed background subagent",
-                            registry=self.registry,
-                            namespace_owner=self.namespace_owner,
+                    asyncio_task = await self.registry.publish_writer(
+                        task,
+                        lambda: create_task_with_context(
+                            _run_background_task(
+                                task, handler, request, subagent_token_tracker,
+                                "Resumed background subagent",
+                                registry=self.registry,
+                                namespace_owner=self.namespace_owner,
+                            ),
+                            name=f"background_subagent_resume_{task.display_id}",
                         ),
-                        name=f"background_subagent_resume_{task.display_id}",
                     )
                 except Exception as e:
                     # An admitted run either spawns or terminates — never a
@@ -1246,8 +1351,19 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                         tool_call_id=tool_call_id,
                         name="Task",
                     )
-                task.asyncio_task = asyncio_task
-                asyncio_task.add_done_callback(_make_task_done_callback(task))
+                if asyncio_task is None:
+                    # A stop stamped the reset (handle-less) task during a
+                    # setup await — the publish fence refused the writer.
+                    await self._finalize_cancelled_before_spawn(task)
+                    return ToolMessage(
+                        content=(
+                            f"Background subagent {task.display_id} was "
+                            f"stopped before the resume started."
+                        ),
+                        tool_call_id=tool_call_id,
+                        name="Task",
+                    )
+                asyncio_task.add_done_callback(_make_task_done_callback(task, self))
             finally:
                 # Safe to drop once the writer is spawned (locally_live now
                 # gates), and must drop on refusal/error so a later resume
@@ -1398,14 +1514,17 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                     task, "running", fenced=self.namespace_owner is not None
                 )
                 await self._append_run_opener(task, prompt)
-                asyncio_task = create_task_with_context(
-                    _run_background_task(
-                        task, handler, request, subagent_token_tracker,
-                        "Background subagent",
-                        registry=self.registry,
-                        namespace_owner=self.namespace_owner,
+                asyncio_task = await self.registry.publish_writer(
+                    task,
+                    lambda: create_task_with_context(
+                        _run_background_task(
+                            task, handler, request, subagent_token_tracker,
+                            "Background subagent",
+                            registry=self.registry,
+                            namespace_owner=self.namespace_owner,
+                        ),
+                        name=f"background_subagent_{task.display_id}",
                     ),
-                    name=f"background_subagent_{task.display_id}",
                 )
             except Exception as e:
                 # An admitted run either spawns or terminates — never a
@@ -1424,9 +1543,20 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                     name="Task",
                 )
 
-            # Update the task with the asyncio task reference
-            task.asyncio_task = asyncio_task
-            asyncio_task.add_done_callback(_make_task_done_callback(task))
+            if asyncio_task is None:
+                # A stop stamped the starting task during a setup await —
+                # the publish fence refused the writer, so the run ends
+                # here, admitted-but-never-spawned.
+                await self._finalize_cancelled_before_spawn(task)
+                return ToolMessage(
+                    content=(
+                        f"Background subagent {task.display_id} was stopped "
+                        f"before it started."
+                    ),
+                    tool_call_id=tool_call_id,
+                    name="Task",
+                )
+            asyncio_task.add_done_callback(_make_task_done_callback(task, self))
 
             # Return immediate pseudo-result with Task-N format
             short_description = _truncate_description(description, max_sentences=2)

@@ -975,18 +975,46 @@ class BackgroundTaskManager:
         """
         merged: list[dict] = []
         for task in tasks:
-            if getattr(task, "captured_event_count", 0) <= 0:
+            expected = getattr(task, "captured_event_count", 0)
+            if expected <= 0:
+                continue
+            # A writer still unwinding can append past this drain's snapshot:
+            # the terminal steering sweep runs in the writer's teardown and
+            # is exempt from the seal, so only a settled writer guarantees
+            # the count is final. Withhold the task otherwise — its stream
+            # keeps the terminal-retention TTL and the lane rebuilds per
+            # read; the guard drain is the backstop for a writer that never
+            # dies.
+            if any(
+                w is not None and not w.done()
+                for w in (
+                    getattr(task, "asyncio_task", None),
+                    getattr(task, "handler_task", None),
+                )
+            ):
+                logger.warning(
+                    f"[StopTeardown] Writers still unwinding for task "
+                    f"{getattr(task, 'task_id', '?')}; withholding snapshot"
+                )
                 continue
             # Track reasoning blocks left open at the kill point so we can close
             # them, mirroring the main agent's finalize_stopped_events. Keyed by
             # the subagent's own (agent, message id) so the synthetic close
             # matches the unpaired start exactly.
             open_reasoning: dict[tuple[str, str], None] = {}
-            recovered = 0
+            task_events: list[dict] = []
+            run_id = getattr(task, "spawned_run_id", None)
+            # Same epoch rule as the collector: a run-stamped task's records
+            # are always stamped, so unstamped ones are a foreign pre-stamp
+            # writer's — never this round's.
+            allowed = (run_id,) if run_id else (None,)
+            eligible = 0
             async for record in iter_subagent_events_full(thread_id, task):
-                recovered += 1
+                if record.get("run") not in allowed:
+                    continue  # another round's record (cross-worker resume)
+                eligible += 1
                 enriched = _record_to_persist_event(record, thread_id)
-                merged.append(enriched)
+                task_events.append(enriched)
                 data = enriched.get("data") or {}
                 if data.get("content_type") == "reasoning_signal":
                     rk = (data.get("agent", ""), data.get("id", ""))
@@ -994,20 +1022,22 @@ class BackgroundTaskManager:
                         open_reasoning[rk] = None
                     elif data.get("content") == "complete":
                         open_reasoning.pop(rk, None)
-            if recovered == 0:
-                # Captured events exist but none were recovered (XRANGE
-                # failure or the capture never reached Redis): append no
-                # synthetic close. A transcript-class row is the replay
-                # cache gate's archive evidence — a bare close would vouch
-                # for a snapshot that isn't there. The lane stays
-                # uncacheable (rebuild-per-read) instead of caching a loss.
+            if eligible != expected:
+                # Mismatch against this round's attempted appends (XRANGE
+                # failure reads as zero rows; a torn spill leaves a prefix;
+                # foreign-epoch records never count): append none of it. A
+                # transcript-class row is the replay cache gate's archive
+                # evidence — a partial snapshot would clear the gate and
+                # cache the loss. The lane stays uncacheable
+                # (rebuild-per-read) and the capture stream keeps its
+                # terminal-retention TTL as the last complete-able copy.
                 logger.warning(
-                    f"[StopTeardown] No captured events recovered for task "
-                    f"{getattr(task, 'task_id', '?')} (count="
-                    f"{getattr(task, 'captured_event_count', 0)}); "
-                    "skipping synthetic close"
+                    f"[StopTeardown] Incomplete recovery for task "
+                    f"{getattr(task, 'task_id', '?')} (recovered={eligible}, "
+                    f"expected={expected}); withholding snapshot"
                 )
                 continue
+            merged.extend(task_events)
             # Close any reasoning block still open when the subagent was killed,
             # else replay renders the card stuck "thinking" indefinitely.
             for r_agent, r_id in open_reasoning:
@@ -1267,7 +1297,7 @@ class BackgroundTaskManager:
 
     async def _replay_owned_task_events(
         self, thread_id: str, task, response_id: str, out: list[dict]
-    ) -> None:
+    ) -> bool:
         """Append a task's captured events, fenced against a mid-replay steal.
 
         Same-process: the claim is re-checked per yielded record — the XRANGE
@@ -1278,13 +1308,48 @@ class BackgroundTaskManager:
         is the durable fence — a resumed round's records carry the resuming
         run's id and are dropped here even when the stale collector's local
         claim still looks intact. Unstamped records (pre-stamp writers) pass.
+
+        Returns True only when the stream yielded exactly this round's
+        attempted appends (``captured_event_count`` at entry). Only records
+        passing the run filter count — a cross-worker resume resets the
+        shared stream and writes its own records, which must not pad the
+        tally for a round whose capture is gone. On any mismatch — XRANGE
+        failure reads as zero rows, a torn spill leaves a prefix, a late
+        terminal append lands past the entry snapshot — or a mid-replay
+        steal, nothing is appended: a partial archive would clear the replay
+        cache gate and freeze an incomplete transcript, and the caller must
+        not retire the streams it would have been rebuilt from.
         """
+        expected = getattr(task, "captured_event_count", 0)
+        # Unstamped records are acceptable only from a task whose own writer
+        # predates run stamping (no spawned_run_id): a modern task's run id
+        # is set at registration — before any append — so every one of its
+        # records is stamped, and an unstamped record on its stream can only
+        # be a foreign pre-stamp writer's (rolling-deploy resume): epoch
+        # unknowable, never archive it.
+        allowed = (
+            (None, response_id)
+            if not getattr(task, "spawned_run_id", None)
+            else (response_id,)
+        )
+        buffered: list[dict] = []
+        eligible = 0
         async for record in iter_subagent_events_full(thread_id, task):
             if task.collector_response_id != response_id:
-                break  # stolen mid-replay: remaining records may be round-2
-            if record.get("run") not in (None, response_id):
+                return False  # stolen mid-replay: the resume owns the archive
+            if record.get("run") not in allowed:
                 continue  # another round's record (cross-worker resume)
-            out.append(_record_to_persist_event(record, thread_id))
+            eligible += 1
+            buffered.append(_record_to_persist_event(record, thread_id))
+        if eligible != expected:
+            logger.error(
+                f"[SubagentCollector] Incomplete stream recovery for task "
+                f"{getattr(task, 'task_id', '?')} (recovered={eligible}, "
+                f"expected={expected}); withholding partial archive"
+            )
+            return False
+        out.extend(buffered)
+        return True
 
     async def _collect_subagent_results_for_turn(
         self,
@@ -1365,14 +1430,18 @@ class BackgroundTaskManager:
                     and task.completed
                     and task.captured_event_count > 0
                 ):
-                    await self._replay_owned_task_events(
+                    if not await self._replay_owned_task_events(
                         thread_id, task, response_id, all_subagent_events
-                    )
+                    ):
+                        persist_ok = False
 
             if all_subagent_events:
-                persist_ok = await self._persist_collected_events(
-                    main_chunks, all_subagent_events, response_id,
-                    thread_id, workspace_id, user_id, sandbox=sandbox,
+                persist_ok = (
+                    await self._persist_collected_events(
+                        main_chunks, all_subagent_events, response_id,
+                        thread_id, workspace_id, user_id, sandbox=sandbox,
+                    )
+                    and persist_ok
                 )
 
             if not pending:
@@ -1380,16 +1449,10 @@ class BackgroundTaskManager:
                     response_id, tasks, thread_id, workspace_id, user_id,
                     is_byok=is_byok,
                 )
-                if persist_ok:
-                    await self._await_drain_and_cleanup_tasks(
-                        tasks, thread_id, response_id
-                    )
-                else:
-                    logger.error(
-                        f"[SubagentCollector] Archive persist failed for "
-                        f"response_id={response_id}; retaining capture "
-                        "streams for their terminal-retention TTL"
-                    )
+                await self._await_drain_and_cleanup_tasks(
+                    tasks, thread_id, response_id,
+                    retire_streams=persist_ok,
+                )
                 return
 
             deadline = time.time() + timeout
@@ -1443,14 +1506,18 @@ class BackgroundTaskManager:
                         task.collector_response_id == response_id
                         and task.captured_event_count > 0
                     ):
-                        await self._replay_owned_task_events(
+                        if not await self._replay_owned_task_events(
                             thread_id, task, response_id, all_subagent_events
-                        )
+                        ):
+                            persist_ok = False
 
                 if all_subagent_events:
-                    persist_ok = await self._persist_collected_events(
-                        main_chunks, all_subagent_events, response_id,
-                        thread_id, workspace_id, user_id, sandbox=sandbox,
+                    persist_ok = (
+                        await self._persist_collected_events(
+                            main_chunks, all_subagent_events, response_id,
+                            thread_id, workspace_id, user_id, sandbox=sandbox,
+                        )
+                        and persist_ok
                     )
 
             if pending:
@@ -1491,16 +1558,10 @@ class BackgroundTaskManager:
                 thread_id, response_id, collected_tasks, workspace_id, user_id,
                 all_settled=not pending,
             )
-            if persist_ok:
-                await self._await_drain_and_cleanup_tasks(
-                    collected_tasks, thread_id, response_id
-                )
-            else:
-                logger.error(
-                    f"[SubagentCollector] Archive persist failed for "
-                    f"response_id={response_id}; retaining capture streams "
-                    "for their terminal-retention TTL"
-                )
+            await self._await_drain_and_cleanup_tasks(
+                collected_tasks, thread_id, response_id,
+                retire_streams=persist_ok,
+            )
 
         except Exception as e:
             logger.error(
@@ -1538,13 +1599,21 @@ class BackgroundTaskManager:
         thread_id: str,
         response_id: str,
         timeout: float | None = None,
+        *,
+        retire_streams: bool = True,
     ) -> None:
         """Post-collection teardown, fenced on the collector claim: every
         mutation and delete re-checks ``collector_response_id`` because a
         resume can steal the entry back (clears the claim, installs a live
         writer) at any await boundary — an unfenced pass here would null the
         new writer's handles, nuke its fresh Redis keys, and evict the entry
-        out from under the resuming run's tail drain."""
+        out from under the resuming run's tail drain.
+
+        ``retire_streams=False`` (after a failed archive persist) skips only
+        the Redis key retirement — the streams keep their terminal-retention
+        TTL as the transcript's last copy — while heavy refs and registry
+        entries are still released; the in-memory entry is process-local and
+        holding it recovers nothing, it only leaks."""
         if timeout is None:
             timeout = get_sse_drain_timeout()
 
@@ -1555,6 +1624,13 @@ class BackgroundTaskManager:
                 pass
 
         await asyncio.gather(*[_wait_one(t.sse_drain_complete) for t in tasks])
+
+        if not retire_streams:
+            logger.error(
+                f"[SubagentCleanup] Archive persist failed for "
+                f"response_id={response_id}; retaining capture streams for "
+                "their terminal-retention TTL"
+            )
 
         try:
             cache = get_cache_client()
@@ -1579,7 +1655,7 @@ class BackgroundTaskManager:
             task.tool_usage = {}
             task.asyncio_task = None
             task.handler_task = None
-            if cache is not None:
+            if cache is not None and retire_streams:
                 # Serialized on the spill lock: the resume's reset-deletes and
                 # the resumed writer's spills take the same lock, so a delete
                 # issued here can never be in flight when round-2 data lands
@@ -1674,6 +1750,7 @@ class BackgroundTaskManager:
                     user_id, all_settled=not pending,
                 )
 
+            persist_ok = True
             for task in tasks:
                 if (
                     task.collector_response_id == response_id
@@ -1681,16 +1758,19 @@ class BackgroundTaskManager:
                     and task.captured_event_count > 0
                     and task not in pending.values()
                 ):
-                    await self._replay_owned_task_events(
+                    if not await self._replay_owned_task_events(
                         thread_id, task, response_id, all_subagent_events
-                    )
+                    ):
+                        persist_ok = False
 
-            persist_ok = True
             if not pending:
                 if all_subagent_events:
-                    persist_ok = await self._persist_collected_events(
-                        main_chunks, all_subagent_events, response_id,
-                        thread_id, workspace_id, user_id, sandbox=sandbox,
+                    persist_ok = (
+                        await self._persist_collected_events(
+                            main_chunks, all_subagent_events, response_id,
+                            thread_id, workspace_id, user_id, sandbox=sandbox,
+                        )
+                        and persist_ok
                     )
                 owned_tasks = [
                     t for t in tasks if t.collector_response_id == response_id
@@ -1699,16 +1779,10 @@ class BackgroundTaskManager:
                     response_id, owned_tasks, thread_id, workspace_id, user_id,
                     is_byok=is_byok,
                 )
-                if persist_ok:
-                    await self._await_drain_and_cleanup_tasks(
-                        owned_tasks, thread_id, response_id
-                    )
-                else:
-                    logger.error(
-                        f"[OrphanCollector] Archive persist failed for "
-                        f"response_id={response_id}; retaining capture "
-                        "streams for their terminal-retention TTL"
-                    )
+                await self._await_drain_and_cleanup_tasks(
+                    owned_tasks, thread_id, response_id,
+                    retire_streams=persist_ok,
+                )
                 logger.info(
                     f"[OrphanCollector] All tasks already completed for "
                     f"thread_id={thread_id}"
@@ -1772,9 +1846,10 @@ class BackgroundTaskManager:
                         if task.collector_response_id != response_id:
                             continue
                         if task.captured_event_count > 0:
-                            await self._replay_owned_task_events(
+                            if not await self._replay_owned_task_events(
                                 thread_id, task, response_id, all_subagent_events
-                            )
+                            ):
+                                persist_ok = False
 
                         logger.info(
                             f"[OrphanCollector] {task.display_id} completed, "
@@ -1782,9 +1857,12 @@ class BackgroundTaskManager:
                         )
 
                     if all_subagent_events:
-                        persist_ok = await self._persist_collected_events(
-                            main_chunks, all_subagent_events, response_id,
-                            thread_id, workspace_id, user_id, sandbox=sandbox,
+                        persist_ok = (
+                            await self._persist_collected_events(
+                                main_chunks, all_subagent_events, response_id,
+                                thread_id, workspace_id, user_id, sandbox=sandbox,
+                            )
+                            and persist_ok
                         )
                 else:
                     for asyncio_task, task in pending.items():
@@ -1823,16 +1901,10 @@ class BackgroundTaskManager:
                     thread_id, response_id, collected_tasks, workspace_id, user_id,
                     all_settled=not pending,
                 )
-                if persist_ok:
-                    await self._await_drain_and_cleanup_tasks(
-                        collected_tasks, thread_id, response_id
-                    )
-                else:
-                    logger.error(
-                        f"[OrphanCollector] Archive persist failed for "
-                        f"response_id={response_id}; retaining capture "
-                        "streams for their terminal-retention TTL"
-                    )
+                await self._await_drain_and_cleanup_tasks(
+                    collected_tasks, thread_id, response_id,
+                    retire_streams=persist_ok,
+                )
 
         except Exception as e:
             logger.error(
@@ -2434,33 +2506,24 @@ class BackgroundTaskManager:
         # One bounded retry: the replay cache gate holds the turn uncacheable
         # until these rows land, so a transiently failed write must not leave
         # the turn rebuilding on every read for its lifetime. Each attempt
-        # rebases on the row as it exists NOW — concurrent atomic appends
-        # (compact/offload context_window) land between compose and write,
-        # and successive batch writes must strip their own earlier task rows
-        # rather than duplicate them.
+        # rebases inside one row-locked transaction — concurrent atomic
+        # appends (compact/offload context_window) serialize on the lock
+        # instead of being erased, and successive batch writes strip their
+        # own earlier task rows rather than duplicate them.
         for attempt in (1, 2):
             try:
-                fresh = await qr_db.get_sse_events(response_id)
-                base = (
-                    [
-                        c
-                        for c in fresh
-                        if str((c.get("data") or {}).get("agent", ""))
-                        not in replaced_agents
-                    ]
-                    if fresh is not None
-                    else list(main_chunks)
-                )
-                updated_chunks = base + cleaned
-                await qr_db.update_sse_events(
-                    conversation_response_id=response_id,
-                    sse_events=updated_chunks,
-                )
-                logger.info(
-                    f"[SubagentCollector] Updated sse_events for "
-                    f"response_id={response_id} ({len(updated_chunks)} events)"
-                )
-                return True
+                if await qr_db.rebase_sse_events(
+                    response_id,
+                    drop_agents=replaced_agents,
+                    append_events=cleaned,
+                    fallback_base=main_chunks,
+                ):
+                    logger.info(
+                        f"[SubagentCollector] Updated sse_events for "
+                        f"response_id={response_id} (+{len(cleaned)} events)"
+                    )
+                    return True
+                raise RuntimeError(f"no response row for {response_id}")
             except Exception as e:
                 if attempt == 1:
                     await asyncio.sleep(2.0)

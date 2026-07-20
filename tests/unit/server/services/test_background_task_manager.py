@@ -921,6 +921,10 @@ class TestDrainReasoningClose:
         task = MagicMock()
         task.task_id = task_id
         task.captured_event_count = count
+        task.spawned_run_id = "run-1"
+        # Settled writers: the drain withholds tasks whose writers are alive.
+        task.asyncio_task = None
+        task.handler_task = None
         return task
 
     @pytest.mark.asyncio
@@ -932,7 +936,8 @@ class TestDrainReasoningClose:
         records = [
             {"event": "message_chunk", "data": {
                 "agent": "task:abc", "id": "m1",
-                "content": "start", "content_type": "reasoning_signal"}},
+                "content": "start", "content_type": "reasoning_signal"},
+             "run": "run-1"},
         ]
 
         async def fake_iter(thread_id, task):
@@ -974,10 +979,12 @@ class TestDrainReasoningClose:
         records = [
             {"event": "message_chunk", "data": {
                 "agent": "task:abc", "id": "m1",
-                "content": "start", "content_type": "reasoning_signal"}},
+                "content": "start", "content_type": "reasoning_signal"},
+             "run": "run-1"},
             {"event": "message_chunk", "data": {
                 "agent": "task:abc", "id": "m1",
-                "content": "complete", "content_type": "reasoning_signal"}},
+                "content": "complete", "content_type": "reasoning_signal"},
+             "run": "run-1"},
         ]
 
         async def fake_iter(thread_id, task):
@@ -1022,46 +1029,127 @@ class TestDrainReasoningClose:
 
         assert merged == []
 
+    @pytest.mark.asyncio
+    async def test_partial_recovery_withholds_snapshot(self):
+        """A truncated read (fewer records than attempted appends — torn
+        spill prefix, mid-stream trim) is as unsafe as zero: persisting the
+        prefix would clear the replay cache gate and cache an incomplete
+        snapshot. The whole task is withheld, closes included."""
+        btm = _make_btm()
+        records = [
+            {"event": "message_chunk", "data": {
+                "agent": "task:abc", "id": "m1",
+                "content": "partial", "content_type": "text"},
+             "run": "run-1"},
+        ]
+
+        async def fake_iter(thread_id, task):
+            for r in records:
+                yield r
+
+        with patch(
+            "src.server.services.background_task_manager.iter_subagent_events_full",
+            side_effect=fake_iter,
+        ):
+            merged = await btm._drain_killed_subagent_events(
+                "t-x", [self._task("abc", 3)]
+            )
+
+        assert merged == []
+
+    @pytest.mark.asyncio
+    async def test_live_writer_withholds_snapshot(self):
+        """A writer still unwinding past the bounded wait can append after
+        this drain reads its count (the terminal steering sweep is exempt
+        from the seal) — only a settled writer guarantees the count is
+        final, so the task is withheld entirely."""
+        btm = _make_btm()
+        task = self._task("abc", 1)
+        live_writer = MagicMock()
+        live_writer.done.return_value = False
+        task.handler_task = live_writer
+
+        async def fake_iter(thread_id, t):
+            yield {"event": "message_chunk", "data": {
+                "agent": "task:abc", "id": "m1",
+                "content": "x", "content_type": "text"}}
+
+        with patch(
+            "src.server.services.background_task_manager.iter_subagent_events_full",
+            side_effect=fake_iter,
+        ):
+            merged = await btm._drain_killed_subagent_events("t-x", [task])
+
+        assert merged == []
+
+    @pytest.mark.asyncio
+    async def test_foreign_epoch_records_are_withheld(self):
+        """Records stamped with another round's run id (cross-worker resume
+        reset the shared stream) neither count toward completeness nor
+        archive under this round."""
+        btm = _make_btm()
+        records = [
+            {
+                "event": "message_chunk",
+                "data": {"agent": "task:abc", "id": "m1",
+                         "content": "r2", "content_type": "text"},
+                "run": "run-2",
+            },
+        ]
+
+        async def fake_iter(thread_id, t):
+            for r in records:
+                yield r
+
+        with patch(
+            "src.server.services.background_task_manager.iter_subagent_events_full",
+            side_effect=fake_iter,
+        ):
+            merged = await btm._drain_killed_subagent_events(
+                "t-x", [self._task("abc", 1)]
+            )
+
+        assert merged == []
+
 
 class TestPersistCollectedEvents:
 
     @pytest.mark.asyncio
-    async def test_rebase_preserves_concurrent_appends(self):
-        """Each write attempt rebases on the row as it exists at write time:
-        rows appended since the compose (context_window) survive, and the
-        collected tasks' earlier live rows are replaced, not duplicated."""
+    async def test_persist_delegates_to_locked_rebase(self):
+        """The archive write goes through the row-locked rebase (concurrent
+        atomic appends serialize on the lock instead of being erased): the
+        collected agents are the strip set, cleaned rows the append set,
+        and the pre-compose main rows the missing-row fallback."""
         btm = _make_btm()
         main = [
             {"event": "message_chunk", "data": {"agent": "ptc", "content": "m"}}
         ]
-        stale_task_row = {
-            "event": "artifact",
-            "data": {"agent": "task:abc", "artifact_type": "todo_list"},
-        }
-        cw_row = {"event": "context_window", "data": {"agent": "ptc"}}
         captured = [
-            {"event": "message_chunk", "data": {"agent": "task:abc", "content": "t"}}
+            {
+                "event": "message_chunk",
+                "data": {"agent": "task:abc", "content": "t"},
+                "ts": 123.0,
+            }
         ]
 
-        writes: list = []
-
-        async def fake_update(**kwargs):
-            writes.append(kwargs["sse_events"])
-            return True
-
+        rebase = AsyncMock(return_value=True)
         with patch(
-            "src.server.database.conversation.get_sse_events",
-            new=AsyncMock(return_value=main + [stale_task_row, cw_row]),
-        ), patch(
-            "src.server.database.conversation.update_sse_events",
-            new=AsyncMock(side_effect=fake_update),
+            "src.server.database.conversation.rebase_sse_events", new=rebase
         ):
             ok = await btm._persist_collected_events(
                 main, captured, "resp-1", "t-x", "ws", "u"
             )
 
         assert ok is True
-        assert writes == [main + [cw_row] + captured]
+        rebase.assert_awaited_once()
+        args, kwargs = rebase.await_args
+        assert args == ("resp-1",)
+        assert kwargs["drop_agents"] == {"task:abc"}
+        # ts is stripped before archival.
+        assert kwargs["append_events"] == [
+            {"event": "message_chunk", "data": {"agent": "task:abc", "content": "t"}}
+        ]
+        assert kwargs["fallback_base"] is main
 
     @pytest.mark.asyncio
     async def test_double_failure_returns_false(self):
@@ -1071,10 +1159,7 @@ class TestPersistCollectedEvents:
         btm = _make_btm()
 
         with patch(
-            "src.server.database.conversation.get_sse_events",
-            new=AsyncMock(return_value=[]),
-        ), patch(
-            "src.server.database.conversation.update_sse_events",
+            "src.server.database.conversation.rebase_sse_events",
             new=AsyncMock(side_effect=RuntimeError("db down")),
         ), patch("asyncio.sleep", new=AsyncMock()):
             ok = await btm._persist_collected_events(
@@ -1087,6 +1172,248 @@ class TestPersistCollectedEvents:
             )
 
         assert ok is False
+
+
+class TestReplayOwnedTaskEvents:
+
+    def _task(self, count: int, response_id: str = "resp-1") -> MagicMock:
+        task = MagicMock()
+        task.task_id = "abc"
+        task.captured_event_count = count
+        task.collector_response_id = response_id
+        task.spawned_run_id = response_id
+        return task
+
+    def _iter(self, records: list[dict]):
+        async def fake_iter(thread_id, task):
+            for r in records:
+                yield r
+
+        return fake_iter
+
+    @pytest.mark.asyncio
+    async def test_complete_recovery_appends_and_succeeds(self):
+        btm = _make_btm()
+        records = [
+            {
+                "event": "message_chunk",
+                "data": {"agent": "task:abc", "content": "a"},
+                "run": "resp-1",
+            },
+            {
+                "event": "message_chunk",
+                "data": {"agent": "task:abc", "content": "b"},
+                "run": "resp-1",
+            },
+        ]
+        out: list = []
+        with patch(
+            "src.server.services.background_task_manager.iter_subagent_events_full",
+            side_effect=self._iter(records),
+        ):
+            ok = await btm._replay_owned_task_events(
+                "t-x", self._task(2), "resp-1", out
+            )
+        assert ok is True
+        assert len(out) == 2
+
+    @pytest.mark.asyncio
+    async def test_incomplete_recovery_withholds_and_fails(self):
+        """A stream yielding fewer records than the attempted appends (XRANGE
+        failure reads as zero rows; a torn spill leaves a prefix) appends
+        NOTHING — a partial archive would clear the replay cache gate and
+        freeze an incomplete transcript — and returns False so cleanup
+        retains the streams."""
+        btm = _make_btm()
+        records = [
+            {
+                "event": "message_chunk",
+                "data": {"agent": "task:abc", "content": "a"},
+                "run": "resp-1",
+            },
+        ]
+        out: list = []
+        with patch(
+            "src.server.services.background_task_manager.iter_subagent_events_full",
+            side_effect=self._iter(records),
+        ):
+            ok = await btm._replay_owned_task_events(
+                "t-x", self._task(3), "resp-1", out
+            )
+        assert ok is False
+        assert out == []
+
+    @pytest.mark.asyncio
+    async def test_zero_recovery_with_captures_fails(self):
+        """The zero-row XRANGE failure mode: captured events exist but the
+        iterator yields nothing — must NOT read as a successful no-op
+        (persist would be skipped and cleanup would retire the only copy)."""
+        btm = _make_btm()
+        out: list = []
+        with patch(
+            "src.server.services.background_task_manager.iter_subagent_events_full",
+            side_effect=self._iter([]),
+        ):
+            ok = await btm._replay_owned_task_events(
+                "t-x", self._task(3), "resp-1", out
+            )
+        assert ok is False
+        assert out == []
+
+    @pytest.mark.asyncio
+    async def test_foreign_epoch_records_do_not_count(self):
+        """Cross-worker resume: worker B reset the shared stream and wrote
+        round-2 records; the stale round-1 collector reads exactly
+        ``expected`` records, but all are foreign-stamped. They must not pad
+        the completeness tally — round 1's capture is gone and its streams
+        must be retained, not retired as safely archived."""
+        btm = _make_btm()
+        records = [
+            {
+                "event": "message_chunk",
+                "data": {"agent": "task:abc", "content": "r2-a"},
+                "run": "run-2",
+            },
+            {
+                "event": "message_chunk",
+                "data": {"agent": "task:abc", "content": "r2-b"},
+                "run": "run-2",
+            },
+        ]
+        out: list = []
+        with patch(
+            "src.server.services.background_task_manager.iter_subagent_events_full",
+            side_effect=self._iter(records),
+        ):
+            ok = await btm._replay_owned_task_events(
+                "t-x", self._task(2), "resp-1", out
+            )
+        assert ok is False
+        assert out == []
+
+    @pytest.mark.asyncio
+    async def test_surplus_eligible_records_fail_strict_equality(self):
+        """More own-round records than the entry snapshot (a terminal append
+        landing mid-replay) also withholds — the snapshot the caller is
+        about to vouch for no longer matches what the writer produced."""
+        btm = _make_btm()
+        records = [
+            {
+                "event": "message_chunk",
+                "data": {"agent": "task:abc", "content": "a"},
+                "run": "resp-1",
+            },
+            {
+                "event": "message_chunk",
+                "data": {"agent": "task:abc", "content": "b"},
+                "run": "resp-1",
+            },
+        ]
+        out: list = []
+        with patch(
+            "src.server.services.background_task_manager.iter_subagent_events_full",
+            side_effect=self._iter(records),
+        ):
+            ok = await btm._replay_owned_task_events(
+                "t-x", self._task(1), "resp-1", out
+            )
+        assert ok is False
+        assert out == []
+
+    @pytest.mark.asyncio
+    async def test_unstamped_records_rejected_for_stamped_task(self):
+        """A run-stamped task's own writer stamps every record (the run id is
+        set at registration, before any append) — an unstamped record on its
+        stream can only be a foreign pre-stamp writer's (rolling-deploy
+        resume). It must neither count nor archive, even when the counts
+        happen to match."""
+        btm = _make_btm()
+        records = [
+            {"event": "message_chunk", "data": {"agent": "task:abc", "content": "a"}},
+            {"event": "message_chunk", "data": {"agent": "task:abc", "content": "b"}},
+        ]
+        out: list = []
+        with patch(
+            "src.server.services.background_task_manager.iter_subagent_events_full",
+            side_effect=self._iter(records),
+        ):
+            ok = await btm._replay_owned_task_events(
+                "t-x", self._task(2), "resp-1", out
+            )
+        assert ok is False
+        assert out == []
+
+    @pytest.mark.asyncio
+    async def test_unstamped_records_accepted_for_legacy_task(self):
+        """A task with no spawned_run_id (pre-stamp writer) legitimately
+        produces unstamped records — they still count and archive."""
+        btm = _make_btm()
+        task = self._task(1)
+        task.spawned_run_id = None
+        records = [
+            {"event": "message_chunk", "data": {"agent": "task:abc", "content": "a"}},
+        ]
+        out: list = []
+        with patch(
+            "src.server.services.background_task_manager.iter_subagent_events_full",
+            side_effect=self._iter(records),
+        ):
+            ok = await btm._replay_owned_task_events("t-x", task, "resp-1", out)
+        assert ok is True
+        assert len(out) == 1
+
+
+class TestCleanupRetireSplit:
+
+    def _task(self, response_id: str = "resp-1") -> MagicMock:
+        task = MagicMock()
+        task.task_id = "abc"
+        task.tool_call_id = "tc-1"
+        task.collector_response_id = response_id
+        task.task_run_id = "run-1"
+        task.redis_spill_lock = asyncio.Lock()
+        event = asyncio.Event()
+        event.set()
+        task.sse_drain_complete = event
+        return task
+
+    async def _run(self, retire_streams: bool) -> tuple[AsyncMock, AsyncMock]:
+        btm = _make_btm()
+        btm._delete_task_keys_if_owned = AsyncMock()
+        registry = MagicMock()
+        registry.remove_task_if_owned = AsyncMock()
+        store = MagicMock()
+        store.get_registry = AsyncMock(return_value=registry)
+        with patch(
+            "src.server.services.background_task_manager.get_cache_client",
+            return_value=MagicMock(),
+        ), patch(
+            "src.server.services.background_registry_store"
+            ".BackgroundRegistryStore.get_instance",
+            return_value=store,
+        ):
+            await btm._await_drain_and_cleanup_tasks(
+                [self._task()], "t-x", "resp-1",
+                timeout=0.01, retire_streams=retire_streams,
+            )
+        return btm._delete_task_keys_if_owned, registry.remove_task_if_owned
+
+    @pytest.mark.asyncio
+    async def test_persist_failure_still_evicts_registry_entry(self):
+        """retire_streams=False (failed archive persist) keeps the Redis
+        capture streams but STILL releases the registry entry — the
+        in-memory entry is process-local and holding it recovers nothing;
+        repeated failures on a long-lived thread would accumulate task
+        objects without bound."""
+        delete_keys, remove_entry = await self._run(retire_streams=False)
+        delete_keys.assert_not_awaited()
+        remove_entry.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_successful_persist_retires_streams(self):
+        delete_keys, remove_entry = await self._run(retire_streams=True)
+        delete_keys.assert_awaited_once()
+        remove_entry.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1833,10 +2160,15 @@ class TestReplayOwnershipRecheck:
             "src.server.services.background_task_manager.iter_subagent_events_full",
             side_effect=_iter,
         ):
-            await btm._replay_owned_task_events("thread-x", task, "run-1", out)
+            ok = await btm._replay_owned_task_events(
+                "thread-x", task, "run-1", out
+            )
 
-        contents = [e["data"]["content"] for e in out]
-        assert contents == ["ROUND-1"]
+        # A steal aborts the whole replay: even pre-steal records are
+        # withheld (a partial round-1 archive would clear the replay cache
+        # gate on an incomplete transcript) — the resume owns the archive.
+        assert ok is False
+        assert out == []
 
     @pytest.mark.asyncio
     async def test_cross_worker_stamped_records_are_dropped(self):
@@ -1860,6 +2192,9 @@ class TestReplayOwnershipRecheck:
             completed=True,
         )
         task.collector_response_id = "run-1"  # worker A's claim, never stolen
+        # Round 1 attempted exactly its own two appends; the foreign record
+        # must be dropped WITHOUT counting toward this tally.
+        task.captured_event_count = 2
 
         async def _iter(thread_id, t):
             yield {"event": "message_chunk", "data": {"content": "LEGACY"}}
@@ -1879,7 +2214,10 @@ class TestReplayOwnershipRecheck:
             "src.server.services.background_task_manager.iter_subagent_events_full",
             side_effect=_iter,
         ):
-            await btm._replay_owned_task_events("thread-x", task, "run-1", out)
+            ok = await btm._replay_owned_task_events(
+                "thread-x", task, "run-1", out
+            )
 
+        assert ok is True
         contents = [e["data"]["content"] for e in out]
         assert contents == ["LEGACY", "OWN"]
