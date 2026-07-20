@@ -143,8 +143,8 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
     } catch (err: any) { // TODO: type properly
       setCreationStep('error');
       if (err.status === 429 && err.rateLimitInfo) {
-        const accountUrl = (import.meta.env.VITE_ACCOUNT_URL as string | undefined) || '/account';
-        const { message } = buildRateLimitError(err.rateLimitInfo, accountUrl);
+        const platformUrl = (import.meta.env.VITE_PLATFORM_URL as string | undefined) || '/account';
+        const { message } = buildRateLimitError(err.rateLimitInfo, platformUrl);
         setProgressError(message);
       } else {
         setProgressError(err.message || t('workspace.failedCreateWorkspace'));

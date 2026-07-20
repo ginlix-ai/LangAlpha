@@ -1,6 +1,6 @@
 import type { GettingStartedTaskDef } from './types';
 
-const ACCOUNT_URL = (import.meta.env.VITE_ACCOUNT_URL as string | undefined) || '/account';
+const PLATFORM_URL = (import.meta.env.VITE_PLATFORM_URL as string | undefined) || '/account';
 
 /**
  * The getting-started checklist, in presentation order: tour the pages first,
@@ -70,7 +70,7 @@ export const GETTING_STARTED_TASKS: GettingStartedTaskDef[] = [
     id: 'integrations',
     titleKey: 'onboarding.gettingStarted.tasks.integrations.title',
     descKey: 'onboarding.gettingStarted.tasks.integrations.desc',
-    to: `${ACCOUNT_URL}/integrations`,
+    to: `${PLATFORM_URL}/integrations`,
     external: true,
     platformOnly: true,
   },

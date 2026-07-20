@@ -71,7 +71,7 @@ export interface StructuredError {
 
 export function buildRateLimitError(
   info: RateLimitErrorInfo,
-  accountUrl?: string | null,
+  platformUrl?: string | null,
 ): StructuredError {
   let message: string;
 
@@ -94,11 +94,11 @@ export function buildRateLimitError(
 
   // All credit-related limits route to /plans (which hosts both upgrade and top-up).
   let link: { url: string; label: string } | undefined;
-  if (accountUrl) {
+  if (platformUrl) {
     if (info.type === 'negative_balance' || info.type === 'permanent_credit_limit') {
-      link = { url: `${accountUrl}/plans`, label: 'Top up' };
+      link = { url: `${platformUrl}/plans`, label: 'Top up' };
     } else if (info.type === 'credit_limit' || info.type === 'monthly_credit_limit') {
-      link = { url: `${accountUrl}/plans`, label: 'Upgrade plan' };
+      link = { url: `${platformUrl}/plans`, label: 'Upgrade plan' };
     }
   }
 

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildRateLimitError } from '../rateLimitError';
 
 describe('buildRateLimitError', () => {
-  it('returns message + link for credit_limit when accountUrl is set', () => {
+  it('returns message + link for credit_limit when platformUrl is set', () => {
     const result = buildRateLimitError(
       { type: 'credit_limit', used_credits: 80, credit_limit: 100 },
       'https://ginlix.ai/account',
@@ -36,7 +36,7 @@ describe('buildRateLimitError', () => {
     });
   });
 
-  it('returns message without link for credit_limit when accountUrl is not set', () => {
+  it('returns message without link for credit_limit when platformUrl is not set', () => {
     const result = buildRateLimitError(
       { type: 'credit_limit', used_credits: 80, credit_limit: 100 },
     );
@@ -44,7 +44,7 @@ describe('buildRateLimitError', () => {
     expect(result.link).toBeUndefined();
   });
 
-  it('returns message without link for credit_limit when accountUrl is null', () => {
+  it('returns message without link for credit_limit when platformUrl is null', () => {
     const result = buildRateLimitError(
       { type: 'credit_limit', used_credits: 50, credit_limit: 50 },
       null,

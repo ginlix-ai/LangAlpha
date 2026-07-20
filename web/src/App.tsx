@@ -90,6 +90,12 @@ function RootRedirect() {
   return <Navigate to="/dashboard" replace />;
 }
 
+/** Legacy shared-host entry path — sends stale /app links to the root entry. */
+function LegacyAppPathRedirect() {
+  const { search } = useLocation();
+  return <Navigate to={{ pathname: '/', search }} replace />;
+}
+
 /**
  * Authenticated app shell — sidebar + main content.
  * Redirects to the setup wizard if the user hasn't configured API keys.
@@ -141,10 +147,9 @@ function App() {
 
   return (
     <Routes>
-      {isPlatformMode ? (
-        <Route path="/app" element={appEntryElement} />
-      ) : (
-        <Route path="/" element={appEntryElement} />
+      <Route path={APP_ENTRY_PATH} element={appEntryElement} />
+      {isPlatformMode && APP_ENTRY_PATH === '/' && (
+        <Route path="/app" element={<LegacyAppPathRedirect />} />
       )}
       <Route path="/callback" element={<AuthCallback />} />
       {/* Supabase email-link landing (signup confirm, magic link, recovery).

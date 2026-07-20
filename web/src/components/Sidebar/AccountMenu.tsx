@@ -23,11 +23,11 @@ const AccountMenu: React.FC = () => {
   const [open, setOpen] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
-  // OSS forks: hide the Usage & Plan link entirely, even if VITE_ACCOUNT_URL
+  // OSS forks: hide the Usage & Plan link entirely, even if VITE_PLATFORM_URL
   // is accidentally set (the default web/.env points it at /account, which
   // doesn't exist outside platform deployments).
-  const accountUrl = isPlatformMode
-    ? ((import.meta.env.VITE_ACCOUNT_URL as string | undefined) || '/account')
+  const platformUrl = isPlatformMode
+    ? ((import.meta.env.VITE_PLATFORM_URL as string | undefined) || '/account')
     : null;
 
   const avatarUrl = useMemo(() => {
@@ -156,10 +156,10 @@ const AccountMenu: React.FC = () => {
             </>
           )}
 
-          {accountUrl && (
+          {platformUrl && (
             <DropdownMenuItem asChild>
               <a
-                href={accountUrl}
+                href={platformUrl}
                 className="flex items-center gap-2"
                 style={{
                   backgroundColor: 'var(--color-accent-soft)',
@@ -182,9 +182,9 @@ const AccountMenu: React.FC = () => {
           )}
 
           {/* Only divide when the Usage & Plan item above actually rendered;
-              OSS mode hides it (accountUrl === null) and an unconditional
+              OSS mode hides it (platformUrl === null) and an unconditional
               separator would stack against the profile divider. */}
-          {accountUrl && <DropdownMenuSeparator />}
+          {platformUrl && <DropdownMenuSeparator />}
 
           <DropdownMenuItem onSelect={() => navigate('/settings')}>
             <Settings className="h-4 w-4" />

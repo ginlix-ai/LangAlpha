@@ -5044,8 +5044,8 @@ export function useChatMessages(
           const errObj = err as Record<string, unknown>;
           if (errObj.status === 429) {
             const info = (errObj.rateLimitInfo || {}) as Record<string, unknown>;
-            const accountUrl = (import.meta.env.VITE_ACCOUNT_URL as string | undefined) || '/account';
-            const structured = buildRateLimitError(info, accountUrl);
+            const platformUrl = (import.meta.env.VITE_PLATFORM_URL as string | undefined) || '/account';
+            const structured = buildRateLimitError(info, platformUrl);
             setMessageError(structured);
             setMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
           } else {

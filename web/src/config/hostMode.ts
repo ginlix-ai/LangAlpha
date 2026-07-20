@@ -12,6 +12,9 @@ export const isPlatformMode = HOST_MODE === 'platform';
 /**
  * The app entry URL for the current mode. In platform mode `/` is served
  * externally (marketing landing via nginx) and the SPA owns `/app`; in OSS mode
- * the SPA owns `/` directly. Route unauthenticated redirects through this.
+ * the SPA owns `/` directly. On a dedicated app subdomain set
+ * VITE_APP_ENTRY_PATH=/ so the entry mounts at the host root instead.
+ * Route unauthenticated redirects through this.
  */
-export const APP_ENTRY_PATH = isPlatformMode ? '/app' : '/';
+export const APP_ENTRY_PATH: string =
+  import.meta.env.VITE_APP_ENTRY_PATH || (isPlatformMode ? '/app' : '/');

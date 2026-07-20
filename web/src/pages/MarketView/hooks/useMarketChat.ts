@@ -563,8 +563,8 @@ export function useMarketChat(): UseMarketChatReturn {
       // Handle rate limit (429) — show friendly message and remove empty assistant placeholder
       if (streamErr.status === 429) {
         const info = streamErr.rateLimitInfo || {};
-        const accountUrl = (import.meta.env.VITE_ACCOUNT_URL as string | undefined) || '/account';
-        const structured = buildRateLimitError(info as Record<string, unknown>, accountUrl);
+        const platformUrl = (import.meta.env.VITE_PLATFORM_URL as string | undefined) || '/account';
+        const structured = buildRateLimitError(info as Record<string, unknown>, platformUrl);
         setError(structured);
         // Remove the empty assistant placeholder — no content to show
         setMessages((prev) => prev.filter((msg) => msg.id !== assistantMessageId));

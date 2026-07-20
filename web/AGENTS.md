@@ -49,3 +49,5 @@ pnpm lint         # ESLint 9 flat config (advisory — NOT gated in CI)
 | `VITE_AUTH_USER_ID` | `local-dev-user` | User id in `oss` mode |
 | `VITE_CDN_BASE` | `/` | Asset base for CDN builds |
 | `VITE_COOKIE_DOMAIN` | (unset = host-only) | Parent domain to share auth/locale cookies across subdomains |
+| `VITE_APP_ENTRY_PATH` | `/app` (platform) / `/` (oss) | Where the SPA entry (login + anonymous bounce) mounts; set `/` on a dedicated app subdomain |
+| `VITE_PLATFORM_URL` | `/account` | Platform console origin/path for account, plans and integrations links. Absolute origin on a split-host deploy; **no trailing slash** (call sites concatenate) |
