@@ -424,6 +424,10 @@ class PTCSandbox:
             # Playwright browsers are installed to /usr/local/ms-playwright
             # in the snapshot image; tell the Python package where to find them.
             "PLAYWRIGHT_BROWSERS_PATH": "/usr/local/ms-playwright",
+            # Tell the in-sandbox ginlix-data client the exact path the host
+            # uploads the token file to. It must not key off $HOME — Daytona
+            # runs as root ($HOME=/root) while the working dir is /home/workspace.
+            "GINLIX_TOKEN_FILE": self._token_file_path,
         }
 
         # MCP server env vars (resolve ${VAR} placeholders from host).

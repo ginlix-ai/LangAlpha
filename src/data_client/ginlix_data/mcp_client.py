@@ -93,10 +93,20 @@ def filter_bars_by_time(
 # Token file helpers
 # ---------------------------------------------------------------------------
 
-# Derive token file path from the sandbox working directory.
-# Inside the sandbox, $HOME matches the configured working directory
-# (e.g. /home/workspace for Daytona, /home/sandbox for Docker).
-TOKEN_FILE = Path(os.environ.get("HOME", "/home/workspace")) / "_internal" / ".mcp_tokens.json"
+# Token file path. The host injects GINLIX_TOKEN_FILE with the exact path it
+# uploaded to (_token_file_path = <work_dir>/_internal/.mcp_tokens.json), so the
+# reader never has to guess. $HOME is NOT reliable here: Daytona sandboxes run as
+# root ($HOME=/root) while the working dir is /home/workspace, so keying off $HOME
+# read from the wrong place and the client always reported "not configured".
+TOKEN_FILE = Path(
+    os.environ.get("GINLIX_TOKEN_FILE", "/home/workspace/_internal/.mcp_tokens.json")
+)
+
+# Declared User-Agent for every sandbox→ginlix-data request (data + token
+# refresh). Set explicitly so the traffic is self-identifying at the edge and
+# does not depend on httpx's default UA — a generic client UA can be swept up by
+# upstream bot mitigation, which would silently break the data path.
+_USER_AGENT = "langalpha-sandbox/1.0"
 
 
 def _load_tokens() -> dict:
@@ -142,7 +152,10 @@ class GinlixMCPClient:
         if ginlix_url and access_token:
             self._http = httpx.AsyncClient(
                 base_url=ginlix_url.rstrip("/"),
-                headers={"Authorization": f"Bearer {access_token}"},
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "User-Agent": _USER_AGENT,
+                },
                 timeout=30.0,
             )
             return True
@@ -194,7 +207,9 @@ class GinlixMCPClient:
         if not all([auth_url, refresh_token, client_id]):
             return None
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(
+                headers={"User-Agent": _USER_AGENT}
+            ) as client:
                 resp = await client.post(
                     f"{auth_url}/oauth/token",
                     data={
