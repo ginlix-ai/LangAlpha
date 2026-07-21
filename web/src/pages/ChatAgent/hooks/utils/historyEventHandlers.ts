@@ -4,6 +4,7 @@
  */
 
 import { normalizeAction } from './eventUtils';
+import { isToolResultFailure } from '../../utils/subagentStatus';
 import type { MessageRecord, SetMessages, ToolCallRecord, ToolCallResultRecord, TodoPayload, HtmlWidgetData } from './types';
 
 let _steeringIdCounter = 0;
@@ -505,9 +506,7 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
       const toolCallProcesses = { ...((msg.toolCallProcesses as Record<string, Record<string, unknown>>) || {}) };
       const subagentTasks = { ...((msg.subagentTasks as Record<string, Record<string, unknown>>) || {}) };
 
-      // Tool call failed only if content starts with "ERROR" (backend convention)
-      const resultContent = (result.content as string) || '';
-      const isFailed = typeof resultContent === 'string' && resultContent.trim().startsWith('ERROR');
+      const isFailed = isToolResultFailure(result);
 
       if (toolCallProcesses[toolCallId]) {
         toolCallProcesses[toolCallId] = {
@@ -528,16 +527,18 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
         return msg;
       }
 
-      // If this toolCallId is associated with a subagent task, mark it as completed
-      // and propagate description from artifact if the inline card's description is empty
+      // If this toolCallId is associated with a subagent task, store the result.
       if (subagentTasks[toolCallId]) {
         // Don't set status: 'completed' here — the Task tool returns immediately
         // after spawning, so its tool_call_result doesn't mean the subagent finished.
         // Terminal status arrives per task: the replayed artifact stamp (ledger
-        // truth) or a live chan_close via onTaskRunClosed.
+        // truth) or a live chan_close via onTaskRunClosed. EXCEPT a failed spawn
+        // (bare "Error: …" result): it has no run, no artifact to stamp and no
+        // channel to close, so this result is its only settle signal.
         subagentTasks[toolCallId] = {
           ...subagentTasks[toolCallId],
           result: result.content,
+          ...(isFailed ? { status: 'error' } : {}),
         };
       }
 

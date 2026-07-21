@@ -328,21 +328,6 @@ class ThreadMutationRunner:
                     "again.",
                 )
 
-            if verb in CASCADING_VERBS:
-                # A background subagent outlives its dispatching turn, so the
-                # root-run gate above can pass while task runs are still live.
-                # Deleting the thread cascades their ledger rows away under
-                # them; refuse with the same 409 the frontend already handles.
-                open_tasks = await sr_db.count_open_runs_for_thread(thread_id)
-                if open_tasks:
-                    raise MutationConflict(
-                        "workflow_active",
-                        verb,
-                        f"Cannot {verb} while {open_tasks} background task(s) "
-                        "are still running on this thread. Wait for them to "
-                        "finish, then try again.",
-                    )
-
             saver = None
             if wg.guard_enabled():
                 pool = wg.get_writer_pool()
@@ -382,6 +367,26 @@ class ThreadMutationRunner:
                 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
                 saver = AsyncPostgresSaver(conn)
+
+            if verb in CASCADING_VERBS:
+                # A background subagent outlives its dispatching turn, so the
+                # root-run gate above can pass while task runs are still live.
+                # Deleting the thread cascades their ledger rows away under
+                # them; refuse with the same 409 the frontend already handles.
+                # Checked AFTER exclusive T on the guard's own session
+                # (matching the fork path in database/turn_lifecycle.start_run)
+                # so no task run can be admitted between check and mutation.
+                open_tasks = await sr_db.count_open_runs_for_thread(
+                    thread_id, conn=conn
+                )
+                if open_tasks:
+                    raise MutationConflict(
+                        "workflow_active",
+                        verb,
+                        f"Cannot {verb} while {open_tasks} background task(s) "
+                        "are still running on this thread. Wait for them to "
+                        "finish, then try again.",
+                    )
 
             op.heartbeat = asyncio.create_task(
                 self._advertise(thread_id, op),

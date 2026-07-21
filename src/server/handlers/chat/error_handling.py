@@ -197,6 +197,25 @@ async def handle_workflow_error(
         protected_finalize,
     )
 
+    # Metadata for persistence calls — built from parameters alone, up here so
+    # ``_finalize_error`` never closes over a cell assigned below its def.
+    persist_metadata = {
+        "msg_type": msg_type,
+        "is_byok": is_byok,
+    }
+    if workspace_id is not None:
+        persist_metadata["workspace_id"] = workspace_id
+    # Prefer request.workspace_id when available (PTC sets it on the request)
+    if hasattr(request, "workspace_id") and request.workspace_id:
+        persist_metadata["workspace_id"] = request.workspace_id
+    if hasattr(request, "locale") and request.locale:
+        persist_metadata["locale"] = request.locale
+    # Use the resolved timezone_str (validated/defaulted) when available,
+    # falling back to the raw request field.
+    _tz = timezone_str or getattr(request, "timezone", None)
+    if _tz:
+        persist_metadata["timezone"] = _tz
+
     async def _finalize_error(error_msg: str, extra_metadata: dict) -> bool:
         """Terminal-write the open run as error; CRITICAL on failure (row
         stays in_progress for recovery rather than masking the persist).
@@ -327,16 +346,35 @@ async def handle_workflow_error(
     # TaskRunSlotBusyError reaches here from the fork guard: a background task
     # run still owns a response row the truncation would delete. Same remedy
     # as a live root run — wait, then retry — so it gets the same 409 detail.
-    if isinstance(e, (RunSlotBusyError, TaskRunSlotBusyError, AttemptConflictError)):
+    # QueryConflictError is the loser of an unfenced cross-instance race (two
+    # servers sharing app tables with the guard disabled): its START rolled
+    # back on the differing-content query collision, so it is a protocol 409
+    # like its siblings, never a workflow failure.
+    if isinstance(
+        e,
+        (
+            RunSlotBusyError,
+            TaskRunSlotBusyError,
+            AttemptConflictError,
+            qr_db.QueryConflictError,
+        ),
+    ):
         await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
-        detail = (
-            admission_conflict_detail("running")
-            if isinstance(e, (RunSlotBusyError, TaskRunSlotBusyError))
-            else {
+        if isinstance(e, (RunSlotBusyError, TaskRunSlotBusyError)):
+            detail = admission_conflict_detail("running")
+        elif isinstance(e, qr_db.QueryConflictError):
+            detail = {
+                "code": "turn_conflict",
+                "message": (
+                    "A concurrent request already wrote a different query "
+                    "at this turn; refresh the thread and resend."
+                ),
+            }
+        else:
+            detail = {
                 "code": "attempt_conflict",
                 "message": "A concurrent request already claimed this attempt.",
             }
-        )
         error_payload = {
             "thread_id": thread_id,
             "error": detail["message"],
@@ -403,24 +441,6 @@ async def handle_workflow_error(
     classification = classify_error(e)
     is_recoverable = classification["is_recoverable"]
     error_type = classification["error_type"]
-
-    # Build metadata for persistence calls
-    persist_metadata = {
-        "msg_type": msg_type,
-        "is_byok": is_byok,
-    }
-    if workspace_id is not None:
-        persist_metadata["workspace_id"] = workspace_id
-    # Prefer request.workspace_id when available (PTC sets it on the request)
-    if hasattr(request, "workspace_id") and request.workspace_id:
-        persist_metadata["workspace_id"] = request.workspace_id
-    if hasattr(request, "locale") and request.locale:
-        persist_metadata["locale"] = request.locale
-    # Use the resolved timezone_str (validated/defaulted) when available,
-    # falling back to the raw request field.
-    _tz = timezone_str or getattr(request, "timezone", None)
-    if _tz:
-        persist_metadata["timezone"] = _tz
 
     if is_recoverable:
         # v4: the retry count IS the attempt chain — this run's attempt_no,

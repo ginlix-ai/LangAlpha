@@ -12,7 +12,6 @@ import pytest
 from src.server.services.history.task_status import (
     collect_task_ids,
     resolve_task_details,
-    resolve_task_statuses,
     stamp_replay_task_status,
     stamp_task_artifact_data,
 )
@@ -43,11 +42,15 @@ class TestCollectTaskIds:
         assert collect_task_ids(items) == ["aaa", "bbb"]
 
 
-class TestResolveTaskStatuses:
+class TestLegacyStatusFallback:
     def _patch(self, live, metas: dict):
         btm = MagicMock()
         btm.resolve_task_liveness = AsyncMock(return_value=live)
         return (
+            patch(
+                "src.server.database.subagent_runs.get_latest_run_details",
+                new=AsyncMock(return_value={}),
+            ),
             patch(
                 "src.server.services.background_task_manager"
                 ".BackgroundTaskManager.get_instance",
@@ -62,40 +65,40 @@ class TestResolveTaskStatuses:
 
     @pytest.mark.asyncio
     async def test_liveness_wins_then_meta_labels_terminal(self):
-        p1, p2 = self._patch(
+        p0, p1, p2 = self._patch(
             live={"live1"},
             metas={
                 "canc1": {"status": "cancelled"},
                 "done1": {"status": "completed"},
             },
         )
-        with p1, p2:
-            statuses = await resolve_task_statuses(
+        with p0, p1, p2:
+            details = await resolve_task_details(
                 "t", ["live1", "canc1", "done1", "gone1"]
             )
-        assert statuses == {
-            "live1": "running",
-            "canc1": "cancelled",
-            "done1": "completed",
-            "gone1": "completed",  # no meta -> terminal default
+        assert details == {
+            "live1": {"status": "running", "error": None},
+            "canc1": {"status": "cancelled", "error": None},
+            "done1": {"status": "completed", "error": None},
+            "gone1": {"status": "completed", "error": None},  # no meta -> terminal default
         }
 
     @pytest.mark.asyncio
     async def test_probe_failure_falls_back_to_meta(self):
-        p1, p2 = self._patch(
+        p0, p1, p2 = self._patch(
             live=None,
             metas={
                 "run1": {"status": "running"},
                 "done1": {"status": "completed"},
             },
         )
-        with p1, p2:
-            statuses = await resolve_task_statuses("t", ["run1", "done1", "gone1"])
+        with p0, p1, p2:
+            details = await resolve_task_details("t", ["run1", "done1", "gone1"])
         # Availability over precision: meta says running, probe unknown.
-        assert statuses == {
-            "run1": "running",
-            "done1": "completed",
-            "gone1": "completed",
+        assert details == {
+            "run1": {"status": "running", "error": None},
+            "done1": {"status": "completed", "error": None},
+            "gone1": {"status": "completed", "error": None},
         }
 
 
@@ -116,6 +119,18 @@ class TestStamping:
         )
         assert stamped["payload"]["status"] == "error"
         assert stamped["payload"]["error"] == "transport_lost: boom"
+
+    def test_status_only_stamps_status_never_error(self):
+        # Public replay contract: only the whitelisted status value may reach
+        # an unauthenticated viewer — never the ledger failure text.
+        data = _artifact("aaa")["data"]
+        stamped = stamp_task_artifact_data(
+            data,
+            {"aaa": {"status": "error", "error": "transport_lost: boom"}},
+            status_only=True,
+        )
+        assert stamped["payload"]["status"] == "error"
+        assert "error" not in stamped["payload"]
 
     def test_stamp_omits_error_key_when_no_reason(self):
         data = _artifact("aaa")["data"]

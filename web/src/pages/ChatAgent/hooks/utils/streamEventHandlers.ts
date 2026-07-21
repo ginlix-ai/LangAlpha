@@ -4,6 +4,7 @@
  */
 
 import { normalizeAction } from './eventUtils';
+import { isToolResultFailure } from '../../utils/subagentStatus';
 import type { MessageRecord, SetMessages, ToolCallRecord, ToolCallResultRecord, TodoPayload, HtmlWidgetData } from './types';
 import type { ProvenanceEvent } from '@/types/sse';
 import type { ProvenanceRecord } from '@/types/chat';
@@ -567,9 +568,7 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
 
       const toolCallProcesses = { ...((msg.toolCallProcesses as Record<string, Record<string, unknown>>) || {}) };
 
-      // Tool call failed only if content starts with "ERROR" (backend convention)
-      const resultContent = (result.content as string) || '';
-      const isFailed = typeof resultContent === 'string' && resultContent.trim().startsWith('ERROR');
+      const isFailed = isToolResultFailure(result);
 
       // Track subagent task status updates
       const subagentTasks = { ...((msg.subagentTasks as Record<string, Record<string, unknown>>) || {}) };
@@ -596,9 +595,9 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
       // If this toolCallId is associated with a subagent task, store the tool call result.
       // A SUCCESSFUL Task returns immediately ("Task-N started in background") while the
       // subagent keeps running, so its result is NOT terminal — real completion comes via
-      // the per-task SSE stream closing. But a FAILED spawn (admission/setup error, content
-      // prefixed "ERROR") never produces a task artifact or a channel, so no chan_close will
-      // ever arrive to settle it; stamp it 'error' here or the placeholder spins forever.
+      // the per-task SSE stream closing. But a FAILED spawn (admission/setup error — a bare
+      // "Error: …" result) never produces a task artifact or a channel, so no chan_close
+      // will ever arrive to settle it; stamp it 'error' here or the placeholder spins forever.
       if (subagentTasks[toolCallId]) {
         subagentTasks[toolCallId] = {
           ...subagentTasks[toolCallId],
@@ -1363,7 +1362,7 @@ export function handleSubagentToolCallResult({ taskId, assistantMessageId, toolC
           },
           isInProgress: false,
           isComplete: true,
-          isFailed: typeof result.content === 'string' && ((result.content as string) || '').trim().startsWith('ERROR'),
+          isFailed: isToolResultFailure(result),
           order: currentOrder,
         },
       },
@@ -1381,9 +1380,7 @@ export function handleSubagentToolCallResult({ taskId, assistantMessageId, toolC
     const msg = updatedMessages[messageIndex];
     const toolCallProcesses = { ...((msg.toolCallProcesses as Record<string, Record<string, unknown>>) || {}) };
 
-    // Tool call failed only if content starts with "ERROR"
-    const resultContent = (result.content as string) || '';
-    const isFailed = typeof resultContent === 'string' && resultContent.trim().startsWith('ERROR');
+    const isFailed = isToolResultFailure(result);
 
     if (toolCallProcesses[toolCallId]) {
       toolCallProcesses[toolCallId] = {

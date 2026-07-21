@@ -466,6 +466,7 @@ class BackgroundTaskManager:
 
         to_remove: list[TaskKey] = []
         dead_handles: list = []
+        cold_running: list[TaskKey] = []
 
         async with self.task_lock:
             for key, info in self.tasks.items():
@@ -483,33 +484,10 @@ class BackgroundTaskManager:
 
                 elif info.status == TaskStatus.RUNNING:
                     if info.active_connections == 0 and info.last_access_at < abandoned_threshold:
-                        if info.task and not info.task.done():
-                            # Cancel but KEEP the entry: the cancellation
-                            # teardown's _finalize_run must still find this
-                            # TaskInfo to settle the durable row. The entry
-                            # leaves via the terminal-TTL branch above on a
-                            # later pass. cancelling() gates re-cancels so a
-                            # slow teardown isn't re-interrupted every sweep.
-                            if not info.task.cancelling():
-                                info.task.cancel()
-                                logger.warning(
-                                    f"[BackgroundTaskManager] Cleanup: cancelling "
-                                    f"abandoned task {key} (no connections for "
-                                    f"{now - info.last_access_at}); entry retained "
-                                    f"until finalize"
-                                )
-                        else:
-                            # Task object gone or settled without ever
-                            # finalizing — nothing will settle the durable
-                            # row from here; fail it open outside the lock.
-                            to_remove.append(key)
-                            handle = info.metadata.get("run_handle")
-                            if handle is not None:
-                                dead_handles.append(handle)
-                            logger.warning(
-                                f"[BackgroundTaskManager] Cleanup: removing dead "
-                                f"RUNNING task {key} (task settled without finalize)"
-                            )
+                        # Locally cold — candidate only. The cross-worker
+                        # consumer signal is consulted outside the lock
+                        # before anything is cancelled.
+                        cold_running.append(key)
 
             for key in to_remove:
                 del self.tasks[key]
@@ -522,6 +500,65 @@ class BackgroundTaskManager:
             # different lock objects, defeating admission. The dict is
             # tiny (one entry per thread that has ever seen traffic);
             # leave it.
+
+        # Redis probe outside the lock: a locally-cold run may be watched
+        # entirely through a sibling worker. None (Redis unreachable) means
+        # unknown — never reap on unknown.
+        abandoned: list[TaskKey] = []
+        for key in cold_running:
+            if await self._remote_consumer_signal(*key) == 0:
+                abandoned.append(key)
+
+        dead_removed: list[TaskKey] = []
+        async with self.task_lock:
+            for key in abandoned:
+                info = self.tasks.get(key)
+                # Re-validate under the lock — a watcher or a finalize may
+                # have landed during the probe.
+                if (
+                    info is None
+                    or info.status is not TaskStatus.RUNNING
+                    or info.active_connections != 0
+                    or info.last_access_at >= abandoned_threshold
+                ):
+                    continue
+                if info.task and not info.task.done():
+                    # Cancel but KEEP the entry: the cancellation
+                    # teardown's _finalize_run must still find this
+                    # TaskInfo to settle the durable row. The entry
+                    # leaves via the terminal-TTL branch above on a
+                    # later pass. cancelling() gates re-cancels so a
+                    # slow teardown isn't re-interrupted every sweep.
+                    if not info.task.cancelling():
+                        # System cancel, not a user stop: explicit_cancel
+                        # gates the checkpoint flush + teardown (a bare
+                        # .cancel() would skip both); user_stop stays False
+                        # so the turn is not persisted as user-"Stopped".
+                        info.cancel_event.set()
+                        info.explicit_cancel = True
+                        if info.inner_task and not info.inner_task.done():
+                            info.inner_task.cancel()
+                        info.task.cancel()
+                        logger.warning(
+                            f"[BackgroundTaskManager] Cleanup: cancelling "
+                            f"abandoned task {key} (no connections for "
+                            f"{now - info.last_access_at}); entry retained "
+                            f"until finalize"
+                        )
+                else:
+                    # Task object gone or settled without ever
+                    # finalizing — nothing will settle the durable
+                    # row from here; fail it open outside the lock.
+                    del self.tasks[key]
+                    dead_removed.append(key)
+                    handle = info.metadata.get("run_handle")
+                    if handle is not None:
+                        dead_handles.append(handle)
+                    logger.warning(
+                        f"[BackgroundTaskManager] Cleanup: removing dead "
+                        f"RUNNING task {key} (task settled without finalize)"
+                    )
+        to_remove.extend(dead_removed)
 
         # Dead RUNNING entries whose task died without finalizing: settle the
         # durable row (outside the lock — fail_open_run does DB I/O).
@@ -1947,16 +1984,21 @@ class BackgroundTaskManager:
             )
 
         # ---- local terminal mark (after the CAS: a losing finalize adopts
-        # the survivor's status instead of relabeling the winner's) ----
-        local_status = survivor_status or status
-        async with self.task_lock:
-            task_info.status = {
-                "cancelled": TaskStatus.CANCELLED,
-                "error": TaskStatus.FAILED,
-            }.get(local_status, TaskStatus.COMPLETED)
-            task_info.completed_at = datetime.now()
-            if error:
-                task_info.error = error
+        # the survivor's status instead of relabeling the winner's). A THROWN
+        # finalize (applied=False, no survivor) marks nothing: the row is
+        # still in_progress, so the entry must stay RUNNING — with its
+        # run_handle — for cleanup's dead-handle fail_open path. ----
+        finalize_concluded = finalize_applied or survivor_status is not None
+        if finalize_concluded:
+            local_status = survivor_status or status
+            async with self.task_lock:
+                task_info.status = {
+                    "cancelled": TaskStatus.CANCELLED,
+                    "error": TaskStatus.FAILED,
+                }.get(local_status, TaskStatus.COMPLETED)
+                task_info.completed_at = datetime.now()
+                if error:
+                    task_info.error = error
 
         if finalize_applied:
             await self._apply_post_terminal_effects(
@@ -1980,8 +2022,9 @@ class BackgroundTaskManager:
             await release_burst_slot(user_id, metadata.get("burst_slot_id"))
 
         task_info.persistence_complete.set()
-        async with self.task_lock:
-            self._release_terminal_refs(thread_id, run_id)
+        if finalize_concluded:
+            async with self.task_lock:
+                self._release_terminal_refs(thread_id, run_id)
 
     async def _classify_outcome(
         self,
@@ -2554,9 +2597,66 @@ class BackgroundTaskManager:
                 task_info.last_access_at = datetime.now()
             return task_info
 
+    # -- cross-worker consumer signal -----------------------------------
+    # SSE watchers attach on ANY worker, so the abandoned heuristic cannot
+    # trust process-local counters alone: the run's owner would reap a run
+    # watched entirely through a sibling worker. Every attach/detach bumps a
+    # Redis counter whose TTL (the abandonment window) is refreshed on each
+    # bump — "key absent" therefore means no watcher activity for at least
+    # that window.
+
+    def _consumers_key(self, thread_id: str, run_id: str) -> str:
+        return f"workflow:consumers:{thread_id}:{run_id}"
+
+    async def _bump_remote_consumers(
+        self, thread_id: str, run_id: str, delta: int
+    ) -> None:
+        """Best-effort: a failed bump only skews a heuristic, never a run."""
+        try:
+            cache = get_cache_client()
+            if (
+                cache is None
+                or not getattr(cache, "enabled", False)
+                or cache.client is None
+            ):
+                return
+            key = self._consumers_key(thread_id, run_id)
+            pipe = cache.client.pipeline(transaction=False)
+            pipe.incrby(key, delta)
+            pipe.expire(key, int(self.abandoned_timeout))
+            await pipe.execute()
+        except Exception:
+            logger.warning(
+                f"[BackgroundTaskManager] consumer-counter bump failed for "
+                f"thread_id={thread_id} run_id={run_id}",
+                exc_info=True,
+            )
+
+    async def _remote_consumer_signal(
+        self, thread_id: str, run_id: str
+    ) -> Optional[int]:
+        """Tri-state read: an int is authoritative (absent key = 0 — no
+        watcher for a full window); None means Redis is unreachable, and the
+        caller must NOT reap (unknown is not abandoned). Cache-disabled
+        deployments read 0 — no cross-worker signal can exist there, so the
+        local counters are the whole truth."""
+        try:
+            cache = get_cache_client()
+            if (
+                cache is None
+                or not getattr(cache, "enabled", False)
+                or cache.client is None
+            ):
+                return 0
+            raw = await cache.client.get(self._consumers_key(thread_id, run_id))
+            return max(0, int(raw)) if raw is not None else 0
+        except Exception:
+            return None
+
     async def increment_connection(
         self, thread_id: str, run_id: Optional[str] = None
     ) -> bool:
+        found = False
         async with self.task_lock:
             if run_id is not None:
                 task_info = self.tasks.get((thread_id, run_id))
@@ -2565,12 +2665,18 @@ class BackgroundTaskManager:
             if task_info:
                 task_info.active_connections += 1
                 task_info.last_access_at = datetime.now()
-                return True
-            return False
+                run_id = task_info.run_id
+                found = True
+        # Remote bump even without a local entry: watching a foreign
+        # worker's run is exactly the case the counter exists for.
+        if run_id is not None:
+            await self._bump_remote_consumers(thread_id, run_id, 1)
+        return found
 
     async def decrement_connection(
         self, thread_id: str, run_id: Optional[str] = None
     ) -> bool:
+        found = False
         async with self.task_lock:
             if run_id is not None:
                 task_info = self.tasks.get((thread_id, run_id))
@@ -2578,8 +2684,11 @@ class BackgroundTaskManager:
                 task_info = self._find_latest_for_thread(thread_id)
             if task_info:
                 task_info.active_connections = max(0, task_info.active_connections - 1)
-                return True
-            return False
+                run_id = task_info.run_id
+                found = True
+        if run_id is not None:
+            await self._bump_remote_consumers(thread_id, run_id, -1)
+        return found
 
     async def cancel_workflow(
         self, thread_id: str, run_id: Optional[str] = None,

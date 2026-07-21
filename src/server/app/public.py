@@ -214,11 +214,11 @@ async def replay_shared_thread(share_token: str):
     # history/task_status.py). Only the whitelisted status value is added.
     from src.server.services.history.task_status import (
         collect_task_ids,
-        resolve_task_statuses,
+        resolve_task_details,
         stamp_task_artifact_data,
     )
 
-    task_statuses: dict[str, str] = {}
+    task_details: dict[str, dict] = {}
     try:
         stored_events = [
             item
@@ -226,7 +226,7 @@ async def replay_shared_thread(share_token: str):
             for item in (r.get("sse_events") or [])
             if isinstance(item, dict)
         ]
-        task_statuses = await resolve_task_statuses(
+        task_details = await resolve_task_details(
             thread_id, collect_task_ids(stored_events)
         )
     except Exception:
@@ -297,8 +297,10 @@ async def replay_shared_thread(share_token: str):
                 replay_data.setdefault("thread_id", thread_id)
                 replay_data["turn_index"] = turn_index
                 replay_data["response_id"] = str(response.get("conversation_response_id"))
-                if task_statuses:
-                    replay_data = stamp_task_artifact_data(replay_data, task_statuses)
+                if task_details:
+                    replay_data = stamp_task_artifact_data(
+                        replay_data, task_details, status_only=True
+                    )
 
                 yield (
                     f"id: {seq}\n"

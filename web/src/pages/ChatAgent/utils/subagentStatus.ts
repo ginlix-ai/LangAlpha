@@ -36,6 +36,25 @@ export function isTerminalStatus(status: string | undefined | null): boolean {
   return status != null && TERMINAL_STATUSES.has(status);
 }
 
+/**
+ * A tool result reports failure iff it is the bare failure ToolMessage:
+ * string content prefixed "Error" (backend convention — e.g. "Error: could
+ * not start Task-…") with no artifact attached. A result carrying an
+ * artifact is never a failure. For Task results this is the settle-or-spin
+ * discriminator: a failed spawn opens no channel, so no chan_close will ever
+ * arrive — the caller must stamp 'error' from this signal alone.
+ */
+export function isToolResultFailure(result: {
+  content?: unknown;
+  artifact?: unknown;
+}): boolean {
+  return (
+    typeof result.content === 'string' &&
+    result.content.trim().startsWith('Error') &&
+    !result.artifact
+  );
+}
+
 export function deriveSubagentStatus(agent: {
   status?: string;
   messages?: unknown[];

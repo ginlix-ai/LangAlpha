@@ -197,3 +197,46 @@ async def test_external_id_conflict_branch_emits_conflict_and_skips_finalize(
     # Deterministic protocol conflict — not a workflow failure.
     coordinator.finalize_turn.assert_not_awaited()
     coordinator.fail_open_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_query_conflict_branch_emits_turn_conflict_and_skips_finalize(
+    coordinator,
+):
+    # The differing-content query collision (unfenced cross-instance race —
+    # START rolled back) must surface as a structured turn_conflict SSE error,
+    # never a 500 or a finalized turn failure.
+    import json as _json
+
+    from src.server.database.conversation import QueryConflictError
+
+    err = QueryConflictError(
+        thread_id="t-qc", turn_index=3, existing_content="other content"
+    )
+
+    with patch.object(error_handling, "release_burst_slot", new=AsyncMock()), \
+         patch.object(error_handling, "get_max_workflow_retries", return_value=3):
+        events = await _consume(error_handling.handle_workflow_error(
+            e=err,
+            thread_id="t-qc",
+            user_id="u-1",
+            workspace_id="ws-1",
+            handler=None,
+            token_callback=None,
+            run_handle=None,
+            start_time=0.0,
+            request=_make_request(),
+            is_byok=False,
+            msg_type="user",
+            log_prefix="CHAT",
+        ))
+
+    assert len(events) == 1
+    assert events[0].startswith("event: error\n")
+    payload = _json.loads(events[0].split("data: ", 1)[1].strip())
+    assert payload["error_type"] == "admission_conflict"
+    assert payload["code"] == "turn_conflict"
+    # The existing row's content must never leak into the SSE payload.
+    assert "other content" not in events[0]
+    coordinator.finalize_turn.assert_not_awaited()
+    coordinator.fail_open_run.assert_not_awaited()

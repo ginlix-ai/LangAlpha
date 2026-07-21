@@ -62,7 +62,7 @@ from src.server.database import turn_lifecycle as tl_db
 from src.server.services.history.reader import CheckpointHistoryReader
 from src.server.services.history.task_status import (
     _artifact_task_id,
-    resolve_task_statuses,
+    resolve_task_details,
 )
 from src.server.utils.checkpoint_helpers import CheckpointBranchTipNotFound
 from src.server.utils.content_normalizer import normalize_text_content
@@ -1390,7 +1390,7 @@ class _TaskLaneProjector:
         # nothing is marked live — availability over precision (a transient
         # duplicate beats a missing transcript).
         try:
-            statuses = await resolve_task_statuses(
+            details = await resolve_task_details(
                 self._thread_id, list(self._tasks)
             )
         except Exception:
@@ -1399,9 +1399,9 @@ class _TaskLaneProjector:
                 self._thread_id,
                 exc_info=True,
             )
-            statuses = {}
+            details = {}
         for task_id, runs in self._tasks.items():
-            runs.live = statuses.get(task_id) == "running"
+            runs.live = (details.get(task_id) or {}).get("status") == "running"
 
     async def _load_ledger(
         self, reader: CheckpointHistoryReader, task_ids: list[str]

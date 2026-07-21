@@ -1329,7 +1329,13 @@ class BackgroundTaskRegistry:
         await self._stamp_cancel_intent(intent_targets)
         cancelled = 0
         async with self._lock:
-            for task in self._tasks.values():
+            # Only the re-validated stamp targets: a task registered during
+            # the unlocked stamp window is either stamped or not cancelled —
+            # never locally cancelled without durable intent (a worker dying
+            # mid-unwind must recover as cancelled, not worker_lost).
+            for task in intent_targets:
+                if self._tasks.get(task.tool_call_id) is not task:
+                    continue
                 if not self._cancellable(task):
                     continue
                 if task.asyncio_task is not None:
@@ -1373,10 +1379,14 @@ class BackgroundTaskRegistry:
         scoped: list[str] = []
         cancelled = 0
         async with self._lock:
-            for tool_call_id, task in self._tasks.items():
-                if task.spawned_run_id != run_id:
+            # Cancel only the re-validated stamp targets: a task registered
+            # during the unlocked stamp window is either stamped or not
+            # cancelled — never locally cancelled without durable intent (a
+            # worker dying mid-unwind must recover as cancelled, not
+            # worker_lost).
+            for task in intent_targets:
+                if self._tasks.get(task.tool_call_id) is not task:
                     continue
-                scoped.append(tool_call_id)
                 if not self._cancellable(task):
                     continue
                 if task.asyncio_task is not None:
@@ -1400,6 +1410,11 @@ class BackgroundTaskRegistry:
                     "status": "cancelled",
                 }
                 cancelled += 1
+            scoped = [
+                tool_call_id
+                for tool_call_id, task in self._tasks.items()
+                if task.spawned_run_id == run_id
+            ]
             # Snapshot the writers before dropping entries: a cancelled task
             # keeps unwinding (checkpoint writes in cleanup sections) after
             # cancel() returns, and the writer-guard tail drain discovers
@@ -1419,11 +1434,14 @@ class BackgroundTaskRegistry:
         # whose writers are STILL alive after the bounded wait stays
         # registered (drain-visible); the guard drain's own deadline is the
         # backstop for a writer that never dies.
-        removable: list[str] = []
         async with self._lock:
             for tool_call_id in scoped:
                 task = self._tasks.get(tool_call_id)
                 if task is None:
+                    continue
+                if not task.completed:
+                    # Registered during the stamp window — deliberately left
+                    # uncancelled (no durable intent), so not ours to evict.
                     continue
                 if any(
                     t is not None and not t.done()
@@ -1437,9 +1455,10 @@ class BackgroundTaskRegistry:
                     )
                     self._remove_when_settled(tool_call_id, task)
                     continue
-                removable.append(tool_call_id)
-        for tool_call_id in removable:
-            await self.remove_task(tool_call_id)
+                # Evict under the SAME lock as the done-check: a resume that
+                # steals the entry between check and eviction would otherwise
+                # have its live writer removed by this stale sweep.
+                self._remove_entry_unlocked(tool_call_id)
 
         if cancelled > 0:
             logger.info(
@@ -1449,16 +1468,6 @@ class BackgroundTaskRegistry:
                 force=force,
             )
         return cancelled
-
-    async def remove_task(self, tool_call_id: str) -> None:
-        """Remove a single task's registry entry and its lookup mappings.
-
-        Called by the BTM collector after ``_await_drain_and_cleanup_tasks``
-        finishes so the registry doesn't grow unboundedly across many turns
-        on a long-lived thread.
-        """
-        async with self._lock:
-            self._remove_entry_unlocked(tool_call_id)
 
     async def remove_task_if_owned(
         self, tool_call_id: str, response_id: str

@@ -741,29 +741,22 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             )
 
     async def _abort_admitted_run(self, task: BackgroundTask, exc: Exception) -> None:
-        """Post-INSERT setup failure: finalize the just-born row as error and
-        release the fence — an admitted run either spawns or terminates, it
-        never strands in_progress."""
-        ledger = getattr(self.registry, "run_ledger", None)
-        if ledger is not None and task.task_run_id:
-            try:
-                await ledger.finalize_task_run(
-                    task.task_run_id,
-                    "error",
-                    task_id=task.task_id,
-                    failure={
-                        "error": f"setup failed before spawn: {exc}",
-                        "error_type": type(exc).__name__,
-                    },
-                )
-            except Exception:
-                logger.warning(
-                    "setup-failure ledger finalize failed",
-                    task_id=task.task_id,
-                    task_run_id=task.task_run_id,
-                    exc_info=True,
-                )
-        await self._release_task_ns(task.task_id)
+        """Post-INSERT setup failure: settle the just-born row as error
+        through the owner terminal pipeline — an admitted run either spawns
+        or terminates, it never strands in_progress. Going through
+        ``_settle_terminal_run`` (not a bare ledger finalize) also writes the
+        terminal meta and stamps stream retention, so the aborted run's spill
+        keys expire instead of leaking without a TTL."""
+        await _settle_terminal_run(
+            task,
+            ledger_status="error",
+            ledger_failure={
+                "error": f"setup failed before spawn: {exc}",
+                "error_type": type(exc).__name__,
+            },
+            registry=self.registry,
+            namespace_owner=self.namespace_owner,
+        )
 
     async def _finalize_cancelled_before_spawn(self, task: BackgroundTask) -> None:
         """A stop won the publish race: the admitted run never spawned (or

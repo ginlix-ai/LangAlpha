@@ -583,6 +583,76 @@ class TestMarkCancelledUserLabeling:
         assert persist_metadata["cancelled_by_user"] is False
 
 
+class TestThrownFinalizeLeavesEntryRunning:
+    """REGRESSION (F4): a THROWN finalize CAS must not stamp the local entry
+    terminal. The durable row is still in_progress — stamping COMPLETED
+    locally (and dropping the run_handle) would strand it: cleanup's
+    dead-handle path only fail_opens entries that are still RUNNING with a
+    handle attached."""
+
+    def _wire(self, btm, task_info, *, finalize_side_effect):
+        run_handle = MagicMock()
+        run_handle.guard = None
+        task_info.metadata = {
+            "workspace_id": "ws-1",
+            "user_id": "user-1",
+            "run_handle": run_handle,
+        }
+        btm.tasks[(task_info.thread_id, task_info.run_id)] = task_info
+
+        coordinator = MagicMock()
+        coordinator.finalize_turn = AsyncMock(side_effect=finalize_side_effect)
+        return run_handle, coordinator
+
+    async def _run_finalize(self, btm, task_info, coordinator):
+        mod = "src.server.services.background_task_manager"
+        with patch(f"{mod}.get_token_usage_from_callback", return_value=(None, [])), \
+             patch(f"{mod}.get_tool_usage_from_handler", return_value={}), \
+             patch(f"{mod}.get_sse_events_from_handler", return_value=[]), \
+             patch(f"{mod}.calculate_execution_time", return_value=1.0), \
+             patch(f"{mod}.release_burst_slot", new_callable=AsyncMock), \
+             patch("src.server.services.turn_lifecycle.TurnCoordinator") as coord_cls:
+            coord_cls.get_instance.return_value = coordinator
+            await btm._finalize_run(
+                task_info.thread_id, task_info.run_id, kind="stream_end"
+            )
+
+    @pytest.mark.asyncio
+    async def test_thrown_cas_keeps_running_status_and_handle(self):
+        btm = _make_btm()
+        task_info = _make_task_info(thread_id="thread-cas", run_id="run-cas")
+        run_handle, coordinator = self._wire(
+            btm, task_info, finalize_side_effect=RuntimeError("db down mid-CAS")
+        )
+
+        await self._run_finalize(btm, task_info, coordinator)
+
+        # Row is still in_progress: the local mirror must not claim terminal.
+        assert task_info.status == TaskStatus.RUNNING
+        assert task_info.completed_at is None
+        # The handle survives for cleanup's dead-handle fail_open path.
+        assert task_info.metadata.get("run_handle") is run_handle
+        # Waiters must still be released (they are timeout-guarded anyway).
+        assert task_info.persistence_complete.is_set()
+
+    @pytest.mark.asyncio
+    async def test_applied_cas_still_marks_terminal(self):
+        from types import SimpleNamespace
+
+        btm = _make_btm()
+        task_info = _make_task_info(thread_id="thread-ok", run_id="run-ok")
+        _, coordinator = self._wire(btm, task_info, finalize_side_effect=None)
+        coordinator.finalize_turn.side_effect = None
+        coordinator.finalize_turn.return_value = SimpleNamespace(
+            applied=True, run={"status": "completed"}
+        )
+
+        await self._run_finalize(btm, task_info, coordinator)
+
+        assert task_info.status == TaskStatus.COMPLETED
+        assert task_info.metadata.get("run_handle") is None
+
+
 # ---------------------------------------------------------------------------
 # _run_workflow stop path: flush + teardown gated on explicit_cancel
 # ---------------------------------------------------------------------------

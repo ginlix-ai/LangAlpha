@@ -98,14 +98,6 @@ async def resolve_task_details(
     return details
 
 
-async def resolve_task_statuses(
-    thread_id: str, task_ids: list[str]
-) -> dict[str, str]:
-    """Status-only projection of :func:`resolve_task_details` (legacy callers)."""
-    details = await resolve_task_details(thread_id, task_ids)
-    return {task_id: d["status"] for task_id, d in details.items()}
-
-
 async def _resolve_legacy_statuses(
     thread_id: str, task_ids: list[str]
 ) -> dict[str, str]:
@@ -141,17 +133,18 @@ async def _resolve_legacy_statuses(
 
 
 def stamp_task_artifact_data(
-    data: Any, details: dict[str, dict[str, Any]]
+    data: Any, details: dict[str, dict[str, Any]], *, status_only: bool = False
 ) -> Any:
     """Return ``data`` with ``payload.status`` (and ``payload.error`` when the
     task errored) stamped — copies, never mutates: stored/cached event dicts
-    are shared objects."""
+    are shared objects. ``status_only`` restricts the stamp to the whitelisted
+    status value — public replay must never ship failure text unauthenticated."""
     task_id = _artifact_task_id(data)
     if not task_id or task_id not in details:
         return data
     detail = details[task_id]
     payload = {**(data.get("payload") or {}), "status": detail["status"]}
-    if detail.get("error"):
+    if not status_only and detail.get("error"):
         payload["error"] = detail["error"]
     return {**data, "payload": payload}
 

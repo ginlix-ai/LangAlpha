@@ -1467,7 +1467,7 @@ def _cache_probe(monkeypatch):
     """Absorb cache writes; return the list of cached tail checkpoint ids."""
     from src.server.services.history import replay as replay_module
 
-    async def fake_statuses(thread_id, task_ids):
+    async def fake_details(thread_id, task_ids):
         return {}
 
     async def fake_live(thread_id, task_ids):
@@ -1481,7 +1481,7 @@ def _cache_probe(monkeypatch):
     async def fake_delete(thread_id, tail_checkpoint_ids):
         pass
 
-    monkeypatch.setattr(replay_module, "resolve_task_statuses", fake_statuses)
+    monkeypatch.setattr(replay_module, "resolve_task_details", fake_details)
     monkeypatch.setattr(
         replay_module.projection_cache, "task_streams_live", fake_live
     )
@@ -2893,10 +2893,10 @@ async def test_live_task_final_launch_defers_to_stream(monkeypatch):
     # trailing either.
     from src.server.services.history import replay as replay_module
 
-    async def fake_statuses(thread_id, task_ids):
-        return {tid: "running" for tid in task_ids}
+    async def fake_details(thread_id, task_ids):
+        return {tid: {"status": "running", "error": None} for tid in task_ids}
 
-    monkeypatch.setattr(replay_module, "resolve_task_statuses", fake_statuses)
+    monkeypatch.setattr(replay_module, "resolve_task_details", fake_details)
 
     def launch(ordinal, action, prompt):
         artifact = {
@@ -2976,7 +2976,7 @@ async def test_trailing_salvage_keeps_its_turn_uncacheable(monkeypatch):
     # without the salvage on the next refresh. Fixed regression.
     from src.server.services.history import replay as replay_module
 
-    async def fake_statuses(thread_id, task_ids):
+    async def fake_details(thread_id, task_ids):
         return {}  # settled — no live writer owns the trailing segment
 
     async def fake_live(thread_id, task_ids):
@@ -2991,7 +2991,7 @@ async def test_trailing_salvage_keeps_its_turn_uncacheable(monkeypatch):
     async def fake_delete(thread_id, tail_checkpoint_ids):
         deleted.extend(tail_checkpoint_ids)
 
-    monkeypatch.setattr(replay_module, "resolve_task_statuses", fake_statuses)
+    monkeypatch.setattr(replay_module, "resolve_task_details", fake_details)
     monkeypatch.setattr(
         replay_module.projection_cache, "task_streams_live", fake_live
     )
