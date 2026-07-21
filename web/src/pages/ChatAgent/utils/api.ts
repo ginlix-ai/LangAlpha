@@ -3,6 +3,7 @@
  * All backend endpoints used by the ChatAgent page
  */
 import { api } from '@/api/client';
+import { registerAuthReset } from '@/lib/authResets';
 import { supabase } from '@/lib/supabase';
 import type { ResourceTier, WorkspaceQuota, WorkflowRunStatus } from '@/types/api';
 
@@ -1347,13 +1348,39 @@ export async function getSkills(mode: string | null = null) {
 
 // --- Model Metadata (eager prefetch at import time — resolved before ChatInput mounts) ---
 
-const _modelMetadataPromise: Promise<Record<string, unknown>> = api.get('/api/v1/models')
-  .then(({ data }) => data.model_metadata || {})
-  .catch(() => ({}));
+let _modelMetadataPromise: Promise<Record<string, unknown>> | null = null;
+
+function fetchModelMetadata(): Promise<Record<string, unknown>> {
+  const promise: Promise<Record<string, unknown>> = api.get('/api/v1/models')
+    .then(({ data }) => data.model_metadata || {})
+    .catch(() => {
+      // Failures are not cached: clear the slot so the next call retries.
+      if (_modelMetadataPromise === promise) _modelMetadataPromise = null;
+      return {};
+    });
+  return promise;
+}
 
 export function getModelMetadata() {
+  if (!_modelMetadataPromise) _modelMetadataPromise = fetchModelMetadata();
   return _modelMetadataPromise;
 }
+
+// Keep the eager import-time prefetch: resolved before ChatInput mounts.
+void getModelMetadata();
+
+/**
+ * Reset the module-level API caches (skills, model metadata). Module
+ * singletons outlive React, so this runs on sign-out and account switch via
+ * the authResets registry — otherwise one user's skills/models leak into the
+ * next session on a shared tab.
+ */
+export function resetChatApiCaches() {
+  for (const key of Object.keys(_skillsPromises)) delete _skillsPromises[key];
+  _modelMetadataPromise = null;
+}
+
+registerAuthReset(resetChatApiCaches);
 
 // --- File Upload ---
 
