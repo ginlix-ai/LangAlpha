@@ -2351,9 +2351,10 @@ export function useChatMessages(
               prompt: taskMetadata?.prompt || taskMetadata?.description || '',
               type: taskMetadata?.type || 'general-purpose',
               messages: finalMessages,
-              // Prefer the backend-stamped real status; fall back to 'completed'
-              // for pre-stamp data or tasks with no replayed task artifact.
-              status: taskMetadata?.status || 'completed',
+              // Prefer the backend-stamped real status. Absent metadata must
+              // NOT read as settled — closure is positive-only, so fall back
+              // to 'running' and let /status reconciliation settle it.
+              status: taskMetadata?.status || 'running',
               error: taskMetadata?.error,
               toolCalls: countToolCalls(finalMessages),
               tokenUsage: tempTokenUsage,
@@ -3547,7 +3548,9 @@ export function useChatMessages(
       }
       taskRefs.messages = msgs;
       if (updateSubagentCard) {
-        updateSubagentCard(agentId, { messages: taskRefs.messages, status: 'completed', isActive: false });
+        // A user Stop is a cancellation, not a completion — stamping
+        // 'completed' would launder the stop as success in the card header.
+        updateSubagentCard(agentId, { messages: taskRefs.messages, status: 'cancelled', isActive: false });
       }
     }
   };

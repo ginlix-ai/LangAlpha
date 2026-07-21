@@ -161,8 +161,10 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
               ? existingSubagentData.isActive
               : true);
 
-        // Auto-finalize messages whenever the card is in completed state.
-        if (finalStatus === 'completed' && finalMessages.length > 0) {
+        // Auto-finalize messages whenever the card settles — ANY terminal
+        // state (completed/cancelled/error): a stopped or failed task's last
+        // message must not keep its streaming spinner forever.
+        if (isTerminalStatus(finalStatus) && finalMessages.length > 0) {
           finalMessages = finalMessages.map(msg => {
             if (msg.role !== 'assistant') return msg;
             const m: SubagentMessage = { ...msg, isStreaming: false };
