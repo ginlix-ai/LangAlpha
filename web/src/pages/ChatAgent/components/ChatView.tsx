@@ -35,7 +35,7 @@ import {
   isManualCompactionInFlight,
 } from '../utils/compactionControl';
 import { countToolCalls } from '../utils/subagentMetrics';
-import { deriveSubagentStatus, isTerminalStatus } from '../utils/subagentStatus';
+import { deriveSubagentStatus, isTerminalStatus, normalizeWireStatus } from '../utils/subagentStatus';
 import { type SubagentTokenUsage, ZERO_USAGE } from '../utils/tokenUsage';
 import {
   resolveSubagentTelemetry as resolveSubagentTelemetryPure,
@@ -2077,8 +2077,11 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     if (isTerminal && (knownStatus !== 'error' || hasReason)) return;
     try {
       const res = await getSubagentTaskStatus(threadId, shortId);
-      const s = res?.status;
-      if (s !== 'completed' && s !== 'cancelled' && s !== 'error') return;
+      // Normalize at the boundary: the ledger endpoint speaks client vocabulary
+      // today, but raw run statuses ('failed'/'interrupted') must land as
+      // 'error' here rather than silently skipping the hydration.
+      const s = normalizeWireStatus(res?.status);
+      if (!isTerminalStatus(s)) return;
       const existing = cards[`subagent-${agentId}`]?.subagentData;
       updateSubagentCard(agentId, {
         agentId,
