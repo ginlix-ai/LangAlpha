@@ -47,8 +47,8 @@ export function provenanceRecordKey(record: {
 
 /**
  * Maps a flat `provenance` SSE event to a `ProvenanceRecord`. Shared by the live
- * (`handleProvenance`) and replay (`handleHistoryProvenance`) paths so a new
- * field on the event only has to be wired up in one place.
+ * and replay paths — both go through `handleProvenance` — so a new field on the
+ * event only has to be wired up in one place.
  */
 export function provenanceEventToRecord(event: ProvenanceEvent): ProvenanceRecord {
   return {
@@ -620,7 +620,8 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
 }
 
 /**
- * Handles provenance events during streaming.
+ * Handles provenance events on both the live-stream and history-replay paths
+ * (replay callers resolve `assistantMessageId` from the event's `turn_index`).
  *
  * Accumulates the accessed-data record onto the assistant message's
  * `provenanceRecords` map. The provenance event is flat (fields top-level on

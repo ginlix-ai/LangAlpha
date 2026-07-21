@@ -1,11 +1,10 @@
 """Locks the cross-worker active-subagent discovery contract.
 
-``/status`` must list tail-mode subagents from ANY worker: membership in
-``subagent:active:{thread}`` (maintained by ``write_task_meta``) is
-enumerated, then verified against each task's N(thread, task:id) advisory
-lock read from pg_locks — held means a live writer, free means settled or
-its worker died. Probe failure keeps members; Redis-unknown falls back to
-the local registry.
+``/status`` must list tail-mode subagents from ANY worker: the ledger's open
+``subagent_runs`` rows are the cluster-wide source, unioned with this
+process's live writers (which cover the settle-teardown window where the row
+is already terminal). Ledger read failure degrades to local-only. A crashed
+worker's open rows stay listed until the recovery scanner finalizes them.
 """
 
 from types import SimpleNamespace
@@ -15,7 +14,6 @@ import pytest
 
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
-    read_active_task_ids,
 )
 from src.server.services.background_task_manager import (
     BackgroundTaskManager,
@@ -93,7 +91,7 @@ class TestHeldTaskNamespaces:
 
 
 # ---------------------------------------------------------------------------
-# write_task_meta maintains the active set in the same pipeline
+# write_task_meta writes routing identity only — no discovery side-channel
 # ---------------------------------------------------------------------------
 
 
@@ -136,8 +134,10 @@ def _task(task_id: str = "aaa111") -> SimpleNamespace:
     )
 
 
-class TestActiveSetMaintenance:
-    async def _write(self, status: str, *, fenced: bool = True) -> _FakePipe:
+class TestTaskMetaWrite:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["running", "completed"])
+    async def test_meta_hash_only_no_set_maintenance(self, status):
         registry = BackgroundTaskRegistry(thread_id="t1")
         pipe = _FakePipe()
         with (
@@ -150,51 +150,13 @@ class TestActiveSetMaintenance:
                 return_value=3600,
             ),
         ):
-            await registry.write_task_meta(_task(), status, fenced=fenced)
-        return pipe
-
-    @pytest.mark.asyncio
-    async def test_running_adds_member(self):
-        pipe = await self._write("running")
-        assert ("sadd", "subagent:active:t1", "aaa111") in pipe.calls
-        assert ("expire", "subagent:active:t1") in pipe.calls
-
-    @pytest.mark.asyncio
-    async def test_unfenced_running_never_advertises(self):
-        # No lock to verify against — a lockless member would always
-        # classify as dead. Meta hash still written for steer targeting.
-        pipe = await self._write("running", fenced=False)
-        assert not any(c[0] in ("sadd", "srem") for c in pipe.calls)
+            await registry.write_task_meta(_task(), status)
         assert ("hset", "subagent:meta:t1:aaa111") in pipe.calls
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("status", ["completed", "cancelled"])
-    async def test_terminal_removes_member(self, status):
-        pipe = await self._write(status)
-        assert ("srem", "subagent:active:t1", "aaa111") in pipe.calls
-        assert not any(c[0] == "sadd" for c in pipe.calls)
-
-
-@pytest.mark.asyncio
-async def test_read_active_task_ids_none_without_redis():
-    cache = MagicMock()
-    cache.enabled = False
-    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
-        assert await read_active_task_ids("t1") is None
-
-
-@pytest.mark.asyncio
-async def test_read_active_task_ids_decodes_and_sorts():
-    cache = MagicMock()
-    cache.enabled = True
-    cache.client = MagicMock()
-    cache.client.smembers = AsyncMock(return_value={b"zz9", b"aa1"})
-    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
-        assert await read_active_task_ids("t1") == ["aa1", "zz9"]
+        assert not any(c[0] in ("sadd", "srem") for c in pipe.calls)
 
 
 # ---------------------------------------------------------------------------
-# BackgroundTaskManager._resolve_active_tasks / get_live_task_info
+# BackgroundTaskManager.get_active_task_ids
 # ---------------------------------------------------------------------------
 
 
@@ -208,9 +170,6 @@ def _make_btm() -> BackgroundTaskManager:
          patch("src.server.services.background_task_manager.get_event_storage_backend", return_value="memory"), \
          patch("src.server.services.background_task_manager.get_redis_ttl_workflow_events", return_value=86400):
         return BackgroundTaskManager()
-
-
-_REGISTRY_MOD = "ptc_agent.agent.middleware.background_subagent.registry"
 
 
 def _live_task(task_id: str) -> SimpleNamespace:
@@ -238,132 +197,55 @@ def _patch_local(tasks):
     )
 
 
+def _patch_ledger(rows_or_exc):
+    if isinstance(rows_or_exc, Exception):
+        mock = AsyncMock(side_effect=rows_or_exc)
+    else:
+        mock = AsyncMock(
+            return_value=[{"task_id": t, "task_run_id": f"run-{t}"} for t in rows_or_exc]
+        )
+    return patch(
+        "src.server.database.subagent_runs.list_open_runs_for_thread", new=mock
+    )
+
+
 class TestResolveActiveTasks:
     @pytest.mark.asyncio
-    async def test_remote_members_filtered_by_lock_never_evicted(self):
-        # Dead members are filtered from the answer but left in the set:
-        # read-path SREM races a resume re-adding the same task id.
+    async def test_union_of_local_and_ledger_open_runs(self):
         btm = _make_btm()
-        probe = AsyncMock(return_value={"live11"})
-        with (
-            _patch_local([]),
-            patch(
-                f"{_REGISTRY_MOD}.read_active_task_ids",
-                new=AsyncMock(return_value=["dead99", "live11"]),
-            ),
-            patch(
-                "src.server.services.writer_guard.held_task_namespaces",
-                new=probe,
-            ),
-        ):
-            assert await btm._resolve_active_tasks("t1") == ["live11"]
-        probe.assert_awaited_once_with("t1", ["dead99", "live11"])
+        with _patch_local(["loc1"]), _patch_ledger(["rem2"]):
+            assert await btm.get_active_task_ids("t1") == ["loc1", "rem2"]
 
     @pytest.mark.asyncio
-    async def test_local_live_tasks_bypass_the_probe(self):
-        # A writer coroutine running in this process is known-alive — listed
-        # even if its Redis publication failed (member missing) or unfenced,
-        # and never probed.
+    async def test_local_live_writer_listed_without_ledger_row(self):
+        # Settle-teardown window: the row is already terminal but the writer
+        # coroutine is still finishing in this process — stays listed.
         btm = _make_btm()
-        probe = AsyncMock(side_effect=AssertionError("must not probe local"))
-        with (
-            _patch_local(["loc1"]),
-            patch(
-                f"{_REGISTRY_MOD}.read_active_task_ids",
-                new=AsyncMock(return_value=["loc1"]),
-            ),
-            patch(
-                "src.server.services.writer_guard.held_task_namespaces",
-                new=probe,
-            ),
-        ):
-            assert await btm._resolve_active_tasks("t1") == ["loc1"]
+        with _patch_local(["loc1"]), _patch_ledger([]):
+            assert await btm.get_active_task_ids("t1") == ["loc1"]
 
     @pytest.mark.asyncio
-    async def test_union_of_local_and_verified_remote(self):
+    async def test_ledger_failure_degrades_to_local_only(self):
         btm = _make_btm()
-        with (
-            _patch_local(["loc1"]),
-            patch(
-                f"{_REGISTRY_MOD}.read_active_task_ids",
-                new=AsyncMock(return_value=["rem2", "dead3"]),
-            ),
-            patch(
-                "src.server.services.writer_guard.held_task_namespaces",
-                new=AsyncMock(return_value={"rem2"}),
-            ),
-        ):
-            assert await btm._resolve_active_tasks("t1") == ["loc1", "rem2"]
-
-    @pytest.mark.asyncio
-    async def test_probe_failure_keeps_members(self):
-        btm = _make_btm()
-        with (
-            _patch_local([]),
-            patch(
-                f"{_REGISTRY_MOD}.read_active_task_ids",
-                new=AsyncMock(return_value=["aaa111"]),
-            ),
-            patch(
-                "src.server.services.writer_guard.held_task_namespaces",
-                new=AsyncMock(return_value=None),
-            ),
-        ):
-            assert await btm._resolve_active_tasks("t1") == ["aaa111"]
-
-    @pytest.mark.asyncio
-    async def test_redis_unknown_falls_back_to_local_registry(self):
-        btm = _make_btm()
-        with (
-            _patch_local(["loc1"]),
-            patch(
-                f"{_REGISTRY_MOD}.read_active_task_ids",
-                new=AsyncMock(return_value=None),
-            ),
-        ):
-            assert await btm._resolve_active_tasks("t1") == ["loc1"]
+        with _patch_local(["loc1"]), _patch_ledger(RuntimeError("db down")):
+            assert await btm.get_active_task_ids("t1") == ["loc1"]
 
     @pytest.mark.asyncio
     async def test_hydrated_placeholder_vanishes_once_owner_settles(self):
         # A peer worker hydrates a running task (e.g. to steer it), leaving
         # a pending-shaped placeholder with no writer coroutine. When the
-        # owner completes (SREM + lock release), the placeholder must not
-        # keep the task listed as active.
+        # owner finalizes (row terminal), the placeholder must not keep the
+        # task listed as active.
         btm = _make_btm()
-        with (
-            _patch_local([_hydrated_placeholder("abc123")]),
-            patch(
-                f"{_REGISTRY_MOD}.read_active_task_ids",
-                new=AsyncMock(return_value=[]),
-            ),
-        ):
-            assert await btm._resolve_active_tasks("t1") == []
+        with _patch_local([_hydrated_placeholder("abc123")]), _patch_ledger([]):
+            assert await btm.get_active_task_ids("t1") == []
 
     @pytest.mark.asyncio
-    async def test_hydrated_placeholder_listed_via_lock_while_owner_lives(self):
+    async def test_hydrated_placeholder_listed_via_open_row_while_owner_lives(self):
         btm = _make_btm()
-        probe = AsyncMock(return_value={"abc123"})
         with (
             _patch_local([_hydrated_placeholder("abc123")]),
-            patch(
-                f"{_REGISTRY_MOD}.read_active_task_ids",
-                new=AsyncMock(return_value=["abc123"]),
-            ),
-            patch(
-                "src.server.services.writer_guard.held_task_namespaces",
-                new=probe,
-            ),
+            _patch_ledger(["abc123"]),
         ):
-            assert await btm._resolve_active_tasks("t1") == ["abc123"]
-        probe.assert_awaited_once_with("t1", ["abc123"])
+            assert await btm.get_active_task_ids("t1") == ["abc123"]
 
-
-@pytest.mark.asyncio
-async def test_get_live_task_info_reports_tasks_without_local_record():
-    """Tail mode on a peer worker: no in-process record, tasks still listed."""
-    btm = _make_btm()
-    with patch.object(
-        btm, "_resolve_active_tasks", new=AsyncMock(return_value=["v2YdrQx"])
-    ):
-        info = await btm.get_live_task_info("t1")
-    assert info == {"live": False, "run_id": None, "active_tasks": ["v2YdrQx"]}

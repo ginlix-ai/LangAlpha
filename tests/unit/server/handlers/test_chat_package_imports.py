@@ -37,11 +37,6 @@ class TestPackagePublicAPI:
 
         assert callable(reconnect_to_workflow_stream)
 
-    def test_import_stream_subagent_task_events(self):
-        from src.server.handlers.chat import stream_subagent_task_events
-
-        assert callable(stream_subagent_task_events)
-
     def test_import_steer_subagent(self):
         from src.server.handlers.chat import steer_subagent
 
@@ -56,7 +51,6 @@ class TestPackagePublicAPI:
             "steer_subagent",
             "reconnect_to_workflow_stream",
             "resolve_llm_config",
-            "stream_subagent_task_events",
         }
         assert set(pkg.__all__) == expected
 
@@ -118,7 +112,6 @@ class TestSubmoduleImports:
         import src.server.handlers.chat.stream_reconnect as mod
 
         assert hasattr(mod, "reconnect_to_workflow_stream")
-        assert hasattr(mod, "stream_subagent_task_events")
 
 
 class TestNoCircularImports:

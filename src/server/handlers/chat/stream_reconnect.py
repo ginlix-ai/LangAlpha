@@ -1,9 +1,8 @@
-"""Stream reconnection and per-subagent SSE consumers.
+"""Main-run stream reconnection.
 
-Both endpoints (``/threads/{id}/messages/stream`` reconnect and
-``/threads/{id}/tasks/{task_id}``) delegate to ``stream_from_log`` /
-``stream_subagent_from_log`` — each a single XREAD BLOCK loop attached by
-stream key + cursor.
+``/threads/{id}/messages/stream`` reconnect delegates to ``stream_from_log``
+— a single XREAD BLOCK loop attached by stream key + cursor. (The
+per-subagent route serves ``stream_subagent_from_log`` directly.)
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from src.server.services.background_task_manager import BackgroundTaskManager
 
 from ._common import logger
 from .steering import drain_steering_return_event
-from .stream_from_log import stream_from_log, stream_subagent_from_log
+from .stream_from_log import stream_from_log
 
 
 # ---------------------------------------------------------------------------
@@ -193,15 +192,3 @@ async def reconnect_to_workflow_stream(
 # ---------------------------------------------------------------------------
 
 
-async def stream_subagent_task_events(
-    thread_id: str, task_id: str, last_event_id: int | None = None
-):
-    """SSE stream of a single subagent's content events.
-
-    Producer-driven Redis writes: ``SubagentEventCaptureMiddleware``'s spill
-    path writes pre-rendered SSE wire strings to
-    ``subagent:stream:{thread_id}:{task_id}`` so this consumer is a
-    pass-through XREAD BLOCK loop.
-    """
-    async for event in stream_subagent_from_log(thread_id, task_id, last_event_id):
-        yield event

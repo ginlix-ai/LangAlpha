@@ -101,7 +101,6 @@ export default function SharedChatView() {
       recentlySentTracker: { isRecentlySent: (_content: string) => false },
       currentMessageRef: { current: null as string | null },
       newMessagesStartIndexRef: { current: 0 },
-      historyMessagesRef: { current: new Set<string>() },
     };
 
     // Cast setMessages to the narrower type expected by historyEventHandlers

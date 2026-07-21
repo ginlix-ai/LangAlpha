@@ -245,6 +245,60 @@ async def patched_get_db_connection(test_db_pool):
         yield _test_get_db_connection
 
 
+@pytest_asyncio.fixture
+async def seed_response(patched_get_db_connection):
+    """Async callable that seeds a response row the trigger-compliant way.
+
+    The terminal-immutability trigger rejects INSERTs with a terminal
+    status, so seeding inserts ``in_progress`` and finalizes with an
+    UPDATE — the same shape production takes through the lifecycle API,
+    including the ``SafeJson`` bind that strips NULs.
+    """
+    from src.server.utils.pg_sanitize import SafeJson
+
+    async def _seed(
+        conversation_response_id: str,
+        conversation_thread_id: str,
+        turn_index: int,
+        status: str = "completed",
+        execution_time=None,
+        sse_events=None,
+    ):
+        async with patched_get_db_connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO conversation_responses
+                        (conversation_response_id, conversation_thread_id,
+                         turn_index, status)
+                    VALUES (%s, %s, %s, 'in_progress')
+                    """,
+                    (
+                        conversation_response_id,
+                        conversation_thread_id,
+                        turn_index,
+                    ),
+                )
+                await cur.execute(
+                    """
+                    UPDATE conversation_responses
+                    SET status = %s,
+                        execution_time = COALESCE(%s, execution_time),
+                        sse_events = COALESCE(%s, sse_events),
+                        completed_at = NOW()
+                    WHERE conversation_response_id = %s
+                    """,
+                    (
+                        status,
+                        execution_time,
+                        SafeJson(sse_events) if sse_events is not None else None,
+                        conversation_response_id,
+                    ),
+                )
+
+    return _seed
+
+
 @pytest.fixture
 def test_user_id() -> str:
     """Deterministic test user ID."""

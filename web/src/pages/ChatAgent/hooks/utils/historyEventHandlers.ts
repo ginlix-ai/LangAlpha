@@ -4,10 +4,7 @@
  */
 
 import { normalizeAction } from './eventUtils';
-import { provenanceEventToRecord, provenanceRecordKey } from './streamEventHandlers';
 import type { MessageRecord, SetMessages, ToolCallRecord, ToolCallResultRecord, TodoPayload, HtmlWidgetData } from './types';
-import type { ProvenanceEvent } from '@/types/sse';
-import type { ProvenanceRecord } from '@/types/chat';
 
 let _steeringIdCounter = 0;
 
@@ -33,14 +30,12 @@ interface HistoryUserMessageRefs {
   recentlySentTracker: { isRecentlySent: (content: string) => boolean };
   currentMessageRef: { current: string | null };
   newMessagesStartIndexRef: { current: number };
-  historyMessagesRef: { current: Set<string> };
   [key: string]: unknown;
 }
 
 /** Refs passed to history steering delivered handler. */
 interface HistorySteeringRefs {
   newMessagesStartIndexRef: { current: number };
-  historyMessagesRef: { current: Set<string> };
   [key: string]: unknown;
 }
 
@@ -73,7 +68,7 @@ export function handleHistoryUserMessage({
   messages: MessageRecord[];
   setMessages: SetMessages;
 }): boolean {
-  const { recentlySentTracker, currentMessageRef, newMessagesStartIndexRef, historyMessagesRef } = refs;
+  const { recentlySentTracker, currentMessageRef, newMessagesStartIndexRef } = refs;
 
   // Check if this is a new pair (not already processed)
   if (assistantMessagesByPair.has(pairIndex)) {
@@ -159,7 +154,6 @@ export function handleHistoryUserMessage({
           userMessage,
           ...prev.slice(insertIndex),
         ];
-        historyMessagesRef.current.add(currentUserMessageId);
         newMessagesStartIndexRef.current = insertIndex + 1;
         return newMessages;
       });
@@ -202,7 +196,6 @@ export function handleHistoryUserMessage({
         assistantMessage,
         ...prev.slice(insertIndex),
       ];
-      historyMessagesRef.current.add(currentAssistantMessageId);
       newMessagesStartIndexRef.current = insertIndex + 1;
       return newMessages;
     });
@@ -560,41 +553,6 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
 }
 
 /**
- * Handles provenance events in history replay. Re-attaches the accessed-data
- * record to the assistant message resolved from the replay `turn_index` (the
- * caller maps `turn_index` → `assistantMessageId`). Keyed by
- * `provenanceRecordKey` so multiple web_search URLs sharing one `tool_call_id`
- * are all kept on reload.
- */
-export function handleHistoryProvenance({ assistantMessageId, event, setMessages }: {
-  assistantMessageId: string;
-  event: ProvenanceEvent;
-  setMessages: SetMessages;
-}): boolean {
-  if (!event || !event.record_id) {
-    return false;
-  }
-
-  const record = provenanceEventToRecord(event);
-  const key = provenanceRecordKey(record);
-
-  setMessages((prev: MessageRecord[]) =>
-    prev.map((msg: MessageRecord) => {
-      if (msg.id !== assistantMessageId) return msg;
-
-      const provenanceRecords = {
-        ...((msg.provenanceRecords as Record<string, ProvenanceRecord>) || {}),
-        [key]: record,
-      };
-
-      return { ...msg, provenanceRecords };
-    })
-  );
-
-  return true;
-}
-
-/**
  * Handles steering_delivered events in history replay. Creates user bubble(s)
  * for each steering message, then a new assistant placeholder so subsequent
  * events render in a fresh assistant bubble.
@@ -614,7 +572,7 @@ export function handleHistorySteeringDelivered({
   refs: HistorySteeringRefs;
   setMessages: SetMessages;
 }): void {
-  const { newMessagesStartIndexRef, historyMessagesRef } = refs;
+  const { newMessagesStartIndexRef } = refs;
   const steeringMessages = (event.messages || []) as Array<Record<string, unknown>>;
 
   // Create user message bubble(s) for each steering message
@@ -636,7 +594,6 @@ export function handleHistorySteeringDelivered({
     setMessages((prev: MessageRecord[]) => {
       const idx = newMessagesStartIndexRef.current;
       const next = [...prev.slice(0, idx), userMessage, ...prev.slice(idx)];
-      historyMessagesRef.current.add(userMsgId);
       newMessagesStartIndexRef.current = idx + 1;
       return next;
     });
@@ -669,7 +626,6 @@ export function handleHistorySteeringDelivered({
   setMessages((prev: MessageRecord[]) => {
     const idx = newMessagesStartIndexRef.current;
     const next = [...prev.slice(0, idx), assistantMessage, ...prev.slice(idx)];
-    historyMessagesRef.current.add(newAssistantId);
     newMessagesStartIndexRef.current = idx + 1;
     return next;
   });

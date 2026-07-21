@@ -23,26 +23,12 @@ vi.mock('../utils/threadStorage', () => ({
   removeStoredThreadId: vi.fn(),
 }));
 
-vi.mock('../../utils/api', () => ({
-  sendChatMessageStream: vi.fn(),
-  sendHitlResponse: vi.fn(),
-  cancelWorkflow: vi.fn().mockResolvedValue({ success: true }),
-  replayThreadHistory: vi.fn().mockResolvedValue(undefined),
-  getWorkflowStatus: vi.fn().mockResolvedValue({
-    can_reconnect: false,
-    status: 'completed',
-    pending_report_back: false,
-    active_tasks: [],
-  }),
-  getReportBackStatus: vi.fn().mockResolvedValue({ pending_report_back: false, report_back_run_id: null }),
-  reconnectToWorkflowStream: vi.fn().mockResolvedValue({ disconnected: false, aborted: false }),
-  openThreadMuxStream: vi.fn(() => new Promise<void>(() => {})),
-  fetchThreadTurns: vi.fn().mockResolvedValue({ turns: [], retry_checkpoint_id: null }),
-  submitFeedback: vi.fn(),
-  removeFeedback: vi.fn(),
-  getThreadFeedback: vi.fn().mockResolvedValue([]),
-  watchThread: vi.fn().mockImplementation(() => ({ abort: new AbortController() })),
-}));
+vi.mock('../../utils/api', async () => {
+  const harness = await import('./chatHookHarness');
+  return harness.apiMockModule({
+    getWorkflowStatus: vi.fn().mockResolvedValue(harness.threadStatus()),
+  });
+});
 
 import { replayThreadHistory, getWorkflowStatus } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';

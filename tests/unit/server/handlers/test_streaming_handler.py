@@ -656,18 +656,9 @@ class TestProvenanceEvent:
         assert "data" not in parsed
 
     def test_provenance_event_resolves_subagent_attribution(self):
-        """A registered subagent namespace yields task:{id} attribution."""
-        from src.ptc_agent.agent.middleware.background_subagent.registry import (
-            BackgroundTaskRegistry,
-        )
-
-        registry = BackgroundTaskRegistry(thread_id="t-provenance")
-        task = MagicMock()
-        task.task_id = "sub42"
-        registry._tasks["tc-sub"] = task
-        registry._ns_uuid_to_tool_call_id["ns-uuid-1"] = "tc-sub"
-
-        handler = self._make_handler(background_registry=registry)
+        """A task-namespace event yields task:{id} attribution from the
+        checkpoint namespace stamped at invocation — no registration."""
+        handler = self._make_handler()
         event_data = {
             "type": "provenance",
             "record_id": "rec-002",
@@ -676,9 +667,8 @@ class TestProvenanceEvent:
             "timestamp": "2024-01-01T00:00:00Z",
             "agent": None,
         }
-        # namespace last element matches the registered uuid
         event_line, parsed = self._dispatch(
-            handler, event_data, agent_from_stream=("tools:ns-uuid-1",)
+            handler, event_data, agent_from_stream=("task:sub42", "tools:ns-uuid-1")
         )
 
         assert event_line == "event: provenance"
@@ -1593,24 +1583,6 @@ class _MultiModeGraph:
         return _gen()
 
 
-class _StubTask:
-    def __init__(self, task_id):
-        self.task_id = task_id
-
-
-class _StubRegistry:
-    """Registry stand-in: resolves registered namespace-element UUIDs."""
-
-    def __init__(self, uuid_to_task_id=None):
-        self._map = uuid_to_task_id or {}
-
-    def get_task_by_namespace(self, ns_element):
-        parts = str(ns_element).split(":", 1)
-        if len(parts) == 2 and parts[1] in self._map:
-            return _StubTask(self._map[parts[1]])
-        return None
-
-
 class TestTaskLaneOwnership:
     """Exclusive lane ownership: task-namespace frames never ride the main
     stream (their canonical copies live in the per-task channel), and a
@@ -1632,24 +1604,14 @@ class TestTaskLaneOwnership:
         ]
 
     def test_resolve_task_lane_literal_namespace_needs_no_registration(self):
-        handler = self._make_handler(registry=_StubRegistry())
+        handler = self._make_handler()
         assert (
             handler._resolve_task_lane(("task:e88Ssw", "model:abc"))
             == "task:e88Ssw"
         )
 
-    def test_resolve_task_lane_registered_uuid_any_segment(self):
-        handler = self._make_handler(
-            registry=_StubRegistry({"uuid-1": "Zz9Xw2"})
-        )
-        # Leaf segment unregistered — the interior registered segment decides.
-        assert (
-            handler._resolve_task_lane(("tools:uuid-1", "model:uuid-fresh"))
-            == "task:Zz9Xw2"
-        )
-
     def test_resolve_task_lane_main_namespaces_stay_main(self):
-        handler = self._make_handler(registry=_StubRegistry())
+        handler = self._make_handler()
         assert handler._resolve_task_lane(()) is None
         assert handler._resolve_task_lane(("model:uuid-a",)) is None
         assert handler._resolve_task_lane(("tools:uuid-b", "model:uuid-c")) is None
@@ -1658,7 +1620,7 @@ class TestTaskLaneOwnership:
     async def test_task_message_frames_suppressed_from_main(self):
         from langchain_core.messages import AIMessageChunk
 
-        handler = self._make_handler(registry=_StubRegistry())
+        handler = self._make_handler()
         events = [
             (
                 ("task:e88Ssw",),
@@ -1682,7 +1644,7 @@ class TestTaskLaneOwnership:
 
     @pytest.mark.asyncio
     async def test_task_interrupt_never_enters_root_lifecycle(self):
-        handler = self._make_handler(registry=_StubRegistry())
+        handler = self._make_handler()
         events = [
             (("task:e88Ssw",), "updates", {"__interrupt__": [object()]}),
         ]
@@ -1692,7 +1654,7 @@ class TestTaskLaneOwnership:
 
     @pytest.mark.asyncio
     async def test_main_interrupt_still_buffers(self):
-        handler = self._make_handler(registry=_StubRegistry())
+        handler = self._make_handler()
 
         async def _no_verify(_graph):
             return False
@@ -1705,7 +1667,7 @@ class TestTaskLaneOwnership:
 
     @pytest.mark.asyncio
     async def test_task_context_window_and_provenance_suppressed(self):
-        handler = self._make_handler(registry=_StubRegistry())
+        handler = self._make_handler()
         events = [
             (
                 ("task:e88Ssw",),
@@ -1735,7 +1697,7 @@ class TestTaskLaneOwnership:
     async def test_task_summarize_window_bookkeeping_still_runs(self):
         # Suppressed from the wire, but the compaction admission window must
         # still open for task namespaces (the stream-end finally closes it).
-        handler = self._make_handler(registry=_StubRegistry())
+        handler = self._make_handler()
         runner = MagicMock()
         runner.open_window.return_value = True
         events = [

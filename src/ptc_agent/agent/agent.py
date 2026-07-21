@@ -576,7 +576,6 @@ class PTCAgent:
             timeout=background_timeout,
             enabled=not disable_subagents,
             registry=_bg_registry,
-            event_capture_middleware=event_capture_middleware,
             checkpointer=checkpointer,
             namespace_owner=namespace_owner,
         )

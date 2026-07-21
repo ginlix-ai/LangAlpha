@@ -391,13 +391,6 @@ class WriterGuard:
 
     # ------------------------------------------------------------- session
 
-    def ensure_alive(self) -> None:
-        if self.lost or self._released or self.conn.closed:
-            raise GuardSessionLost(
-                f"writer session for run={self.run_id} is gone "
-                f"(lost={self.lost}, released={self._released})"
-            )
-
     def attach_abort(self, cb: Callable[[], Any]) -> None:
         """Register the graph-cancel callback the monitor fires on session loss.
 

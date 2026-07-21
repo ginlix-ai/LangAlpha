@@ -24,7 +24,6 @@ from unittest.mock import patch
 import pytest
 
 from src.server.database.subagent_runs import (
-    count_open_runs_for_responses,
     count_open_runs_for_thread,
     find_open_run_from_turn,
     repair_dangling_task_chains,
@@ -227,33 +226,6 @@ async def test_guard_passes_when_nothing_is_live(mock_connection, mock_cursor):
     mock_cursor.fetchone.return_value = None
 
     assert await find_open_run_from_turn(THREAD_ID, 0, conn=mock_connection) is None
-
-
-@pytest.mark.asyncio
-async def test_response_guard_counts_only_cascaded_runs(
-    mock_connection, mock_cursor
-):
-    mock_cursor.fetchone.return_value = (2,)
-
-    count = await count_open_runs_for_responses(
-        THREAD_ID, [RESPONSE_A, RESPONSE_B], conn=mock_connection
-    )
-
-    assert count == 2
-    sql = _sql_at(mock_cursor, 0)
-    assert "status = 'in_progress'" in sql
-    assert "parent_run_id = ANY(%s)" in sql
-    assert _params_at(mock_cursor, 0)[1] == [RESPONSE_A, RESPONSE_B]
-
-
-@pytest.mark.asyncio
-async def test_response_guard_short_circuits_on_no_deletions(
-    mock_connection, mock_cursor
-):
-    """Nothing is being deleted, so nothing can be cascaded — and an empty
-    ANY() would otherwise cost a query to answer zero."""
-    assert await count_open_runs_for_responses(THREAD_ID, [], conn=mock_connection) == 0
-    mock_cursor.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio

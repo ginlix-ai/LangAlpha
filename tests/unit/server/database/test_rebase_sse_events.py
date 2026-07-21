@@ -67,42 +67,40 @@ async def test_locked_read_strips_and_appends_on_same_conn(
 ):
     """Concurrent-append survival: the context_window row that landed after
     the collector's compose is preserved, the collected agent's stale row is
-    replaced (not duplicated), and the write reuses the locked connection."""
+    replaced (not duplicated), and the write happens inside the same locked
+    transaction."""
     mock_cursor.fetchone = AsyncMock(
-        return_value={"sse_events": MAIN + [STALE_TASK_ROW, CW_ROW]}
+        side_effect=[
+            {"sse_events": MAIN + [STALE_TASK_ROW, CW_ROW]},
+            {"conversation_thread_id": "t1", "turn_index": 0},
+        ]
     )
-    update = AsyncMock(return_value=True)
 
-    with patch(
-        "src.server.database.conversation.update_sse_events", new=update
-    ):
-        ok = await rebase_sse_events(
-            "resp-1", {"task:abc"}, CAPTURED, fallback_base=[]
-        )
+    ok = await rebase_sse_events(
+        "resp-1", {"task:abc"}, CAPTURED, fallback_base=[]
+    )
 
     assert ok is True
-    sql = mock_cursor.execute.call_args.args[0]
-    assert "FOR UPDATE" in sql
-    args, kwargs = update.await_args
-    assert args == ("resp-1", MAIN + [CW_ROW] + CAPTURED)
-    assert kwargs["conn"] is rebase_db
+    read_sql = mock_cursor.execute.await_args_list[0].args[0]
+    assert "FOR UPDATE" in read_sql
+    write_sql, write_params = mock_cursor.execute.await_args_list[1].args
+    assert "SET sse_events" in write_sql
+    assert "RETURNING" in write_sql
+    assert write_params[0].obj == MAIN + [CW_ROW] + CAPTURED
+    assert write_params[1] == "resp-1"
 
 
 @pytest.mark.asyncio
 async def test_missing_row_composes_from_fallback(rebase_db, mock_cursor):
     """No row yet: the fallback (pre-compose main chunks) seeds the blob;
-    the update's False (nothing updated) propagates so the caller treats
+    the write updates nothing, so False propagates and the caller treats
     it as a failed persist."""
     mock_cursor.fetchone = AsyncMock(return_value=None)
-    update = AsyncMock(return_value=False)
 
-    with patch(
-        "src.server.database.conversation.update_sse_events", new=update
-    ):
-        ok = await rebase_sse_events(
-            "resp-1", {"task:abc"}, CAPTURED, fallback_base=list(MAIN)
-        )
+    ok = await rebase_sse_events(
+        "resp-1", {"task:abc"}, CAPTURED, fallback_base=list(MAIN)
+    )
 
     assert ok is False
-    args, _ = update.await_args
-    assert args == ("resp-1", MAIN + CAPTURED)
+    _, write_params = mock_cursor.execute.await_args_list[1].args
+    assert write_params[0].obj == MAIN + CAPTURED

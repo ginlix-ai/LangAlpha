@@ -94,25 +94,17 @@ class TurnOutcome:
 
 @dataclass
 class RunHandle:
-    """Identity of one run (= one conversation_responses row), START to finalize.
-
-    ``outcome_hint`` is the in-band interrupt signal: the streaming handler
-    sets it after the durability barrier verifies a pending interrupt, so
-    finalize classification never depends on a timeout-prone state read.
-    """
+    """Identity of one run (= one conversation_responses row), START to finalize."""
 
     run_id: str
     thread_id: str
     turn_index: int
     attempt_no: int
-    request_key: str
     msg_type: str  # 'ptc' | 'flash'
     workspace_id: Optional[str] = None
     user_id: Optional[str] = None
-    query_id: Optional[str] = None
     is_byok: bool = False
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    outcome_hint: Optional[TurnOutcome] = None
     finalized: bool = False
     # Phase 2 (I2): the run's pinned PG session — advisory-lock fence,
     # lifecycle SQL, and per-run saver on one connection. None = Phase-1
@@ -201,11 +193,9 @@ class TurnCoordinator:
             thread_id=thread_id,
             turn_index=row["turn_index"],
             attempt_no=row["attempt_no"],
-            request_key=str(row["request_key"]),
             msg_type=msg_type,
             workspace_id=workspace_id,
             user_id=user_id,
-            query_id=query.query_id if query else None,
             is_byok=is_byok,
             started_at=row["created_at"],
             guard=guard,

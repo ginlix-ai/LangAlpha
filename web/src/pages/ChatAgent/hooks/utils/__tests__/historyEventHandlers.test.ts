@@ -34,7 +34,6 @@ function makeRefs() {
     recentlySentTracker: { isRecentlySent: () => false },
     currentMessageRef: { current: null as string | null },
     newMessagesStartIndexRef: { current: 0 },
-    historyMessagesRef: { current: new Set<string>() },
   };
 }
 

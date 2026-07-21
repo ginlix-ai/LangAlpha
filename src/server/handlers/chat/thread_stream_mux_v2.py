@@ -36,17 +36,24 @@ from src.utils.cache.redis_cache import get_cache_client
 from ._common import logger
 from .report_back import watch_wakes
 from .stream_from_log import _xread_block_ms
-from .thread_stream_mux import (
-    _KEEPALIVE_S,
-    _MAX_CHANNELS,
-    _MAX_CURSORS_LEN,
-    _MAX_DURATION_S,
-    _OUT_QUEUE_MAX,
-    _QUIESCE_EMPTY_ROUNDS,
-    _RESCAN_INTERVAL_S,
-    _XREAD_COUNT,
-    _control,
-)
+
+_MAX_CHANNELS = 32
+_MAX_CURSORS_LEN = 4096
+# Per-channel entries per XREAD round. XREAD's COUNT applies per stream, so
+# this IS the fairness bound: a flooding task hands the loop at most this
+# many frames before other channels get their turn.
+_XREAD_COUNT = 32
+# Empty XREAD rounds on a channel before its (rate-limited) settled probe may
+# fire — a throttle on the crash-window backstop, not a completion handshake.
+_QUIESCE_EMPTY_ROUNDS = 2
+_RESCAN_INTERVAL_S = 30.0
+_KEEPALIVE_S = 25.0
+_MAX_DURATION_S = 30 * 60
+_OUT_QUEUE_MAX = 256
+
+
+def _control(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 _RUN_CHAN_RE = re.compile(r"^run:([A-Za-z0-9-]{1,40})$")
 _ENTRY_ID_RE = re.compile(r"^\d{1,15}-\d{1,10}$")

@@ -30,7 +30,7 @@ import {
 } from '../utils/api';
 // From the dependency-free signal module (not `../utils/api`) so decoding still
 // works where the hook tests mock `../utils/api`.
-import { decodeReportBackSignal, shouldArmReportBack } from '../utils/reportBackSignal';
+import { decodeReportBackSignal, shouldArmForStatus } from '../utils/reportBackSignal';
 
 /**
  * Re-subscribe pacing for the push watch. The watch NEVER stops retrying while
@@ -651,16 +651,10 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
       requestHistoryReload();
       return;
     }
-    // No live run, but this re-activated flash thread still has a report-back
-    // pending (or the backend can't say — `unknown` also arms; draining is only
-    // ever an explicit `false`). Without this, a report-back finished while
-    // hidden would never stream — the hidden view holds no watch to hear it.
-    // Live tail subagents also arm: their report-backs haven't materialized
-    // yet (producer-undecided), so pendingness alone under-reports.
-    if (
-      shouldArmReportBack(decodeReportBackSignal(status.pending_report_back)) ||
-      (status.active_tasks?.length ?? 0) > 0
-    ) {
+    // No live run, but this re-activated flash thread still has work pending.
+    // Without this, a report-back finished while hidden would never stream —
+    // the hidden view holds no watch to hear it.
+    if (shouldArmForStatus(status)) {
       arm(threadId, status.report_back_run_id ?? null, 'activate');
       return;
     }

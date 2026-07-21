@@ -7,8 +7,12 @@
 import { vi, type Mock } from 'vitest';
 import { act } from '@testing-library/react';
 
-/** Mock module shape for `../../utils/api` used by all useChatMessages suites. */
-export function apiMockModule() {
+/**
+ * Mock module shape for `../../utils/api` used by all useChatMessages suites.
+ * `overrides` replaces individual members for suites that need a different
+ * resolved value or a driving implementation — the rest keep the idle defaults.
+ */
+export function apiMockModule<T extends Record<string, unknown>>(overrides = {} as T) {
   return {
     sendChatMessageStream: vi.fn(),
     sendHitlResponse: vi.fn(),
@@ -21,12 +25,13 @@ export function apiMockModule() {
     // like a live stream with no frames. Tests that feed subagent frames
     // drive the REAL v2 client through captureMuxConnections below.
     openThreadMuxStream: vi.fn(() => new Promise<void>(() => {})),
-    fetchThreadTurns: vi.fn().mockResolvedValue({ turns: [], retry_checkpoint_id: null }),
+    fetchThreadTurns: vi.fn().mockResolvedValue({ turns: [] }),
     submitFeedback: vi.fn(),
     removeFeedback: vi.fn(),
     getThreadFeedback: vi.fn().mockResolvedValue([]),
     watchThread: vi.fn().mockImplementation(() => ({ abort: new AbortController() })),
     fetchMarketWatch: vi.fn().mockResolvedValue({ thread_id: 't', symbols: [] }),
+    ...overrides,
   };
 }
 

@@ -501,26 +501,6 @@ async def test_get_latest_turn_index_read_failure_is_none(mock_db_connection, mo
 
 
 @pytest.mark.asyncio
-async def test_create_response(mock_db_connection, mock_cursor):
-    """create_response inserts response and returns dict."""
-    from src.server.database.conversation import create_response
-
-    row = _response_row(response_id="r-1")
-    mock_cursor.fetchone.return_value = row
-
-    result = await create_response(
-        conversation_response_id="r-1",
-        conversation_thread_id="t-1",
-        turn_index=0,
-        status="completed",
-        execution_time=2.0,
-    )
-
-    assert result["conversation_response_id"] == "r-1"
-    assert result["status"] == "completed"
-
-
-@pytest.mark.asyncio
 async def test_get_responses_for_thread(mock_db_connection, mock_cursor):
     """get_responses_for_thread returns responses and total count."""
     from src.server.database.conversation import get_responses_for_thread

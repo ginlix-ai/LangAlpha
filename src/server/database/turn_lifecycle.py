@@ -717,25 +717,3 @@ async def find_run_by_request_key(request_key: str) -> Optional[Dict[str, Any]]:
             return dict(row) if row else None
 
 
-async def append_sse_events_patch(
-    run_id: str, events: List[Dict[str, Any]], conn=None
-) -> bool:
-    """Run-keyed JSONB append to a (possibly terminal) row's archive.
-
-    The lifecycle trigger permits this on terminal rows; it is the only
-    legal post-terminal write (late subagent collectors, salvage).
-    """
-    sql = """
-        UPDATE conversation_responses
-        SET sse_events = COALESCE(sse_events, '[]'::jsonb) || %s::jsonb
-        WHERE conversation_response_id = %s
-    """
-    params = (SafeJson(events), run_id)
-    if conn is not None:
-        async with conn.cursor() as cur:
-            await cur.execute(sql, params)
-            return cur.rowcount > 0
-    async with qr_db.get_db_connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(sql, params)
-            return cur.rowcount > 0

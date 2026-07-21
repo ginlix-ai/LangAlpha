@@ -1050,25 +1050,6 @@ class TestWaitOrSteer:
         assert exc_info.value.detail["code"] == "running"
         mock_steer.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    async def test_exclude_run_id_reaches_admission_scan(self):
-        """A dispatched flow passes its own pre-registered run_id so the
-        admission scan ignores its placeholder and only sees OTHER runs."""
-        from src.server.handlers.chat.admission import wait_or_steer
-
-        manager = AsyncMock()
-        manager.wait_for_admission = AsyncMock(return_value=("fresh", None))
-
-        ready, event = await wait_or_steer(
-            manager, "t-1", "hi", "u-1", exclude_run_id="r-9"
-        )
-
-        assert ready is True
-        assert event is None
-        manager.wait_for_admission.assert_awaited_once_with(
-            "t-1", exclude_run_id="r-9"
-        )
-
 
 # ---------------------------------------------------------------------------
 # admission_conflict_detail (single 409 wording source)

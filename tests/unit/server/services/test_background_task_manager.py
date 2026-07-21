@@ -252,44 +252,20 @@ class TestCancelStaleWorkflowTimeout:
 
 
 # ---------------------------------------------------------------------------
-# cancel_stale_workflow — excludes the caller's own run
+# cancel_stale_workflow
 # ---------------------------------------------------------------------------
 
-class TestCancelStaleWorkflowExcludesOwnRun:
-    """Regression: a dispatched cold-start must not cancel its own run.
-
-    When the sandbox is cold, astream_ptc_workflow calls
-    cancel_stale_workflow to clear a stale prior run — without
-    exclude_run_id it could find and cancel the caller's OWN run, so the
-    dispatch silently never executed.
-    """
-
+class TestCancelStaleWorkflow:
     @pytest.mark.asyncio
-    async def test_excluded_own_run_not_cancelled(self):
-        """With exclude_run_id naming the only run, nothing is cancelled."""
-        btm = _make_btm()
-        own = _make_task_info(status=TaskStatus.RUNNING, run_id="run-self")
-        btm.tasks[("thread-1", "run-self")] = own
-
-        result = await btm.cancel_stale_workflow("thread-1", exclude_run_id="run-self")
-
-        assert result is False
-        assert not own.cancel_event.is_set()
-
-    @pytest.mark.asyncio
-    async def test_other_stale_run_still_cancelled_when_excluding_own(self):
-        """A genuinely stale OTHER run is still cancelled despite the exclusion."""
+    async def test_stale_run_cancelled(self):
         btm = _make_btm()
         stale = _make_task_info(status=TaskStatus.RUNNING, run_id="run-stale")
-        own = _make_task_info(status=TaskStatus.RUNNING, run_id="run-self")
         btm.tasks[("thread-1", "run-stale")] = stale
-        btm.tasks[("thread-1", "run-self")] = own
 
-        result = await btm.cancel_stale_workflow("thread-1", exclude_run_id="run-self")
+        result = await btm.cancel_stale_workflow("thread-1")
 
         assert result is True
         assert stale.cancel_event.is_set()
-        assert not own.cancel_event.is_set()
 
 
 # ---------------------------------------------------------------------------
@@ -1458,16 +1434,6 @@ class TestWaitForAdmission:
             assert await btm.wait_for_admission("t-run") == ("running", row)
 
     @pytest.mark.asyncio
-    async def test_own_excluded_row_is_fresh(self):
-        """A dispatched caller's own committed row must not read as a peer."""
-        btm = _make_btm()
-        with patch(
-            _GET_ACTIVE_RUN, new_callable=AsyncMock, return_value=_live_row("r-mine")
-        ):
-            state = await btm.wait_for_admission("t-run", exclude_run_id="r-mine")
-        assert state == ("fresh", None)
-
-    @pytest.mark.asyncio
     async def test_stopping_local_teardown_within_wait_is_fresh(self):
         """Stopping row hosted by THIS worker: the local task finishes winding
         down within the wait and the slot clears → fresh; the task's
@@ -2109,18 +2075,16 @@ class TestCleanupSpillLockFence:
             await btm._await_drain_and_cleanup_tasks([task], "thread-x", "run-old")
 
         assert locked_during_eval == [True]
-        # One atomic script call: meta hash checked as owner key, the three
-        # event keys deleted only if the owner check passes, caller's run
-        # as the sole argument.
+        # One atomic script call: meta hash checked as owner key, the
+        # captured-events key deleted only if the owner check passes,
+        # caller's run as the sole argument.
         args = cache.client.eval.await_args.args
-        assert args[1] == 4
-        assert list(args[2:6]) == [
+        assert args[1] == 2
+        assert list(args[2:4]) == [
             "subagent:meta:thread-x:abc123",
-            "subagent:events:meta:thread-x:abc123",
-            "subagent:stream:thread-x:abc123",
             "subagent:events:thread-x:abc123",
         ]
-        assert args[6] == "run-old"
+        assert args[4] == "run-old"
 
 
 # ---------------------------------------------------------------------------

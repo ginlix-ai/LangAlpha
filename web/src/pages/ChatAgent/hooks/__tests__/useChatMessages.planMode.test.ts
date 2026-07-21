@@ -63,19 +63,7 @@ vi.mock('../utils/historyEventHandlers', () => ({
 }));
 
 // The API module – the core of what we're testing
-vi.mock('../../utils/api', () => ({
-  fetchMarketWatch: vi.fn().mockResolvedValue({ thread_id: 't', symbols: [] }),
-  sendChatMessageStream: vi.fn(),
-  sendHitlResponse: vi.fn(),
-  replayThreadHistory: vi.fn(),
-  getWorkflowStatus: vi.fn(),
-  reconnectToWorkflowStream: vi.fn(),
-  openThreadMuxStream: vi.fn(() => new Promise<void>(() => {})),
-  fetchThreadTurns: vi.fn(),
-  submitFeedback: vi.fn(),
-  removeFeedback: vi.fn(),
-  getThreadFeedback: vi.fn(),
-}));
+vi.mock('../../utils/api', async () => (await import('./chatHookHarness')).apiMockModule());
 
 import { sendChatMessageStream, sendHitlResponse } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';

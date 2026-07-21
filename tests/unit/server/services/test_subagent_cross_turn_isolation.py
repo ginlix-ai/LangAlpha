@@ -363,25 +363,19 @@ class TestRegistryRemoveTask:
 
     @pytest.mark.asyncio
     async def test_remove_task_drops_all_mappings(self):
-        """remove_task evicts the task, its task_id lookup, results, and
-        any namespace mappings keyed to it."""
+        """remove_task evicts the task, its task_id lookup, and results."""
         registry = BackgroundTaskRegistry(thread_id="t")
         task = _make_subagent_task(
             tool_call_id="tc1", task_id="id1", spawned_run_id="r1",
         )
         registry._tasks["tc1"] = task
         registry._task_id_to_tool_call_id["id1"] = "tc1"
-        registry._ns_uuid_to_tool_call_id["uuid-alpha"] = "tc1"
-        registry._ns_uuid_to_tool_call_id["uuid-other"] = "tc-other"
         registry._results["tc1"] = {"success": True}
 
         await registry.remove_task("tc1")
 
         assert "tc1" not in registry._tasks
         assert "id1" not in registry._task_id_to_tool_call_id
-        assert "uuid-alpha" not in registry._ns_uuid_to_tool_call_id
-        # Unrelated mapping survives.
-        assert registry._ns_uuid_to_tool_call_id["uuid-other"] == "tc-other"
         assert "tc1" not in registry._results
 
     @pytest.mark.asyncio

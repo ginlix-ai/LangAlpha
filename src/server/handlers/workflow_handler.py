@@ -299,25 +299,6 @@ async def get_workflow_status(
             row_ts = latest.get("created_at") if latest is not None else None
         last_update = row_ts.isoformat() if row_ts is not None else None
 
-        # Subagent ids for the frontend's per-task reattach — cluster-wide
-        # (Redis active set verified against the namespace advisory locks),
-        # and NOT gated on an in_progress run: tail-mode subagents outlive
-        # the run's terminal row.
-        active_tasks = []
-        try:
-            from src.server.services.background_task_manager import (
-                BackgroundTaskManager,
-            )
-
-            live = await BackgroundTaskManager.get_instance().get_live_task_info(
-                thread_id
-            )
-            active_tasks = live.get("active_tasks", [])
-        except Exception as e:
-            logger.debug(
-                f"Could not get background task status for {thread_id}: {e}"
-            )
-
         # Include share status so the UI can show the correct icon without an
         # extra API call. The ``/status`` route resolves this while authorizing
         # and passes it in; only fetch when a caller didn't.
@@ -333,21 +314,15 @@ async def get_workflow_status(
                 logger.debug(f"Could not fetch share status for {thread_id}: {e}")
                 is_shared = False
 
-        # Pending report-backs, from the thread kind's own read model: a PTC
-        # thread's pendingness is its open task_report_back outbox row; a
-        # flash thread's is the Redis watch set.
-        if msg_type == "ptc":
-            from src.server.handlers.chat.task_report_back import (
-                read_task_report_back_status,
-            )
+        # Report-back pendingness AND the subagent ids for per-task reattach,
+        # from the thread kind's own read model (task slice = outbox row +
+        # ledger-backed active tasks; flash = Redis watch set, no subagents).
+        # active_tasks is NOT gated on an in_progress run: tail-mode
+        # subagents outlive the run's terminal row.
+        from src.server.handlers.chat.report_back import read_report_back_slice
 
-            rb = await read_task_report_back_status(thread_id)
-        else:
-            from src.server.handlers.chat.report_back import (
-                read_report_back_status,
-            )
-
-            rb = await read_report_back_status(thread_id)
+        rb = await read_report_back_slice(thread_id, msg_type)
+        active_tasks = rb.get("active_tasks", [])
         pending_report_back = rb["pending_report_back"]
         report_back_run_id = rb["report_back_run_id"]
         recent_report_back_run_ids = rb.get("recent_report_back_run_ids", [])

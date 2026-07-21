@@ -110,7 +110,7 @@ def _fake_runner(refusal: Exception | None = None, saver=None):
             raise refusal
         runner.held.append((thread_id, verb))
         try:
-            yield MutationSession(op_id="test-op", conn=None, saver=saver)
+            yield MutationSession(conn=None, saver=saver)
         finally:
             runner.released.append((thread_id, verb))
 

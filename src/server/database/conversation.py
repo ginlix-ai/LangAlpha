@@ -957,48 +957,6 @@ async def get_latest_turn_index(conversation_thread_id: str) -> Optional[int]:
         return None
 
 
-async def get_next_turn_index(conversation_thread_id: str, conn=None) -> int:
-    """
-    Calculate the next turn_index for a thread (0-based).
-
-    Args:
-        conversation_thread_id: Thread ID
-        conn: Optional database connection to reuse
-    """
-    try:
-        if conn:
-            # Reuse provided connection
-            async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(
-                    """
-                    SELECT COUNT(*) as count
-                    FROM conversation_queries
-                    WHERE conversation_thread_id = %s
-                """,
-                    (conversation_thread_id,),
-                )
-                result = await cur.fetchone()
-                return result["count"]
-        else:
-            # Acquire new connection (backward compatibility)
-            async with get_db_connection() as conn:
-                async with conn.cursor(row_factory=dict_row) as cur:
-                    await cur.execute(
-                        """
-                        SELECT COUNT(*) as count
-                        FROM conversation_queries
-                        WHERE conversation_thread_id = %s
-                    """,
-                        (conversation_thread_id,),
-                    )
-                    result = await cur.fetchone()
-                    return result["count"]
-
-    except Exception as e:
-        logger.error(f"Error calculating turn index: {e}")
-        return 0
-
-
 async def create_query(
     conversation_query_id: str,
     conversation_thread_id: str,
@@ -1337,232 +1295,6 @@ async def _sync_provenance_for_response(
     )
 
 
-async def create_response(
-    conversation_response_id: str,
-    conversation_thread_id: str,
-    turn_index: int,
-    status: str,
-    interrupt_reason: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-    warnings: Optional[List[str]] = None,
-    errors: Optional[List[str]] = None,
-    execution_time: Optional[float] = None,
-    created_at: Optional[datetime] = None,
-    sse_events: Optional[Any] = None,
-    conn=None,
-    idempotent: bool = True,
-) -> Dict[str, Any]:
-    """
-    Create a response entry.
-
-    Args:
-        conversation_response_id: Response ID
-        conversation_thread_id: Thread ID
-        turn_index: Turn index
-        status: Status
-        interrupt_reason: Optional interrupt reason
-        metadata: Optional metadata
-        warnings: Optional warnings
-        errors: Optional errors
-        execution_time: Optional execution time
-        created_at: Optional timestamp
-        sse_events: Optional SSE events data
-        conn: Optional database connection to reuse
-        idempotent: If True, use ON CONFLICT DO UPDATE for safe retries
-    """
-    if created_at is None:
-        created_at = datetime.now(timezone.utc)
-
-    try:
-        if conn:
-            # Reuse provided connection
-            async with conn.cursor(row_factory=dict_row) as cur:
-                if idempotent:
-                    # Idempotent: ON CONFLICT DO UPDATE for safe retries
-                    await cur.execute(
-                        """
-                        INSERT INTO conversation_responses (
-                            conversation_response_id, conversation_thread_id, turn_index, status,
-                            interrupt_reason, metadata,
-                            warnings, errors, execution_time, created_at,
-                            sse_events
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (conversation_thread_id, turn_index) DO UPDATE
-                        SET status = EXCLUDED.status,
-                            interrupt_reason = EXCLUDED.interrupt_reason,
-                            metadata = EXCLUDED.metadata,
-                            warnings = EXCLUDED.warnings,
-                            errors = EXCLUDED.errors,
-                            execution_time = EXCLUDED.execution_time,
-                            created_at = EXCLUDED.created_at,
-                            sse_events = EXCLUDED.sse_events
-                        RETURNING conversation_response_id, conversation_thread_id, turn_index, status,
-                                  interrupt_reason, metadata,
-                                  warnings, errors, execution_time, created_at,
-                                  sse_events
-                    """,
-                        (
-                            conversation_response_id,
-                            conversation_thread_id,
-                            turn_index,
-                            status,
-                            interrupt_reason,
-                            SafeJson(metadata or {}),
-                            warnings or [],
-                            errors or [],
-                            execution_time,
-                            created_at,
-                            SafeJson(sse_events) if sse_events else None,
-                        ),
-                    )
-                else:
-                    # Non-idempotent: fail on conflict
-                    await cur.execute(
-                        """
-                        INSERT INTO conversation_responses (
-                            conversation_response_id, conversation_thread_id, turn_index, status,
-                            interrupt_reason, metadata,
-                            warnings, errors, execution_time, created_at,
-                            sse_events
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        RETURNING conversation_response_id, conversation_thread_id, turn_index, status,
-                                  interrupt_reason, metadata,
-                                  warnings, errors, execution_time, created_at,
-                                  sse_events
-                    """,
-                        (
-                            conversation_response_id,
-                            conversation_thread_id,
-                            turn_index,
-                            status,
-                            interrupt_reason,
-                            SafeJson(metadata or {}),
-                            warnings or [],
-                            errors or [],
-                            execution_time,
-                            created_at,
-                            SafeJson(sse_events) if sse_events else None,
-                        ),
-                    )
-                result = await cur.fetchone()
-                logger.debug(
-                    f"[conversation_db] create_response response_id={conversation_response_id} thread_id={conversation_thread_id} turn_index={turn_index} status={status}"
-                )
-                # Use the canonical row id from RETURNING — on ON CONFLICT this
-                # is the EXISTING row's id, which may differ from the arg. The
-                # provenance FK must reference the row that actually persisted.
-                canonical_response_id = (
-                    str(result["conversation_response_id"])
-                    if result
-                    else conversation_response_id
-                )
-                await _sync_provenance_for_response(
-                    conn,
-                    conversation_response_id=canonical_response_id,
-                    conversation_thread_id=conversation_thread_id,
-                    turn_index=turn_index,
-                    sse_events=sse_events,
-                )
-                return dict(result)
-        else:
-            # Acquire new connection (backward compatibility)
-            async with get_db_connection() as conn:
-                async with conn.cursor(row_factory=dict_row) as cur:
-                    if idempotent:
-                        # Idempotent: ON CONFLICT DO UPDATE for safe retries
-                        await cur.execute(
-                            """
-                            INSERT INTO conversation_responses (
-                                conversation_response_id, conversation_thread_id, turn_index, status,
-                                interrupt_reason, metadata,
-                                warnings, errors, execution_time, created_at,
-                                sse_events
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (conversation_thread_id, turn_index) DO UPDATE
-                            SET status = EXCLUDED.status,
-                                interrupt_reason = EXCLUDED.interrupt_reason,
-                                metadata = EXCLUDED.metadata,
-                                warnings = EXCLUDED.warnings,
-                                errors = EXCLUDED.errors,
-                                execution_time = EXCLUDED.execution_time,
-                                created_at = EXCLUDED.created_at,
-                                sse_events = EXCLUDED.sse_events
-                            RETURNING conversation_response_id, conversation_thread_id, turn_index, status,
-                                      interrupt_reason, metadata,
-                                      warnings, errors, execution_time, created_at,
-                                      sse_events
-                        """,
-                            (
-                                conversation_response_id,
-                                conversation_thread_id,
-                                turn_index,
-                                status,
-                                interrupt_reason,
-                                SafeJson(metadata or {}),
-                                warnings or [],
-                                errors or [],
-                                execution_time,
-                                created_at,
-                                SafeJson(sse_events) if sse_events else None,
-                            ),
-                        )
-                    else:
-                        # Non-idempotent: fail on conflict
-                        await cur.execute(
-                            """
-                            INSERT INTO conversation_responses (
-                                conversation_response_id, conversation_thread_id, turn_index, status,
-                                interrupt_reason, metadata,
-                                warnings, errors, execution_time, created_at,
-                                sse_events
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            RETURNING conversation_response_id, conversation_thread_id, turn_index, status,
-                                      interrupt_reason, metadata,
-                                      warnings, errors, execution_time, created_at,
-                                      sse_events
-                        """,
-                            (
-                                conversation_response_id,
-                                conversation_thread_id,
-                                turn_index,
-                                status,
-                                interrupt_reason,
-                                SafeJson(metadata or {}),
-                                warnings or [],
-                                errors or [],
-                                execution_time,
-                                created_at,
-                                SafeJson(sse_events) if sse_events else None,
-                            ),
-                        )
-                    result = await cur.fetchone()
-                    logger.debug(
-                        f"[conversation_db] create_response response_id={conversation_response_id} thread_id={conversation_thread_id} turn_index={turn_index} status={status}"
-                    )
-                    # Canonical id from RETURNING (see conn-branch note above).
-                    canonical_response_id = (
-                        str(result["conversation_response_id"])
-                        if result
-                        else conversation_response_id
-                    )
-                    await _sync_provenance_for_response(
-                        conn,
-                        conversation_response_id=canonical_response_id,
-                        conversation_thread_id=conversation_thread_id,
-                        turn_index=turn_index,
-                        sse_events=sse_events,
-                    )
-                    return dict(result)
-
-    except Exception as e:
-        logger.error(f"Error creating response: {e}")
-        raise
-
-
 async def rebase_sse_events(
     conversation_response_id: str,
     drop_agents: set,
@@ -1601,32 +1333,6 @@ async def rebase_sse_events(
                 for c in base
                 if str((c.get("data") or {}).get("agent", "")) not in drop_agents
             ] + append_events
-            return await update_sse_events(
-                conversation_response_id, updated_chunks, conn=conn
-            )
-
-
-async def update_sse_events(
-    conversation_response_id: str,
-    sse_events: List[Dict[str, Any]],
-    conn=None,
-) -> bool:
-    """
-    Update sse_events for an existing response.
-
-    Used by post-interrupt subagent result collector to replace incomplete
-    subagent events with the full set captured by middleware.
-
-    Args:
-        conversation_response_id: The response ID to update
-        sse_events: Updated SSE events list
-        conn: Optional database connection to reuse
-
-    Returns:
-        True if the row was updated, False if not found
-    """
-    try:
-        if conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
@@ -1635,59 +1341,30 @@ async def update_sse_events(
                     WHERE conversation_response_id = %s
                     RETURNING conversation_thread_id, turn_index
                     """,
-                    (SafeJson(sse_events), conversation_response_id),
+                    (SafeJson(updated_chunks), conversation_response_id),
                 )
-                row = await cur.fetchone()
-                updated = row is not None
-            if updated:
-                # Re-derive provenance_records on the same connection. This is
-                # the choke point for the background subagent drain and the
-                # context_window append, neither of which goes through
-                # create_response.
-                await _sync_provenance_for_response(
-                    conn,
-                    conversation_response_id=conversation_response_id,
-                    conversation_thread_id=str(row["conversation_thread_id"]),
-                    turn_index=row["turn_index"],
-                    sse_events=sse_events,
+                urow = await cur.fetchone()
+            if urow is None:
+                logger.warning(
+                    f"[conversation_db] rebase_sse_events: no row found for "
+                    f"response_id={conversation_response_id}"
                 )
-        else:
-            async with get_db_connection() as conn:
-                async with conn.cursor(row_factory=dict_row) as cur:
-                    await cur.execute(
-                        """
-                        UPDATE conversation_responses
-                        SET sse_events = %s
-                        WHERE conversation_response_id = %s
-                        RETURNING conversation_thread_id, turn_index
-                        """,
-                        (SafeJson(sse_events), conversation_response_id),
-                    )
-                    row = await cur.fetchone()
-                    updated = row is not None
-                if updated:
-                    await _sync_provenance_for_response(
-                        conn,
-                        conversation_response_id=conversation_response_id,
-                        conversation_thread_id=str(row["conversation_thread_id"]),
-                        turn_index=row["turn_index"],
-                        sse_events=sse_events,
-                    )
-
-        if updated:
+                return False
+            # Re-derive provenance_records inside the same transaction — this
+            # is the choke point for the background subagent drain, which
+            # bypasses the turn-finalize path.
+            await _sync_provenance_for_response(
+                conn,
+                conversation_response_id=conversation_response_id,
+                conversation_thread_id=str(urow["conversation_thread_id"]),
+                turn_index=urow["turn_index"],
+                sse_events=updated_chunks,
+            )
             logger.info(
-                f"[conversation_db] update_sse_events response_id={conversation_response_id} "
-                f"events={len(sse_events)}"
+                f"[conversation_db] rebase_sse_events response_id="
+                f"{conversation_response_id} events={len(updated_chunks)}"
             )
-        else:
-            logger.warning(
-                f"[conversation_db] update_sse_events: no row found for response_id={conversation_response_id}"
-            )
-        return updated
-
-    except Exception as e:
-        logger.error(f"Error updating sse_events: {e}")
-        raise
+            return True
 
 
 async def append_sse_event(

@@ -1,7 +1,7 @@
 """Locks for the thread snapshot's revalidation loop and cursor grammar.
 
 The cursors this emits are consumed verbatim by the mux, so the task-cursor
-test round-trips through ``parse_mux_cursors`` rather than asserting a
+test round-trips through ``parse_mux_cursors_v2`` rather than asserting a
 string shape. Ledger rows arrive from psycopg with UUID objects, so the
 fakes here use real UUIDs — string coercion is part of the contract.
 """
@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.server.handlers.chat.thread_stream_mux import parse_mux_cursors
+from src.server.handlers.chat.thread_stream_mux_v2 import parse_mux_cursors_v2
 from src.server.services.history.snapshot import build_thread_snapshot
 
 THREAD = "11111111-1111-1111-1111-111111111111"
@@ -115,10 +115,10 @@ class TestRevalidationLoop:
         assert active.await_count == 4
 
     @pytest.mark.asyncio
-    async def test_epoch_rotation_at_recheck_forces_a_second_pass(self):
+    async def test_run_rotation_at_recheck_forces_a_second_pass(self):
         # R1 finalizes and R2 resumes the same task mid-sample: the recheck
         # compares exact {task_id: task_run_id} maps, so the rotation is
-        # caught and the SECOND pass's epoch is what gets served.
+        # caught and the SECOND pass's run is what gets served.
         run = uuid.uuid4()
         r1, r2 = uuid.uuid4(), uuid.uuid4()
         snap, _ = await _build(
@@ -131,7 +131,7 @@ class TestRevalidationLoop:
             ],
         )
         assert snap["revalidations"] == 1
-        assert snap["active_runs"][1]["epoch"] == str(r2)
+        assert snap["active_runs"][1]["run_id"] == str(r2)
 
     @pytest.mark.asyncio
     async def test_spawn_during_sampling_is_picked_up(self):
@@ -175,14 +175,12 @@ class TestCursorForms:
         snap, _ = await _build(
             active_run=None,
             task_rows=[_task_row("k7Xm2p", task_run_id)],
-            streams={f"subagent:stream:{THREAD}:k7Xm2p": "42-0"},
+            streams={f"subagent:stream:{THREAD}:{task_run_id}": "42-0"},
         )
         lane = snap["active_runs"][0]
-        assert lane["cursor"] == f"task:k7Xm2p@{task_run_id}#42-0"
+        assert lane["cursor"] == f"run:{task_run_id}#42-0"
         # The mux is the real consumer — prove it parses.
-        assert parse_mux_cursors(lane["cursor"]) == {
-            "task:k7Xm2p": (str(task_run_id), "42-0")
-        }
+        assert parse_mux_cursors_v2(lane["cursor"]) == {str(task_run_id): "42-0"}
 
     @pytest.mark.asyncio
     async def test_empty_task_stream_cursors_from_bottom(self):
@@ -192,7 +190,7 @@ class TestCursorForms:
         )
         lane = snap["active_runs"][0]
         assert lane["cursor"].endswith("#0-0")
-        assert parse_mux_cursors(lane["cursor"])["task:k7Xm2p"][1] == "0-0"
+        assert parse_mux_cursors_v2(lane["cursor"])[str(task_run_id)] == "0-0"
 
     @pytest.mark.asyncio
     async def test_task_lane_identity_fields(self):
@@ -203,8 +201,8 @@ class TestCursorForms:
         lane = snap["active_runs"][0]
         assert lane["lane"] == "task:k7Xm2p"
         assert lane["task_id"] == "k7Xm2p"
-        # run_id IS the epoch: streams are immutable per run.
-        assert lane["run_id"] == lane["epoch"] == str(task_run_id)
+        # The run stream is immutable: run_id alone is the channel identity.
+        assert lane["run_id"] == str(task_run_id)
 
     @pytest.mark.asyncio
     async def test_main_cursor_is_the_entry_id_major(self):

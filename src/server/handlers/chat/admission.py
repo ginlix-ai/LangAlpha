@@ -85,7 +85,6 @@ async def wait_or_steer(
     *,
     steer_only: bool = False,
     can_steer: bool = True,
-    exclude_run_id: str | None = None,
 ) -> tuple[bool, str | None]:
     """Admit a new turn, steer the running one, or 409.
 
@@ -106,9 +105,7 @@ async def wait_or_steer(
     ``steering_returned`` on the turn stream, not this connection.
 
     ``can_steer=False`` (dispatched X-Dispatch=background flows) forbids
-    steering entirely: they own a pre-registered ``(thread_id, run_id)``
-    placeholder — passed as ``exclude_run_id`` so the admission scan ignores
-    it — and any OTHER in-flight run is a hard conflict, never a steer.
+    steering entirely: any in-flight run is a hard conflict, never a steer.
 
     Admission states (see ``BackgroundTaskManager.wait_for_admission``):
     - ``"fresh"``     → start a new turn ``(True, None)``; with ``steer_only``,
@@ -122,9 +119,7 @@ async def wait_or_steer(
     # Deferred: steering imports chat-handler modules at module level.
     from src.server.handlers.chat.steering import steer_thread, unsteer_thread
 
-    state, active_row = await manager.wait_for_admission(
-        thread_id, exclude_run_id=exclude_run_id
-    )
+    state, active_row = await manager.wait_for_admission(thread_id)
     if state == "fresh":
         if steer_only:
             raise HTTPException(

@@ -1012,14 +1012,6 @@ export async function fetchThreadTurns(threadId: string) {
 }
 
 /**
- * Stream a single subagent's content events (message_chunk, tool_calls, etc.)
- * via a dedicated per-task SSE endpoint.
- * @param {string} threadId - The thread ID
- * @param {string} taskId - The 6-char subagent task ID (e.g., 'k7Xm2p')
- * @param {Function} onEvent - Callback for each SSE event
- * @param {AbortSignal} signal - AbortController signal for cancellation
- */
-/**
  * Raw line-oriented reader for the multiplexed thread stream
  * (`GET /threads/{id}/stream?contract=v2`). The mux client parses SSE blocks
  * itself — it needs the `run:<run_id>#<entry_id>` cursor id line that

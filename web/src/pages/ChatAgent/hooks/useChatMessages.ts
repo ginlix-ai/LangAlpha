@@ -15,7 +15,7 @@ import { getThreadMux, peekThreadMux, type ThreadMuxSink } from '../utils/thread
 import type { WorkflowStatusResponse, ReportBackStatusResponse } from '../utils/api';
 // Imported from the dependency-free signal module (not `../utils/api`) so this
 // keeps decoding wire status even in the hook tests that fully mock `../utils/api`.
-import { decodeReportBackSignal, shouldArmReportBack } from '../utils/reportBackSignal';
+import { decodeReportBackSignal, shouldArmForStatus } from '../utils/reportBackSignal';
 import { useReportBackWatch, REPORT_BACK_IDLE_MAX_REARMS } from './useReportBackWatch';
 import { toast } from '@/components/ui/use-toast';
 import { buildRateLimitError, isUpstreamHint, type StructuredError } from '@/utils/rateLimitError';
@@ -59,7 +59,6 @@ import {
   handleHistoryToolCallResult,
   handleHistoryTodoUpdate,
   handleHistoryHtmlWidget,
-  handleHistoryProvenance,
   handleHistorySteeringDelivered,
   handleHistoryTaskArtifactStatus,
   isSubagentHistoryEvent,
@@ -766,7 +765,6 @@ export function useChatMessages(
 
   // Refs for history loading state
   const historyLoadingRef = useRef(false);
-  const historyMessagesRef = useRef(new Set<string>()); // Track message IDs from history
   const newMessagesStartIndexRef = useRef(0); // Index where new messages start
   // Guards against the load-history effect doing a redundant replay when
   // (workspaceId, threadId, reloadTrigger) re-resolve to a tuple this hook
@@ -1089,7 +1087,6 @@ export function useChatMessages(
         steeringAtOrderRef.current = null;
         historyLoadingRef.current = false;
         historyLoadedKeyRef.current = null;
-        historyMessagesRef.current.clear();
         newMessagesStartIndexRef.current = 0;
         recentlySentTrackerRef.current.clear();
         turnCheckpointsRef.current = null;
@@ -1125,7 +1122,6 @@ export function useChatMessages(
       // duplicate insert would also trip React's same-key warnings.
       // ``isHistory: true`` only marks bubbles produced by this loader, so
       // any in-flight streaming bubble survives the filter.
-      historyMessagesRef.current.clear();
       newMessagesStartIndexRef.current = 0;
       // A re-replay rebuilds every history bubble from persisted events, so the
       // rendered-interrupt set must start empty and be repopulated by this pass;
@@ -1291,7 +1287,7 @@ export function useChatMessages(
             pairIndex: event.turn_index!,
             assistantMessagesByPair,
             pairStateByPair,
-            refs: { newMessagesStartIndexRef, historyMessagesRef },
+            refs: { newMessagesStartIndexRef },
             setMessages: setMessagesForHandlers,
           });
           return;
@@ -1313,7 +1309,7 @@ export function useChatMessages(
             return;
           }
 
-          handleHistoryProvenance({
+          handleProvenance({
             assistantMessageId: currentAssistantMessageId,
             event: event as unknown as import('@/types/sse').ProvenanceEvent,
             setMessages: setMessagesForHandlers,
@@ -1436,7 +1432,6 @@ export function useChatMessages(
             recentlySentTracker: recentlySentTrackerRef.current,
             currentMessageRef,
             newMessagesStartIndexRef,
-            historyMessagesRef,
           };
 
           handleHistoryUserMessage({
@@ -3063,14 +3058,8 @@ export function useChatMessages(
       // the report-back becomes due can report both; reconnecting to
       // status.run_id alone can miss the report-back run). The watch stays
       // dormant while a reconnect stream is live and attach() skips the run
-      // already on screen, so this never double-streams. Arms on `pending` OR
-      // `unknown` (draining is only ever an explicit `false`) OR live tail
-      // subagents — their report-backs haven't materialized yet, so a mid-run
-      // load reads idle while turns are still coming (producer-undecided).
-      if (
-        shouldArmReportBack(decodeReportBackSignal(status.pending_report_back)) ||
-        (status.active_tasks?.length ?? 0) > 0
-      ) {
+      // already on screen, so this never double-streams.
+      if (shouldArmForStatus(status)) {
         if (import.meta.env.DEV) console.log('[ReportBack] Pending report-back detected on load, opening watch');
         // Key the watch to THIS thread (pending_report_back is a flash-thread
         // property) and seed the run /status already named. Poke a catch-up
@@ -3324,9 +3313,9 @@ export function useChatMessages(
       setInlineSubagentTaskStatus(`task:${shortTaskId}`, status);
       // Workflow-level flag only when ALL run channels have closed. No status
       // sweep: each task's card/chip was already stamped terminal by its own
-      // chan_close above (positive closure per task). A blanket
-      // inactivateAllSubagents() here would falsely complete any sibling whose
-      // chan_close merely lagged or dropped.
+      // chan_close above (positive closure per task). A blanket completion
+      // sweep here would falsely complete any sibling whose chan_close merely
+      // lagged or dropped.
       if (muxOpenTaskIds().size === 0) {
         setHasActiveSubagents(false);
       }
@@ -3356,21 +3345,19 @@ export function useChatMessages(
     },
   };
 
-  /** A task from a stale /status snapshot that history already shows
-   * terminal must not be revived: its run settled before the mux's window,
-   * so no closure would ever arrive for a re-activated card. */
-  const isHistoryTerminalTask = (shortTaskId: string): boolean => {
-    const st = subagentHistoryRef.current?.[`task:${shortTaskId}`]?.status;
-    return !!st && st !== 'running';
-  };
-
   /** A task is settled — and must never be re-activated by a stale /status
    * snapshot — if the ledger shows it terminal OR the client already saw its
-   * per-task stream close live this session. The second half is what history
-   * alone misses: a task that closed live but whose ledger the local history
-   * hasn't refreshed to terminal yet. */
-  const isSettledTask = (shortTaskId: string): boolean =>
-    isHistoryTerminalTask(shortTaskId) || terminalTaskOutcomesRef.current.has(shortTaskId);
+   * per-task stream close live this session. Either way its run settled before
+   * the mux's window, so no closure would ever arrive for a re-activated card.
+   * The second half is what history alone misses: a task that closed live but
+   * whose ledger the local history hasn't refreshed to terminal yet. */
+  const isSettledTask = (shortTaskId: string): boolean => {
+    const historyStatus = subagentHistoryRef.current?.[`task:${shortTaskId}`]?.status;
+    return (
+      (!!historyStatus && historyStatus !== 'running') ||
+      terminalTaskOutcomesRef.current.has(shortTaskId)
+    );
+  };
 
   /**
    * Keep the thread's v2 mux attached with the current stream processor.

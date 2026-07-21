@@ -5,8 +5,8 @@
  * closing. But a FAILED spawn (admission/setup error, content prefixed "ERROR")
  * never produces a task artifact or a channel, so nothing else will ever settle
  * its inline placeholder. handleToolCallResult must stamp it 'error' itself, or
- * the chip spins "Running" forever (regression after the inactivateAllSubagents
- * sweep was removed).
+ * the chip spins "Running" forever (regression after the blanket completion
+ * sweep was removed in favor of positive per-task closure).
  */
 import { describe, it, expect, vi } from 'vitest';
 import { handleToolCallResult } from '../streamEventHandlers';

@@ -38,9 +38,6 @@ from src.observability.tracing import (
 )
 
 if TYPE_CHECKING:
-    from ptc_agent.agent.middleware.background_subagent.event_capture import (
-        SubagentEventCaptureMiddleware,
-    )
     from src.tools.decorators import ToolUsageTracker
 
 # This ContextVar propagates tool_call_id to subagent tool calls, used by
@@ -535,7 +532,6 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         *,
         enabled: bool = True,
         registry: BackgroundTaskRegistry | None = None,
-        event_capture_middleware: "SubagentEventCaptureMiddleware | None" = None,
         checkpointer: Any | None = None,
         namespace_owner: Any | None = None,
     ) -> None:
@@ -552,7 +548,6 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         self.registry = registry or BackgroundTaskRegistry()
         self.timeout = timeout
         self.enabled = enabled
-        self.event_capture_middleware = event_capture_middleware
         self.checkpointer = checkpointer
         self.namespace_owner = namespace_owner
         # Task ids with a resume mid-flight: the liveness check and the
@@ -1279,13 +1274,6 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 # detaches the writer from every run's teardown.
                 task.spawned_run_id = resume_run_id
 
-                # Clear stale namespace mappings so new ones can be registered
-                self.registry.clear_namespaces_for_task(task.tool_call_id)
-
-                # Allow re-emission of subagent_identity event
-                if self.event_capture_middleware:
-                    self.event_capture_middleware.clear_identity(task.tool_call_id)
-
                 # Set ContextVars for the resumed task
                 current_background_tool_call_id.set(task.tool_call_id)
                 current_background_agent_id.set(task.agent_id)
@@ -1319,9 +1307,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                     )
                     # Meta before spawn: a fast writer's terminal meta (written at
                     # settle) must never be overwritten by a late "running".
-                    await self.registry.write_task_meta(
-                        task, "running", fenced=self.namespace_owner is not None
-                    )
+                    await self.registry.write_task_meta(task, "running")
                     await self._append_run_opener(task, prompt)
                     asyncio_task = await self.registry.publish_writer(
                         task,
@@ -1510,9 +1496,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 )
                 # Meta before spawn: a fast writer's terminal meta (written at
                 # settle) must never be overwritten by a late "running".
-                await self.registry.write_task_meta(
-                    task, "running", fenced=self.namespace_owner is not None
-                )
+                await self.registry.write_task_meta(task, "running")
                 await self._append_run_opener(task, prompt)
                 asyncio_task = await self.registry.publish_writer(
                     task,

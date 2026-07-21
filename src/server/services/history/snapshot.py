@@ -117,10 +117,10 @@ async def build_thread_snapshot(thread_id: str) -> dict | None:
             parent_cache: dict[str, bool] = {}
             for row in task_rows:
                 task_id = str(row["task_id"])
-                epoch = str(row["task_run_id"])
+                task_run_id = str(row["task_run_id"])
                 entry_id = (
                     await _last_entry_id(
-                        client, f"subagent:stream:{thread_id}:{task_id}"
+                        client, f"subagent:stream:{thread_id}:{task_run_id}"
                     )
                     or _EMPTY_ENTRY_ID
                 )
@@ -128,10 +128,9 @@ async def build_thread_snapshot(thread_id: str) -> dict | None:
                 active_runs.append(
                     {
                         "lane": f"task:{task_id}",
-                        "run_id": epoch,
+                        "run_id": task_run_id,
                         "task_id": task_id,
-                        "epoch": epoch,
-                        "cursor": f"task:{task_id}@{epoch}#{entry_id}",
+                        "cursor": f"run:{task_run_id}#{entry_id}",
                         "anchor_satisfied": await _anchor_satisfied(
                             str(parent_run_id) if parent_run_id else None,
                             root_id,
@@ -142,7 +141,7 @@ async def build_thread_snapshot(thread_id: str) -> dict | None:
 
             # Recheck the FULL open-run map, not just the sampled rows'
             # statuses: a spawn during sampling grows the map, a resume
-            # rotates an epoch, a finalize drops a row — all must trigger
+            # mints a new run, a finalize drops a row — all must trigger
             # a re-pass, or the snapshot serves cursors for a set that no
             # longer exists.
             sampled_map = {
@@ -167,7 +166,7 @@ async def build_thread_snapshot(thread_id: str) -> dict | None:
             revalidations += 1
 
         # Every pass was invalidated — the sample in hand is proven stale.
-        # Serving it would hand out cursors for dead epochs; degrading to no
+        # Serving it would hand out cursors for dead runs; degrading to no
         # snapshot costs freshness only (the live stream reconciles).
         logger.info(
             f"[SNAPSHOT] {thread_id} churned through {_MAX_PASSES} passes; "

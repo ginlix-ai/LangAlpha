@@ -69,13 +69,10 @@ def stream_meta_key(thread_id: str, run_id: str) -> str:
     return f"workflow:events:meta:{thread_id}:{run_id}"
 
 
-# Terminal sentinel written to the per-run workflow Stream when the run's
-# event forwarding ends (mirrors SUBAGENT_STREAM_END_EVENT). Consumers close
-# on sight instead of waiting out the empty-XREAD terminal handshake.
-WORKFLOW_STREAM_END_EVENT = "workflow_stream_end"
 # Visible end-of-run frame (I6): written only after the finalize CAS commits,
-# carrying {thread_id, run_id, outcome}. Replaces the swallowed pre-finalize
-# sentinel above, which survives in the consumer as a legacy swallow only.
+# carrying {thread_id, run_id, outcome}. Replaces the pre-finalize
+# ``workflow_stream_end`` sentinel, which survives only as a deploy-compat
+# swallow in ``stream_from_log``.
 WORKFLOW_RUN_END_EVENT = "run_end"
 
 
@@ -176,7 +173,6 @@ class TransportLostError(RuntimeError):
 class TaskStatus(str, Enum):
     """Background task execution status."""
 
-    QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -303,23 +299,11 @@ class BackgroundTaskManager:
                 best = info
         return best
 
-    def _find_active_for_thread(
-        self,
-        thread_id: str,
-        exclude_run_id: Optional[str] = None,
-    ) -> Optional[TaskInfo]:
-        """Return the most-recently-created active (non-terminal) TaskInfo.
-
-        ``exclude_run_id`` skips a specific run — used by dispatched flows
-        that want to check for OTHER active runs on the thread while
-        ignoring their own already-registered run.
-        """
+    def _find_active_for_thread(self, thread_id: str) -> Optional[TaskInfo]:
+        """Return the most-recently-created active (non-terminal) TaskInfo."""
         best: Optional[TaskInfo] = None
-        live = (TaskStatus.QUEUED, TaskStatus.RUNNING)
         for (tid, rid), info in self.tasks.items():
-            if tid != thread_id or info.status not in live:
-                continue
-            if exclude_run_id is not None and rid == exclude_run_id:
+            if tid != thread_id or info.status is not TaskStatus.RUNNING:
                 continue
             if best is None or info.created_at > best.created_at:
                 best = info
@@ -335,11 +319,10 @@ class BackgroundTaskManager:
         where a false "idle" is destructive and a false "active" only defers.
         """
         async with self.task_lock:
-            active = (TaskStatus.RUNNING, TaskStatus.QUEUED)
             for info in self.tasks.values():
                 if (
                     info.metadata.get("workspace_id") == workspace_id
-                    and info.status in active
+                    and info.status is TaskStatus.RUNNING
                 ):
                     return True
         try:
@@ -369,7 +352,7 @@ class BackgroundTaskManager:
         return False
 
     async def has_active_task_for_thread(self, thread_id: str) -> bool:
-        """True if any QUEUED/RUNNING task exists for the thread.
+        """True if any RUNNING task exists for the thread.
 
         Used by the /cancel safety net so it only wipes a thread's registry
         when nothing else owns it — a run-targeted cancel that misses (the run
@@ -412,7 +395,7 @@ class BackgroundTaskManager:
             running_tasks = [
                 (key, info)
                 for key, info in self.tasks.items()
-                if info.status in [TaskStatus.RUNNING, TaskStatus.QUEUED]
+                if info.status is TaskStatus.RUNNING
             ]
 
         if not running_tasks:
@@ -591,7 +574,7 @@ class BackgroundTaskManager:
 
             running_count = sum(
                 1 for t in self.tasks.values()
-                if t.status in [TaskStatus.QUEUED, TaskStatus.RUNNING]
+                if t.status is TaskStatus.RUNNING
             )
             if running_count >= self.max_concurrent:
                 raise ValueError(
@@ -1230,14 +1213,6 @@ class BackgroundTaskManager:
 
     # ========== Subagent collection ==========
 
-    # Deletes a task's event keys only while the durable meta hash still names
-    # the caller's run as the writer's owner. The local claim and spill lock
-    # are process-local, so a stale collector on ANOTHER worker could
-    # otherwise delete a stream a cross-worker resume has already reset and
-    # refilled; the resume restamps ``spawned_run_id`` in the meta (under the
-    # namespace lock, before its writer spawns and produces any record), so
-    # this owner check refuses every post-restamp delete. Missing hash or
-    # empty owner (legacy/unfenced writers) allows the delete.
     # Settled task streams are RETAINED for a bounded window instead of
     # deleted: consumer counts are process-local, so a mux/SSE reader on
     # another worker is invisible to the drain-wait above — a delete here
@@ -1247,12 +1222,18 @@ class BackgroundTaskManager:
     # epoch bump and must not linger.
     _TASK_STREAM_RETENTION_SECONDS = 900
 
+    # Deletes the task's captured-events key only while the durable meta hash
+    # still names the caller's run as the writer's owner. The local claim and
+    # spill lock are process-local, so a stale collector on ANOTHER worker
+    # could otherwise delete state a cross-worker resume has already reset and
+    # refilled; the resume restamps ``spawned_run_id`` in the meta (under the
+    # namespace lock, before its writer spawns), so this owner check refuses
+    # every post-restamp delete. Missing hash or empty owner (legacy/unfenced
+    # writers) allows the delete.
     _RETIRE_TASK_KEYS_IF_OWNED_LUA = """
     local owner = redis.call('HGET', KEYS[1], 'spawned_run_id')
     if owner == false or owner == '' or owner == ARGV[1] then
-        redis.call('EXPIRE', KEYS[2], ARGV[2])
-        redis.call('EXPIRE', KEYS[3], ARGV[2])
-        return redis.call('DEL', KEYS[4])
+        return redis.call('DEL', KEYS[2])
     end
     return -1
     """
@@ -1270,13 +1251,10 @@ class BackgroundTaskManager:
         try:
             await cache.client.eval(
                 self._RETIRE_TASK_KEYS_IF_OWNED_LUA,
-                4,
+                2,
                 f"subagent:meta:{thread_id}:{task_id}",
-                f"subagent:events:meta:{thread_id}:{task_id}",
-                f"subagent:stream:{thread_id}:{task_id}",
                 f"subagent:events:{thread_id}:{task_id}",
                 response_id,
-                self._TASK_STREAM_RETENTION_SECONDS,
             )
             if task_run_id:
                 # Run-scoped retire: the archive owns the transcript now, so
@@ -1399,25 +1377,6 @@ class BackgroundTaskManager:
                 and t.collector_response_id == response_id
             }
 
-            # Report-back rows land BEFORE any event replay: a settled task
-            # drops out of active_tasks the moment its lock releases, and a
-            # client idle read in that window must find the outbox row — both
-            # the XRANGE replay and the persistence below are unbounded.
-            # Idempotent (registry claim + ON CONFLICT), so later calls
-            # safely repeat it. Ownership-filtered, not just pending-derived:
-            # a stolen task is excluded from ``pending`` too, so it would
-            # otherwise masquerade as settled here.
-            settled_at_entry = [
-                t for t in tasks
-                if t.collector_response_id == response_id
-                and t not in pending.values()
-            ]
-            if settled_at_entry:
-                await self._enqueue_task_report_backs(
-                    thread_id, response_id, settled_at_entry, workspace_id,
-                    user_id, all_settled=not pending,
-                )
-
             all_subagent_events: list[dict] = []
             # Tracks whether the LATEST archive write landed. Cleanup retires
             # the Redis capture streams, which after a failed persist are the
@@ -1489,18 +1448,9 @@ class BackgroundTaskManager:
                             task.result = {"success": False, "error": str(e)}
                     settled_now.append(task)
 
-                # Same ordering rule as the fast path: this batch's report-back
-                # rows go down before its event replay and the archival below;
-                # the loop-end call dedups via the registry claim.
-                if settled_now:
-                    await self._enqueue_task_report_backs(
-                        thread_id, response_id, settled_now, workspace_id,
-                        user_id, all_settled=False,
-                    )
-
                 for task in settled_now:
-                    # Re-checked: the enqueue above awaits, and a steal in
-                    # that window would make this replay archive round-2
+                    # Re-checked: the prior task's replay awaits, and a steal
+                    # in that window would make this replay archive round-2
                     # events into round 1.
                     if (
                         task.collector_response_id == response_id
@@ -1554,10 +1504,8 @@ class BackgroundTaskManager:
                 response_id, collected_tasks, thread_id, workspace_id, user_id,
                 is_byok=is_byok,
             )
-            await self._enqueue_task_report_backs(
-                thread_id, response_id, collected_tasks, workspace_id, user_id,
-                all_settled=not pending,
-            )
+            if not pending:
+                await self._publish_settled_wake(thread_id)
             await self._await_drain_and_cleanup_tasks(
                 collected_tasks, thread_id, response_id,
                 retire_streams=persist_ok,
@@ -1569,29 +1517,16 @@ class BackgroundTaskManager:
                 exc_info=True,
             )
 
-    async def _enqueue_task_report_backs(
-        self,
-        thread_id: str,
-        response_id: str,
-        tasks: list,
-        workspace_id: str,
-        user_id: str,
-        *,
-        all_settled: bool,
-    ) -> None:
+    async def _publish_settled_wake(self, thread_id: str) -> None:
         """Settled-watch reconciliation. Report-back jobs are born on the run
         ledger's terminal CAS, not by the collectors — this only publishes
-        the cleared wake when the batch has fully settled with no open job.
-        Never raises (the helper swallows its own errors); the extra args
-        are legacy call-site shape, retired with the collector migration."""
+        the cleared wake once the batch has fully settled with no open job.
+        Never raises (the helper swallows its own errors)."""
         from src.server.handlers.chat.task_report_back import (
-            enqueue_task_report_backs,
+            publish_cleared_wake_if_no_open_job,
         )
 
-        await enqueue_task_report_backs(
-            thread_id=thread_id,
-            all_settled=all_settled,
-        )
+        await publish_cleared_wake_if_no_open_job(thread_id)
 
     async def _await_drain_and_cleanup_tasks(
         self,
@@ -1736,20 +1671,6 @@ class BackgroundTaskManager:
                 and t.collector_response_id == response_id
             }
 
-            # Rows before any event replay — see the turn collector's fast
-            # path. Ownership-filtered: a stolen task is excluded from
-            # ``pending`` too, so it would otherwise masquerade as settled.
-            settled_at_entry = [
-                t for t in tasks
-                if t.collector_response_id == response_id
-                and t not in pending.values()
-            ]
-            if settled_at_entry:
-                await self._enqueue_task_report_backs(
-                    thread_id, response_id, settled_at_entry, workspace_id,
-                    user_id, all_settled=not pending,
-                )
-
             persist_ok = True
             for task in tasks:
                 if (
@@ -1832,17 +1753,10 @@ class BackgroundTaskManager:
                                 task.result = {"success": False, "error": str(e)}
                         settled_now.append(task)
 
-                    # Rows before any event replay — see the turn collector's loop.
-                    if settled_now:
-                        await self._enqueue_task_report_backs(
-                            thread_id, response_id, settled_now, workspace_id,
-                            user_id, all_settled=False,
-                        )
-
                     for task in settled_now:
-                        # Re-checked: the enqueue above awaits, and a steal
-                        # in that window would archive round-2 events into
-                        # round 1.
+                        # Re-checked: the prior task's replay awaits, and a
+                        # steal in that window would archive round-2 events
+                        # into round 1.
                         if task.collector_response_id != response_id:
                             continue
                         if task.captured_event_count > 0:
@@ -1897,10 +1811,8 @@ class BackgroundTaskManager:
                     response_id, collected_tasks, thread_id, workspace_id, user_id,
                     is_byok=is_byok,
                 )
-                await self._enqueue_task_report_backs(
-                    thread_id, response_id, collected_tasks, workspace_id, user_id,
-                    all_settled=not pending,
-                )
+                if not pending:
+                    await self._publish_settled_wake(thread_id)
                 await self._await_drain_and_cleanup_tasks(
                     collected_tasks, thread_id, response_id,
                     retire_streams=persist_ok,
@@ -2629,17 +2541,6 @@ class BackgroundTaskManager:
 
     # ---------- status & introspection ----------
 
-    async def get_task_status(
-        self, thread_id: str, run_id: Optional[str] = None
-    ) -> Optional[TaskStatus]:
-        """Get status for a specific run, or latest run on thread if ``run_id`` omitted."""
-        async with self.task_lock:
-            if run_id is not None:
-                task_info = self.tasks.get((thread_id, run_id))
-            else:
-                task_info = self._find_latest_for_thread(thread_id)
-            return task_info.status if task_info else None
-
     async def get_task_info(
         self, thread_id: str, run_id: Optional[str] = None
     ) -> Optional[TaskInfo]:
@@ -2713,7 +2614,7 @@ class BackgroundTaskManager:
                 )
                 return False
 
-            if task_info.status not in [TaskStatus.QUEUED, TaskStatus.RUNNING]:
+            if task_info.status is not TaskStatus.RUNNING:
                 logger.info(
                     f"[BackgroundTaskManager] Cannot cancel "
                     f"thread_id={thread_id} run_id={task_info.run_id}: "
@@ -2740,18 +2641,10 @@ class BackgroundTaskManager:
         self,
         thread_id: str,
         timeout: float = 10.0,
-        exclude_run_id: Optional[str] = None,
     ) -> bool:
-        """Cancel a stale workflow on the given thread.
-
-        ``exclude_run_id`` skips that run when locating the stale task, so a
-        dispatched flow can pass its own run_id and not cancel the very run
-        it is about to start.
-        """
+        """Cancel a stale workflow on the given thread."""
         async with self.task_lock:
-            task_info = self._find_active_for_thread(
-                thread_id, exclude_run_id=exclude_run_id
-            )
+            task_info = self._find_active_for_thread(thread_id)
             if not task_info:
                 return False
 
@@ -2771,67 +2664,37 @@ class BackgroundTaskManager:
                 )
         return True
 
-    async def get_live_task_info(self, thread_id: str) -> Dict[str, Any]:
-        """Liveness snapshot ``{"live", "run_id", "active_tasks"}`` for a thread's latest run.
-
-        ``live``/``run_id`` are executor-locality garnish from the in-process
-        record, never lifecycle truth — the ledger row is. ``active_tasks`` is
-        cluster-wide: the Redis active set verified against each task's
-        namespace advisory lock, so tail-mode subagents survive the run's
-        terminal row and a crashed worker's members are filtered out.
+    async def get_active_task_ids(self, thread_id: str) -> list[str]:
+        """Cross-worker active-subagent ids: the ledger's open task runs
+        unioned with this process's live writers (which cover the
+        settle-teardown window where the row is already terminal). A crashed
+        worker's open rows stay listed until the recovery scanner finalizes
+        them — availability over precision; closure arrives with the
+        finalize. Ledger read failure degrades to local-only.
         """
-        # Snapshot under the lock, release BEFORE the awaits below: holding
-        # task_lock across them would let a slow path block /cancel from
-        # acquiring the lock to signal a stop.
-        async with self.task_lock:
-            task_info = self._find_latest_for_thread(thread_id)
-            run_id = task_info.run_id if task_info else None
-
-        active_tasks = await self._resolve_active_tasks(thread_id)
-        return {
-            "live": task_info is not None,
-            "run_id": run_id,
-            "active_tasks": active_tasks,
-        }
-
-    async def _resolve_active_tasks(self, thread_id: str) -> list[str]:
-        """Cross-worker active-subagent ids: this process's live writers
-        (known-alive, no probe, and the only source for unfenced writers or
-        when their Redis publication failed) unioned with the remote Redis
-        set members that still hold their N(thread, task:id) lock. Probe
-        failure keeps members (availability over precision). Dead members
-        are filtered, never evicted — read-path SREM races a resume
-        re-adding the same task id.
-        """
-        from ptc_agent.agent.middleware.background_subagent.registry import (
-            read_active_task_ids,
-        )
-
         local = await self._local_live_task_ids(thread_id)
-        members = await read_active_task_ids(thread_id)
-        if members is None:
+        try:
+            from src.server.database import subagent_runs as sr_db
+
+            rows = await sr_db.list_open_runs_for_thread(thread_id)
+        except Exception:
+            logger.warning(
+                f"active-task ledger read failed for {thread_id}; "
+                "serving local writers only"
+            )
             return local
-
-        remote = [t for t in members if t not in set(local)]
-        if remote:
-            from src.server.services.writer_guard import held_task_namespaces
-
-            held = await held_task_namespaces(thread_id, remote)
-            if held is not None:
-                remote = [t for t in remote if t in held]
-        return sorted(set(local) | set(remote))
+        return sorted({str(r["task_id"]) for r in rows} | set(local))
 
     async def resolve_task_liveness(
         self, thread_id: str, task_ids: list[str]
     ) -> set[str] | None:
         """Which of these tasks have a provably-live writer right now.
 
-        Candidate-aware, unlike ``_resolve_active_tasks``: every id's
-        namespace advisory lock is probed directly, so a live writer that
-        never made it into the best-effort ``subagent:active`` set (failed
-        Redis publication, resume's reset window) still counts. None = the
-        lock probe failed and liveness is unknown — callers fall back to
-        advisory state instead of assuming settled.
+        Candidate-aware, unlike ``get_active_task_ids``: every id's
+        namespace advisory lock is probed directly, so a live writer whose
+        ledger row already settled (or whose row read lapsed) still counts.
+        None = the lock probe failed and liveness is unknown — callers fall
+        back to advisory state instead of assuming settled.
         """
         if not task_ids:
             return set()
@@ -2879,7 +2742,6 @@ class BackgroundTaskManager:
     async def wait_for_admission(
         self,
         thread_id: str,
-        exclude_run_id: Optional[str] = None,
     ) -> tuple[
         Literal["fresh", "running", "stopping", "compacting"],
         Optional[Dict[str, Any]],
@@ -2900,9 +2762,6 @@ class BackgroundTaskManager:
           writer while the checkpoint flush may still be running).
         - ``("compacting", None)`` — a thread mutation outlived the wait:
           409 "compacting, retry".
-
-        ``exclude_run_id`` lets a caller ignore its own already-committed
-        run while checking for OTHER live runs.
         """
         # Hold the new turn until any in-progress mutation finishes (a local
         # op's done-Event, or another worker's advertised op key), then read
@@ -2930,16 +2789,7 @@ class BackgroundTaskManager:
 
         from src.server.database import turn_lifecycle as tl_db
 
-        def _relevant(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-            if (
-                row is not None
-                and exclude_run_id
-                and str(row["conversation_response_id"]) == exclude_run_id
-            ):
-                return None
-            return row
-
-        row = _relevant(await tl_db.get_active_run(thread_id))
+        row = await tl_db.get_active_run(thread_id)
         if row is None:
             return "fresh", None
         if row["cancel_requested_at"] is None:
@@ -2973,7 +2823,7 @@ class BackgroundTaskManager:
                     break
                 await asyncio.sleep(1.0)
 
-        row = _relevant(await tl_db.get_active_run(thread_id))
+        row = await tl_db.get_active_run(thread_id)
         if row is None:
             return "fresh", None
         if row["cancel_requested_at"] is None:
@@ -2984,21 +2834,3 @@ class BackgroundTaskManager:
             f"after {timeout}s; rejecting new turn with 409"
         )
         return "stopping", row
-
-    async def get_stats(self) -> Dict[str, Any]:
-        async with self.task_lock:
-            total = len(self.tasks)
-            by_status = {}
-            for status in TaskStatus:
-                by_status[status.value] = sum(
-                    1 for t in self.tasks.values() if t.status == status
-                )
-
-            return {
-                "total_tasks": total,
-                "by_status": by_status,
-                "max_concurrent": self.max_concurrent,
-                "active_connections": sum(
-                    t.active_connections for t in self.tasks.values()
-                ),
-            }

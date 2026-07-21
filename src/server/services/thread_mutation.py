@@ -80,7 +80,6 @@ class MutationSession:
     exactly as runs do there.
     """
 
-    op_id: str
     conn: Optional[Any] = None
     saver: Optional[Any] = None
 
@@ -392,7 +391,7 @@ class ThreadMutationRunner:
                 f"[ThreadMutation] {verb} holds thread={thread_id} "
                 f"(fenced={conn is not None})"
             )
-            yield MutationSession(op_id=op.op_id, conn=conn, saver=saver)
+            yield MutationSession(conn=conn, saver=saver)
         finally:
             self._finish(thread_id, op)
             if conn is not None:

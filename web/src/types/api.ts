@@ -116,18 +116,6 @@ export interface DeleteThreadResponse {
   message: string;
 }
 
-export interface ThreadTurn {
-  turn_index: number;
-  edit_checkpoint_id: string | null;
-  regenerate_checkpoint_id: string;
-}
-
-export interface ThreadTurnsResponse {
-  thread_id: string;
-  turns: ThreadTurn[];
-  retry_checkpoint_id: string | null;
-}
-
 /**
  * The backend's public workflow-run status vocabulary — the `status` field of the
  * `/status` and dispatch-liveness responses. Single source of truth for the wire
@@ -145,12 +133,6 @@ export type WorkflowRunStatus =
   | 'interrupted'
   | 'failed'
   | 'cancelled';
-
-export interface WorkflowStatus {
-  can_reconnect: boolean;
-  status: WorkflowRunStatus;
-  [key: string]: unknown;
-}
 
 // --- Thread Sharing ---
 

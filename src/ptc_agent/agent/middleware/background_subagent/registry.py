@@ -219,7 +219,7 @@ class BackgroundTask:
     from persisting the same subagent events to different response_ids."""
 
     sse_drain_complete: asyncio.Event = field(default_factory=asyncio.Event)
-    """Set by stream_subagent_task_events after its final drain.
+    """Set by stream_subagent_from_log after its final drain.
     The collector awaits this before clearing the captured-event tail so that
     live SSE consumers are guaranteed to have emitted all events."""
 
@@ -263,9 +263,6 @@ class BackgroundTaskRegistry:
         """
         self._tasks: dict[str, BackgroundTask] = {}
         self._task_id_to_tool_call_id: dict[str, str] = {}  # task_id -> tool_call_id
-        self._ns_uuid_to_tool_call_id: dict[
-            str, str
-        ] = {}  # LangGraph namespace UUID -> tool_call_id
         self._lock = asyncio.Lock()
         self._results: dict[str, Any] = {}
         self._late_removals: set[asyncio.Task] = set()
@@ -430,40 +427,6 @@ class BackgroundTaskRegistry:
     def get_by_tool_call_id(self, tool_call_id: str) -> BackgroundTask | None:
         """Return the task for a given tool_call_id (synchronous, no lock)."""
         return self._tasks.get(tool_call_id)
-
-    def register_namespace(self, checkpoint_ns: str, tool_call_id: str) -> None:
-        """Map each LangGraph UUID in checkpoint_ns to tool_call_id for streaming lookup."""
-        for element in checkpoint_ns.split("|"):
-            parts = element.split(":", 1)
-            if len(parts) == 2:
-                ns_uuid = parts[1]
-                self._ns_uuid_to_tool_call_id[ns_uuid] = tool_call_id
-
-    def get_task_by_namespace(self, ns_element: str) -> BackgroundTask | None:
-        """Return the task for a namespace element like 'tools:uuid', or None."""
-        parts = ns_element.split(":", 1)
-        if len(parts) == 2:
-            ns_uuid = parts[1]
-            tool_call_id = self._ns_uuid_to_tool_call_id.get(ns_uuid)
-            if tool_call_id:
-                return self._tasks.get(tool_call_id)
-        return None
-
-    def clear_namespaces_for_task(self, tool_call_id: str) -> None:
-        """Remove stale namespace UUID mappings so resumed invocations can register fresh ones."""
-        stale_keys = [
-            ns
-            for ns, tid in self._ns_uuid_to_tool_call_id.items()
-            if tid == tool_call_id
-        ]
-        for key in stale_keys:
-            del self._ns_uuid_to_tool_call_id[key]
-        if stale_keys:
-            logger.debug(
-                "Cleared stale namespace mappings for task",
-                tool_call_id=tool_call_id,
-                cleared_count=len(stale_keys),
-            )
 
     async def publish_writer(
         self, task: "BackgroundTask", factory: "Callable[[], asyncio.Task]"
@@ -880,9 +843,7 @@ class BackgroundTaskRegistry:
                 error=str(exc),
             )
 
-    async def write_task_meta(
-        self, task: BackgroundTask, status: str, *, fenced: bool = True
-    ) -> None:
+    async def write_task_meta(self, task: BackgroundTask, status: str) -> None:
         """Best-effort mirror of the task's routing identity + writer liveness
         to Redis (``subagent:meta:{thread}:{task}``) so OTHER workers can
         resolve steer/update targets and gate resumes.
@@ -891,14 +852,6 @@ class BackgroundTaskRegistry:
         the namespace, "completed"/"cancelled"/"error" once it settled), not
         result availability. Advisory only — the N(thread, task:id) advisory
         lock, not this hash, is the write fence.
-
-        Also maintains ``subagent:active:{thread}``, the cross-worker set of
-        running task ids: added on a FENCED "running" (after the ns lock,
-        before the writer spawns), removed on terminal (before the lock
-        releases) — so a member without its lock means the owning worker
-        died. Unfenced writers (no namespace_owner: CLI, guard-less spawns)
-        must not advertise: readers verify members against the lock, and a
-        lockless member would always classify as dead.
         """
         if not self.thread_id:
             return
@@ -927,27 +880,6 @@ class BackgroundTaskRegistry:
                 },
             )
             pipe.expire(key, get_redis_ttl_workflow_events())
-            active_key = f"subagent:active:{self.thread_id}"
-            if status == "running" and fenced:
-                pipe.sadd(active_key, task.task_id)
-                pipe.expire(active_key, get_redis_ttl_workflow_events())
-                # Nudge attached mux consumers: a new writer round exists
-                # (spawn or resume). Registry rescans alone can miss a fast
-                # spawn-and-settle because the active set drops membership
-                # on terminal.
-                pipe.publish(
-                    spawn_nudge_channel(self.thread_id),
-                    json.dumps(
-                        {
-                            "task_id": task.task_id,
-                            "epoch": task.task_run_id
-                            or task.spawned_run_id
-                            or "-",
-                        }
-                    ),
-                )
-            elif status != "running":
-                pipe.srem(active_key, task.task_id)
             await asyncio.wait_for(pipe.execute(), timeout=_SPILL_TIMEOUT_SECONDS)
         except Exception as exc:
             logger.warning(
@@ -1548,12 +1480,6 @@ class BackgroundTaskRegistry:
             return
         self._task_id_to_tool_call_id.pop(task.task_id, None)
         self._results.pop(tool_call_id, None)
-        stale_ns = [
-            ns for ns, tid in self._ns_uuid_to_tool_call_id.items()
-            if tid == tool_call_id
-        ]
-        for ns in stale_ns:
-            del self._ns_uuid_to_tool_call_id[ns]
 
     def _remove_when_settled(self, tool_call_id: str, task) -> None:
         """A cancelled entry retained for the guard drain must still leave
@@ -1583,7 +1509,6 @@ class BackgroundTaskRegistry:
         """Drop all task/result/lookup state. Caller owns concurrency control."""
         self._tasks.clear()
         self._task_id_to_tool_call_id.clear()
-        self._ns_uuid_to_tool_call_id.clear()
         self._results.clear()
         logger.debug("Cleared background task registry")
 
@@ -1658,16 +1583,6 @@ def parse_steering_payload(raw: Any) -> dict[str, Any] | None:
     return None
 
 
-def spawn_nudge_channel(thread_id: str) -> str:
-    """Pub/sub channel nudged on every fenced task spawn/resume.
-
-    Payload: ``{"task_id": ..., "epoch": <task_run_id, falling back to
-    spawned_run_id for pre-ledger rounds>}``. Consumed by the thread-stream
-    mux for mid-connection channel discovery.
-    """
-    return f"subagent:spawn:{thread_id}"
-
-
 async def read_task_meta(thread_id: str, task_id: str) -> dict[str, str] | None:
     """Read the cross-worker task meta hash written by ``write_task_meta``.
 
@@ -1696,36 +1611,5 @@ async def read_task_meta(thread_id: str, task_id: str) -> dict[str, str] | None:
         logger.warning(
             "task meta read failed", thread_id=thread_id, task_id=task_id,
             error=str(exc),
-        )
-        return None
-
-
-async def read_active_task_ids(thread_id: str) -> list[str] | None:
-    """Task ids whose writers were last known running, from the cross-worker
-    ``subagent:active:{thread}`` set maintained by ``write_task_meta``.
-
-    Returns None when Redis is unavailable or the read fails ("no distributed
-    knowledge" — callers fall back to local state). A member is live unless
-    its worker died; verify against the N(thread, task:id) advisory lock.
-    Dead members are left in place — read-path eviction races a resume
-    re-adding the same task id (probe says free, resume re-locks + SADDs,
-    stale SREM hides the new writer); the terminal SREM and the set TTL are
-    the only removers.
-    """
-    if not thread_id:
-        return None
-    try:
-        from src.utils.cache.redis_cache import get_cache_client
-
-        cache = get_cache_client()
-        if not getattr(cache, "enabled", False) or not cache.client:
-            return None
-        raw = await cache.client.smembers(f"subagent:active:{thread_id}")
-        return sorted(
-            m.decode() if isinstance(m, bytes) else str(m) for m in raw
-        )
-    except Exception as exc:
-        logger.warning(
-            "active task set read failed", thread_id=thread_id, error=str(exc)
         )
         return None

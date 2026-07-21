@@ -6,7 +6,6 @@ from src.server.handlers.chat.steering import steer_subagent
 from src.server.handlers.chat.ptc_workflow import astream_ptc_workflow
 from src.server.handlers.chat.stream_reconnect import (
     reconnect_to_workflow_stream,
-    stream_subagent_task_events,
 )
 
 __all__ = [
@@ -15,5 +14,4 @@ __all__ = [
     "steer_subagent",
     "reconnect_to_workflow_stream",
     "resolve_llm_config",
-    "stream_subagent_task_events",
 ]

@@ -65,29 +65,23 @@ vi.mock('../utils/historyEventHandlers', () => ({
   handleHistoryArtifact: vi.fn(),
 }));
 
-vi.mock('../../utils/api', () => ({
-  fetchMarketWatch: vi.fn().mockResolvedValue({ thread_id: 't', symbols: [] }),
-  sendChatMessageStream: vi.fn(),
-  sendHitlResponse: vi.fn(),
-  // Replay a thread with substantial history: events carry a large cumulative
-  // id-space (last id 930), mirroring the real `/messages/replay` counter.
-  replayThreadHistory: vi.fn().mockImplementation(async (tid: string, onEvent: (e: Record<string, unknown>) => void) => {
-    onEvent({ event: 'user_message', _eventId: 929, turn_index: 0, content: 'earlier turn' });
-    onEvent({ event: 'replay_done', _eventId: 930, thread_id: tid });
+vi.mock('../../utils/api', async () =>
+  (await import('./chatHookHarness')).apiMockModule({
+    // Replay a thread with substantial history: events carry a large cumulative
+    // id-space (last id 930), mirroring the real `/messages/replay` counter.
+    replayThreadHistory: vi.fn().mockImplementation(async (tid: string, onEvent: (e: Record<string, unknown>) => void) => {
+      onEvent({ event: 'user_message', _eventId: 929, turn_index: 0, content: 'earlier turn' });
+      onEvent({ event: 'replay_done', _eventId: 930, thread_id: tid });
+    }),
+    getWorkflowStatus: vi.fn().mockResolvedValue({
+      can_reconnect: true,
+      status: 'active',
+      active_tasks: [],
+      is_shared: false,
+    }),
+    reconnectToWorkflowStream: vi.fn().mockResolvedValue({ disconnected: false }),
   }),
-  getWorkflowStatus: vi.fn().mockResolvedValue({
-    can_reconnect: true,
-    status: 'active',
-    active_tasks: [],
-    is_shared: false,
-  }),
-  reconnectToWorkflowStream: vi.fn().mockResolvedValue({ disconnected: false }),
-  openThreadMuxStream: vi.fn(() => new Promise<void>(() => {})),
-  fetchThreadTurns: vi.fn().mockResolvedValue({ turns: [], retry_checkpoint_id: null }),
-  submitFeedback: vi.fn(),
-  removeFeedback: vi.fn(),
-  getThreadFeedback: vi.fn().mockResolvedValue([]),
-}));
+);
 
 import { reconnectToWorkflowStream } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';

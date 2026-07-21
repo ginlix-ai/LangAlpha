@@ -26,13 +26,18 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.server.services.background_task_manager import (
     WORKFLOW_RUN_END_EVENT,
-    WORKFLOW_STREAM_END_EVENT,
     BackgroundTaskManager,
     TaskStatus,
 )
 from src.utils.cache.redis_cache import get_cache_client
 
 from ._common import logger
+
+# Pre-finalize stream-end sentinel written by pre-1.5 producers. Nothing on
+# this release writes it; the swallow in ``_stream_from_redis_log`` is
+# one-release deploy compat for streams the previous release produced
+# (bounded by the 24h stream TTL). Remove after the first deploy cycle.
+WORKFLOW_STREAM_END_EVENT = "workflow_stream_end"
 
 
 _XREAD_BLOCK_MARGIN_MS = 1_000

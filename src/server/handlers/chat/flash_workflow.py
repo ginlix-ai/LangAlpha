@@ -173,13 +173,11 @@ async def astream_flash_workflow(
         # message is neither a run nor a turn (v4 identity model); its
         # content is archived on the owning response's metadata at finalize.
         # Admit a fresh turn, steer the running one, or 409 —
-        # see ``wait_or_steer``. Dispatched flows own the pre-registered
-        # ``(thread_id, run_id)`` placeholder, so they pass it as
-        # ``exclude_run_id`` (ignore it in the admission scan) and
-        # ``can_steer=False`` (any OTHER in-flight run is a hard conflict,
-        # never a steer). Foreground turns steer; retries never do — a
-        # /retry that finds another live run is a hard conflict, not an
-        # (empty) steering message into that run.
+        # see ``wait_or_steer``. Dispatched flows pass ``can_steer=False``:
+        # any in-flight run is a hard conflict, never a steer. Foreground
+        # turns steer; retries never do — a /retry that finds another live
+        # run is a hard conflict, not an (empty) steering message into
+        # that run.
         ready, steering_event = await wait_or_steer(
             manager,
             thread_id,
@@ -187,7 +185,6 @@ async def astream_flash_workflow(
             user_id,
             steer_only=request.steer_only,
             can_steer=not dispatched and request.retry_of_run_id is None,
-            exclude_run_id=run_id if dispatched else None,
         )
         if not ready:
             slot_owned = False

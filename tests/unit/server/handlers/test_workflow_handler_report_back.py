@@ -43,9 +43,7 @@ def _patches(cache: _FakeCache, latest_turn: int | None = None) -> list:
     from src.server.database import turn_lifecycle as tl_db
 
     manager = MagicMock()
-    manager.get_live_task_info = AsyncMock(
-        return_value={"live": False, "active_tasks": [], "run_id": None}
-    )
+    manager.get_active_task_ids = AsyncMock(return_value=[])
     return [
         patch.object(
             workflow_handler, "get_checkpoint_tuple", AsyncMock(return_value=None)
@@ -286,9 +284,7 @@ def _live_patches(cache: _FakeCache, row: dict) -> list:
     from src.server.database import turn_lifecycle as tl_db
 
     manager = MagicMock()
-    manager.get_live_task_info = AsyncMock(
-        return_value={"live": False, "active_tasks": [], "run_id": None}
-    )
+    manager.get_active_task_ids = AsyncMock(return_value=[])
     return [
         patch.object(
             workflow_handler, "get_checkpoint_tuple", AsyncMock(return_value=None)

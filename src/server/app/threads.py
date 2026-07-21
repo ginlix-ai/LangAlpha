@@ -1647,7 +1647,7 @@ async def stream_subagent_task(
     ``Last-Event-ID`` HTTP header.
     """
     await require_thread_owner(thread_id, x_user_id)
-    from src.server.handlers.chat import stream_subagent_task_events
+    from src.server.handlers.chat.stream_from_log import stream_subagent_from_log
 
     if last_event_id is None and last_event_id_header is not None:
         try:
@@ -1656,7 +1656,7 @@ async def stream_subagent_task(
             pass
 
     return StreamingResponse(
-        stream_subagent_task_events(thread_id, task_id, last_event_id),
+        stream_subagent_from_log(thread_id, task_id, last_event_id),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
@@ -1668,13 +1668,10 @@ async def thread_stream_mux_endpoint(
     x_user_id: CurrentUserId,
     cursors: Optional[str] = Query(
         None,
-        description=(
-            "Per-channel resume cursors. v1: task:<id>@<epoch>#<entry_id>,… "
-            "v2: run:<run_id>#<entry_id>,…"
-        ),
+        description="Per-channel resume cursors: run:<run_id>#<entry_id>,…",
     ),
     contract: Optional[str] = Query(
-        None, description="Stream contract version: 'v2' for run-scoped lanes"
+        None, description="Stream contract version; 'v2' is the only contract"
     ),
     since_age_s: float = Query(
         0.0,
@@ -1686,35 +1683,24 @@ async def thread_stream_mux_endpoint(
         ),
     ),
 ):
-    """Multiplexed thread stream: every task channel + watch on one socket.
+    """Multiplexed thread stream: every lane of the thread on one socket.
 
-    v1 (default) carries task channels + watch; the foreground POST owns the
-    main run stream. ``?contract=v2`` serves STREAM_CONTRACT_V2 run-scoped
-    channels for ALL lanes, main included — the two consume the same Redis
-    streams, so they can run side by side (shadow) until the client cutover.
+    Serves STREAM_CONTRACT_V2 run-scoped channels for ALL lanes, main
+    included. The retired v1 contract (per-task epoch channels) 400s rather
+    than silently changing shape under a stale pre-cutover client.
     """
     await require_thread_owner(thread_id, x_user_id)
-    if contract == "v2":
-        from src.server.handlers.chat.thread_stream_mux_v2 import (
-            parse_mux_cursors_v2,
-            stream_thread_mux_v2,
+    if contract != "v2":
+        raise HTTPException(
+            status_code=400, detail="unsupported stream contract; use contract=v2"
         )
-
-        return StreamingResponse(
-            stream_thread_mux_v2(
-                thread_id, parse_mux_cursors_v2(cursors), since_age_s
-            ),
-            media_type="text/event-stream",
-            headers=SSE_HEADERS,
-        )
-    from src.server.handlers.chat.thread_stream_mux import (
-        parse_mux_cursors,
-        stream_thread_mux,
+    from src.server.handlers.chat.thread_stream_mux_v2 import (
+        parse_mux_cursors_v2,
+        stream_thread_mux_v2,
     )
 
-    cursor_map = parse_mux_cursors(cursors)
     return StreamingResponse(
-        stream_thread_mux(thread_id, cursor_map),
+        stream_thread_mux_v2(thread_id, parse_mux_cursors_v2(cursors), since_age_s),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )

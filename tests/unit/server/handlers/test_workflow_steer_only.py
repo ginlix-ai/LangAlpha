@@ -4,10 +4,9 @@ Both the foreground and dispatched paths now flow through the single
 ``wait_or_steer`` admission decision; the entrypoint's only job is to hand it
 the right knobs. Per mode (PTC and Flash) this pins that wiring:
 - the foreground path forwards ``request.steer_only`` with ``can_steer=True``
-  and no ``exclude_run_id`` (dropping ``steer_only`` would silently revert the
-  gateway-probe fix), and
-- the dispatched path (X-Dispatch=background) forwards ``can_steer=False`` and
-  its own pre-registered ``exclude_run_id`` so it can never steer.
+  (dropping ``steer_only`` would silently revert the gateway-probe fix), and
+- the dispatched path (X-Dispatch=background) forwards ``can_steer=False`` so
+  it can never steer.
 
 The admission *behavior* those knobs select (fresh+steer_only → not_running,
 non-fresh + can't-steer → 409) lives in ``TestWaitOrSteer``.
@@ -110,7 +109,6 @@ async def test_ptc_foreground_forwards_steer_only_and_can_steer():
     kwargs = mock_wos.await_args.kwargs
     assert kwargs["steer_only"] is True
     assert kwargs["can_steer"] is True
-    assert kwargs["exclude_run_id"] is None
 
 
 @pytest.mark.asyncio
@@ -145,16 +143,15 @@ async def test_flash_foreground_forwards_steer_only_and_can_steer():
     kwargs = mock_wos.await_args.kwargs
     assert kwargs["steer_only"] is True
     assert kwargs["can_steer"] is True
-    assert kwargs["exclude_run_id"] is None
 
 
 # ---------------------------------------------------------------------------
-# Dispatched: steering disabled, own placeholder excluded
+# Dispatched: steering disabled
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ptc_dispatched_forwards_can_steer_false_and_exclude_run_id():
+async def test_ptc_dispatched_forwards_can_steer_false():
     from src.server.handlers.chat.ptc_workflow import astream_ptc_workflow
 
     wm = MagicMock()
@@ -192,11 +189,10 @@ async def test_ptc_dispatched_forwards_can_steer_false_and_exclude_run_id():
     kwargs = mock_wos.await_args.kwargs
     assert kwargs["steer_only"] is True
     assert kwargs["can_steer"] is False
-    assert kwargs["exclude_run_id"] == "r-1"
 
 
 @pytest.mark.asyncio
-async def test_flash_dispatched_forwards_can_steer_false_and_exclude_run_id():
+async def test_flash_dispatched_forwards_can_steer_false():
     from src.server.handlers.chat.flash_workflow import astream_flash_workflow
 
     with (
@@ -228,4 +224,3 @@ async def test_flash_dispatched_forwards_can_steer_false_and_exclude_run_id():
     kwargs = mock_wos.await_args.kwargs
     assert kwargs["steer_only"] is True
     assert kwargs["can_steer"] is False
-    assert kwargs["exclude_run_id"] == "r-1"

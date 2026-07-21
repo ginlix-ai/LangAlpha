@@ -958,7 +958,6 @@ async def check_dispatch_capacity(flash_thread_id: str | None, user_id: str) -> 
             if attempt == 0 and await _reap_orphan_members(cache, flash_thread_id, user_id):
                 continue
             return error
-        return error
     except Exception as e:
         logger.warning(f"Dispatch capacity pre-check failed: {e}")
         return None
@@ -1314,8 +1313,6 @@ async def takeover_report_back_run(
     ``'lost'`` = the pointer changed under us (or Redis failed) — the caller
     surfaces retriable and the retry re-probes.
     """
-    if not (cache.enabled and cache.client):
-        return "claimed"
     try:
         state = await cache.client.eval(
             _POINTER_TAKEOVER_LUA,
@@ -1675,8 +1672,6 @@ async def watch_wakes(cache, flash_thread_id: str):
     Forwards EVERY wake, not just the first: N concurrent PTCs' report-backs
     arrive as separate runs and must all be delivered on the one connection.
     """
-    import time
-
     if not (
         cache
         and getattr(cache, "enabled", False)

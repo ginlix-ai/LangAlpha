@@ -65,19 +65,7 @@ vi.mock('../utils/historyEventHandlers', () => ({
   handleHistoryArtifact: vi.fn(),
 }));
 
-vi.mock('../../utils/api', () => ({
-  fetchMarketWatch: vi.fn().mockResolvedValue({ thread_id: 't', symbols: [] }),
-  sendChatMessageStream: vi.fn(),
-  sendHitlResponse: vi.fn(),
-  replayThreadHistory: vi.fn().mockResolvedValue(undefined),
-  getWorkflowStatus: vi.fn().mockResolvedValue({ can_reconnect: false, status: 'completed' }),
-  reconnectToWorkflowStream: vi.fn(),
-  openThreadMuxStream: vi.fn(() => new Promise<void>(() => {})),
-  fetchThreadTurns: vi.fn(),
-  submitFeedback: vi.fn(),
-  removeFeedback: vi.fn(),
-  getThreadFeedback: vi.fn().mockResolvedValue([]),
-}));
+vi.mock('../../utils/api', async () => (await import('./chatHookHarness')).apiMockModule());
 
 import {
   sendChatMessageStream,

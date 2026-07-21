@@ -737,37 +737,12 @@ async def repair_dangling_task_chains(
 # ------------------------------------------------------------ mutation guard
 
 
-async def count_open_runs_for_responses(
-    thread_id: str, response_ids: List[str], conn=None
-) -> int:
-    """Live runs dispatched by any of these response rows.
-
-    Deleting those rows would cascade the runs away under their live
-    executors, so a mutation that plans to must refuse first.
-    """
-    if not response_ids:
-        return 0
-    async with _ledger_connection(conn) as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                SELECT COUNT(*) FROM subagent_runs
-                WHERE thread_id = %s
-                  AND status = 'in_progress'
-                  AND parent_run_id = ANY(%s)
-                """,
-                (thread_id, [str(r) for r in response_ids]),
-            )
-            return (await cur.fetchone())[0]
-
-
 async def find_open_run_from_turn(
     thread_id: str, from_turn_index: int, conn=None
 ) -> Optional[Dict[str, Any]]:
     """One live run whose dispatching response sits at or past the fork cut.
 
-    The same guard as count_open_runs_for_responses, expressed for the fork
-    path: it knows the turn cut rather than the row ids, and resolving those
+    It knows the turn cut rather than the row ids, and resolving those
     separately would race the truncation it performs in the same transaction.
     Returns the offending row so the refusal can name it.
     """
@@ -822,16 +797,3 @@ async def get_task(thread_id: str, task_id: str) -> Optional[Dict[str, Any]]:
             return dict(row) if row else None
 
 
-async def list_tasks_for_thread(thread_id: str) -> List[Dict[str, Any]]:
-    async with qr_db.get_db_connection() as conn:
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                """
-                SELECT * FROM subagent_tasks
-                WHERE thread_id = %s
-                ORDER BY created_at
-                """,
-                (thread_id,),
-            )
-            rows = await cur.fetchall()
-            return [dict(r) for r in rows]

@@ -206,20 +206,16 @@ async def astream_ptc_workflow(
         needs_startup = not workspace_manager.has_ready_session(workspace_id)
         # When the workspace was evicted/restarted, any in-BTM TaskInfo for
         # this thread holds a stale sandbox reference — cancel it first so
-        # admission/steering routes against live state only. Exclude our own
-        # run_id: on the dispatched path threads.py already pre-registered
-        # (thread_id, run_id) as a QUEUED placeholder, and without this the
-        # cold-start cleanup cancels the very run it is about to start.
+        # admission/steering routes against live state only (this run isn't
+        # registered anywhere yet; its row commits at START, below).
         if needs_startup:
-            await manager.cancel_stale_workflow(thread_id, exclude_run_id=run_id)
+            await manager.cancel_stale_workflow(thread_id)
         # Admit a fresh turn, steer the running one, or 409 — see
-        # ``wait_or_steer``. Dispatched flows own the pre-registered
-        # ``(thread_id, run_id)`` placeholder, so they pass it as
-        # ``exclude_run_id`` (ignore it in the admission scan) and
-        # ``can_steer=False`` (any OTHER in-flight run is a hard conflict,
-        # never a steer). Foreground turns steer.
-        # Retries are never steerable: a /retry that finds another live run
-        # is a hard conflict, not an (empty) steering message into that run.
+        # ``wait_or_steer``. Dispatched flows pass ``can_steer=False``: any
+        # in-flight run is a hard conflict, never a steer. Foreground turns
+        # steer. Retries are never steerable either: a /retry that finds
+        # another live run is a hard conflict, not an (empty) steering
+        # message into that run.
         ready, steering_event = await wait_or_steer(
             manager,
             thread_id,
@@ -227,7 +223,6 @@ async def astream_ptc_workflow(
             user_id,
             steer_only=request.steer_only,
             can_steer=not dispatched and request.retry_of_run_id is None,
-            exclude_run_id=run_id if dispatched else None,
         )
         if not ready:
             slot_owned = False

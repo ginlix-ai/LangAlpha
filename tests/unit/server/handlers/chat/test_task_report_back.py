@@ -3,10 +3,8 @@
 Jobs are born on the run ledger's terminal CAS; the EXECUTOR arbitrates at
 claim time against the durable row (result_delivered_at → drop; live or
 interrupted parent → park until the thread's next completed finalize).
-``style`` is carried in the durable payload and honored at dispatch: inline
-embeds the result and gates subagent tooling off; pointer announces and
-keeps TaskOutput available. Unknown styles must fall back to inline — a
-durable job may outlive the code that enqueued it.
+The notification turn announces completion and directs the agent to
+TaskOutput — the result rides the durable archive, never the payload.
 """
 
 import contextlib
@@ -15,9 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.server.handlers.chat.task_report_back import (
-    TASK_RB_RESULT_CAP,
     _build_notification_message,
-    enqueue_task_report_backs,
+    publish_cleared_wake_if_no_open_job,
     execute_task_report_back,
 )
 
@@ -33,46 +30,18 @@ def _payload(**over) -> dict:
         "display_id": "Task-abc123",
         "subagent_type": "research",
         "description": "look things up",
-        "result_text": "the findings",
-        "result_truncated": False,
-        "result_total_chars": 12,
-        "style": "inline",
+        "style": "pointer",
     }
     base.update(over)
     return base
 
 
 class TestBuildNotificationMessage:
-    def test_inline_embeds_result(self):
+    def test_directs_to_taskoutput(self):
         msg = _build_notification_message(_payload())
-        assert '<task_result id="Task-abc123" subagent="research">' in msg
-        assert "the findings" in msg
-        assert "Review the output below" in msg
-        assert "TaskOutput" not in msg
-
-    def test_inline_truncation_note(self):
-        msg = _build_notification_message(
-            _payload(result_truncated=True, result_total_chars=99999)
-        )
-        assert f"[truncated: showing {TASK_RB_RESULT_CAP} of 99999 chars]" in msg
-
-    def test_inline_missing_result_never_points_at_taskoutput(self):
-        # Inline turns have no TaskOutput tool; the recovery hint must not
-        # reference it.
-        msg = _build_notification_message(_payload(result_text=None))
-        assert "workspace files" in msg
-        assert "TaskOutput" not in msg
-
-    def test_pointer_directs_to_taskoutput(self):
-        msg = _build_notification_message(_payload(style="pointer"))
         assert 'TaskOutput(task_id="abc123")' in msg
-        assert "<task_result" not in msg
         assert "Retrieve it" in msg
-
-    def test_unknown_style_renders_inline(self):
-        msg = _build_notification_message(_payload(style="carrier-pigeon"))
-        assert "<task_result" in msg
-        assert "the findings" in msg
+        assert "look things up" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +60,7 @@ async def test_settled_wake_publishes_when_no_open_job():
         patch("src.server.handlers.chat.report_back.publish_wake", new=wake),
         patch("src.utils.cache.redis_cache.get_cache_client"),
     ):
-        await enqueue_task_report_backs(thread_id="t1", all_settled=True)
+        await publish_cleared_wake_if_no_open_job("t1")
 
     assert wake.await_args.kwargs.get("cleared") is True
 
@@ -110,20 +79,9 @@ async def test_settled_wake_skipped_while_a_job_is_open():
         patch("src.server.handlers.chat.report_back.publish_wake", new=wake),
         patch("src.utils.cache.redis_cache.get_cache_client"),
     ):
-        await enqueue_task_report_backs(thread_id="t1", all_settled=True)
+        await publish_cleared_wake_if_no_open_job("t1")
 
     wake.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_not_settled_is_a_noop():
-    probe = AsyncMock()
-    with patch(
-        "src.server.database.hook_outbox.get_open_notification_job", new=probe
-    ):
-        await enqueue_task_report_backs(thread_id="t1", all_settled=False)
-
-    probe.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -293,15 +251,13 @@ async def test_dispatch_proceeds_for_undelivered_run_on_settled_parent():
 
 
 # ---------------------------------------------------------------------------
-# dispatch: the recursion gate follows the style
+# dispatch: the notification turn points at TaskOutput
 # ---------------------------------------------------------------------------
 
 
-def _job(style: str) -> dict:
-    payload = _payload(style=style)
+def _job() -> dict:
+    payload = _payload()
     payload.update({"workspace_id": "w1", "user_id": "u1"})
-    if style == "pointer":
-        payload.pop("result_text")
     return {
         "hook_outbox_id": "0f1e2d3c-0000-0000-0000-000000000001",
         "conversation_thread_id": "t1",
@@ -311,10 +267,7 @@ def _job(style: str) -> dict:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "style,expected_gate", [("inline", True), ("pointer", False)]
-)
-async def test_dispatch_gates_subagents_by_style(style, expected_gate):
+async def test_dispatch_posts_taskoutput_pointer_turn():
     posted: list[dict] = []
 
     async def _post(*, thread_id, body, **kwargs):
@@ -344,15 +297,11 @@ async def test_dispatch_gates_subagents_by_style(style, expected_gate):
         ),
         patch("src.utils.cache.redis_cache.get_cache_client"),
     ):
-        await execute_task_report_back(_job(style))
+        await execute_task_report_back(_job())
 
     assert len(posted) == 1
-    assert posted[0]["disable_subagents"] is expected_gate
     content = posted[0]["messages"][0]["content"]
-    if style == "pointer":
-        assert 'TaskOutput(task_id="abc123")' in content
-    else:
-        assert "<task_result" in content
+    assert 'TaskOutput(task_id="abc123")' in content
 
 
 @pytest.mark.asyncio
@@ -381,7 +330,7 @@ async def test_dispatch_nacks_when_pointer_persist_fails():
         patch("src.utils.cache.redis_cache.get_cache_client"),
     ):
         with pytest.raises(RuntimeError, match="db down"):
-            await execute_task_report_back(_job("pointer"))
+            await execute_task_report_back(_job())
 
     wake.assert_not_awaited()
 
@@ -394,7 +343,7 @@ async def test_dispatch_nacks_when_pointer_persist_fails():
 def _slice_env(recents):
     """Patches for read_task_report_back_status with a stubbed recents read."""
     btm = MagicMock()
-    btm.get_live_task_info = AsyncMock(return_value={"active_tasks": []})
+    btm.get_active_task_ids = AsyncMock(return_value=[])
     return (
         patch(
             "src.server.database.hook_outbox.get_open_notification_job",
@@ -454,7 +403,7 @@ async def test_status_slice_recents_read_failure_reports_empty():
 
 def _open_job_env(recents, run_row):
     btm = MagicMock()
-    btm.get_live_task_info = AsyncMock(return_value={"active_tasks": []})
+    btm.get_active_task_ids = AsyncMock(return_value=[])
     job = {"payload": {"dispatched_run_id": "run-x"}}
     return (
         patch(

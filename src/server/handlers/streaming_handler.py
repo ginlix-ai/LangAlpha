@@ -648,21 +648,6 @@ class WorkflowStreamHandler:
                     if isinstance(event_data, dict):
                         event_type = event_data.get("type")
 
-                        # Handle subagent identity registration
-                        # Emitted by SubagentEventCaptureMiddleware on first model call.
-                        # The namespace_tuple from the streaming infrastructure tells us
-                        # which LangGraph UUID corresponds to which background task.
-                        if event_type == "subagent_identity":
-                            tool_call_id = event_data.get("tool_call_id")
-                            if tool_call_id and self._background_registry and agent_from_stream:
-                                ns_str = "|".join(str(ns) for ns in agent_from_stream)
-                                self._background_registry.register_namespace(ns_str, tool_call_id)
-                                logger.debug(
-                                    f"[SUBAGENT_IDENTITY] Registered namespace mapping: "
-                                    f"{ns_str} -> tool_call_id={tool_call_id}"
-                                )
-                            continue
-
                         # Handle unified context_window events (token_usage, summarize, offload)
                         if event_type == "context_window":
                             cw_agent = self._extract_agent_name(agent_from_stream, event_data)
@@ -1177,45 +1162,34 @@ class WorkflowStreamHandler:
         """Lane owner for a graph event: ``task:{id}`` when any namespace
         segment belongs to a background task, else None (main lane).
 
-        Two matchers, because the segment forms differ by event path: the
-        UUID map registered at ``subagent_identity`` time, and the literal
-        ``task:{id}`` checkpoint namespace every background subagent runs
-        under — the latter needs no registration, so frames that beat the
-        identity event still classify correctly. Any-segment matching (not
-        just the tail) catches multi-segment task namespaces whose leaf UUID
-        was never registered (e.g. per-call model nodes).
+        Every background subagent runs under a literal ``task:{id}``
+        checkpoint namespace stamped at invocation, so the segment needs no
+        registration and frames from the very first model call classify
+        correctly. Any-segment matching (not just the tail) catches
+        multi-segment task namespaces (e.g. per-call model nodes).
         """
         if not namespace_tuple:
             return None
         for element in namespace_tuple:
             raw = str(element)
-            if self._background_registry is not None:
-                task = self._background_registry.get_task_by_namespace(raw)
-                if task:
-                    return f"task:{task.task_id}"
             if raw.startswith("task:"):
                 return raw
         return None
 
     def _extract_agent_name(self, namespace_tuple: tuple, message_metadata: dict) -> str:
-        """Return the agent identifier, resolving to unified subagent identity when possible.
+        """Return the agent identifier for an event.
 
         Priority:
-        1. `namespace_tuple[-1]` resolved via registry to `agent_id` (e.g., "research:uuid4")
-        2. `namespace_tuple[-1]` (verbatim, includes UUID)
+        1. any ``task:{id}`` segment in `namespace_tuple` (the checkpoint
+           namespace every background subagent runs under)
+        2. `namespace_tuple[-1]` (verbatim)
         3. `checkpoint_ns` (verbatim)
         4. `langgraph_node`
         """
         if namespace_tuple:
-            raw_name = str(namespace_tuple[-1])
-
-            # Try to resolve to task:{task_id} format via registry
-            if self._background_registry:
-                task = self._background_registry.get_task_by_namespace(raw_name)
-                if task:
-                    return f"task:{task.task_id}"
-
-            return raw_name
+            return self._resolve_task_lane(namespace_tuple) or str(
+                namespace_tuple[-1]
+            )
 
         checkpoint_ns = message_metadata.get("checkpoint_ns")
         if checkpoint_ns:
