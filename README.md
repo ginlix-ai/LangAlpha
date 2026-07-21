@@ -243,7 +243,7 @@ The agent can schedule its own tasks from within a conversation — no separate 
 Conditions can be combined (AND logic), and each price automation supports **one-shot** (fire once) or **recurring** mode with a configurable cooldown (minimum 4 hours, or once per trading day by default).
 
 > [!NOTE]
-> Price-triggered automations require the real-time WebSocket feed from ginlix-data. During the beta, this feature is available exclusively on the [hosted platform](https://ginlix.ai). Broader WebSocket data source support is planned for future releases.
+> Price-triggered automations require the real-time WebSocket feed from ginlix-data. During the beta, this feature is available exclusively on the [hosted platform](https://langalpha.ai). Broader WebSocket data source support is planned for future releases.
 
 <p align="center">
   <img src="docs/images/automations-page-mag7-pre-earnings.png" alt="Automations page with template gallery and Mag 7 pre-earnings schedule" width="800" />
@@ -408,7 +408,7 @@ The web UI is more than a chat interface — it's a full research workbench:
 
 ## Channel Integrations
 
-Use LangAlpha from the tools you already work in. The integration gateway relays messages between messaging platforms and the core agent, with each channel receiving responses in its native format. Channel integrations are available exclusively on our hosted service with one-click setup and quick account binding — visit [integrations](https://ginlix.ai/account/integrations) to get started.
+Use LangAlpha from the tools you already work in. The integration gateway relays messages between messaging platforms and the core agent, with each channel receiving responses in its native format. Channel integrations are available exclusively on our hosted service with one-click setup and quick account binding — visit [integrations](https://platform.langalpha.ai/integrations) to get started.
 
 
 | Feature                        | Slack | Discord | Feishu | Telegram | WhatsApp |
@@ -430,7 +430,7 @@ Slack and Discord offer native channels and thread-level groups, which map natur
 ## Getting Started
 
 > [!TIP]
-> **Don't want to self-host?** Try the [hosted version](https://ginlix.ai) — it includes full data infrastructure (FMP, real-time market data, cloud sandboxes) out of the box. Bring your own LLM key (BYOK) and start immediately with no setup.
+> **Don't want to self-host?** Try the [hosted version](https://langalpha.ai) — it includes full data infrastructure (FMP, real-time market data, cloud sandboxes) out of the box. Bring your own LLM key (BYOK) and start immediately with no setup.
 
 You can start LangAlpha with **nothing but Docker** — no API keys for data, no cloud sandbox. Just Docker for infrastructure and your own LLM subscription for the AI model.
 
