@@ -6,7 +6,36 @@
  * detail view contradicted its inline chip's "Running".
  */
 import { describe, it, expect } from 'vitest';
-import { deriveSubagentStatus } from '../subagentStatus';
+import { deriveSubagentStatus, normalizeWireStatus } from '../subagentStatus';
+
+describe('normalizeWireStatus', () => {
+  it('passes terminal display statuses through', () => {
+    expect(normalizeWireStatus('completed')).toBe('completed');
+    expect(normalizeWireStatus('cancelled')).toBe('cancelled');
+    expect(normalizeWireStatus('error')).toBe('error');
+  });
+
+  it('collapses failure spellings to error — including interrupted', () => {
+    // Task HITL is descoped: an interrupted task run is a failure, matching
+    // the server's history stamping. Before this lane existed, a live
+    // chan_close{outcome: interrupted} fell through to 'completed' while a
+    // history reload stamped the same task 'error'.
+    expect(normalizeWireStatus('failed')).toBe('error');
+    expect(normalizeWireStatus('interrupted')).toBe('error');
+  });
+
+  it('collapses live spellings to active', () => {
+    expect(normalizeWireStatus('in_progress')).toBe('active');
+    expect(normalizeWireStatus('running')).toBe('active');
+    expect(normalizeWireStatus('active')).toBe('active');
+  });
+
+  it('returns null for unknown/absent values so callers keep their default', () => {
+    expect(normalizeWireStatus(undefined)).toBeNull();
+    expect(normalizeWireStatus(null)).toBeNull();
+    expect(normalizeWireStatus('weird-legacy')).toBeNull();
+  });
+});
 
 describe('deriveSubagentStatus', () => {
   it('returns terminal statuses verbatim, regardless of message shape', () => {

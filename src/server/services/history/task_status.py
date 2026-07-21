@@ -19,9 +19,11 @@ logger = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = ("completed", "cancelled", "error")
 
-# Ledger run status -> client vocabulary. 'interrupted' maps to error: task
-# HITL is descoped, so an interrupted task run is a failure, not a resumable
-# state the client could act on.
+# Ledger run status -> client vocabulary — a deliberate SECOND lane beside
+# services.status_vocabulary (whose public mapping keeps 'interrupted' for
+# root runs). Here 'interrupted' maps to error: task HITL is descoped, so an
+# interrupted task run is a failure, not a resumable state the client could
+# act on.
 _LEDGER_TO_CLIENT = {
     "in_progress": "running",
     "completed": "completed",

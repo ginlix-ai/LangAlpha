@@ -366,40 +366,38 @@ class RecoveryScanner:
         )
         sse_events, quality = await self._salvage_stream(thread_id, run_id)
 
-        result = await tl_db.finalize_run_idempotent(
-            run_id=run_id,
-            thread_id=thread_id,
-            status=status,
-            interrupt_reason=interrupt_reason,
-            metadata={"recovery": "scanner", "recovery_quality": quality},
-            errors=errors,
-            sse_events=sse_events,
+        from src.server.services.turn_lifecycle import TurnCoordinator, TurnOutcome
+
+        # The funnel owns the entire post-CAS tail — projection refresh,
+        # drainer nudge, and stream closure through the run_end gate. A lost
+        # CAS still closes the stream with the survivor's outcome (the owner
+        # may have died between its commit and its emission, and no later
+        # scan revisits a terminal row).
+        result = await TurnCoordinator.get_instance().finalize_detached_run(
+            thread_id,
+            run_id,
+            TurnOutcome(
+                status=status,
+                interrupt_reason=interrupt_reason,
+                metadata={"recovery": "scanner", "recovery_quality": quality},
+                errors=errors,
+                sse_events=sse_events,
+            ),
             checkpoint_id=checkpoint_id,
+            error_frame={
+                "thread_id": thread_id,
+                "content": "the worker running this turn was lost",
+                "error_type": "worker_lost",
+                "error": "worker_lost",
+            },
         )
-        if not result.applied:
-            # Lost the CAS to the owner — but the owner may have died
-            # between ITS commit and its run_end append, and no later scan
-            # revisits a terminal row. Ensure the stream closes with the
-            # owner's adopted outcome; the run_end gate + tail check keep
-            # this exactly-once against a still-alive owner. No error
-            # frame: the owner told its own story.
-            survivor_status = (result.run or {}).get("status")
-            if survivor_status:
-                await self._emit_terminal_frames(
-                    thread_id, run_id, survivor_status, include_error_frame=False
-                )
-            return False
-
-        final_status = (result.run or {}).get("status", status)
-        logger.warning(
-            f"[RecoveryScanner] recovered run {run_id} (thread={thread_id}) "
-            f"-> {final_status} (quality={quality})"
-        )
-        from src.server.services.turn_lifecycle import TurnCoordinator
-
-        TurnCoordinator.get_instance().post_finalize_tail(thread_id)
-        await self._emit_terminal_frames(thread_id, run_id, final_status)
-        return True
+        if result.applied:
+            logger.warning(
+                f"[RecoveryScanner] recovered run {run_id} (thread={thread_id}) "
+                f"-> {(result.run or {}).get('status', status)} "
+                f"(quality={quality})"
+            )
+        return result.applied
 
     # --------------------------------------------------------- classification
 
@@ -552,59 +550,6 @@ class RecoveryScanner:
         except Exception:
             return None
         return None
-
-    # -------------------------------------------------------------- emission
-
-    async def _emit_terminal_frames(
-        self,
-        thread_id: str,
-        run_id: str,
-        final_status: str,
-        *,
-        include_error_frame: bool = True,
-    ) -> None:
-        """Close the run's live stream for any reconnected client (I6):
-        commit-then-run_end, an error frame first for a real failure.
-        Best-effort — the archive row is already durable."""
-        try:
-            from src.server.services.background_task_manager import (
-                BackgroundTaskManager,
-                stream_key,
-            )
-            from src.utils.cache.redis_cache import get_cache_client
-
-            cache = get_cache_client()
-            if not (cache.enabled and cache.client):
-                return
-            skey = stream_key(thread_id, run_id)
-            tail = await cache.client.xrevrange(skey, count=1)
-            if tail:
-                wire = tail[0][1].get(b"event") or tail[0][1].get("event") or b""
-                if isinstance(wire, str):
-                    wire = wire.encode("utf-8")
-                if wire.startswith(b"event: run_end"):
-                    return
-            if include_error_frame and final_status == "error":
-                payload = {
-                    "thread_id": thread_id,
-                    "content": "the worker running this turn was lost",
-                    "error_type": "worker_lost",
-                    "error": "worker_lost",
-                }
-                frame = (
-                    f"event: error\n"
-                    f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                )
-                await cache.client.xadd(skey, {b"event": frame.encode("utf-8")})
-            await BackgroundTaskManager.get_instance().append_run_end_event(
-                thread_id, run_id, final_status
-            )
-        except Exception:
-            logger.warning(
-                f"[RecoveryScanner] terminal frame emission failed for "
-                f"{run_id}",
-                exc_info=True,
-            )
 
     # ------------------------------------------------------------ legacy heal
 

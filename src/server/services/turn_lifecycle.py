@@ -10,7 +10,6 @@ else may write a run's terminal state.
 """
 
 import asyncio
-import json
 import logging
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -255,10 +254,10 @@ class TurnCoordinator:
                 # taken outside would be stale (monitor queued ahead of
                 # finalize).
                 guard = raw_guard
-                if guard is not None and (guard.lost or guard.conn.closed):
+                if guard is not None and not guard.usable:
                     guard = None
                 outcome = self._downgrade_if_guard_lost(handle, outcome, guard)
-                result = await tl_db.finalize_run_idempotent(
+                result = await tl_db.finalize_run(
                     run_id=handle.run_id,
                     thread_id=handle.thread_id,
                     status=outcome.status,
@@ -337,6 +336,53 @@ class TurnCoordinator:
             )
             return None
 
+    async def finalize_detached_run(
+        self,
+        thread_id: str,
+        run_id: str,
+        outcome: TurnOutcome,
+        *,
+        checkpoint_id: Optional[str] = None,
+        error_frame: Optional[Dict[str, Any]] = None,
+    ) -> FinalizeResult:
+        """The guard-less finalize funnel for runs with no live owner
+        (recovery scanner, dispatch reconcile): the same terminal CAS as the
+        owner path, then its entire tail — projection refresh + drainer nudge
+        on a won CAS, and terminal-frame emission through the run_end gate
+        even on a lost one (the survivor may have died between its commit and
+        its emission; the gate keeps the close exactly-once against a live
+        emitter). ``error_frame`` is the caller's client-facing failure
+        payload, emitted only when the verified terminal status is ``error``.
+        Raises like the CAS it wraps; callers that must never raise wrap it.
+        """
+        result = await tl_db.finalize_run(
+            run_id=run_id,
+            thread_id=thread_id,
+            status=outcome.status,
+            interrupt_reason=outcome.interrupt_reason,
+            metadata=outcome.metadata,
+            warnings=outcome.warnings,
+            errors=outcome.errors,
+            execution_time=outcome.execution_time,
+            sse_events=outcome.sse_events,
+            checkpoint_id=checkpoint_id,
+        )
+        if result.applied:
+            self.post_finalize_tail(thread_id)
+        final_status = (result.run or {}).get("status")
+        if final_status:
+            from src.server.services.background_task_manager import (
+                BackgroundTaskManager,
+            )
+
+            await BackgroundTaskManager.get_instance().append_run_end_event(
+                thread_id,
+                run_id,
+                final_status,
+                error_frame=error_frame if final_status == "error" else None,
+            )
+        return result
+
     async def reconcile_orphaned_dispatch(
         self,
         thread_id: str,
@@ -348,117 +394,54 @@ class TurnCoordinator:
         """Last-resort owner (I6) for a dispatched run whose consumer died
         without the executor settling the row.
 
-        CASes a still-in_progress row to error (durable cancel intent may
-        adopt 'cancelled') and emits the terminal frames the real owner never
-        wrote: an error frame only for a real error, run_end only with a
-        verified terminal status, and only if this call won the CAS — losing
-        means the real owner finalized concurrently and emits its own frames.
-        Returns the verified terminal status, or None when nothing durable
-        could be established. Never raises.
+        One funnel call: CAS a still-in_progress row to error (durable cancel
+        intent may adopt 'cancelled'), then close the transport with the
+        verified terminal status through the run_end gate. When nothing
+        durable can be established (row missing, CAS failure) an error frame
+        still tells attached clients the workflow died — without claiming a
+        terminal. Returns the verified terminal status, or None. Never raises.
         """
-        from src.server.services.background_task_manager import (
-            BackgroundTaskManager,
-            stream_key,
-        )
-        from src.utils.cache.redis_cache import get_cache_client
-
-        terminal_status: Optional[str] = None
+        error_frame = {
+            "thread_id": thread_id,
+            "content": "background workflow failed",
+            "error_type": "background_failure",
+            "error": error_text or "background workflow failed",
+        }
         try:
-            cache = get_cache_client()
-            if not (cache.enabled and cache.client):
-                return None
-            skey = stream_key(thread_id, run_id)
-
-            # If the stream already closed with run_end, the run's real owner
-            # finalized and emitted — add nothing.
-            tail_is_run_end = False
-            try:
-                tail = await cache.client.xrevrange(skey, count=1)
-                if tail:
-                    wire = (
-                        tail[0][1].get(b"event") or tail[0][1].get("event") or b""
-                    )
-                    if isinstance(wire, str):
-                        wire = wire.encode("utf-8")
-                    tail_is_run_end = wire.startswith(b"event: run_end")
-            except Exception:
-                pass
-
-            run_row = None
-            try:
-                run_row = await tl_db.get_run(run_id)
-            except Exception:
-                logger.warning(
-                    f"[{label}] run-row read failed for {run_id}; "
-                    f"emitting error frame without run_end",
-                    exc_info=True,
-                )
-
-            cas_owned = True
-            if run_row is not None:
-                if run_row.get("status") == "in_progress":
-                    try:
-                        result = await tl_db.finalize_run_idempotent(
-                            run_id=run_id,
-                            thread_id=thread_id,
-                            status="error",
-                            errors=[error_text or "background workflow failed"],
-                            metadata={"recovery": "dispatch_consumer_crash"},
-                        )
-                        cas_owned = result.applied
-                        if result.run:
-                            terminal_status = result.run.get("status")
-                        if result.applied:
-                            self.post_finalize_tail(thread_id)
-                    except Exception:
-                        logger.critical(
-                            f"[{label}] last-resort finalize failed for "
-                            f"run={run_id}; row remains in_progress for "
-                            f"recovery",
-                            exc_info=True,
-                        )
-                else:
-                    terminal_status = run_row.get("status")
-
-            # Emission matrix: an error frame only for a real error (an
-            # adopted cancel is not a failure to the client — it gets only
-            # run_end(cancelled)); nothing for a run that ended completed/
-            # interrupted; nothing on a duplicate close or a lost CAS.
-            if not tail_is_run_end and cas_owned:
-                if terminal_status in (None, "error"):
-                    error_payload = {
-                        "thread_id": thread_id,
-                        "content": "background workflow failed",
-                        "error_type": "background_failure",
-                        "error": error_text or "background workflow failed",
-                    }
-                    sse_wire = (
-                        f"event: error\n"
-                        f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
-                    )
-                    await cache.client.xadd(
-                        skey, {b"event": sse_wire.encode("utf-8")}
-                    )
-                if terminal_status in ("error", "cancelled"):
-                    await BackgroundTaskManager.get_instance().append_run_end_event(
-                        thread_id, run_id, terminal_status
-                    )
+            result = await self.finalize_detached_run(
+                thread_id,
+                run_id,
+                TurnOutcome(
+                    status="error",
+                    errors=[error_text or "background workflow failed"],
+                    metadata={"recovery": "dispatch_consumer_crash"},
+                ),
+                error_frame=error_frame,
+            )
+            return (result.run or {}).get("status")
         except Exception:
-            logger.warning(
-                f"[{label}] failed to emit terminal error SSE for "
-                f"thread_id={thread_id} run_id={run_id}",
+            logger.critical(
+                f"[{label}] last-resort finalize failed for run={run_id}; "
+                f"row (if any) remains in_progress for recovery",
                 exc_info=True,
             )
-        return terminal_status
+            try:
+                from src.server.services.background_task_manager import (
+                    BackgroundTaskManager,
+                )
+
+                await BackgroundTaskManager.get_instance().append_run_end_event(
+                    thread_id, run_id, None, error_frame=error_frame
+                )
+            except Exception:
+                logger.warning(
+                    f"[{label}] failed to emit terminal error SSE for "
+                    f"thread_id={thread_id} run_id={run_id}",
+                    exc_info=True,
+                )
+            return None
 
     # ------------------------------------------------------------ guard utils
-
-    def _usable_guard(self, handle: RunHandle):
-        """The handle's guard iff its session is still trustworthy."""
-        guard = handle.guard
-        if guard is None or guard.lost or guard.conn.closed:
-            return None
-        return guard
 
     def _downgrade_if_guard_lost(
         self, handle: RunHandle, outcome: TurnOutcome, usable_guard
@@ -576,8 +559,8 @@ class TurnCoordinator:
         """Checkpoint tip via the run's own session when fenced (reads its
         own writes; a lock-lost session can't answer), else the pool saver."""
         try:
-            guard = self._usable_guard(handle)
-            if guard is not None:
+            guard = handle.guard
+            if guard is not None and guard.usable:
                 saver = guard.saver
             else:
                 from src.server.app import setup

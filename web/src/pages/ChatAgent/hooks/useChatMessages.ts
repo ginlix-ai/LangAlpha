@@ -21,6 +21,7 @@ import { toast } from '@/components/ui/use-toast';
 import { buildRateLimitError, isUpstreamHint, type StructuredError } from '@/utils/rateLimitError';
 import { getStoredThreadId, setStoredThreadId } from './utils/threadStorage';
 import { countToolCalls } from '../utils/subagentMetrics';
+import { isTerminalStatus, normalizeWireStatus } from '../utils/subagentStatus';
 import { type SubagentTokenUsage, ZERO_USAGE, extractTokenUsageDelta, accumulateTokenUsage } from '../utils/tokenUsage';
 import { computeSteeringBoundary, shouldSkipSteeringRollback } from '../utils/steeringRollback';
 import { bumpThreadNavOrder } from './useNavigationData';
@@ -3255,6 +3256,20 @@ export function useChatMessages(
     });
   };
 
+  /** A task is settled — and must never be re-activated by a stale /status
+   * snapshot — if the ledger shows it terminal OR the client already saw its
+   * per-task stream close live this session. Either way its run settled before
+   * the mux's window, so no closure would ever arrive for a re-activated card.
+   * The second half is what history alone misses: a task that closed live but
+   * whose ledger the local history hasn't refreshed to terminal yet. */
+  const isSettledTask = (shortTaskId: string): boolean => {
+    const historyStatus = subagentHistoryRef.current?.[`task:${shortTaskId}`]?.status;
+    return (
+      isTerminalStatus(normalizeWireStatus(historyStatus)) ||
+      terminalTaskOutcomesRef.current.has(shortTaskId)
+    );
+  };
+
   /**
    * Thread-level sink for the v2 mux. Task frames route through the CURRENT
    * stream processor (last attach wins), and run closure — run_end or
@@ -3272,10 +3287,7 @@ export function useChatMessages(
         const agentId = typeof ev.agent === 'string' ? ev.agent : '';
         const shortId = agentId.startsWith('task:') ? agentId.slice(5) : '';
         const hist = subagentHistoryRef.current?.[agentId];
-        if (
-          terminalTaskOutcomesRef.current.has(shortId) ||
-          (!!hist?.status && hist.status !== 'running')
-        ) {
+        if (isSettledTask(shortId)) {
           return;
         }
         // Run-level guard: a task can be live under a successor run while a
@@ -3296,11 +3308,12 @@ export function useChatMessages(
     },
     onTaskRunClosed: (shortTaskId, outcome) => {
       // Positive closure from the run ledger: honor the real terminal
-      // outcome — cancelled and error must not render as success.
+      // outcome — cancelled, error, and interrupted (a failure for tasks;
+      // task HITL is descoped) must not render as success. A missing or
+      // non-terminal outcome keeps the legacy 'completed' default.
+      const normalized = normalizeWireStatus(outcome);
       const status =
-        outcome === 'cancelled' ? 'cancelled'
-        : outcome === 'error' ? 'error'
-        : 'completed';
+        normalized && isTerminalStatus(normalized) ? normalized : 'completed';
       // Record the exact outcome so every downstream reactivation guard can seed
       // the RIGHT terminal status (a failed task must not resurface as completed).
       terminalTaskOutcomesRef.current.set(shortTaskId, status);
@@ -3344,20 +3357,6 @@ export function useChatMessages(
       }
       setReloadTrigger((n) => n + 1);
     },
-  };
-
-  /** A task is settled — and must never be re-activated by a stale /status
-   * snapshot — if the ledger shows it terminal OR the client already saw its
-   * per-task stream close live this session. Either way its run settled before
-   * the mux's window, so no closure would ever arrive for a re-activated card.
-   * The second half is what history alone misses: a task that closed live but
-   * whose ledger the local history hasn't refreshed to terminal yet. */
-  const isSettledTask = (shortTaskId: string): boolean => {
-    const historyStatus = subagentHistoryRef.current?.[`task:${shortTaskId}`]?.status;
-    return (
-      (!!historyStatus && historyStatus !== 'running') ||
-      terminalTaskOutcomesRef.current.has(shortTaskId)
-    );
   };
 
   /**

@@ -308,8 +308,15 @@ class WriterGuard:
         self._released = False
         self._discard = False
         self._release_task: Optional[asyncio.Task] = None
+
         self._monitor_task: Optional[asyncio.Task] = None
         self._abort_cb: Optional[Callable[[], Any]] = None
+
+    @property
+    def usable(self) -> bool:
+        """The session can still be trusted for fenced SQL/saver work:
+        not lost, not released, connection open."""
+        return not (self.lost or self._released or self.conn.closed)
 
     # ------------------------------------------------------------- acquire
 
@@ -414,7 +421,7 @@ class WriterGuard:
         session or a query error refuses the namespace rather than admitting
         an unfenced writer.
         """
-        if self.lost or self._released or self.conn.closed:
+        if not self.usable:
             return False
         key = namespace_key(self.thread_id, f"task:{task_id}")
         try:
@@ -450,7 +457,7 @@ class WriterGuard:
         if task_id not in self._task_ns:
             return
         self._task_ns.discard(task_id)
-        if self.lost or self._released or self.conn.closed:
+        if not self.usable:
             return
         # A write authorized before the permit fell may still be in flight
         # (e.g. a double-cancelled writer's abandoned saver task): keep the
@@ -475,7 +482,7 @@ class WriterGuard:
                 # lock, and the conn may already be back in the pool (or
                 # serving another session). Executing here then would fire a
                 # stray unlock on a connection this guard no longer owns.
-                if self.lost or self._released or self.conn.closed:
+                if not self.usable:
                     return
                 await self.conn.execute(
                     "SELECT pg_advisory_unlock(%s)",

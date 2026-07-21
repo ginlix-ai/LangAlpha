@@ -1,11 +1,12 @@
-# Stream Contract v2 — run-scoped lanes (target)
+# Stream Contract v2 — run-scoped lanes
 
-Target contract for thread streaming after the subagent run ledger lands. Milestone
-status: **lane ownership is live** (the main stream no longer carries task content);
-everything else here is the frozen design that M3–M7 implement. Until then, the
-transitional v1 behaviors (per-task streams keyed by task id, epoch reset on resume,
-sentinel handshake) remain in effect — this document is the authority for what new code
-builds toward, not a description of the current wire.
+Contract for thread streaming on the subagent run ledger. Milestone status: **live on
+the wire** — the mux v2 server and the client cutover shipped (M1–M7), so run-scoped
+streams, the control lane, lane_open/run_end, and the snapshot semantics below describe
+the current transport, not a target. What remains transitional until the M8 deletions:
+the v1 per-task streams (keyed by task id) are still dual-written for the legacy
+readers, and the sentinel handshake survives on the compatibility surfaces (foreground
+POST SSE, pre-v2 streams).
 
 ## Identity
 
@@ -24,10 +25,10 @@ builds toward, not a description of the current wire.
 {run_id, seq, lane, type, payload}
 ```
 
-- `seq` is a per-run monotonic sequence allocated **Redis-side** (derived from the
-  stream, never an in-process counter) so any worker — including a recovery scanner
-  appending a terminal frame — can allocate `last_seq + 1`.
-- Cursor = `(run_id, seq)`; resume is exclusive (`seq + 1` onward).
+- `seq` is the Redis stream entry id assigned by XADD (`<ms>-<n>`) — nobody allocates
+  or increments it. Monotonic per stream by construction, so any worker — including a
+  recovery finalizer appending a terminal frame — appends without coordination.
+- Cursor = `run:<run_id>#<entry_id>`; resume is exclusive (XREAD after the entry id).
 - **Every render-affecting frame carries a cursor**, including `lane_open`, interrupts,
   and `run_end`. Keepalives are the only cursorless traffic.
 
@@ -64,9 +65,10 @@ present in the snapshot.
 
 Ledger rows do not notify connected consumers. A per-thread **control lane**
 (`subagent:control:{thread_id}`, a bounded Redis stream) announces
-`run_started{run_id}` for root turns and `task_run_started{task_run_id}` for task
-runs push-style; because it is a stream, an attaching mux reads the backlog — there
-is no subscribe-after-snapshot race. It is MAXLEN-trimmed and best-effort; periodic
+`run_started{run_id}` for root turns and `task_run_started{run_id, task_id, cause,
+parent_run_id}` for task runs (the run-id field is named `run_id` and carries the
+task_run_id) push-style; because it is a stream, an attaching mux reads the backlog —
+there is no subscribe-after-snapshot race. It is MAXLEN-trimmed and best-effort; periodic
 ledger reconciliation is the backstop. `lane_open` alone is not discoverable (it
 lives inside the stream it announces).
 
@@ -97,6 +99,12 @@ lives inside the stream it announces).
 - A cursor gap on an active stream returns **`resync_required`** — never
   gap-and-continue. `resync_required` on an active run is preceded by its
   `error(transport_lost)` finalize: a resync target must be a terminal projection.
+- **Implementation caveat**: the byte/event quota is enforced today only on the
+  main-lane stream (the event buffer finalizes `error(transport_lost)` at quota;
+  its MAXLEN is a 2× backstop the quota fires before). Task-run v2 streams are
+  appended with **no MAXLEN and no quota** — currently their content is dual-written
+  to the MAXLEN-bounded v1 per-task leg, but that bound protects a *different key*.
+  The v2 quota must land with (or before) the M8 deletion of the v1 leg.
 
 ## Snapshot
 
@@ -115,11 +123,22 @@ sampled transactionally, the snapshot algorithm is a revalidation loop:
 ## Consumers
 
 - **Foreground POST SSE** stays as a main-lane-only compatibility surface (gateway,
-  curl, OSS). A mux-exclusive client uses content negotiation to receive
-  `202 {run_id}` after durable handoff instead of draining the POST body.
+  curl, OSS). A mux-exclusive client opts into dispatch with the
+  `X-Dispatch: background` request header and receives a **200**
+  `{status: "dispatched", run_id, …}` once the START txn has committed (a durable
+  receipt — the handler primes the workflow generator past START before responding)
+  instead of draining the POST body.
 - **Mux v2** carries all lanes (including main) as v2 frames over per-run streams; task
   discovery comes from the control lane + ledger, and anchor ordering is enforced
   server-side (frames buffer in Redis until the anchor is delivered or snapshotted).
+- **Socket control frames** (mux-level, cursorless — distinct from in-stream frames):
+  `chan_open{chan, lane, mode, started}` when the mux admits a channel (mode `replay`
+  for a live run, `drain` for a settled backlog; `started` = ledger started_at epoch
+  ms, the client orders per-task outcome votes by it), and `chan_close{chan, reason}`
+  when it releases one. `chan_close{reason: terminal, outcome}` carries the ledger
+  row's outcome — it is how a channel closes from row truth when the worker died
+  between the terminal CAS and the `run_end` append. Other reasons:
+  `resync_required` (cursor gap / aged-out stream) and `transport_error`.
 - Client item identity is `(lane, run_id, item_id)` — never a positional index. Delivery
   is at-least-once: consumers keep a per-run applied-seq high-water mark; no semantic
   dedup is required beyond it.

@@ -63,6 +63,7 @@ async def test_crash_never_clears_report_back_off_chain():
     admission's just-claimed pointer mid-flight."""
     from src.server.database import turn_lifecycle as tl_db
     from src.server.database.turn_lifecycle import FinalizeResult
+    from src.server.services.background_task_manager import BackgroundTaskManager
 
     for ledger in (
         patch.object(tl_db, "get_run", AsyncMock(return_value=None)),
@@ -80,12 +81,18 @@ async def test_crash_never_clears_report_back_off_chain():
         p1, p2, _default = _patched(cache, clear)
         finalize = patch.object(
             tl_db,
-            "finalize_run_idempotent",
+            "finalize_run",
             AsyncMock(
                 return_value=FinalizeResult(applied=False, run={"status": "error"})
             ),
         )
-        with p1, p2, ledger, finalize:
+        fake_manager = AsyncMock()
+        fake_manager.is_run_live = AsyncMock(return_value=False)
+        with p1, p2, ledger, finalize, patch.object(
+            BackgroundTaskManager,
+            "get_instance",
+            classmethod(lambda cls: fake_manager),
+        ):
             ok = await _consume_background_gen(
                 _crashing_gen(), "PTC_DISPATCH", "ptc-1", "run-1"
             )
@@ -95,10 +102,13 @@ async def test_crash_never_clears_report_back_off_chain():
 
 # --- last-resort finalize + verified run_end (I6) ---------------------------
 #
-# The dispatch-failure path may only emit run_end with a VERIFIED terminal
-# status: it settles an orphaned in_progress row itself (one CAS, adopting
-# durable cancel intent), reads an already-terminal row's real status, and
-# emits NOTHING when the stream already closed or the run actually succeeded.
+# The dispatch-failure path funnels through finalize_detached_run: one CAS
+# (adopting durable cancel intent), then transport closure with the VERIFIED
+# terminal status through the run_end gate — a lost CAS still closes the
+# stream with the survivor's outcome (the gate keeps it exactly-once against
+# a live emitter). All frames go through append_run_end_event; the consumer
+# path never XADDs directly. When nothing durable can be established, an
+# error frame informs without claiming a terminal (outcome=None).
 
 
 def _row(status):
@@ -112,33 +122,32 @@ def _row(status):
     }
 
 
-def _ledger_patches(run_row, finalize_result=None):
+def _finalize_patch(result):
     from src.server.database import turn_lifecycle as tl_db
 
-    return (
-        patch.object(tl_db, "get_run", AsyncMock(return_value=run_row)),
-        patch.object(
-            tl_db,
-            "finalize_run_idempotent",
-            AsyncMock(return_value=finalize_result),
-        ),
+    mock = (
+        AsyncMock(side_effect=result)
+        if isinstance(result, BaseException) or (
+            isinstance(result, type) and issubclass(result, BaseException)
+        )
+        else AsyncMock(return_value=result)
     )
+    return patch.object(tl_db, "finalize_run", mock), mock
 
 
-async def _run_crash(cache, run_row, finalize_result=None):
+async def _run_crash(cache, finalize_result):
     from src.server.services.background_task_manager import BackgroundTaskManager
 
-    order = []
-    cache.client.xadd.side_effect = lambda *a, **kw: order.append("error_xadd")
+    closes = []
     fake_manager = AsyncMock()
     fake_manager.is_run_live = AsyncMock(return_value=False)
     fake_manager.append_run_end_event.side_effect = (
-        lambda *a, **kw: order.append("run_end")
+        lambda *a, **kw: closes.append((a, kw))
     )
     clear = AsyncMock()
     p1, p2, p0 = _patched(cache, clear)
-    p3, p4 = _ledger_patches(run_row, finalize_result)
-    with p1, p2, p0, p3, p4, patch.object(
+    p3, finalize = _finalize_patch(finalize_result)
+    with p1, p2, p0, p3, patch.object(
         BackgroundTaskManager,
         "get_instance",
         classmethod(lambda cls: fake_manager),
@@ -147,97 +156,97 @@ async def _run_crash(cache, run_row, finalize_result=None):
             _crashing_gen(), "PTC_DISPATCH", "ptc-1", "run-1"
         )
     assert ok is False
-    return order, fake_manager
+    # ALL frame emission goes through the run_end gate — the consumer path
+    # never writes to the stream directly.
+    cache.client.xadd.assert_not_awaited()
+    return closes
 
 
 @pytest.mark.asyncio
-async def test_orphaned_in_progress_row_is_finalized_then_run_end():
-    """An in_progress row with a dead generator gets the last-resort CAS;
-    run_end carries the CAS-adopted status and follows the error frame."""
+async def test_orphaned_in_progress_row_is_finalized_then_closed():
+    """The last-resort CAS wins: transport closes with the CAS-adopted
+    status, and the failure story rides the gate as the error frame."""
     from src.server.database.turn_lifecycle import FinalizeResult
 
-    cache = _FakeCache({})
-    order, manager = await _run_crash(
-        cache,
-        run_row=_row("in_progress"),
-        finalize_result=FinalizeResult(applied=True, run={"status": "error"}),
+    closes = await _run_crash(
+        _FakeCache({}),
+        FinalizeResult(applied=True, run={"status": "error"}),
     )
-    assert order == ["error_xadd", "run_end"]
-    manager.append_run_end_event.assert_awaited_once_with("ptc-1", "run-1", "error")
+    assert len(closes) == 1
+    args, kwargs = closes[0]
+    assert args == ("ptc-1", "run-1", "error")
+    assert kwargs["error_frame"]["error_type"] == "background_failure"
 
 
 @pytest.mark.asyncio
 async def test_durable_cancel_intent_adopts_cancelled_outcome():
     """An adopted cancel is not a failure to the client: run_end(cancelled)
-    closes the stream, but no background_failure error frame appears."""
+    closes the stream with no background_failure error frame."""
     from src.server.database.turn_lifecycle import FinalizeResult
 
-    cache = _FakeCache({})
-    order, manager = await _run_crash(
-        cache,
-        run_row=_row("in_progress"),
-        finalize_result=FinalizeResult(applied=True, run={"status": "cancelled"}),
+    closes = await _run_crash(
+        _FakeCache({}),
+        FinalizeResult(applied=True, run={"status": "cancelled"}),
     )
-    assert order == ["run_end"]
-    manager.append_run_end_event.assert_awaited_once_with(
-        "ptc-1", "run-1", "cancelled"
-    )
+    assert closes == [(("ptc-1", "run-1", "cancelled"), {"error_frame": None})]
 
 
 @pytest.mark.asyncio
-async def test_lost_finalize_cas_emits_nothing():
-    """applied=False means the real owner finalized concurrently — it owns
-    the terminal transport; a second error frame / run_end here would
-    double-close the stream."""
+async def test_lost_finalize_cas_still_closes_with_survivor_status():
+    """applied=False means the real owner finalized concurrently — but it
+    may have died between its commit and its emission, so the transport is
+    still closed with the SURVIVOR's outcome; the run_end gate keeps this
+    exactly-once against a live owner."""
     from src.server.database.turn_lifecycle import FinalizeResult
 
-    cache = _FakeCache({})
-    order, manager = await _run_crash(
-        cache,
-        run_row=_row("in_progress"),
-        finalize_result=FinalizeResult(applied=False, run={"status": "error"}),
+    closes = await _run_crash(
+        _FakeCache({}),
+        FinalizeResult(applied=False, run={"status": "completed"}),
     )
-    assert order == []
-    manager.append_run_end_event.assert_not_awaited()
+    assert closes == [(("ptc-1", "run-1", "completed"), {"error_frame": None})]
 
 
 @pytest.mark.asyncio
-async def test_no_ledger_row_emits_error_frame_without_run_end():
-    """Pre-START crash: nothing durable exists, so no terminal may be claimed."""
-    cache = _FakeCache({})
-    order, manager = await _run_crash(cache, run_row=None)
-    assert order == ["error_xadd"]
-    manager.append_run_end_event.assert_not_awaited()
+async def test_survivor_error_row_closes_with_error_frame():
+    """In-generator finalize (row already error, transport maybe never
+    closed): the consumer path completes the close with the ROW's status
+    and the failure story — the gate suppresses it if the owner already
+    told its own."""
+    from src.server.database.turn_lifecycle import FinalizeResult
 
-
-@pytest.mark.asyncio
-async def test_completed_row_emits_nothing():
-    """A run that really finished must not gain a misleading error frame."""
-    cache = _FakeCache({})
-    order, manager = await _run_crash(cache, run_row=_row("completed"))
-    assert order == []
-    manager.append_run_end_event.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_terminal_error_row_gets_error_frame_and_its_real_status():
-    """In-generator finalize (row already error, no run_end on the stream):
-    the consumer path completes the transport close with the ROW's status."""
-    cache = _FakeCache({})
-    order, manager = await _run_crash(cache, run_row=_row("error"))
-    assert order == ["error_xadd", "run_end"]
-    manager.append_run_end_event.assert_awaited_once_with("ptc-1", "run-1", "error")
-
-
-@pytest.mark.asyncio
-async def test_stream_already_closed_with_run_end_emits_nothing():
-    cache = _FakeCache({})
-    cache.client.xrevrange = AsyncMock(
-        return_value=[("1-0", {b"event": b"event: run_end\ndata: {}\n\n"})]
+    closes = await _run_crash(
+        _FakeCache({}),
+        FinalizeResult(applied=False, run={"status": "error"}),
     )
-    order, manager = await _run_crash(cache, run_row=_row("error"))
-    assert order == []
-    manager.append_run_end_event.assert_not_awaited()
+    assert len(closes) == 1
+    args, kwargs = closes[0]
+    assert args == ("ptc-1", "run-1", "error")
+    assert kwargs["error_frame"] is not None
+
+
+@pytest.mark.asyncio
+async def test_no_ledger_row_informs_without_claiming_terminal():
+    """Pre-START crash (RunNotFoundError): nothing durable exists, so no
+    terminal may be claimed — outcome=None hands the error frame to the
+    gate without closing the stream."""
+    from src.server.database.turn_lifecycle import RunNotFoundError
+
+    closes = await _run_crash(_FakeCache({}), RunNotFoundError("run-1"))
+    assert len(closes) == 1
+    args, kwargs = closes[0]
+    assert args == ("ptc-1", "run-1", None)
+    assert kwargs["error_frame"]["error_type"] == "background_failure"
+
+
+@pytest.mark.asyncio
+async def test_failed_last_resort_finalize_withholds_terminal_claim():
+    """If the CAS itself fails the row stays in_progress — an error frame
+    may inform (outcome=None), but no run_end terminal claim appears (I6)."""
+    closes = await _run_crash(_FakeCache({}), RuntimeError("db down"))
+    assert len(closes) == 1
+    args, kwargs = closes[0]
+    assert args == ("ptc-1", "run-1", None)
+    assert kwargs["error_frame"] is not None
 
 
 @pytest.mark.asyncio
@@ -274,7 +283,7 @@ async def test_live_btm_executor_blocks_last_resort_finalize():
     clear = AsyncMock()
     p1, p2, p0 = _patched(cache, clear)
     with p1, p2, p0, patch.object(
-        tl_db, "finalize_run_idempotent", finalize
+        tl_db, "finalize_run", finalize
     ), patch.object(
         BackgroundTaskManager,
         "get_instance",
@@ -289,40 +298,3 @@ async def test_live_btm_executor_blocks_last_resort_finalize():
     cache.client.xadd.assert_not_awaited()
     fake_manager.append_run_end_event.assert_not_awaited()
     clear.assert_not_awaited()  # live dispatched run's watch keys stay in use
-
-
-@pytest.mark.asyncio
-async def test_failed_last_resort_finalize_withholds_run_end():
-    """If the CAS itself fails the row stays in_progress — an error frame may
-    inform, but run_end (a terminal claim) must not appear (I6)."""
-    from src.server.database import turn_lifecycle as tl_db
-    from src.server.services.background_task_manager import BackgroundTaskManager
-
-    cache = _FakeCache({})
-    order = []
-    cache.client.xadd.side_effect = lambda *a, **kw: order.append("error_xadd")
-    fake_manager = AsyncMock()
-    fake_manager.is_run_live = AsyncMock(return_value=False)
-    fake_manager.append_run_end_event.side_effect = (
-        lambda *a, **kw: order.append("run_end")
-    )
-    clear = AsyncMock()
-    p1, p2, p0 = _patched(cache, clear)
-    with p1, p2, p0, patch.object(
-        tl_db, "get_run", AsyncMock(return_value=_row("in_progress"))
-    ), patch.object(
-        tl_db,
-        "finalize_run_idempotent",
-        AsyncMock(side_effect=RuntimeError("db down")),
-    ), patch.object(
-        BackgroundTaskManager,
-        "get_instance",
-        classmethod(lambda cls: fake_manager),
-    ):
-        ok = await _consume_background_gen(
-            _crashing_gen(), "PTC_DISPATCH", "ptc-1", "run-1"
-        )
-
-    assert ok is False
-    assert order == ["error_xadd"]
-    fake_manager.append_run_end_event.assert_not_awaited()

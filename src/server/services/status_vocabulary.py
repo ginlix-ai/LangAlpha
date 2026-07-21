@@ -26,6 +26,11 @@ PUBLIC_STATUSES = frozenset(
     }
 )
 
+# The one internal terminal set — both run ledgers (turn_lifecycle,
+# subagent_runs) import it, and the migration CHECK constraints are
+# test-bound to it, so a new outcome cannot land in one store only.
+TERMINAL_STATUSES = ("completed", "interrupted", "error", "cancelled")
+
 # Live-run internal spellings, refined by durable intent/liveness below.
 _LIVE = ("in_progress", "active")
 
@@ -62,20 +67,16 @@ def to_public(
     return mapped if mapped in PUBLIC_STATUSES else "idle"
 
 
-_TERMINAL_INTERNAL = frozenset({"completed", "error", "cancelled", "interrupted"})
-
-
-def to_public_terminal(raw: Any) -> Optional[str]:
-    """Map an internal status to the public vocabulary only if it is terminal.
-
-    Returns None for live/unknown values so callers that publish settled
-    outcomes only (e.g. the liveness terminal fallback) omit rather than
-    mislabel a run that is still in flight.
-    """
+def is_terminal(raw: Any) -> bool:
+    """True iff the internal status is a settled run outcome."""
     value = getattr(raw, "value", raw)
-    if value is None or str(value) not in _TERMINAL_INTERNAL:
-        return None
-    return to_public(value)
+    return value is not None and str(value) in TERMINAL_STATUSES
+
+
+def is_live(raw: Any) -> bool:
+    """True iff the internal status names a run still in flight."""
+    value = getattr(raw, "value", raw)
+    return value is not None and str(value) in _LIVE
 
 
 def classify_interrupt_reason(interrupts: Any) -> str:

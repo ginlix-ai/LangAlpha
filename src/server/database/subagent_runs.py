@@ -16,11 +16,10 @@ import psycopg
 from psycopg.rows import dict_row
 
 from src.server.database import conversation as qr_db
+from src.server.services.status_vocabulary import TERMINAL_STATUSES
 from src.server.utils.pg_sanitize import SafeJson
 
 logger = logging.getLogger(__name__)
-
-TERMINAL_STATUSES = ("completed", "interrupted", "error", "cancelled")
 
 
 class SubagentRunError(Exception):

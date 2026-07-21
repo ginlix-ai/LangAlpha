@@ -25,11 +25,10 @@ from src.server.database.hook_outbox import (
     enqueue_hooks,
     release_deferred_jobs,
 )
+from src.server.services.status_vocabulary import TERMINAL_STATUSES
 from src.server.utils.pg_sanitize import SafeJson, normalize_uuid
 
 logger = logging.getLogger(__name__)
-
-TERMINAL_STATUSES = ("completed", "interrupted", "error", "cancelled")
 
 
 class TurnLifecycleError(Exception):
@@ -306,6 +305,10 @@ async def start_run(
     )
 
 
+class _AlreadyTerminal(Exception):
+    """Internal control flow: guarded UPDATE matched zero rows."""
+
+
 async def finalize_run(
     *,
     run_id: str,
@@ -325,8 +328,9 @@ async def finalize_run(
 
     Zero rows from the guarded UPDATE means someone else already finalized —
     the caller lost an intended race (cancel vs owner, janitor vs owner) and
-    gets applied=False with the surviving row; nothing else is written.
-    Committed cancel intent is authoritative: a row stamped with
+    gets applied=False with the surviving row (RunNotFoundError when no row
+    survives at all — e.g. the thread was deleted mid-run); nothing else is
+    written. Committed cancel intent is authoritative: a row stamped with
     cancel_requested_at before this CAS lands finalizes as 'cancelled'
     regardless of the requested status (I3: the durable cancel that locks
     the row first wins — the row lock linearizes cancel vs finalize).
@@ -342,153 +346,144 @@ async def finalize_run(
     if status not in TERMINAL_STATUSES:
         raise ValueError(f"finalize_run: {status!r} is not a terminal status")
 
-    async with _lifecycle_connection(conn) as conn:
-        async with conn.transaction():
-            async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(
-                    """
-                    UPDATE conversation_responses
-                    SET status = CASE
-                            WHEN cancel_requested_at IS NOT NULL THEN 'cancelled'
-                            ELSE %s
-                        END,
-                        interrupt_reason = CASE
-                            WHEN cancel_requested_at IS NOT NULL THEN NULL
-                            ELSE %s
-                        END,
-                        cancel_requested_at = CASE
-                            WHEN cancel_requested_at IS NULL AND %s = 'cancelled'
-                                THEN NOW()
-                            ELSE cancel_requested_at
-                        END,
-                        metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
-                            || CASE
-                                WHEN cancel_requested_at IS NOT NULL
-                                    THEN '{"cancelled_by_user": true}'::jsonb
-                                ELSE '{}'::jsonb
+    try:
+        async with _lifecycle_connection(conn) as conn:
+            async with conn.transaction():
+                async with conn.cursor(row_factory=dict_row) as cur:
+                    await cur.execute(
+                        """
+                        UPDATE conversation_responses
+                        SET status = CASE
+                                WHEN cancel_requested_at IS NOT NULL THEN 'cancelled'
+                                ELSE %s
                             END,
-                        warnings = %s,
-                        errors = %s,
-                        execution_time = %s,
-                        -- Merge, never replace: mid-run appenders
-                        -- (append_sse_event, e.g. manual compact/offload
-                        -- context_window persists) may have durably written
-                        -- to the open row already.
-                        sse_events = CASE
-                            WHEN %s::jsonb IS NULL THEN sse_events
-                            ELSE COALESCE(sse_events, '[]'::jsonb) || %s::jsonb
-                        END
-                    WHERE conversation_response_id = %s AND status = 'in_progress'
-                    RETURNING *
-                    """,
-                    (
-                        status,
-                        interrupt_reason,
-                        status,
-                        SafeJson(metadata or {}),
-                        warnings or [],
-                        errors or [],
-                        execution_time,
-                        SafeJson(sse_events) if sse_events else None,
-                        SafeJson(sse_events) if sse_events else None,
-                        run_id,
-                    ),
-                )
-                run_row = await cur.fetchone()
+                            interrupt_reason = CASE
+                                WHEN cancel_requested_at IS NOT NULL THEN NULL
+                                ELSE %s
+                            END,
+                            cancel_requested_at = CASE
+                                WHEN cancel_requested_at IS NULL AND %s = 'cancelled'
+                                    THEN NOW()
+                                ELSE cancel_requested_at
+                            END,
+                            metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                                || CASE
+                                    WHEN cancel_requested_at IS NOT NULL
+                                        THEN '{"cancelled_by_user": true}'::jsonb
+                                    ELSE '{}'::jsonb
+                                END,
+                            warnings = %s,
+                            errors = %s,
+                            execution_time = %s,
+                            -- Merge, never replace: mid-run appenders
+                            -- (append_sse_event, e.g. manual compact/offload
+                            -- context_window persists) may have durably written
+                            -- to the open row already.
+                            sse_events = CASE
+                                WHEN %s::jsonb IS NULL THEN sse_events
+                                ELSE COALESCE(sse_events, '[]'::jsonb) || %s::jsonb
+                            END
+                        WHERE conversation_response_id = %s AND status = 'in_progress'
+                        RETURNING *
+                        """,
+                        (
+                            status,
+                            interrupt_reason,
+                            status,
+                            SafeJson(metadata or {}),
+                            warnings or [],
+                            errors or [],
+                            execution_time,
+                            SafeJson(sse_events) if sse_events else None,
+                            SafeJson(sse_events) if sse_events else None,
+                            run_id,
+                        ),
+                    )
+                    run_row = await cur.fetchone()
 
-            if run_row is None:
-                # Lost the race (or bad id) — decide outside this txn.
-                raise _AlreadyTerminal()
+                if run_row is None:
+                    # Lost the race (or bad id) — decide outside this txn.
+                    raise _AlreadyTerminal()
 
-            run_row = dict(run_row)
-            final_status = run_row["status"]
-            if final_status != status:
-                logger.info(
-                    f"[turn_lifecycle] durable cancel intent overrode finalize "
-                    f"for run={run_id}: {status} -> {final_status}"
-                )
-
-            # The helpers below historically swallow failures (return False /
-            # catch-all). Inside this transaction a swallowed SQL error leaves
-            # the txn aborted, and Postgres turns the commit into a silent
-            # rollback — finalize would report applied=True with nothing
-            # written. Every helper result is therefore checked, and the
-            # transaction status is verified before commit as a backstop.
-            if not await qr_db.update_thread_status(
-                thread_id, final_status, checkpoint_id=checkpoint_id, conn=conn
-            ):
-                raise RuntimeError(
-                    f"thread projection update failed for thread={thread_id}"
-                )
-
-            await qr_db._sync_provenance_for_response(
-                conn,
-                conversation_response_id=run_id,
-                conversation_thread_id=thread_id,
-                turn_index=run_row["turn_index"],
-                # The RETURNING row carries the MERGED archive (pre-existing
-                # mid-run appends || this finalize's events) — provenance
-                # must derive from what was actually persisted.
-                sse_events=run_row.get("sse_events"),
-                strict=True,
-            )
-
-            if usage_writer is not None:
-                await usage_writer(conn, final_status)
-
-            # I5: every finalize path — fail_open, error funnels, sweep,
-            # fallback — gets its terminal effects derived from the row's
-            # START-stamped metadata, selected on the CAS-ADOPTED status
-            # (durable cancel intent can flip error->cancelled). No caller
-            # can attach, override, or forget them.
-            jobs = build_finalize_jobs_from_run_row(run_row)(final_status)
-            if jobs:
-                await enqueue_hooks(
-                    conn, run_id=run_id, thread_id=thread_id, jobs=jobs
-                )
-
-            # Deferred task report-backs wait for exactly this event: a
-            # completed finalize proves no pending HITL checkpoint can
-            # collide with their synthetic POST. Same transaction as the
-            # terminal CAS, so release and successor hooks commit together.
-            if final_status == "completed":
-                released = await release_deferred_jobs(
-                    conn, thread_id, "task_report_back"
-                )
-                if released:
+                run_row = dict(run_row)
+                final_status = run_row["status"]
+                if final_status != status:
                     logger.info(
-                        f"[turn_lifecycle] released {released} deferred "
-                        f"task_report_back job(s) for thread={thread_id}"
+                        f"[turn_lifecycle] durable cancel intent overrode finalize "
+                        f"for run={run_id}: {status} -> {final_status}"
                     )
 
-            if conn.info.transaction_status == psycopg.pq.TransactionStatus.INERROR:
-                raise RuntimeError(
-                    f"finalize transaction for run={run_id} poisoned by a "
-                    f"swallowed SQL error"
+                # The helpers below historically swallow failures (return False /
+                # catch-all). Inside this transaction a swallowed SQL error leaves
+                # the txn aborted, and Postgres turns the commit into a silent
+                # rollback — finalize would report applied=True with nothing
+                # written. Every helper result is therefore checked, and the
+                # transaction status is verified before commit as a backstop.
+                if not await qr_db.update_thread_status(
+                    thread_id, final_status, checkpoint_id=checkpoint_id, conn=conn
+                ):
+                    raise RuntimeError(
+                        f"thread projection update failed for thread={thread_id}"
+                    )
+
+                await qr_db._sync_provenance_for_response(
+                    conn,
+                    conversation_response_id=run_id,
+                    conversation_thread_id=thread_id,
+                    turn_index=run_row["turn_index"],
+                    # The RETURNING row carries the MERGED archive (pre-existing
+                    # mid-run appends || this finalize's events) — provenance
+                    # must derive from what was actually persisted.
+                    sse_events=run_row.get("sse_events"),
+                    strict=True,
                 )
 
-    logger.info(
-        f"[turn_lifecycle] FINALIZE run={run_id} thread={thread_id} "
-        f"status={final_status}"
-    )
-    return FinalizeResult(applied=True, run=run_row)
+                if usage_writer is not None:
+                    await usage_writer(conn, final_status)
 
+                # I5: every finalize path — fail_open, error funnels, sweep,
+                # fallback — gets its terminal effects derived from the row's
+                # START-stamped metadata, selected on the CAS-ADOPTED status
+                # (durable cancel intent can flip error->cancelled). No caller
+                # can attach, override, or forget them.
+                jobs = build_finalize_jobs_from_run_row(run_row)(final_status)
+                if jobs:
+                    await enqueue_hooks(
+                        conn, run_id=run_id, thread_id=thread_id, jobs=jobs
+                    )
 
-class _AlreadyTerminal(Exception):
-    """Internal control flow: guarded UPDATE matched zero rows."""
+                # Deferred task report-backs wait for exactly this event: a
+                # completed finalize proves no pending HITL checkpoint can
+                # collide with their synthetic POST. Same transaction as the
+                # terminal CAS, so release and successor hooks commit together.
+                if final_status == "completed":
+                    released = await release_deferred_jobs(
+                        conn, thread_id, "task_report_back"
+                    )
+                    if released:
+                        logger.info(
+                            f"[turn_lifecycle] released {released} deferred "
+                            f"task_report_back job(s) for thread={thread_id}"
+                        )
 
+                if conn.info.transaction_status == psycopg.pq.TransactionStatus.INERROR:
+                    raise RuntimeError(
+                        f"finalize transaction for run={run_id} poisoned by a "
+                        f"swallowed SQL error"
+                    )
 
-async def finalize_run_idempotent(**kwargs) -> FinalizeResult:
-    """finalize_run, mapping the zero-row CAS to applied=False + survivor row."""
-    try:
-        return await finalize_run(**kwargs)
-    except _AlreadyTerminal:
-        run = await get_run(kwargs["run_id"])
-        if run is None:
-            raise RunNotFoundError(kwargs["run_id"])
         logger.info(
-            f"[turn_lifecycle] finalize no-op: run={kwargs['run_id']} already "
-            f"{run['status']} (wanted {kwargs['status']})"
+            f"[turn_lifecycle] FINALIZE run={run_id} thread={thread_id} "
+            f"status={final_status}"
+        )
+        return FinalizeResult(applied=True, run=run_row)
+    except _AlreadyTerminal:
+        run = await get_run(run_id)
+        if run is None:
+            raise RunNotFoundError(run_id)
+        logger.info(
+            f"[turn_lifecycle] finalize no-op: run={run_id} already "
+            f"{run['status']} (wanted {status})"
         )
         return FinalizeResult(applied=False, run=run)
 

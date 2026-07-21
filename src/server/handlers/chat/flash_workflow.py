@@ -291,8 +291,8 @@ async def astream_flash_workflow(
 
         if dispatched:
             # Durable receipt (v4 2.4c): the dispatch handler is priming this
-            # generator and returns its 202 only once the START txn above has
-            # committed. The marker never reaches the SSE stream.
+            # generator and returns its 200 response only once the START txn
+            # above has committed. The marker never reaches the SSE stream.
             yield DISPATCH_STARTED_MARKER
 
         # =================================================================

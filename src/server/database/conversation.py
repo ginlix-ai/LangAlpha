@@ -1243,14 +1243,6 @@ _SETTLED_ATTEMPTS = """
     ORDER BY turn_index ASC, attempt_no DESC
 """
 
-# Cross-thread variant (no thread param) for the stats aggregates.
-_SETTLED_ATTEMPTS_ALL = """
-    SELECT DISTINCT ON (conversation_thread_id, turn_index) *
-    FROM conversation_responses
-    WHERE status <> 'in_progress'
-    ORDER BY conversation_thread_id, turn_index, attempt_no DESC
-"""
-
 
 def _sse_has_provenance(sse_events: Optional[Any]) -> bool:
     """True if any accumulated SSE event is a provenance entry."""
@@ -1833,43 +1825,6 @@ async def get_thread_auth_meta(thread_id: str) -> Optional[Dict[str, Any]]:
         raise
 
 
-async def get_threads_terminal_status(
-    thread_ids: List[str], user_id: str
-) -> Dict[str, str]:
-    """Durable ``current_status`` for the caller's threads, keyed by canonical id.
-
-    Batched, ownership-filtered read of ``conversation_threads.current_status`` so
-    the dispatch-liveness read-model can resolve ids whose Redis status blob has
-    expired. Non-UUID ids are dropped (they can't match the column) and rows the
-    caller doesn't own are excluded.
-    """
-    # Same UUID normalization as get_thread_auth_meta: a non-UUID id can't match
-    # the column, so drop it rather than risk a 22P02 cast error on ANY(...).
-    normalized = [nid for nid in (normalize_uuid(t) for t in thread_ids) if nid]
-    if not normalized:
-        return {}
-    try:
-        async with get_db_connection() as conn:
-            async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(
-                    """
-                    SELECT t.conversation_thread_id, t.current_status
-                    FROM conversation_threads t
-                    JOIN workspaces w ON w.workspace_id = t.workspace_id
-                    WHERE t.conversation_thread_id = ANY(%s) AND w.user_id = %s
-                    """,
-                    (normalized, user_id),
-                )
-                rows = await cur.fetchall()
-                return {
-                    str(row["conversation_thread_id"]): row["current_status"]
-                    for row in rows
-                }
-    except Exception as e:
-        logger.error(f"Error getting threads terminal status: {e}")
-        raise
-
-
 async def get_thread_by_share_token(share_token: str) -> Optional[Dict[str, Any]]:
     """
     Get a shared thread by its public share token.
@@ -1982,42 +1937,22 @@ async def get_user_stats(user_id: str) -> Dict[str, Any]:
                 )
                 ws_count = (await cur.fetchone())["total_workspaces"]
 
-                # Get thread statistics via workspaces. Each source table is
-                # aggregated per thread BEFORE joining — joining queries and
-                # responses independently by thread would fan out (q x r rows
-                # per thread) and multiply the SUMs. total_cost is thread-wide
-                # over ALL usage rows (spend on failed attempts is real);
-                # execution time counts settled attempts only.
+                # Get thread statistics via workspaces
                 await cur.execute(
-                    f"""
+                    """
                     SELECT
                         COUNT(DISTINCT t.conversation_thread_id) as total_threads,
-                        COALESCE(SUM(qa.query_count), 0)::bigint as total_queries,
-                        COALESCE(SUM(ra.response_count), 0)::bigint as total_responses,
-                        COALESCE(SUM(ua.cost), 0) as total_cost,
-                        COALESCE(SUM(ra.execution_time), 0) as total_execution_time,
+                        COUNT(DISTINCT q.conversation_query_id) as total_queries,
+                        COUNT(DISTINCT r.conversation_response_id) as total_responses,
+                        COALESCE(SUM((u.token_usage->>'total_cost')::float), 0) as total_cost,
+                        COALESCE(SUM(r.execution_time), 0) as total_execution_time,
                         MIN(t.created_at) as first_activity,
                         MAX(t.updated_at) as last_activity
                     FROM workspaces w
                     LEFT JOIN conversation_threads t ON w.workspace_id = t.workspace_id
-                    LEFT JOIN (
-                        SELECT conversation_thread_id, COUNT(*) AS query_count
-                        FROM conversation_queries
-                        GROUP BY conversation_thread_id
-                    ) qa ON qa.conversation_thread_id = t.conversation_thread_id
-                    LEFT JOIN (
-                        SELECT conversation_thread_id,
-                               COUNT(*) AS response_count,
-                               SUM(execution_time) AS execution_time
-                        FROM ({_SETTLED_ATTEMPTS_ALL}) s
-                        GROUP BY conversation_thread_id
-                    ) ra ON ra.conversation_thread_id = t.conversation_thread_id
-                    LEFT JOIN (
-                        SELECT conversation_thread_id,
-                               SUM((token_usage->>'total_cost')::float) AS cost
-                        FROM conversation_usages
-                        GROUP BY conversation_thread_id
-                    ) ua ON ua.conversation_thread_id = t.conversation_thread_id
+                    LEFT JOIN conversation_queries q ON t.conversation_thread_id = q.conversation_thread_id
+                    LEFT JOIN conversation_responses r ON t.conversation_thread_id = r.conversation_thread_id
+                    LEFT JOIN conversation_usages u ON r.conversation_response_id = u.conversation_response_id
                     WHERE w.user_id = %s
                 """,
                     (user_id,),
@@ -2065,35 +2000,18 @@ async def get_workspace_stats(workspace_id: str) -> Dict[str, Any]:
     try:
         async with get_db_connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
-                # Get thread and pair statistics. Aggregate-per-thread before
-                # joining (see get_user_stats): independent thread joins fan
-                # out and multiply the SUMs. total_cost is thread-wide over
-                # ALL usage rows; execution time counts settled attempts only.
+                # Get thread and pair statistics
                 await cur.execute(
-                    f"""
+                    """
                     SELECT
                         COUNT(DISTINCT t.conversation_thread_id) as total_threads,
-                        COALESCE(SUM(qa.query_count), 0)::bigint as total_pairs,
-                        COALESCE(SUM(ua.cost), 0) as total_cost,
-                        COALESCE(SUM(ra.execution_time), 0) as total_execution_time
+                        COUNT(DISTINCT q.conversation_query_id) as total_pairs,
+                        COALESCE(SUM((u.token_usage->>'total_cost')::float), 0) as total_cost,
+                        COALESCE(SUM(r.execution_time), 0) as total_execution_time
                     FROM conversation_threads t
-                    LEFT JOIN (
-                        SELECT conversation_thread_id, COUNT(*) AS query_count
-                        FROM conversation_queries
-                        GROUP BY conversation_thread_id
-                    ) qa ON qa.conversation_thread_id = t.conversation_thread_id
-                    LEFT JOIN (
-                        SELECT conversation_thread_id,
-                               SUM(execution_time) AS execution_time
-                        FROM ({_SETTLED_ATTEMPTS_ALL}) s
-                        GROUP BY conversation_thread_id
-                    ) ra ON ra.conversation_thread_id = t.conversation_thread_id
-                    LEFT JOIN (
-                        SELECT conversation_thread_id,
-                               SUM((token_usage->>'total_cost')::float) AS cost
-                        FROM conversation_usages
-                        GROUP BY conversation_thread_id
-                    ) ua ON ua.conversation_thread_id = t.conversation_thread_id
+                    LEFT JOIN conversation_queries q ON t.conversation_thread_id = q.conversation_thread_id
+                    LEFT JOIN conversation_responses r ON t.conversation_thread_id = r.conversation_thread_id
+                    LEFT JOIN conversation_usages u ON r.conversation_response_id = u.conversation_response_id
                     WHERE t.workspace_id = %s
                 """,
                     (workspace_id,),

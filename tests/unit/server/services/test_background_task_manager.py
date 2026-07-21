@@ -1819,11 +1819,24 @@ class _FakePipeline:
 
 
 def _sentinel_cache(
-    calls: list, fail: bool = False, gate_acquired: bool = True
+    calls: list,
+    fail: bool = False,
+    gate_acquired: bool = True,
+    gate_exists: bool = False,
 ) -> MagicMock:
     cache = MagicMock()
     cache.enabled = True
     cache.client = MagicMock()
+    cache.client.exists = AsyncMock(
+        side_effect=lambda *a: (
+            calls.append(("exists",) + a) or (1 if gate_exists else 0)
+        )
+    )
+    cache.client.xadd = AsyncMock(
+        side_effect=lambda key, fields, **kw: calls.append(
+            ("xadd", key, fields)
+        )
+    )
     cache.client.set = AsyncMock(
         side_effect=lambda *a, **kw: (
             calls.append(("set", a, kw)) or (True if gate_acquired else None)
@@ -1914,6 +1927,94 @@ class TestAppendRunEndEvent:
         # over retryability. A missing frame falls back to the consumer's
         # terminal handshake.
         assert not any(c[0] == "delete" for c in calls)
+
+    @pytest.mark.asyncio
+    async def test_winner_emits_error_frame_before_run_end(self):
+        """The gate winner writes the whole closing story: the caller's
+        error frame first, then run_end — one pipeline, exactly once."""
+        import json as _json
+
+        btm = _make_btm()
+        btm.event_storage_backend = "redis"
+        calls: list = []
+
+        with patch(
+            "src.server.services.background_task_manager.get_cache_client",
+            return_value=_sentinel_cache(calls),
+        ):
+            await btm.append_run_end_event(
+                "t-1", "r-1", "error", error_frame={"error": "worker_lost"}
+            )
+
+        xadds = [c for c in calls if c[0] == "xadd"]
+        assert len(xadds) == 2
+        first = xadds[0][2][b"event"].decode("utf-8")
+        assert first.startswith("event: error\ndata: ")
+        assert _json.loads(first.split("data: ", 1)[1]) == {
+            "error": "worker_lost"
+        }
+        second = xadds[1][2][b"event"].decode("utf-8")
+        assert second.startswith("event: run_end\ndata: ")
+
+    @pytest.mark.asyncio
+    async def test_gate_loser_emits_no_error_frame(self):
+        """A lost gate suppresses the ENTIRE closing story — the winner
+        already told it; a trailing error frame would double-report."""
+        btm = _make_btm()
+        btm.event_storage_backend = "redis"
+        calls: list = []
+
+        with patch(
+            "src.server.services.background_task_manager.get_cache_client",
+            return_value=_sentinel_cache(calls, gate_acquired=False),
+        ):
+            await btm.append_run_end_event(
+                "t-1", "r-1", "error", error_frame={"error": "worker_lost"}
+            )
+
+        assert not any(c[0] == "xadd" for c in calls)
+
+    @pytest.mark.asyncio
+    async def test_no_truth_appends_error_frame_without_claiming_gate(self):
+        """outcome=None (no durable terminal established): the error frame
+        informs attached clients, but no run_end appears, the gate stays
+        unclaimed for a later real finalize, and no retention TTL is stamped
+        (the row may still be in_progress)."""
+        btm = _make_btm()
+        btm.event_storage_backend = "redis"
+        calls: list = []
+
+        with patch(
+            "src.server.services.background_task_manager.get_cache_client",
+            return_value=_sentinel_cache(calls),
+        ):
+            await btm.append_run_end_event(
+                "t-1", "r-1", None, error_frame={"error": "boom"}
+            )
+
+        assert not any(c[0] == "set" for c in calls)
+        assert not any(c[0] == "expire" for c in calls)
+        xadds = [c for c in calls if c[0] == "xadd"]
+        assert len(xadds) == 1
+        assert xadds[0][2][b"event"].decode("utf-8").startswith("event: error\n")
+
+    @pytest.mark.asyncio
+    async def test_no_truth_suppressed_once_transport_closed(self):
+        """outcome=None after a real emitter claimed the gate: the stream
+        already ended in run_end — nothing may trail it."""
+        btm = _make_btm()
+        btm.event_storage_backend = "redis"
+        calls: list = []
+
+        with patch(
+            "src.server.services.background_task_manager.get_cache_client",
+            return_value=_sentinel_cache(calls, gate_exists=True),
+        ):
+            await btm.append_run_end_event(
+                "t-1", "r-1", None, error_frame={"error": "boom"}
+            )
+
+        assert not any(c[0] == "xadd" for c in calls)
 
     @pytest.mark.asyncio
     async def test_append_failure_swallowed(self):

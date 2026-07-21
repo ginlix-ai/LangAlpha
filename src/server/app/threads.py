@@ -877,10 +877,10 @@ async def _handle_send_message(
                     )
                 # Durable receipt (v4 2.4c): drive the generator through its
                 # own admission (per-thread lock, dedup, wait_or_steer, START
-                # txn) to the post-START marker. The 202 below is returned
-                # only once the in_progress row is committed — a 202 whose
-                # run then vanishes rowlessly can no longer happen. Pre-START
-                # failures surface here raw as HTTP errors.
+                # txn) to the post-START marker. The dispatched 200 below is
+                # returned only once the in_progress row is committed — a
+                # receipt whose run then vanishes rowlessly can no longer
+                # happen. Pre-START failures surface here raw as HTTP errors.
                 try:
                     first = await anext(flash_gen)
                 except DuplicateRequestError as dup:
@@ -998,8 +998,8 @@ async def _handle_send_message(
 
         # Durable receipt (v4 2.4c): drive the generator through its own
         # admission (per-thread lock, dedup, wait_or_steer, START txn) to
-        # the post-START marker; the 202 is returned only once the
-        # in_progress row is committed. Pre-START failures surface here raw
+        # the post-START marker; the dispatched 200 is returned only once
+        # the in_progress row is committed. Pre-START failures surface here raw
         # as HTTP errors and retract the intent stamp (CAS'd to this
         # admission's run — a same-gen sibling's stamp is never stripped);
         # a retransmit-adopt must NOT retract, the adopted run IS this

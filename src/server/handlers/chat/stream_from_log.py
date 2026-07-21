@@ -27,7 +27,6 @@ from src.server.services.background_registry_store import BackgroundRegistryStor
 from src.server.services.background_task_manager import (
     WORKFLOW_RUN_END_EVENT,
     BackgroundTaskManager,
-    TaskStatus,
 )
 from src.utils.cache.redis_cache import get_cache_client
 
@@ -374,9 +373,7 @@ async def stream_from_log(
         # its terminal row (owner finalize or recovery scanner) releases it.
         info = manager.tasks.get((thread_id, run_id))
         if info is not None:
-            return info.status in (
-                TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED
-            )
+            return info.status.terminal
         from src.server.database import turn_lifecycle as tl_db
 
         row = await tl_db.get_run(run_id)

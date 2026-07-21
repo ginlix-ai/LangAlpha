@@ -177,6 +177,11 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
+
+    @property
+    def terminal(self) -> bool:
+        return self is not TaskStatus.RUNNING
 
 
 @dataclass
@@ -470,11 +475,7 @@ class BackgroundTaskManager:
 
         async with self.task_lock:
             for key, info in self.tasks.items():
-                if info.status in [
-                    TaskStatus.COMPLETED,
-                    TaskStatus.FAILED,
-                    TaskStatus.CANCELLED,
-                ]:
+                if info.status.terminal:
                     if info.completed_at and info.completed_at < completed_threshold:
                         to_remove.append(key)
                         logger.info(
@@ -1173,17 +1174,31 @@ class BackgroundTaskManager:
             )
 
     async def append_run_end_event(
-        self, thread_id: str, run_id: str, outcome: str
+        self,
+        thread_id: str,
+        run_id: str,
+        outcome: Optional[str],
+        *,
+        error_frame: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Write the visible ``run_end`` frame to the per-run Stream (I6).
+        """Write the closing frames to the per-run Stream (I6), exactly once.
 
         Written only AFTER the finalize CAS commits, carrying the ADOPTED
         terminal status — a consumer that sees ``run_end`` may trust the
-        durable row exists with that outcome. Raw auto-ID XADD, not
-        ``_buffer_event_redis``: it has no seq slot, and the auto ID (ms
-        timestamp) always sorts after the explicit ``seq-0`` IDs real events
-        use. Best-effort: on failure the consumer's two-empty-round terminal
-        handshake still closes the stream, just slower.
+        durable row exists with that outcome. The SETNX gate picks ONE
+        emitter among the owner, the recovery scanner, and the dispatch
+        reconcile; the winner writes the whole closing story — the caller's
+        ``error_frame`` payload (a failure the dead owner never told), then
+        ``run_end``. Raw auto-ID XADD, not ``_buffer_event_redis``: it has
+        no seq slot, and the auto ID (ms timestamp) always sorts after the
+        explicit ``seq-0`` IDs real events use. Best-effort: on failure the
+        consumer's two-empty-round terminal handshake still closes the
+        stream, just slower.
+
+        ``outcome=None`` is the no-durable-truth path (reconcile could not
+        establish a terminal): the error frame is appended only while the
+        gate is unclaimed, WITHOUT claiming it — no terminal is asserted,
+        and a later real finalize still closes the stream.
         """
         if self.event_storage_backend != "redis":
             return
@@ -1193,11 +1208,28 @@ class BackgroundTaskManager:
                 return
             stream_k = stream_key(thread_id, run_id)
             meta_k = stream_meta_key(thread_id, run_id)
+            gate_key = f"workflow:run_end_gate:{thread_id}:{run_id}"
+
+            if outcome is None:
+                if error_frame is None:
+                    return
+                # No terminal to claim, and no retention stamp: the row may
+                # still be in_progress, and active streams carry no TTL.
+                if await cache.client.exists(gate_key):
+                    return
+                frame = (
+                    f"event: error\n"
+                    f"data: {json.dumps(error_frame, ensure_ascii=False)}\n\n"
+                )
+                await cache.client.xadd(
+                    stream_k, {b"event": frame.encode("utf-8")}
+                )
+                return
+
             # Terminal retention stamp: active streams carry no TTL, so the
             # attach-grace clock starts HERE. Unconditional and idempotent —
-            # both the owner and the recovery scanner stamp it, regardless
-            # of who wins the run_end gate below (EXPIRE on a missing key
-            # is a no-op).
+            # every emitter stamps it, regardless of who wins the run_end
+            # gate below (EXPIRE on a missing key is a no-op).
             try:
                 async with cache.client.pipeline(transaction=False) as pipe:
                     pipe.expire(stream_k, self.redis_event_ttl)
@@ -1209,10 +1241,9 @@ class BackgroundTaskManager:
                     f"({thread_id}, {run_id}): {exc}"
                 )
             # Atomic exactly-once gate: the owner (possibly alive but
-            # fence-lost) and a recovery scanner can both reach this after
-            # the same finalize CAS — SETNX picks one emitter, so the
-            # stream never carries two run_end frames.
-            gate_key = f"workflow:run_end_gate:{thread_id}:{run_id}"
+            # fence-lost), a recovery scanner, and the dispatch reconcile
+            # can all reach this after the same finalize CAS — SETNX picks
+            # one emitter, so the stream never carries two run_end frames.
             acquired = await cache.client.set(
                 gate_key, "1", nx=True, ex=self.redis_event_ttl
             )
@@ -1232,6 +1263,12 @@ class BackgroundTaskManager:
             # best-effort by contract, and the consumer's two-empty-round
             # terminal handshake covers a missing frame.
             async with cache.client.pipeline(transaction=False) as pipe:
+                if error_frame is not None:
+                    err_wire = (
+                        f"event: error\n"
+                        f"data: {json.dumps(error_frame, ensure_ascii=False)}\n\n"
+                    )
+                    pipe.xadd(stream_k, {b"event": err_wire.encode("utf-8")})
                 pipe.xadd(
                     stream_k,
                     {b"event": payload},
@@ -1995,6 +2032,7 @@ class BackgroundTaskManager:
                 task_info.status = {
                     "cancelled": TaskStatus.CANCELLED,
                     "error": TaskStatus.FAILED,
+                    "interrupted": TaskStatus.INTERRUPTED,
                 }.get(local_status, TaskStatus.COMPLETED)
                 task_info.completed_at = datetime.now()
                 if error:
@@ -2047,7 +2085,10 @@ class BackgroundTaskManager:
         elif handler is not None and getattr(handler, "saw_interrupt", False):
             if handler.interrupt_verified:
                 status, phase = "interrupted", "interrupt"
-                interrupt_reason = handler.interrupt_reason or "plan_review_required"
+                # Already classified by the handler's durability barrier
+                # (classify_interrupt_reason over the buffered payloads) —
+                # never respelled here.
+                interrupt_reason = handler.interrupt_reason
             else:
                 # I8: a pause that never reached the checkpointer must not
                 # advertise resumability.
@@ -2067,8 +2108,16 @@ class BackgroundTaskManager:
                         timeout=get_checkpoint_flush_timeout(),
                     )
                     if snapshot and snapshot.next:
+                        from src.server.services.status_vocabulary import (
+                            classify_interrupt_reason,
+                        )
+
                         status, phase = "interrupted", "interrupt"
-                        interrupt_reason = "plan_review_required"
+                        interrupt_reason = classify_interrupt_reason(
+                            intr
+                            for task in (snapshot.tasks or ())
+                            for intr in (getattr(task, "interrupts", ()) or ())
+                        )
             except Exception:
                 logger.warning(
                     f"[BackgroundTaskManager] fallback state probe failed for "

@@ -25,6 +25,8 @@ export type SubagentDisplayStatus =
   | 'cancelled'
   | 'error';
 
+export type SubagentTerminalStatus = 'completed' | 'cancelled' | 'error';
+
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['completed', 'cancelled', 'error']);
 
 /**
@@ -32,7 +34,9 @@ const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['completed', 'cancelled'
  * or errored. Terminal status is authoritative and monotonic: once observed, no
  * stale-liveness signal may revert a card back to a running/initializing state.
  */
-export function isTerminalStatus(status: string | undefined | null): boolean {
+export function isTerminalStatus(
+  status: string | undefined | null,
+): status is SubagentTerminalStatus {
   return status != null && TERMINAL_STATUSES.has(status);
 }
 
@@ -53,6 +57,36 @@ export function isToolResultFailure(result: {
     result.content.trim().startsWith('Error') &&
     !result.artifact
   );
+}
+
+/**
+ * Normalize a backend wire status (run-ledger or legacy spellings) into the
+ * display vocabulary. 'failed' and 'interrupted' collapse to 'error' — task
+ * HITL is descoped, so an interrupted task run is a failure, matching the
+ * server's history stamping. Live spellings collapse to 'active'. Unknown or
+ * absent values return null so callers keep their own default instead of
+ * inventing a settle.
+ */
+export function normalizeWireStatus(
+  status: string | undefined | null,
+): SubagentDisplayStatus | null {
+  switch (status) {
+    case 'completed':
+    case 'cancelled':
+      return status;
+    case 'error':
+    case 'failed':
+    case 'interrupted':
+      return 'error';
+    case 'in_progress':
+    case 'running':
+    case 'active':
+      return 'active';
+    case 'initializing':
+      return 'initializing';
+    default:
+      return null;
+  }
 }
 
 export function deriveSubagentStatus(agent: {
