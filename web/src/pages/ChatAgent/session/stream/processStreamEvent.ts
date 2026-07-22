@@ -76,11 +76,34 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
   // This ensures toolCallIdToTaskIdMapRef is populated before tool_call_result.
   const pendingTaskToolCallIds: string[] = [];
 
+  // Append a notification segment to a task card's latest assistant message
+  // (transcript notice inside the subagent detail view). No-ops before the
+  // task has an assistant message — status still surfaces via chan_close.
+  const appendTaskNotification = (taskId: string, text: string, detail?: string): void => {
+    if (!rt.updateSubagentCard) return;
+    const taskRefs = getOrCreateTaskRefs(refs, taskId);
+    const order = ++taskRefs.contentOrderCounterRef.current;
+    const updatedMessages = [...taskRefs.messages] as Record<string, unknown>[];
+    const msgIdx = updatedMessages.findLastIndex((m) => m.role === 'assistant');
+    if (msgIdx !== -1) {
+      const existingMsg = updatedMessages[msgIdx];
+      const segs = (existingMsg.contentSegments || []) as Record<string, unknown>[];
+      updatedMessages[msgIdx] = { ...existingMsg, contentSegments: [...segs, { type: 'notification', content: text, order, detail }] };
+    }
+    taskRefs.messages = updatedMessages;
+    rt.updateSubagentCard(taskId, { messages: updatedMessages });
+  };
+
   const processEvent = (event: SSEEvent): void => {
     const eventType = event.event || 'message_chunk';
 
-    // Track last event ID for reconnection
-    if (event._eventId != null) {
+    // Check if this is a subagent event — filtered from the main chat view
+    // and (critically) from the main reconnect cursor: task-lane frames
+    // carry per-task seqs that must never clobber lastEventIdRef.
+    const isSubagent = isSubagentEvent(event);
+
+    // Track last event ID for reconnection (main lane only)
+    if (event._eventId != null && !isSubagent) {
       rt.lastEventIdRef.current = event._eventId;
     }
 
@@ -130,9 +153,6 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       handleMarketWatchUpdate({ event, setMarketWatch: deps.setMarketWatch });
       return;
     }
-
-    // Check if this is a subagent event - filter it out from main chat view
-    const isSubagent = isSubagentEvent(event);
 
     // Handle steering_accepted events for the MAIN agent (user sent a message while agent streams).
     // Subagent steering_accepted events are handled below in the isSubagent block.
@@ -287,9 +307,11 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       return;
     }
 
-    // Handle steering_returned — agent finished before consuming the steering message.
-    // Remove the steering user message from chat and restore text to input box.
-    if (eventType === 'steering_returned') {
+    // Handle steering_returned for the MAIN agent — it finished before
+    // consuming the steering message. Remove the steering user message from
+    // chat and restore text to input box. Task-lane steering_returned is
+    // handled in the isSubagent block (it must not mutate main-chat state).
+    if (eventType === 'steering_returned' && !isSubagent) {
       const returnedMessages = event.messages || [];
       if (returnedMessages.length > 0) {
         // Remove steering user messages from the chat
@@ -336,19 +358,8 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
             else if (reads > 0) text = rt.t('chat.offloadedReadsNotification', { count: reads });
             else if (args > 0) text = rt.t('chat.offloadedArgsNotification', { count: args });
           }
-          if (text && rt.updateSubagentCard) {
-            const taskRefs = getOrCreateTaskRefs(refs, taskId);
-            const order = ++taskRefs.contentOrderCounterRef.current;
-            // Find the last assistant message and append the notification segment
-            const updatedMessages = [...taskRefs.messages] as Record<string, unknown>[];
-            const msgIdx = updatedMessages.findLastIndex((m) => m.role === 'assistant');
-            if (msgIdx !== -1) {
-              const existingMsg = updatedMessages[msgIdx];
-              const segs = (existingMsg.contentSegments || []) as Record<string, unknown>[];
-              updatedMessages[msgIdx] = { ...existingMsg, contentSegments: [...segs, { type: 'notification', content: text, order, detail }] };
-            }
-            taskRefs.messages = updatedMessages;
-            rt.updateSubagentCard(taskId, { messages: updatedMessages });
+          if (text) {
+            appendTaskNotification(taskId, text, detail);
           }
         }
         return;
@@ -522,6 +533,19 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
               updateSubagentCard: rt.updateSubagentCard,
             });
           }
+        } else if (eventType === 'steering_returned') {
+          // Run ended before the task steering was delivered — surface the
+          // returned text in the task transcript.
+          const returned = (event.messages || []) as Array<{ content?: string }>;
+          const combined = returned.map((m) => m.content || '').filter(Boolean).join('\n');
+          if (combined) {
+            appendTaskNotification(taskId, rt.t('chat.taskSteeringReturnedNotification'), combined);
+          }
+        } else if (eventType === 'error' || event.error) {
+          // chan_close carries only the terminal status; the failure reason
+          // exists only on this frame — surface it in the task transcript.
+          const errMsg = (event.error || event.message || '') as string;
+          appendTaskNotification(taskId, rt.t('chat.taskErrorNotification'), errMsg || undefined);
         }
       }
       return; // Don't process subagent events in main chat view
