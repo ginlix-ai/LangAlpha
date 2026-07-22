@@ -268,7 +268,7 @@ async def _extract_with_llm(
     if client_override is not None:
         # Deep-copy: maybe_disable_streaming mutates .streaming in place and
         # the override may be a shared instance from config.subsidiary_llm_clients.
-        # Mirrors workflow_handler.py::compact.
+        # Mirrors thread_maintenance.py::compact.
         llm = client_override.model_copy()
     else:
         llm = LLM(model).get_llm()

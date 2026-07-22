@@ -34,7 +34,7 @@ def maybe_disable_streaming(model: object) -> None:
     ``ChatCodexOpenAI`` instances must keep their construction-time
     ``streaming=True`` flag. Mutates ``model`` in place — callers that
     share the instance across requests MUST deep-copy first (see
-    ``workflow_handler.py::compact`` and ``fetch.py::_extract_with_llm``
+    ``thread_maintenance.py::compact`` and ``fetch.py::_extract_with_llm``
     for the reference pattern).
 
     The ``RunnableBindingBase`` unwrap is defensive — keeps the Codex guard

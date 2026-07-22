@@ -885,10 +885,17 @@ class TestDockerRuntimePreviewUrl:
         runtime._container.exec = AsyncMock(
             return_value=_make_exec_mock(output="12345\n")
         )
-        url_info = await runtime.get_preview_url(8080)
-        link_info = await runtime.get_preview_link(8080)
-        # Same proxy port even if host may differ (server-side vs browser)
-        assert url_info.url.split(":")[-1] == link_info.url.split(":")[-1]
+        # Seed the host cache — get_preview_link otherwise resolves
+        # host.docker.internal via live DNS (order-dependent under the
+        # socket tripwire; the host is irrelevant to this assertion).
+        DockerRuntime._server_side_host = "http://localhost"
+        try:
+            url_info = await runtime.get_preview_url(8080)
+            link_info = await runtime.get_preview_link(8080)
+            # Same proxy port even if host may differ (server-side vs browser)
+            assert url_info.url.split(":")[-1] == link_info.url.split(":")[-1]
+        finally:
+            DockerRuntime._server_side_host = None
 
     @pytest.mark.asyncio
     async def test_preview_link_uses_docker_internal_when_available(self, runtime):

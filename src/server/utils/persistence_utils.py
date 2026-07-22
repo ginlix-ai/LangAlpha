@@ -3,7 +3,7 @@ Utility functions for workflow persistence operations.
 
 This module provides helper functions to extract token usage, tool usage,
 and calculate execution time from workflow metadata. These are used by
-the BackgroundTaskManager for workflow persistence at interrupt, error,
+the LocalRunExecutor for workflow persistence at interrupt, error,
 and cancellation points.
 """
 

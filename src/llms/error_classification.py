@@ -3,7 +3,7 @@
 Used by the agent's model-resilience middleware to decide whether a failed
 model call is worth retrying on the same model or should move straight to the
 next fallback. Mirrors the exception-chain walking in
-``src/server/handlers/streaming_handler.py::classify_stream_exception`` — kept
+``src/server/services/runs/sse_producer.py::classify_stream_exception`` — kept
 separate because ptc_agent code must not import from src/server.
 """
 

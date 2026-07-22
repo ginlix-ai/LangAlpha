@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from src.ptc_agent.core.tool_generator import ToolFunctionGenerator
+from ptc_agent.core.tool_generator import ToolFunctionGenerator
 
 # Server key → module under mcp_servers/. Imported lazily in _all_tools() so a
 # broken server surfaces as a contained test failure, not a module-wide
