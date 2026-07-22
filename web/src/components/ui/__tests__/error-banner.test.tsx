@@ -98,4 +98,45 @@ describe('ErrorBanner', () => {
     expect(screen.getByText('Database unavailable')).toBeInTheDocument();
     consoleErr.mockRestore();
   });
+
+  // Ported from ChatViewErrorBanner.test.tsx (local-copy drift test, deleted):
+  // scenarios the ChatView banner relies on that were not covered above.
+
+  it('renders a structured error without a link (no link role present)', () => {
+    const err: StructuredError = {
+      message: 'Too many concurrent requests. Please wait a moment.',
+    };
+    renderInRouter(<ErrorBanner error={err} />);
+    expect(screen.getByText(/Too many concurrent requests/)).toBeInTheDocument();
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('renders the upstream headline with the status code interpolated', () => {
+    const err: StructuredError = {
+      message: "Error code: 500 - {'error': {'message': 'Internal service error'}}",
+      kind: 'upstream',
+      statusCode: 500,
+      hints: ['api_key'],
+    };
+    renderInRouter(<ErrorBanner error={err} />);
+    expect(screen.getByText('The model provider returned an error (500)')).toBeInTheDocument();
+  });
+
+  it('renders the upstream headline without a status suffix when backend omits it', () => {
+    const err: StructuredError = {
+      message: 'Connection reset by peer',
+      kind: 'upstream',
+      hints: ['provider_status'],
+    };
+    renderInRouter(<ErrorBanner error={err} />);
+    const headline = screen.getByText('The model provider returned an error');
+    expect(headline.textContent).not.toMatch(/\(/);
+  });
+
+  it('passes a descriptive rate-limit string through without a redundant prefix', () => {
+    renderInRouter(<ErrorBanner error="Daily credit limit reached (50/50 credits). Resets at midnight UTC." />);
+    expect(screen.getByText(/Daily credit limit reached/)).toBeInTheDocument();
+    expect(screen.queryByText(/Rate limit exceeded:/)).not.toBeInTheDocument();
+  });
 });
+
