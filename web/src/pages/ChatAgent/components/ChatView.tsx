@@ -1,9 +1,9 @@
 import React, { Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, FolderOpen, ScrollText, CheckCircle2, Circle, Loader2, TextSelect, Minus, PanelLeftOpen, Menu, Info, Pin, PinOff, Clock, AlertTriangle, X, StopCircle } from 'lucide-react';
+import { ArrowLeft, FolderOpen, ScrollText, Loader2, TextSelect, Minus, PanelLeftOpen, Menu, Info, Pin, PinOff, Clock } from 'lucide-react';
 import { HoverCard, HoverCardTrigger, HoverCardContent } from '@/components/ui/hover-card';
-import { useIsMobile, getIsMobileSnapshot } from '@/hooks/useIsMobile';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { useNarrowContainer } from '@/hooks/useNarrowContainer';
 import { ScrollArea } from '../../../components/ui/scroll-area';
 import { usePreferences } from '@/hooks/usePreferences';
@@ -12,21 +12,17 @@ import { useFeatureEnabled } from '@/hooks/useFeatures';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { updateCurrentUser } from '../../Dashboard/utils/api';
-import { getWorkspace, summarizeThread, offloadThread, getPreviewUrl, getThreadShareStatus, updateThreadSharing, getSubagentTaskStatus } from '../utils/api';
+import { getWorkspace, summarizeThread, offloadThread, getThreadShareStatus, updateThreadSharing } from '../utils/api';
 import { buildSharedServeUrl, buildWsfilesUrl } from './viewers/html/wsfilesUrl';
 import ShareReportLinkModal from './ShareReportLinkModal';
 import { toast } from '@/components/ui/use-toast';
 import { mergeWarmingDisplay } from '../utils/warmWorkspace';
 import { useChatMessages } from '../hooks/useChatMessages';
 import { saveChatSession, getChatSession, clearChatSession } from '../hooks/utils/chatSessionRestore';
-import { isNearBottom } from '../utils/scrollHelpers';
 import type { PreviewData } from '../hooks/utils/types';
-import type { ProvenanceRecord } from '@/types/chat';
-import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
 import { useCardState } from '../hooks/useCardState';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
-import { classifyAgentPath, computeAgentArtifactRouting } from '../utils/agentPaths';
-import { isValidUuid } from '../utils/uuid';
+import { classifyAgentPath } from '../utils/agentPaths';
 import {
   routeStopAction,
   compactionErrorCode,
@@ -34,19 +30,9 @@ import {
   shouldClearCompactingFlag,
   isManualCompactionInFlight,
 } from '../utils/compactionControl';
-import { countToolCalls } from '../utils/subagentMetrics';
-import { deriveSubagentStatus, isTerminalStatus, normalizeWireStatus } from '../utils/subagentStatus';
-import { type SubagentTokenUsage, ZERO_USAGE } from '../utils/tokenUsage';
-import {
-  resolveSubagentTelemetry as resolveSubagentTelemetryPure,
-  type SubagentDataLike,
-  type SubagentHistoryLike,
-} from '../utils/resolveSubagentTelemetry';
-import { getCompletedRowTitle } from './toolDisplayConfig';
 import './FilePanel.css';
 import ChatInput, { type ChatInputHandle } from '../../../components/ui/chat-input';
 import { attachmentsToContexts, widgetSnapshotsToContexts, type Attachment } from '../utils/fileUpload';
-import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import MessageList, { normalizeSubagentText } from './MessageList';
 import { SubagentTelemetryContext } from './SubagentTelemetryContext';
 import Markdown from './Markdown';
@@ -66,308 +52,30 @@ import { motion, AnimatePresence, type PanInfo } from 'framer-motion';
 import { MobileBottomSheet } from '@/components/ui/mobile-bottom-sheet';
 
 
-/** Append an optional path suffix to a base URL (e.g. "/timeline.html"). */
-function appendPathSuffix(baseUrl: string, path?: string): string {
-  if (!path) return baseUrl;
-  try {
-    const parsed = new URL(baseUrl);
-    parsed.pathname = parsed.pathname.replace(/\/+$/, '') + path;
-    return parsed.toString();
-  } catch {
-    return baseUrl;
-  }
-}
 
 const RightPanel = React.lazy(() => import('./RightPanel'));
-import type { PanelTarget } from './RightPanel';
 const DetailPanel = React.lazy(() => import('./DetailPanel'));
 const PreviewViewer = React.lazy(() => import('./viewers/PreviewViewer'));
 
-// --- Types ---
+import {
+  type MessageRecord, type LocationState,
+  type SubagentMessage, type SlashCommand, type ModelOptions, type ActionCommand,
+  type MsgSelectionTooltipData, type WorkspaceRecord, type ChatViewProps,
+} from './chatView/types';
+import SubagentStatusIndicator from './chatView/SubagentStatusIndicator';
+import { ModelStatusPill } from './chatView/ModelStatusPill';
+import { FallbackSuggestionPill } from './chatView/FallbackSuggestionPill';
+import { useToolCallAnnouncer } from './chatView/useToolCallAnnouncer';
+import { useNavPanel } from './chatView/useNavPanel';
+import { useChatScroll } from './chatView/useChatScroll';
+import { useSubagentTabs } from './chatView/useSubagentTabs';
+import { useRightPanel } from './chatView/useRightPanel';
 
-type MessageRecord = Record<string, unknown>;
-
-interface LocationState {
-  agentMode?: string;
-  workspaceStatus?: string | null;
-  initialMessage?: string;
-  planMode?: boolean;
-  additionalContext?: Record<string, unknown>[] | null;
-  attachmentMeta?: Record<string, unknown>[] | null;
-  model?: string;
-  reasoningEffort?: string;
-  isOnboarding?: boolean;
-  isPersonalizing?: boolean;
-  isModifyingPreferences?: boolean;
-  workspaceId?: string;
-  workspaceName?: string;
-  fromThreadId?: string;
-  fromWorkspaceId?: string;
-  /**
-   * Widget context snapshots forwarded from the dashboard's send. Re-seeds
-   * the chat input's deck rail on mount so the user sees the same chips they
-   * had on the dashboard. The auto-fire effect already includes the same
-   * snapshots in `additionalContext`, so the first message is unaffected;
-   * the bus state powers the visual chips and any follow-up the user types.
-   */
-  widgetSnapshots?: WidgetContextSnapshot[];
-  /**
-   * Chart selection snapshots forwarded from MarketView's PTC send so the
-   * auto-fired user message renders the selection cards live (they also persist
-   * to metadata, so replay re-renders them regardless).
-   */
-  chartSelections?: import('@/pages/MarketView/stores/chartSelectionStore').ChartSelectionSnapshot[];
-  /**
-   * Skill names to preload as hidden skills (chart-annotation forwarding from
-   * MarketView). Merged into `additionalContext` as `{type:'skills',name}` on
-   * the auto-fire send so hidden skills stay active on the PTC side.
-   */
-  skills?: string[];
-  [key: string]: unknown;
-}
-
-interface ToolCallProcessRecord {
-  toolName?: string;
-  toolCallResult?: { artifact?: { type?: string } };
-  [key: string]: unknown;
-}
-
-interface PlanData {
-  [key: string]: unknown;
-}
-
-/** Subagent message shape (matches useCardState's SubagentMessage) */
-interface SubagentMessage {
-  role: string;
-  isStreaming?: boolean;
-  toolCallProcesses?: Record<string, { isInProgress?: boolean; toolName?: string; [key: string]: unknown }>;
-  [key: string]: unknown;
-}
-
-interface AgentInfo {
-  id: string;
-  name: string;
-  displayName?: string;
-  taskId: string;
-  description: string;
-  prompt?: string;
-  type: string;
-  status: string;
-  /** Ledger failure reason for an errored task (shown in the detail header). */
-  error?: string;
-  toolCalls: number;
-  tokenUsage: SubagentTokenUsage;
-  currentTool: string;
-  messages: SubagentMessage[];
-  isActive: boolean;
-  isMainAgent: boolean;
-  [key: string]: unknown;
-}
-
-/** Subagent card update data passed to updateSubagentCard */
-interface SubagentUpdateData {
-  agentId: string;
-  taskId: string;
-  description: string;
-  prompt: string;
-  type: string;
-  isHistory: boolean;
-  isActive: boolean;
-  status?: string;
-  error?: string;
-  currentTool?: string;
-  messages?: SubagentMessage[];
-  tokenUsage?: SubagentTokenUsage;
-  [key: string]: unknown;
-}
-
-interface SubagentInfo {
-  subagentId: string;
-  description?: string;
-  prompt?: string;
-  type?: string;
-  status?: string;
-  error?: string;
-}
-
-interface SlashCommand {
-  type: string;
-  name: string;
-  skillName?: string;
-}
-
-interface ModelOptions {
-  model?: string | null;
-  reasoningEffort?: string | null;
-  /**
-   * Per-message Watch-toggle state. When on, `handleSendWithAttachments`
-   * appends a `market-watch` skills item to `additional_context`.
-   */
-  marketWatch?: boolean | null;
-  /**
-   * Widget context snapshots from the chat input's deck rail. Serialized into
-   * `additional_context` items (one widget directive + optional sibling image
-   * per snapshot) by `handleSendWithAttachments`.
-   */
-  widgetSnapshots?: WidgetContextSnapshot[];
-}
-
-interface ActionCommand {
-  name: string;
-  type?: string;
-  skillName?: string;
-  description?: string;
-  aliases?: string[];
-}
-
-interface MsgSelectionTooltipData {
-  x: number;
-  y: number;
-  text: string;
-}
-
-interface WorkspaceRecord {
-  status?: string;
-  name?: string;
-  [key: string]: unknown;
-}
-
-interface ChatViewProps {
-  workspaceId: string;
-  threadId: string;
-  initialTaskId?: string;
-  onBack: () => void;
-  workspaceName?: string;
-  isActive?: boolean;
-  onThreadResolved?: (oldThreadId: string, newThreadId: string) => void;
-  // Warming state from the entry-time /events stream (useWarmWorkspaceSandbox).
-  // Lets the spinner show the slow-restore copy when a background warm — not a
-  // chat message — owns the sandbox start.
-  warmingState?: false | 'starting' | 'archived';
-}
-
-interface SubagentStatusIndicatorProps {
-  status: string;
-  currentTool: string;
-  toolCalls?: number;
-  messages?: SubagentMessage[];
-}
-
-// Shared nav panel state across ChatView instances — when switching threads,
-// the newly active instance inherits this so the panel stays open.
-// `pinned` is persisted and read synchronously at module load so a reload
-// mounts the panel docked without a flash. Pinning is desktop-only; mobile
-// keeps the hamburger/drawer flow and ignores `pinned`.
-const NAV_PIN_KEY = 'nav.pinned';
-function readNavPinned(): boolean {
-  try {
-    return localStorage.getItem(NAV_PIN_KEY) === 'true';
-  } catch {
-    return false;
-  }
-}
-const _sharedNav = { visible: false, locked: false, pinned: readNavPinned() };
-
-// Static main agent object — never changes, so defined once at module level
-const MAIN_AGENT: AgentInfo = {
-  id: 'main',
-  name: 'Lead Agent',
-  displayName: 'LangAlpha',
-  taskId: '',
-  description: '',
-  type: 'main',
-  status: 'active',
-  toolCalls: 0,
-  tokenUsage: ZERO_USAGE,
-  currentTool: '',
-  messages: [],
-  isActive: true,
-  isMainAgent: true,
-};
-
-function SubagentStatusIndicator({ status, currentTool, toolCalls = 0, messages = [] }: SubagentStatusIndicatorProps): React.ReactElement {
-  const { t } = useTranslation();
-  // Derive the in-flight tool from messages (self-sufficient, no subagent_status dependency)
-  const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
-
-  // Derive current tool from message state
-  const derivedCurrentTool = (() => {
-    if (currentTool) return currentTool;
-    if (!lastAssistant?.toolCallProcesses) return '';
-    const inProgress = Object.values(lastAssistant.toolCallProcesses).find(p => p.isInProgress);
-    return (inProgress?.toolName as string) || '';
-  })();
-
-  // Shared derivation (same as the nav tree and SubagentStatusBar, so the
-  // surfaces can never disagree): terminal card statuses — completed,
-  // cancelled, error — are authoritative; everything else displays as
-  // running. Never derive 'completed' from message streaming gaps — those
-  // are transient, especially after update/resume actions.
-  const effectiveStatus = deriveSubagentStatus({ status, messages });
-
-  // A terminal card never shows a live tool spinner — a tool process that was
-  // mid-flight when the run settled is history, not activity.
-  const isTerminal =
-    effectiveStatus === 'completed' ||
-    effectiveStatus === 'cancelled' ||
-    effectiveStatus === 'error';
-
-  const getIcon = (): React.ReactElement => {
-    if (!isTerminal && derivedCurrentTool) {
-      return <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />;
-    }
-    if (effectiveStatus === 'active') {
-      return <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />;
-    }
-    if (effectiveStatus === 'completed') {
-      return <CheckCircle2 className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />;
-    }
-    if (effectiveStatus === 'cancelled') {
-      return <StopCircle className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />;
-    }
-    if (effectiveStatus === 'error') {
-      return <AlertTriangle className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />;
-    }
-    return <Circle className="h-3.5 w-3.5" style={{ color: 'var(--color-icon-muted)' }} />;
-  };
-
-  const getText = (): string => {
-    if (!isTerminal && derivedCurrentTool) return t('chat.running', { tool: derivedCurrentTool });
-    if (effectiveStatus === 'error') return t('common.failed');
-    if (effectiveStatus === 'completed') {
-      return toolCalls > 0 ? t('chat.completedWithCalls', { count: toolCalls }) : t('chat.completed');
-    }
-    if (effectiveStatus === 'cancelled') {
-      return t('chat.stoppedChip');
-    }
-    if (effectiveStatus === 'active') {
-      return t('chat.runningStatus');
-    }
-    return t('chat.initializing');
-  };
-
-  return (
-    <div className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-      {getIcon()}
-      <span>{getText()}</span>
-    </div>
-  );
-}
-
-// Scroll/pin tuning. Distance from the bottom (px) still counted as "at bottom";
-// settle window the pin re-applies through as async media expands; fallback for
-// engines without a `scrollend` event.
-const NEAR_BOTTOM_PX = 120;
-const SETTLE_QUIET_MS = 1500;
-const SETTLE_HARD_CAP_MS = 8000;
-const SCROLLEND_FALLBACK_MS = 600;
 
 function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName: initialWorkspaceName, isActive = true, onThreadResolved, warmingState = false }: ChatViewProps): React.ReactElement | null {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const containerRef = useRef<HTMLDivElement>(null);
-  const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const subagentScrollAreaRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<ChatInputHandle>(null);
   const location = useLocation();
   const navigate = useNavigate();
@@ -376,15 +84,13 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const marketWatchEnabled = useFeatureEnabled('market_watch');
   const queryClient = useQueryClient();
   const initialMessageSentRef = useRef(false);
-  // Guards one-shot consumption of the ?file= deep link (report share / copy link).
-  const fileDeepLinkConsumedRef = useRef(false);
   // Determine agent mode: flash workspaces use flash mode, otherwise ptc
   const state = location.state as LocationState | null;
   const [agentMode, setAgentMode] = useState(state?.agentMode || 'ptc');
   const isFlashMode = agentMode === 'flash' || state?.workspaceStatus === 'flash';
 
-  // The mode's currently-configured model — fallback initializer for
-  // nextSendModel below, mirroring ChatInput's own modePreferredModel.
+  // The mode's currently-configured model — fallback initializer for the
+  // suggestion pill's nextSendModel, mirroring ChatInput's own modePreferredModel.
   const otherPreference = (preferences as Record<string, Record<string, unknown>> | null | undefined)?.other_preference;
   const activePreferredModel = isFlashMode
     ? ((otherPreference?.preferred_flash_model as string | undefined) || (otherPreference?.preferred_model as string | undefined) || null)
@@ -392,105 +98,16 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // Live model selection reported by ChatInput (null until it reports in).
   const [inputModel, setInputModel] = useState<string | null>(null);
   const [workspaceName, setWorkspaceName] = useState(initialWorkspaceName || '');
-  // Single source of truth for what the RightPanel is pointed at. Exactly one
-  // target is ever set (file/memory/memo/sources/status); the panel derives the
-  // active tab, tab visibility, and snap-back from `.kind`. Sources/status stay
-  // set while their tab is open (tab chrome persistence) and are cleared on
-  // panel close by the effect below; file/memory/memo self-clear once the child
-  // panel consumes the pre-select (the handled callbacks).
-  const [panelTarget, setPanelTarget] = useState<PanelTarget | null>(null);
-  // Stable handlers — these land in useEffect deps in MemoryPanel/MemoPanel/
-  // FilePanel. Inline arrows would create a new identity on every ChatView
-  // render, re-triggering those effects on every streaming chunk (the
-  // `targetKey == null` guard makes them no-ops, but the wakeup is wasted).
-  // Each clears the target only if it still matches the kind it consumed, so a
-  // fast follow-up open of a different kind isn't wiped by a late callback.
-  const handleTargetFileHandled = useCallback(() => setPanelTarget((pt) => (pt?.kind === 'file' ? null : pt)), []);
-  const handleTargetDirHandled = useCallback(() => setPanelTarget((pt) => (pt?.kind === 'file' ? null : pt)), []);
-  const handleTargetMemoryHandled = useCallback(() => setPanelTarget((pt) => (pt?.kind === 'memory' ? null : pt)), []);
-  const handleTargetMemoHandled = useCallback(() => setPanelTarget((pt) => (pt?.kind === 'memo' ? null : pt)), []);
   // Cross-workspace file panel: in flash mode, files live in PTC workspaces.
   // This tracks which workspace the file panel should fetch from.
   const [filePanelWorkspaceId, setFilePanelWorkspaceId] = useState<string | null>(null);
-  const isDraggingRef = useRef(false);
-  const [isDragging, setIsDragging] = useState(false);
-  // True for exactly one render after drag ends — forces transition duration:0
-  // so Framer Motion jumps to the final width instead of animating from pre-drag.
-  const dragJustEndedRef = useRef(false);
 
-  // Right panel management - can show 'file', 'detail', 'preview', or null (closed)
-  const [rightPanelType, setRightPanelType] = useState<'file' | 'detail' | 'preview' | null>(null);
-  const [rightPanelWidth, setRightPanelWidth] = useState(750);
-  // Multi-port preview state: Map keyed by port lives in a ref (non-active updates don't re-render).
-  // activePreviewPort + derived previewData drive the panel render.
-  const previewMapRef = useRef<Map<number, PreviewData>>(new Map());
-  const activePreviewPortRef = useRef<number | null>(null);
-  const reloadCounterRef = useRef(0);
-  const [previewData, setPreviewData] = useState<PreviewData | null>(null);
-  const panelWrapperRef = useRef<HTMLDivElement>(null);
 
-  // Clear the drag-just-ended flag after each render so future transitions animate normally.
-  useEffect(() => { dragJustEndedRef.current = false; });
 
-  // Clear preview cache and cross-workspace state when workspace changes to avoid leaking old workspace data.
-  useEffect(() => {
-    previewMapRef.current.clear();
-    activePreviewPortRef.current = null;
-    setPreviewData(null);
-    setFilePanelWorkspaceId(null);
-  }, [workspaceId]);
   // Active agent in main view (default: 'main', or from URL taskId)
   const [activeAgentId, setActiveAgentId] = useState(
     initialTaskId ? `task:${initialTaskId}` : 'main'
   );
-  // Navigation panel visibility (hover-triggered overlay, or docked when pinned)
-  // Initialize from shared state so thread switches inherit the panel's open/closed state.
-  // Pinned (desktop only) forces the panel visible from first paint.
-  const initialNavOpen = _sharedNav.visible || (_sharedNav.pinned && !isMobile);
-  const [navPanelVisible, setNavPanelVisible] = useState(initialNavOpen);
-  const navPanelVisibleRef = useRef(initialNavOpen);
-  const [navPinned, setNavPinned] = useState(_sharedNav.pinned);
-  const navPinnedRef = useRef(_sharedNav.pinned);
-  const navHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const navLockedRef = useRef(_sharedNav.locked);
-  const contentAreaRef = useRef<HTMLDivElement>(null);
-  const contentAreaWidthRef = useRef<number>(0);
-  // True when the content area is too narrow for the docked push layout; a
-  // pinned panel then stays visible but overlays without pushing content.
-  const [contentNarrow, setContentNarrow] = useState(false);
-  // Skip nav panel slide-in on mount if already open (inherited from previous thread or pinned).
-  const skipNavAnimRef = useRef(initialNavOpen);
-  useEffect(() => { skipNavAnimRef.current = false; return () => { if (navHideTimerRef.current) clearTimeout(navHideTimerRef.current); }; }, []);
-  // Auto-close nav panel when content area shrinks below threshold (e.g., right panel opens)
-  useEffect(() => {
-    const container = contentAreaRef.current;
-    if (!container) return;
-    const observer = new ResizeObserver((entries: ResizeObserverEntry[]) => {
-      const width = entries[0].contentRect.width;
-      contentAreaWidthRef.current = width;
-      // Skip auto-hide on mobile — hamburger controls nav drawer
-      if (getIsMobileSnapshot()) return;
-      // Skip when view is hidden (display:none reports width 0) to avoid
-      // corrupting _sharedNav for the incoming active view.
-      if (!isActiveRef.current) return;
-      setContentNarrow(width < 1100);
-      // Pinned panels never auto-collapse — they fall back to overlay-without-push instead.
-      if (width < 1100 && navPanelVisibleRef.current && !navPinnedRef.current) {
-        if (navHideTimerRef.current) clearTimeout(navHideTimerRef.current);
-        navPanelVisibleRef.current = false;
-        _sharedNav.visible = false;
-        setNavPanelVisible(false);
-      }
-    });
-    observer.observe(container);
-    return () => observer.disconnect();
-  }, []);
-  // Tool call detail panel state
-  const [detailToolCall, setDetailToolCall] = useState<ToolCallProcessRecord | null>(null);
-  // Plan detail panel state
-  const [detailPlanData, setDetailPlanData] = useState<PlanData | null>(null);
-  // Track hidden agents (removed from sidebar, but not from state)
-  const [hiddenAgentIds, setHiddenAgentIds] = useState<Set<string>>(new Set());
   // Show system files in FilePanel (.agents/, code/, tools/, etc.)
   const [showSystemFiles, setShowSystemFiles] = useState(
     () => localStorage.getItem('filePanel.showSystemFiles') === 'true'
@@ -504,93 +121,29 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
 
-  // --- Aria-live announcement for screen readers ---
-  // String announced through a polite live region whenever a tool call
-  // transitions from in-progress → completed/failed. Each completion is
-  // queued and announced individually so a batch of completions in a single
-  // SSE tick doesn't collapse to "only the last one" — screen readers
-  // re-utter each one with a brief silence in between.
-  const announcedToolCallIdsRef = useRef<Set<string>>(new Set());
-  const announcementClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const announcementQueueRef = useRef<Array<{ label: string; failed: boolean }>>([]);
-  const [recentlyCompletedAnnouncement, setRecentlyCompletedAnnouncement] = useState('');
+  // Nav-panel controller (hover/pin/minimize, shared across instances).
+  const {
+    navPanelVisible,
+    navPinned,
+    contentNarrow,
+    contentAreaRef,
+    navPanelVisibleRef,
+    skipNavAnimRef,
+    handleNavEnter,
+    handleNavLeave,
+    handleNavMinimize,
+    handleTogglePin,
+    handleNavExpand,
+    inheritNavOnActivate,
+  } = useNavPanel({ isMobile, isActiveRef });
 
-  // --- Scroll position memory for tab switching ---
-  // Stores scrollTop per agentId so switching tabs preserves position
-  const scrollPositionsRef = useRef<Record<string, number>>({});
-  const activeAgentIdRef = useRef(activeAgentId);
-  activeAgentIdRef.current = activeAgentId;
-  // Flag to skip subagent auto-scroll when restoring a saved position
-  const skipSubagentAutoScrollRef = useRef(false);
 
-  // Helper: get the scrollable container from a ScrollArea ref
-  const getScrollContainer = useCallback((ref: React.RefObject<HTMLDivElement | null>): HTMLElement | null => {
-    if (!ref?.current) return null;
-    return ref.current.querySelector('[data-radix-scroll-area-viewport]') ||
-           ref.current.querySelector('.overflow-auto') ||
-           ref.current;
-  }, []);
-
-  // Save scroll position of the currently active tab
-  const saveScrollPosition = useCallback(() => {
-    const currentId = activeAgentIdRef.current;
-    const ref = currentId === 'main' ? scrollAreaRef : subagentScrollAreaRef;
-    const container = getScrollContainer(ref);
-    if (container) {
-      scrollPositionsRef.current[currentId] = container.scrollTop;
-    }
-  }, [getScrollContainer]);
 
   // Ref for resolved thread ID — updated after useChatMessages, used in switchAgent
   // to avoid referencing currentThreadId (defined later) in useCallback closure.
   const resolvedThreadIdRef = useRef(threadId);
 
-  // Switch agent tab with scroll position preservation
-  const switchAgent = useCallback((newAgentId: string) => {
-    if (newAgentId === activeAgentIdRef.current) return;
-    const wasMain = activeAgentIdRef.current === 'main';
-    saveScrollPosition();
-    // If destination has a saved position, skip auto-scroll so restore wins
-    if (scrollPositionsRef.current[newAgentId] != null) {
-      skipSubagentAutoScrollRef.current = true;
-    }
-    setActiveAgentId(newAgentId);
 
-    // Sync URL with active agent
-    const tid = resolvedThreadIdRef.current || threadId;
-    if (newAgentId === 'main') {
-      // Replace: removes the subagent entry so browser back goes to thread gallery
-      navigate(`/chat/t/${tid}`, { replace: true, state: { workspaceId } });
-    } else {
-      const taskSlug = newAgentId.replace('task:', '');
-      // Push from main → subagent (back returns to main)
-      // Replace from subagent → subagent (back still returns to main)
-      navigate(`/chat/t/${tid}/${taskSlug}`, { replace: !wasMain, state: { workspaceId } });
-    }
-  }, [saveScrollPosition, threadId, workspaceId, navigate]);
-
-  // Restore scroll position after the new tab mounts
-  useEffect(() => {
-    const savedPosition = scrollPositionsRef.current[activeAgentId];
-    if (savedPosition == null) return;
-
-    // requestAnimationFrame waits for DOM commit + layout
-    requestAnimationFrame(() => {
-      const ref = activeAgentId === 'main' ? scrollAreaRef : subagentScrollAreaRef;
-      const container = getScrollContainer(ref);
-      if (container) {
-        // Mark as programmatic so the main-tab scroll listener doesn't treat
-        // this restore as a user scroll (which would cancel the pin / save).
-        programmaticScrollRef.current = true;
-        container.scrollTop = savedPosition;
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() => {
-            programmaticScrollRef.current = false;
-          }),
-        );
-      }
-    });
-  }, [activeAgentId, getScrollContainer]);
 
   // Direct URL navigation fallback: detect flash workspace and resolve name from API
   const wsFetchedRef = useRef<string | null>(null); // tracks workspaceId we already fetched for
@@ -777,13 +330,6 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     resolveSubagentIdToAgentId,
   } = useChatMessages(workspaceId, threadId, updateTodoListCard as (todoData: Record<string, unknown>) => void, updateSubagentCard, finalizePendingTodos, handleOnboardingRelatedToolComplete, handleFileArtifact, handleOpenPreviewFromStream, agentMode, clearSubagentCards, handleWorkspaceCreated, 'web');
 
-  // The model the NEXT send will actually use: the chat input's live
-  // selection, falling back to its initializer (thread's last model, then the
-  // mode's preferred model) until it reports in. The suggestion pill gates on
-  // this — not on the durable preference, which a thread's own model overrides
-  // on every send.
-  const nextSendModel = inputModel ?? (lastThreadModel || activePreferredModel);
-
   // Fallback-suggestion pill action: adopt the model that actually answered —
   // immediately for this thread's next send (chat input selection) and
   // durably in preferences under the mode-appropriate key.
@@ -839,156 +385,59 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // Keep resolvedThreadIdRef in sync with the resolved thread ID from useChatMessages
   resolvedThreadIdRef.current = currentThreadId || threadId;
 
-  // ==========================================================================
-  // Chat transcript scroll controller
-  // Reliable land-at-bottom that survives async content (charts/code/images)
-  // expanding after the initial scroll, plus a jump-to-latest affordance.
-  // See utils/scrollHelpers.
-  // ==========================================================================
-
-  // "Near bottom" trackers (used by streaming follow + the pin controller).
-  const isNearBottomRef = useRef(true);
-  const isSubagentNearBottomRef = useRef(true);
-
-  // Pin controller state.
-  type PinTarget = { mode: 'bottom' };
-  const pinTargetRef = useRef<PinTarget | null>(null);
-  const programmaticScrollRef = useRef(false);
-  const settleQuietTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const settleHardCapRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reapplyRafRef = useRef<number | null>(null);
-  const restoredForThreadRef = useRef<string | null>(null);
-  // Streaming auto-follow's deferred scroll, and the entry-restore frame —
-  // tracked so a thread switch / unmount cancels a pending scroll instead of
-  // yanking a now-stale view.
-  const streamFollowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const entryRestoreRafRef = useRef<number | null>(null);
-
-  // Jump-to-latest pill.
-  const messagesLenRef = useRef(0);
-  messagesLenRef.current = messages.length;
-  const pillBaselineLenRef = useRef(0);
-  const [jumpPill, setJumpPill] = useState<{ visible: boolean; hasNew: boolean; newCount: number }>({
-    visible: false,
-    hasNew: false,
-    newCount: 0,
+  // Chat transcript scroll controller + tab scroll memory (chatView/useChatScroll).
+  const {
+    scrollAreaRef,
+    subagentScrollAreaRef,
+    getScrollContainer,
+    withProgrammaticScroll,
+    pinToBottom,
+    saveScrollPosition,
+    jumpPill,
+    userMsgCount,
+    scrollPositionsRef,
+    skipSubagentAutoScrollRef,
+    activeAgentIdRef,
+    isNearBottomRef,
+    isSubagentNearBottomRef,
+    restoredForThreadRef,
+  } = useChatScroll({
+    activeAgentId,
+    messages,
+    isActive,
+    isActiveRef,
+    isLoadingHistory,
+    currentThreadId,
+    threadId,
   });
-  const setPillState = useCallback((next: { visible: boolean; hasNew: boolean; newCount: number }) => {
-    setJumpPill((prev) =>
-      prev.visible === next.visible && prev.hasNew === next.hasNew && prev.newCount === next.newCount
-        ? prev
-        : next,
-    );
-  }, []);
-  const userMsgCount = useMemo(
-    () => (messages as Array<{ role?: string }>).filter((m) => m?.role === 'user').length,
-    [messages],
-  );
 
-  // Wrap a programmatic scroll so the scroll listener doesn't mistake it for a
-  // user scroll (which cancels the pin). Smooth scrolls clear on `scrollend`
-  // (600ms fallback for engines without it); instant clears after the scroll
-  // event flushes (double rAF).
-  const withProgrammaticScroll = useCallback(
-    (fn: () => void, behavior: 'auto' | 'smooth' = 'auto') => {
-      programmaticScrollRef.current = true;
-      fn();
-      if (behavior === 'smooth') {
-        const c = getScrollContainer(scrollAreaRef);
-        let cleared = false;
-        const clear = () => {
-          if (cleared) return;
-          cleared = true;
-          c?.removeEventListener('scrollend', clear);
-          programmaticScrollRef.current = false;
-        };
-        c?.addEventListener('scrollend', clear, { once: true });
-        setTimeout(clear, SCROLLEND_FALLBACK_MS);
-      } else {
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() => {
-            programmaticScrollRef.current = false;
-          }),
-        );
-      }
-    },
-    [getScrollContainer],
-  );
-
-  // The growing content node inside the fixed-height Radix viewport. The viewport
-  // height is fixed (h-full); only its content grows as async media expands, so
-  // that is what the ResizeObserver must watch.
-  const getScrollContent = useCallback(
-    (c: HTMLElement): HTMLElement =>
-      c.querySelector<HTMLElement>('.max-w-3xl') ?? (c.firstElementChild as HTMLElement) ?? c,
-    [],
-  );
-
-  const clearSettleTimers = useCallback(() => {
-    if (settleQuietTimerRef.current) {
-      clearTimeout(settleQuietTimerRef.current);
-      settleQuietTimerRef.current = null;
-    }
-    if (settleHardCapRef.current) {
-      clearTimeout(settleHardCapRef.current);
-      settleHardCapRef.current = null;
-    }
-  }, []);
-
-  // Arm the settle window: re-pin while content keeps growing, give up after a
-  // 1.5s quiet window (reset on each settle resize) or an 8s hard cap.
-  const armSettleTimers = useCallback(() => {
-    if (settleQuietTimerRef.current) clearTimeout(settleQuietTimerRef.current);
-    settleQuietTimerRef.current = setTimeout(() => {
-      // Quiet window elapsed — the settle session is over. Tear down BOTH timers
-      // so the next pin session arms a fresh hard cap; otherwise it inherits this
-      // session's stale (shortened or already-elapsed) one and gives up early.
-      pinTargetRef.current = null;
-      settleQuietTimerRef.current = null;
-      if (settleHardCapRef.current) {
-        clearTimeout(settleHardCapRef.current);
-        settleHardCapRef.current = null;
-      }
-    }, SETTLE_QUIET_MS);
-    if (!settleHardCapRef.current) {
-      settleHardCapRef.current = setTimeout(() => {
-        pinTargetRef.current = null;
-        settleHardCapRef.current = null;
-        if (settleQuietTimerRef.current) {
-          clearTimeout(settleQuietTimerRef.current);
-          settleQuietTimerRef.current = null;
-        }
-      }, SETTLE_HARD_CAP_MS);
-    }
-  }, []);
-
-  const pinToBottom = useCallback(
-    (behavior: 'auto' | 'smooth' = 'auto') => {
-      const c = getScrollContainer(scrollAreaRef);
-      if (!c) return;
-      pinTargetRef.current = { mode: 'bottom' };
-      isNearBottomRef.current = true;
-      pillBaselineLenRef.current = messagesLenRef.current;
-      setPillState({ visible: false, hasNew: false, newCount: 0 });
-      withProgrammaticScroll(() => c.scrollTo({ top: c.scrollHeight, behavior }), behavior);
-      armSettleTimers();
-    },
-    [getScrollContainer, withProgrammaticScroll, armSettleTimers, setPillState],
-  );
-
-  // Re-apply the bottom pin (rAF-coalesced); called by the ResizeObserver each
-  // time content settles, so async media finishing layout can't strand the user
-  // mid-thread.
-  const reapplyPin = useCallback(() => {
-    if (reapplyRafRef.current != null) return;
-    reapplyRafRef.current = requestAnimationFrame(() => {
-      reapplyRafRef.current = null;
-      const c = getScrollContainer(scrollAreaRef);
-      if (!pinTargetRef.current || !c) return;
-      withProgrammaticScroll(() => c.scrollTo({ top: c.scrollHeight }), 'auto');
-      armSettleTimers();
-    });
-  }, [getScrollContainer, withProgrammaticScroll, armSettleTimers]);
+  // Subagent tab registry + card refresh (chatView/useSubagentTabs).
+  const {
+    agents,
+    activeAgent,
+    switchAgent,
+    handleSelectAgent,
+    handleOpenSubagentTask,
+    handleRemoveAgent,
+    handleSubagentInstruction,
+    resolveSubagentTelemetry,
+  } = useSubagentTabs({
+    threadId,
+    workspaceId,
+    initialTaskId,
+    isLoadingHistory,
+    activeAgentId,
+    setActiveAgentId,
+    cards,
+    updateSubagentCard,
+    getSubagentHistory,
+    resolveSubagentIdToAgentId,
+    saveScrollPosition,
+    scrollPositionsRef,
+    skipSubagentAutoScrollRef,
+    activeAgentIdRef,
+    resolvedThreadIdRef,
+  });
 
   // Copy-a-link to an HTML report opens a consent chooser; the actual copy runs
   // in one of the two handlers below depending on the user's pick.
@@ -1300,547 +749,81 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     }
   }, [isLoading, refreshFiles]);
 
-  // Ensure new active agents are visible (remove from hidden list)
-  useEffect(() => {
-    Object.entries(cards).forEach(([cardId, card]) => {
-      if (cardId.startsWith('subagent-')) {
-        const agentId = cardId.replace('subagent-', '');
-        const isNewActiveAgent = card.subagentData?.isActive !== false && !card.subagentData?.isHistory;
-
-        // If this is a new active agent, remove it from hidden list
-        if (isNewActiveAgent && hiddenAgentIds.has(agentId)) {
-          setHiddenAgentIds((prev) => {
-            const newSet = new Set(prev);
-            newSet.delete(agentId);
-            return newSet;
-          });
-        }
-      }
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cards]);
-
-  // Convert cards to agents array for sidebar (memoized to avoid re-renders)
-  const { subagentAgents, excessSubagents } = useMemo(() => {
-    const maxSubagents = 11;
-    const all = Object.entries(cards)
-      .filter(([cardId]) => cardId.startsWith('subagent-'))
-      .map(([cardId, card]): AgentInfo => {
-        const sd = card.subagentData as Record<string, unknown> | undefined;
-        return {
-          id: cardId.replace('subagent-', ''),
-          name: (sd?.displayId as string) || t('chat.worker'),
-          taskId: (sd?.taskId as string) || (sd?.agentId as string) || '',
-          description: (sd?.description as string) || '',
-          prompt: (sd?.prompt as string) || '',
-          type: (sd?.type as string) || 'general-purpose',
-          // Missing status = not-yet-known → 'initializing' (deriveSubagentStatus
-          // promotes it to running once messages exist); never default to a live
-          // 'active' that would paint a status-less card as Running.
-          status: (sd?.status as string) || 'initializing',
-          error: sd?.error as string | undefined,
-          toolCalls: countToolCalls(sd?.messages as SubagentMessage[] | undefined),
-          tokenUsage: (sd?.tokenUsage as SubagentTokenUsage | undefined) ?? ZERO_USAGE,
-          currentTool: (sd?.currentTool as string) || '',
-          messages: (sd?.messages as SubagentMessage[]) || [],
-          isActive: sd?.isActive !== false,
-          isMainAgent: false,
-        };
-      })
-      .reverse();
-    const visible = all.filter(agent => !hiddenAgentIds.has(agent.id));
-    return {
-      subagentAgents: visible.slice(0, maxSubagents),
-      excessSubagents: visible.slice(maxSubagents),
-    };
-  }, [cards, hiddenAgentIds, t]);
-
-  // Per-subagent telemetry resolver consumed by MessageList. Maps a message
-  // segment's `subagentId` (a toolCallId) through `resolveSubagentIdToAgentId`
-  // and reads tool count + token usage off the matching card. Falls back to
-  // the history entry on a fresh load — cards are created lazily on click,
-  // so without this fallback the inline row would stay hidden after refresh
-  // until the user clicks into the subagent. Keeping the resolution in this
-  // closure means MessageList never touches the cards or the toolCallId map
-  // directly.
-  const resolveSubagentTelemetry = useCallback((subagentId: string) => {
-    const card = cards[`subagent-${resolveSubagentIdToAgentId(subagentId)}`];
-    const sd = card?.subagentData as SubagentDataLike | undefined;
-    const history = getSubagentHistory?.(subagentId) as SubagentHistoryLike | undefined;
-    return resolveSubagentTelemetryPure(sd, history);
-  }, [cards, resolveSubagentIdToAgentId, getSubagentHistory]);
-
-  // Auto-hide excess agents (beyond 11 subagents)
-  const excessIds = useMemo(() => excessSubagents.map(a => a.id).join(','), [excessSubagents]);
-  useEffect(() => {
-    if (excessSubagents.length > 0) {
-      setHiddenAgentIds((prev) => {
-        const newSet = new Set(prev);
-        excessSubagents.forEach(agent => {
-          newSet.add(agent.id);
-        });
-        return newSet;
-      });
-    }
-  }, [excessSubagents.length, excessIds]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Combine: main agent first, then visible subagents (limited to 11)
-  const agents = useMemo((): AgentInfo[] => [MAIN_AGENT, ...subagentAgents], [subagentAgents]);
-
-  // Find the active agent object for subagent view
-  const activeAgent: AgentInfo | null = activeAgentId !== 'main'
-    ? agents.find(a => a.id === activeAgentId) || null
-    : null;
-
-  // Callback: user sent an instruction to the active subagent via the status bar.
-  // Immediately insert a pending user message (breathing animation) into the card.
-  const handleSubagentInstruction = useCallback((content: string) => {
-    if (!activeAgent) return;
-    const agentId = activeAgent.id;
-    const cardId = `subagent-${agentId}`;
-    const card = cards[cardId];
-    const existingMessages = card?.subagentData?.messages || [];
-
-    const pendingMessage = {
-      id: `pending-instruction-${Date.now()}`,
-      role: 'user',
-      content,
-      contentSegments: [{ type: 'text', content, order: 0 }],
-      reasoningProcesses: {},
-      toolCallProcesses: {},
-      isPending: true,
-    };
-
-    updateSubagentCard(agentId, {
-      messages: [...existingMessages, pendingMessage],
-    });
-  }, [activeAgent, cards, updateSubagentCard]);
 
 
-  const clampPanelWidth = useCallback(
-    (desired: number) => clampPanelWidthUtil(desired, containerRef.current?.offsetWidth || window.innerWidth),
-    [],
-  );
 
-  // Handle drag panel width — direct DOM manipulation for smooth, jank-free resize.
-  // React state is only updated once on mouseup; during drag we bypass React/Framer.
-  const PREVIEW_MAX_RATIO = 0.92;
-  const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    isDraggingRef.current = true;
-    setIsDragging(true);
-    const startX = e.clientX;
-    const startWidth = rightPanelWidth;
-    const containerW = containerRef.current?.offsetWidth || window.innerWidth;
-    const maxRatio = rightPanelType === 'preview' ? PREVIEW_MAX_RATIO : undefined;
 
-    // Immediately disable pointer events on iframes to prevent them from
-    // capturing mouse events during resize (can't wait for React re-render).
-    const iframes = containerRef.current?.querySelectorAll('iframe');
-    iframes?.forEach(iframe => { (iframe as HTMLIFrameElement).style.pointerEvents = 'none'; });
 
-    // Grab DOM elements for direct manipulation (no React re-renders during drag)
-    const wrapperEl = panelWrapperRef.current;
-    const innerEl = wrapperEl?.querySelector<HTMLElement>('[data-panel-inner]');
-    let currentWidth = startWidth;
 
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      if (!isDraggingRef.current) return;
-      const delta = startX - moveEvent.clientX;
-      currentWidth = clampPanelWidthUtil(startWidth + delta, containerW, maxRatio);
-      if (wrapperEl) wrapperEl.style.width = `${currentWidth}px`;
-      if (innerEl) innerEl.style.width = `${currentWidth}px`;
-    };
 
-    const onMouseUp = () => {
-      isDraggingRef.current = false;
-      // Flag ensures the next render uses duration:0 so Framer doesn't
-      // animate from the stale pre-drag width to the final width.
-      dragJustEndedRef.current = true;
-      setIsDragging(false);
-      setRightPanelWidth(currentWidth);
-      iframes?.forEach(iframe => { (iframe as HTMLIFrameElement).style.pointerEvents = ''; });
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
 
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-  }, [rightPanelWidth, rightPanelType]);
-
-  // Open a file in the right panel from chat tool calls
-  // --- Mobile back-button integration for panels ---
-  // Push a sentinel history entry when a panel opens so that the browser back
-  // gesture closes the panel instead of navigating away from ChatView.
-  //
-  // Key: we use raw pushState (not React Router's navigate) and CLONE the
-  // current history.state so React Router's idx/key tracking stays intact.
-  // When the sentinel is popped, RR sees delta=0 and bails out — no re-render,
-  // no route change, no flicker. Only our popstate handler fires to close the panel.
-  //
-  // Programmatic history.back() (explicit close) does NOT trigger iOS's visual
-  // page transition — only the edge swipe gesture does.
-  const panelHistoryPushedRef = useRef(false);
-
-  const pushPanelHistory = useCallback(() => {
-    if (!isMobile || panelHistoryPushedRef.current) return;
-    panelHistoryPushedRef.current = true;
-    window.history.pushState(
-      { ...window.history.state, _panelSentinel: true },
-      '',
-      window.location.href,
-    );
-  }, [isMobile]);
-
-  const popPanelHistory = useCallback(() => {
-    if (!isMobile || !panelHistoryPushedRef.current) return;
-    panelHistoryPushedRef.current = false;
-    window.history.back();
-  }, [isMobile]);
-
-  // Listen for popstate — close panel if our sentinel was popped by back gesture
-  useEffect(() => {
-    if (!isMobile) return;
-    const onPopState = () => {
-      if (panelHistoryPushedRef.current) {
-        panelHistoryPushedRef.current = false;
-        setRightPanelType(null);
-        setDetailToolCall(null);
-        setDetailPlanData(null);
-        setPreviewData(null);
-      }
-    };
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
-  }, [isMobile]);
-
-  // Clean up sentinel on unmount (e.g. navigating away with panel still open).
-  // Use replaceState to silently neutralize the sentinel instead of history.back(),
-  // which would fire a popstate after our listener is already cleaned up and could
-  // cause React Router to navigate backward unexpectedly.
-  useEffect(() => {
-    return () => {
-      if (panelHistoryPushedRef.current) {
-        panelHistoryPushedRef.current = false;
-        const state = window.history.state;
-        if (state?._panelSentinel) {
-          window.history.replaceState(
-            { ...state, _panelSentinel: undefined },
-            '',
-            window.location.href,
-          );
-        }
-      }
-    };
-  }, []);
-
-  /**
-   * Routes a click on a tool-call artifact to the right panel tab that owns
-   * its domain. The pure decision is computed by computeAgentArtifactRouting;
-   * we apply the result atomically (clear everything, then set).
-   */
-  const handleOpenAgentArtifactFromChat = useCallback((rawPath: string, targetWorkspaceId?: string) => {
-    const r = computeAgentArtifactRouting(rawPath, targetWorkspaceId);
-    if (r.setWorkspaceId && !isValidUuid(r.setWorkspaceId)) {
-      console.warn('[ChatView] ignoring artifact ref with invalid workspace id', r.setWorkspaceId);
-      return;
-    }
-
-    // The routing result carries exactly one non-null target field; map it to
-    // the matching panel kind. `targetMemoKey` may legitimately be '' (memo
-    // index → LIST view), so test for null rather than truthiness.
-    let target: PanelTarget;
-    if (r.targetMemoryKey != null && r.targetMemoryTier != null) {
-      target = { kind: 'memory', key: r.targetMemoryKey, tier: r.targetMemoryTier };
-    } else if (r.targetMemoKey != null) {
-      target = { kind: 'memo', key: r.targetMemoKey };
-    } else {
-      target = { kind: 'file', path: r.targetFile };
-    }
-    setPanelTarget(target);
-    if (r.clearWorkspaceId) {
-      setFilePanelWorkspaceId(null);
-    } else if (r.setWorkspaceId) {
-      setFilePanelWorkspaceId(r.setWorkspaceId);
-    }
-
-    setRightPanelWidth(clampPanelWidth(850));
-    setRightPanelType('file');
-    pushPanelHistory();
-  }, [clampPanelWidth, pushPanelHistory]);
-
-  // Alias kept for the existing callers (tool-call rows, ws:// flash links,
-  // file-panel handoffs) that still use the older name. Pure identity — the
-  // unified router does the path-aware classification on every call.
-  const handleOpenFileFromChat = handleOpenAgentArtifactFromChat;
-
-  // Opens the Sources tab for a turn by pinning the message id — the single
-  // target replaces any prior file/memory/memo/status one, so the panel snaps
-  // to Sources; it resolves live records from `messages`.
-  const handleOpenSourcesFromChat = useCallback((messageId: string) => {
-    setPanelTarget({ kind: 'sources', messageId });
-    setRightPanelWidth(clampPanelWidth(850));
-    setRightPanelType('file');
-    pushPanelHistory();
-  }, [clampPanelWidth, pushPanelHistory]);
-
-  // Opens the Status tab (live market watch) from the persistent chip. The
-  // single 'status' target replaces any prior one, so the panel snaps to Status;
-  // it resolves live watch state from `marketWatch`.
-  const handleOpenStatusFromChat = useCallback(() => {
-    setPanelTarget({ kind: 'status' });
-    setRightPanelWidth(clampPanelWidth(850));
-    setRightPanelType('file');
-    pushPanelHistory();
-  }, [clampPanelWidth, pushPanelHistory]);
-
-  // The message id whose provenance the Sources tab shows, when a sources target
-  // is active. Drives the two provenance memos below.
-  const sourcesMessageId = panelTarget?.kind === 'sources' ? panelTarget.messageId : null;
-
-  // Live provenance for the targeted turn — resolved from `messages` so the
-  // Sources panel updates as records stream in (live) or replay re-delivers
-  // them (reload). Recomputes on every `messages` change while the tab is open.
-  const sourcesRecords = useMemo<Record<string, ProvenanceRecord> | undefined>(() => {
-    if (!sourcesMessageId) return undefined;
-    const msg = messages.find((m) => (m as { id?: string }).id === sourcesMessageId);
-    return (msg as { provenanceRecords?: Record<string, ProvenanceRecord> } | undefined)?.provenanceRecords;
-  }, [sourcesMessageId, messages]);
-
-  // Thread-wide provenance: every turn's records merged in chronological order.
-  // The Sources panel dedups across turns (first occurrence wins) and offers a
-  // "This turn / All sources" switch when this set is larger than the turn's.
-  // Gated on an open Sources tab so we don't merge on every unrelated render.
-  const allSourcesRecords = useMemo<Record<string, ProvenanceRecord> | undefined>(() => {
-    if (!sourcesMessageId) return undefined;
-    const merged: Record<string, ProvenanceRecord> = {};
-    for (const m of messages) {
-      const recs = (m as { provenanceRecords?: Record<string, ProvenanceRecord> }).provenanceRecords;
-      if (!recs) continue;
-      // First occurrence wins: keep the earliest turn's metadata for a colliding
-      // key (Object.assign would let later turns overwrite — last-wins).
-      for (const key in recs) {
-        if (!(key in merged)) merged[key] = recs[key];
-      }
-    }
-    return merged;
-  }, [sourcesMessageId, messages]);
-
-  // Drop a sticky sources/status target whenever the right panel is closed or
-  // switches to a non-file view (detail/preview), so a later file/memory click
-  // doesn't reopen that tab. These two are the only kinds that persist while
-  // their tab is open; file/memory/memo self-clear via the handled callbacks.
-  // The many close call sites all funnel through rightPanelType.
-  useEffect(() => {
-    if (rightPanelType !== 'file' && (panelTarget?.kind === 'sources' || panelTarget?.kind === 'status')) {
-      setPanelTarget(null);
-    }
-  }, [rightPanelType, panelTarget]);
-
-  // One-shot ?file= deep link: opens the file panel targeting that file. Gated
-  // on isActive so only the visible ChatView consumes it (ChatAgent keeps cached
-  // hidden instances), and on workspaceId so the panel has something to read.
-  // The param is stripped after consuming so it can't re-fire on re-render.
-  useEffect(() => {
-    if (!isActive || !workspaceId || fileDeepLinkConsumedRef.current) return;
-    const params = new URLSearchParams(location.search);
-    const raw = params.get('file');
-    if (!raw) return;
-    fileDeepLinkConsumedRef.current = true;
-    // URLSearchParams.get already percent-decodes; a second decodeURIComponent
-    // would throw on a literal '%' in the filename (e.g. 100%25_report.html).
-    handleOpenFileFromChat(raw);
-    params.delete('file');
-    const search = params.toString();
-    navigate(
-      { pathname: location.pathname, search: search ? `?${search}` : '' },
-      { replace: true, state: location.state },
-    );
-  }, [isActive, workspaceId, location.search, location.pathname, location.state, navigate, handleOpenFileFromChat]);
-
-  // Open file panel filtered to a specific directory. The single 'file' target
-  // (with `dir`) replaces any pending memory/memo/status pre-select, so nothing
-  // can snap-back hijack the dir click.
-  const handleOpenDirFromChat = useCallback((dirPath: string) => {
-    setRightPanelWidth(clampPanelWidth(850));
-    setRightPanelType('file');
-    setPanelTarget({ kind: 'file', dir: dirPath });
-    pushPanelHistory();
-  }, [clampPanelWidth, pushPanelHistory]);
-
-  // Determine detail panel width based on content type
-  const getDetailPanelWidth = useCallback((toolCallProcess: ToolCallProcessRecord | null) => {
-    let desired = 650;
-    if (!toolCallProcess) { desired = 550; }
-    else {
-      const toolName = toolCallProcess.toolName || '';
-      const artifactType = toolCallProcess.toolCallResult?.artifact?.type;
-
-      // Wide: file reading, SEC filings, subagent results
-      if (artifactType === 'sec_filing') desired = 850;
-      else if (toolName === 'Read') desired = 850;
-      else if (toolName === 'Task' || toolName === 'task') desired = 750;
-      // Medium: charts, search results, default markdown
-      else if (artifactType === 'stock_prices' || artifactType === 'market_indices' || artifactType === 'sector_performance') desired = 650;
-      else if (toolName === 'WebSearch' || toolName === 'web_search') desired = 650;
-      // Slim: compact data cards
-      else if (artifactType === 'company_overview') desired = 480;
-      else if (artifactType === 'automations') desired = 480;
-    }
-    return clampPanelWidth(desired);
-  }, [clampPanelWidth]);
-
-  // Resolve preview URL: always pass command so the backend can start the
-  // server if the port is idle (common for history sessions where the
-  // original server process is long gone).  The backend skips the start
-  // when the port is already listening, so this is safe for live sessions.
-  const resolvePreviewUrl = useCallback(async (wid: string, port: number, command?: string): Promise<string> => {
-    try {
-      const result = await getPreviewUrl(wid, port, command);
-      return result.url;
-    } catch (err: unknown) {
-      const status = (err as { response?: { status?: number } })?.response?.status;
-      if (status === 503 && command) {
-        // Sandbox was stopped — retry (may trigger workspace start)
-        const result = await getPreviewUrl(wid, port, command);
-        return result.url;
-      }
-      throw err;
-    }
-  }, []);
-
-  // Resolve a preview URL and update the Map entry for this port.
-  // Only syncs to render state if this port is still active.
-  // If the entry has a `path` suffix (e.g. "/timeline.html"), it's appended to the signed URL.
-  const resolveAndSetPreview = useCallback((wid: string, port: number, command?: string, pathSuffix?: string) => {
-    resolvePreviewUrl(wid, port, command)
-      .then((baseUrl: string) => {
-        const entry = previewMapRef.current.get(port);
-        if (!entry) return;
-        const url = appendPathSuffix(baseUrl, pathSuffix ?? entry.path);
-        const updated = { ...entry, url, loading: false, error: undefined };
-        previewMapRef.current.set(port, updated);
-        if (activePreviewPortRef.current === port) setPreviewData(updated);
-      })
-      .catch(() => {
-        const entry = previewMapRef.current.get(port);
-        if (!entry) return;
-        const updated = { ...entry, url: '', loading: false, error: true };
-        previewMapRef.current.set(port, updated);
-        if (activePreviewPortRef.current === port) setPreviewData(updated);
-      });
-  }, [resolvePreviewUrl]);
-
-  // Open preview URL in right panel
-  const handleOpenPreview = useCallback((data: PreviewData) => {
-    previewMapRef.current.set(data.port, data);
-    activePreviewPortRef.current = data.port;
-    setPreviewData(data);
-    setRightPanelType('preview');
-    const containerW = containerRef.current?.offsetWidth || window.innerWidth;
-    setRightPanelWidth(clampPanelWidthUtil(850, containerW, PREVIEW_MAX_RATIO));
-    pushPanelHistory();
-    // If opened with loading state (no URL yet), resolve via authenticated endpoint
-    if (data.loading && !data.url && workspaceId) {
-      resolveAndSetPreview(workspaceId, data.port, data.command, data.path);
-    }
-  }, [pushPanelHistory, workspaceId, resolveAndSetPreview]);
+  // Right-panel controller (chatView/useRightPanel).
+  const {
+    panelTarget,
+    handleTargetFileHandled,
+    handleTargetDirHandled,
+    handleTargetMemoryHandled,
+    handleTargetMemoHandled,
+    rightPanelType,
+    setRightPanelType,
+    rightPanelWidth,
+    previewData,
+    panelWrapperRef,
+    isDragging,
+    dragJustEndedRef,
+    handleDividerMouseDown,
+    popPanelHistory,
+    handleOpenFileFromChat,
+    handleOpenSourcesFromChat,
+    handleOpenStatusFromChat,
+    handleOpenDirFromChat,
+    handleToolCallDetailClick,
+    handlePlanDetailClick,
+    handleCloseDetailPanel,
+    handleClosePreview,
+    handleRefreshPreview,
+    handleToggleFilePanel,
+    handleOpenPreview,
+    detailToolCall,
+    detailPlanData,
+    sourcesRecords,
+    allSourcesRecords,
+  } = useRightPanel({
+    isMobile,
+    workspaceId,
+    isActive,
+    containerRef,
+    setFilePanelWorkspaceId,
+    messages,
+  });
 
   // Keep the ref in sync so SSE events (via handleOpenPreviewFromStream) use the latest closure
   openPreviewRef.current = handleOpenPreview;
 
-  // Open tool call detail in right panel (or preview panel for preview_url artifacts)
-  const handleToolCallDetailClick = useCallback((toolCallProcess: ToolCallProcessRecord) => {
-    const artifact = toolCallProcess.toolCallResult?.artifact as Record<string, unknown> | undefined;
-    if (artifact?.type === 'preview_url' && artifact.port && workspaceId) {
-      const port = artifact.port as number;
-      const title = artifact.title as string | undefined;
-      const command = artifact.command as string | undefined;
-      const path = artifact.path as string | undefined;
-      const token = ++reloadCounterRef.current;
-      // Check Map cache (not single state) — show cached URL instantly, then verify in background
-      const cached = previewMapRef.current.get(port);
-      if (cached?.url) {
-        handleOpenPreview({ ...cached, url: '', loading: true, error: undefined, reloadToken: token, path });
-        resolveAndSetPreview(workspaceId, port, command, path);
-        return;
-      }
-      // No cache — resolve (restarts server if needed via 503 fallback)
-      // handleOpenPreview will trigger resolution since loading=true and url=''
-      handleOpenPreview({ url: '', port, title, command, path, loading: true, reloadToken: token });
-      return;
-    }
-    setDetailToolCall(toolCallProcess);
-    setDetailPlanData(null);
-    setRightPanelWidth(getDetailPanelWidth(toolCallProcess));
-    setRightPanelType('detail');
-    pushPanelHistory();
-  }, [getDetailPanelWidth, pushPanelHistory, workspaceId, handleOpenPreview, resolveAndSetPreview]);
 
-  // Open plan detail in right panel
-  const handlePlanDetailClick = useCallback((planData: PlanData) => {
-    setDetailPlanData(planData);
-    setDetailToolCall(null);
-    setRightPanelWidth(clampPanelWidth(550));
-    setRightPanelType('detail');
-    pushPanelHistory();
-  }, [clampPanelWidth, pushPanelHistory]);
+  // Open a file in the right panel from chat tool calls
+  // --- Mobile back-button integration for panels ---
 
-  // Close detail panel (shared by MobileBottomSheet + DetailPanel onClose)
-  const handleCloseDetailPanel = useCallback(() => {
-    setRightPanelType(null);
-    setDetailToolCall(null);
-    setDetailPlanData(null);
-    popPanelHistory();
-  }, [popPanelHistory]);
 
-  // Close preview panel (keep Map cache for instant reopen, but stop background state updates)
-  const handleClosePreview = useCallback(() => {
-    activePreviewPortRef.current = null;
-    setRightPanelType(null);
-    popPanelHistory();
-  }, [popPanelHistory]);
 
-  // Refresh preview: restart process + resolve fresh signed URL (force bypasses cache)
-  const handleRefreshPreview = useCallback(async () => {
-    if (!previewData || !workspaceId) return;
-    // Capture values before async gap to avoid stale closure if user switches ports
-    const { port, command, path } = previewData;
-    const loadingEntry = { ...previewData, loading: true, error: undefined };
-    previewMapRef.current.set(port, loadingEntry);
-    setPreviewData(loadingEntry);
-    try {
-      const result = await getPreviewUrl(workspaceId, port, command, true);
-      const token = ++reloadCounterRef.current;
-      const url = appendPathSuffix(result.url, path);
-      const entry = previewMapRef.current.get(port);
-      const updated = { ...(entry ?? previewData), url, loading: false, reloadToken: token };
-      previewMapRef.current.set(port, updated);
-      if (activePreviewPortRef.current === port) setPreviewData(updated);
-    } catch (e) {
-      console.error('Failed to refresh preview:', e);
-      const entry = previewMapRef.current.get(port);
-      const updated = { ...(entry ?? previewData), loading: false, error: true };
-      previewMapRef.current.set(port, updated);
-      if (activePreviewPortRef.current === port) setPreviewData(updated);
-    }
-  }, [previewData, workspaceId]);
 
-  // Toggle file panel
-  const handleToggleFilePanel = useCallback(() => {
-    if (rightPanelType === 'file') {
-      setRightPanelType(null);
-      popPanelHistory();
-    } else {
-      setRightPanelWidth(clampPanelWidth(850));
-      setRightPanelType('file');
-      pushPanelHistory();
-    }
-  }, [rightPanelType, clampPanelWidth, pushPanelHistory, popPanelHistory]);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   // Add context from FilePanel or message selection to ChatInput
   const handleAddContext = useCallback((ctx: any) => { // TODO: type properly
@@ -1910,37 +893,6 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     return () => document.removeEventListener('mousedown', handler);
   }, [msgSelectionTooltip]);
 
-  // Navigation panel hover handlers with 30s hide delay
-  const handleNavEnter = useCallback(() => {
-    if (navPinnedRef.current) return; // pinned panel ignores the hover dance
-    if (navLockedRef.current) return; // locked after explicit minimize
-    // Don't open if content area is too narrow (e.g., right panel consuming space)
-    if ((contentAreaRef.current?.offsetWidth ?? Infinity) < 1100) return;
-    if (navHideTimerRef.current) clearTimeout(navHideTimerRef.current);
-    navPanelVisibleRef.current = true;
-    _sharedNav.visible = true;
-    setNavPanelVisible(true);
-  }, []);
-
-  const handleNavLeave = useCallback(() => {
-    if (navPinnedRef.current) return; // pinned panel never auto-hides
-    if (navLockedRef.current) return;
-    navHideTimerRef.current = setTimeout(() => {
-      if (!isActiveRef.current) return;
-      navPanelVisibleRef.current = false;
-      _sharedNav.visible = false;
-      setNavPanelVisible(false);
-    }, 30000);
-  }, []);
-
-  const handleNavMinimize = useCallback(() => {
-    if (navHideTimerRef.current) clearTimeout(navHideTimerRef.current);
-    navLockedRef.current = true;
-    navPanelVisibleRef.current = false;
-    _sharedNav.visible = false;
-    _sharedNav.locked = true;
-    setNavPanelVisible(false);
-  }, []);
 
   // Mobile: tap top bar to scroll chat to top
   const handleTopBarTap = useCallback((e: React.MouseEvent) => {
@@ -1949,222 +901,15 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     const ref = activeAgentId === 'main' ? scrollAreaRef : subagentScrollAreaRef;
     const container = getScrollContainer(ref);
     if (container) withProgrammaticScroll(() => container.scrollTo({ top: 0, behavior: 'smooth' }), 'smooth');
-  }, [isMobile, activeAgentId, getScrollContainer, withProgrammaticScroll]);
+  }, [isMobile, activeAgentId, getScrollContainer, withProgrammaticScroll, scrollAreaRef, subagentScrollAreaRef]);
 
-  // Pin toggle: pin docks the panel open (persisted); unpin returns to hover mode.
-  const handleTogglePin = useCallback(() => {
-    const next = !navPinnedRef.current;
-    navPinnedRef.current = next;
-    _sharedNav.pinned = next;
-    try {
-      localStorage.setItem(NAV_PIN_KEY, String(next));
-    } catch {
-      // localStorage unavailable (private mode) — pin still works for the session
-    }
-    setNavPinned(next);
-    if (next) {
-      if (navHideTimerRef.current) clearTimeout(navHideTimerRef.current);
-      navLockedRef.current = false;
-      _sharedNav.locked = false;
-      navPanelVisibleRef.current = true;
-      _sharedNav.visible = true;
-      setNavPanelVisible(true);
-    } else {
-      navPanelVisibleRef.current = false;
-      _sharedNav.visible = false;
-      setNavPanelVisible(false);
-    }
-  }, []);
 
-  // Expand button explicitly unlocks and opens the panel
-  const handleNavExpand = useCallback(() => {
-    navLockedRef.current = false;
-    _sharedNav.locked = false;
-    if (navHideTimerRef.current) clearTimeout(navHideTimerRef.current);
-    navPanelVisibleRef.current = true;
-    _sharedNav.visible = true;
-    setNavPanelVisible(true);
-  }, []);
 
-  // Refresh subagent card with latest data from history or inline status.
-  // Ensures status/currentTool are accurate regardless of stale streaming data.
-  // agentId: stable agent_id (already resolved from toolCallId if needed)
-  // overrides: optional { description, type, status } from inline card click
-  const refreshSubagentCard = useCallback((agentId: string, overrides: Partial<SubagentInfo> = {}) => {
-    if (!updateSubagentCard || !agentId) return;
 
-    const history = getSubagentHistory ? getSubagentHistory(agentId) : null;
-    // Preserve existing card description/type. Priority:
-    // 1. History description (most authoritative — from replay)
-    // 2. Existing card description (set during spawn — must not be overwritten
-    //    by follow-up/resume inline cards whose description is the instruction)
-    // 3. Override description (from inline card click — only used when card has
-    //    no description yet, e.g., first open of a newly spawned task)
-    const cardId = `subagent-${agentId}`;
-    const existingDescription = cards[cardId]?.subagentData?.description;
-    const existingPrompt = cards[cardId]?.subagentData?.prompt;
-    const existingType = cards[cardId]?.subagentData?.type;
-    const existingStatus = cards[cardId]?.subagentData?.status;
-    const finalDescription = history?.description || existingDescription || overrides.description || '';
-    const finalPrompt = history?.prompt || existingPrompt || overrides.prompt || '';
-    const finalType = history?.type || existingType || overrides.type || 'general-purpose';
-    // A card that already settled terminal is authoritative: never downgrade it to
-    // a stale non-terminal history value (a history entry can still read 'running'
-    // when the ledger hasn't refreshed locally yet). A genuine resume — a separate
-    // code path — is the only thing that reactivates a settled task.
-    const finalStatus = isTerminalStatus(existingStatus)
-      ? existingStatus!
-      : (history?.status || overrides.status || 'completed');
-    const finalError = history?.error || overrides.error;
 
-    // Check if card is currently live (active with an open stream)
-    const existingCard = cards[cardId]?.subagentData;
-    const isLive = existingCard?.isActive && !history;
 
-    const updateData: SubagentUpdateData = {
-      agentId,
-      taskId: agentId,
-      description: finalDescription,
-      prompt: finalPrompt,
-      type: finalType,
-      isHistory: !!history,
-      // isActive: true bypasses the inactive-card guard so stale fields get cleared.
-      // For history cards this will be immediately overridden to false by the
-      // isHistory check inside updateSubagentCard.
-      isActive: !history,
-    };
-    if (isLive) {
-      // Card is actively streaming — preserve its current status and currentTool.
-      // Overwriting these causes a brief "completed" flash in the SubagentStatusBar.
-    } else {
-      updateData.status = finalStatus;
-      updateData.currentTool = '';
-      if (finalError) updateData.error = finalError;
-    }
-    if (history) {
-      updateData.messages = (history.messages || []) as SubagentMessage[];
-      // Also seed tokenUsage from history. Without this, clicking a replayed
-      // subagent card creates the live card with tokenUsage=ZERO_USAGE, and
-      // the telemetry resolver's "card path" wins on return (messages.length > 0)
-      // and reports zero tokens — even though history still has the real total.
-      updateData.tokenUsage = (history.tokenUsage as SubagentTokenUsage) ?? ZERO_USAGE;
-    }
 
-    updateSubagentCard(agentId, updateData);
-  }, [updateSubagentCard, getSubagentHistory, cards]);
 
-  // Durable hydration for a clicked task whose local card is ambiguous:
-  // non-terminal (a settled task whose live stream drained while the tab was
-  // backgrounded — the "Initializing" spinner that never resolves), or errored
-  // without a reason (a live transport-loss whose failure text only lives in
-  // the ledger). Resolves the ledger's real terminal state and lands it on the
-  // card. The existing messages ride along so the inactive-card guard treats
-  // this as a content update — authoritative terminal truth must not be dropped
-  // just because the card already settled non-terminally.
-  const hydrateTaskStatusIfStale = useCallback(async (agentId: string) => {
-    if (agentId === 'main' || !threadId || threadId === '__default__') return;
-    const shortId = agentId.startsWith('task:') ? agentId.slice(5) : agentId;
-    if (!shortId) return;
-    const history = getSubagentHistory ? getSubagentHistory(agentId) : null;
-    const card = cards[`subagent-${agentId}`]?.subagentData;
-    const knownStatus = deriveSubagentStatus({
-      status: (history?.status ?? card?.status) as string | undefined,
-      messages: (history?.messages ?? card?.messages) as unknown[] | undefined,
-    });
-    const hasReason = !!(history?.error || card?.error);
-    const isTerminal = knownStatus === 'completed' || knownStatus === 'cancelled' || knownStatus === 'error';
-    // Already have the full terminal picture (incl. a reason for errors) — no fetch.
-    if (isTerminal && (knownStatus !== 'error' || hasReason)) return;
-    try {
-      const res = await getSubagentTaskStatus(threadId, shortId);
-      // Normalize at the boundary: the ledger endpoint speaks client vocabulary
-      // today, but raw run statuses ('failed'/'interrupted') must land as
-      // 'error' here rather than silently skipping the hydration.
-      const s = normalizeWireStatus(res?.status);
-      if (!isTerminalStatus(s)) return;
-      const existing = cards[`subagent-${agentId}`]?.subagentData;
-      updateSubagentCard(agentId, {
-        agentId,
-        taskId: agentId,
-        status: s,
-        ...(res.error ? { error: res.error } : {}),
-        // Ride along the existing content so the inactive-card guard admits
-        // this authoritative terminal update.
-        messages: (existing?.messages as SubagentMessage[]) || [],
-        isActive: false,
-      });
-    } catch {
-      // Best-effort: a failed hydration leaves the card as-is (a full thread
-      // reload still corrects it via replay stamping).
-    }
-  }, [threadId, getSubagentHistory, cards, updateSubagentCard]);
-
-  // Handle sidebar agent selection — refresh card data, then switch tab
-  const handleSelectAgent = useCallback((agentId: string) => {
-    if (agentId !== 'main') {
-      refreshSubagentCard(agentId);
-      void hydrateTaskStatusIfStale(agentId);
-    }
-    switchAgent(agentId);
-  }, [refreshSubagentCard, hydrateTaskStatusIfStale, switchAgent]);
-
-  // Open subagent task (navigate to subagent tab) - shared between MessageList and DetailPanel
-  const handleOpenSubagentTask = useCallback((subagentInfo: SubagentInfo) => {
-    const { subagentId, description, prompt, type, status } = subagentInfo;
-    // Resolve subagentId (may be toolCallId from segment) to stable agent_id for card operations
-    const agentId = resolveSubagentIdToAgentId
-      ? resolveSubagentIdToAgentId(subagentId)
-      : subagentId;
-
-    if (!updateSubagentCard) {
-      console.error('[ChatView] updateSubagentCard is not defined!');
-      return;
-    }
-
-    refreshSubagentCard(agentId, { description, prompt, type, status });
-    void hydrateTaskStatusIfStale(agentId);
-
-    switchAgent(agentId);
-  }, [resolveSubagentIdToAgentId, updateSubagentCard, refreshSubagentCard, hydrateTaskStatusIfStale, switchAgent]);
-
-  // Handle removing an agent from sidebar (just hide from display, don't affect state)
-  const handleRemoveAgent = useCallback((agentId: string) => {
-    // Add to hidden set
-    setHiddenAgentIds((prev) => {
-      const newSet = new Set(prev);
-      newSet.add(agentId);
-      return newSet;
-    });
-
-    // If the removed agent was active, fallback to main (preserving main's scroll position)
-    if (activeAgentIdRef.current === agentId) {
-      switchAgent('main');
-    }
-  }, [switchAgent]);
-
-  // Sync activeAgentId with URL-derived initialTaskId (browser back/forward)
-  useEffect(() => {
-    const urlAgentId = initialTaskId ? `task:${initialTaskId}` : 'main';
-    if (urlAgentId !== activeAgentIdRef.current) {
-      saveScrollPosition();
-      if (scrollPositionsRef.current[urlAgentId] != null) {
-        skipSubagentAutoScrollRef.current = true;
-      }
-      setActiveAgentId(urlAgentId);
-    }
-  }, [initialTaskId, saveScrollPosition]);
-
-  // Refresh subagent card data on deep link / browser forward (guarded to run once per taskId)
-  const lastRefreshedTaskRef = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    if (!initialTaskId || isLoadingHistory) {
-      lastRefreshedTaskRef.current = undefined;
-      return;
-    }
-    if (lastRefreshedTaskRef.current === initialTaskId) return;
-    lastRefreshedTaskRef.current = initialTaskId;
-    refreshSubagentCard(`task:${initialTaskId}`);
-  }, [initialTaskId, isLoadingHistory, refreshSubagentCard]);
 
   // Update URL when thread ID changes (e.g., when __default__ becomes actual thread ID)
   // Hidden views notify parent via onThreadResolved but skip URL navigate.
@@ -2184,7 +929,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       // Invalidate thread cache so navigation panel picks up the new thread
       queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(workspaceId) });
     }
-  }, [currentThreadId, threadId, workspaceId, navigate, queryClient, isActive, onThreadResolved]);
+  }, [currentThreadId, threadId, workspaceId, navigate, queryClient, isActive, onThreadResolved, activeAgentIdRef]);
 
   // Auto-send initial message from navigation state (e.g., from Dashboard)
   useEffect(() => {
@@ -2300,211 +1045,12 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     navigate(location.pathname, { replace: true, state: { ...navState, widgetSnapshots: undefined } });
   }, [location.state, location.pathname, navigate]);
 
-  // Scroll listener + settle-aware ResizeObserver.
-  // Re-attaches when activeAgentId changes (ScrollArea remounts on tab switch).
-  useEffect(() => {
-    const isMain = activeAgentId === 'main';
-    const ref = isMain ? scrollAreaRef : subagentScrollAreaRef;
-    const nearBottomRef = isMain ? isNearBottomRef : isSubagentNearBottomRef;
-    const c = getScrollContainer(ref);
-    if (!c) return;
 
-    // Reset to near-bottom when switching tabs
-    nearBottomRef.current = true;
 
-    const handleScroll = () => {
-      nearBottomRef.current = isNearBottom(
-        { scrollTop: c.scrollTop, scrollHeight: c.scrollHeight, clientHeight: c.clientHeight },
-        NEAR_BOTTOM_PX,
-      );
-      if (!isMain) return;
-      if (programmaticScrollRef.current) return; // ignore our own scrolls
-      // A genuine user scroll takes control away from the pin controller.
-      pinTargetRef.current = null;
-      clearSettleTimers();
-      // Update jump-to-latest pill.
-      const atBottom = nearBottomRef.current;
-      setJumpPill((prev) => {
-        if (atBottom) {
-          return prev.visible || prev.hasNew ? { visible: false, hasNew: false, newCount: 0 } : prev;
-        }
-        if (prev.visible) return prev; // keep hasNew/newCount once shown
-        pillBaselineLenRef.current = messagesLenRef.current;
-        return { visible: true, hasNew: false, newCount: 0 };
-      });
-    };
-    c.addEventListener('scroll', handleScroll, { passive: true });
 
-    // A real user gesture (wheel / touch) reclaims scroll control even mid
-    // programmatic smooth-scroll. Without this, those scroll events are flagged
-    // programmatic and ignored above, so the pin keeps yanking against the user.
-    const handleUserIntent = () => {
-      if (!isMain) return;
-      programmaticScrollRef.current = false;
-      pinTargetRef.current = null;
-      clearSettleTimers();
-    };
-    c.addEventListener('wheel', handleUserIntent, { passive: true });
-    c.addEventListener('touchstart', handleUserIntent, { passive: true });
 
-    // While a pin target is set, re-apply it whenever the transcript grows
-    // (charts/code/images finishing layout) — the fix for landing mid-thread.
-    let ro: ResizeObserver | null = null;
-    if (isMain) {
-      ro = new ResizeObserver(() => {
-        if (pinTargetRef.current) reapplyPin();
-      });
-      ro.observe(getScrollContent(c));
-    }
-    return () => {
-      c.removeEventListener('scroll', handleScroll);
-      c.removeEventListener('wheel', handleUserIntent);
-      c.removeEventListener('touchstart', handleUserIntent);
-      ro?.disconnect();
-      if (reapplyRafRef.current != null) {
-        cancelAnimationFrame(reapplyRafRef.current);
-        reapplyRafRef.current = null;
-      }
-    };
-  }, [activeAgentId, getScrollContainer, getScrollContent, reapplyPin, clearSettleTimers]);
-
-  // Auto-scroll main chat to bottom when messages change, but only if the user is
-  // near the bottom and the pin controller isn't currently owning the scroll.
-  useEffect(() => {
-    if (pinTargetRef.current) return; // pin controller owns scroll during settle
-    if (!isNearBottomRef.current) {
-      // User is reading earlier turns — surface "N new" instead of yanking them down.
-      const delta = messagesLenRef.current - pillBaselineLenRef.current;
-      if (delta > 0) {
-        setJumpPill((prev) => (prev.visible ? { visible: true, hasNew: true, newCount: delta } : prev));
-      }
-      return;
-    }
-    const c = getScrollContainer(scrollAreaRef);
-    if (!c) return;
-    if (streamFollowTimerRef.current) clearTimeout(streamFollowTimerRef.current);
-    streamFollowTimerRef.current = setTimeout(() => {
-      streamFollowTimerRef.current = null;
-      // Re-check at fire time: if a pin took over or the user scrolled up
-      // between scheduling and firing, do not yank them to the bottom. Wrap as
-      // programmatic so this scroll isn't misread as the user scrolling away.
-      if (pinTargetRef.current || !isNearBottomRef.current) return;
-      const el = getScrollContainer(scrollAreaRef);
-      if (!el) return;
-      withProgrammaticScroll(() => el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }), 'smooth');
-    }, 0);
-    return () => {
-      if (streamFollowTimerRef.current) {
-        clearTimeout(streamFollowTimerRef.current);
-        streamFollowTimerRef.current = null;
-      }
-    };
-  }, [messages, getScrollContainer, withProgrammaticScroll]);
-
-  // Thread-entry restore — the core fix. Fires on the real "history is present"
-  // signal (isLoadingHistory flips false), not on an empty/partial list, then
-  // pins to bottom through the async settle window.
-  useEffect(() => {
-    if (!isActive) return;
-    const tid = currentThreadId || threadId;
-    if (!tid || tid === '__default__') return;
-    if (isLoadingHistory) return;
-    if (restoredForThreadRef.current === tid) return;
-    restoredForThreadRef.current = tid;
-    entryRestoreRafRef.current = requestAnimationFrame(() => {
-      entryRestoreRafRef.current = null;
-      // The instance may have gone inactive (cached/hidden) before this frame.
-      if (!isActiveRef.current) return;
-      pinToBottom('auto');
-    });
-    return () => {
-      if (entryRestoreRafRef.current != null) {
-        cancelAnimationFrame(entryRestoreRafRef.current);
-        entryRestoreRafRef.current = null;
-      }
-    };
-  }, [isActive, isLoadingHistory, currentThreadId, threadId, pinToBottom]);
-
-  // Cleanup pending scroll timers/rAF on unmount.
-  useEffect(() => {
-    return () => {
-      if (settleQuietTimerRef.current) clearTimeout(settleQuietTimerRef.current);
-      if (settleHardCapRef.current) clearTimeout(settleHardCapRef.current);
-      if (reapplyRafRef.current != null) cancelAnimationFrame(reapplyRafRef.current);
-      if (streamFollowTimerRef.current) clearTimeout(streamFollowTimerRef.current);
-      if (entryRestoreRafRef.current != null) cancelAnimationFrame(entryRestoreRafRef.current);
-    };
-  }, []);
-
-  // Drain the announcement queue one item at a time. Each announcement is
-  // displayed for 1500ms, followed by ~80ms of silence before the next so
-  // screen readers treat each as a fresh utterance. Stable identity (no
-  // deps) — uses tRef for fresh translations.
-  const tRef = useRef(t);
-  tRef.current = t;
-  const pumpAnnouncements = useCallback(() => {
-    if (announcementClearTimerRef.current) return;
-    const next = announcementQueueRef.current.shift();
-    if (!next) return;
-    const currentT = tRef.current;
-    const tail = next.failed
-      ? currentT('chat.a11y.toolCallFailed', 'failed')
-      : currentT('chat.a11y.toolCallCompleted', 'completed');
-    setRecentlyCompletedAnnouncement(`${next.label} ${tail}`);
-    announcementClearTimerRef.current = setTimeout(() => {
-      announcementClearTimerRef.current = null;
-      setRecentlyCompletedAnnouncement('');
-      if (announcementQueueRef.current.length > 0) {
-        setTimeout(pumpAnnouncements, 80);
-      }
-    }, 1500);
-  }, []);
-
-  // Aria-live announcements for tool call completion. Watches assistant
-  // messages for tool-call processes that have transitioned out of
-  // `isInProgress: true` and pushes a path-aware
-  // "<verb> <object> completed/failed" string onto a queue that is drained
-  // by `pumpAnnouncements`. Each tool-call id is announced at most once.
-  useEffect(() => {
-    const seen = announcedToolCallIdsRef.current;
-    let enqueued = 0;
-
-    for (const m of messages as unknown as Array<Record<string, unknown>>) {
-      if (m?.role !== 'assistant') continue;
-      const procs = m.toolCallProcesses as Record<string, Record<string, unknown>> | undefined;
-      if (!procs) continue;
-      for (const [id, proc] of Object.entries(procs)) {
-        if (!proc) continue;
-        if (proc.isInProgress) continue;
-        // Only announce once per tool-call id.
-        if (seen.has(id)) continue;
-        // Only announce real terminal states (completed or failed). Skip
-        // entries that haven't reached either yet.
-        const isFailed = proc.isFailed === true;
-        const isCompleted = proc.isComplete === true || proc.toolCallResult != null;
-        if (!isFailed && !isCompleted) continue;
-        seen.add(id);
-        const toolName = (proc.toolName as string) || '';
-        const toolCall = proc.toolCall as { args?: Record<string, unknown> } | undefined;
-        const baseTitle = getCompletedRowTitle(toolName, toolCall, t);
-        announcementQueueRef.current.push({ label: baseTitle, failed: isFailed });
-        enqueued++;
-      }
-    }
-
-    if (enqueued > 0) pumpAnnouncements();
-  }, [messages, t, pumpAnnouncements]);
-
-  // Clear announcement timer + queue on unmount.
-  useEffect(() => {
-    return () => {
-      if (announcementClearTimerRef.current) {
-        clearTimeout(announcementClearTimerRef.current);
-        announcementClearTimerRef.current = null;
-      }
-      announcementQueueRef.current = [];
-    };
-  }, []);
+  // Screen-reader announcements for tool-call completions (polite live region).
+  const recentlyCompletedAnnouncement = useToolCallAnnouncer(messages);
 
   // Auto-scroll subagent view when active subagent's messages change
   // Uses the same smart-scroll logic: only scroll if user is near the bottom
@@ -2537,22 +1083,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   reconnectIfStaleRunRef.current = reconnectIfStaleRun;
   useEffect(() => {
     if (isActive && !prevIsActiveRef.current) {
-      // Clear stale nav-hide timer from a previous activation period
-      if (navHideTimerRef.current) clearTimeout(navHideTimerRef.current);
-      // Reset nav lock — matches the old per-thread-change reset so the
-      // hover trigger zone works again after a minimize + thread switch.
-      navLockedRef.current = false;
-      _sharedNav.locked = false;
-      // Sync pin state — it may have been toggled in another instance.
-      // Pinned forces visibility on desktop; mobile ignores it (drawer flow).
-      navPinnedRef.current = _sharedNav.pinned;
-      setNavPinned(_sharedNav.pinned);
-      const wantNavVisible = _sharedNav.visible || (_sharedNav.pinned && !getIsMobileSnapshot());
-      // Sync nav panel from shared state
-      navPanelVisibleRef.current = wantNavVisible;
-      setNavPanelVisible(wantNavVisible);
-      // Skip slide-in animation if inheriting open state
-      if (wantNavVisible) skipNavAnimRef.current = true;
+      const wantNavVisible = inheritNavOnActivate();
 
       const tidNow = currentThreadId || threadId;
       requestAnimationFrame(() => {
@@ -2573,7 +1104,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       void reconnectIfStaleRunRef.current();
     }
     prevIsActiveRef.current = isActive;
-  }, [isActive, getScrollContainer, currentThreadId, threadId, pinToBottom]);
+  }, [isActive, getScrollContainer, currentThreadId, threadId, pinToBottom, inheritNavOnActivate, skipNavAnimRef, isNearBottomRef, restoredForThreadRef]);
 
   // Early return if workspaceId or threadId is missing
   if (!workspaceId || !threadId) {
@@ -3058,67 +1589,16 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         {t('chat.reconnecting', 'Reconnecting…')}
                       </div>
                     )}
-                    {/* Model resilience: the provider is retrying the current
-                        model, or has fallen back to a secondary. Transient —
-                        cleared on the first content event, on error, or on stop. */}
-                    {modelStatus && isLoading && (
-                      <div className="flex items-center gap-2 px-3 py-1.5 text-xs"
-                        role="status" aria-live="polite"
-                        style={{ color: 'var(--color-text-tertiary)' }}>
-                        <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" style={{ color: 'var(--color-accent-primary)' }} />
-                        {modelStatus.kind === 'retrying'
-                          ? t('chat.modelRetrying', {
-                              model: modelStatus.model,
-                              attempt: modelStatus.attempt + 1,
-                              total: modelStatus.maxRetries + 1,
-                            })
-                          : t('chat.modelFallingBack', { model: modelStatus.toModel })}
-                      </div>
-                    )}
-                    {/* Model-fallback suggestion: the model the user sent with
-                        had trouble and a fallback answered the last turn. Offer
-                        adopting the working model. Persistent (survives
-                        stream end + reload) until dismissed, switched, or a
-                        new turn starts. Gated on nextSendModel — the input's
-                        live selection — because that is what the next send
-                        re-uses, regardless of the durable preference. */}
-                    {fallbackSuggestion && !isLoading && fallbackSuggestion.toModel !== nextSendModel && (
-                      <div className="flex items-center gap-2 px-3 py-2 rounded-md text-sm"
-                        role="status" aria-live="polite"
-                        style={{
-                          backgroundColor: 'var(--color-warning-soft)',
-                          color: 'var(--color-text-secondary)',
-                          border: '1px solid var(--color-border-muted)',
-                        }}>
-                        <AlertTriangle aria-hidden="true" className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-warning)' }} />
-                        <span className="flex-1 min-w-0">
-                          {t('chat.modelTroubleSuggestion', {
-                            from: fallbackSuggestion.fromModel,
-                            to: fallbackSuggestion.toModel,
-                          })}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handleSwitchModel(fallbackSuggestion.toModel)}
-                          className="text-xs font-medium whitespace-nowrap rounded-md px-2.5 py-1 flex-shrink-0 hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] focus-visible:ring-offset-1"
-                          style={{
-                            backgroundColor: 'var(--color-accent-primary)',
-                            color: 'var(--color-text-on-accent)',
-                          }}
-                        >
-                          {t('chat.switchToModel', { model: fallbackSuggestion.toModel })}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={clearFallbackSuggestion}
-                          aria-label={t('common.close')}
-                          className="p-1 rounded flex-shrink-0 hover:opacity-70"
-                          style={{ color: 'var(--color-text-tertiary)' }}
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    )}
+                    <ModelStatusPill modelStatus={modelStatus} isLoading={isLoading} />
+                    <FallbackSuggestionPill
+                      fallbackSuggestion={fallbackSuggestion}
+                      isLoading={isLoading}
+                      inputModel={inputModel}
+                      lastThreadModel={lastThreadModel}
+                      activePreferredModel={activePreferredModel}
+                      onSwitchModel={handleSwitchModel}
+                      onDismiss={clearFallbackSuggestion}
+                    />
                     {/* Report-back pending: a follow-up turn will land here —
                         a flash summary of dispatched PTC thread(s), or a PTC
                         notification for an unseen subagent result. Suppressed

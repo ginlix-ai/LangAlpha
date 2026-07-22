@@ -5,7 +5,7 @@ import iconRobo from '../../../assets/img/icon-robo.png';
 import iconRoboSing from '../../../assets/img/icon-robo-sing.png';
 import Markdown from './Markdown';
 import { sendSubagentMessage } from '../utils/api';
-import { deriveSubagentStatus } from '../utils/subagentStatus';
+import { deriveSubagentStatus } from '../session/subagents/subagentStatus';
 import './NavigationPanel.css';
 
 interface AgentMessage {

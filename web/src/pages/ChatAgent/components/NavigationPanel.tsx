@@ -22,7 +22,7 @@ import {
   toggleWorkspaceExpansion,
   toggleThreadExpansion,
 } from './navExpansionStore';
-import { deriveSubagentStatus } from '../utils/subagentStatus';
+import { deriveSubagentStatus } from '../session/subagents/subagentStatus';
 import './NavigationPanel.css';
 
 interface WorkspaceEntry {
