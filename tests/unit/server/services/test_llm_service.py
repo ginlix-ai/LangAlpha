@@ -22,7 +22,7 @@ import pytest
 from pydantic import BaseModel
 
 from ptc_agent.config.agent import CredentialSource
-from src.server.services.llm_service import LLMService
+from src.server.services.llm.service import LLMService
 
 
 class _DummySchema(BaseModel):
@@ -50,15 +50,15 @@ class TestUserIdNone:
 
         with (
             patch(
-                "src.server.services.llm_service.resolve_llm_config",
+                "src.server.services.llm.service.resolve_llm_config",
                 new_callable=AsyncMock,
             ) as mock_resolve,
             patch(
-                "src.server.services.llm_service.create_llm",
+                "src.server.services.llm.service.create_llm",
                 return_value=fake_llm,
             ) as mock_create,
             patch(
-                "src.server.services.llm_service.make_api_call",
+                "src.server.services.llm.service.make_api_call",
                 new_callable=AsyncMock,
                 return_value="raw string response",
             ) as mock_call,
@@ -92,15 +92,15 @@ class TestUserIdNone:
 
         with (
             patch(
-                "src.server.services.llm_service.resolve_llm_config",
+                "src.server.services.llm.service.resolve_llm_config",
                 new_callable=AsyncMock,
             ) as mock_resolve,
             patch(
-                "src.server.services.llm_service.create_llm",
+                "src.server.services.llm.service.create_llm",
                 return_value=fake_llm,
             ) as mock_create,
             patch(
-                "src.server.services.llm_service.make_api_call",
+                "src.server.services.llm.service.make_api_call",
                 new_callable=AsyncMock,
                 return_value="ok",
             ),
@@ -137,15 +137,15 @@ class TestUserIdProvided:
 
         with (
             patch(
-                "src.server.services.llm_service.resolve_llm_config",
+                "src.server.services.llm.service.resolve_llm_config",
                 new_callable=AsyncMock,
                 return_value=resolved_config,
             ) as mock_resolve,
             patch(
-                "src.server.services.llm_service.create_llm",
+                "src.server.services.llm.service.create_llm",
             ) as mock_create,
             patch(
-                "src.server.services.llm_service.make_api_call",
+                "src.server.services.llm.service.make_api_call",
                 new_callable=AsyncMock,
                 return_value="ok",
             ) as mock_call,
@@ -197,16 +197,16 @@ class TestUserIdProvided:
 
         with (
             patch(
-                "src.server.services.llm_service.resolve_llm_config",
+                "src.server.services.llm.service.resolve_llm_config",
                 new_callable=AsyncMock,
                 return_value=resolved_config,
             ),
             patch(
-                "src.server.services.llm_service.create_llm",
+                "src.server.services.llm.service.create_llm",
                 return_value=fake_llm,
             ) as mock_create,
             patch(
-                "src.server.services.llm_service.make_api_call",
+                "src.server.services.llm.service.make_api_call",
                 new_callable=AsyncMock,
                 return_value="ok",
             ) as mock_call,
@@ -237,11 +237,11 @@ class TestReturnShapes:
 
         with (
             patch(
-                "src.server.services.llm_service.create_llm",
+                "src.server.services.llm.service.create_llm",
                 return_value=MagicMock(),
             ),
             patch(
-                "src.server.services.llm_service.make_api_call",
+                "src.server.services.llm.service.make_api_call",
                 new_callable=AsyncMock,
                 return_value="free-form reply",
             ) as mock_call,
@@ -264,11 +264,11 @@ class TestReturnShapes:
 
         with (
             patch(
-                "src.server.services.llm_service.create_llm",
+                "src.server.services.llm.service.create_llm",
                 return_value=MagicMock(),
             ),
             patch(
-                "src.server.services.llm_service.make_api_call",
+                "src.server.services.llm.service.make_api_call",
                 new_callable=AsyncMock,
                 return_value=instance,
             ) as mock_call,
@@ -292,11 +292,11 @@ class TestReturnShapes:
 
         with (
             patch(
-                "src.server.services.llm_service.create_llm",
+                "src.server.services.llm.service.create_llm",
                 return_value=MagicMock(),
             ),
             patch(
-                "src.server.services.llm_service.make_api_call",
+                "src.server.services.llm.service.make_api_call",
                 new_callable=AsyncMock,
                 return_value=payload,
             ) as mock_call,
@@ -330,12 +330,12 @@ class TestRequestModelOverride:
 
         with (
             patch(
-                "src.server.services.llm_service.resolve_llm_config",
+                "src.server.services.llm.service.resolve_llm_config",
                 new_callable=AsyncMock,
                 return_value=resolved_config,
             ) as mock_resolve,
             patch(
-                "src.server.services.llm_service.make_api_call",
+                "src.server.services.llm.service.make_api_call",
                 new_callable=AsyncMock,
                 return_value="ok",
             ),
@@ -379,16 +379,16 @@ class TestPlatformKeyFallbackSignal:
         fake_llm = MagicMock(name="fake_llm")
         with (
             patch(
-                "src.server.services.llm_service.resolve_llm_config",
+                "src.server.services.llm.service.resolve_llm_config",
                 new_callable=AsyncMock,
                 return_value=resolved_config,
             ),
             patch(
-                "src.server.services.llm_service.create_llm",
+                "src.server.services.llm.service.create_llm",
                 return_value=fake_llm,
             ),
             patch(
-                "src.server.services.llm_service.make_api_call",
+                "src.server.services.llm.service.make_api_call",
                 new_callable=AsyncMock,
                 return_value="ok",
             ),
@@ -474,11 +474,11 @@ class TestPlatformKeyFallbackSignal:
 
         with (
             patch(
-                "src.server.services.llm_service.create_llm",
+                "src.server.services.llm.service.create_llm",
                 return_value=MagicMock(),
             ),
             patch(
-                "src.server.services.llm_service.make_api_call",
+                "src.server.services.llm.service.make_api_call",
                 new_callable=AsyncMock,
                 return_value="ok",
             ),

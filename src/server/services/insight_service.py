@@ -181,7 +181,7 @@ async def _llm_extract_fallback(raw_text: str, user_id: str | None) -> dict:
     ``user_id`` is required so callers must be explicit about the platform path.
     """
     from src.server.models.market_insight import InsightOutputSchema
-    from src.server.services.llm_service import LLMService
+    from src.server.services.llm.service import LLMService
     from src.server.app import setup
 
     svc = LLMService(agent_config=setup.agent_config, logger=logger)
@@ -211,7 +211,7 @@ async def _run_flash_agent(prompt: str, user_id: str | None = None) -> str:
     """
     from langchain_core.messages import HumanMessage
 
-    from src.ptc_agent.agent.flash.graph import build_flash_graph
+    from ptc_agent.agent.flash.graph import build_flash_graph
     from src.server.app import setup
 
     agent_config = setup.agent_config
@@ -221,7 +221,7 @@ async def _run_flash_agent(prompt: str, user_id: str | None = None) -> str:
     config = agent_config
     if user_id:
         try:
-            from src.server.handlers.chat.llm_config import resolve_llm_config
+            from src.server.services.llm.config import resolve_llm_config
 
             config = await resolve_llm_config(config, user_id, request_model=None, is_byok=True, mode="flash")
         except Exception as exc:
