@@ -42,7 +42,7 @@ from src.config.settings import (
     get_allowed_origins,
 )
 from src.observability import init_otel, init_otel_runtime, shutdown_otel_runtime
-from src.server.services.background_task_manager import BackgroundTaskManager
+from src.server.services.runs.executor import LocalRunExecutor
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.server.utils.api import find_malformed_route_ids  # TEMP (malformed-id-diag)
 
@@ -146,7 +146,7 @@ async def lifespan(app: FastAPI):
         )
 
     # Initialize and open conversation database pool
-    from src.server.database.conversation import get_or_create_pool
+    from src.server.database.pool import get_or_create_pool
 
     conv_pool = get_or_create_pool()
     # Extract connection details from pool
@@ -214,12 +214,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Market calendar pre-build failed: {e}")
 
-    # Start BackgroundTaskManager cleanup task
+    # Start LocalRunExecutor cleanup task
     try:
-        manager = BackgroundTaskManager.get_instance()
+        manager = LocalRunExecutor.get_instance()
         await manager.start_cleanup_task()
     except Exception as e:
-        logger.warning(f"Failed to start BackgroundTaskManager cleanup task: {e}")
+        logger.warning(f"Failed to start LocalRunExecutor cleanup task: {e}")
 
     # Initialize PTC Agent configuration and session service
     try:
@@ -271,7 +271,7 @@ async def lifespan(app: FastAPI):
         # every server-side utility LLM call (memo metadata, thread titles,
         # follow-up suggestions, etc.) shares a single BYOK/OAuth-aware entry
         # point.
-        from src.server.services.llm_service import LLMService
+        from src.server.services.llm.service import LLMService
 
         llm_service = LLMService(agent_config=agent_config, logger=logger)
         logger.info("LLMService initialized")
@@ -343,7 +343,7 @@ async def lifespan(app: FastAPI):
         # advisory locks are database-local, so a split deployment gets no
         # fence (and must stay single-worker).
         try:
-            from src.server.database.conversation import get_db_connection_string
+            from src.server.database.pool import get_db_connection_string
             from src.server.services import writer_guard
 
             if checkpointer is not None and hasattr(checkpointer, "conn"):
@@ -392,10 +392,16 @@ async def lifespan(app: FastAPI):
     # Start the hook-outbox drainer BEFORE the stale-run sweep so the jobs
     # the sweep enqueues (and any left over from the previous process — the
     # lease-expiry reclaim doubles as startup recovery) start executing
-    # immediately.
+    # immediately. Executor registration must precede start(): the outbox
+    # never imports handlers, and an unregistered type's jobs nack toward
+    # dead.
     try:
+        from src.server.services.report_back import subagent
+        from src.server.services.report_back.flash import core as flash_core
         from src.server.services.hook_outbox import HookOutboxDrainer
 
+        flash_core.register_outbox_executors()
+        subagent.register_outbox_executors()
         HookOutboxDrainer.get_instance().start()
         logger.info("HookOutboxDrainer started")
     except Exception as e:
@@ -406,7 +412,7 @@ async def lifespan(app: FastAPI):
     # restarting proves any open run's executor is dead), one-time thread
     # projection heal, then the periodic guarded loop when the fence is up.
     try:
-        from src.server.services.recovery_scanner import RecoveryScanner
+        from src.server.services.runs.recovery import RecoveryScanner
 
         scanner = RecoveryScanner.get_instance()
         recovered = await scanner.scan_once(assume_dead=True)
@@ -420,7 +426,7 @@ async def lifespan(app: FastAPI):
     # Turn-cancel nudge listener (v4 Phase 2.4e): a /cancel landing on
     # another worker signals this one's executor via pub/sub.
     try:
-        from src.server.services.turn_cancel_pubsub import TurnCancelListener
+        from src.server.services.runs.cancel import TurnCancelListener
 
         TurnCancelListener.get_instance().start()
         logger.info("TurnCancelListener started")
@@ -496,7 +502,7 @@ async def lifespan(app: FastAPI):
     # 0.0. Stop the recovery scanner first — no new recovery work while the
     # process drains (live runs hold their guards and are skipped anyway).
     try:
-        from src.server.services.recovery_scanner import RecoveryScanner
+        from src.server.services.runs.recovery import RecoveryScanner
 
         await RecoveryScanner.get_instance().stop()
     except Exception as e:
@@ -504,7 +510,7 @@ async def lifespan(app: FastAPI):
 
     # 0.0b. Stop the turn-cancel nudge listener.
     try:
-        from src.server.services.turn_cancel_pubsub import TurnCancelListener
+        from src.server.services.runs.cancel import TurnCancelListener
 
         await TurnCancelListener.get_instance().stop()
     except Exception as e:
@@ -626,10 +632,10 @@ async def lifespan(app: FastAPI):
 
     # 6. Gracefully shutdown background workflows
     try:
-        manager = BackgroundTaskManager.get_instance()
+        manager = LocalRunExecutor.get_instance()
         await manager.shutdown()  # Uses shutdown_timeout from config.yaml
     except Exception as e:
-        logger.error(f"Error during BackgroundTaskManager shutdown: {e}")
+        logger.error(f"Error during LocalRunExecutor shutdown: {e}")
 
     # 6b. Stop the hook-outbox drainer AFTER BTM shutdown so jobs enqueued by
     # those final finalizes still execute; anything unclaimed survives
@@ -653,7 +659,7 @@ async def lifespan(app: FastAPI):
 
     # 7. Close database pools
     try:
-        from src.server.database.conversation import get_or_create_pool
+        from src.server.database.pool import get_or_create_pool
 
         conv_pool = get_or_create_pool()
         if not conv_pool.closed:

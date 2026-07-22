@@ -1,4 +1,4 @@
-"""Tests for BackgroundTaskManager._buffer_event_redis.
+"""Tests for LocalRunExecutor._buffer_event_redis.
 
 Verifies that every spilled event hits the atomic ``pipelined_event_buffer``
 helper exactly once with the right keys and parsed event id, and that every
@@ -14,38 +14,38 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.server.services.background_task_manager import (
-    BackgroundTaskManager,
-    TaskInfo,
-    TaskStatus,
-    TransportLostError,
+from src.server.services.runs.executor import (
+    LocalRunExecutor,
+    LocalRunExecution,
+    LocalRunStatus,
 )
+from src.server.services.runs.stream_writer import TransportLostError
 
 
-def _make_btm(backend: str = "redis") -> BackgroundTaskManager:
-    with patch("src.server.services.background_task_manager.get_max_concurrent_workflows", return_value=10), \
-         patch("src.server.services.background_task_manager.get_workflow_result_ttl", return_value=3600), \
-         patch("src.server.services.background_task_manager.get_abandoned_workflow_timeout", return_value=3600), \
-         patch("src.server.services.background_task_manager.get_cleanup_interval", return_value=60), \
-         patch("src.server.services.background_task_manager.is_intermediate_storage_enabled", return_value=False), \
-         patch("src.server.services.background_task_manager.get_max_stored_messages_per_agent", return_value=1000), \
-         patch("src.server.services.background_task_manager.get_event_storage_backend", return_value=backend), \
-         patch("src.server.services.background_task_manager.get_redis_ttl_workflow_events", return_value=86400):
-        btm = BackgroundTaskManager()
+def _make_btm(backend: str = "redis") -> LocalRunExecutor:
+    with patch("src.server.services.runs.executor.get_max_concurrent_workflows", return_value=10), \
+         patch("src.server.services.runs.executor.get_workflow_result_ttl", return_value=3600), \
+         patch("src.server.services.runs.executor.get_abandoned_workflow_timeout", return_value=3600), \
+         patch("src.server.services.runs.executor.get_cleanup_interval", return_value=60), \
+         patch("src.server.services.runs.executor.is_intermediate_storage_enabled", return_value=False), \
+         patch("src.server.services.runs.executor.get_max_stored_messages_per_agent", return_value=1000), \
+         patch("src.server.services.runs.executor.get_event_storage_backend", return_value=backend), \
+         patch("src.server.services.runs.executor.get_redis_ttl_workflow_events", return_value=86400):
+        btm = LocalRunExecutor()
     return btm
 
 
 def _register_task(
-    btm: BackgroundTaskManager, thread_id: str = "thread-1", run_id: str = "run-1"
-) -> TaskInfo:
-    task_info = TaskInfo(
+    btm: LocalRunExecutor, thread_id: str = "thread-1", run_id: str = "run-1"
+) -> LocalRunExecution:
+    task_info = LocalRunExecution(
         thread_id=thread_id,
         run_id=run_id,
-        status=TaskStatus.RUNNING,
+        status=LocalRunStatus.RUNNING,
         created_at=datetime.now(),
         started_at=datetime.now(),
     )
-    btm.tasks[(thread_id, run_id)] = task_info
+    btm.executions[(thread_id, run_id)] = task_info
     return task_info
 
 
@@ -62,7 +62,7 @@ class TestBufferEventRedisHappyPath:
         mock_cache.pipelined_event_buffer = AsyncMock(return_value=(True, 1))
 
         with patch(
-            "src.server.services.background_task_manager.get_cache_client",
+            "src.server.services.runs.stream_writer.get_cache_client",
             return_value=mock_cache,
         ):
             await btm._buffer_event_redis("thread-1", "run-1", "id: 42\nevent: x\ndata: hi\n\n")
@@ -92,7 +92,7 @@ class TestBufferEventRedisHappyPath:
         mock_cache.pipelined_event_buffer = AsyncMock(return_value=(True, 1))
 
         with patch(
-            "src.server.services.background_task_manager.get_cache_client",
+            "src.server.services.runs.stream_writer.get_cache_client",
             return_value=mock_cache,
         ):
             with pytest.raises(TransportLostError):
@@ -121,7 +121,7 @@ class TestBufferEventRedisFailureModes:
         mock_cache.pipelined_event_buffer = AsyncMock(return_value=(False, 0))
 
         with patch(
-            "src.server.services.background_task_manager.get_cache_client",
+            "src.server.services.runs.stream_writer.get_cache_client",
             return_value=mock_cache,
         ):
             with pytest.raises(TransportLostError):
@@ -137,7 +137,7 @@ class TestBufferEventRedisFailureModes:
         _register_task(btm)
 
         with patch(
-            "src.server.services.background_task_manager.get_cache_client",
+            "src.server.services.runs.stream_writer.get_cache_client",
             side_effect=RuntimeError("cache singleton init failed"),
         ):
             with pytest.raises(TransportLostError):
@@ -155,7 +155,7 @@ class TestBufferEventRedisFailureModes:
         mock_cache.pipelined_event_buffer = AsyncMock()
 
         with patch(
-            "src.server.services.background_task_manager.get_cache_client",
+            "src.server.services.runs.stream_writer.get_cache_client",
             return_value=mock_cache,
         ):
             with pytest.raises(TransportLostError):
@@ -176,7 +176,7 @@ class TestBufferEventRedisFailureModes:
         mock_cache.pipelined_event_buffer = AsyncMock(return_value=(True, 1000))
 
         with patch(
-            "src.server.services.background_task_manager.get_cache_client",
+            "src.server.services.runs.stream_writer.get_cache_client",
             return_value=mock_cache,
         ):
             await btm._buffer_event_redis(
@@ -198,7 +198,7 @@ class TestBufferEventRedisFailureModes:
         _register_task(btm)
 
         with patch(
-            "src.server.services.background_task_manager.get_cache_client",
+            "src.server.services.runs.stream_writer.get_cache_client",
             side_effect=RuntimeError("never called"),
         ):
             await btm._buffer_event_redis("thread-1", "run-1", "id: 1\ndata: x\n\n")

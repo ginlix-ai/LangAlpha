@@ -38,8 +38,8 @@ from src.server.services.thread_mutation import (
     mutation_stop_key,
 )
 
-TL_DB = "src.server.database.turn_lifecycle"
-SR_DB = "src.server.database.subagent_runs"
+TL_DB = "src.server.database.runs.lifecycle"
+SR_DB = "src.server.database.runs.subagent_runs"
 WG = "src.server.services.writer_guard"
 
 
@@ -327,15 +327,15 @@ class TestWindow:
     @pytest.mark.asyncio
     async def test_open_close_ownership(self):
         runner = _make_runner()
-        assert runner.open_window("t1") is True
+        assert runner.open_auto_compaction_window("t1") is True
         # Second open while held: not the owner, must not close later.
-        assert runner.open_window("t1") is False
+        assert runner.open_auto_compaction_window("t1") is False
         assert await runner.is_mutating("t1")
-        runner.close_window("t1")
+        runner.close_auto_compaction_window("t1")
         assert not await runner.is_mutating("t1")
         # Freed: the next turn's window opens from scratch.
-        assert runner.open_window("t1") is True
-        runner.close_window("t1")
+        assert runner.open_auto_compaction_window("t1") is True
+        runner.close_auto_compaction_window("t1")
 
     @pytest.mark.asyncio
     async def test_close_window_ignores_exclusive_op(self):
@@ -344,7 +344,7 @@ class TestWindow:
         runner = _make_runner()
         with _guard_off(), _no_active_run():
             async with runner.exclusive("t1", "compact"):
-                runner.close_window("t1")
+                runner.close_auto_compaction_window("t1")
                 assert "t1" in runner._local
         assert "t1" not in runner._local
 
@@ -376,10 +376,10 @@ class TestRequestStop:
         """AUTO compaction is stopped through its turn's cancel path; the
         runner reports none and leaves the window open."""
         runner = _make_runner()
-        runner.open_window("t1")
+        runner.open_auto_compaction_window("t1")
         assert await runner.request_stop("t1") == "none"
         assert await runner.is_mutating("t1")
-        runner.close_window("t1")
+        runner.close_auto_compaction_window("t1")
 
     @pytest.mark.asyncio
     async def test_stop_signals_remote_exclusive(self):
@@ -410,11 +410,11 @@ class TestLiveness:
     @pytest.mark.asyncio
     async def test_wait_until_idle_returns_when_local_op_finishes(self):
         runner = _make_runner()
-        runner.open_window("t1")
+        runner.open_auto_compaction_window("t1")
 
         async def _close_soon():
             await asyncio.sleep(0.05)
-            runner.close_window("t1")
+            runner.close_auto_compaction_window("t1")
 
         closer = asyncio.create_task(_close_soon())
         assert await runner.wait_until_idle("t1", timeout=1.0) is True
@@ -423,9 +423,9 @@ class TestLiveness:
     @pytest.mark.asyncio
     async def test_wait_until_idle_times_out_on_held_thread(self):
         runner = _make_runner()
-        runner.open_window("t1")
+        runner.open_auto_compaction_window("t1")
         assert await runner.wait_until_idle("t1", timeout=0.05) is False
-        runner.close_window("t1")
+        runner.close_auto_compaction_window("t1")
 
     @pytest.mark.asyncio
     async def test_wait_until_idle_polls_foreign_key(self, monkeypatch):

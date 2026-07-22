@@ -112,9 +112,9 @@ async def held_task_namespaces(
         unsigned = namespace_key(thread_id, f"task:{task_id}") & 0xFFFFFFFFFFFFFFFF
         pair_to_task[(unsigned >> 32, unsigned & 0xFFFFFFFF)] = task_id
     try:
-        from src.server.database import conversation as qr_db
+        from src.server.database import pool
 
-        async with qr_db.get_db_connection() as conn:
+        async with pool.get_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """

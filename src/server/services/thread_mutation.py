@@ -254,7 +254,7 @@ class ThreadMutationRunner:
 
     # ------------------------------------------------------------- window
 
-    def open_window(self, thread_id: str) -> bool:
+    def open_auto_compaction_window(self, thread_id: str) -> bool:
         """Advertise a running turn's AUTO compaction (admission holds new
         sends until it closes). Marker only — the turn's own WriterGuard is
         the fence. False = another op already holds the thread (a manual
@@ -274,7 +274,7 @@ class ThreadMutationRunner:
         )
         return True
 
-    def close_window(self, thread_id: str) -> None:
+    def close_auto_compaction_window(self, thread_id: str) -> None:
         op = self._local.get(thread_id)
         if op is None or op.kind != "window":
             return
@@ -293,8 +293,8 @@ class ThreadMutationRunner:
         T(thread) on a writer-pool conn. Checkpoint writes belong on the
         yielded ``saver`` so the fence and the writes share one session.
         """
-        from src.server.database import subagent_runs as sr_db
-        from src.server.database import turn_lifecycle as tl_db
+        from src.server.database.runs import subagent_runs as sr_db
+        from src.server.database.runs import lifecycle as tl_db
         from src.server.services import writer_guard as wg
 
         if thread_id in self._local:
@@ -374,7 +374,7 @@ class ThreadMutationRunner:
                 # Deleting the thread cascades their ledger rows away under
                 # them; refuse with the same 409 the frontend already handles.
                 # Checked AFTER exclusive T on the guard's own session
-                # (matching the fork path in database/turn_lifecycle.start_run)
+                # (matching the fork path in database/runs/lifecycle.start_run)
                 # so no task run can be admitted between check and mutation.
                 open_tasks = await sr_db.count_open_runs_for_thread(
                     thread_id, conn=conn

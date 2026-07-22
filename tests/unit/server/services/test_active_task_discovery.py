@@ -15,10 +15,10 @@ import pytest
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
 )
-from src.server.services.background_task_manager import (
-    BackgroundTaskManager,
-)
+from src.server.services import subagent_liveness
 from src.server.services.writer_guard import held_task_namespaces, namespace_key
+
+REGISTRY_STORE_MOD = "src.server.services.background_registry_store"
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +67,7 @@ class TestHeldTaskNamespaces:
     async def test_filters_to_tasks_whose_lock_is_granted(self):
         rows = [_lock_row("t1", "aaa111"), (12345, 67890)]
         with patch(
-            "src.server.database.conversation.get_db_connection",
+            "src.server.database.pool.get_db_connection",
             return_value=_mock_db_conn(rows),
         ):
             held = await held_task_namespaces("t1", ["aaa111", "bbb222"])
@@ -76,7 +76,7 @@ class TestHeldTaskNamespaces:
     @pytest.mark.asyncio
     async def test_empty_input_never_touches_the_db(self):
         with patch(
-            "src.server.database.conversation.get_db_connection",
+            "src.server.database.pool.get_db_connection",
             side_effect=AssertionError("must not connect"),
         ):
             assert await held_task_namespaces("t1", []) == set()
@@ -84,7 +84,7 @@ class TestHeldTaskNamespaces:
     @pytest.mark.asyncio
     async def test_probe_failure_returns_none(self):
         with patch(
-            "src.server.database.conversation.get_db_connection",
+            "src.server.database.pool.get_db_connection",
             side_effect=RuntimeError("db down"),
         ):
             assert await held_task_namespaces("t1", ["aaa111"]) is None
@@ -156,20 +156,8 @@ class TestTaskMetaWrite:
 
 
 # ---------------------------------------------------------------------------
-# BackgroundTaskManager.get_active_task_ids
+# subagent_liveness.get_active_task_ids
 # ---------------------------------------------------------------------------
-
-
-def _make_btm() -> BackgroundTaskManager:
-    with patch("src.server.services.background_task_manager.get_max_concurrent_workflows", return_value=10), \
-         patch("src.server.services.background_task_manager.get_workflow_result_ttl", return_value=3600), \
-         patch("src.server.services.background_task_manager.get_abandoned_workflow_timeout", return_value=3600), \
-         patch("src.server.services.background_task_manager.get_cleanup_interval", return_value=60), \
-         patch("src.server.services.background_task_manager.is_intermediate_storage_enabled", return_value=False), \
-         patch("src.server.services.background_task_manager.get_max_stored_messages_per_agent", return_value=1000), \
-         patch("src.server.services.background_task_manager.get_event_storage_backend", return_value="memory"), \
-         patch("src.server.services.background_task_manager.get_redis_ttl_workflow_events", return_value=86400):
-        return BackgroundTaskManager()
 
 
 def _live_task(task_id: str) -> SimpleNamespace:
@@ -191,7 +179,7 @@ def _patch_local(tasks):
     store = MagicMock()
     store.get_registry = AsyncMock(return_value=registry if tasks else None)
     return patch(
-        "src.server.services.background_registry_store."
+        f"{REGISTRY_STORE_MOD}."
         "BackgroundRegistryStore.get_instance",
         return_value=store,
     )
@@ -205,30 +193,30 @@ def _patch_ledger(rows_or_exc):
             return_value=[{"task_id": t, "task_run_id": f"run-{t}"} for t in rows_or_exc]
         )
     return patch(
-        "src.server.database.subagent_runs.list_open_runs_for_thread", new=mock
+        "src.server.database.runs.subagent_runs.list_open_runs_for_thread", new=mock
     )
 
 
 class TestResolveActiveTasks:
     @pytest.mark.asyncio
     async def test_union_of_local_and_ledger_open_runs(self):
-        btm = _make_btm()
         with _patch_local(["loc1"]), _patch_ledger(["rem2"]):
-            assert await btm.get_active_task_ids("t1") == ["loc1", "rem2"]
+            assert await subagent_liveness.get_active_task_ids("t1") == [
+                "loc1",
+                "rem2",
+            ]
 
     @pytest.mark.asyncio
     async def test_local_live_writer_listed_without_ledger_row(self):
         # Settle-teardown window: the row is already terminal but the writer
         # coroutine is still finishing in this process — stays listed.
-        btm = _make_btm()
         with _patch_local(["loc1"]), _patch_ledger([]):
-            assert await btm.get_active_task_ids("t1") == ["loc1"]
+            assert await subagent_liveness.get_active_task_ids("t1") == ["loc1"]
 
     @pytest.mark.asyncio
     async def test_ledger_failure_degrades_to_local_only(self):
-        btm = _make_btm()
         with _patch_local(["loc1"]), _patch_ledger(RuntimeError("db down")):
-            assert await btm.get_active_task_ids("t1") == ["loc1"]
+            assert await subagent_liveness.get_active_task_ids("t1") == ["loc1"]
 
     @pytest.mark.asyncio
     async def test_hydrated_placeholder_vanishes_once_owner_settles(self):
@@ -236,16 +224,14 @@ class TestResolveActiveTasks:
         # a pending-shaped placeholder with no writer coroutine. When the
         # owner finalizes (row terminal), the placeholder must not keep the
         # task listed as active.
-        btm = _make_btm()
         with _patch_local([_hydrated_placeholder("abc123")]), _patch_ledger([]):
-            assert await btm.get_active_task_ids("t1") == []
+            assert await subagent_liveness.get_active_task_ids("t1") == []
 
     @pytest.mark.asyncio
     async def test_hydrated_placeholder_listed_via_open_row_while_owner_lives(self):
-        btm = _make_btm()
         with (
             _patch_local([_hydrated_placeholder("abc123")]),
             _patch_ledger(["abc123"]),
         ):
-            assert await btm.get_active_task_ids("t1") == ["abc123"]
+            assert await subagent_liveness.get_active_task_ids("t1") == ["abc123"]
 

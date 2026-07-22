@@ -20,24 +20,24 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from ptc_agent.agent.state import DeltaAgentState
-from src.server.services.background_task_manager import (
-    BackgroundTaskManager,
-    TaskInfo,
-    TaskStatus,
+from src.server.services.runs.executor import (
+    LocalRunExecutor,
+    LocalRunExecution,
+    LocalRunStatus,
 )
 
 
-def _manager_with_graph(graph, thread_id: str, run_id: str) -> BackgroundTaskManager:
-    """A BackgroundTaskManager holding just the one task — `_flush_checkpoint`
-    only touches `self.tasks` and `self.task_lock`, so skip the config-heavy
+def _manager_with_graph(graph, thread_id: str, run_id: str) -> LocalRunExecutor:
+    """A LocalRunExecutor holding just the one task — `_flush_checkpoint`
+    only touches `self.executions` and `self.task_lock`, so skip the config-heavy
     __init__ entirely."""
-    mgr = BackgroundTaskManager.__new__(BackgroundTaskManager)
-    mgr.tasks = {}
+    mgr = LocalRunExecutor.__new__(LocalRunExecutor)
+    mgr.executions = {}
     mgr.task_lock = asyncio.Lock()
-    mgr.tasks[(thread_id, run_id)] = TaskInfo(
+    mgr.executions[(thread_id, run_id)] = LocalRunExecution(
         thread_id=thread_id,
         run_id=run_id,
-        status=TaskStatus.RUNNING,
+        status=LocalRunStatus.RUNNING,
         created_at=datetime.now(),
         graph=graph,
     )

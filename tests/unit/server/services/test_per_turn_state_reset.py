@@ -1,6 +1,6 @@
 """Tests for per-turn state isolation under ``run_id`` keying.
 
-The previous design relied on identity-guard scaffolding (TaskInfo identity
+The previous design relied on identity-guard scaffolding (LocalRunExecution identity
 checks, ``_tracker_write_is_safe``, ``acquire_for_new_execution``, etc.)
 because state was keyed by ``thread_id`` alone. After the run_id refactor,
 state is keyed by ``(thread_id, run_id)`` so cross-turn aliasing is
@@ -15,15 +15,15 @@ import pytest
 
 from datetime import datetime
 
-from src.server.services.background_task_manager import (
-    BackgroundTaskManager,
-    TaskInfo,
-    TaskStatus,
+from src.server.services.runs.executor import (
+    LocalRunExecutor,
+    LocalRunExecution,
+    LocalRunStatus,
 )
 def _new_task_info(
-    thread_id: str, run_id: str, status: "TaskStatus"
-) -> "TaskInfo":
-    return TaskInfo(
+    thread_id: str, run_id: str, status: "LocalRunStatus"
+) -> "LocalRunExecution":
+    return LocalRunExecution(
         thread_id=thread_id,
         run_id=run_id,
         status=status,
@@ -31,16 +31,16 @@ def _new_task_info(
     )
 
 
-def _make_btm() -> BackgroundTaskManager:
-    with patch("src.server.services.background_task_manager.get_max_concurrent_workflows", return_value=10), \
-         patch("src.server.services.background_task_manager.get_workflow_result_ttl", return_value=3600), \
-         patch("src.server.services.background_task_manager.get_abandoned_workflow_timeout", return_value=3600), \
-         patch("src.server.services.background_task_manager.get_cleanup_interval", return_value=60), \
-         patch("src.server.services.background_task_manager.is_intermediate_storage_enabled", return_value=False), \
-         patch("src.server.services.background_task_manager.get_max_stored_messages_per_agent", return_value=1000), \
-         patch("src.server.services.background_task_manager.get_event_storage_backend", return_value="redis"), \
-         patch("src.server.services.background_task_manager.get_redis_ttl_workflow_events", return_value=86400):
-        return BackgroundTaskManager()
+def _make_btm() -> LocalRunExecutor:
+    with patch("src.server.services.runs.executor.get_max_concurrent_workflows", return_value=10), \
+         patch("src.server.services.runs.executor.get_workflow_result_ttl", return_value=3600), \
+         patch("src.server.services.runs.executor.get_abandoned_workflow_timeout", return_value=3600), \
+         patch("src.server.services.runs.executor.get_cleanup_interval", return_value=60), \
+         patch("src.server.services.runs.executor.is_intermediate_storage_enabled", return_value=False), \
+         patch("src.server.services.runs.executor.get_max_stored_messages_per_agent", return_value=1000), \
+         patch("src.server.services.runs.executor.get_event_storage_backend", return_value="redis"), \
+         patch("src.server.services.runs.executor.get_redis_ttl_workflow_events", return_value=86400):
+        return LocalRunExecutor()
 
 
 # ---------------------------------------------------------------------------
@@ -73,35 +73,35 @@ async def test_admission_lock_is_per_thread_and_idempotent():
 
 
 @pytest.mark.asyncio
-async def test_get_task_info_with_run_id_targets_specific_run():
-    """``get_task_info(tid, rid)`` targets exactly that run."""
+async def test_get_local_run_with_run_id_targets_specific_run():
+    """``get_local_run(tid, rid)`` targets exactly that run."""
     btm = _make_btm()
-    ti_a = _new_task_info("thread-X", "run-A", TaskStatus.RUNNING)
-    ti_b = _new_task_info("thread-X", "run-B", TaskStatus.RUNNING)
-    btm.tasks[("thread-X", "run-A")] = ti_a
-    btm.tasks[("thread-X", "run-B")] = ti_b
+    ti_a = _new_task_info("thread-X", "run-A", LocalRunStatus.RUNNING)
+    ti_b = _new_task_info("thread-X", "run-B", LocalRunStatus.RUNNING)
+    btm.executions[("thread-X", "run-A")] = ti_a
+    btm.executions[("thread-X", "run-B")] = ti_b
 
-    fetched_a = await btm.get_task_info("thread-X", "run-A")
-    fetched_b = await btm.get_task_info("thread-X", "run-B")
+    fetched_a = await btm.get_local_run("thread-X", "run-A")
+    fetched_b = await btm.get_local_run("thread-X", "run-B")
 
     assert fetched_a is ti_a
     assert fetched_b is ti_b
 
 
 @pytest.mark.asyncio
-async def test_get_task_info_without_run_id_returns_latest():
-    """``get_task_info(tid)`` (no run_id) returns the latest-created run."""
+async def test_get_local_run_without_run_id_returns_latest():
+    """``get_local_run(tid)`` (no run_id) returns the latest-created run."""
     import asyncio as _a
 
     btm = _make_btm()
-    older = _new_task_info("thread-X", "run-A", TaskStatus.COMPLETED)
+    older = _new_task_info("thread-X", "run-A", LocalRunStatus.COMPLETED)
     # Tiny sleep so created_at strictly differs.
     await _a.sleep(0.001)
-    newer = _new_task_info("thread-X", "run-B", TaskStatus.RUNNING)
-    btm.tasks[("thread-X", "run-A")] = older
-    btm.tasks[("thread-X", "run-B")] = newer
+    newer = _new_task_info("thread-X", "run-B", LocalRunStatus.RUNNING)
+    btm.executions[("thread-X", "run-A")] = older
+    btm.executions[("thread-X", "run-B")] = newer
 
-    fetched = await btm.get_task_info("thread-X")
+    fetched = await btm.get_local_run("thread-X")
     assert fetched is newer
 
 
@@ -124,14 +124,14 @@ async def test_cleanup_preserves_admission_locks():
     lock = await btm.get_admission_lock("thread-L")
     assert "thread-L" in btm._admission_locks
 
-    ti = _new_task_info("thread-L", "run-1", TaskStatus.COMPLETED)
+    ti = _new_task_info("thread-L", "run-1", LocalRunStatus.COMPLETED)
     ti.completed_at = datetime.now() - timedelta(hours=1)
-    btm.tasks[("thread-L", "run-1")] = ti
+    btm.executions[("thread-L", "run-1")] = ti
 
     await btm._cleanup_abandoned_tasks()
 
     # Task entry is evicted, but the admission lock survives.
-    assert ("thread-L", "run-1") not in btm.tasks
+    assert ("thread-L", "run-1") not in btm.executions
     assert "thread-L" in btm._admission_locks
     assert btm._admission_locks["thread-L"] is lock
     assert not lock.locked()
