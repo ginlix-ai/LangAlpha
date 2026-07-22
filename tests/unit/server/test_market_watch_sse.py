@@ -3,7 +3,7 @@
 MarketWatchMiddleware emits {"type": "market_watch_update", ...} via
 runtime.stream_writer; the streaming handler's custom-event block must forward
 it as its own SSE frame (previously unhandled types fell through and were
-dropped). Drives WorkflowStreamHandler.stream_workflow with a minimal fake
+dropped). Drives RunSSEProducer.stream_workflow with a minimal fake
 graph — no heavyweight harness. Neutral placeholder tickers only.
 """
 
@@ -47,9 +47,9 @@ def _parse_frames(raw_frames):
 
 @pytest.mark.asyncio
 async def test_market_watch_update_forwarded_to_sse():
-    from src.server.handlers.streaming_handler import WorkflowStreamHandler
+    from src.server.services.runs.sse_producer import RunSSEProducer
 
-    handler = WorkflowStreamHandler(thread_id="t-1", run_id="r-1")
+    handler = RunSSEProducer(thread_id="t-1", run_id="r-1")
     custom_event = (
         (),
         "custom",
