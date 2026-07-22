@@ -77,13 +77,13 @@ def _patches(
         patch(
             "src.utils.cache.redis_cache.get_cache_client", return_value=cache
         ),
-        patch("src.server.database.turn_lifecycle.get_active_run", new=active),
+        patch("src.server.database.runs.lifecycle.get_active_run", new=active),
         patch(
-            "src.server.database.turn_lifecycle.get_run",
+            "src.server.database.runs.lifecycle.get_run",
             new=AsyncMock(side_effect=lambda rid: parent_rows.get(str(rid))),
         ),
         patch(
-            "src.server.database.subagent_runs.list_open_runs_for_thread",
+            "src.server.database.runs.subagent_runs.list_open_runs_for_thread",
             new=open_runs,
         ),
         active,
@@ -292,7 +292,7 @@ class TestDegradation:
                 return_value=cache,
             ),
             patch(
-                "src.server.database.turn_lifecycle.get_active_run",
+                "src.server.database.runs.lifecycle.get_active_run",
                 new=AsyncMock(side_effect=RuntimeError("pg down")),
             ),
         ):

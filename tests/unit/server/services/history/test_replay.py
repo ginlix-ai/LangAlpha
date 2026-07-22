@@ -702,7 +702,7 @@ async def test_wholesale_fallback_preserves_task_lane_and_watermark(monkeypatch)
     )
     reader.aget_task_run_stamps = AsyncMock(return_value=["run-1"])
     monkeypatch.setattr(
-        "src.server.services.history.replay.sr_db.list_runs_for_thread",
+        "src.server.services.history.replay.task_lane.sr_db.list_runs_for_thread",
         AsyncMock(
             return_value=[
                 {
@@ -971,7 +971,7 @@ async def test_wholesale_fallback_stop_snapshot_does_not_evict_projection(
     )
     reader.aget_task_run_stamps = AsyncMock(return_value=["run-1"])
     monkeypatch.setattr(
-        "src.server.services.history.replay.sr_db.list_runs_for_thread",
+        "src.server.services.history.replay.task_lane.sr_db.list_runs_for_thread",
         AsyncMock(
             return_value=[
                 {
@@ -1235,7 +1235,7 @@ def _ledgered_run(monkeypatch, reader, status):
     started = datetime(2026, 1, 3, tzinfo=timezone.utc)
     reader.aget_task_run_stamps = AsyncMock(return_value=["run-1"])
     monkeypatch.setattr(
-        "src.server.services.history.replay.sr_db.list_runs_for_thread",
+        "src.server.services.history.replay.task_lane.sr_db.list_runs_for_thread",
         AsyncMock(
             return_value=[
                 {
@@ -1466,6 +1466,7 @@ async def test_errored_run_committed_copy_is_not_resurrected(monkeypatch):
 def _cache_probe(monkeypatch):
     """Absorb cache writes; return the list of cached tail checkpoint ids."""
     from src.server.services.history import replay as replay_module
+    from src.server.services.history.replay import task_lane as task_lane_module
 
     async def fake_details(thread_id, task_ids):
         return {}
@@ -1481,7 +1482,7 @@ def _cache_probe(monkeypatch):
     async def fake_delete(thread_id, tail_checkpoint_ids):
         pass
 
-    monkeypatch.setattr(replay_module, "resolve_task_details", fake_details)
+    monkeypatch.setattr(task_lane_module, "resolve_task_details", fake_details)
     monkeypatch.setattr(
         replay_module.projection_cache, "task_streams_live", fake_live
     )
@@ -1892,7 +1893,7 @@ async def test_wholesale_fallback_task_custom_artifact_is_not_ownership(monkeypa
     )
     reader.aget_task_run_stamps = AsyncMock(return_value=["run-1"])
     monkeypatch.setattr(
-        "src.server.services.history.replay.sr_db.list_runs_for_thread",
+        "src.server.services.history.replay.task_lane.sr_db.list_runs_for_thread",
         AsyncMock(
             return_value=[
                 {
@@ -2140,7 +2141,7 @@ async def test_claimed_run_stamps_projection_watermark(monkeypatch):
         task_messages=[AIMessage(content="task answer", id="sub-ai-1")],
     )
     monkeypatch.setattr(
-        "src.server.services.history.replay.sr_db.list_runs_for_thread",
+        "src.server.services.history.replay.task_lane.sr_db.list_runs_for_thread",
         AsyncMock(
             return_value=[
                 {
@@ -2209,7 +2210,7 @@ async def test_in_progress_run_is_excluded_from_the_watermark(monkeypatch):
     )
     reader.aget_task_run_stamps = AsyncMock(return_value=["run-1"])
     monkeypatch.setattr(
-        "src.server.services.history.replay.sr_db.list_runs_for_thread",
+        "src.server.services.history.replay.task_lane.sr_db.list_runs_for_thread",
         AsyncMock(
             return_value=[
                 {
@@ -2375,7 +2376,7 @@ async def test_widget_data_ref_resolved_from_storage(monkeypatch):
     ]
     _mock_reader(monkeypatch, ThreadHistory(thread_id=THREAD, turns=[_turn(0, turn_msgs)]))
     monkeypatch.setattr(
-        "src.server.services.history.replay.get_bytes",
+        "src.server.services.history.replay.widgets.get_bytes",
         lambda key: b'{"file.csv": "a,b"}' if key == "widgets/t/abc.json" else None,
     )
     items = await build_checkpoint_replay_items(THREAD, [_query(0)], {0: _response(0)})
@@ -2411,7 +2412,7 @@ async def test_widget_inline_data_needs_no_storage(monkeypatch):
     def _boom(key):
         raise AssertionError("storage must not be read for inline data")
 
-    monkeypatch.setattr("src.server.services.history.replay.get_bytes", _boom)
+    monkeypatch.setattr("src.server.services.history.replay.widgets.get_bytes", _boom)
     items = await build_checkpoint_replay_items(THREAD, [_query(0)], {0: _response(0)})
     widgets = [
         i for i in items
@@ -2441,7 +2442,7 @@ async def test_widget_data_ref_unreadable_left_in_place(monkeypatch):
     ]
     _mock_reader(monkeypatch, ThreadHistory(thread_id=THREAD, turns=[_turn(0, turn_msgs)]))
     monkeypatch.setattr(
-        "src.server.services.history.replay.get_bytes", lambda key: None
+        "src.server.services.history.replay.widgets.get_bytes", lambda key: None
     )
     items = await build_checkpoint_replay_items(THREAD, [_query(0)], {0: _response(0)})
     widgets = [
@@ -2891,12 +2892,12 @@ async def test_live_task_final_launch_defers_to_stream(monkeypatch):
     # seq 1, and both together render the instruction bubble twice. Earlier
     # settled runs still attribute; the live remainder is not salvaged as
     # trailing either.
-    from src.server.services.history import replay as replay_module
+    from src.server.services.history.replay import task_lane as task_lane_module
 
     async def fake_details(thread_id, task_ids):
         return {tid: {"status": "running", "error": None} for tid in task_ids}
 
-    monkeypatch.setattr(replay_module, "resolve_task_details", fake_details)
+    monkeypatch.setattr(task_lane_module, "resolve_task_details", fake_details)
 
     def launch(ordinal, action, prompt):
         artifact = {
@@ -2975,6 +2976,7 @@ async def test_trailing_salvage_keeps_its_turn_uncacheable(monkeypatch):
     # never runs the task lane, so a cached entry would replay the turn
     # without the salvage on the next refresh. Fixed regression.
     from src.server.services.history import replay as replay_module
+    from src.server.services.history.replay import task_lane as task_lane_module
 
     async def fake_details(thread_id, task_ids):
         return {}  # settled — no live writer owns the trailing segment
@@ -2991,7 +2993,7 @@ async def test_trailing_salvage_keeps_its_turn_uncacheable(monkeypatch):
     async def fake_delete(thread_id, tail_checkpoint_ids):
         deleted.extend(tail_checkpoint_ids)
 
-    monkeypatch.setattr(replay_module, "resolve_task_details", fake_details)
+    monkeypatch.setattr(task_lane_module, "resolve_task_details", fake_details)
     monkeypatch.setattr(
         replay_module.projection_cache, "task_streams_live", fake_live
     )

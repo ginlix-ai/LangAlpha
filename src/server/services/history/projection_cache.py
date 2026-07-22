@@ -138,7 +138,7 @@ def _is_stream_end_sentinel(raw: Any) -> bool:
     """Match forwarder.finalize()'s ``{"event": "subagent_stream_end"}``
     sentinel (a JSON dict without ``seq`` — same test as the reconnect
     consumer's payload classifier)."""
-    from ptc_agent.agent.middleware.background_subagent.registry import (
+    from ptc_agent.agent.middleware.background_subagent.redis_stream import (
         SUBAGENT_STREAM_END_EVENT,
     )
 

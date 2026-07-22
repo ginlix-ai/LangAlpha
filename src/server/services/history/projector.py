@@ -25,6 +25,9 @@ from ptc_agent.agent.middleware.tool.argument_parsing import parse_tool_args
 from src.llms.content_utils import extract_content_with_type
 from src.llms.token_counter import extract_token_usage
 from src.server.utils.content_normalizer import normalize_text_content
+from src.server.utils.error_sanitization import (
+    sanitize_error_text as _sanitize_error_text,
+)
 
 MAIN_AGENT = "main"
 
@@ -528,3 +531,75 @@ def _normalize_todos(todos: Any) -> list[dict[str, Any]]:
 
 def _count_lines(text: str) -> int:
     return len(text.splitlines()) if text else 0
+
+
+MODEL_FALLBACK_UI_NAME = "model_fallback"
+
+MODEL_FALLBACK_FIELDS = (
+    "from_model",
+    "to_model",
+    "from_is_primary",
+    "status_code",
+    "attempts_on_from",
+)
+
+
+def context_signal_items(
+    thread_id: str, turn: Any, *, agent: str = MAIN_AGENT
+) -> list[dict[str, Any]]:
+    """Project a turn's compaction signals from its private-state deltas.
+
+    Offload counts become one aggregated event per kind (live may batch them
+    across several firings); the summarize event projects through its summary
+    message, which carries ``lc_source=summarization`` (+ stamped fields on
+    new threads).
+    """
+    events: list[HistoryEvent] = []
+    for count, kind, field_name in (
+        (turn.newly_offloaded_args, "args", "offloaded_args"),
+        (turn.newly_offloaded_reads, "reads", "offloaded_reads"),
+    ):
+        if count:
+            events.append(
+                HistoryEvent(
+                    "context-window",
+                    agent,
+                    None,
+                    {
+                        "action": "offload",
+                        "signal": "complete",
+                        "kind": kind,
+                        field_name: count,
+                    },
+                )
+            )
+    summarization_event = turn.new_summarization_event
+    if summarization_event is not None:
+        message = summarization_event.get("summary_message")
+        if isinstance(message, HumanMessage):
+            events.extend(messages_to_history_events([message], agent=agent))
+    return history_events_to_sse(events, thread_id=thread_id)
+
+
+def model_fallback_items(
+    thread_id: str, turn: Any, *, agent: str = MAIN_AGENT
+) -> list[dict[str, Any]]:
+    """Project a turn's model_fallback notices from its new ``ui`` records.
+
+    Field whitelist and error sanitization mirror the live handler. ``agent``
+    identifies the namespace being projected (main or ``task:{id}``).
+    """
+    items: list[dict[str, Any]] = []
+    for record in turn.new_ui_records:
+        if record.get("name") != MODEL_FALLBACK_UI_NAME:
+            continue
+        props = record.get("props") or {}
+        data: dict[str, Any] = {"thread_id": thread_id, "agent": agent}
+        for key in MODEL_FALLBACK_FIELDS:
+            if key in props:
+                data[key] = props[key]
+        error_text = props.get("error")
+        if isinstance(error_text, str):
+            data["error"] = _sanitize_error_text(error_text)
+        items.append({"event": "model_fallback", "data": data})
+    return items

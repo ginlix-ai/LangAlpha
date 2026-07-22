@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 _TERMINAL_STATUSES = ("completed", "cancelled", "error")
 
 # Ledger run status -> client vocabulary — a deliberate SECOND lane beside
-# services.status_vocabulary (whose public mapping keeps 'interrupted' for
+# contracts.status (whose public mapping keeps 'interrupted' for
 # root runs). Here 'interrupted' maps to error: task HITL is descoped, so an
 # interrupted task run is a failure, not a resumable state the client could
 # act on.
@@ -67,7 +67,7 @@ async def resolve_task_details(
     """
     if not task_ids:
         return {}
-    from src.server.database import subagent_runs as sr_db
+    from src.server.database.runs import subagent_runs as sr_db
 
     ledger: dict[str, dict[str, Any]] = {}
     try:
@@ -109,14 +109,12 @@ async def _resolve_legacy_statuses(
     precision: a live task wrongly stamped terminal would stick until the
     next load, while a dead one stamped running self-corrects the same way).
     """
-    from ptc_agent.agent.middleware.background_subagent.registry import (
+    from ptc_agent.agent.middleware.background_subagent.redis_stream import (
         read_task_meta,
     )
-    from src.server.services.background_task_manager import BackgroundTaskManager
+    from src.server.services.subagent_liveness import resolve_task_liveness
 
-    live = await BackgroundTaskManager.get_instance().resolve_task_liveness(
-        thread_id, task_ids
-    )
+    live = await resolve_task_liveness(thread_id, task_ids)
     statuses: dict[str, str] = {}
     for task_id in task_ids:
         if live is not None and task_id in live:
@@ -169,3 +167,24 @@ async def stamp_replay_task_status(thread_id: str, items: list[dict]) -> None:
             f"[REPLAY] task-status stamping failed for {thread_id}",
             exc_info=True,
         )
+
+
+def stamp_projected_watermarks(
+    items: list[dict[str, Any]], watermarks: dict[str, float]
+) -> None:
+    """Stamp ``payload.projected_run_started_ms`` onto each task artifact
+    whose task has claimed runs: the newest run this payload's transcript
+    contains. Replaces items copy-on-write — stored-event items share payload
+    dicts with the request's pristine rows."""
+    if not watermarks:
+        return
+    for i, item in enumerate(items):
+        data = item.get("data") if isinstance(item, dict) else None
+        task_id = _artifact_task_id(data)
+        if not task_id or task_id not in watermarks:
+            continue
+        payload = {
+            **(data.get("payload") or {}),
+            "projected_run_started_ms": watermarks[task_id],
+        }
+        items[i] = {**item, "data": {**data, "payload": payload}}

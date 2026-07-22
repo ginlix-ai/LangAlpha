@@ -68,7 +68,7 @@ async def _anchor_satisfied(
     if parent_run_id in cache:
         return cache[parent_run_id]
 
-    from src.server.database import turn_lifecycle as tl_db
+    from src.server.database.runs import lifecycle as tl_db
 
     row = await tl_db.get_run(parent_run_id)
     satisfied = bool(row) and row.get("status") in tl_db.TERMINAL_STATUSES
@@ -82,8 +82,8 @@ async def build_thread_snapshot(thread_id: str) -> dict | None:
     Returns None on any failure — replay degrades to its settled projection
     rather than breaking, so a snapshot outage costs freshness, not history.
     """
-    from src.server.database import subagent_runs as sr_db
-    from src.server.database import turn_lifecycle as tl_db
+    from src.server.database.runs import subagent_runs as sr_db
+    from src.server.database.runs import lifecycle as tl_db
     from src.utils.cache.redis_cache import get_cache_client
 
     try:

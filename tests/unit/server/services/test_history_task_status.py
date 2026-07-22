@@ -5,7 +5,7 @@ subagent cards: running requires proven liveness, terminal is the default,
 and stamping must copy — stored/cached event dicts are shared objects.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -44,20 +44,17 @@ class TestCollectTaskIds:
 
 class TestLegacyStatusFallback:
     def _patch(self, live, metas: dict):
-        btm = MagicMock()
-        btm.resolve_task_liveness = AsyncMock(return_value=live)
         return (
             patch(
-                "src.server.database.subagent_runs.get_latest_run_details",
+                "src.server.database.runs.subagent_runs.get_latest_run_details",
                 new=AsyncMock(return_value={}),
             ),
             patch(
-                "src.server.services.background_task_manager"
-                ".BackgroundTaskManager.get_instance",
-                return_value=btm,
+                "src.server.services.subagent_liveness.resolve_task_liveness",
+                new=AsyncMock(return_value=live),
             ),
             patch(
-                "ptc_agent.agent.middleware.background_subagent.registry"
+                "ptc_agent.agent.middleware.background_subagent.redis_stream"
                 ".read_task_meta",
                 new=AsyncMock(side_effect=lambda t, tid: metas.get(tid)),
             ),
@@ -179,7 +176,7 @@ class TestResolveTaskDetails:
             "done1": {"status": "completed", "error": None},
         }
         with patch(
-            "src.server.database.subagent_runs.get_latest_run_details",
+            "src.server.database.runs.subagent_runs.get_latest_run_details",
             new=AsyncMock(return_value=ledger),
         ):
             details = await resolve_task_details("t", ["err1", "done1"])
@@ -190,7 +187,7 @@ class TestResolveTaskDetails:
     async def test_interrupted_maps_to_error_without_reason(self):
         ledger = {"int1": {"status": "interrupted", "error": None}}
         with patch(
-            "src.server.database.subagent_runs.get_latest_run_details",
+            "src.server.database.runs.subagent_runs.get_latest_run_details",
             new=AsyncMock(return_value=ledger),
         ):
             details = await resolve_task_details("t", ["int1"])
@@ -198,32 +195,29 @@ class TestResolveTaskDetails:
 
 
 class TestResolveTaskLiveness:
-    def _btm(self):
-        from src.server.services.background_task_manager import (
-            BackgroundTaskManager,
-        )
-
-        return BackgroundTaskManager.__new__(BackgroundTaskManager)
-
     @pytest.mark.asyncio
     async def test_local_and_lock_held_union(self):
-        btm = self._btm()
-        with patch.object(
-            btm, "_local_live_task_ids", new=AsyncMock(return_value=["loc1"])
+        from src.server.services.subagent_liveness import resolve_task_liveness
+
+        with patch(
+            "src.server.services.subagent_liveness._local_live_task_ids",
+            new=AsyncMock(return_value=["loc1"]),
         ), patch(
             "src.server.services.writer_guard.held_task_namespaces",
             new=AsyncMock(return_value={"rem1"}),
         ):
-            live = await btm.resolve_task_liveness("t", ["loc1", "rem1", "dead1"])
+            live = await resolve_task_liveness("t", ["loc1", "rem1", "dead1"])
         assert live == {"loc1", "rem1"}
 
     @pytest.mark.asyncio
     async def test_probe_failure_returns_none(self):
-        btm = self._btm()
-        with patch.object(
-            btm, "_local_live_task_ids", new=AsyncMock(return_value=[])
+        from src.server.services.subagent_liveness import resolve_task_liveness
+
+        with patch(
+            "src.server.services.subagent_liveness._local_live_task_ids",
+            new=AsyncMock(return_value=[]),
         ), patch(
             "src.server.services.writer_guard.held_task_namespaces",
             new=AsyncMock(return_value=None),
         ):
-            assert await btm.resolve_task_liveness("t", ["x"]) is None
+            assert await resolve_task_liveness("t", ["x"]) is None
