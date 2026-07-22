@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.server.database.subagent_runs import (
+from src.server.database.runs.subagent_runs import (
     count_open_runs_for_thread,
     find_open_run_from_turn,
     repair_dangling_task_chains,
@@ -35,7 +35,7 @@ RESPONSE_A = "22222222-2222-2222-2222-222222222222"
 RESPONSE_B = "33333333-3333-3333-3333-333333333333"
 TASK_RUN_ID = "44444444-4444-4444-4444-444444444444"
 
-POOL = "src.server.database.conversation.get_db_connection"
+POOL = "src.server.database.pool.get_db_connection"
 
 
 def _rowcounts(cursor, values):

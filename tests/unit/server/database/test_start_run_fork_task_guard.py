@@ -17,11 +17,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.server.database.subagent_runs import TaskRunSlotBusyError
-from src.server.database.turn_lifecycle import ForkSpec, TurnLifecycleError, start_run
+from src.server.database.runs.subagent_runs import TaskRunSlotBusyError
+from src.server.database.runs.lifecycle import ForkSpec, TurnLifecycleError, start_run
 
-QR_DB = "src.server.database.turn_lifecycle.qr_db"
-SR_DB = "src.server.database.turn_lifecycle.sr_db"
+QR_DB = "src.server.database.runs.lifecycle.qr_db"
+SR_DB = "src.server.database.runs.lifecycle.sr_db"
 
 THREAD_ID = "11111111-1111-1111-1111-111111111111"
 RUN_ID = "22222222-2222-2222-2222-222222222222"
