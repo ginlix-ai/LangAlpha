@@ -99,12 +99,11 @@ lives inside the stream it announces).
 - A cursor gap on an active stream returns **`resync_required`** — never
   gap-and-continue. `resync_required` on an active run is preceded by its
   `error(transport_lost)` finalize: a resync target must be a terminal projection.
-- **Implementation caveat**: the byte/event quota is enforced today only on the
-  main-lane stream (the event buffer finalizes `error(transport_lost)` at quota;
-  its MAXLEN is a 2× backstop the quota fires before). Task-run v2 streams are
-  appended with **no MAXLEN and no quota** — currently their content is dual-written
-  to the MAXLEN-bounded v1 per-task leg, but that bound protects a *different key*.
-  The v2 quota must land with (or before) the M8 deletion of the v1 leg.
+- **Implementation caveat**: task-run v2 streams now carry the same 2× MAXLEN
+  backstop as the main lane (content spill and control-frame appends alike). The
+  event/quota *circuit* for task content is still driven by the v1 leg's counter —
+  content is dual-written under one lock, so a breach tears the run for both keys —
+  and must move to a v2-native counter with the M8 deletion of the v1 leg.
 
 ## Snapshot
 

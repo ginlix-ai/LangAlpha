@@ -328,6 +328,8 @@ class SubagentRunCoordinator:
                 # frames are skipped rather than refused.
                 return
             key = v2_stream_key(self.thread_id, task_run_id)
+            from src.config.settings import get_max_stored_messages_per_agent
+
             await cache.client.xadd(
                 key,
                 {
@@ -338,6 +340,10 @@ class SubagentRunCoordinator:
                         payload, ensure_ascii=False, default=str
                     ).encode(),
                 },
+                # Same 2x MAXLEN backstop the content spill applies — the
+                # spill's quota circuit fires long before trim could bite.
+                maxlen=get_max_stored_messages_per_agent() * 2,
+                approximate=True,
             )
             if terminal:
                 # Set-if-absent: never resurrect the shorter post-collection

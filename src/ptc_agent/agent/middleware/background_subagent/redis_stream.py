@@ -300,7 +300,15 @@ async def spill_task_record(
                 for attempt in (1, 2):
                     try:
                         await asyncio.wait_for(
-                            cache.client.xadd(v2_key, v2_fields),
+                            # Same 2x MAXLEN backstop as the v1 leg: the quota
+                            # circuit below tears the run before FIFO trim
+                            # could touch the head (STREAM_CONTRACT_V2.md).
+                            cache.client.xadd(
+                                v2_key,
+                                v2_fields,
+                                maxlen=quota * 2,
+                                approximate=True,
+                            ),
                             timeout=_SPILL_TIMEOUT_SECONDS,
                         )
                         break

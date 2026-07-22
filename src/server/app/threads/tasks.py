@@ -57,10 +57,11 @@ async def stream_subagent_task(
     """Stream a single subagent's content events (message_chunk, tool_calls, etc.).
 
     Accepts the cursor as either ``?last_event_id=N`` or the SSE-spec
-    ``Last-Event-ID`` HTTP header.
+    ``Last-Event-ID`` HTTP header. Served from the v2 per-run stream
+    (v1-identical wire shape); pre-ledger tasks fall back to the v1 reader.
     """
     await auth_api.require_thread_owner(thread_id, x_user_id)
-    from src.server.handlers.chat.legacy_task_sse_reader import stream_subagent_from_log
+    from src.server.handlers.chat.task_run_sse_reader import stream_task_run_sse
 
     if last_event_id is None and last_event_id_header is not None:
         try:
@@ -69,7 +70,7 @@ async def stream_subagent_task(
             pass
 
     return StreamingResponse(
-        stream_subagent_from_log(thread_id, task_id, last_event_id),
+        stream_task_run_sse(thread_id, task_id, last_event_id),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
