@@ -985,7 +985,7 @@ class TestManageChartAnnotations:
 
 class TestSkillRegistryVisibility:
     def test_chart_annotation_registered_for_both_modes(self):
-        from src.ptc_agent.agent.middleware.skills.registry import SKILL_REGISTRY
+        from ptc_agent.agent.middleware.skills.registry import SKILL_REGISTRY
 
         skill = SKILL_REGISTRY["chart-annotation"]
         # Discoverable in both modes so the agent can self-load it on demand
@@ -1001,7 +1001,7 @@ class TestSkillRegistryVisibility:
         SkillsMiddleware. The agent can only choose to load a skill it can see,
         so a discoverable skill must appear here.
         """
-        from src.ptc_agent.agent.middleware.skills.registry import list_skills
+        from ptc_agent.agent.middleware.skills.registry import list_skills
 
         for mode in ("ptc", "flash", None):
             listed = {s["name"] for s in list_skills(mode=mode)}
@@ -1011,14 +1011,14 @@ class TestSkillRegistryVisibility:
 
     def test_synced_to_sandbox(self):
         """exposure=both ⇒ SKILL.md is uploaded so PTC can self-load by reading it."""
-        from src.ptc_agent.agent.middleware.skills.registry import (
+        from ptc_agent.agent.middleware.skills.registry import (
             get_sandbox_skill_names,
         )
 
         assert "chart-annotation" in get_sandbox_skill_names()
 
     def test_reachable_by_name_in_every_mode(self):
-        from src.ptc_agent.agent.middleware.skills.registry import get_skill
+        from ptc_agent.agent.middleware.skills.registry import get_skill
 
         for mode in ("ptc", "flash", None):
             skill = get_skill("chart-annotation", mode=mode)

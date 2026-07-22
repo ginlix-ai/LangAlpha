@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import src.ptc_agent.agent.tools.show_widget as _mod
-from src.ptc_agent.agent.tools.show_widget import (
+import ptc_agent.agent.tools.show_widget as _mod
+from ptc_agent.agent.tools.show_widget import (
     _detect_outer_wrapper_issues,
     _load_widget_guidelines,
     _validate_html,
@@ -231,7 +231,7 @@ class TestShowWidgetTool:
 # _is_text_file
 # ---------------------------------------------------------------------------
 
-from src.ptc_agent.agent.tools.show_widget import _is_text_file
+from ptc_agent.agent.tools.show_widget import _is_text_file
 
 
 class TestIsTextFile:
@@ -260,7 +260,7 @@ class TestIsTextFile:
 
 from unittest.mock import AsyncMock
 
-from src.ptc_agent.agent.tools.show_widget import _resolve_data_files
+from ptc_agent.agent.tools.show_widget import _resolve_data_files
 
 
 class TestResolveDataFiles:
@@ -401,7 +401,7 @@ class TestShowWidgetWithDataFiles:
 import hashlib
 import json
 
-from src.ptc_agent.agent.tools.show_widget import (
+from ptc_agent.agent.tools.show_widget import (
     _attach_widget_data,
     widget_data_storage_key,
 )
