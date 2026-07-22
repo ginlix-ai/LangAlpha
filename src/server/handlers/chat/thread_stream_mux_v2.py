@@ -428,6 +428,10 @@ async def stream_thread_mux_v2(
 
     # ---- attach ----------------------------------------------------------
     pending_admissions: dict[str, str] = {}
+    # Resume positions for cap-deferred cursor admissions (socket-local: the
+    # next socket's client re-sends its cursors on attach, so only this
+    # socket's rescan needs them). Popped when the channel finally opens.
+    pending_cursors: dict[str, str] = {}
     for run_id, lane, started_ms in await _seed_channels(thread_id):
         if _open_count() >= _MAX_CHANNELS:
             break
@@ -453,8 +457,11 @@ async def stream_thread_mux_v2(
         lane, started_ms = resolved
         if _open_count() >= _MAX_CHANNELS:
             # Over-budget cursor debt defers to the rescan/pending path —
-            # a resume cursor is recovery state and must never be dropped.
+            # a resume cursor is recovery state and must never be dropped,
+            # and its position rides along so the deferred admission keeps
+            # resume + head-gap semantics instead of a blind from-0 drain.
             pending_admissions[run_id] = lane
+            pending_cursors[run_id] = entry_id
             continue
         chan = _open(run_id, lane, entry_id.encode(), started_ms)
         attach_frames.append(_chan_open_frame(chan, "drain"))
@@ -571,6 +578,7 @@ async def stream_thread_mux_v2(
     ) -> None:
         if run_id in channels:
             pending_admissions.pop(run_id, None)
+            pending_cursors.pop(run_id, None)
             return
         if _open_count() >= _MAX_CHANNELS:
             pending_admissions[run_id] = lane
@@ -596,6 +604,33 @@ async def stream_thread_mux_v2(
         # Local retirement only — the durable field expires by TTL. Deleting
         # it here would erase a debt other sockets' clients still owe.
         pending_admissions.pop(run_id, None)
+        cursor = pending_cursors.pop(run_id, None)
+        if cursor:
+            # Cap-deferred resume: open at the preserved position and run the
+            # same head-gap probe the attach path applies — a trimmed head
+            # means resync_required, never a silent skip.
+            chan = _open(run_id, lane, cursor.encode(), started_ms)
+            await out_q.put(
+                (
+                    "frame",
+                    _chan_open_frame(chan, "drain" if settled else "resume"),
+                )
+            )
+            try:
+                head = await cache.client.xrange(chan.stream_key, count=1)
+            except Exception:
+                return  # transient probe failure — the pump reads onward
+            if not head:
+                outcome = await _run_row_outcome(run_id, lane)
+                if outcome is not None:
+                    await _close(chan, "terminal", outcome=outcome)
+                return
+            if _entry_after(head[0][0], cursor):
+                await out_q.put(
+                    ("frame", _control("resync_required", {"chan": chan.name}))
+                )
+                await _close(chan, "resync_required")
+            return
         chan = _open(run_id, lane, b"0", started_ms)
         await out_q.put(
             ("frame", _chan_open_frame(chan, "drain" if settled else "replay"))

@@ -94,6 +94,29 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
     rt.updateSubagentCard(taskId, { messages: updatedMessages });
   };
 
+  // Append a standalone assistant notice message to a task card (terminal
+  // notices: steering returned, run error). A new message rather than a
+  // segment on the last assistant message: the card may hold an optimistic
+  // pending-instruction bubble that taskRefs.messages doesn't (useCardState
+  // keeps the longer array), and a failed task may have no assistant
+  // message at all — a pushed message survives both.
+  const appendTaskNoticeMessage = (taskId: string, text: string, detail?: string): void => {
+    if (!rt.updateSubagentCard) return;
+    const taskRefs = getOrCreateTaskRefs(refs, taskId);
+    const order = ++taskRefs.contentOrderCounterRef.current;
+    const updatedMessages = [...taskRefs.messages] as Record<string, unknown>[];
+    updatedMessages.push({
+      id: `task-notice-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      role: 'assistant',
+      content: '',
+      contentSegments: [{ type: 'notification', content: text, order, detail }],
+      reasoningProcesses: {},
+      toolCallProcesses: {},
+    });
+    taskRefs.messages = updatedMessages;
+    rt.updateSubagentCard(taskId, { messages: updatedMessages });
+  };
+
   const processEvent = (event: SSEEvent): void => {
     const eventType = event.event || 'message_chunk';
 
@@ -535,17 +558,19 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
           }
         } else if (eventType === 'steering_returned') {
           // Run ended before the task steering was delivered — surface the
-          // returned text in the task transcript.
-          const returned = (event.messages || []) as Array<{ content?: string }>;
-          const combined = returned.map((m) => m.content || '').filter(Boolean).join('\n');
-          if (combined) {
-            appendTaskNotification(taskId, rt.t('chat.taskSteeringReturnedNotification'), combined);
+          // returned text in the task transcript. Producers emit the text as
+          // top-level content; messages[] is a defensive fallback only.
+          const returnedContent = ((event.content as string) || '')
+            || ((event.messages || []) as Array<{ content?: string }>)
+              .map((m) => m.content || '').filter(Boolean).join('\n');
+          if (returnedContent) {
+            appendTaskNoticeMessage(taskId, rt.t('chat.taskSteeringReturnedNotification'), returnedContent);
           }
         } else if (eventType === 'error' || event.error) {
           // chan_close carries only the terminal status; the failure reason
           // exists only on this frame — surface it in the task transcript.
           const errMsg = (event.error || event.message || '') as string;
-          appendTaskNotification(taskId, rt.t('chat.taskErrorNotification'), errMsg || undefined);
+          appendTaskNoticeMessage(taskId, rt.t('chat.taskErrorNotification'), errMsg || undefined);
         }
       }
       return; // Don't process subagent events in main chat view
