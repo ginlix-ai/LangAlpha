@@ -29,7 +29,7 @@ from psycopg.types.json import Json
 from src.server.database import portfolio as portfolio_db
 from src.server.database import user as user_db
 from src.server.database import watchlist as watchlist_db
-from src.server.database.conversation import get_db_connection
+from src.server.database.pool import get_db_connection
 from src.server.models.user import normalize_instrument_type, normalize_symbol
 
 logger = logging.getLogger(__name__)

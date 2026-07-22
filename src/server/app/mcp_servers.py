@@ -28,7 +28,7 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import ValidationError
 
-from src.ptc_agent.core.mcp_sanitize import VAULT_REF_RE
+from ptc_agent.core.mcp_sanitize import VAULT_REF_RE
 from src.server.database.mcp_servers import (
     MAX_MCP_SERVERS_PER_WORKSPACE,
     create_catalog_server,
@@ -48,7 +48,7 @@ from src.server.database.vault_secrets import (
     get_workspace_secret_names,
 )
 from src.server.database.workspace import get_workspace as db_get_workspace
-from src.server.handlers.chat.mcp_config import resolve_mcp_config
+from src.server.services.mcp_config import resolve_mcp_config
 from src.server.services.mcp_discovery import mcp_discovery_fingerprint
 from src.server.models.mcp_server import (
     CatalogServer,

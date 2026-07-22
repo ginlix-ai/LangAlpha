@@ -25,7 +25,7 @@ from src.server.database.user import (
     update_user as db_update_user,
     upsert_user_preferences,
 )
-from src.ptc_agent.agent.graph import invalidate_user_profile_cache
+from ptc_agent.agent.graph import invalidate_user_profile_cache
 from src.server.services.onboarding import maybe_complete_onboarding
 from src.server.models.user import (
     UserBase,

@@ -101,7 +101,7 @@ class TestWarmCooldownNoQuery:
 
         # resolve must NOT be called within cooldown.
         with patch(
-            "src.server.handlers.chat.mcp_config.resolve_mcp_config",
+            "src.server.services.mcp_config.resolve_mcp_config",
             new_callable=AsyncMock,
         ) as mock_resolve:
             result = await wm.get_session_for_workspace(ws_id, user_id="user-1")
@@ -131,7 +131,7 @@ class TestSessionCachesMcp:
         session = _make_session(version=3, summary="already")
 
         with patch(
-            "src.server.handlers.chat.mcp_config.resolve_mcp_config",
+            "src.server.services.mcp_config.resolve_mcp_config",
             new_callable=AsyncMock,
         ) as mock_resolve:
             out = await wm._apply_session_mcp(
@@ -151,7 +151,7 @@ class TestSessionCachesMcp:
 
         composite = MagicMock()
         with patch(
-            "src.server.handlers.chat.mcp_config.resolve_mcp_config",
+            "src.server.services.mcp_config.resolve_mcp_config",
             new_callable=AsyncMock,
             return_value=resolved,
         ) as mock_resolve, patch(
@@ -405,7 +405,7 @@ class TestVersionDeltaBackgroundDiscovery:
 
         resolved = _resolved(5)
         with patch(
-            "src.server.handlers.chat.mcp_config.resolve_mcp_config",
+            "src.server.services.mcp_config.resolve_mcp_config",
             new_callable=AsyncMock,
             return_value=resolved,
         ) as mock_resolve, patch(
@@ -732,11 +732,11 @@ class TestSetWorkspaceSpecDiskGuard:
         both quiet so these tests exercise only the disk-guard mechanics."""
         with (
             patch(
-                "src.server.database.turn_lifecycle.workspace_has_active_run",
+                "src.server.database.runs.lifecycle.workspace_has_active_run",
                 new=AsyncMock(return_value=False),
             ),
             patch(
-                "src.server.database.subagent_runs.count_open_runs_for_workspace",
+                "src.server.database.runs.subagent_runs.count_open_runs_for_workspace",
                 new=AsyncMock(return_value=0),
             ),
         ):

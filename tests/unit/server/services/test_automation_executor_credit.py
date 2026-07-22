@@ -60,7 +60,7 @@ _PATCHES = {
     "enforce_credit": "src.server.services.automation_executor.enforce_credit_limit",
     "auto_db": "src.server.services.automation_executor.auto_db",
     "flash_ws": "src.server.services.automation_executor.get_or_create_flash_workspace",
-    "btm": "src.server.services.background_task_manager.BackgroundTaskManager",
+    "btm": "src.server.services.runs.executor.LocalRunExecutor",
     "fire_webhook": "src.server.services.automation_executor.AutomationExecutor._fire_webhook",
 }
 
@@ -295,7 +295,7 @@ def _setup_auto_db(mock_adb):
 
 
 def _setup_btm(mock_btm_cls):
-    """Wire up BackgroundTaskManager mock."""
+    """Wire up LocalRunExecutor mock."""
     mock_btm = MagicMock()
     mock_btm.wait_for_persistence = AsyncMock()
     mock_btm_cls.get_instance = MagicMock(return_value=mock_btm)

@@ -16,9 +16,9 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from src.ptc_agent.config.core import MCPServerConfig
+from ptc_agent.config.core import MCPServerConfig
 from src.server.app.mcp_servers import _derive_status
-from src.server.handlers.chat.mcp_config import ResolvedMCP
+from src.server.services.mcp_config import ResolvedMCP
 from src.server.services.mcp_discovery import mcp_discovery_fingerprint
 from tests.conftest import create_test_app
 

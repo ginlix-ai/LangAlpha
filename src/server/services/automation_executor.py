@@ -159,6 +159,9 @@ class AutomationExecutor:
             )
 
             # ─── Invoke agent workflow ─────────────────────────────
+            # TODO(layering): sanctioned services→handlers residual — automation
+            # is an alternate run driver; fixing this means moving the run
+            # entrypoints into services/runs/ with handlers as thin adapters.
             from src.server.handlers.chat import (
                 astream_flash_workflow,
                 astream_ptc_workflow,
@@ -205,15 +208,15 @@ class AutomationExecutor:
             # Wait for background persistence (sse_events) to finish before
             # firing the completed webhook — otherwise the replay endpoint
             # may return empty text because the DB write hasn't landed yet.
-            from src.server.services.background_task_manager import BackgroundTaskManager
-            manager = BackgroundTaskManager.get_instance()
+            from src.server.services.runs.executor import LocalRunExecutor
+            manager = LocalRunExecutor.get_instance()
             await manager.wait_for_persistence(thread_id, run_id)
 
             # A drained generator is transport, not truth — it ends the same
             # way for success, a streamed error event, or a cancelled run.
             # The ledger's terminal row decides the outcome (v4 2.4); any
             # non-completed outcome routes through the failure branch below.
-            from src.server.database import turn_lifecycle as tl_db
+            from src.server.database.runs import lifecycle as tl_db
 
             run_row = await tl_db.get_run(run_id)
             run_outcome = run_row["status"] if run_row else None
