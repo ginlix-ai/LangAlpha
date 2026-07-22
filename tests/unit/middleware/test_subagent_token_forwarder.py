@@ -15,7 +15,7 @@ import pytest
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
 )
-from ptc_agent.agent.middleware.background_subagent.subagent import (
+from ptc_agent.agent.middleware.background_subagent.token_forwarder import (
     _SubagentTokenForwarder,
 )
 
@@ -118,7 +118,7 @@ async def test_forwards_text_chunks_one_per_token():
 @pytest.mark.asyncio
 async def test_reasoning_lifecycle_emits_inline_start_and_complete_on_transition():
     """First reasoning chunk → emit start signal. Transition to text → emit
-    complete signal. Mirrors WorkflowStreamHandler._process_message_chunk."""
+    complete signal. Mirrors RunSSEProducer._process_message_chunk."""
     registry = BackgroundTaskRegistry()
     task = await _register(registry)
     fw = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc")
@@ -167,7 +167,7 @@ async def test_reasoning_section_transition_inserts_separator():
     """When the summary_text index advances (0→1) a new reasoning section
     started: the forwarder must prepend a blank line so the next section's
     ``**Title**`` header lands on its own line instead of gluing onto the
-    previous section's prose. Mirrors WorkflowStreamHandler's main-agent path."""
+    previous section's prose. Mirrors RunSSEProducer's main-agent path."""
     registry = BackgroundTaskRegistry()
     task = await _register(registry)
     fw = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc")
@@ -469,7 +469,7 @@ async def test_tool_node_inner_llm_chunks_skipped():
     user-facing output arrives via ``tool_call_result``; surfacing the inner
     model's CoT here renders the extraction prompt's analysis as the
     subagent's own reasoning. Gate is keyed on ``langgraph_node="tools"``,
-    matching the gate in ``streaming_handler._process_message_chunk``."""
+    matching the gate in ``sse_producer._process_message_chunk``."""
     registry = BackgroundTaskRegistry()
     task = await _register(registry)
     fw = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc")

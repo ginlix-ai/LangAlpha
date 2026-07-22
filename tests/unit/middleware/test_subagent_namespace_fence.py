@@ -264,7 +264,7 @@ async def test_hydrate_running_meta_builds_live_task_with_real_identity():
         "task_run_id": "tr-remote-1",
     }
     with patch(
-        "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+        "ptc_agent.agent.middleware.background_subagent.redis_stream.read_task_meta",
         AsyncMock(return_value=meta),
     ):
         task = await mw._hydrate_from_checkpoint("abc123", "thread-x")
@@ -290,7 +290,7 @@ async def test_hydrate_running_meta_without_fence_stays_completed():
         checkpointer=_checkpointer({}),
     )
     with patch(
-        "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+        "ptc_agent.agent.middleware.background_subagent.redis_stream.read_task_meta",
         AsyncMock(return_value={"tool_call_id": "tc-remote", "status": "running"}),
     ):
         task = await mw._hydrate_from_checkpoint("abc123", "thread-x")
@@ -310,7 +310,7 @@ async def test_hydrate_running_meta_survives_missing_checkpoint():
         checkpointer=_checkpointer(None),
     )
     with patch(
-        "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+        "ptc_agent.agent.middleware.background_subagent.redis_stream.read_task_meta",
         AsyncMock(
             return_value={"tool_call_id": "tc-remote", "status": "running"}
         ),
@@ -329,7 +329,7 @@ async def test_hydrate_no_meta_no_checkpoint_returns_none():
         checkpointer=_checkpointer(None),
     )
     with patch(
-        "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+        "ptc_agent.agent.middleware.background_subagent.redis_stream.read_task_meta",
         AsyncMock(return_value=None),
     ):
         assert await mw._hydrate_from_checkpoint("abc123", "thread-x") is None
@@ -366,7 +366,7 @@ async def test_concurrent_hydrations_publish_one_object():
         checkpointer=_yielding_checkpointer({}),
     )
     with patch(
-        "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+        "ptc_agent.agent.middleware.background_subagent.redis_stream.read_task_meta",
         AsyncMock(return_value=dict(_COMPLETED_META)),
     ):
         t1, t2 = await asyncio.gather(
@@ -402,7 +402,7 @@ async def test_parallel_resumes_through_hydration_register_the_spawned_writer():
         "subagent_type": "general-purpose",
     }
     with patch(
-        "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+        "ptc_agent.agent.middleware.background_subagent.redis_stream.read_task_meta",
         AsyncMock(return_value=dict(_COMPLETED_META)),
     ):
         r1, r2 = await asyncio.gather(
@@ -696,7 +696,7 @@ async def test_followup_reclaimed_when_run_settles_mid_push():
             return_value=cache,
         ),
         patch(
-            "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+            "ptc_agent.agent.middleware.background_subagent.redis_stream.read_task_meta",
             AsyncMock(return_value={"status": "completed"}),
         ),
     ):
@@ -720,7 +720,7 @@ async def test_followup_stands_while_meta_still_running():
             return_value=cache,
         ),
         patch(
-            "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+            "ptc_agent.agent.middleware.background_subagent.redis_stream.read_task_meta",
             AsyncMock(
                 return_value={"status": "running", "task_run_id": "run-9"}
             ),
@@ -747,7 +747,7 @@ async def test_followup_reclaimed_when_epoch_rotates_mid_push():
             return_value=cache,
         ),
         patch(
-            "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+            "ptc_agent.agent.middleware.background_subagent.redis_stream.read_task_meta",
             AsyncMock(
                 return_value={"status": "running", "task_run_id": "run-10"}
             ),
@@ -779,7 +779,7 @@ async def test_followup_lapsed_meta_falls_back_to_the_injected_ledger():
             return_value=cache,
         ),
         patch(
-            "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+            "ptc_agent.agent.middleware.background_subagent.redis_stream.read_task_meta",
             AsyncMock(return_value=None),
         ),
     ):
@@ -804,7 +804,7 @@ async def test_followup_fails_open_when_no_authority_is_readable():
             return_value=cache,
         ),
         patch(
-            "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+            "ptc_agent.agent.middleware.background_subagent.redis_stream.read_task_meta",
             AsyncMock(return_value=None),
         ),
     ):
@@ -826,7 +826,7 @@ async def test_sweep_deletes_only_after_every_entry_is_surfaced():
     """The queue must outlive its own archival: DEL runs after the appends,
     so a crash or spill failure between the two leaves acknowledged input
     recoverable in Redis instead of silently destroyed."""
-    from ptc_agent.agent.middleware.background_subagent.middleware import (
+    from ptc_agent.agent.middleware.background_subagent.run_executor import (
         _return_unconsumed_steering,
     )
 
@@ -867,7 +867,7 @@ async def test_sweep_keeps_the_queue_when_the_spill_tears_mid_sweep():
     """An append that opens the write circuit means the entries never made
     the archive — the DEL is skipped so they survive to their TTL as the
     durable record of what was lost."""
-    from ptc_agent.agent.middleware.background_subagent.middleware import (
+    from ptc_agent.agent.middleware.background_subagent.run_executor import (
         _return_unconsumed_steering,
     )
 
@@ -898,7 +898,7 @@ async def test_sweep_withholds_delete_when_appends_do_not_land():
     counter (whatever the cause), the frames never reached the archive —
     the DEL must be withheld so the queue survives as the TTL record of
     acknowledged input."""
-    from ptc_agent.agent.middleware.background_subagent.middleware import (
+    from ptc_agent.agent.middleware.background_subagent.run_executor import (
         _return_unconsumed_steering,
     )
 
@@ -924,7 +924,7 @@ async def test_sweep_withholds_delete_when_appends_do_not_land():
 async def test_sweep_skips_entirely_when_the_circuit_is_already_open():
     """With a torn transport, appends would no-op against the circuit and
     the delete would erase unsurfaced input — leave everything to TTL."""
-    from ptc_agent.agent.middleware.background_subagent.middleware import (
+    from ptc_agent.agent.middleware.background_subagent.run_executor import (
         _return_unconsumed_steering,
     )
 

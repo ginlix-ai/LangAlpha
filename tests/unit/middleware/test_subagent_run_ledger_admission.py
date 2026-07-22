@@ -422,9 +422,9 @@ async def test_run_end_appends_after_the_sweep(monkeypatch):
     async def _sweep(_registry, _task):
         journal.append(("sweep",))
 
-    from ptc_agent.agent.middleware.background_subagent import middleware as mwmod
+    from ptc_agent.agent.middleware.background_subagent import run_executor
 
-    monkeypatch.setattr(mwmod, "_return_unconsumed_steering", _sweep)
+    monkeypatch.setattr(run_executor, "_return_unconsumed_steering", _sweep)
 
     await mw.awrap_tool_call(_request({"description": "d", "prompt": "p"}), _ok_handler)
     await mw.registry._tasks["tc-1"].asyncio_task

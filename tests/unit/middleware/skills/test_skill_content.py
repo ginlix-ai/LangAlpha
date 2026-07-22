@@ -8,22 +8,22 @@ Covers two pure functions that the SkillsMiddleware composes:
 - ``compute_already_loaded`` — which skills' bodies are still live in the
   effective (post-compaction) message window, so the body can be skipped.
 
-Import + patch targets use the ``src.`` prefix consistently: ``src.ptc_agent.X``
-and ``ptc_agent.X`` are distinct module objects, so the patch namespace must match
-the import namespace or ``patch`` hits the wrong module.
+Import + patch targets use the bare ``ptc_agent.X`` namespace — the package's
+one module identity (a ``src.``-prefixed import would create a distinct module
+object whose patches never reach production code; ruff TID251 bans it).
 """
 
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.ptc_agent.agent.middleware.skills.content import (
+from ptc_agent.agent.middleware.skills.content import (
     SkillRequest,
     build_skill_content,
     compute_already_loaded,
 )
 
-MOD = "src.ptc_agent.agent.middleware.skills.content"
+MOD = "ptc_agent.agent.middleware.skills.content"
 
 
 def _ctx(name: str, instruction: str | None = None) -> SkillRequest:

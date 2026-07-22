@@ -13,7 +13,7 @@ import asyncio
 import pytest
 from langchain_core.messages import ToolMessage
 
-from ptc_agent.agent.middleware.background_subagent.middleware import (
+from ptc_agent.agent.middleware.background_subagent.run_executor import (
     _run_background_task,
 )
 from ptc_agent.agent.middleware.background_subagent.registry import BackgroundTask

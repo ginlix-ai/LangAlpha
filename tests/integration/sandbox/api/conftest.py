@@ -92,10 +92,10 @@ async def files_client(mock_session, sandbox):
 
     with (
         patch(
-            "src.server.app.workspace_files.db_get_workspace",
+            "src.server.app.workspace_files.crud.db_get_workspace",
             AsyncMock(return_value=_make_workspace()),
         ),
-        patch("src.server.app.workspace_files.WorkspaceManager") as MockWM,
+        patch("src.server.app.workspace_files.crud.WorkspaceManager") as MockWM,
     ):
         MockWM.get_instance.return_value = mock_manager
         async with AsyncClient(

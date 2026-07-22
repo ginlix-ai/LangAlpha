@@ -17,7 +17,7 @@ from ptc_agent.core.mcp_sanitize import (
     vault_refs,
 )
 
-from src.ptc_agent.config.core import MCPServerConfig
+from ptc_agent.config.core import MCPServerConfig
 
 
 class _Tool:

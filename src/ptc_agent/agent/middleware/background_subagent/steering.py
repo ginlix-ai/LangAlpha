@@ -24,6 +24,8 @@ from langchain.agents.middleware.types import AgentMiddleware, AgentState
 from ptc_agent.agent.middleware.background_subagent.middleware import current_background_tool_call_id
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
+)
+from ptc_agent.agent.middleware.background_subagent.redis_stream import (
     parse_steering_payload,
     steering_queue_key,
 )

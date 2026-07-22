@@ -209,7 +209,7 @@ async def test_redis_spill_timeout_flips_flag_no_hang(monkeypatch) -> None:
         "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
     )
     monkeypatch.setattr(
-        "ptc_agent.agent.middleware.background_subagent.registry._SPILL_TIMEOUT_SECONDS",
+        "ptc_agent.agent.middleware.background_subagent.redis_stream._SPILL_TIMEOUT_SECONDS",
         0.05,
     )
 
@@ -253,7 +253,7 @@ async def test_redis_spill_timeout_landed_write_recovers(monkeypatch) -> None:
         "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
     )
     monkeypatch.setattr(
-        "ptc_agent.agent.middleware.background_subagent.registry._SPILL_TIMEOUT_SECONDS",
+        "ptc_agent.agent.middleware.background_subagent.redis_stream._SPILL_TIMEOUT_SECONDS",
         0.05,
     )
 
@@ -293,7 +293,7 @@ async def test_redis_spill_timeout_retry_succeeds(monkeypatch) -> None:
         "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
     )
     monkeypatch.setattr(
-        "ptc_agent.agent.middleware.background_subagent.registry._SPILL_TIMEOUT_SECONDS",
+        "ptc_agent.agent.middleware.background_subagent.redis_stream._SPILL_TIMEOUT_SECONDS",
         0.05,
     )
 
@@ -327,7 +327,7 @@ async def test_redis_spill_v2_timeout_landed_recovers(monkeypatch) -> None:
         "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
     )
     monkeypatch.setattr(
-        "ptc_agent.agent.middleware.background_subagent.registry._SPILL_TIMEOUT_SECONDS",
+        "ptc_agent.agent.middleware.background_subagent.redis_stream._SPILL_TIMEOUT_SECONDS",
         0.05,
     )
 
@@ -363,7 +363,7 @@ async def test_redis_spill_v2_timeout_not_landed_trips_circuit(monkeypatch) -> N
         "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
     )
     monkeypatch.setattr(
-        "ptc_agent.agent.middleware.background_subagent.registry._SPILL_TIMEOUT_SECONDS",
+        "ptc_agent.agent.middleware.background_subagent.redis_stream._SPILL_TIMEOUT_SECONDS",
         0.05,
     )
 
@@ -534,8 +534,8 @@ def _make_pipeline_capture(execute_return=None):
             )
             return self
 
-        def expire(self, name, ttl):
-            queued["expire"].append({"name": name, "ttl": ttl})
+        def expire(self, name, ttl, nx=False):
+            queued["expire"].append({"name": name, "ttl": ttl, "nx": nx})
             return self
 
         async def execute(self):
@@ -593,7 +593,7 @@ async def test_sentinel_writes_xadd_no_seq_bump(monkeypatch) -> None:
     assert b'"event": "subagent_stream_end"' in payload
 
     assert queued["expire"] == [
-        {"name": f"subagent:stream:thread-x:{task.task_id}", "ttl": 86400}
+        {"name": f"subagent:stream:thread-x:{task.task_id}", "ttl": 86400, "nx": False}
     ]
 
     assert task.captured_event_seq == 0
@@ -743,10 +743,12 @@ async def test_stamp_terminal_retention_runs_even_when_circuit_open(
 
     await registry.stamp_terminal_retention(task.tool_call_id)
 
+    # nx=True: the attach-grace stamp is set-if-absent so it can never
+    # resurrect the shorter post-collection retention window.
     assert queued["expire"] == [
-        {"name": f"subagent:stream:thread-x:{task.task_id}", "ttl": 86400},
-        {"name": f"subagent:events:meta:thread-x:{task.task_id}", "ttl": 86400},
-        {"name": "subagent:stream:thread-x:run-77", "ttl": 86400},
+        {"name": f"subagent:stream:thread-x:{task.task_id}", "ttl": 86400, "nx": True},
+        {"name": f"subagent:events:meta:thread-x:{task.task_id}", "ttl": 86400, "nx": True},
+        {"name": "subagent:stream:thread-x:run-77", "ttl": 86400, "nx": True},
     ]
     assert queued["xadd"] == []
 

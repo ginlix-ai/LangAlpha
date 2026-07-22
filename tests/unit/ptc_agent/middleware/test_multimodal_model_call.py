@@ -1,7 +1,7 @@
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.ptc_agent.agent.middleware.file_operations.multimodal import (
+from ptc_agent.agent.middleware.file_operations.multimodal import (
     _strip_unsupported_content_blocks,
 )
 

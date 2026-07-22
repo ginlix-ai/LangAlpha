@@ -18,6 +18,8 @@ import pytest
 
 from ptc_agent.agent.middleware.background_subagent.middleware import (
     BackgroundSubagentMiddleware,
+)
+from ptc_agent.agent.middleware.background_subagent.run_executor import (
     _make_task_done_callback,
 )
 from ptc_agent.agent.middleware.background_subagent.registry import (
@@ -239,7 +241,7 @@ async def test_finalize_cancelled_before_spawn_runs_owner_pipeline():
     middleware, ledger, task = _pipeline_harness(order)
 
     with patch(
-        "ptc_agent.agent.middleware.background_subagent.middleware."
+        "ptc_agent.agent.middleware.background_subagent.run_executor."
         "_return_unconsumed_steering",
         AsyncMock(side_effect=lambda *a, **k: order.append("sweep")),
     ):
@@ -272,7 +274,7 @@ async def test_finalize_cancelled_before_spawn_suppresses_run_end_on_torn_stream
     task.redis_write_failed = True
 
     with patch(
-        "ptc_agent.agent.middleware.background_subagent.middleware."
+        "ptc_agent.agent.middleware.background_subagent.run_executor."
         "_return_unconsumed_steering",
         AsyncMock(side_effect=lambda *a, **k: order.append("sweep")),
     ):
@@ -298,7 +300,9 @@ async def test_never_started_writer_cancel_finalizes_via_done_callback():
         task.handler_task = MagicMock()
 
     writer = asyncio.get_running_loop().create_task(_writer_body())
-    writer.add_done_callback(_make_task_done_callback(task, middleware))
+    writer.add_done_callback(
+        _make_task_done_callback(task, middleware._finalize_cancelled_before_spawn)
+    )
     writer.cancel()
     try:
         await writer
@@ -329,7 +333,9 @@ async def test_started_writer_cancel_skips_done_callback_finalization():
 
     writer = asyncio.get_running_loop().create_task(_writer_body())
     await started.wait()
-    writer.add_done_callback(_make_task_done_callback(task, middleware))
+    writer.add_done_callback(
+        _make_task_done_callback(task, middleware._finalize_cancelled_before_spawn)
+    )
     writer.cancel()
     try:
         await writer

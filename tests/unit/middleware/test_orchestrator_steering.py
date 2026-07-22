@@ -63,7 +63,7 @@ class TestHasPendingSteering:
         )
         checker = AsyncMock(return_value=True)
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=checker),
         ):
             assert await orch._has_pending_steering(_config()) is True
@@ -75,7 +75,7 @@ class TestHasPendingSteering:
         )
         checker = AsyncMock(return_value=False)
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=checker),
         ):
             assert await orch._has_pending_steering(_config()) is False
@@ -87,7 +87,7 @@ class TestHasPendingSteering:
             _make_agent(), _make_middleware()
         )
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=None),
         ):
             assert await orch._has_pending_steering(_config()) is False
@@ -100,7 +100,7 @@ class TestHasPendingSteering:
         )
         checker = AsyncMock(side_effect=ConnectionError("redis down"))
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=checker),
         ):
             assert await orch._has_pending_steering(_config()) is False
@@ -122,7 +122,7 @@ class TestReinvokeForSteering:
 
         checker = AsyncMock(return_value=True)
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=checker),
         ):
             result = await orch._reinvoke_for_steering(cfg, iteration=1)
@@ -142,7 +142,7 @@ class TestReinvokeForSteering:
 
         checker = AsyncMock(return_value=False)
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=checker),
         ):
             result = await orch._reinvoke_for_steering(_config(), iteration=1)
@@ -178,7 +178,7 @@ class TestAstreamGapB:
             return call_count == 1
 
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=_checker),
         ):
             events = []
@@ -199,7 +199,7 @@ class TestAstreamGapB:
 
         checker = AsyncMock(return_value=False)
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=checker),
         ):
             events = []
@@ -238,7 +238,7 @@ class TestAstreamGapC:
             return call_count == 1
 
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=_checker),
         ):
             events = []
@@ -272,7 +272,7 @@ class TestAinvokeGapD:
             return call_count == 1
 
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=_checker),
         ):
             await orch.ainvoke({"messages": []}, cfg)
@@ -301,7 +301,7 @@ class TestMaxIterationsGuard:
         # Always report steering pending → would loop forever without guard
         checker = AsyncMock(return_value=True)
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=checker),
         ):
             events = []

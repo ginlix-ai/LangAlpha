@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.ptc_agent.agent.middleware.steering import SteeringMiddleware
+from ptc_agent.agent.middleware.steering import SteeringMiddleware
 from tests.unit.server.handlers.chat.redis_fakes import FakeCache
 
 _KEY = "workflow:steering:t-1"

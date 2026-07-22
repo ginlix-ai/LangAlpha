@@ -14,10 +14,10 @@ from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.middleware.background_subagent.middleware import (
     BackgroundSubagentMiddleware,
 )
-from ptc_agent.agent.middleware.background_subagent.utils import (
-    build_message_checker,
-    config_own_run_id,
-)
+# Module-attribute binding (not a direct symbol import) so a single patch of
+# utils.build_message_checker governs every caller — tools.py binds the same way.
+from ptc_agent.agent.middleware.background_subagent import utils
+from ptc_agent.agent.middleware.background_subagent.utils import config_own_run_id
 
 logger = structlog.get_logger(__name__)
 
@@ -126,7 +126,7 @@ class BackgroundSubagentOrchestrator:
             # If there are still pending background tasks, wait for them.
             if self.middleware.registry.has_pending_tasks():
                 thread_id = (config.get("configurable") or {}).get("thread_id")
-                checker = await build_message_checker(
+                checker = await utils.build_message_checker(
                     thread_id, own_run_id=config_own_run_id(config)
                 )
                 logger.info(
@@ -283,7 +283,7 @@ class BackgroundSubagentOrchestrator:
 
             # Wait for all background tasks to complete
             thread_id = (config.get("configurable") or {}).get("thread_id")
-            checker = await build_message_checker(
+            checker = await utils.build_message_checker(
                 thread_id, own_run_id=config_own_run_id(config)
             )
             logger.info(
@@ -384,7 +384,7 @@ class BackgroundSubagentOrchestrator:
     async def _has_pending_steering(self, config: dict[str, Any]) -> bool:
         """Check if there are pending steering messages this run would consume."""
         thread_id = (config.get("configurable") or {}).get("thread_id")
-        checker = await build_message_checker(
+        checker = await utils.build_message_checker(
             thread_id, own_run_id=config_own_run_id(config)
         )
         if checker is None:

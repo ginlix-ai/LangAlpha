@@ -13,10 +13,10 @@ import structlog
 from langchain_core.tools import StructuredTool
 from langgraph.config import get_config
 
-from ptc_agent.agent.middleware.background_subagent.utils import (
-    build_message_checker,
-    config_own_run_id,
-)
+# Module-attribute binding to keep utils.build_message_checker the single patch
+# point shared with orchestrator.py.
+from ptc_agent.agent.middleware.background_subagent import utils
+from ptc_agent.agent.middleware.background_subagent.utils import config_own_run_id
 
 if TYPE_CHECKING:
     from ptc_agent.agent.middleware.background_subagent.middleware import (
@@ -246,7 +246,7 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
             )
             cfg = get_config()
             thread_id = cfg.get("configurable", {}).get("thread_id")
-            checker = await build_message_checker(
+            checker = await utils.build_message_checker(
                 thread_id, own_run_id=config_own_run_id(cfg)
             )
             result = await registry.wait_for_specific(
@@ -340,7 +340,7 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
 
         cfg = get_config()
         thread_id = cfg.get("configurable", {}).get("thread_id")
-        checker = await build_message_checker(
+        checker = await utils.build_message_checker(
             thread_id, own_run_id=config_own_run_id(cfg)
         )
         results = await registry.wait_for_all(timeout=timeout, message_checker=checker)

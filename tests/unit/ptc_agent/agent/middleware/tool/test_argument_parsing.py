@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 
-from src.ptc_agent.agent.middleware.tool.argument_parsing import (
+from ptc_agent.agent.middleware.tool.argument_parsing import (
     ToolArgumentParsingMiddleware,
 )
 
