@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { type SubagentTokenUsage, ZERO_USAGE } from '../utils/tokenUsage';
-import { isTerminalStatus } from '../utils/subagentStatus';
+import { isTerminalStatus } from '../session/subagents/subagentStatus';
 
 // --- Card-level types ---
 

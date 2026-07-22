@@ -15,6 +15,7 @@ import { act } from '@testing-library/react';
 export function apiMockModule<T extends Record<string, unknown>>(overrides = {} as T) {
   return {
     sendChatMessageStream: vi.fn(),
+    sendRetryStream: vi.fn(),
     sendHitlResponse: vi.fn(),
     cancelWorkflow: vi.fn().mockResolvedValue({ success: true }),
     replayThreadHistory: vi.fn().mockResolvedValue(undefined),
@@ -31,6 +32,83 @@ export function apiMockModule<T extends Record<string, unknown>>(overrides = {} 
     getThreadFeedback: vi.fn().mockResolvedValue([]),
     watchThread: vi.fn().mockImplementation(() => ({ abort: new AbortController() })),
     fetchMarketWatch: vi.fn().mockResolvedValue({ thread_id: 't', symbols: [] }),
+    ...overrides,
+  };
+}
+
+/**
+ * importOriginal-partial mocks for the stream-handler leaves. Mock the LEAF
+ * module, not the `../utils/streamEventHandlers` barrel: the barrel re-exports
+ * the mocked leaf, so both import routes stay intercepted, while the session
+ * modules (which import leaves directly) are covered too. Stubbed names are
+ * replaced; every other export keeps its real implementation, so a factory
+ * cannot go stale as its module gains or loses exports.
+ */
+export function mainHandlersMockModule(
+  original: unknown,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    ...(original as Record<string, unknown>),
+    handleReasoningSignal: vi.fn(),
+    handleReasoningContent: vi.fn(),
+    handleTextContent: vi.fn(),
+    handleToolCalls: vi.fn(),
+    handleToolCallResult: vi.fn(),
+    handleToolCallChunks: vi.fn(),
+    handleTodoUpdate: vi.fn(),
+    ...overrides,
+  };
+}
+
+/** Leaf mock for `session/subagents/liveEventHandlers` (same partial rule). */
+export function subagentHandlersMockModule(
+  original: unknown,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    ...(original as Record<string, unknown>),
+    isSubagentEvent: vi.fn().mockReturnValue(false),
+    handleSubagentMessageChunk: vi.fn(),
+    handleSubagentToolCallChunks: vi.fn(),
+    handleSubagentToolCalls: vi.fn(),
+    handleSubagentToolCallResult: vi.fn(),
+    handleTaskSteeringAccepted: vi.fn(),
+    ...overrides,
+  };
+}
+
+/** Leaf mock for `session/streamRefs` (same partial rule). */
+export function streamRefsMockModule(
+  original: unknown,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    ...(original as Record<string, unknown>),
+    getOrCreateTaskRefs: vi.fn().mockReturnValue({
+      contentOrderCounterRef: { current: 0 },
+      currentReasoningIdRef: { current: null },
+      currentToolCallIdRef: { current: null },
+    }),
+    ...overrides,
+  };
+}
+
+/** importOriginal-partial mock for `../utils/historyEventHandlers` (same rule). */
+export function historyHandlersMockModule(
+  original: unknown,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    ...(original as Record<string, unknown>),
+    handleHistoryUserMessage: vi.fn(),
+    handleHistoryReasoningSignal: vi.fn(),
+    handleHistoryReasoningContent: vi.fn(),
+    handleHistoryTextContent: vi.fn(),
+    handleHistoryToolCalls: vi.fn(),
+    handleHistoryToolCallResult: vi.fn(),
+    handleHistoryTodoUpdate: vi.fn(),
+    handleHistorySteeringDelivered: vi.fn(),
     ...overrides,
   };
 }

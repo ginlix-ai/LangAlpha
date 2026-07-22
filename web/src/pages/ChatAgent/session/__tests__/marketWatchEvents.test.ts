@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { handleMarketWatchUpdate } from '../streamEventHandlers';
-import type { MarketWatchState } from '../streamEventHandlers';
+import { handleMarketWatchUpdate } from '../marketWatchEvents';
+import type { MarketWatchState } from '../marketWatchEvents';
 
 describe('handleMarketWatchUpdate (streaming)', () => {
   it('parses symbols + content + timestamp onto the setter', () => {
