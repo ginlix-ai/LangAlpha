@@ -16,6 +16,8 @@ from httpx import ASGITransport, AsyncClient
 
 from tests.conftest import create_test_app
 
+THREADS_MOD = "src.server.app.threads.provenance"
+
 THREAD_ID = "11111111-1111-1111-1111-111111111111"
 RESPONSE_0 = "22222222-2222-2222-2222-222222222222"
 RESPONSE_1 = "33333333-3333-3333-3333-333333333333"
@@ -96,15 +98,15 @@ def _patch_body_store(owner, rows, bodies, *, full_body=None):
             new=AsyncMock(return_value=owner),
         ),
         patch(
-            "src.server.app.threads.get_provenance_body_refs",
+            f"{THREADS_MOD}.get_provenance_body_refs",
             new=AsyncMock(side_effect=_get_body_refs),
         ),
         patch(
-            "src.server.app.threads.get_provenance_record",
+            f"{THREADS_MOD}.get_provenance_record",
             new=AsyncMock(side_effect=_get_record),
         ),
         patch(
-            "src.server.database.conversation.get_db_connection",
+            "src.server.database.pool.get_db_connection",
             new=_fake_db_conn,
         ),
         patch(
@@ -296,7 +298,7 @@ class TestGetProvenanceShape:
                 new=AsyncMock(return_value=OWNER_ID),
             ),
             patch(
-                "src.server.app.threads.get_provenance_for_thread",
+                f"{THREADS_MOD}.get_provenance_for_thread",
                 new=AsyncMock(return_value=rows),
             ),
         ):
@@ -323,7 +325,7 @@ class TestGetProvenanceShape:
                 new=AsyncMock(return_value=OWNER_ID),
             ),
             patch(
-                "src.server.app.threads.get_provenance_for_thread",
+                f"{THREADS_MOD}.get_provenance_for_thread",
                 new=AsyncMock(return_value=[]),
             ),
         ):
@@ -346,7 +348,7 @@ class TestGetProvenanceShape:
                 new=AsyncMock(return_value=OWNER_ID),
             ),
             patch(
-                "src.server.app.threads.get_provenance_for_thread",
+                f"{THREADS_MOD}.get_provenance_for_thread",
                 new=AsyncMock(return_value=[row]),
             ),
         ):

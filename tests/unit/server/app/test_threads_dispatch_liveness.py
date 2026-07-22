@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 CALLER = "test-user-123"  # create_test_app's bypassed user id
 
-LEDGER = "src.server.database.turn_lifecycle.get_latest_attempts_for_threads"
+LEDGER = "src.server.database.runs.lifecycle.get_latest_attempts_for_threads"
 
 
 def _row(tid, status, *, run_id=None, cancel_requested_at=None):
@@ -196,10 +196,10 @@ def _fake_db():
 
 @pytest.mark.asyncio
 async def test_helper_drops_non_uuid_ids_before_bind():
-    from src.server.database import turn_lifecycle as tl_db
+    from src.server.database.runs import lifecycle as tl_db
 
     fake_db, cursor = _fake_db()
-    with patch("src.server.database.conversation.get_db_connection", new=fake_db):
+    with patch("src.server.database.pool.get_db_connection", new=fake_db):
         got = await tl_db.get_latest_attempts_for_threads(
             ["not-a-uuid", ""], CALLER
         )
@@ -210,11 +210,11 @@ async def test_helper_drops_non_uuid_ids_before_bind():
 
 @pytest.mark.asyncio
 async def test_helper_binds_normalized_ids_and_owner():
-    from src.server.database import turn_lifecycle as tl_db
+    from src.server.database.runs import lifecycle as tl_db
 
     valid = str(uuid.uuid4())
     fake_db, cursor = _fake_db()
-    with patch("src.server.database.conversation.get_db_connection", new=fake_db):
+    with patch("src.server.database.pool.get_db_connection", new=fake_db):
         await tl_db.get_latest_attempts_for_threads([valid, "junk"], CALLER)
 
     bound_ids, bound_user = cursor.execute.await_args.args[1]

@@ -20,6 +20,9 @@ from src.server.database.conversation import ExternalIdConflictError
 from src.server.utils.api import get_current_user_id, get_stamp_auth
 from tests.conftest import create_test_app
 
+THREADS_MOD = "src.server.app.threads.crud"
+AUTH_MOD = "src.server.utils.api"
+
 USER = "test-user-123"
 
 # Sentinel so _stamp_app() can distinguish "use the default user-scoped caller"
@@ -101,9 +104,9 @@ async def test_stamp_success():
     app = _stamp_app()
     row = _thread_row(platform="telegram", external_id="chat:42")
     with (
-        patch("src.server.app.threads.require_thread_owner", new=AsyncMock()),
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
         patch(
-            "src.server.app.threads.update_thread_external_id",
+            f"{THREADS_MOD}.update_thread_external_id",
             new=AsyncMock(return_value=row),
         ) as m,
     ):
@@ -120,9 +123,9 @@ async def test_stamp_idempotent_restamp():
     app = _stamp_app()
     row = _thread_row(platform="telegram", external_id="chat:42")
     with (
-        patch("src.server.app.threads.require_thread_owner", new=AsyncMock()),
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
         patch(
-            "src.server.app.threads.update_thread_external_id",
+            f"{THREADS_MOD}.update_thread_external_id",
             new=AsyncMock(return_value=row),
         ),
     ):
@@ -137,9 +140,9 @@ async def test_stamp_idempotent_restamp():
 async def test_stamp_conflict_returns_409():
     app = _stamp_app()
     with (
-        patch("src.server.app.threads.require_thread_owner", new=AsyncMock()),
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
         patch(
-            "src.server.app.threads.update_thread_external_id",
+            f"{THREADS_MOD}.update_thread_external_id",
             new=AsyncMock(
                 side_effect=ExternalIdConflictError(
                     platform="telegram", external_id="chat:42"
@@ -161,7 +164,7 @@ async def test_stamp_platform_only_is_422():
     """external_id is required — a lone field is rejected by the model (422)."""
     app = _stamp_app()
     with patch(
-        "src.server.app.threads.update_thread_external_id", new=AsyncMock()
+        f"{THREADS_MOD}.update_thread_external_id", new=AsyncMock()
     ) as m:
         resp = await _put(app, {"platform": "telegram"})
 
@@ -173,7 +176,7 @@ async def test_stamp_platform_only_is_422():
 async def test_stamp_external_id_only_is_422():
     app = _stamp_app()
     with patch(
-        "src.server.app.threads.update_thread_external_id", new=AsyncMock()
+        f"{THREADS_MOD}.update_thread_external_id", new=AsyncMock()
     ) as m:
         resp = await _put(app, {"external_id": "chat:42"})
 
@@ -186,7 +189,7 @@ async def test_stamp_empty_fields_is_422():
     """Empty strings never clear external_id back to NULL — min_length rejects."""
     app = _stamp_app()
     with patch(
-        "src.server.app.threads.update_thread_external_id", new=AsyncMock()
+        f"{THREADS_MOD}.update_thread_external_id", new=AsyncMock()
     ) as m:
         resp = await _put(app, {"platform": "", "external_id": ""})
 
@@ -199,13 +202,13 @@ async def test_stamp_not_owner_is_forbidden():
     app = _stamp_app()
     with (
         patch(
-            "src.server.app.threads.require_thread_owner",
+            f"{AUTH_MOD}.require_thread_owner",
             new=AsyncMock(
                 side_effect=HTTPException(status_code=403, detail="Forbidden")
             ),
         ),
         patch(
-            "src.server.app.threads.update_thread_external_id",
+            f"{THREADS_MOD}.update_thread_external_id",
             new=AsyncMock(),
         ) as m,
     ):
@@ -220,9 +223,9 @@ async def test_stamp_thread_missing_is_404():
     """update_thread_external_id returns None (thread vanished) → 404."""
     app = _stamp_app()
     with (
-        patch("src.server.app.threads.require_thread_owner", new=AsyncMock()),
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
         patch(
-            "src.server.app.threads.update_thread_external_id",
+            f"{THREADS_MOD}.update_thread_external_id",
             new=AsyncMock(return_value=None),
         ),
     ):
@@ -243,9 +246,9 @@ async def test_stamp_service_no_user_skips_ownership():
     app = _stamp_app(None)
     row = _thread_row(platform="telegram", external_id="chat:42")
     with (
-        patch("src.server.app.threads.require_thread_owner", new=AsyncMock()) as owner,
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()) as owner,
         patch(
-            "src.server.app.threads.update_thread_external_id",
+            f"{THREADS_MOD}.update_thread_external_id",
             new=AsyncMock(return_value=row),
         ) as m,
     ):
@@ -262,9 +265,9 @@ async def test_stamp_service_with_user_keeps_ownership():
     app = _stamp_app(USER)
     row = _thread_row(platform="telegram", external_id="chat:42")
     with (
-        patch("src.server.app.threads.require_thread_owner", new=AsyncMock()) as owner,
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()) as owner,
         patch(
-            "src.server.app.threads.update_thread_external_id",
+            f"{THREADS_MOD}.update_thread_external_id",
             new=AsyncMock(return_value=row),
         ) as m,
     ):
@@ -280,9 +283,9 @@ async def test_stamp_service_conflict_still_409():
     """The service path surfaces the same 409 conflict body as the user path."""
     app = _stamp_app(None)
     with (
-        patch("src.server.app.threads.require_thread_owner", new=AsyncMock()),
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
         patch(
-            "src.server.app.threads.update_thread_external_id",
+            f"{THREADS_MOD}.update_thread_external_id",
             new=AsyncMock(
                 side_effect=ExternalIdConflictError(
                     platform="telegram", external_id="chat:42"
@@ -309,9 +312,9 @@ async def test_stamp_real_service_token_no_user_id():
     row = _thread_row(platform="telegram", external_id="chat:42")
     with (
         patch("src.server.utils.api._SERVICE_TOKEN", "svc-secret"),
-        patch("src.server.app.threads.require_thread_owner", new=AsyncMock()) as owner,
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()) as owner,
         patch(
-            "src.server.app.threads.update_thread_external_id",
+            f"{THREADS_MOD}.update_thread_external_id",
             new=AsyncMock(return_value=row),
         ) as m,
     ):
@@ -334,9 +337,9 @@ async def test_stamp_real_service_token_with_user_enforces_ownership():
     row = _thread_row(platform="telegram", external_id="chat:42")
     with (
         patch("src.server.utils.api._SERVICE_TOKEN", "svc-secret"),
-        patch("src.server.app.threads.require_thread_owner", new=AsyncMock()) as owner,
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()) as owner,
         patch(
-            "src.server.app.threads.update_thread_external_id",
+            f"{THREADS_MOD}.update_thread_external_id",
             new=AsyncMock(return_value=row),
         ) as m,
     ):
@@ -358,7 +361,7 @@ async def test_stamp_real_invalid_service_token_is_401():
     with (
         patch("src.server.utils.api._SERVICE_TOKEN", "svc-secret"),
         patch(
-            "src.server.app.threads.update_thread_external_id", new=AsyncMock()
+            f"{THREADS_MOD}.update_thread_external_id", new=AsyncMock()
         ) as m,
     ):
         resp = await _put(
@@ -381,9 +384,9 @@ async def test_patch_title_renames():
     app = _title_app()
     row = _thread_row(title="Renamed")
     with (
-        patch("src.server.app.threads.require_thread_owner", new=AsyncMock()),
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
         patch(
-            "src.server.app.threads.update_thread_title",
+            f"{THREADS_MOD}.update_thread_title",
             new=AsyncMock(return_value=row),
         ) as m,
     ):
@@ -404,8 +407,8 @@ async def test_patch_title_service_no_user_is_401():
     app.dependency_overrides.pop(get_current_user_id, None)
     with (
         patch("src.server.utils.api._SERVICE_TOKEN", "svc-secret"),
-        patch("src.server.app.threads.require_thread_owner", new=AsyncMock()) as owner,
-        patch("src.server.app.threads.update_thread_title", new=AsyncMock()) as title,
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()) as owner,
+        patch(f"{THREADS_MOD}.update_thread_title", new=AsyncMock()) as title,
     ):
         resp = await _patch(
             app, {"title": "Renamed"}, headers={"X-Service-Token": "svc-secret"}

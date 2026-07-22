@@ -1,68 +1,30 @@
-"""
-Unified Thread Router — all thread-related endpoints under /api/v1/threads.
+"""Thread messaging: send/stream SSE, reconnect/replay, control, retry, mux."""
 
-Route definitions are thin; business logic lives in handlers/.
-"""
-
-import hashlib
 import json
-import logging
-import secrets
-from datetime import datetime, timezone
-from typing import Annotated, Optional
+from typing import Optional
 from uuid import uuid4
 
 import asyncio
-import os
 
-from fastapi import APIRouter, Header, HTTPException, Path, Query, Request
+from fastapi import Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
 
-from src.server.services.features import user_feature_enabled
+# require_thread_owner is called through the module (auth_api.…) so a single
+# definition-site patch governs every route — a consumer-site patch that stops
+# intercepting after a move would silently bypass auth in tests.
+from src.server.utils import api as auth_api
 from src.server.utils.api import (
     CurrentUserId,
-    StampThreadAuth,
-    require_thread_owner,
     require_workspace_owner,
     service_token_matches,
 )
-from src.utils.market_watch import get_watchlist
-from src.server.models.chat import ChatRequest, SubagentMessageRequest
-from src.server.models.conversation import (
-    WorkspaceThreadListItem,
-    WorkspaceThreadsListResponse,
-    ThreadUpdateRequest,
-    ThreadExternalIdRequest,
-    ThreadDeleteResponse,
-    ThreadShareRequest,
-    ThreadShareResponse,
-    SharePermissions,
-    FeedbackRequest,
-    FeedbackResponse,
-)
+from src.server.models.chat import ChatRequest
 from src.server.models.workflow import RetryRequest
 from src.server.database.conversation import (
-    ExternalIdConflictError,
-    external_id_conflict_payload,
-    get_workspace_threads,
-    get_threads_for_user,
-    delete_thread,
-    update_thread_title,
-    update_thread_external_id,
     get_thread_by_id,
     get_thread_owner_id,
-    update_thread_sharing,
     lookup_thread_by_external_id,
-    upsert_feedback,
-    get_feedback_for_thread,
-    delete_feedback,
     get_replay_thread_data,
-)
-from src.server.database.provenance import (
-    get_provenance_body_refs,
-    get_provenance_for_thread,
-    get_provenance_record,
 )
 from psycopg_pool import PoolTimeout
 from src.server.dependencies.usage_limits import ChatRateLimited
@@ -78,23 +40,7 @@ from src.observability import (
 # Import setup module to access initialized globals
 from src.server.app import setup
 
-logger = logging.getLogger(__name__)
-
-
-# Strong references to background dispatch tasks to prevent GC.
-# Tasks remove themselves via done callback.
-_background_tasks: set[asyncio.Task] = set()
-
-
-def _get_service_token() -> str:
-    """Read INTERNAL_SERVICE_TOKEN at call time (not import time)."""
-    return os.getenv("INTERNAL_SERVICE_TOKEN", "")
-
-
-def _track_task(task: asyncio.Task) -> None:
-    """Hold a strong reference to *task* until it completes."""
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+from ._deps import SSE_HEADERS, _get_service_token, _track_task, logger, router
 
 
 async def _assert_stream_transport_ready() -> None:
@@ -108,10 +54,10 @@ async def _assert_stream_transport_ready() -> None:
     event would finalize it failed(transport_lost); refusing admission is
     strictly cheaper.
     """
-    from src.server.services.background_task_manager import BackgroundTaskManager
+    from src.server.services.runs.executor import LocalRunExecutor
     from src.utils.cache.redis_cache import get_cache_client
 
-    manager = BackgroundTaskManager.get_instance()
+    manager = LocalRunExecutor.get_instance()
     if not (manager.enable_storage and manager.event_storage_backend == "redis"):
         raise HTTPException(
             status_code=503,
@@ -171,11 +117,11 @@ async def _consume_background_gen(
         # its own CAS.
         _btm_live = False
         try:
-            from src.server.services.background_task_manager import (
-                BackgroundTaskManager,
+            from src.server.services.runs.executor import (
+                LocalRunExecutor,
             )
 
-            _btm_live = await BackgroundTaskManager.get_instance().is_run_live(
+            _btm_live = await LocalRunExecutor.get_instance().is_run_live(
                 thread_id, run_id
             )
         except Exception:
@@ -187,7 +133,7 @@ async def _consume_background_gen(
                 f"the run to its owner"
             )
 
-        # When the generator raised before reaching start_workflow, the
+        # When the generator raised before reaching start_run, the
         # frontend already received {status: dispatched, run_id} and
         # navigated to workflow:stream:{tid}:{rid} — but no events will
         # ever land. The coordinator is the last-resort owner (I6): it
@@ -200,278 +146,13 @@ async def _consume_background_gen(
             # flash ordering chain, which owns any pair teardown. No direct
             # report-back clear here: it would run OFF-CHAIN against a live
             # admission (round-19 P1).
-            from src.server.services.turn_lifecycle import TurnCoordinator
+            from src.server.services.runs.coordinator import RunCoordinator
 
-            await TurnCoordinator.get_instance().reconcile_orphaned_dispatch(
+            await RunCoordinator.get_instance().reconcile_orphaned_dispatch(
                 thread_id, run_id, error_text=_error_text, label=label
             )
 
     return _ok
-
-
-# Single router for all thread operations
-router = APIRouter(prefix="/api/v1/threads", tags=["Threads"])
-
-SSE_HEADERS = {
-    "Cache-Control": "no-cache",
-    "X-Accel-Buffering": "no",
-    "Connection": "keep-alive",
-}
-
-
-# =============================================================================
-# THREAD CRUD
-# =============================================================================
-
-
-@router.get("", response_model=WorkspaceThreadsListResponse)
-async def list_threads(
-    x_user_id: CurrentUserId,
-    workspace_id: Optional[str] = Query(None, description="Filter by workspace ID"),
-    limit: int = Query(20, ge=1, le=100, description="Max threads per page"),
-    offset: int = Query(0, ge=0, description="Pagination offset"),
-    sort_by: str = Query(
-        "updated_at", description="Sort field (created_at, updated_at)"
-    ),
-    sort_order: str = Query("desc", description="Sort order (asc or desc)"),
-    platform_prefix: Optional[str] = Query(
-        None,
-        description="Prefix filter on platform column. 'market_view' matches "
-        "'market_view:AAPL' and any future 'market_view:*' suffixes; 'web' "
-        "matches exact 'web' since no suffix exists for that origin.",
-    ),
-):
-    """
-    List threads with optional workspace + platform-prefix filter.
-
-    When workspace_id is provided, returns threads for that workspace.
-    Otherwise returns all threads for the authenticated user.
-    """
-    try:
-        if workspace_id:
-            from src.server.database.workspace import get_workspace as db_get_workspace
-
-            workspace = await db_get_workspace(workspace_id)
-            require_workspace_owner(workspace, user_id=x_user_id)
-            threads, total = await get_workspace_threads(
-                workspace_id=workspace_id,
-                limit=limit,
-                offset=offset,
-                sort_by=sort_by,
-                sort_order=sort_order,
-                platform_prefix=platform_prefix,
-            )
-        else:
-            threads, total = await get_threads_for_user(
-                user_id=x_user_id,
-                limit=limit,
-                offset=offset,
-                sort_by=sort_by,
-                sort_order=sort_order,
-                platform_prefix=platform_prefix,
-            )
-
-        thread_items = [
-            WorkspaceThreadListItem(
-                thread_id=str(thread["conversation_thread_id"]),
-                workspace_id=str(thread["workspace_id"]),
-                thread_index=thread["thread_index"],
-                current_status=thread["current_status"],
-                msg_type=thread.get("msg_type"),
-                title=thread.get("title"),
-                first_query_content=thread.get("first_query_content"),
-                platform=thread.get("platform"),
-                is_shared=bool(thread.get("is_shared", False)),
-                created_at=thread["created_at"],
-                updated_at=thread["updated_at"],
-            )
-            for thread in threads
-        ]
-
-        return WorkspaceThreadsListResponse(
-            threads=thread_items,
-            total=total,
-            limit=limit,
-            offset=offset,
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error listing threads: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to list threads: {str(e)}",
-        )
-
-
-@router.get("/{thread_id}")
-async def get_thread(thread_id: str, x_user_id: CurrentUserId):
-    """Get thread metadata. Used by frontend to resolve workspaceId from threadId."""
-    await require_thread_owner(thread_id, x_user_id)
-    thread = await get_thread_by_id(thread_id)
-    if not thread:
-        raise HTTPException(status_code=404, detail="Thread not found")
-    return WorkspaceThreadListItem(
-        thread_id=str(thread["conversation_thread_id"]),
-        workspace_id=str(thread["workspace_id"]),
-        thread_index=thread["thread_index"],
-        current_status=thread["current_status"],
-        msg_type=thread.get("msg_type"),
-        title=thread.get("title"),
-        created_at=thread["created_at"],
-        updated_at=thread["updated_at"],
-    )
-
-
-class MarketWatchResponse(BaseModel):
-    thread_id: str
-    symbols: list[str]
-
-
-@router.get("/{thread_id}/market-watch", response_model=MarketWatchResponse)
-async def get_market_watch(thread_id: str, x_user_id: CurrentUserId):
-    """Current market-watch symbols for a thread (empty list when none)."""
-    await require_thread_owner(thread_id, x_user_id)
-    if not await user_feature_enabled(x_user_id, "market_watch"):
-        return MarketWatchResponse(thread_id=thread_id, symbols=[])
-    symbols = await get_watchlist(thread_id)
-    return MarketWatchResponse(thread_id=thread_id, symbols=symbols)
-
-
-@router.delete("/{thread_id}", response_model=ThreadDeleteResponse)
-async def delete_thread_endpoint(thread_id: str, x_user_id: CurrentUserId):
-    """
-    Delete a thread and all its queries/responses.
-
-    Permanently deletes the thread and all associated data due to CASCADE constraints.
-    """
-    from src.server.services.thread_mutation import (
-        MutationConflict,
-        MutationUnavailable,
-        ThreadMutationRunner,
-    )
-
-    try:
-        await require_thread_owner(thread_id, x_user_id)
-        # Guarded delete (v4 2.4): exclusive T(thread) refuses while a fenced
-        # run or tail writer is live on ANY worker; the ledger gate refuses on
-        # an in_progress row (cancel the run first). The delete statement runs
-        # on the locked session so fence and effect die together.
-        try:
-            async with ThreadMutationRunner.get_instance().exclusive(
-                thread_id, "delete"
-            ) as mutation:
-                await delete_thread(thread_id, conn=mutation.conn)
-        except MutationConflict as e:
-            raise HTTPException(status_code=409, detail=e.detail)
-        except MutationUnavailable as e:
-            raise HTTPException(status_code=503, detail=str(e))
-
-        # Invalidate existence cache + the thread's market-watch list, so a
-        # recreated thread id can't inherit the old symbols within the TTL.
-        from src.server.database.conversation import thread_exists_key
-        from src.utils.cache.redis_cache import get_cache_client
-        from src.utils.market_watch import watch_key
-
-        cache = get_cache_client()
-        if cache.enabled and cache.client:
-            try:
-                await cache.client.delete(thread_exists_key(thread_id), watch_key(thread_id))
-            except Exception:
-                pass
-
-        logger.info(f"Successfully deleted thread thread_id={thread_id}")
-        return ThreadDeleteResponse(
-            success=True,
-            thread_id=thread_id,
-            message="Thread deleted successfully",
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error deleting thread {thread_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to delete thread: {str(e)}"
-        )
-
-
-def _thread_list_item(row: dict) -> WorkspaceThreadListItem:
-    """Build the list-item response from an updated thread row."""
-    return WorkspaceThreadListItem(
-        thread_id=str(row["conversation_thread_id"]),
-        workspace_id=str(row["workspace_id"]),
-        thread_index=row["thread_index"],
-        current_status=row["current_status"],
-        msg_type=row.get("msg_type"),
-        title=row.get("title"),
-        platform=row.get("platform"),
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-    )
-
-
-@router.patch("/{thread_id}", response_model=WorkspaceThreadListItem)
-async def update_thread_endpoint(
-    thread_id: str, request: ThreadUpdateRequest, x_user_id: CurrentUserId
-):
-    """Rename a thread's title."""
-    try:
-        await require_thread_owner(thread_id, x_user_id)
-        updated_thread = await update_thread_title(thread_id, request.title)
-        if not updated_thread:
-            raise HTTPException(
-                status_code=404, detail=f"Thread not found: {thread_id}"
-            )
-        return _thread_list_item(updated_thread)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error updating thread {thread_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to update thread: {str(e)}"
-        )
-
-
-@router.put("/{thread_id}/external-id", response_model=WorkspaceThreadListItem)
-async def stamp_thread_external_id_endpoint(
-    thread_id: str, request: ThreadExternalIdRequest, user_id: StampThreadAuth
-):
-    """Stamp a channel identity (``platform`` + ``external_id``) onto a thread.
-
-    A user-scoped caller must own the thread. A privileged service caller (valid
-    ``X-Service-Token`` with no ``X-User-Id``) skips the ownership check and
-    stamps by thread_id alone — used by the one-time external-id backfill, which
-    cannot know each thread's owner. A ``(platform, external_id)`` already held by
-    another thread maps to a 409 carrying the shared conflict payload.
-    """
-    try:
-        if user_id is not None:
-            await require_thread_owner(thread_id, user_id)
-        try:
-            updated_thread = await update_thread_external_id(
-                thread_id, request.platform, request.external_id
-            )
-        except ExternalIdConflictError as e:
-            raise HTTPException(
-                status_code=409,
-                detail=external_id_conflict_payload(e.platform, e.external_id),
-            )
-        if not updated_thread:
-            raise HTTPException(
-                status_code=404, detail=f"Thread not found: {thread_id}"
-            )
-        return _thread_list_item(updated_thread)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error stamping thread {thread_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to stamp thread: {str(e)}"
-        )
 
 
 # =============================================================================
@@ -524,7 +205,7 @@ async def _reject_duplicate_request(request_key: str, user_id: str) -> None:
     consumes the duplicate. Discloses the existing run's identity only to
     the owning user.
     """
-    from src.server.database import turn_lifecycle as tl_db
+    from src.server.database.runs import lifecycle as tl_db
 
     existing = await tl_db.find_run_by_request_key(request_key)
     if existing is None:
@@ -582,7 +263,13 @@ async def _handle_send_message(
     agent_mode = request.agent_mode or "ptc"
     workspace_id = request.workspace_id
 
-    from src.server.dependencies.usage_limits import release_burst_slot
+    from src.server.services.runs.admission import RunScope
+
+    # HTTP-window owner of the burst lease: every pre-generator failure and
+    # dispatch-priming exit that doesn't hand the run to an executor releases
+    # through this scope (idempotent). The generator carries its own scope
+    # for the window it owns — same layering as before, one vocabulary.
+    scope = RunScope(user_id=user_id, burst_slot_id=auth.burst_slot_id)
 
     try:
         # Retry provenance: force the route-supplied value over anything in
@@ -725,7 +412,7 @@ async def _handle_send_message(
         )
 
         # Resolve LLM config eagerly — credit check must happen before SSE stream starts
-        from src.server.handlers.chat import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
         from src.server.dependencies.usage_limits import enforce_credit_limit
         from ptc_agent.config.agent import CredentialSource
 
@@ -775,7 +462,7 @@ async def _handle_send_message(
             if internal_overrides:
                 request = request.model_copy(update=internal_overrides)
     except BaseException:
-        await release_burst_slot(user_id, auth.burst_slot_id)
+        await scope.release_slot()
         raise
 
     # Resolve model name for observability labels (bounded by models.json keys).
@@ -809,8 +496,8 @@ async def _handle_send_message(
         )
 
         if is_flash_dispatch:
-            from src.server.database.turn_lifecycle import DuplicateRequestError
-            from src.server.handlers.chat._common import DISPATCH_STARTED_MARKER
+            from src.server.database.runs.lifecycle import DuplicateRequestError
+            from src.server.handlers.chat.request_prep import DISPATCH_STARTED_MARKER
             # Report-back idempotency: a lost-response retry of the drainer's
             # POST must NOT start a second summary run. The claim CM SET-NXs
             # the per-(flash, ptc) run pointer (atomic on its own — no outer
@@ -823,14 +510,14 @@ async def _handle_send_message(
             if rb_ptc:
                 from src.utils.cache.redis_cache import get_cache_client
                 rb_cache = get_cache_client()
-            from src.server.handlers.chat import report_back
-            async with report_back.claim(
+            from src.server.services.report_back.flash import pointer
+            async with pointer.claim(
                 rb_cache, thread_id, rb_ptc, run_id,
                 request.origin_dispatch_gen,
                 request.request_key,
             ) as rb_claim:
                 if rb_claim.incumbent is not None:
-                    await release_burst_slot(user_id, auth.burst_slot_id)
+                    await scope.release_slot()
                     logger.info(
                         f"[FLASH_DISPATCH] Idempotent report-back: returning "
                         f"in-flight run {rb_claim.incumbent} for ptc={rb_ptc} on "
@@ -842,7 +529,7 @@ async def _handle_send_message(
                         "run_id": rb_claim.incumbent,
                     })
                 if rb_claim.pair_gone:
-                    await release_burst_slot(user_id, auth.burst_slot_id)
+                    await scope.release_slot()
                     logger.warning(
                         f"[FLASH_DISPATCH] Report-back pair for ptc={rb_ptc} on "
                         f"flash thread {thread_id} was already settled; refusing "
@@ -859,7 +546,7 @@ async def _handle_send_message(
                         ),
                     )
                 if rb_claim.in_flight:
-                    await release_burst_slot(user_id, auth.burst_slot_id)
+                    await scope.release_slot()
                     logger.info(
                         f"[FLASH_DISPATCH] Report-back for ptc={rb_ptc} on "
                         f"flash thread {thread_id} has a rowless incumbent "
@@ -884,7 +571,7 @@ async def _handle_send_message(
                 try:
                     first = await anext(flash_gen)
                 except DuplicateRequestError as dup:
-                    await release_burst_slot(user_id, auth.burst_slot_id)
+                    await scope.release_slot()
                     existing = str(dup.existing_run["conversation_response_id"])
                     logger.info(
                         f"[FLASH_DISPATCH] Retransmit adopted existing run "
@@ -896,17 +583,17 @@ async def _handle_send_message(
                         "run_id": existing,
                     })
                 except HTTPException:
-                    await release_burst_slot(user_id, auth.burst_slot_id)
+                    await scope.release_slot()
                     raise
                 except Exception as e:
-                    await release_burst_slot(user_id, auth.burst_slot_id)
+                    await scope.release_slot()
                     raise HTTPException(
                         status_code=503,
                         detail=f"Dispatch could not start durably: {e}",
                     )
                 if first != DISPATCH_STARTED_MARKER:
                     await flash_gen.aclose()
-                    await release_burst_slot(user_id, auth.burst_slot_id)
+                    await scope.release_slot()
                     raise HTTPException(
                         status_code=500,
                         detail="Dispatch priming yielded an unexpected event.",
@@ -969,9 +656,9 @@ async def _handle_send_message(
     )
 
     if is_ptc_dispatch:
-        from src.server.database.turn_lifecycle import DuplicateRequestError
-        from src.server.handlers.chat import report_back
-        from src.server.handlers.chat._common import DISPATCH_STARTED_MARKER
+        from src.server.database.runs.lifecycle import DuplicateRequestError
+        from src.server.services.report_back.flash import reserve
+        from src.server.handlers.chat.request_prep import DISPATCH_STARTED_MARKER
 
         # Phantom-refusal gate BEFORE the START txn: it atomically refuses
         # generations the orphan resolver already receipted (their watch
@@ -983,11 +670,11 @@ async def _handle_send_message(
         # pre-START window for the resolver. Gen-less dispatches skip the
         # gate — there is nothing to receipt against.
         if request.origin_dispatch_gen:
-            admitted = await report_back.admit_dispatch_gen(
+            admitted = await reserve.admit_dispatch_gen(
                 thread_id, request.origin_dispatch_gen, run_id
             )
             if not admitted:
-                await release_burst_slot(user_id, auth.burst_slot_id)
+                await scope.release_slot()
                 raise HTTPException(
                     status_code=503,
                     detail=(
@@ -1007,7 +694,7 @@ async def _handle_send_message(
         try:
             first = await anext(ptc_gen)
         except DuplicateRequestError as dup:
-            await release_burst_slot(user_id, auth.burst_slot_id)
+            await scope.release_slot()
             existing = str(dup.existing_run["conversation_response_id"])
             logger.info(
                 f"[PTC_DISPATCH] Retransmit adopted existing run {existing} "
@@ -1020,16 +707,16 @@ async def _handle_send_message(
                 "workspace_id": workspace_id,
             })
         except HTTPException:
-            await release_burst_slot(user_id, auth.burst_slot_id)
+            await scope.release_slot()
             if request.origin_dispatch_gen:
-                await report_back.retract_dispatch_gen(
+                await reserve.retract_dispatch_gen(
                     thread_id, request.origin_dispatch_gen, run_id
                 )
             raise
         except Exception as e:
-            await release_burst_slot(user_id, auth.burst_slot_id)
+            await scope.release_slot()
             if request.origin_dispatch_gen:
-                await report_back.retract_dispatch_gen(
+                await reserve.retract_dispatch_gen(
                     thread_id, request.origin_dispatch_gen, run_id
                 )
             raise HTTPException(
@@ -1038,7 +725,7 @@ async def _handle_send_message(
             )
         if first != DISPATCH_STARTED_MARKER:
             await ptc_gen.aclose()
-            await release_burst_slot(user_id, auth.burst_slot_id)
+            await scope.release_slot()
             raise HTTPException(
                 status_code=500,
                 detail="Dispatch priming yielded an unexpected event.",
@@ -1095,9 +782,9 @@ async def reconnect_to_stream(
     ``run_id`` targets a specific turn. If omitted, falls back to the
     latest run on the thread (matches the single-turn happy path).
     """
-    await require_thread_owner(thread_id, x_user_id)
+    await auth_api.require_thread_owner(thread_id, x_user_id)
     from src.server.handlers.chat import reconnect_to_workflow_stream
-    from src.server.handlers.chat.stream_reconnect import classify_reconnect
+    from src.server.handlers.chat.reconnect_admission import classify_reconnect
 
     safe_add(sse_reconnects, 1)
 
@@ -1142,10 +829,10 @@ async def watch_thread(thread_id: str, x_user_id: CurrentUserId):
     Sends keepalive pings every 45 seconds.  Auto-closes after 30 minutes
     to prevent leaked connections from abandoned browser tabs.
     """
-    await require_thread_owner(thread_id, x_user_id)
+    await auth_api.require_thread_owner(thread_id, x_user_id)
 
     from src.utils.cache.redis_cache import get_cache_client
-    from src.server.handlers.chat.report_back import watch_wakes
+    from src.server.services.report_back.flash.core import watch_wakes
 
     async def watch_generator():
         cache = get_cache_client()
@@ -1357,15 +1044,15 @@ async def get_thread_status(
         raise HTTPException(status_code=403, detail="Forbidden")
 
     if fields == "report_back":
-        from src.server.handlers.chat.report_back import read_report_back_slice
+        from src.server.services.report_back.flash.status import read_report_back_slice
 
         return await read_report_back_slice(
             thread_id, msg_type=meta.get("msg_type") or ""
         )
 
-    from src.server.handlers.workflow_handler import get_workflow_status
+    from src.server.services.thread_status import read_thread_runtime_status
 
-    return await get_workflow_status(
+    return await read_thread_runtime_status(
         thread_id,
         is_shared=bool(meta["is_shared"]),
         msg_type=meta.get("msg_type"),
@@ -1415,8 +1102,8 @@ async def get_dispatches_liveness(
     if not deduped:
         return {"liveness": []}
 
-    from src.server.database import turn_lifecycle as tl_db
-    from src.server.services.status_vocabulary import to_public
+    from src.server.database.runs import lifecycle as tl_db
+    from src.server.contracts.status import to_public
 
     rows = await tl_db.get_latest_attempts_for_threads(deduped, x_user_id)
 
@@ -1449,8 +1136,8 @@ async def cancel_thread(
     ``run_id`` targets a specific run so a retried stop can't cancel a newer
     turn started after the stopped one ended (defaults to latest active run).
     """
-    await require_thread_owner(thread_id, x_user_id)
-    from src.server.handlers.workflow_handler import cancel_workflow
+    await auth_api.require_thread_owner(thread_id, x_user_id)
+    from src.server.services.cancel_dispatch import cancel_workflow
 
     return await cancel_workflow(thread_id, run_id)
 
@@ -1468,8 +1155,8 @@ async def summarize_thread(
     Endpoint path ``/summarize`` and function name preserved for REST contract
     compatibility — clients may call the older URL.
     """
-    await require_thread_owner(thread_id, x_user_id)
-    from src.server.handlers.workflow_handler import trigger_compaction
+    await auth_api.require_thread_owner(thread_id, x_user_id)
+    from src.server.handlers.thread_maintenance import trigger_compaction
 
     return await trigger_compaction(thread_id, keep_messages, user_id=x_user_id)
 
@@ -1477,8 +1164,8 @@ async def summarize_thread(
 @router.post("/{thread_id}/offload", status_code=200)
 async def offload_thread(thread_id: str, x_user_id: CurrentUserId):
     """Truncate large tool arguments and offload originals to sandbox (Tier 1 only)."""
-    await require_thread_owner(thread_id, x_user_id)
-    from src.server.handlers.workflow_handler import trigger_offload
+    await auth_api.require_thread_owner(thread_id, x_user_id)
+    from src.server.handlers.thread_maintenance import trigger_offload
 
     return await trigger_offload(thread_id)
 
@@ -1493,7 +1180,7 @@ async def get_thread_turns(thread_id: str, x_user_id: CurrentUserId):
     - regenerate_checkpoint_id: fork AFTER user message, BEFORE AI response (for regenerating)
     - retry_checkpoint_id: most recent checkpoint (for retrying after failure)
     """
-    await require_thread_owner(thread_id, x_user_id)
+    await auth_api.require_thread_owner(thread_id, x_user_id)
     from src.server.handlers.checkpoint_handler import (
         get_thread_turns as _get_thread_turns,
     )
@@ -1518,13 +1205,15 @@ async def retry_thread(
     archived. Graph-wise the retry resumes from the last checkpoint.
     Returns an SSE stream.
     """
-    from src.server.database import turn_lifecycle as tl_db
-    from src.server.dependencies.usage_limits import release_burst_slot
-    from src.server.handlers.chat.admission import admission_conflict_detail
+    from src.server.database.runs import lifecycle as tl_db
+    from src.server.handlers.chat.admission_gate import admission_conflict_detail
     from src.server.handlers.checkpoint_handler import get_retry_checkpoint
+    from src.server.services.runs.admission import RunScope
+
+    scope = RunScope(user_id=auth.user_id, burst_slot_id=auth.burst_slot_id)
 
     try:
-        await require_thread_owner(thread_id, auth.user_id)
+        await auth_api.require_thread_owner(thread_id, auth.user_id)
 
         # I6: refuse before any durable row when the event transport is down.
         await _assert_stream_transport_ready()
@@ -1586,7 +1275,7 @@ async def retry_thread(
         # early exit above bypasses _handle_send_message, whose own guard
         # normally releases it — without this, repeated stale retries
         # exhaust the user's burst allowance until TTL expiry.
-        await release_burst_slot(auth.user_id, auth.burst_slot_id)
+        await scope.release_slot()
         raise
 
     # Delegate to the message flow as a checkpoint replay carrying the
@@ -1607,59 +1296,6 @@ async def retry_thread(
     )
 
 
-@router.get("/{thread_id}/tasks/{task_id}/status")
-async def get_subagent_task_status(
-    thread_id: str,
-    task_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,12}$")],
-    x_user_id: CurrentUserId,
-):
-    """Durable terminal state of a single subagent task from the run ledger.
-
-    The client's in-memory card can go stale (a settled task whose live
-    stream drained while the tab was backgrounded), leaving the detail view
-    stuck on "Initializing"/spinner. This resolves the task's real
-    ``{status, error}`` on demand so the view can hydrate without a full
-    thread reload — the same ledger truth replay stamps at load time.
-    """
-    await require_thread_owner(thread_id, x_user_id)
-    from src.server.services.history.task_status import resolve_task_details
-
-    details = await resolve_task_details(thread_id, [task_id])
-    detail = details.get(task_id)
-    if detail is None:
-        return {"task_id": task_id, "status": None, "error": None}
-    return {"task_id": task_id, "status": detail["status"], "error": detail.get("error")}
-
-
-@router.get("/{thread_id}/tasks/{task_id}")
-async def stream_subagent_task(
-    thread_id: str,
-    task_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,12}$")],
-    x_user_id: CurrentUserId,
-    last_event_id: Optional[int] = Query(
-        None, description="Last received event ID for reconnect"
-    ),
-    last_event_id_header: Optional[str] = Header(None, alias="Last-Event-ID"),
-):
-    """Stream a single subagent's content events (message_chunk, tool_calls, etc.).
-
-    Accepts the cursor as either ``?last_event_id=N`` or the SSE-spec
-    ``Last-Event-ID`` HTTP header.
-    """
-    await require_thread_owner(thread_id, x_user_id)
-    from src.server.handlers.chat.stream_from_log import stream_subagent_from_log
-
-    if last_event_id is None and last_event_id_header is not None:
-        try:
-            last_event_id = int(last_event_id_header)
-        except ValueError:
-            pass
-
-    return StreamingResponse(
-        stream_subagent_from_log(thread_id, task_id, last_event_id),
-        media_type="text/event-stream",
-        headers=SSE_HEADERS,
-    )
 
 
 @router.get("/{thread_id}/stream")
@@ -1689,7 +1325,7 @@ async def thread_stream_mux_endpoint(
     included. The retired v1 contract (per-task epoch channels) 400s rather
     than silently changing shape under a stale pre-cutover client.
     """
-    await require_thread_owner(thread_id, x_user_id)
+    await auth_api.require_thread_owner(thread_id, x_user_id)
     if contract != "v2":
         raise HTTPException(
             status_code=400, detail="unsupported stream contract; use contract=v2"
@@ -1704,428 +1340,3 @@ async def thread_stream_mux_endpoint(
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
-
-
-@router.post("/{thread_id}/tasks/{task_id}/messages")
-async def send_subagent_message(
-    thread_id: str,
-    task_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,12}$")],
-    request: SubagentMessageRequest,
-    x_user_id: CurrentUserId,
-):
-    """Send a message/instruction to a running background subagent."""
-    await require_thread_owner(thread_id, x_user_id)
-    from src.server.handlers.chat import steer_subagent
-
-    return await steer_subagent(
-        thread_id=thread_id,
-        task_id=task_id,
-        content=request.content,
-        user_id=x_user_id,
-    )
-
-
-# =============================================================================
-# THREAD SHARING
-# =============================================================================
-
-
-@router.post("/{thread_id}/share", response_model=ThreadShareResponse)
-async def update_thread_share(
-    thread_id: str,
-    request: ThreadShareRequest,
-    x_user_id: CurrentUserId,
-):
-    """Toggle public sharing for a thread and update permissions."""
-    await require_thread_owner(thread_id, x_user_id)
-
-    thread = await get_thread_by_id(thread_id)
-    if not thread:
-        raise HTTPException(status_code=404, detail="Thread not found")
-
-    # Build update kwargs
-    kwargs: dict = {"is_shared": request.is_shared}
-
-    # Generate share_token on first enable (reuse existing on re-enable)
-    if request.is_shared and not thread.get("share_token"):
-        kwargs["share_token"] = secrets.token_urlsafe(16)
-
-    if request.is_shared:
-        kwargs["shared_at"] = datetime.now(timezone.utc)
-
-    # Merge permissions: start from existing, overlay provided fields
-    existing_perms = thread.get("share_permissions") or {}
-    if isinstance(existing_perms, str):
-        existing_perms = json.loads(existing_perms)
-
-    if request.permissions is not None:
-        merged = {**existing_perms, **request.permissions.model_dump()}
-        # Enforce: download requires files
-        if merged.get("allow_download") and not merged.get("allow_files"):
-            merged["allow_files"] = True
-        kwargs["share_permissions"] = merged
-
-    updated = await update_thread_sharing(thread_id, **kwargs)
-    if not updated:
-        raise HTTPException(status_code=404, detail="Thread not found")
-
-    share_token = updated.get("share_token")
-    perms = updated.get("share_permissions") or {}
-    if isinstance(perms, str):
-        perms = json.loads(perms)
-
-    return ThreadShareResponse(
-        is_shared=updated["is_shared"],
-        share_token=share_token if updated["is_shared"] else None,
-        share_url=f"/s/{share_token}" if updated["is_shared"] and share_token else None,
-        permissions=SharePermissions(**(perms if isinstance(perms, dict) else {})),
-    )
-
-
-@router.get("/{thread_id}/share", response_model=ThreadShareResponse)
-async def get_thread_share(thread_id: str, x_user_id: CurrentUserId):
-    """Get current share status and permissions for a thread."""
-    await require_thread_owner(thread_id, x_user_id)
-
-    thread = await get_thread_by_id(thread_id)
-    if not thread:
-        raise HTTPException(status_code=404, detail="Thread not found")
-
-    share_token = thread.get("share_token")
-    is_shared = thread.get("is_shared", False)
-    perms = thread.get("share_permissions") or {}
-    if isinstance(perms, str):
-        perms = json.loads(perms)
-
-    return ThreadShareResponse(
-        is_shared=is_shared,
-        share_token=share_token if is_shared else None,
-        share_url=f"/s/{share_token}" if is_shared and share_token else None,
-        permissions=SharePermissions(**(perms if isinstance(perms, dict) else {})),
-    )
-
-
-# ==================== Feedback ====================
-
-
-@router.post("/{thread_id}/feedback", response_model=FeedbackResponse)
-async def submit_feedback(
-    thread_id: str,
-    request: FeedbackRequest,
-    x_user_id: CurrentUserId,
-):
-    """Submit or update feedback (thumbs up/down) for a response."""
-    try:
-        await require_thread_owner(thread_id, x_user_id)
-        result = await upsert_feedback(
-            conversation_thread_id=thread_id,
-            turn_index=request.turn_index,
-            user_id=x_user_id,
-            rating=request.rating,
-            issue_categories=request.issue_categories,
-            comment=request.comment,
-            consent_human_review=request.consent_human_review,
-        )
-        if not result:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No response found at turn_index={request.turn_index}",
-            )
-        return FeedbackResponse(
-            conversation_feedback_id=str(result["conversation_feedback_id"]),
-            turn_index=result["turn_index"],
-            rating=result["rating"],
-            issue_categories=result.get("issue_categories"),
-            comment=result.get("comment"),
-            consent_human_review=result.get("consent_human_review", False),
-            review_status=result.get("review_status"),
-            created_at=str(result["created_at"]),
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error submitting feedback for thread {thread_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to submit feedback")
-
-
-@router.get("/{thread_id}/feedback", response_model=list[FeedbackResponse])
-async def get_feedback(thread_id: str, x_user_id: CurrentUserId):
-    """Get all feedback for a thread by the current user."""
-    try:
-        await require_thread_owner(thread_id, x_user_id)
-        rows = await get_feedback_for_thread(thread_id, x_user_id)
-        return [
-            FeedbackResponse(
-                conversation_feedback_id=str(row["conversation_feedback_id"]),
-                turn_index=row["turn_index"],
-                rating=row["rating"],
-                issue_categories=row.get("issue_categories"),
-                comment=row.get("comment"),
-                consent_human_review=row.get("consent_human_review", False),
-                review_status=row.get("review_status"),
-                created_at=str(row["created_at"]),
-            )
-            for row in rows
-        ]
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error getting feedback for thread {thread_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get feedback")
-
-
-@router.delete("/{thread_id}/feedback")
-async def remove_feedback(
-    thread_id: str,
-    turn_index: int,
-    x_user_id: CurrentUserId,
-):
-    """Remove feedback for a specific response. Query param: ?turn_index=N"""
-    try:
-        await require_thread_owner(thread_id, x_user_id)
-        deleted = await delete_feedback(thread_id, turn_index, x_user_id)
-        if not deleted:
-            raise HTTPException(status_code=404, detail="Feedback not found")
-        return {"status": "deleted"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error deleting feedback for thread {thread_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to delete feedback")
-
-
-# =============================================================================
-# DATA PROVENANCE
-# =============================================================================
-
-
-@router.get("/{thread_id}/provenance")
-async def get_provenance(thread_id: str, x_user_id: CurrentUserId):
-    """Return the external data the agent accessed in a thread, grouped by turn.
-
-    The aggregated shape (per-turn sources + a by_source_type count summary) is
-    the structured input a post-hoc verification agent consumes.
-    """
-    try:
-        await require_thread_owner(thread_id, x_user_id)
-        rows = await get_provenance_for_thread(thread_id)
-
-        turns: dict[int, dict] = {}
-        by_source_type: dict[str, int] = {}
-        for row in rows:
-            turn_index = row["turn_index"]
-            turn = turns.get(turn_index)
-            if turn is None:
-                turn = {
-                    "turn_index": turn_index,
-                    "conversation_response_id": str(row["conversation_response_id"]),
-                    "sources": [],
-                }
-                turns[turn_index] = turn
-
-            source_timestamp = row.get("source_timestamp")
-            source = {
-                # `record_id` matches the SSE/replay provenance record field so a
-                # consumer can map streamed records to this REST shape directly.
-                "record_id": str(row["provenance_record_id"]),
-                "source_type": row["source_type"],
-                "identifier": row.get("identifier"),
-                "title": row.get("title"),
-                "detail": row.get("detail"),
-                "tool_call_id": row.get("tool_call_id"),
-                "args_fingerprint": row.get("args_fingerprint"),
-                "args": row.get("args"),
-                "result_sha256": row.get("result_sha256"),
-                "result_size": row.get("result_size"),
-                "result_snippet": row.get("result_snippet"),
-                "agent": row.get("agent"),
-                "provider": row.get("provider"),
-                "timestamp": (
-                    source_timestamp.isoformat() if source_timestamp else None
-                ),
-            }
-            turn["sources"].append(source)
-
-            source_type = row["source_type"]
-            by_source_type[source_type] = by_source_type.get(source_type, 0) + 1
-
-        return {
-            "thread_id": thread_id,
-            "turns": [turns[i] for i in sorted(turns)],
-            "by_source_type": by_source_type,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error getting provenance for thread {thread_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get provenance")
-
-
-def _body_hashes_to(body: str, sha256: str | None) -> bool:
-    """True iff ``body`` reproduces the content-address ``sha256``.
-
-    The verifier's integrity check: a present body that hashes to its advertised
-    sha is the exact content the agent reasoned over. A mismatch means the body was
-    redacted (a secret was stripped) or is otherwise not the hashed bytes — the
-    caller distinguishes the two via the ``truncated`` flag.
-    """
-    if not body or not sha256:
-        return False
-    return hashlib.sha256(body.encode("utf-8")).hexdigest() == sha256
-
-
-@router.get("/{thread_id}/provenance/bodies")
-async def get_provenance_bodies(
-    thread_id: str,
-    x_user_id: CurrentUserId,
-    limit: int = Query(
-        100,
-        ge=1,
-        le=200,
-        description="Max bodies returned; a long thread is capped (see `capped`).",
-    ),
-):
-    """Return stored result bodies (inline head only) for a thread's provenance records.
-
-    Sibling to ``/provenance`` (which stays snippet-only): joins each record's
-    ``result_sha256`` to the content-addressed body store and returns the inline
-    head plus ``truncated`` and ``verified`` flags. Spilled objects are never
-    fetched here — use the per-record ``/body?full=true`` endpoint for the full body.
-
-    The response is bounded: each inline head is up to 64 KiB, so a long thread is
-    capped at ``limit`` bodies (``capped: true`` when more were available) to keep
-    one request from materializing tens of MB.
-    """
-    try:
-        await require_thread_owner(thread_id, x_user_id)
-
-        from src.server.database.conversation import get_db_connection
-        from src.server.database.provenance_bodies import fetch_result_bodies
-
-        # Eligible refs are filtered + capped in SQL (LIMIT limit+1) and the body
-        # fetch shares the same connection, so a long thread doesn't transfer every
-        # record (and its args JSON) just to discard all but `limit`.
-        async with get_db_connection() as conn:
-            eligible = await get_provenance_body_refs(conn, thread_id, limit)
-            capped = len(eligible) > limit
-            eligible = eligible[:limit]
-            shas = [row["result_sha256"] for row in eligible]
-            bodies = await fetch_result_bodies(conn, shas)
-
-        records = []
-        for row in eligible:
-            sha = row["result_sha256"]
-            body = bodies.get(sha)
-            if body is None:
-                continue
-            body_inline = body["body_inline"] or ""
-            byte_len = body["byte_len"]
-            # byte_len is the length of the STORED (post-redaction) body, so the
-            # inline head is incomplete exactly when the full stored body is longer
-            # than what's inline — i.e. it spilled to an object, or a head was kept
-            # with no bucket to spill to. A body redaction shrank below the cap is
-            # stored whole (byte_len == len(inline)) and reads back complete.
-            truncated = byte_len > len(body_inline.encode("utf-8"))
-            records.append(
-                {
-                    "provenance_record_id": str(row["provenance_record_id"]),
-                    "result_sha256": sha,
-                    "body_inline": body_inline,
-                    "byte_len": byte_len,
-                    "truncated": truncated,
-                    # The stored body hashes to result_sha256 (untruncated + not
-                    # redacted). False on a truncated head or a redaction-modified
-                    # body — the signal that "these bytes != the advertised hash."
-                    "verified": (not truncated) and _body_hashes_to(body_inline, sha),
-                }
-            )
-
-        return {"thread_id": thread_id, "records": records, "capped": capped}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(
-            f"Error getting provenance bodies for thread {thread_id}: {e}"
-        )
-        raise HTTPException(status_code=500, detail="Failed to get provenance bodies")
-
-
-@router.get("/{thread_id}/provenance/{provenance_record_id}/body")
-async def get_provenance_record_body(
-    thread_id: str,
-    provenance_record_id: str,
-    x_user_id: CurrentUserId,
-    full: bool = Query(
-        False,
-        description="When true, read the full body (pulls the spilled object if any).",
-    ),
-):
-    """Return the body for a single provenance record.
-
-    With ``full=true`` the full body is read via ``fetch_full_body`` (pulling the
-    spilled object when present, capped at ``FULL_BODY_READ_MAX_BYTES`` so one
-    request can't serialize a ~10 MiB object — an over-cap body returns truncated);
-    otherwise only the inline head is returned. The record must belong to the
-    caller's thread.
-    """
-    try:
-        await require_thread_owner(thread_id, x_user_id)
-        row = await get_provenance_record(thread_id, provenance_record_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail="Provenance record not found")
-
-        sha = row.get("result_sha256")
-        if not sha:
-            raise HTTPException(
-                status_code=404, detail="Provenance record has no stored body"
-            )
-
-        from src.server.database.conversation import get_db_connection
-        from src.server.database.provenance_bodies import (
-            fetch_full_body,
-            fetch_result_bodies,
-        )
-
-        async with get_db_connection() as conn:
-            bodies = await fetch_result_bodies(conn, [sha])
-        meta = bodies.get(sha)
-        if meta is None:
-            raise HTTPException(
-                status_code=404, detail="Provenance record has no stored body"
-            )
-
-        byte_len = meta["byte_len"]
-        if full:
-            # meta already carries body_inline + object_key from the fetch above,
-            # so pass it through — fetch_full_body skips a second connection and
-            # only does the spilled-object read when there's an object_key.
-            body = await fetch_full_body(sha, row=meta) or ""
-            # byte_len is the full stored-body length; the read is incomplete
-            # exactly when we returned fewer bytes than that — the spilled object
-            # exceeded the read cap, or a head was kept with no bucket to spill to.
-            truncated = byte_len > len(body.encode("utf-8"))
-        else:
-            body = meta["body_inline"] or ""
-            # The inline head is incomplete exactly when the full stored body is
-            # longer than the inline slice (spilled, or head kept with no bucket).
-            # byte_len tracks the stored (post-redaction) length, so a redaction-
-            # shrunk body that fits inline reads back complete.
-            truncated = byte_len > len(body.encode("utf-8"))
-
-        return {
-            "provenance_record_id": str(row["provenance_record_id"]),
-            "result_sha256": sha,
-            "body": body,
-            "byte_len": byte_len,
-            "truncated": truncated,
-            # With full=true and no truncation, a true value attests the body is the
-            # exact bytes behind result_sha256; false means redacted or head-only.
-            "verified": (not truncated) and _body_hashes_to(body, sha),
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(
-            f"Error getting provenance body for record {provenance_record_id}: {e}"
-        )
-        raise HTTPException(status_code=500, detail="Failed to get provenance body")

@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+THREADS_MOD = "src.server.app.threads.messaging"
+
 THREAD = "11111111-1111-1111-1111-111111111111"
 
 
@@ -44,7 +46,7 @@ async def test_snapshot_frame_precedes_replay_done(
 ):
     with (
         patch(
-            "src.server.app.threads.get_replay_thread_data",
+            f"{THREADS_MOD}.get_replay_thread_data",
             new=AsyncMock(return_value=_replay_data()),
         ),
         patch(

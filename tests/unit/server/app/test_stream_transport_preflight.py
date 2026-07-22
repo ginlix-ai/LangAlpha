@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from src.server.app.threads import _assert_stream_transport_ready
+from src.server.app.threads.messaging import _assert_stream_transport_ready
 
 
 def _manager(backend="redis", enable_storage=True):
@@ -22,7 +22,7 @@ def _manager(backend="redis", enable_storage=True):
 
 
 def _patches(manager, cache=None):
-    from src.server.services.background_task_manager import BackgroundTaskManager
+    from src.server.services.runs.executor import LocalRunExecutor
 
     if cache is None:
         cache = MagicMock()
@@ -30,7 +30,7 @@ def _patches(manager, cache=None):
         cache.client.ping = AsyncMock(return_value=True)
     return (
         patch.object(
-            BackgroundTaskManager,
+            LocalRunExecutor,
             "get_instance",
             classmethod(lambda cls: manager),
         ),
