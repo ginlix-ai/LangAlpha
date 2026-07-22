@@ -51,7 +51,7 @@ def _patches(runner, delete_thread):
             "src.server.services.thread_mutation.ThreadMutationRunner.get_instance",
             return_value=runner,
         ),
-        patch("src.server.database.conversation.delete_thread", delete_thread),
+        patch("src.server.database.conversation.threads_write.delete_thread", delete_thread),
         patch(
             "src.utils.cache.redis_cache.get_cache_client",
             return_value=disabled_cache,

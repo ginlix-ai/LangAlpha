@@ -114,7 +114,7 @@ async def _confirm_dispatch_admission(
     and no finite absence proves a delivered, still-processing request
     won't admit later. The caller must treat False as unproven and retain.
     """
-    from src.server.database import turn_lifecycle as tl_db
+    from src.server.database.runs import lifecycle as tl_db
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _DISPATCH_CONFIRM_GRACE_S
@@ -223,7 +223,7 @@ async def _verify_thread_owner(
     thread_id: str, user_id: str, tool_call_id: str
 ) -> Command | None:
     """Return error Command if user doesn't own thread, else None."""
-    from src.server.database.conversation import get_thread_owner_id
+    from src.server.database.conversation.threads_read import get_thread_owner_id
 
     try:
         owner_id = await get_thread_owner_id(thread_id)
@@ -499,7 +499,7 @@ async def ptc_agent(
 
     # Resolve workspace_id from existing thread or create/verify workspace
     if is_continuation:
-        from src.server.database.conversation import get_thread_by_id
+        from src.server.database.conversation.threads_read import get_thread_by_id
         from src.server.utils.pg_sanitize import normalize_uuid
 
         # Normalize once so the owner check and every downstream bind use the
@@ -556,7 +556,7 @@ async def ptc_agent(
     if not is_continuation:
         # Create workspace or verify ownership
         if workspace_id is None:
-            from src.server.handlers.chat.report_back import check_dispatch_capacity
+            from src.server.services.report_back.flash.reserve import check_dispatch_capacity
 
             # Advisory cap check BEFORE provisioning: a dispatch reserve() is
             # certain to reject must not spin up a sandbox it would orphan.
@@ -591,7 +591,7 @@ async def ptc_agent(
     # non-committed exit; a no-op when flash_thread_id is None (report_back off).
     # ``slot.wired`` (not the request flag) is echoed as report_back so we never
     # promise a report-back the completion gate would drop.
-    from src.server.handlers.chat.report_back import reserve
+    from src.server.services.report_back.flash.reserve import reserve
 
     flash_thread_id = configurable.get("thread_id") if report_back else None
     flash_workspace_id = configurable.get("workspace_id")
@@ -861,13 +861,13 @@ async def _threads_list(
             if err := await _verify_workspace_owner(workspace_id, user_id, tool_call_id):
                 return err
 
-            from src.server.database.conversation import get_workspace_threads
+            from src.server.database.conversation.threads_read import get_workspace_threads
 
             threads, total = await get_workspace_threads(
                 workspace_id=workspace_id, limit=20
             )
         else:
-            from src.server.database.conversation import get_threads_for_user
+            from src.server.database.conversation.threads_read import get_threads_for_user
 
             threads, total = await get_threads_for_user(
                 user_id=user_id, limit=20
@@ -925,7 +925,7 @@ async def _threads_delete(
         )
 
     try:
-        from src.server.database.conversation import delete_thread
+        from src.server.database.conversation.threads_write import delete_thread
         from src.server.services.thread_mutation import (
             MutationConflict,
             MutationUnavailable,
@@ -956,7 +956,7 @@ async def _threads_delete(
 
         # Invalidate thread existence cache (matches HTTP delete endpoint)
         try:
-            from src.server.database.conversation import thread_exists_key
+            from src.server.database.conversation.threads_write import thread_exists_key
             from src.utils.cache.redis_cache import get_cache_client
             cache = get_cache_client()
             if cache.enabled and cache.client:

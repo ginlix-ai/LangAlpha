@@ -3,7 +3,7 @@
 The reader consumes the per-run Redis Stream
 ``workflow:stream:{tid}:{run_id}`` for the caller-resolved run_id — the
 ledger-active row, authoritative on every worker (v4 2.4c review F6: a
-local-BTM resolution could prefer a stale terminal TaskInfo over the live
+local-BTM resolution could prefer a stale terminal LocalRunExecution over the live
 remote run). These tests pin the key shape plus the SSE decode rules.
 """
 

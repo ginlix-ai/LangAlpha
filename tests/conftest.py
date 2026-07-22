@@ -73,7 +73,7 @@ def mock_db_connection(mock_connection):
         yield mock_connection
 
     with patch(
-        "src.server.database.conversation.get_db_connection",
+        "src.server.database.pool.get_db_connection",
         new=_fake_get_db_connection,
     ) as mock:
         yield mock_connection

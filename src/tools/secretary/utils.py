@@ -177,7 +177,7 @@ async def extract_text_from_thread(
     Returns:
         Dict with keys: text, status, thread_id, workspace_id
     """
-    from src.server.database.conversation import (
+    from src.server.database.conversation.threads_read import (
         get_thread_by_id,
     )
 
@@ -196,7 +196,7 @@ async def extract_text_from_thread(
     # The ledger routes live-vs-settled (v4 2.4): an in_progress row means
     # the turn is still streaming into Redis on SOME worker; anything else
     # reads the finalized turns from the DB.
-    from src.server.database import turn_lifecycle as tl_db
+    from src.server.database.runs import lifecycle as tl_db
 
     active_run = await tl_db.get_active_run(thread_id)
     if active_run is not None:
@@ -209,7 +209,7 @@ async def extract_text_from_thread(
     if active_run is not None:
         # The active stream is always a single live turn — read the ledger
         # row's run stream directly. Resolving through local BTM state can
-        # pick a retained terminal TaskInfo from a prior run on this worker
+        # pick a retained terminal LocalRunExecution from a prior run on this worker
         # while the live run executes elsewhere (v4 2.4c review F6).
         text = await _extract_from_redis(
             thread_id, str(active_run["conversation_response_id"])
@@ -239,7 +239,7 @@ async def _extract_from_redis(thread_id: str, run_id: str) -> str:
     """
     # Local import to avoid load-order coupling with the server package
     # at agent import time.
-    from src.server.services.background_task_manager import stream_key
+    from src.server.services.runs.stream_writer import stream_key
     from src.utils.cache.redis_cache import get_cache_client
 
     key = stream_key(thread_id, run_id)
@@ -304,7 +304,7 @@ async def _latest_turn_text(thread_id: str) -> list[str]:
     pays one wider ``_EMPTY_LATEST_FALLBACK_TURNS`` read so an empty result
     isn't mistaken for "the agent produced nothing".
     """
-    from src.server.database.conversation import get_recent_responses_for_thread
+    from src.server.database.conversation.responses import get_recent_responses_for_thread
 
     responses = await get_recent_responses_for_thread(thread_id, limit=1)
     if responses and (text := _text_from_response(responses[0])):
@@ -336,7 +336,7 @@ async def _extract_from_db(thread_id: str, turns: int = 1) -> list[str]:
     if turns == 1:
         return await _latest_turn_text(thread_id)
 
-    from src.server.database.conversation import get_recent_responses_for_thread
+    from src.server.database.conversation.responses import get_recent_responses_for_thread
 
     limit = _MAX_HISTORY_TURNS if turns <= 0 else min(turns, _MAX_HISTORY_TURNS)
     responses = await get_recent_responses_for_thread(thread_id, limit=limit)

@@ -56,7 +56,7 @@ def rebase_db(mock_connection):
         yield mock_connection
 
     with patch(
-        "src.server.database.conversation.get_db_connection", new=_fake_pool
+        "src.server.database.pool.get_db_connection", new=_fake_pool
     ):
         yield mock_connection
 
