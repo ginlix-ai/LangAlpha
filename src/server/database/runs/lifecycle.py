@@ -289,6 +289,10 @@ async def start_run(
             "uq_responses_request_key",
             "uq_responses_thread_turn_attempt",
             "uq_responses_retry_of",
+            # Legacy (thread, turn_index) uniqueness — exists only in the
+            # 017→018 expand/contract window; a retry tripping it degrades to
+            # a clean conflict instead of an unclassified re-raise.
+            "unique_turn_index_per_thread_response",
         ):
             raise
 

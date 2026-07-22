@@ -223,6 +223,19 @@ async def _enqueue_report_back_job(conn, run_row: Dict[str, Any]) -> None:
     task_id = str(run_row["task_id"])
     task_run_id = str(run_row["task_run_id"])
     final_pin = run_row.get("final_checkpoint_id")
+    # Task identity (type/description) lives on subagent_tasks, not the runs
+    # row — read it on the finalize connection so the payload commits with
+    # the real context instead of the fallbacks.
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT subagent_type, description
+            FROM subagent_tasks
+            WHERE thread_id = %s AND task_id = %s
+            """,
+            (run_row["thread_id"], task_id),
+        )
+        task_row = dict(await cur.fetchone() or {})
     await outbox_db.enqueue_compensation_job(
         run_id=str(parent_run_id),
         thread_id=str(run_row["thread_id"]),
@@ -231,8 +244,8 @@ async def _enqueue_report_back_job(conn, run_row: Dict[str, Any]) -> None:
             "task_id": task_id,
             "task_run_id": task_run_id,
             "display_id": f"Task-{task_id}",
-            "subagent_type": str(run_row.get("subagent_type") or "subagent"),
-            "description": str(run_row.get("description") or "")[:500],
+            "subagent_type": str(task_row.get("subagent_type") or "subagent"),
+            "description": str(task_row.get("description") or "")[:500],
             "style": "pointer",
             "final_checkpoint_id": str(final_pin) if final_pin else None,
         },

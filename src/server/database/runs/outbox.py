@@ -460,6 +460,35 @@ async def revive_dead_cleanup_jobs(
             return [dict(r) for r in rows]
 
 
+async def purge_terminal_jobs(
+    *, retention_seconds: float, batch_size: int = 5000
+) -> int:
+    """Delete done/dead rows older than the retention window, one batch.
+
+    Terminal history is only read back within short windows (done-recents
+    wake-miss recovery, the dead-revive cool-down/ceiling ≈ a day), so
+    anything past the retention window is dead weight that the per-worker
+    sweeps would otherwise scan forever. Batched so the first purge on a
+    long-lived deployment can't hold a giant delete.
+    """
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                DELETE FROM hook_outbox
+                WHERE hook_outbox_id IN (
+                    SELECT hook_outbox_id FROM hook_outbox
+                    WHERE status IN ('done', 'dead')
+                      AND COALESCE(completed_at, created_at)
+                          <= NOW() - make_interval(secs => %s::float)
+                    LIMIT %s
+                )
+                """,
+                (retention_seconds, batch_size),
+            )
+            return cur.rowcount
+
+
 async def ack_outbox_job(job_id: str, *, attempts: int) -> bool:
     """Mark a claimed job done, fenced to the caller's lease generation.
 

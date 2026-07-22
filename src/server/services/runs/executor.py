@@ -1026,8 +1026,10 @@ class LocalRunExecutor:
             # outbox jobs, so the burst slot must release inline.
             await release_burst_slot(user_id, metadata.get("burst_slot_id"))
 
-        task_info.persistence_complete.set()
+        # A thrown finalize also withholds persistence_complete: the row is
+        # not terminal, so waiters must time out rather than read it as done.
         if finalize_concluded:
+            task_info.persistence_complete.set()
             async with self.task_lock:
                 self._release_terminal_refs(thread_id, run_id)
 

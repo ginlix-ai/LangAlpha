@@ -218,9 +218,11 @@ async def append_run_end_event(
                 maxlen=max_stored_messages * 2,
                 approximate=True,
             )
-            # Stamp TTL so a run_end landing on an expired/cleared
-            # key can't recreate it without an expiry.
+            # Stamp TTLs so a run_end landing on an expired/cleared
+            # key can't recreate it without an expiry — meta_k included,
+            # else a swallowed first stamp leaves it permanent.
             pipe.expire(stream_k, redis_event_ttl)
+            pipe.expire(meta_k, redis_event_ttl)
             await pipe.execute()
     except Exception as exc:
         logger.debug(

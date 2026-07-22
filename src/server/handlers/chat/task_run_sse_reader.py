@@ -230,3 +230,8 @@ async def stream_task_run_sse(
                         )
                         yield f"event: stream_gap\ndata: {gap}\n\n"
                 yield _record_to_v1_sse(record, thread_id, task_id)
+
+        # Reset terminal-seen on any non-empty XREAD batch — same
+        # two-empty-round handshake as run_stream_reader: entries still
+        # arriving mean the stream is not at end yet.
+        terminal_seen = False

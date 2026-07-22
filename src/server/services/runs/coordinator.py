@@ -183,27 +183,33 @@ class RunCoordinator:
                     metadata=metadata,
                     conn=guard.conn if guard is not None else None,
                 )
+            handle = RunHandle(
+                run_id=run_id,
+                thread_id=thread_id,
+                turn_index=row["turn_index"],
+                attempt_no=row["attempt_no"],
+                msg_type=msg_type,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                is_byok=is_byok,
+                started_at=row["created_at"],
+                guard=guard,
+            )
+            # Announce the durably-born run on the thread's control lane so an
+            # attached mux admits the main-lane channel push-style (best-effort).
+            from src.server.services.thread_control_stream import (
+                announce_run_started,
+            )
+
+            await announce_run_started(thread_id, run_id)
         except BaseException:
+            # Covers post-commit failures too (incl. CancelledError from the
+            # announce await): releasing the guard here is what lets the
+            # recovery scanner reclaim the committed in_progress row instead
+            # of it wedging the thread behind a leaked advisory lock.
             if guard is not None:
                 await guard.release()
             raise
-        handle = RunHandle(
-            run_id=run_id,
-            thread_id=thread_id,
-            turn_index=row["turn_index"],
-            attempt_no=row["attempt_no"],
-            msg_type=msg_type,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            is_byok=is_byok,
-            started_at=row["created_at"],
-            guard=guard,
-        )
-        # Announce the durably-born run on the thread's control lane so an
-        # attached mux admits the main-lane channel push-style (best-effort).
-        from src.server.services.thread_control_stream import announce_run_started
-
-        await announce_run_started(thread_id, run_id)
         return handle
 
     # --------------------------------------------------------------- FINALIZE

@@ -18,6 +18,7 @@ swallowed read — is the retry path.
 
 import asyncio
 import logging
+import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from src.server.database.runs import outbox as outbox_db
@@ -37,6 +38,11 @@ MAX_CONCURRENT_JOBS = 10
 # share so a burst of tail completions can't starve flash report-backs and
 # cheap wakes. Excluded types stay unclaimed but still head their chains.
 TASK_RB_INFLIGHT_QUOTA = 3
+# Terminal-row retention: far beyond every read-back window (done-recents
+# recovery, dead-revive ceiling ≈ a day, idempotency re-observation).
+RETENTION_SECONDS = 7 * 24 * 3600.0
+PURGE_INTERVAL = 3600.0
+PURGE_BATCH = 5000
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +141,7 @@ class HookOutboxDrainer:
         self._nudge = asyncio.Event()
         # task -> hook_type, so per-type quotas can count in-flight work.
         self._inflight: Dict[asyncio.Task, str] = {}
+        self._next_purge = 0.0
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -220,6 +227,33 @@ class HookOutboxDrainer:
                 raise
             except Exception:
                 logger.error("[HookOutbox] revive sweep failed", exc_info=True)
+
+            # Retention: purge terminal rows past every read-back window so
+            # the table (and the sweeps above) stays flat on a long-lived
+            # deployment.
+            if time.monotonic() >= self._next_purge:
+                self._next_purge = time.monotonic() + PURGE_INTERVAL
+                try:
+                    purged = 0
+                    for _ in range(10):
+                        n = await outbox_db.purge_terminal_jobs(
+                            retention_seconds=RETENTION_SECONDS,
+                            batch_size=PURGE_BATCH,
+                        )
+                        purged += n
+                        if n < PURGE_BATCH:
+                            break
+                    if purged:
+                        logger.info(
+                            f"[HookOutbox] purged {purged} terminal jobs past "
+                            f"retention"
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.error(
+                        "[HookOutbox] retention purge failed", exc_info=True
+                    )
 
             # Claim only what free slots can run: an over-claimed job would sit
             # here burning its lease while it waits for a task slot.

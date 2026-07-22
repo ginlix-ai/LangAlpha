@@ -147,7 +147,7 @@ async def append_sse_event(
             SELECT conversation_response_id
             FROM conversation_responses
             WHERE conversation_thread_id = %s
-            ORDER BY turn_index DESC
+            ORDER BY turn_index DESC, attempt_no DESC
             LIMIT 1
         )
     """

@@ -636,8 +636,9 @@ class TestThrownFinalizeLeavesEntryRunning:
         assert task_info.completed_at is None
         # The handle survives for cleanup's dead-handle fail_open path.
         assert task_info.metadata.get("run_handle") is run_handle
-        # Waiters must still be released (they are timeout-guarded anyway).
-        assert task_info.persistence_complete.is_set()
+        # Waiters are NOT released on a thrown CAS: the row is unfinalized,
+        # so they must hit their timeout instead of reading it as done.
+        assert not task_info.persistence_complete.is_set()
 
     @pytest.mark.asyncio
     async def test_applied_cas_still_marks_terminal(self):

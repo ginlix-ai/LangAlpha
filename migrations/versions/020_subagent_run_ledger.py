@@ -123,6 +123,14 @@ def upgrade() -> None:
         LANGUAGE plpgsql
         AS $$
         BEGIN
+            IF TG_OP = 'INSERT' THEN
+                IF NEW.status <> 'in_progress' THEN
+                    RAISE EXCEPTION
+                        'task run %: rows are born in_progress, not %',
+                        NEW.task_run_id, NEW.status;
+                END IF;
+                RETURN NEW;
+            END IF;
             IF OLD.status <> 'in_progress' THEN
                 IF NEW.status IS DISTINCT FROM OLD.status THEN
                     RAISE EXCEPTION
@@ -142,7 +150,7 @@ def upgrade() -> None:
     """)
     op.execute("""
         CREATE TRIGGER trg_subagent_run_lifecycle_guard
-        BEFORE UPDATE ON subagent_runs
+        BEFORE INSERT OR UPDATE ON subagent_runs
         FOR EACH ROW
         EXECUTE FUNCTION subagent_run_lifecycle_guard()
     """)

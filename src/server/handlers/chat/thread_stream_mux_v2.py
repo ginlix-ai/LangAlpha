@@ -427,6 +427,7 @@ async def stream_thread_mux_v2(
         return sum(1 for c in channels.values() if not c.closed)
 
     # ---- attach ----------------------------------------------------------
+    pending_admissions: dict[str, str] = {}
     for run_id, lane, started_ms in await _seed_channels(thread_id):
         if _open_count() >= _MAX_CHANNELS:
             break
@@ -450,6 +451,11 @@ async def stream_thread_mux_v2(
         # Settled run the client is still behind on: drain the retained
         # stream to its run_end; an expired stream closes via the row probe.
         lane, started_ms = resolved
+        if _open_count() >= _MAX_CHANNELS:
+            # Over-budget cursor debt defers to the rescan/pending path —
+            # a resume cursor is recovery state and must never be dropped.
+            pending_admissions[run_id] = lane
+            continue
         chan = _open(run_id, lane, entry_id.encode(), started_ms)
         attach_frames.append(_chan_open_frame(chan, "drain"))
 
@@ -492,7 +498,6 @@ async def stream_thread_mux_v2(
     # load is UNKNOWN debt, not absent debt: the rescan re-reads until one
     # load succeeds (pending_synced), and since nothing deletes hash fields,
     # a debt can never be erased out from under a socket that hasn't seen it.
-    pending_admissions: dict[str, str] = {}
     inherited = await _load_pending(cache, thread_id)
     pending_synced = inherited is not None
     for run_id, lane in (inherited or {}).items():
@@ -791,3 +796,6 @@ async def stream_thread_mux_v2(
     finally:
         for pump in pumps:
             pump.cancel()
+        # Await the cancellations so generator cleanup finishes before the
+        # response returns and pump exceptions are consumed, not orphaned.
+        await asyncio.gather(*pumps, return_exceptions=True)

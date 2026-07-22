@@ -732,6 +732,27 @@ async def collect_orphaned_subagent_results(
                 task.collector_response_id = None
 
 
+# Strong refs for post-terminal collector tasks: a bare create_task is
+# eligible for GC mid-flight, which would silently skip transcript archival
+# and usage persistence. Distinct from the executor's orphan-collector
+# registry — these must never be cancelled by the stop path.
+_collector_tasks: set[asyncio.Task] = set()
+
+
+def _retain_collector(task: asyncio.Task) -> None:
+    _collector_tasks.add(task)
+
+    def _discard(t: asyncio.Task) -> None:
+        _collector_tasks.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.error(
+                f"[SubagentCollector] post-terminal collector failed: "
+                f"{t.exception()!r}"
+            )
+
+    task.add_done_callback(_discard)
+
+
 async def spawn_subagent_collector(
     thread_id: str,
     run_id: str,
@@ -773,18 +794,20 @@ async def spawn_subagent_collector(
     if tasks_to_collect and workspace_id and user_id:
         handler = metadata.get("handler")
         sse_events = handler.get_sse_events() if handler else []
-        asyncio.create_task(
-            collect_for_turn(
-                thread_id=thread_id,
-                response_id=response_id,
-                original_chunks=sse_events or [],
-                tasks=tasks_to_collect,
-                workspace_id=workspace_id,
-                user_id=user_id,
-                is_byok=metadata.get("is_byok", False),
-                sandbox=metadata.get("sandbox"),
-            ),
-            name=f"subagent-collector-{thread_id}-{run_id}-post-tail",
+        _retain_collector(
+            asyncio.create_task(
+                collect_for_turn(
+                    thread_id=thread_id,
+                    response_id=response_id,
+                    original_chunks=sse_events or [],
+                    tasks=tasks_to_collect,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    is_byok=metadata.get("is_byok", False),
+                    sandbox=metadata.get("sandbox"),
+                ),
+                name=f"subagent-collector-{thread_id}-{run_id}-post-tail",
+            )
         )
 
 
