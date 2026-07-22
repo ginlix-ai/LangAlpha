@@ -28,7 +28,7 @@ logger = structlog.get_logger(__name__)
 # pure codegen change is otherwise invisible to sync_sandbox_assets and never
 # re-uploaded to a reused sandbox. Folding this constant into the tool_modules
 # version makes a bump force the regenerated client onto every workspace on its
-# next sync. See ptc_sandbox._compute_sandbox_manifest.
+# next sync. See sandbox/assets.py:_compute_sandbox_manifest.
 MCP_CLIENT_CODEGEN_VERSION = "2"
 
 # Aggregate per-execution ceiling on result_body bytes emitted BY THE GENERATED
@@ -993,7 +993,7 @@ _SERVER_CONFIGS = {servers_dict}
 # we stop emitting result_body (snippet/sha/size still recorded) to keep a
 # cooperative run's trace small. This is a courtesy bound only — agent code can
 # write MCP_TRACE_FILE directly; the hard host-memory bound is in
-# ptc_sandbox._collect_mcp_trace, which sizes the file before reading it.
+# sandbox/execution.py:_collect_mcp_trace, which sizes the file before reading it.
 _RESULT_BODY_MAX_BYTES = {RESULT_BODY_MAX_BYTES}
 _RESULT_BODY_TRACE_BUDGET_BYTES = {RESULT_BODY_TRACE_BUDGET_BYTES}
 _result_body_emitted_bytes = 0
