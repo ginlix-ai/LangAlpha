@@ -1,5 +1,5 @@
 """
-Tests for src/server/handlers/chat/_common.py shared helpers.
+Tests for src/server/handlers/chat/request_prep.py — chat request preparation.
 
 Covers:
 - classify_error: recoverable vs non-recoverable error classification
@@ -23,7 +23,7 @@ import pytest
 from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 from src.server.models.additional_context import SkillContext
 
-COMMON = "src.server.handlers.chat._common"
+PREP = "src.server.handlers.chat.request_prep"
 
 
 # ---------------------------------------------------------------------------
@@ -208,14 +208,14 @@ class TestProcessHitlResponse:
         return req
 
     def test_approve_with_message(self):
-        from src.server.handlers.chat._common import process_hitl_response
+        from src.server.handlers.chat.request_prep import process_hitl_response
 
         response = MagicMock()
         response.decisions = [MagicMock(type="approve", message="yes please")]
         req = self._make_request({"int-1": response})
 
         with patch(
-            f"{COMMON}.summarize_hitl_response_map",
+            f"{PREP}.summarize_hitl_response_map",
             return_value={
                 "feedback_action": "QUESTION_ANSWERED",
                 "content": "approved: yes please",
@@ -229,14 +229,14 @@ class TestProcessHitlResponse:
         assert answers["int-1"] == "yes please"
 
     def test_reject_without_message(self):
-        from src.server.handlers.chat._common import process_hitl_response
+        from src.server.handlers.chat.request_prep import process_hitl_response
 
         response = MagicMock()
         response.decisions = [MagicMock(type="reject", message="")]
         req = self._make_request({"int-1": response})
 
         with patch(
-            f"{COMMON}.summarize_hitl_response_map",
+            f"{PREP}.summarize_hitl_response_map",
             return_value={
                 "feedback_action": "QUESTION_SKIPPED",
                 "content": "rejected",
@@ -250,13 +250,13 @@ class TestProcessHitlResponse:
 
     def test_dict_style_response(self):
         """HITL response as plain dict (not Pydantic model)."""
-        from src.server.handlers.chat._common import process_hitl_response
+        from src.server.handlers.chat.request_prep import process_hitl_response
 
         response = {"decisions": [{"type": "approve", "message": "ok"}]}
         req = self._make_request({"int-1": response})
 
         with patch(
-            f"{COMMON}.summarize_hitl_response_map",
+            f"{PREP}.summarize_hitl_response_map",
             return_value={
                 "feedback_action": "QUESTION_ANSWERED",
                 "content": "ok",
@@ -268,7 +268,7 @@ class TestProcessHitlResponse:
         assert answers["int-1"] == "ok"
 
     def test_multiple_interrupts(self):
-        from src.server.handlers.chat._common import process_hitl_response
+        from src.server.handlers.chat.request_prep import process_hitl_response
 
         r1 = MagicMock()
         r1.decisions = [MagicMock(type="approve", message="answer 1")]
@@ -277,7 +277,7 @@ class TestProcessHitlResponse:
         req = self._make_request({"int-1": r1, "int-2": r2})
 
         with patch(
-            f"{COMMON}.summarize_hitl_response_map",
+            f"{PREP}.summarize_hitl_response_map",
             return_value={
                 "feedback_action": "QUESTION_ANSWERED",
                 "content": "mixed",
@@ -291,14 +291,14 @@ class TestProcessHitlResponse:
         assert answers["int-2"] is None
 
     def test_empty_decisions(self):
-        from src.server.handlers.chat._common import process_hitl_response
+        from src.server.handlers.chat.request_prep import process_hitl_response
 
         response = MagicMock()
         response.decisions = []
         req = self._make_request({"int-1": response})
 
         with patch(
-            f"{COMMON}.summarize_hitl_response_map",
+            f"{PREP}.summarize_hitl_response_map",
             return_value={
                 "feedback_action": "QUESTION_SKIPPED",
                 "content": "",
@@ -323,7 +323,7 @@ class TestNormalizeRequestMessages:
         return req
 
     def test_string_content(self):
-        from src.server.handlers.chat._common import normalize_request_messages
+        from src.server.handlers.chat.request_prep import normalize_request_messages
 
         msg = MagicMock()
         msg.role = "user"
@@ -332,7 +332,7 @@ class TestNormalizeRequestMessages:
         assert result == [{"role": "user", "content": "hello"}]
 
     def test_list_content_text(self):
-        from src.server.handlers.chat._common import normalize_request_messages
+        from src.server.handlers.chat.request_prep import normalize_request_messages
 
         item = MagicMock()
         item.type = "text"
@@ -344,7 +344,7 @@ class TestNormalizeRequestMessages:
         assert result[0]["content"] == [{"type": "text", "text": "hello"}]
 
     def test_list_content_image(self):
-        from src.server.handlers.chat._common import normalize_request_messages
+        from src.server.handlers.chat.request_prep import normalize_request_messages
 
         item = MagicMock()
         item.type = "image"
@@ -359,13 +359,13 @@ class TestNormalizeRequestMessages:
         ]
 
     def test_empty_messages(self):
-        from src.server.handlers.chat._common import normalize_request_messages
+        from src.server.handlers.chat.request_prep import normalize_request_messages
 
         result = normalize_request_messages(self._make_request([]))
         assert result == []
 
     def test_multiple_messages(self):
-        from src.server.handlers.chat._common import normalize_request_messages
+        from src.server.handlers.chat.request_prep import normalize_request_messages
 
         m1 = MagicMock(role="user", content="hello")
         m2 = MagicMock(role="assistant", content="hi there")
@@ -384,15 +384,15 @@ class TestNormalizeRequestMessages:
 
 class TestInitTracking:
     def test_returns_tuple(self):
-        from src.server.handlers.chat._common import init_tracking
+        from src.server.handlers.chat.request_prep import init_tracking
 
         with (
             patch(
-                f"{COMMON}.TokenTrackingManager.initialize_tracking",
+                f"{PREP}.TokenTrackingManager.initialize_tracking",
                 return_value=MagicMock(),
             ) as mock_token,
             patch(
-                f"{COMMON}.ToolUsageTracker",
+                f"{PREP}.ToolUsageTracker",
                 return_value=MagicMock(),
             ) as mock_tool,
         ):
@@ -411,15 +411,15 @@ class TestInitTracking:
 
 class TestApplyFetchOverride:
     def test_sets_context_vars(self):
-        from src.server.handlers.chat._common import apply_fetch_override
+        from src.server.handlers.chat.request_prep import apply_fetch_override
 
         config = MagicMock()
         config.llm.fetch = "gpt-4o-mini"
         config.subsidiary_llm_clients = {"fetch": MagicMock()}
 
         with (
-            patch(f"{COMMON}.fetch_model_override") as mock_model_var,
-            patch(f"{COMMON}.fetch_llm_client_override") as mock_client_var,
+            patch(f"{PREP}.fetch_model_override") as mock_model_var,
+            patch(f"{PREP}.fetch_llm_client_override") as mock_client_var,
         ):
             apply_fetch_override(config)
 
@@ -429,14 +429,14 @@ class TestApplyFetchOverride:
         )
 
     def test_skips_when_no_fetch(self):
-        from src.server.handlers.chat._common import apply_fetch_override
+        from src.server.handlers.chat.request_prep import apply_fetch_override
 
         config = MagicMock()
         config.llm.fetch = None
 
         with (
-            patch(f"{COMMON}.fetch_model_override") as mock_model_var,
-            patch(f"{COMMON}.fetch_llm_client_override") as mock_client_var,
+            patch(f"{PREP}.fetch_model_override") as mock_model_var,
+            patch(f"{PREP}.fetch_llm_client_override") as mock_client_var,
         ):
             apply_fetch_override(config)
 
@@ -444,15 +444,15 @@ class TestApplyFetchOverride:
         mock_client_var.set.assert_not_called()
 
     def test_skips_client_when_not_in_subsidiary(self):
-        from src.server.handlers.chat._common import apply_fetch_override
+        from src.server.handlers.chat.request_prep import apply_fetch_override
 
         config = MagicMock()
         config.llm.fetch = "gpt-4o-mini"
         config.subsidiary_llm_clients = {}
 
         with (
-            patch(f"{COMMON}.fetch_model_override") as mock_model_var,
-            patch(f"{COMMON}.fetch_llm_client_override") as mock_client_var,
+            patch(f"{PREP}.fetch_model_override") as mock_model_var,
+            patch(f"{PREP}.fetch_llm_client_override") as mock_client_var,
         ):
             apply_fetch_override(config)
 
@@ -479,7 +479,7 @@ class TestApplyFetchOverrideContextVars:
     def _run_and_capture(self, config):
         """Run apply_fetch_override in an isolated context; return snapshot."""
         import contextvars
-        from src.server.handlers.chat._common import apply_fetch_override
+        from src.server.handlers.chat.request_prep import apply_fetch_override
         from src.tools.web.fetch import fetch_model_override, fetch_llm_client_override
 
         results = {}
@@ -550,7 +550,7 @@ class TestApplyFetchOverrideContextVars:
     def test_context_isolation_across_cases(self):
         """Override set in one isolated run must not bleed into the next run."""
         import contextvars
-        from src.server.handlers.chat._common import apply_fetch_override
+        from src.server.handlers.chat.request_prep import apply_fetch_override
         from src.tools.web.fetch import fetch_llm_client_override
 
         leak_sentinel = MagicMock(name="leaked-client")
@@ -578,13 +578,13 @@ class TestApplyFetchOverrideContextVars:
 class TestEnsureThread:
     @pytest.mark.asyncio
     async def test_basic_call(self):
-        from src.server.handlers.chat._common import ensure_thread
+        from src.server.handlers.chat.request_prep import ensure_thread
 
         request = MagicMock()
         request.external_thread_id = None
         request.platform = None
 
-        with patch(f"{COMMON}.qr_db.ensure_thread_exists", new_callable=AsyncMock) as mock_db:
+        with patch(f"{PREP}.qr_db.ensure_thread_exists", new_callable=AsyncMock) as mock_db:
             await ensure_thread(
                 request, "t-1", "ws-1", "u-1", msg_type="flash", initial_query="hello"
             )
@@ -600,13 +600,13 @@ class TestEnsureThread:
 
     @pytest.mark.asyncio
     async def test_with_external_thread(self):
-        from src.server.handlers.chat._common import ensure_thread
+        from src.server.handlers.chat.request_prep import ensure_thread
 
         request = MagicMock()
         request.external_thread_id = "ext-123"
         request.platform = "slack"
 
-        with patch(f"{COMMON}.qr_db.ensure_thread_exists", new_callable=AsyncMock) as mock_db:
+        with patch(f"{PREP}.qr_db.ensure_thread_exists", new_callable=AsyncMock) as mock_db:
             await ensure_thread(
                 request, "t-1", "ws-1", "u-1", msg_type="ptc", initial_query=""
             )
@@ -617,13 +617,13 @@ class TestEnsureThread:
 
     @pytest.mark.asyncio
     async def test_default_initial_query(self):
-        from src.server.handlers.chat._common import ensure_thread
+        from src.server.handlers.chat.request_prep import ensure_thread
 
         request = MagicMock()
         request.external_thread_id = None
         request.platform = None
 
-        with patch(f"{COMMON}.qr_db.ensure_thread_exists", new_callable=AsyncMock) as mock_db:
+        with patch(f"{PREP}.qr_db.ensure_thread_exists", new_callable=AsyncMock) as mock_db:
             await ensure_thread(request, "t-1", "ws-1", "u-1", msg_type="flash")
 
         call_kwargs = mock_db.call_args.kwargs
@@ -637,7 +637,7 @@ class TestEnsureThread:
 
 class TestBuildGraphConfig:
     def _build(self, **kwargs):
-        from src.server.handlers.chat._common import build_graph_config
+        from src.server.handlers.chat.request_prep import build_graph_config
 
         defaults = dict(
             thread_id="t-1",
@@ -659,8 +659,8 @@ class TestBuildGraphConfig:
         )
         defaults.update(kwargs)
         with (
-            patch(f"{COMMON}.get_langsmith_tags", return_value=["tag1"]),
-            patch(f"{COMMON}.get_langsmith_metadata", return_value={"k": "v"}),
+            patch(f"{PREP}.get_langsmith_tags", return_value=["tag1"]),
+            patch(f"{PREP}.get_langsmith_metadata", return_value={"k": "v"}),
         ):
             return build_graph_config(**defaults)
 
@@ -755,7 +755,7 @@ class TestWaitOrSteer:
         reclaim (v4 2.4c — worker-agnostic, replaces the local task check).
         Defaults to a live row (no reclaim); exit-race tests set it None."""
         with patch(
-            "src.server.database.turn_lifecycle.get_active_run",
+            "src.server.database.runs.lifecycle.get_active_run",
             new_callable=AsyncMock,
             return_value=_LIVE_ROW,
         ) as slot:
@@ -763,7 +763,7 @@ class TestWaitOrSteer:
 
     @pytest.mark.asyncio
     async def test_fresh_returns_true(self):
-        from src.server.handlers.chat.admission import wait_or_steer
+        from src.server.handlers.chat.admission_gate import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value=("fresh", None))
@@ -780,7 +780,7 @@ class TestWaitOrSteer:
         409 'not_running' routes the gateway to its resubmit path instead."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat.admission import wait_or_steer
+        from src.server.handlers.chat.admission_gate import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value=("fresh", None))
@@ -800,7 +800,7 @@ class TestWaitOrSteer:
     async def test_steer_only_still_steers_running(self):
         """steer_only forbids only the fresh-admission fallback; a
         genuinely-running turn steers exactly as before."""
-        from src.server.handlers.chat.admission import wait_or_steer
+        from src.server.handlers.chat.admission_gate import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value=("running", _LIVE_ROW))
@@ -824,7 +824,7 @@ class TestWaitOrSteer:
         the Redis push landed: the message must be reclaimed and the POST
         routed as a fresh turn — never a false steering_accepted for a
         message nothing will consume."""
-        from src.server.handlers.chat.admission import wait_or_steer
+        from src.server.handlers.chat.admission_gate import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value=("running", _LIVE_ROW))
@@ -856,7 +856,7 @@ class TestWaitOrSteer:
         not_running so the gateway resubmits — not as a fresh admission."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat.admission import wait_or_steer
+        from src.server.handlers.chat.admission_gate import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value=("running", _LIVE_ROW))
@@ -890,7 +890,7 @@ class TestWaitOrSteer:
         message first and steering_returned already carried it back on the
         turn stream — the POST keeps the queue contract and reports
         accepted."""
-        from src.server.handlers.chat.admission import wait_or_steer
+        from src.server.handlers.chat.admission_gate import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value=("running", _LIVE_ROW))
@@ -918,7 +918,7 @@ class TestWaitOrSteer:
         """CRITICAL regression: a genuinely-running turn is steered immediately
         — admission returns "running" and steer_thread is called without any
         wait on the running task."""
-        from src.server.handlers.chat.admission import wait_or_steer
+        from src.server.handlers.chat.admission_gate import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value=("running", _LIVE_ROW))
@@ -949,7 +949,7 @@ class TestWaitOrSteer:
         never steered (a second checkpoint writer would corrupt state)."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat.admission import wait_or_steer
+        from src.server.handlers.chat.admission_gate import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value=("stopping", _STOPPING_ROW))
@@ -975,7 +975,7 @@ class TestWaitOrSteer:
     async def test_raises_409_when_steering_fails(self):
         from fastapi import HTTPException
 
-        from src.server.handlers.chat.admission import wait_or_steer
+        from src.server.handlers.chat.admission_gate import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value=("running", _LIVE_ROW))
@@ -1002,7 +1002,7 @@ class TestWaitOrSteer:
         never steered (steering mid-summarize corrupts the context rewrite)."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat.admission import wait_or_steer
+        from src.server.handlers.chat.admission_gate import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value=("compacting", None))
@@ -1032,7 +1032,7 @@ class TestWaitOrSteer:
         checkpointer would collide."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat.admission import wait_or_steer
+        from src.server.handlers.chat.admission_gate import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value=("running", _LIVE_ROW))
@@ -1063,7 +1063,7 @@ class TestAdmissionConflictDetail:
     and dispatched."""
 
     def test_compacting_state_names_compaction(self):
-        from src.server.handlers.chat.admission import admission_conflict_detail
+        from src.server.handlers.chat.admission_gate import admission_conflict_detail
 
         detail = admission_conflict_detail("compacting")
         # Structured detail (code + message) so handle_workflow_error can tag the
@@ -1074,7 +1074,7 @@ class TestAdmissionConflictDetail:
         assert "retry" in detail["message"].lower() or "resend" in detail["message"].lower()
 
     def test_stopping_state_names_stopping(self):
-        from src.server.handlers.chat.admission import admission_conflict_detail
+        from src.server.handlers.chat.admission_gate import admission_conflict_detail
 
         detail = admission_conflict_detail("stopping")
         assert isinstance(detail, dict)
@@ -1082,7 +1082,7 @@ class TestAdmissionConflictDetail:
         assert "stopping" in detail["message"].lower()
 
     def test_not_running_names_the_steer_refusal(self):
-        from src.server.handlers.chat.admission import admission_conflict_detail
+        from src.server.handlers.chat.admission_gate import admission_conflict_detail
 
         # The steer_only probe against an idle thread: not a wait_for_admission
         # state, but routed through the same mapper so the wording lives here too.
@@ -1092,7 +1092,7 @@ class TestAdmissionConflictDetail:
         assert "running" in detail["message"].lower()
 
     def test_running_state_is_the_generic_fallback(self):
-        from src.server.handlers.chat.admission import admission_conflict_detail
+        from src.server.handlers.chat.admission_gate import admission_conflict_detail
 
         # Any other non-fresh state (e.g. "running") falls through to the
         # "still running" code.
@@ -1106,7 +1106,7 @@ class TestAdmissionConflictDetail:
         assert "cancel" in detail["message"].lower()
 
     def test_unknown_state_falls_back_to_generic(self):
-        from src.server.handlers.chat.admission import admission_conflict_detail
+        from src.server.handlers.chat.admission_gate import admission_conflict_detail
 
         detail = admission_conflict_detail("wedged")
         assert detail["code"] == "running"
@@ -1127,11 +1127,11 @@ class TestHandleWorkflowErrorHTTPException:
     the thread's open run would clobber a concurrently-running peer turn.
 
     v4: the durable terminal write moved off ``ConversationPersistenceService``
-    onto ``TurnCoordinator.finalize_turn`` (driven by the STARTed ``run_handle``),
+    onto ``RunCoordinator.finalize_run`` (driven by the STARTed ``run_handle``),
     so these tests observe the coordinator rather than a persistence service.
     """
 
-    TC = "src.server.services.turn_lifecycle.TurnCoordinator"
+    TC = "src.server.services.runs.coordinator.RunCoordinator"
 
     @staticmethod
     def _handler():
@@ -1151,6 +1151,15 @@ class TestHandleWorkflowErrorHTTPException:
         request.timezone = None
         return request
 
+    @staticmethod
+    def _scope(run_handle=None):
+        from src.server.services.runs.admission import RunScope
+
+        scope = RunScope(user_id="u-1", burst_slot_id=None)
+        if run_handle is not None:
+            scope.attach_run(run_handle)
+        return scope
+
     @pytest.mark.asyncio
     async def test_http_exception_surfaces_error_but_skips_finalize(self):
         from fastapi import HTTPException
@@ -1166,7 +1175,7 @@ class TestHandleWorkflowErrorHTTPException:
 
         with (
             patch(
-                "src.server.handlers.chat.error_handling.release_burst_slot",
+                "src.server.dependencies.usage_limits.release_burst_slot",
                 new_callable=AsyncMock,
             ),
             patch(self.TC) as mock_coord_cls,
@@ -1181,7 +1190,7 @@ class TestHandleWorkflowErrorHTTPException:
                     workspace_id="w-1",
                     handler=self._handler(),
                     token_callback=None,
-                    run_handle=None,
+                    scope=self._scope(),
                     start_time=0.0,
                     request=self._request(),
                     is_byok=False,
@@ -1195,7 +1204,7 @@ class TestHandleWorkflowErrorHTTPException:
         assert any("compacting" in ev for ev in events)
         # ...but the conflict is never finalized as a turn failure — the
         # (possibly peer-owned) open run is untouched.
-        coordinator.finalize_turn.assert_not_awaited()
+        coordinator.finalize_run.assert_not_awaited()
         coordinator.fail_open_run.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1217,7 +1226,7 @@ class TestHandleWorkflowErrorHTTPException:
 
         with (
             patch(
-                "src.server.handlers.chat.error_handling.release_burst_slot",
+                "src.server.dependencies.usage_limits.release_burst_slot",
                 new_callable=AsyncMock,
             ),
             patch(self.TC) as mock_coord_cls,
@@ -1232,7 +1241,7 @@ class TestHandleWorkflowErrorHTTPException:
                     workspace_id="w-1",
                     handler=self._handler(),
                     token_callback=None,
-                    run_handle=None,
+                    scope=self._scope(),
                     start_time=0.0,
                     request=self._request(),
                     is_byok=False,
@@ -1243,7 +1252,7 @@ class TestHandleWorkflowErrorHTTPException:
 
         assert any("event: error" in ev for ev in events)
         assert any("not_running" in ev for ev in events)
-        coordinator.finalize_turn.assert_not_awaited()
+        coordinator.finalize_run.assert_not_awaited()
         coordinator.fail_open_run.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1266,7 +1275,7 @@ class TestHandleWorkflowErrorHTTPException:
 
         with (
             patch(
-                "src.server.handlers.chat.error_handling.release_burst_slot",
+                "src.server.dependencies.usage_limits.release_burst_slot",
                 new_callable=AsyncMock,
             ),
             patch(self.TC) as mock_coord_cls,
@@ -1281,7 +1290,7 @@ class TestHandleWorkflowErrorHTTPException:
                     workspace_id="w-1",
                     handler=self._handler(),
                     token_callback=None,
-                    run_handle=run_handle,
+                    scope=self._scope(run_handle),
                     start_time=0.0,
                     request=self._request(),
                     is_byok=False,
@@ -1291,7 +1300,7 @@ class TestHandleWorkflowErrorHTTPException:
             ]
 
         # A genuine 503 is finalized as error (real failure path)...
-        coordinator.finalize_turn.assert_awaited()
+        coordinator.finalize_run.assert_awaited()
         # ...and is never mislabeled as a transient admission conflict.
         assert not any("admission_conflict" in ev for ev in events)
 
@@ -1317,7 +1326,7 @@ class TestHandleWorkflowErrorHTTPException:
 
         with (
             patch(
-                "src.server.handlers.chat.error_handling.release_burst_slot",
+                "src.server.dependencies.usage_limits.release_burst_slot",
                 new_callable=AsyncMock,
             ),
             patch(self.TC) as mock_coord_cls,
@@ -1332,7 +1341,7 @@ class TestHandleWorkflowErrorHTTPException:
                     workspace_id="w-1",
                     handler=self._handler(),
                     token_callback=None,
-                    run_handle=run_handle,
+                    scope=self._scope(run_handle),
                     start_time=0.0,
                     request=self._request(),
                     is_byok=False,
@@ -1341,7 +1350,7 @@ class TestHandleWorkflowErrorHTTPException:
                 )
             ]
 
-        coordinator.finalize_turn.assert_awaited()
+        coordinator.finalize_run.assert_awaited()
         assert not any("admission_conflict" in ev for ev in events)
 
 
@@ -1358,7 +1367,7 @@ class TestSerializeContextMetadata:
         return req
 
     def test_serializes_skills_and_directives(self):
-        from src.server.handlers.chat._common import serialize_context_metadata
+        from src.server.handlers.chat.request_prep import serialize_context_metadata
 
         skill_ctx = MagicMock(type="skills")
         skill_ctx.name = "research"
@@ -1377,14 +1386,14 @@ class TestSerializeContextMetadata:
         ]
 
     def test_slash_command_fallback(self):
-        from src.server.handlers.chat._common import serialize_context_metadata
+        from src.server.handlers.chat.request_prep import serialize_context_metadata
 
         req = self._make_request(additional_context=None)
         metadata = {}
 
         mock_skill = MagicMock(name="research")
         with patch(
-            f"{COMMON}.detect_slash_commands",
+            f"{PREP}.detect_slash_commands",
             return_value=("hello", [mock_skill]),
         ):
             serialize_context_metadata(req, metadata, "hello", mode="flash")
@@ -1393,13 +1402,13 @@ class TestSerializeContextMetadata:
         assert metadata["additional_context"][0]["type"] == "skills"
 
     def test_no_slash_commands_found(self):
-        from src.server.handlers.chat._common import serialize_context_metadata
+        from src.server.handlers.chat.request_prep import serialize_context_metadata
 
         req = self._make_request(additional_context=None)
         metadata = {}
 
         with patch(
-            f"{COMMON}.detect_slash_commands",
+            f"{PREP}.detect_slash_commands",
             return_value=("hello", []),
         ):
             serialize_context_metadata(req, metadata, "hello", mode="flash")
@@ -1407,25 +1416,25 @@ class TestSerializeContextMetadata:
         assert "additional_context" not in metadata
 
     def test_hitl_response_skips_slash_commands(self):
-        from src.server.handlers.chat._common import serialize_context_metadata
+        from src.server.handlers.chat.request_prep import serialize_context_metadata
 
         req = self._make_request(additional_context=None, hitl_response={"int-1": {}})
         metadata = {}
 
-        with patch(f"{COMMON}.detect_slash_commands") as mock_detect:
+        with patch(f"{PREP}.detect_slash_commands") as mock_detect:
             serialize_context_metadata(req, metadata, "hello", mode="flash")
 
         mock_detect.assert_not_called()
 
     def test_existing_additional_context_prevents_fallback(self):
-        from src.server.handlers.chat._common import serialize_context_metadata
+        from src.server.handlers.chat.request_prep import serialize_context_metadata
 
         skill_ctx = MagicMock(type="skills")
         skill_ctx.name = "research"
         req = self._make_request(additional_context=[skill_ctx])
         metadata = {}
 
-        with patch(f"{COMMON}.detect_slash_commands") as mock_detect:
+        with patch(f"{PREP}.detect_slash_commands") as mock_detect:
             serialize_context_metadata(req, metadata, "hello", mode="ptc")
 
         # Should not call detect_slash_commands since additional_context was serialized
@@ -1440,7 +1449,7 @@ class TestSerializeContextMetadata:
 class TestSetupSteeringTracking:
     @pytest.mark.asyncio
     async def test_wires_callback(self):
-        from src.server.handlers.chat._common import setup_steering_tracking
+        from src.server.handlers.chat.request_prep import setup_steering_tracking
 
         handler = MagicMock()
         handler.injected_steerings = []
@@ -1452,7 +1461,7 @@ class TestSetupSteeringTracking:
 
     @pytest.mark.asyncio
     async def test_callback_filters_empty_content(self):
-        from src.server.handlers.chat._common import setup_steering_tracking
+        from src.server.handlers.chat.request_prep import setup_steering_tracking
 
         handler = MagicMock()
         handler.injected_steerings = []
@@ -1480,20 +1489,20 @@ class TestSetupSteeringTracking:
 
 class TestPrepareSkillContexts:
     def test_no_skills_returns_empty(self):
-        from src.server.handlers.chat._common import prepare_skill_contexts
+        from src.server.handlers.chat.request_prep import prepare_skill_contexts
 
         request = MagicMock()
         request.additional_context = None
         request.hitl_response = None
         messages = [{"role": "user", "content": "hello"}]
 
-        with patch(f"{COMMON}.parse_skill_contexts", return_value=[]):
+        with patch(f"{PREP}.parse_skill_contexts", return_value=[]):
             result = prepare_skill_contexts(messages, request, mode="flash")
 
         assert result == []
 
     def test_skill_from_additional_context(self):
-        from src.server.handlers.chat._common import prepare_skill_contexts
+        from src.server.handlers.chat.request_prep import prepare_skill_contexts
 
         request = MagicMock()
         request.additional_context = [MagicMock(type="skills")]
@@ -1501,7 +1510,7 @@ class TestPrepareSkillContexts:
         messages = [{"role": "user", "content": "hello"}]
 
         ctx = SkillContext(type="skills", name="research", instruction="find news")
-        with patch(f"{COMMON}.parse_skill_contexts", return_value=[ctx]):
+        with patch(f"{PREP}.parse_skill_contexts", return_value=[ctx]):
             result = prepare_skill_contexts(messages, request, mode="flash")
 
         # Returns plain dicts to thread through config; no body injected here.
@@ -1509,7 +1518,7 @@ class TestPrepareSkillContexts:
         assert messages[0]["content"] == "hello"
 
     def test_slash_command_detection_fallback_strips_prefix(self):
-        from src.server.handlers.chat._common import prepare_skill_contexts
+        from src.server.handlers.chat.request_prep import prepare_skill_contexts
 
         request = MagicMock()
         request.additional_context = None
@@ -1518,9 +1527,9 @@ class TestPrepareSkillContexts:
 
         ctx = SkillContext(type="skills", name="research")
         with (
-            patch(f"{COMMON}.parse_skill_contexts", return_value=[]),
+            patch(f"{PREP}.parse_skill_contexts", return_value=[]),
             patch(
-                f"{COMMON}.detect_slash_commands",
+                f"{PREP}.detect_slash_commands",
                 return_value=("market analysis", [ctx]),
             ),
         ):
@@ -1531,7 +1540,7 @@ class TestPrepareSkillContexts:
         assert messages[0]["content"] == "market analysis"
 
     def test_hitl_response_skips_slash_detection(self):
-        from src.server.handlers.chat._common import prepare_skill_contexts
+        from src.server.handlers.chat.request_prep import prepare_skill_contexts
 
         request = MagicMock()
         request.additional_context = None
@@ -1539,8 +1548,8 @@ class TestPrepareSkillContexts:
         messages = [{"role": "user", "content": "/research something"}]
 
         with (
-            patch(f"{COMMON}.parse_skill_contexts", return_value=[]),
-            patch(f"{COMMON}.detect_slash_commands") as mock_detect,
+            patch(f"{PREP}.parse_skill_contexts", return_value=[]),
+            patch(f"{PREP}.detect_slash_commands") as mock_detect,
         ):
             result = prepare_skill_contexts(messages, request, mode="flash")
 
@@ -1551,7 +1560,7 @@ class TestPrepareSkillContexts:
         """A supported attachment rewrites content into a block list; the slash
         command must still activate, be stripped in its own text block, and leave
         the attachment blocks intact."""
-        from src.server.handlers.chat._common import prepare_skill_contexts
+        from src.server.handlers.chat.request_prep import prepare_skill_contexts
 
         request = MagicMock()
         request.additional_context = None
@@ -1562,9 +1571,9 @@ class TestPrepareSkillContexts:
 
         ctx = SkillContext(type="skills", name="research")
         with (
-            patch(f"{COMMON}.parse_skill_contexts", return_value=[]),
+            patch(f"{PREP}.parse_skill_contexts", return_value=[]),
             patch(
-                f"{COMMON}.detect_slash_commands",
+                f"{PREP}.detect_slash_commands",
                 return_value=("market analysis", [ctx]),
             ),
         ):
@@ -1577,7 +1586,7 @@ class TestPrepareSkillContexts:
 
     def test_list_content_without_slash_block_skips_detection(self):
         """List content whose text blocks don't lead with `/` activates nothing."""
-        from src.server.handlers.chat._common import prepare_skill_contexts
+        from src.server.handlers.chat.request_prep import prepare_skill_contexts
 
         request = MagicMock()
         request.additional_context = None
@@ -1594,8 +1603,8 @@ class TestPrepareSkillContexts:
         ]
 
         with (
-            patch(f"{COMMON}.parse_skill_contexts", return_value=[]),
-            patch(f"{COMMON}.detect_slash_commands") as mock_detect,
+            patch(f"{PREP}.parse_skill_contexts", return_value=[]),
+            patch(f"{PREP}.detect_slash_commands") as mock_detect,
         ):
             result = prepare_skill_contexts(messages, request, mode="flash")
 
@@ -1610,16 +1619,16 @@ class TestPrepareSkillContexts:
 
 class TestResolveTimezone:
     def test_valid_timezone(self):
-        from src.server.handlers.chat._common import _resolve_timezone
+        from src.server.handlers.chat.request_prep import _resolve_timezone
 
         result = _resolve_timezone("America/New_York", "en-US")
         assert result == "America/New_York"
 
     def test_invalid_timezone_falls_back(self):
-        from src.server.handlers.chat._common import _resolve_timezone
+        from src.server.handlers.chat.request_prep import _resolve_timezone
 
         with patch(
-            f"{COMMON}.get_locale_config",
+            f"{PREP}.get_locale_config",
             return_value={"timezone": "Asia/Shanghai"},
         ):
             result = _resolve_timezone("Invalid/Zone", "zh-CN")
@@ -1627,10 +1636,10 @@ class TestResolveTimezone:
         assert result == "Asia/Shanghai"
 
     def test_none_timezone_falls_back(self):
-        from src.server.handlers.chat._common import _resolve_timezone
+        from src.server.handlers.chat.request_prep import _resolve_timezone
 
         with patch(
-            f"{COMMON}.get_locale_config",
+            f"{PREP}.get_locale_config",
             return_value={"timezone": "UTC"},
         ):
             result = _resolve_timezone(None, "en-US")
@@ -1638,10 +1647,10 @@ class TestResolveTimezone:
         assert result == "UTC"
 
     def test_none_locale_uses_default(self):
-        from src.server.handlers.chat._common import _resolve_timezone
+        from src.server.handlers.chat.request_prep import _resolve_timezone
 
         with patch(
-            f"{COMMON}.get_locale_config",
+            f"{PREP}.get_locale_config",
             return_value={"timezone": "UTC"},
         ) as mock_locale:
             result = _resolve_timezone(None, None)
@@ -1652,7 +1661,7 @@ class TestResolveTimezone:
 
 class TestInjectInlineReminders:
     def _inject(self, messages, reminders):
-        from src.server.handlers.chat._common import inject_inline_reminders
+        from src.server.handlers.chat.request_prep import inject_inline_reminders
 
         return inject_inline_reminders(messages, reminders)
 

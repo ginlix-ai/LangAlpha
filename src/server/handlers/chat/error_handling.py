@@ -4,7 +4,7 @@
 ``handle_workflow_error`` is the one in-generator error surface for both
 agent modes — it routes protocol responses (admission conflicts, START-txn
 refusals) past persistence, and finalizes genuinely-failed runs through
-the TurnCoordinator CAS.
+the RunCoordinator CAS.
 """
 
 from __future__ import annotations
@@ -21,12 +21,11 @@ from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientErr
 
 from src.config.settings import get_max_workflow_retries
 from src.server.database import conversation as qr_db
-from src.server.dependencies.usage_limits import release_burst_slot
-
-from .admission import ADMISSION_CONFLICT_CODES, admission_conflict_detail
+from .admission_gate import ADMISSION_CONFLICT_CODES, admission_conflict_detail
 
 if TYPE_CHECKING:
     from src.server.models.chat import ChatRequest
+    from src.server.services.runs.admission import RunScope
 
 # Hard-coded logger name for backward-compat with existing log routing.
 logger = logging.getLogger("src.server.handlers.chat_handler")
@@ -166,7 +165,7 @@ async def handle_workflow_error(
     workspace_id: str | None,
     handler,
     token_callback,
-    run_handle,
+    scope: "RunScope",
     start_time: float,
     request: ChatRequest,
     is_byok: bool,
@@ -179,23 +178,27 @@ async def handle_workflow_error(
     This is an async generator that yields SSE event strings (``retry`` or
     ``error``).  Call it with ``async for event in handle_workflow_error(...): yield event``.
 
-    ``run_handle`` is the STARTed run to finalize, or ``None`` when the error
-    fired before START — or after handoff to BTM, whose ``_finalize_run``
-    owns the terminal write from that point (callers pass
-    ``run_handle if slot_owned else None`` to encode exactly that).
+    ``scope`` owns the burst lease and the open START row; its
+    ``owned_run_handle`` is the run to finalize — ``None`` when the error
+    fired before START, or after handoff to BTM, whose ``_finalize_run``
+    owns the terminal write (and the durable slot release) from that point.
     ``workspace_id`` accepts ``None`` to guard against the case where the
     error occurred before the workspace was resolved.
     ``timezone_str`` is the resolved timezone; falls back to ``request.timezone``.
     """
-    from src.server.database.subagent_runs import TaskRunSlotBusyError
-    from src.server.services.turn_lifecycle import (
+    from src.server.database.runs.subagent_runs import TaskRunSlotBusyError
+    from src.server.services.runs.coordinator import (
         AttemptConflictError,
         DuplicateRequestError,
         RunSlotBusyError,
-        TurnCoordinator,
-        TurnOutcome,
+        RunCoordinator,
+        RunOutcome,
         protected_finalize,
     )
+
+    # Captured before any release below flips ownership — the finalize
+    # branches must see the run this scope owned at error time.
+    run_handle = scope.owned_run_handle
 
     # Metadata for persistence calls — built from parameters alone, up here so
     # ``_finalize_error`` never closes over a cell assigned below its def.
@@ -239,9 +242,9 @@ async def handle_workflow_error(
             tools = None
         try:
             result = await protected_finalize(
-                TurnCoordinator.get_instance().finalize_turn(
+                RunCoordinator.get_instance().finalize_run(
                     run_handle,
-                    TurnOutcome(
+                    RunOutcome(
                         status="error",
                         metadata={**persist_metadata, **extra_metadata},
                         errors=[error_msg],
@@ -281,12 +284,12 @@ async def handle_workflow_error(
         and isinstance(e.detail, dict)
         and e.detail.get("code") in ADMISSION_CONFLICT_CODES
     ):
-        await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
+        await scope.release_slot()
         # Normally pre-START (run_handle is None). The flash RuntimeError
         # fallback can 409 after START, though — release the durable slot so
         # it doesn't leak until the stale-run sweep.
         if run_handle is not None:
-            await TurnCoordinator.get_instance().fail_open_run(
+            await RunCoordinator.get_instance().fail_open_run(
                 run_handle, "admission conflict after START", status="cancelled"
             )
         # The guard above already proved e.detail is a dict whose "code" is in
@@ -308,7 +311,7 @@ async def handle_workflow_error(
     # back, so nothing was persisted for THIS request (run_handle is None) and
     # there is nothing to finalize.
     if isinstance(e, DuplicateRequestError):
-        await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
+        await scope.release_slot()
         existing = e.existing_run or {}
         error_payload = {
             "thread_id": thread_id,
@@ -359,7 +362,7 @@ async def handle_workflow_error(
             qr_db.QueryConflictError,
         ),
     ):
-        await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
+        await scope.release_slot()
         if isinstance(e, (RunSlotBusyError, TaskRunSlotBusyError)):
             detail = admission_conflict_detail("running")
         elif isinstance(e, qr_db.QueryConflictError):
@@ -391,7 +394,7 @@ async def handle_workflow_error(
     from src.server.services.writer_guard import WriterGuardUnavailable
 
     if isinstance(e, WriterGuardUnavailable):
-        await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
+        await scope.release_slot()
         error_payload = {
             "thread_id": thread_id,
             "error": (
@@ -415,7 +418,7 @@ async def handle_workflow_error(
     # already-started stream, so this is the response surface — a synchronous
     # HTTP 409 status is not reachable from here.
     if isinstance(e, qr_db.ExternalIdConflictError):
-        await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
+        await scope.release_slot()
         # Same core fields (error_type discriminator + offending pair + human
         # wording) as the stamp API's HTTP 409, built from the shared helper so
         # the two surfaces never drift; the SSE-envelope fields (thread_id, type,
@@ -435,8 +438,9 @@ async def handle_workflow_error(
 
     MAX_RETRIES = get_max_workflow_retries()
 
-    # Release burst slot on error (setup errors before background task starts)
-    await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
+    # Release burst slot on error (setup errors before background task starts;
+    # post-handoff this no-ops — the executor's terminal hooks own the release)
+    await scope.release_slot()
 
     classification = classify_error(e)
     is_recoverable = classification["is_recoverable"]

@@ -1,5 +1,5 @@
 """Tests for the per-stream ``metadata`` SSE frame produced by
-``WorkflowStreamHandler.stream_workflow``.
+``RunSSEProducer.stream_workflow``.
 
 Contract: ``run_id`` is REQUIRED at construction time. Every stream
 announces that ``run_id`` as the FIRST yielded SSE chunk (``event:
@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-from src.server.handlers.streaming_handler import WorkflowStreamHandler
+from src.server.services.runs.sse_producer import RunSSEProducer
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ def _parse_sse(chunk: str):
     return event_line[len("event: "):], json.loads(data_line[len("data: "):])
 
 
-async def _collect_stream(handler: WorkflowStreamHandler):
+async def _collect_stream(handler: RunSSEProducer):
     return [
         chunk
         async for chunk in handler.stream_workflow(
@@ -76,7 +76,7 @@ class TestMetadataFrameFirst:
 
     @pytest.mark.asyncio
     async def test_metadata_is_first_event_when_run_id_set(self):
-        handler = WorkflowStreamHandler(thread_id="t-1", run_id="r-abc")
+        handler = RunSSEProducer(thread_id="t-1", run_id="r-abc")
         chunks = await _collect_stream(handler)
         assert chunks, "expected at least the metadata frame"
         event_name, data = _parse_sse(chunks[0])
@@ -89,7 +89,7 @@ class TestMetadataFrameFirst:
         per-connection identity hand-shake. The accumulator owns persistence,
         so a missing accumulated entry proves ``accumulate=False`` flowed
         through ``_format_sse_event``."""
-        handler = WorkflowStreamHandler(thread_id="t-1", run_id="r-abc")
+        handler = RunSSEProducer(thread_id="t-1", run_id="r-abc")
         chunks = await _collect_stream(handler)
         assert chunks  # sanity — metadata was emitted to the wire
         persisted = handler.get_sse_events()
@@ -109,4 +109,4 @@ class TestMetadataFrameFirst:
         way for a caller to construct the handler without committing to a
         canonical per-turn identity."""
         with pytest.raises(TypeError):
-            WorkflowStreamHandler(thread_id="t-1")  # type: ignore[call-arg]
+            RunSSEProducer(thread_id="t-1")  # type: ignore[call-arg]

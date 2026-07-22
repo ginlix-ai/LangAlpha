@@ -12,7 +12,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_appends_via_append_sse_event_not_full_rewrite():
-    from src.server.handlers.workflow_handler import _persist_context_window_event
+    from src.server.handlers.thread_maintenance import _persist_context_window_event
 
     append_mock = AsyncMock(return_value=True)
     # The old read-modify-write path must be gone: this would fail loudly.
@@ -36,7 +36,7 @@ async def test_appends_via_append_sse_event_not_full_rewrite():
 
 @pytest.mark.asyncio
 async def test_best_effort_swallows_errors():
-    from src.server.handlers.workflow_handler import _persist_context_window_event
+    from src.server.handlers.thread_maintenance import _persist_context_window_event
 
     boom = AsyncMock(side_effect=RuntimeError("db down"))
     with patch("src.server.database.conversation.append_sse_event", new=boom):

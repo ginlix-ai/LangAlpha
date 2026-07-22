@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.server.handlers.chat.ptc_workflow import _resolve_origin_meta
+from src.server.handlers.chat.ptc_run import _resolve_origin_meta
 
 
 def _request(**fields):
@@ -46,7 +46,7 @@ async def test_public_follow_up_inherits_from_previous_attempt():
         }
     }
     with patch(
-        "src.server.database.turn_lifecycle.get_latest_attempt",
+        "src.server.database.runs.lifecycle.get_latest_attempt",
         AsyncMock(return_value=prev),
     ):
         meta = await _resolve_origin_meta(req, "ptc-1")
@@ -62,7 +62,7 @@ async def test_origin_less_thread_resolves_none():
     resolves both fields to None — correctly foreign to any prober."""
     req = _request()
     with patch(
-        "src.server.database.turn_lifecycle.get_latest_attempt",
+        "src.server.database.runs.lifecycle.get_latest_attempt",
         AsyncMock(return_value=None),
     ):
         meta = await _resolve_origin_meta(req, "ptc-1")

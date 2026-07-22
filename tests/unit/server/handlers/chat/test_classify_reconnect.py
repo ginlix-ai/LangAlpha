@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from src.server.handlers.chat import stream_reconnect
+from src.server.handlers.chat import reconnect_admission
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
 TID = "thread-1"
@@ -40,18 +40,18 @@ def _patches(
     cache=None,
     backend="redis",
 ):
-    from src.server.database import turn_lifecycle as tl_db
-    from src.server.services import background_task_manager as btm_mod
+    from src.server.database.runs import lifecycle as tl_db
+    from src.server.services.runs import executor as btm_mod
 
     manager = MagicMock()
-    manager.get_task_info = AsyncMock(return_value=task_info)
+    manager.get_local_run = AsyncMock(return_value=task_info)
     manager.event_storage_backend = backend
     manager.enable_storage = backend == "redis"
     return (
         patch.object(tl_db, "get_run", AsyncMock(return_value=run_row)),
         patch.object(tl_db, "get_latest_attempt", AsyncMock(return_value=run_row)),
         patch.object(
-            btm_mod.BackgroundTaskManager,
+            btm_mod.LocalRunExecutor,
             "get_instance",
             classmethod(lambda cls: manager),
         ),
@@ -65,7 +65,7 @@ def _patches(
 async def _classify(run_id=RUN_ID, **kw):
     ps = _patches(**kw)
     with ps[0], ps[1], ps[2], ps[3]:
-        return await stream_reconnect.classify_reconnect(TID, run_id)
+        return await reconnect_admission.classify_reconnect(TID, run_id)
 
 
 def _terminal_row(status="completed"):

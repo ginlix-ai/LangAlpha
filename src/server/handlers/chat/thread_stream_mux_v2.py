@@ -21,6 +21,7 @@ Wire shape:
 
 from __future__ import annotations
 
+import logging
 import asyncio
 import json
 import re
@@ -33,9 +34,11 @@ from fastapi import HTTPException
 from src.server.services.thread_control_stream import control_stream_key
 from src.utils.cache.redis_cache import get_cache_client
 
-from ._common import logger
-from .report_back import watch_wakes
-from .stream_from_log import _xread_block_ms
+from src.server.services.report_back.flash.core import watch_wakes
+from .run_stream_reader import _xread_block_ms
+
+# Same hard-coded logger name request_prep uses — existing log routing keys off it.
+logger = logging.getLogger("src.server.handlers.chat_handler")
 
 _MAX_CHANNELS = 32
 _MAX_CURSORS_LEN = 4096
@@ -216,10 +219,10 @@ async def _run_row(run_id: str, lane: str) -> Optional[dict]:
     """Ledger row for a run, or None when unknown/unreadable."""
     try:
         if lane == "main":
-            from src.server.database import turn_lifecycle as tl_db
+            from src.server.database.runs import lifecycle as tl_db
 
             return await tl_db.get_run(run_id)
-        from src.server.database import subagent_runs as sr_db
+        from src.server.database.runs import subagent_runs as sr_db
 
         return await sr_db.get_task_run(run_id)
     except Exception:
@@ -286,7 +289,7 @@ async def _seed_channels(
     rescan's recent-terminal admission below."""
     out: list[tuple[str, str, Optional[float]]] = []
     try:
-        from src.server.database import turn_lifecycle as tl_db
+        from src.server.database.runs import lifecycle as tl_db
 
         root = await tl_db.get_active_run(thread_id)
         if root is not None:
@@ -296,7 +299,7 @@ async def _seed_channels(
             "[mux2] main-lane seed failed for %s", thread_id, exc_info=True
         )
     try:
-        from src.server.database import subagent_runs as sr_db
+        from src.server.database.runs import subagent_runs as sr_db
 
         for run in await sr_db.list_open_runs_for_thread(thread_id):
             out.append(
@@ -319,12 +322,12 @@ async def _resolve_lane(
     """(lane, started_ms) for a client-cursor run the seed didn't cover
     (settled runs)."""
     try:
-        from src.server.database import subagent_runs as sr_db
+        from src.server.database.runs import subagent_runs as sr_db
 
         row = await sr_db.get_task_run(run_id)
         if row is not None and str(row.get("thread_id")) == thread_id:
             return f"task:{row['task_id']}", _row_started_ms(row)
-        from src.server.database import turn_lifecycle as tl_db
+        from src.server.database.runs import lifecycle as tl_db
 
         root = await tl_db.get_run(run_id)
         if root is not None and str(root.get("conversation_thread_id")) == thread_id:
@@ -455,7 +458,7 @@ async def stream_thread_mux_v2(
     # coming from the open-run seed. Admit them as drain backlogs now — the
     # first rescan is 30s out, far too late for a card wedged on page load.
     try:
-        from src.server.database import subagent_runs as sr_db
+        from src.server.database.runs import subagent_runs as sr_db
 
         recent = await sr_db.list_recently_finalized_runs_for_thread(
             thread_id,
@@ -717,7 +720,7 @@ async def stream_thread_mux_v2(
                     + _ATTACH_GRACE_S,
                 )
                 try:
-                    from src.server.database import subagent_runs as sr_db
+                    from src.server.database.runs import subagent_runs as sr_db
 
                     recent = await sr_db.list_recently_finalized_runs_for_thread(
                         thread_id, within_seconds=window

@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-PTC = "src.server.handlers.chat.ptc_workflow"
+PTC = "src.server.handlers.chat.ptc_run"
 
 
 def _parse_ws_status_events(sse_lines: list[str]) -> list[dict]:
@@ -61,7 +61,7 @@ def _make_request():
     req.steer_only = False
     # Explicit None: a bare MagicMock attribute is truthy, so resolve_retry_of
     # would treat this as a real retry and hit the DB (get_run) — killing the
-    # generator. request_key is likewise threaded into start_turn.
+    # generator. request_key is likewise threaded into start_run.
     req.retry_of_run_id = None
     req.request_key = None
     return req
@@ -107,7 +107,7 @@ def _make_workspace_manager(
 
 
 async def _run_to_sentinel(request, workspace_manager):
-    from src.server.handlers.chat.ptc_workflow import astream_ptc_workflow
+    from src.server.handlers.chat.ptc_run import astream_ptc_workflow
 
     sentinel_registry_store = MagicMock()
     sentinel_registry_store.get_or_create_registry = AsyncMock(
@@ -121,7 +121,7 @@ async def _run_to_sentinel(request, workspace_manager):
             f"{PTC}._resolve_fork",
             return_value=("Q", None),
         ),
-        patch(f"{PTC}.begin_turn", new_callable=AsyncMock) as mock_begin_turn,
+        patch(f"{PTC}.begin_run", new_callable=AsyncMock) as mock_begin_run,
         # Admission is ledger-driven (v4 2.4c) and not under test here.
         patch(
             f"{PTC}.wait_or_steer",
@@ -141,7 +141,7 @@ async def _run_to_sentinel(request, workspace_manager):
         mock_wm_cls.get_instance.return_value = workspace_manager
         mock_reg_store_cls.get_instance.return_value = sentinel_registry_store
         run_handle = MagicMock(run_id="r-1", turn_index=1, finalized=False)
-        mock_begin_turn.return_value = run_handle
+        mock_begin_run.return_value = run_handle
 
         gen = astream_ptc_workflow(
             request=request,

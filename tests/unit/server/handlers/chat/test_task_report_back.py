@@ -8,15 +8,17 @@ TaskOutput — the result rides the durable archive, never the payload.
 """
 
 import contextlib
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.server.handlers.chat.task_report_back import (
+from src.server.services.report_back.subagent import (
     _build_notification_message,
     publish_cleared_wake_if_no_open_job,
     execute_task_report_back,
 )
+
+WAKE_MOD = "src.server.services.report_back.flash.wake"
 
 
 # ---------------------------------------------------------------------------
@@ -54,10 +56,10 @@ async def test_settled_wake_publishes_when_no_open_job():
     wake = AsyncMock()
     with (
         patch(
-            "src.server.database.hook_outbox.get_open_notification_job",
+            "src.server.database.runs.outbox.get_open_notification_job",
             new=AsyncMock(return_value=None),
         ),
-        patch("src.server.handlers.chat.report_back.publish_wake", new=wake),
+        patch(f"{WAKE_MOD}.publish_wake", new=wake),
         patch("src.utils.cache.redis_cache.get_cache_client"),
     ):
         await publish_cleared_wake_if_no_open_job("t1")
@@ -73,10 +75,10 @@ async def test_settled_wake_skipped_while_a_job_is_open():
     wake = AsyncMock()
     with (
         patch(
-            "src.server.database.hook_outbox.get_open_notification_job",
+            "src.server.database.runs.outbox.get_open_notification_job",
             new=AsyncMock(return_value={"hook_outbox_id": "j1"}),
         ),
-        patch("src.server.handlers.chat.report_back.publish_wake", new=wake),
+        patch(f"{WAKE_MOD}.publish_wake", new=wake),
         patch("src.utils.cache.redis_cache.get_cache_client"),
     ):
         await publish_cleared_wake_if_no_open_job("t1")
@@ -125,38 +127,38 @@ def _arb_env(
     )
     patches = (
         patch(
-            "src.server.database.subagent_runs.get_task_run",
+            "src.server.database.runs.subagent_runs.get_task_run",
             new=AsyncMock(return_value=run_row),
         ),
         patch(
-            "src.server.database.turn_lifecycle.get_latest_attempt", new=latest
+            "src.server.database.runs.lifecycle.get_latest_attempt", new=latest
         ),
         patch(
-            "src.server.handlers.chat.notify_turn.post_notification_turn",
+            "src.server.services.report_back.notify_turn.post_notification_turn",
             new=post or AsyncMock(return_value=("dispatched", "rb-run-1")),
         ),
         patch(
-            "src.server.handlers.chat.notify_turn.await_run_terminal",
+            "src.server.services.report_back.notify_turn.await_run_terminal",
             new=AsyncMock(return_value="done"),
         ),
         patch(
-            "src.server.database.hook_outbox.merge_job_payload",
+            "src.server.database.runs.outbox.merge_job_payload",
             new=AsyncMock(return_value=True),
         ),
         patch(
-            "src.server.database.hook_outbox.defer_claimed_job",
+            "src.server.database.runs.outbox.defer_claimed_job",
             new=defer or AsyncMock(return_value="pending"),
         ),
         patch(
-            "src.server.database.hook_outbox.release_deferred_jobs",
+            "src.server.database.runs.outbox.release_deferred_jobs",
             new=release or AsyncMock(return_value=1),
         ),
         patch(
-            "src.server.handlers.chat.report_back.publish_wake",
+            f"{WAKE_MOD}.publish_wake",
             new=wake or AsyncMock(),
         ),
         patch("src.utils.cache.redis_cache.get_cache_client"),
-        patch("src.server.database.conversation.get_db_connection"),
+        patch("src.server.database.pool.get_db_connection"),
         patch("src.server.services.hook_outbox.HookOutboxDrainer.get_instance"),
     )
     with contextlib.ExitStack() as stack:
@@ -276,23 +278,23 @@ async def test_dispatch_posts_taskoutput_pointer_turn():
 
     with (
         patch(
-            "src.server.database.turn_lifecycle.get_latest_attempt",
+            "src.server.database.runs.lifecycle.get_latest_attempt",
             new=AsyncMock(return_value={"status": "completed"}),
         ),
         patch(
-            "src.server.handlers.chat.notify_turn.post_notification_turn",
+            "src.server.services.report_back.notify_turn.post_notification_turn",
             new=AsyncMock(side_effect=_post),
         ),
         patch(
-            "src.server.handlers.chat.notify_turn.await_run_terminal",
+            "src.server.services.report_back.notify_turn.await_run_terminal",
             new=AsyncMock(return_value="done"),
         ),
         patch(
-            "src.server.database.hook_outbox.merge_job_payload",
+            "src.server.database.runs.outbox.merge_job_payload",
             new=AsyncMock(return_value=True),
         ),
         patch(
-            "src.server.handlers.chat.report_back.publish_wake",
+            f"{WAKE_MOD}.publish_wake",
             new=AsyncMock(),
         ),
         patch("src.utils.cache.redis_cache.get_cache_client"),
@@ -312,19 +314,19 @@ async def test_dispatch_nacks_when_pointer_persist_fails():
     wake = AsyncMock()
     with (
         patch(
-            "src.server.database.turn_lifecycle.get_latest_attempt",
+            "src.server.database.runs.lifecycle.get_latest_attempt",
             new=AsyncMock(return_value={"status": "completed"}),
         ),
         patch(
-            "src.server.handlers.chat.notify_turn.post_notification_turn",
+            "src.server.services.report_back.notify_turn.post_notification_turn",
             new=AsyncMock(return_value=("dispatched", "rb-run-1")),
         ),
         patch(
-            "src.server.database.hook_outbox.merge_job_payload",
+            "src.server.database.runs.outbox.merge_job_payload",
             new=AsyncMock(side_effect=RuntimeError("db down")),
         ),
         patch(
-            "src.server.handlers.chat.report_back.publish_wake",
+            f"{WAKE_MOD}.publish_wake",
             new=wake,
         ),
         patch("src.utils.cache.redis_cache.get_cache_client"),
@@ -342,20 +344,17 @@ async def test_dispatch_nacks_when_pointer_persist_fails():
 
 def _slice_env(recents):
     """Patches for read_task_report_back_status with a stubbed recents read."""
-    btm = MagicMock()
-    btm.get_active_task_ids = AsyncMock(return_value=[])
     return (
         patch(
-            "src.server.database.hook_outbox.get_open_notification_job",
+            "src.server.database.runs.outbox.get_open_notification_job",
             new=AsyncMock(return_value=None),
         ),
         patch(
-            "src.server.services.background_task_manager."
-            "BackgroundTaskManager.get_instance",
-            return_value=btm,
+            "src.server.services.subagent_liveness.get_active_task_ids",
+            new=AsyncMock(return_value=[]),
         ),
         patch(
-            "src.server.database.hook_outbox.get_recent_notification_run_ids",
+            "src.server.database.runs.outbox.get_recent_notification_run_ids",
             new=recents,
         ),
     )
@@ -363,7 +362,7 @@ def _slice_env(recents):
 
 @pytest.mark.asyncio
 async def test_status_slice_lists_recent_notification_runs():
-    from src.server.handlers.chat.task_report_back import (
+    from src.server.services.report_back.subagent import (
         read_task_report_back_status,
     )
 
@@ -378,7 +377,7 @@ async def test_status_slice_lists_recent_notification_runs():
 
 @pytest.mark.asyncio
 async def test_status_slice_recents_read_failure_reports_empty():
-    from src.server.handlers.chat.task_report_back import (
+    from src.server.services.report_back.subagent import (
         read_task_report_back_status,
     )
 
@@ -402,30 +401,27 @@ async def test_status_slice_recents_read_failure_reports_empty():
 
 
 def _open_job_env(recents, run_row):
-    btm = MagicMock()
-    btm.get_active_task_ids = AsyncMock(return_value=[])
     job = {"payload": {"dispatched_run_id": "run-x"}}
     return (
         patch(
-            "src.server.database.hook_outbox.get_open_notification_job",
+            "src.server.database.runs.outbox.get_open_notification_job",
             new=AsyncMock(return_value=job),
         ),
         patch(
-            "src.server.services.background_task_manager."
-            "BackgroundTaskManager.get_instance",
-            return_value=btm,
+            "src.server.services.subagent_liveness.get_active_task_ids",
+            new=AsyncMock(return_value=[]),
         ),
         patch(
-            "src.server.database.hook_outbox.get_recent_notification_run_ids",
+            "src.server.database.runs.outbox.get_recent_notification_run_ids",
             new=AsyncMock(return_value=recents),
         ),
-        patch("src.server.database.turn_lifecycle.get_run", new=run_row),
+        patch("src.server.database.runs.lifecycle.get_run", new=run_row),
     )
 
 
 @pytest.mark.asyncio
 async def test_open_jobs_terminal_run_joins_recents():
-    from src.server.handlers.chat.task_report_back import (
+    from src.server.services.report_back.subagent import (
         read_task_report_back_status,
     )
 
@@ -443,7 +439,7 @@ async def test_open_jobs_terminal_run_joins_recents():
 
 @pytest.mark.asyncio
 async def test_open_jobs_live_run_stays_out_of_recents():
-    from src.server.handlers.chat.task_report_back import (
+    from src.server.services.report_back.subagent import (
         read_task_report_back_status,
     )
 
@@ -458,7 +454,7 @@ async def test_open_jobs_live_run_stays_out_of_recents():
 
 @pytest.mark.asyncio
 async def test_terminal_pointer_already_in_recents_not_duplicated():
-    from src.server.handlers.chat.task_report_back import (
+    from src.server.services.report_back.subagent import (
         read_task_report_back_status,
     )
 
@@ -473,7 +469,7 @@ async def test_terminal_pointer_already_in_recents_not_duplicated():
 
 @pytest.mark.asyncio
 async def test_terminal_pointer_row_read_failure_leaves_recents():
-    from src.server.handlers.chat.task_report_back import (
+    from src.server.services.report_back.subagent import (
         read_task_report_back_status,
     )
 

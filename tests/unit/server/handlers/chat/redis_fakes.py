@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from src.server.handlers.chat import report_back
+from src.server.services.report_back.flash import keys, pointer, reserve
 
 
 class FakePipeline:
@@ -157,7 +157,7 @@ class FakeClient:
     async def eval(self, script, numkeys, *args):
         """Emulates the report-back Lua scripts by identity."""
         keys, argv = args[:numkeys], args[numkeys:]
-        if script is report_back._ADMISSION_GATE_LUA:
+        if script is reserve.ADMISSION_GATE_LUA:
             receipt_key, origin_key = keys
             gen, run_id = argv
             if gen in self.sets.get(receipt_key, set()):
@@ -178,7 +178,7 @@ class FakeClient:
                 pending[run_id] = True
                 self.kv[origin_key] = origin_blob
             return 1
-        if script is report_back._ADMISSION_RETRACT_LUA:
+        if script is reserve.ADMISSION_RETRACT_LUA:
             (origin_key,) = keys
             gen, run_id = argv
             origin_blob = self._decoded(origin_key)
@@ -201,7 +201,7 @@ class FakeClient:
                 return 0
             self.kv[origin_key] = origin_blob
             return 1
-        if script is report_back._GATED_POINTER_SET_LUA:
+        if script is pointer.GATED_POINTER_SET_LUA:
             watch_key, run_key = keys
             ptc_id, run_id, value, ttl, request_key, gen = argv
             if ptc_id not in self.sets.get(watch_key, set()):
@@ -228,7 +228,7 @@ class FakeClient:
             self.kv[run_key] = json.loads(value)
             self.ttls[run_key] = int(ttl)
             return 1
-        if script is report_back._CLAIM_POINTER_LUA:
+        if script is pointer.CLAIM_POINTER_LUA:
             watch_key, run_key = keys
             ptc_id, value, ttl, request_key, gen = argv
             current = self._decoded(run_key)
@@ -251,7 +251,7 @@ class FakeClient:
             self.kv[run_key] = json.loads(value)
             self.ttls[run_key] = int(ttl)
             return [1, ""]
-        if script is report_back._POINTER_TAKEOVER_LUA:
+        if script is pointer.POINTER_TAKEOVER_LUA:
             watch_key, run_key = keys
             ptc_id, expected, value, ttl = argv
             raw = self.kv.get(run_key)
@@ -265,7 +265,7 @@ class FakeClient:
             self.kv[run_key] = json.loads(value)
             self.ttls[run_key] = int(ttl)
             return 1
-        if script is report_back._REAP_ORPHANS_LUA:
+        if script is reserve.REAP_ORPHANS_LUA:
             set_key, origin_keys = keys[0], keys[1:]
             removed = 0
             for origin_key, member in zip(origin_keys, argv):
@@ -275,7 +275,7 @@ class FakeClient:
                     self.sets[set_key].discard(member)
                     removed += 1
             return removed
-        if script is report_back._ORPHAN_RESOLVE_LUA:
+        if script is reserve.ORPHAN_RESOLVE_LUA:
             (
                 origin_key,
                 watch_key,
@@ -343,7 +343,7 @@ class FakeClient:
                         ][: int(done_max)]
                         self.ttls[done_key] = int(done_ttl)
             return [1, ptr, watch_removed, user_removed]
-        if script is report_back._GATED_TEARDOWN_LUA:
+        if script is pointer.GATED_TEARDOWN_LUA:
             origin_key, run_key, watch_key, user_key, tomb_key = keys
             expected_gen, ptc_id, tomb_ttl, refuse_if_pointer = argv
             # Off-chain caller + live run pointer: refuse everything — only
@@ -374,7 +374,7 @@ class FakeClient:
             if user_key:
                 self.sets.get(user_key, set()).discard(ptc_id)
             return 1
-        if script is report_back._POINTER_COMPARE_DELETE_LUA:
+        if script is pointer.POINTER_COMPARE_DELETE_LUA:
             (run_key,), (run_id,) = keys, argv
             current = self._decoded(run_key)
             if current is None and self.kv.get(run_key) is not None:
@@ -383,7 +383,7 @@ class FakeClient:
                 self.kv.pop(run_key, None)
                 return 1
             return 0
-        if script is report_back._RESERVE_LUA:
+        if script is reserve.RESERVE_LUA:
             watch_key, user_key, origin_key = keys
             ptc_id, flash_id, max_flash, max_user, ttl, origin_json = argv
             prev = self._decoded(origin_key)
@@ -424,7 +424,7 @@ class FakeClient:
             self.ttls[origin_key] = int(ttl)
             prev_raw = json.dumps(prev) if isinstance(prev, dict) else ""
             return ["ok", 0 if in_watch else 1, 0 if in_user else 1, prev_raw]
-        if script is report_back._ROLLBACK_RESERVE_LUA:
+        if script is reserve.ROLLBACK_RESERVE_LUA:
             watch_key, user_key, origin_key, tomb_key, run_key = keys
             ptc_id, minted_gen, prev_json, added_watch, added_user, ttl = argv
             current = self._decoded(origin_key)
@@ -515,9 +515,9 @@ def seed_dispatched(cache: FakeCache, flash: str, ptcs: list[str], user: str = "
     dispatch (the reserve script created both memberships, so the origin
     carries ownership of them)."""
     for ptc in ptcs:
-        cache.client.sets.setdefault(report_back.flash_watch_key(flash), set()).add(ptc)
-        cache.client.sets.setdefault(report_back.flash_user_pending_key(user), set()).add(ptc)
-        cache.kv[report_back.ptc_origin_key(ptc)] = {
+        cache.client.sets.setdefault(keys.flash_watch_key(flash), set()).add(ptc)
+        cache.client.sets.setdefault(keys.flash_user_pending_key(user), set()).add(ptc)
+        cache.kv[keys.ptc_origin_key(ptc)] = {
             **origin(ptc, flash, user),
             "owns_watch": True,
             "owns_user": True,

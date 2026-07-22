@@ -23,13 +23,16 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.server.handlers.chat import report_back as rb
-from src.server.handlers.chat.report_back import (
+from src.server.services.report_back.flash import keys
+from src.server.services.report_back.flash import leases, pointer
+from src.server.services.report_back.flash.pointer import (
     claim_report_back_run,
     flash_rb_run_key,
     release_report_back_run,
     takeover_report_back_run,
 )
+
+POINTER_MOD = "src.server.services.report_back.flash.pointer"
 
 
 class _Cache:
@@ -40,7 +43,7 @@ class _Cache:
         # The claim's write is membership-gated; every claim test models a
         # live pair unless it removes the member explicitly.
         self.sets: dict[str, set[str]] = {
-            rb.flash_watch_key("flash-1"): {"ptc-1"}
+            keys.flash_watch_key("flash-1"): {"ptc-1"}
         }
 
     async def get(self, key):
@@ -63,7 +66,7 @@ class _Cache:
 
     async def eval(self, script, numkeys, *args):
         keys, argv = args[:numkeys], args[numkeys:]
-        if script is rb._CLAIM_POINTER_LUA:
+        if script is pointer.CLAIM_POINTER_LUA:
             watch_key, run_key = keys
             ptc_id, value, ttl, request_key, gen = argv
             data = self._decoded(run_key)
@@ -81,7 +84,7 @@ class _Cache:
                 return [2, ""]
             self.kv[run_key] = value
             return [1, ""]
-        if script is rb._POINTER_TAKEOVER_LUA:
+        if script is pointer.POINTER_TAKEOVER_LUA:
             watch_key, run_key = keys
             ptc_id, expected, value, ttl = argv
             current = self.kv.get(run_key)
@@ -91,7 +94,7 @@ class _Cache:
                 return 2
             self.kv[run_key] = value
             return 1
-        if script is rb._POINTER_COMPARE_DELETE_LUA:
+        if script is pointer.POINTER_COMPARE_DELETE_LUA:
             data = self._decoded(keys[0])
             if isinstance(data, dict) and data.get("run_id") == argv[0]:
                 self.kv.pop(keys[0], None)
@@ -261,14 +264,14 @@ async def test_cm_script_failure_defers_as_in_flight():
     start unfenced), never as a won claim. Covers both orders of the round-6
     interleaving: blip before the clear, and blip after membership fell."""
     cache = _RaisingCache()
-    async with rb.claim(cache, "flash-1", "ptc-1", "run-1") as handle:
+    async with pointer.claim(cache, "flash-1", "ptc-1", "run-1") as handle:
         assert handle.in_flight
         assert handle.incumbent is None and not handle.pair_gone
     assert cache.kv == {}
 
     cleared = _RaisingCache()
-    cleared.sets[rb.flash_watch_key("flash-1")].discard("ptc-1")
-    async with rb.claim(cleared, "flash-1", "ptc-1", "run-1") as handle:
+    cleared.sets[keys.flash_watch_key("flash-1")].discard("ptc-1")
+    async with pointer.claim(cleared, "flash-1", "ptc-1", "run-1") as handle:
         # Membership already fell, but the failed script can't prove it:
         # defer (retriable) rather than misreading the pair as live or gone.
         assert handle.in_flight and not handle.pair_gone
@@ -283,7 +286,7 @@ async def test_claim_refuses_to_resurrect_a_pointer_after_the_pair_fell():
     summary and pointer exist. The write is membership-gated in the same
     script; the route refuses the dispatch on ``pair_gone``."""
     cache = _Cache()
-    cache.sets[rb.flash_watch_key("flash-1")].discard("ptc-1")
+    cache.sets[keys.flash_watch_key("flash-1")].discard("ptc-1")
 
     result = await claim_report_back_run(
         cache, "flash-1", "ptc-1", "run-late", "g-2", "rk-late"
@@ -370,7 +373,7 @@ async def test_takeover_loses_when_pointer_changed_under_us():
 @pytest.mark.asyncio
 async def test_takeover_refuses_when_pair_membership_fell():
     cache = _Cache()
-    cache.sets[rb.flash_watch_key("flash-1")].discard("ptc-1")
+    cache.sets[keys.flash_watch_key("flash-1")].discard("ptc-1")
     key = flash_rb_run_key("flash-1", "ptc-1")
     stale = json.dumps({"run_id": "run-dead", "request_key": "rk-A"})
     cache.kv[key] = stale
@@ -395,7 +398,7 @@ async def test_takeover_surfaces_lost_on_redis_failure():
 # claim() CM — incumbent durability gate (review F1)
 # ---------------------------------------------------------------------------
 
-_GET_RUN = "src.server.database.turn_lifecycle.get_run"
+_GET_RUN = "src.server.database.runs.lifecycle.get_run"
 
 
 def _seed_incumbent(cache: _Cache, claimed_at: float | None) -> str:
@@ -415,7 +418,7 @@ async def test_cm_adopts_incumbent_backed_by_a_ledger_row():
     key = _seed_incumbent(cache, time.time())
     row = {"conversation_response_id": "run-A", "status": "in_progress"}
     with patch(_GET_RUN, AsyncMock(return_value=row)):
-        async with rb.claim(
+        async with pointer.claim(
             cache, "flash-1", "ptc-1", "run-B", "g-1", "rk-A"
         ) as handle:
             assert handle.incumbent == "run-A"
@@ -431,7 +434,7 @@ async def test_cm_defers_on_rowless_incumbent_inside_priming_lease():
     cache = _Cache()
     key = _seed_incumbent(cache, time.time())
     with patch(_GET_RUN, AsyncMock(return_value=None)):
-        async with rb.claim(
+        async with pointer.claim(
             cache, "flash-1", "ptc-1", "run-B", "g-1", "rk-A"
         ) as handle:
             assert handle.in_flight
@@ -446,10 +449,10 @@ async def test_cm_takes_over_stale_rowless_incumbent():
     summary itself instead of adopting a run that will never terminate."""
     cache = _Cache()
     key = _seed_incumbent(
-        cache, time.time() - rb._RB_POINTER_PRIMING_LEASE_S - 5
+        cache, time.time() - leases.RB_POINTER_PRIMING_LEASE_S - 5
     )
     with patch(_GET_RUN, AsyncMock(return_value=None)):
-        async with rb.claim(
+        async with pointer.claim(
             cache, "flash-1", "ptc-1", "run-B", "g-1", "rk-A"
         ) as handle:
             assert handle.incumbent is None
@@ -465,10 +468,10 @@ async def test_cm_takeover_releases_pointer_on_non_consummated_exit():
     either — the release compensates exactly like a fresh claim's."""
     cache = _Cache()
     key = _seed_incumbent(
-        cache, time.time() - rb._RB_POINTER_PRIMING_LEASE_S - 5
+        cache, time.time() - leases.RB_POINTER_PRIMING_LEASE_S - 5
     )
     with patch(_GET_RUN, AsyncMock(return_value=None)):
-        async with rb.claim(
+        async with pointer.claim(
             cache, "flash-1", "ptc-1", "run-B", "g-1", "rk-A"
         ) as handle:
             assert handle.incumbent is None and not handle.in_flight
@@ -482,7 +485,7 @@ async def test_cm_treats_undated_rowless_pointer_as_stale():
     cache = _Cache()
     key = _seed_incumbent(cache, None)
     with patch(_GET_RUN, AsyncMock(return_value=None)):
-        async with rb.claim(
+        async with pointer.claim(
             cache, "flash-1", "ptc-1", "run-B", "g-1", "rk-A"
         ) as handle:
             assert handle.incumbent is None and not handle.in_flight
@@ -497,7 +500,7 @@ async def test_cm_defers_when_ledger_probe_fails():
     cache = _Cache()
     key = _seed_incumbent(cache, time.time())
     with patch(_GET_RUN, AsyncMock(side_effect=RuntimeError("db down"))):
-        async with rb.claim(
+        async with pointer.claim(
             cache, "flash-1", "ptc-1", "run-B", "g-1", "rk-A"
         ) as handle:
             assert handle.in_flight
@@ -509,15 +512,15 @@ async def test_cm_defers_when_takeover_is_lost_to_a_rival():
     """The CAS token no longer matches (a rival re-claimed between probe and
     takeover): defer retriable; the retry re-probes the new pointer."""
     cache = _Cache()
-    _seed_incumbent(cache, time.time() - rb._RB_POINTER_PRIMING_LEASE_S - 5)
+    _seed_incumbent(cache, time.time() - leases.RB_POINTER_PRIMING_LEASE_S - 5)
     with (
         patch(_GET_RUN, AsyncMock(return_value=None)),
         patch(
-            "src.server.handlers.chat.report_back.takeover_report_back_run",
+            f"{POINTER_MOD}.takeover_report_back_run",
             AsyncMock(return_value="lost"),
         ),
     ):
-        async with rb.claim(
+        async with pointer.claim(
             cache, "flash-1", "ptc-1", "run-B", "g-1", "rk-A"
         ) as handle:
             assert handle.in_flight
@@ -527,10 +530,10 @@ async def test_cm_defers_when_takeover_is_lost_to_a_rival():
 @pytest.mark.asyncio
 async def test_cm_surfaces_pair_gone_when_membership_fell_before_takeover():
     cache = _Cache()
-    _seed_incumbent(cache, time.time() - rb._RB_POINTER_PRIMING_LEASE_S - 5)
-    cache.sets[rb.flash_watch_key("flash-1")].discard("ptc-1")
+    _seed_incumbent(cache, time.time() - leases.RB_POINTER_PRIMING_LEASE_S - 5)
+    cache.sets[keys.flash_watch_key("flash-1")].discard("ptc-1")
     with patch(_GET_RUN, AsyncMock(return_value=None)):
-        async with rb.claim(
+        async with pointer.claim(
             cache, "flash-1", "ptc-1", "run-B", "g-1", "rk-A"
         ) as handle:
             assert handle.pair_gone
@@ -546,43 +549,41 @@ def test_priming_lease_and_budget_fit_the_admission_lifecycle():
     POST pre-START. Both must hold for ANY configured workflow_timeout
     (the admission holds derive from different config knobs), or the job
     is dropped and acked with no run row: summary permanently lost."""
-    hold = rb._admission_hold_bound()
-    assert rb._RB_POINTER_PRIMING_LEASE_S <= rb._RB_BUSY_WAIT_CAP / 2
-    assert rb._RB_POINTER_PRIMING_LEASE_S <= 900.0
+    hold = leases.admission_hold_bound()
+    assert leases.RB_POINTER_PRIMING_LEASE_S <= leases.RB_BUSY_WAIT_CAP / 2
+    assert leases.RB_POINTER_PRIMING_LEASE_S <= 900.0
     # Post-lease retry window covers one full admission hold plus slack.
     assert (
-        rb._RB_BUSY_WAIT_CAP - rb._RB_POINTER_PRIMING_LEASE_S
-        >= hold + rb._RB_ADMISSION_MARGIN_S
+        leases.RB_BUSY_WAIT_CAP - leases.RB_POINTER_PRIMING_LEASE_S
+        >= hold + leases.RB_ADMISSION_MARGIN_S
     )
     # The floor binds even when workflow_timeout is configured tiny.
-    assert rb._RB_BUSY_WAIT_CAP >= 2.0 * (hold + rb._RB_ADMISSION_MARGIN_S)
+    assert leases.RB_BUSY_WAIT_CAP >= 2.0 * (hold + leases.RB_ADMISSION_MARGIN_S)
     # The derivation itself: small budgets scale the lease down; large
     # budgets cap it at the admission-wait ceiling.
-    assert rb._derive_priming_lease(600.0) == 300.0
-    assert rb._derive_priming_lease(7200.0) == 900.0
+    assert leases.derive_priming_lease(600.0) == 300.0
+    assert leases.derive_priming_lease(7200.0) == 900.0
 
 
-def test_admission_hold_bound_mirrors_btm_margins():
-    """_admission_hold_bound re-derives wait_for_admission's two waits from
-    settings (importing BTM would be circular); this pins the mirrored +2/+20
-    margins to BTM's class constants so they can't silently drift. The bound
-    is the SUM of the two waits — one admission call runs the compaction
-    backstop and then the stop-drain sequentially (Codex round-4 F1; the
-    composition itself is pinned in test_background_task_manager)."""
+def test_admission_hold_bound_matches_admission_margins():
+    """_admission_hold_bound derives wait_for_admission's two waits from the
+    same runs.admission constants the wait itself reads. The bound is the
+    SUM of the two waits — one admission call runs the compaction backstop
+    and then the stop-drain sequentially (Codex round-4 F1; the composition
+    itself is pinned in runs/test_executor)."""
     from src.config.settings import (
         get_admission_compaction_wait_timeout,
         get_checkpoint_flush_timeout,
         get_compaction_timeout,
     )
-    from src.server.services.background_task_manager import BackgroundTaskManager
-
-    stopping = (
-        get_checkpoint_flush_timeout()
-        + BackgroundTaskManager._ADMISSION_TEARDOWN_MARGIN_S
+    from src.server.services.runs.admission import (
+        ADMISSION_TEARDOWN_MARGIN_S,
+        COMPACTION_ADMISSION_MARGIN_S,
     )
+
+    stopping = get_checkpoint_flush_timeout() + ADMISSION_TEARDOWN_MARGIN_S
     compaction = max(
         get_admission_compaction_wait_timeout(),
-        get_compaction_timeout()
-        + BackgroundTaskManager._COMPACTION_ADMISSION_MARGIN_S,
+        get_compaction_timeout() + COMPACTION_ADMISSION_MARGIN_S,
     )
-    assert rb._admission_hold_bound() == compaction + stopping
+    assert leases.admission_hold_bound() == compaction + stopping

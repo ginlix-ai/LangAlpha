@@ -21,8 +21,8 @@ from ptc_agent.config.core import (
 )
 
 
-HANDLER = "src.server.handlers.workflow_handler"
-LLM_HANDLER = "src.server.handlers.chat.llm_config"
+HANDLER = "src.server.handlers.thread_maintenance"
+LLM_HANDLER = "src.server.services.llm.config"
 
 
 def _make_agent_config(compaction_model: str | None = "system-compaction") -> AgentConfig:
@@ -131,7 +131,7 @@ def mutation_runner():
 @pytest.mark.asyncio
 async def test_manual_compact_uses_user_compaction_model(base_config):
     """When user_id is passed and pref sets compaction_model, that model is used."""
-    from src.server.handlers.workflow_handler import trigger_compaction
+    from src.server.handlers.thread_maintenance import trigger_compaction
 
     stub_resolve = _stub_resolve_graph_and_state()
 
@@ -192,7 +192,7 @@ async def test_manual_compact_uses_user_compaction_model(base_config):
 @pytest.mark.asyncio
 async def test_manual_compact_without_user_id_uses_base_config(base_config):
     """No user_id → no resolve_llm_config call; base YAML compaction model is used."""
-    from src.server.handlers.workflow_handler import trigger_compaction
+    from src.server.handlers.thread_maintenance import trigger_compaction
 
     stub_resolve = _stub_resolve_graph_and_state()
 
@@ -231,7 +231,7 @@ async def test_manual_compact_without_user_id_uses_base_config(base_config):
 @pytest.mark.asyncio
 async def test_resolve_failure_falls_back_to_base_config(base_config):
     """If resolve_llm_config raises, manual /compact logs and falls back cleanly."""
-    from src.server.handlers.workflow_handler import trigger_compaction
+    from src.server.handlers.thread_maintenance import trigger_compaction
 
     stub_resolve = _stub_resolve_graph_and_state()
 
@@ -276,7 +276,7 @@ async def test_manual_compact_forwards_subsidiary_oauth_client(base_config):
     same client the auto path uses), manual /compact must hand it to
     compact_messages rather than re-resolving via the system LLM factory.
     Otherwise users on Codex/Claude OAuth or BYOK get billed wrong or 4xx."""
-    from src.server.handlers.workflow_handler import trigger_compaction
+    from src.server.handlers.thread_maintenance import trigger_compaction
 
     stub_resolve = _stub_resolve_graph_and_state()
 
@@ -338,7 +338,7 @@ async def test_manual_compact_falls_back_to_main_llm_client(base_config):
     """When no compaction-specific subsidiary client is present but the main
     agent has a BYOK/OAuth llm_client, forward that — mirrors the middleware's
     priority order in PTCAgent.create_agent."""
-    from src.server.handlers.workflow_handler import trigger_compaction
+    from src.server.handlers.thread_maintenance import trigger_compaction
 
     stub_resolve = _stub_resolve_graph_and_state()
 
@@ -399,7 +399,7 @@ async def test_manual_compact_copies_llm_client_before_forwarding(base_config):
     mutated and all subsequent chat workflows lose SSE token streaming.
     Mirrors the ``.model_copy()`` pattern in ``PTCAgent.create_agent``.
     """
-    from src.server.handlers.workflow_handler import trigger_compaction
+    from src.server.handlers.thread_maintenance import trigger_compaction
 
     stub_resolve = _stub_resolve_graph_and_state()
 
@@ -476,7 +476,7 @@ class TestMutationFence:
         runner's structured detail, before any graph read or LLM call."""
         from fastapi import HTTPException
 
-        from src.server.handlers.workflow_handler import trigger_compaction
+        from src.server.handlers.thread_maintenance import trigger_compaction
 
         compact_mock = AsyncMock()  # must NEVER run
         stub_resolve = _stub_resolve_graph_and_state()
@@ -508,7 +508,7 @@ class TestMutationFence:
     async def test_offload_maps_runner_refusal_to_409(self, base_config):
         from fastapi import HTTPException
 
-        from src.server.handlers.workflow_handler import trigger_offload
+        from src.server.handlers.thread_maintenance import trigger_offload
 
         offload_mock = AsyncMock()  # must NEVER run
         stub_resolve = _stub_resolve_graph_and_state()
@@ -543,7 +543,7 @@ class TestMutationFence:
         503, mirroring WriterGuardUnavailable at the chat boundary."""
         from fastapi import HTTPException
 
-        from src.server.handlers.workflow_handler import trigger_compaction
+        from src.server.handlers.thread_maintenance import trigger_compaction
         from src.server.services.thread_mutation import MutationUnavailable
 
         compact_mock = AsyncMock()  # must NEVER run
@@ -576,7 +576,7 @@ class TestMutationFence:
         """The critical section runs inside the fence (held+released exactly
         once) and graph building receives the fence-bound saver, not the
         global pooled one."""
-        from src.server.handlers.workflow_handler import trigger_compaction
+        from src.server.handlers.thread_maintenance import trigger_compaction
 
         fence_saver = object()
         runner = _fake_runner(saver=fence_saver)
@@ -601,7 +601,7 @@ class TestMutationFence:
 
     @pytest.mark.asyncio
     async def test_offload_threads_fence_saver(self, base_config):
-        from src.server.handlers.workflow_handler import trigger_offload
+        from src.server.handlers.thread_maintenance import trigger_offload
 
         fence_saver = object()
         runner = _fake_runner(saver=fence_saver)
@@ -637,7 +637,7 @@ class TestMutationFence:
         a queued POST is not blocked past the runner's own cleanup."""
         from fastapi import HTTPException
 
-        from src.server.handlers.workflow_handler import trigger_compaction
+        from src.server.handlers.thread_maintenance import trigger_compaction
 
         runner = _fake_runner()
         compact_mock = AsyncMock(side_effect=RuntimeError("boom"))
@@ -672,7 +672,7 @@ class TestMutationFence:
 
         from fastapi import HTTPException
 
-        from src.server.handlers.workflow_handler import trigger_compaction
+        from src.server.handlers.thread_maintenance import trigger_compaction
 
         runner = _fake_runner()
         compact_mock = AsyncMock(side_effect=asyncio.CancelledError())
@@ -707,7 +707,7 @@ class TestMutationFence:
 
         from fastapi import HTTPException
 
-        from src.server.handlers.workflow_handler import trigger_offload
+        from src.server.handlers.thread_maintenance import trigger_offload
 
         runner = _fake_runner()
         offload_mock = AsyncMock(side_effect=asyncio.CancelledError())

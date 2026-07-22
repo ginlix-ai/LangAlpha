@@ -21,7 +21,7 @@ from .redis_fakes import FakeCache
 
 CACHE = "src.utils.cache.redis_cache.get_cache_client"
 KEY = "workflow:steering:t-1"
-SR_DB = "src.server.database.subagent_runs"
+SR_DB = "src.server.database.runs.subagent_runs"
 
 
 @contextlib.contextmanager
@@ -236,7 +236,7 @@ async def test_steer_subagent_reclaims_when_run_settles_mid_push(monkeypatch):
     settled = dict(running, status="completed")
     with (
         patch(
-            "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+            "ptc_agent.agent.middleware.background_subagent.redis_stream.read_task_meta",
             AsyncMock(side_effect=[running, settled]),
         ),
         pytest.raises(HTTPException) as exc,
@@ -267,7 +267,7 @@ async def test_steer_subagent_refuses_when_epoch_rotates_mid_push(monkeypatch):
     r2 = dict(r1, task_run_id="run-10")
     with (
         patch(
-            "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+            "ptc_agent.agent.middleware.background_subagent.redis_stream.read_task_meta",
             AsyncMock(side_effect=[r1, r2]),
         ),
         pytest.raises(HTTPException) as exc,

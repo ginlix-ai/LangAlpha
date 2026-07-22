@@ -20,7 +20,7 @@ from src.server.handlers.chat.thread_stream_mux_v2 import (
     _store_pending,
 )
 
-SR_DB = "src.server.database.subagent_runs"
+SR_DB = "src.server.database.runs.subagent_runs"
 STARTED = datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc)
 STARTED_MS = STARTED.timestamp() * 1000.0
 
@@ -100,7 +100,7 @@ async def test_main_lane_admits_without_start_order():
     # Main-lane outcomes are not voted by start order; a missing row must
     # not block the root channel.
     with patch(
-        "src.server.database.turn_lifecycle.get_run",
+        "src.server.database.runs.lifecycle.get_run",
         new=AsyncMock(side_effect=RuntimeError("db down")),
     ):
         meta = await _admission_meta("run-1", "main", False, None)

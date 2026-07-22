@@ -1,4 +1,4 @@
-"""Tests for `_parse_tool_args` in `src/server/handlers/streaming_handler.py`.
+"""Tests for `_parse_tool_args` in `src/server/services/runs/sse_producer.py`.
 
 Frontier models occasionally emit tool-call argument JSON with an unescaped
 quote inside a long string value, causing strict `json.loads` to raise
@@ -6,7 +6,7 @@ quote inside a long string value, causing strict `json.loads` to raise
 through `json_repair` recovers the dominant case.
 """
 
-from src.server.handlers.streaming_handler import _parse_tool_args
+from src.server.services.runs.sse_producer import _parse_tool_args
 
 
 class TestParseToolArgs:

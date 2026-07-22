@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.server.handlers.chat import report_back
+from src.server.services.report_back.flash import executor, leases
 
 _ORIGIN = {
     "ptc_workspace_id": "ws-ptc",
@@ -82,7 +82,7 @@ async def _run(steps, **kwargs):
     """Drive _post_report_back over ``steps`` with sleeps stubbed out."""
     session, sess_patch = _patch_session(steps)
     with sess_patch, patch("asyncio.sleep", new=AsyncMock()):
-        outcome = await report_back._post_report_back(
+        outcome = await executor._post_report_back(
             cache=None,
             flash_thread_id="flash-1",
             ptc_thread_id="ptc-1",
@@ -244,9 +244,9 @@ async def test_busy_wait_cap_exhausted_returns_cap():
         sess_patch,
         patch("asyncio.sleep", new=AsyncMock()),
         # Past deadline on the first check, so one 409 exhausts the budget.
-        patch.object(report_back, "_RB_BUSY_WAIT_CAP", -1.0),
+        patch.object(leases, "RB_BUSY_WAIT_CAP", -1.0),
     ):
-        outcome = await report_back._post_report_back(
+        outcome = await executor._post_report_back(
             cache=None,
             flash_thread_id="flash-1",
             ptc_thread_id="ptc-1",

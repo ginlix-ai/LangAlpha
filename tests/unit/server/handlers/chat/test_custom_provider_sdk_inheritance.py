@@ -13,9 +13,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.server.handlers.chat.llm_config import _resolve_custom_model_byok
+from src.server.services.llm.config import _resolve_custom_model_byok
 
-H = "src.server.handlers.chat.llm_config"
+H = "src.server.services.llm.config"
 DBK = "src.server.database.api_keys"
 
 

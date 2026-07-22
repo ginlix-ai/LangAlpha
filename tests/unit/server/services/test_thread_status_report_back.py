@@ -1,4 +1,4 @@
-"""Coverage for ``get_workflow_status``'s flash report-back resolution.
+"""Coverage for ``read_thread_runtime_status``'s flash report-back resolution.
 
 A flash thread polling ``/status`` must surface which report-back run to attach
 to (``report_back_run_id``), resolved from a live per-(flash, ptc) pointer of
@@ -14,39 +14,42 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.server.handlers import workflow_handler
-from src.server.handlers.chat import report_back
+from src.server.services import thread_status
+from src.server.services.report_back.flash import keys, status
 from tests.unit.server.handlers.chat.redis_fakes import FakeCache as _FakeCache
 
 
 def _seed(cache: _FakeCache, flash: str, members: list[str], run_pointers: dict[str, str]) -> None:
-    cache.client.sets[report_back.flash_watch_key(flash)] = set(members)
+    cache.client.sets[keys.flash_watch_key(flash)] = set(members)
     # A live member always carries an origin (reserve writes both atomically);
     # the status read treats originless members as orphans and reaps them.
     for ptc in members:
-        cache.client.kv[report_back.ptc_origin_key(ptc)] = json.dumps(
+        cache.client.kv[keys.ptc_origin_key(ptc)] = json.dumps(
             {"flash_thread_id": flash, "report_back": True}
         )
     # Pointers are read via client.mget (raw serialized JSON), matching prod.
     for ptc, run_id in run_pointers.items():
-        cache.client.kv[report_back.flash_rb_run_key(flash, ptc)] = json.dumps(
+        cache.client.kv[keys.flash_rb_run_key(flash, ptc)] = json.dumps(
             {"run_id": run_id}
         )
 
 
 def _patches(cache: _FakeCache, latest_turn: int | None = None) -> list:
-    """Stub everything get_workflow_status touches except the report-back block.
+    """Stub everything read_thread_runtime_status touches except the report-back block.
 
     The ledger speaks status truth (v4 2.4): no active slot, latest attempt
     'completed' — a settled terminal thread (can_reconnect False).
     """
-    from src.server.database import turn_lifecycle as tl_db
+    from src.server.database.runs import lifecycle as tl_db
 
     manager = MagicMock()
-    manager.get_active_task_ids = AsyncMock(return_value=[])
     return [
+        patch(
+            "src.server.services.subagent_liveness.get_active_task_ids",
+            new=AsyncMock(return_value=[]),
+        ),
         patch.object(
-            workflow_handler, "get_checkpoint_tuple", AsyncMock(return_value=None)
+            thread_status, "get_checkpoint_tuple", AsyncMock(return_value=None)
         ),
         patch.object(tl_db, "get_active_run", AsyncMock(return_value=None)),
         patch.object(
@@ -61,7 +64,7 @@ def _patches(cache: _FakeCache, latest_turn: int | None = None) -> list:
             ),
         ),
         patch(
-            "src.server.services.background_task_manager.BackgroundTaskManager.get_instance",
+            "src.server.services.runs.executor.LocalRunExecutor.get_instance",
             return_value=manager,
         ),
         patch(
@@ -84,12 +87,12 @@ async def test_status_surfaces_member_pointer_and_recent_runs():
     flash = "flash-1"
     _seed(cache, flash, ["ptc-1"], {"ptc-1": "rb-1"})
     # A previously drained run rides along in the same status payload.
-    cache.client.lists[report_back.flash_rb_done_key(flash)] = ["rb-done-1"]
+    cache.client.lists[keys.flash_rb_done_key(flash)] = ["rb-done-1"]
 
     with contextlib.ExitStack() as stack:
         for p in _patches(cache):
             stack.enter_context(p)
-        resp = await workflow_handler.get_workflow_status(flash)
+        resp = await thread_status.read_thread_runtime_status(flash)
 
     assert resp["pending_report_back"] is True
     assert resp["report_back_run_id"] == "rb-1"
@@ -106,7 +109,7 @@ async def test_status_falls_back_to_any_member_with_a_pointer():
     with contextlib.ExitStack() as stack:
         for p in _patches(cache):
             stack.enter_context(p)
-        resp = await workflow_handler.get_workflow_status(flash)
+        resp = await thread_status.read_thread_runtime_status(flash)
 
     assert resp["pending_report_back"] is True
     assert resp["report_back_run_id"] == "rb-live"
@@ -119,7 +122,7 @@ async def test_status_no_pending_report_back():
     with contextlib.ExitStack() as stack:
         for p in _patches(cache):
             stack.enter_context(p)
-        resp = await workflow_handler.get_workflow_status("flash-x")
+        resp = await thread_status.read_thread_runtime_status("flash-x")
 
     assert resp["pending_report_back"] is False
     assert resp["report_back_run_id"] is None
@@ -146,7 +149,7 @@ async def test_report_back_status_redis_error_returns_unknown_not_false():
     with patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=_BoomCache()
     ):
-        resp = await report_back.read_report_back_status("flash-err")
+        resp = await status.read_report_back_status("flash-err")
 
     assert resp["pending_report_back"] is None
     assert resp["pending_report_back"] is not False
@@ -160,7 +163,7 @@ async def test_report_back_status_success_returns_real_bool():
     # Drained: empty watch SET + queue -> explicit False.
     empty = _FakeCache()
     with patch("src.utils.cache.redis_cache.get_cache_client", return_value=empty):
-        drained = await report_back.read_report_back_status("flash-empty")
+        drained = await status.read_report_back_status("flash-empty")
     assert drained["pending_report_back"] is False
     assert drained["report_back_run_id"] is None
 
@@ -170,7 +173,7 @@ async def test_report_back_status_success_returns_real_bool():
     with patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=pending
     ):
-        live = await report_back.read_report_back_status("flash-pending")
+        live = await status.read_report_back_status("flash-pending")
     assert live["pending_report_back"] is True
     assert live["report_back_run_id"] == "rb-1"
 
@@ -187,15 +190,15 @@ async def test_status_excludes_and_reaps_originless_members():
     cache = _FakeCache()
     flash = "flash-1"
     _seed(cache, flash, ["ptc-live", "ptc-orphan"], {"ptc-live": "rb-live"})
-    del cache.client.kv[report_back.ptc_origin_key("ptc-orphan")]
+    del cache.client.kv[keys.ptc_origin_key("ptc-orphan")]
 
     with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
-        resp = await report_back.read_report_back_status(flash)
+        resp = await status.read_report_back_status(flash)
 
     assert resp["pending_report_back"] is True
     assert resp["report_back_run_id"] == "rb-live"
     # The orphan was reaped from the watch set, not just skipped.
-    assert cache.client.sets[report_back.flash_watch_key(flash)] == {"ptc-live"}
+    assert cache.client.sets[keys.flash_watch_key(flash)] == {"ptc-live"}
 
 
 @pytest.mark.asyncio
@@ -203,14 +206,14 @@ async def test_status_with_only_orphans_reads_drained():
     cache = _FakeCache()
     flash = "flash-1"
     _seed(cache, flash, ["ptc-orphan"], {})
-    del cache.client.kv[report_back.ptc_origin_key("ptc-orphan")]
+    del cache.client.kv[keys.ptc_origin_key("ptc-orphan")]
 
     with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
-        resp = await report_back.read_report_back_status(flash)
+        resp = await status.read_report_back_status(flash)
 
     assert resp["pending_report_back"] is False
     assert resp["report_back_run_id"] is None
-    assert not cache.client.sets.get(report_back.flash_watch_key(flash))
+    assert not cache.client.sets.get(keys.flash_watch_key(flash))
 
 
 @pytest.mark.asyncio
@@ -220,7 +223,7 @@ async def test_status_orphan_reap_failure_still_filters_the_derivation():
     cache = _FakeCache()
     flash = "flash-1"
     _seed(cache, flash, ["ptc-orphan"], {})
-    del cache.client.kv[report_back.ptc_origin_key("ptc-orphan")]
+    del cache.client.kv[keys.ptc_origin_key("ptc-orphan")]
 
     async def _boom(*_a, **_k):
         raise RuntimeError("eval failed")
@@ -228,11 +231,11 @@ async def test_status_orphan_reap_failure_still_filters_the_derivation():
     cache.client.eval = _boom
 
     with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
-        resp = await report_back.read_report_back_status(flash)
+        resp = await status.read_report_back_status(flash)
 
     assert resp["pending_report_back"] is False  # filtered, not None/unknown
     # The unreaped member stays for a later reap attempt.
-    assert "ptc-orphan" in cache.client.sets[report_back.flash_watch_key(flash)]
+    assert "ptc-orphan" in cache.client.sets[keys.flash_watch_key(flash)]
 
 
 # --- latest_turn_index (the cached-view terminal-staleness signal) -----------
@@ -250,7 +253,7 @@ async def test_status_includes_latest_turn_index_for_terminal_thread():
     with contextlib.ExitStack() as stack:
         for p in _patches(cache, latest_turn=3):
             stack.enter_context(p)
-        resp = await workflow_handler.get_workflow_status("thread-1")
+        resp = await thread_status.read_thread_runtime_status("thread-1")
 
     assert resp["latest_turn_index"] == 3
     # Terminal per the tracker blob — the signal must not depend on liveness.
@@ -265,7 +268,7 @@ async def test_status_latest_turn_index_none_when_thread_has_no_turns():
     with contextlib.ExitStack() as stack:
         for p in _patches(cache, latest_turn=None):
             stack.enter_context(p)
-        resp = await workflow_handler.get_workflow_status("thread-1")
+        resp = await thread_status.read_thread_runtime_status("thread-1")
 
     assert "latest_turn_index" in resp
     assert resp["latest_turn_index"] is None
@@ -281,13 +284,16 @@ def _live_patches(cache: _FakeCache, row: dict) -> list:
     and ``get_active_run`` is a tripwire: the status path must resolve live
     state from the single latest-attempt read (a second snapshot can race a
     concurrent START into status='running' with run_id=None)."""
-    from src.server.database import turn_lifecycle as tl_db
+    from src.server.database.runs import lifecycle as tl_db
 
     manager = MagicMock()
-    manager.get_active_task_ids = AsyncMock(return_value=[])
     return [
+        patch(
+            "src.server.services.subagent_liveness.get_active_task_ids",
+            new=AsyncMock(return_value=[]),
+        ),
         patch.object(
-            workflow_handler, "get_checkpoint_tuple", AsyncMock(return_value=None)
+            thread_status, "get_checkpoint_tuple", AsyncMock(return_value=None)
         ),
         patch.object(
             tl_db,
@@ -296,7 +302,7 @@ def _live_patches(cache: _FakeCache, row: dict) -> list:
         ),
         patch.object(tl_db, "get_latest_attempt", AsyncMock(return_value=row)),
         patch(
-            "src.server.services.background_task_manager.BackgroundTaskManager.get_instance",
+            "src.server.services.runs.executor.LocalRunExecutor.get_instance",
             return_value=manager,
         ),
         patch(
@@ -324,7 +330,7 @@ async def test_status_live_slot_resolves_from_single_latest_attempt_read():
     with contextlib.ExitStack() as stack:
         for p in _live_patches(_FakeCache(), row):
             stack.enter_context(p)
-        resp = await workflow_handler.get_workflow_status("t-1")
+        resp = await thread_status.read_thread_runtime_status("t-1")
 
     assert resp["status"] == "running"
     assert resp["run_id"] == "run-live"
@@ -344,7 +350,7 @@ async def test_status_live_slot_with_cancel_intent_reads_stopping():
     with contextlib.ExitStack() as stack:
         for p in _live_patches(_FakeCache(), row):
             stack.enter_context(p)
-        resp = await workflow_handler.get_workflow_status("t-1")
+        resp = await thread_status.read_thread_runtime_status("t-1")
 
     assert resp["status"] == "stopping"
     assert resp["run_id"] == "run-live"

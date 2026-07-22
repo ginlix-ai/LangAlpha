@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.server.handlers.chat import stream_reconnect
+from src.server.handlers.chat import reconnect_admission
 
 
 def _stream_stub(events: list[str]):
@@ -28,7 +28,7 @@ def _stream_stub(events: list[str]):
 async def _collect(thread_id: str = "t-1") -> list[str]:
     return [
         e
-        async for e in stream_reconnect.reconnect_to_workflow_stream(
+        async for e in reconnect_admission.reconnect_to_workflow_stream(
             thread_id, run_id="run-old", last_event_id=None
         )
     ]
@@ -38,10 +38,10 @@ async def _collect(thread_id: str = "t-1") -> list[str]:
 async def test_drain_skipped_while_another_run_is_active():
     drain = AsyncMock(return_value="event: steering_returned\ndata: {}\n\n")
     with (
-        patch.object(stream_reconnect, "stream_from_log", _stream_stub(["e1"])),
-        patch.object(stream_reconnect, "drain_steering_return_event", drain),
+        patch.object(reconnect_admission, "stream_from_log", _stream_stub(["e1"])),
+        patch.object(reconnect_admission, "drain_steering_return_event", drain),
         patch(
-            "src.server.database.turn_lifecycle.get_active_run",
+            "src.server.database.runs.lifecycle.get_active_run",
             AsyncMock(return_value={"conversation_response_id": "run-live"}),
         ),
     ):
@@ -55,10 +55,10 @@ async def test_drain_skipped_while_another_run_is_active():
 async def test_drain_runs_when_thread_is_idle():
     drain = AsyncMock(return_value="event: steering_returned\ndata: {}\n\n")
     with (
-        patch.object(stream_reconnect, "stream_from_log", _stream_stub(["e1"])),
-        patch.object(stream_reconnect, "drain_steering_return_event", drain),
+        patch.object(reconnect_admission, "stream_from_log", _stream_stub(["e1"])),
+        patch.object(reconnect_admission, "drain_steering_return_event", drain),
         patch(
-            "src.server.database.turn_lifecycle.get_active_run",
+            "src.server.database.runs.lifecycle.get_active_run",
             AsyncMock(return_value=None),
         ),
     ):
@@ -74,10 +74,10 @@ async def test_drain_skipped_when_ledger_unreadable():
     a live run's steering; skipping only delays the return to end-of-run."""
     drain = AsyncMock(return_value=None)
     with (
-        patch.object(stream_reconnect, "stream_from_log", _stream_stub([])),
-        patch.object(stream_reconnect, "drain_steering_return_event", drain),
+        patch.object(reconnect_admission, "stream_from_log", _stream_stub([])),
+        patch.object(reconnect_admission, "drain_steering_return_event", drain),
         patch(
-            "src.server.database.turn_lifecycle.get_active_run",
+            "src.server.database.runs.lifecycle.get_active_run",
             AsyncMock(side_effect=RuntimeError("db down")),
         ),
     ):

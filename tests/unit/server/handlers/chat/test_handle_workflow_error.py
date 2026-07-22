@@ -2,7 +2,7 @@
 
 Pins the contract that both terminal branches (max-retries-exceeded and
 non-recoverable) terminal-write the open run through
-``TurnCoordinator.finalize_turn`` — and that a finalize failure or a
+``RunCoordinator.finalize_run`` — and that a finalize failure or a
 deterministic protocol conflict never suppresses the client-facing SSE
 error. Without these tests a future refactor that drops the finalize call
 would silently restore the original "in_progress forever" zombie after a
@@ -17,6 +17,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.server.handlers.chat import error_handling
+from src.server.services.runs.admission import RunScope
+
+# The scope routes releases through the definition site — patch it there.
+RELEASE = "src.server.dependencies.usage_limits.release_burst_slot"
 
 
 def _consume(agen):
@@ -46,6 +50,13 @@ def _run_handle(attempt_no: int = 1):
     )
 
 
+def _scope(run_handle=None):
+    scope = RunScope(user_id="u-1", burst_slot_id=None)
+    if run_handle is not None:
+        scope.attach_run(run_handle)
+    return scope
+
+
 def _handler():
     handler = MagicMock()
     handler.get_tool_usage.return_value = None
@@ -58,10 +69,10 @@ def _handler():
 
 @pytest.fixture
 def coordinator():
-    """Patch TurnCoordinator.get_instance to return a recordable mock."""
+    """Patch RunCoordinator.get_instance to return a recordable mock."""
     coord = AsyncMock()
-    coord.finalize_turn.return_value = SimpleNamespace(run={"status": "error"})
-    with patch("src.server.services.turn_lifecycle.TurnCoordinator") as coord_cls:
+    coord.finalize_run.return_value = SimpleNamespace(run={"status": "error"})
+    with patch("src.server.services.runs.coordinator.RunCoordinator") as coord_cls:
         coord_cls.get_instance.return_value = coord
         yield coord
 
@@ -74,7 +85,7 @@ async def test_max_retries_branch_finalizes_error(coordinator):
     run_handle = _run_handle(attempt_no=99)
     err = ConnectionError("connection refused")
 
-    with patch.object(error_handling, "release_burst_slot", new=AsyncMock()), \
+    with patch(RELEASE, new=AsyncMock()), \
          patch.object(error_handling, "get_max_workflow_retries", return_value=3):
         await _consume(error_handling.handle_workflow_error(
             e=err,
@@ -83,7 +94,7 @@ async def test_max_retries_branch_finalizes_error(coordinator):
             workspace_id="ws-1",
             handler=_handler(),
             token_callback=None,
-            run_handle=run_handle,
+            scope=_scope(run_handle),
             start_time=0.0,
             request=_make_request(),
             is_byok=False,
@@ -91,8 +102,8 @@ async def test_max_retries_branch_finalizes_error(coordinator):
             log_prefix="CHAT",
         ))
 
-    coordinator.finalize_turn.assert_awaited_once()
-    handle, outcome = coordinator.finalize_turn.await_args.args
+    coordinator.finalize_run.assert_awaited_once()
+    handle, outcome = coordinator.finalize_run.await_args.args
     assert handle is run_handle
     assert outcome.status == "error"
     assert "Max retries exceeded" in outcome.errors[0]
@@ -105,7 +116,7 @@ async def test_non_recoverable_branch_finalizes_error(coordinator):
     # the error's message.
     err = AttributeError("'NoneType' has no attribute 'foo'")
 
-    with patch.object(error_handling, "release_burst_slot", new=AsyncMock()), \
+    with patch(RELEASE, new=AsyncMock()), \
          patch.object(error_handling, "get_max_workflow_retries", return_value=3):
         await _consume(error_handling.handle_workflow_error(
             e=err,
@@ -114,7 +125,7 @@ async def test_non_recoverable_branch_finalizes_error(coordinator):
             workspace_id="ws-1",
             handler=_handler(),
             token_callback=None,
-            run_handle=_run_handle(),
+            scope=_scope(_run_handle()),
             start_time=0.0,
             request=_make_request(),
             is_byok=False,
@@ -122,8 +133,8 @@ async def test_non_recoverable_branch_finalizes_error(coordinator):
             log_prefix="CHAT",
         ))
 
-    coordinator.finalize_turn.assert_awaited_once()
-    _, outcome = coordinator.finalize_turn.await_args.args
+    coordinator.finalize_run.assert_awaited_once()
+    _, outcome = coordinator.finalize_run.await_args.args
     assert outcome.status == "error"
     assert outcome.errors == ["'NoneType' has no attribute 'foo'"]
 
@@ -132,12 +143,12 @@ async def test_non_recoverable_branch_finalizes_error(coordinator):
 async def test_finalize_failure_does_not_break_error_flow(coordinator):
     # If the terminal write itself raises, the handler logs CRITICAL (the row
     # stays in_progress for recovery) but must still emit the SSE error event.
-    coordinator.finalize_turn.side_effect = RuntimeError("db down")
+    coordinator.finalize_run.side_effect = RuntimeError("db down")
 
     err = AttributeError("boom")
     handler = _handler()
 
-    with patch.object(error_handling, "release_burst_slot", new=AsyncMock()), \
+    with patch(RELEASE, new=AsyncMock()), \
          patch.object(error_handling, "get_max_workflow_retries", return_value=3):
         events = await _consume(error_handling.handle_workflow_error(
             e=err,
@@ -146,7 +157,7 @@ async def test_finalize_failure_does_not_break_error_flow(coordinator):
             workspace_id="ws-1",
             handler=handler,
             token_callback=None,
-            run_handle=_run_handle(),
+            scope=_scope(_run_handle()),
             start_time=0.0,
             request=_make_request(),
             is_byok=False,
@@ -170,7 +181,7 @@ async def test_external_id_conflict_branch_emits_conflict_and_skips_finalize(
 
     err = ExternalIdConflictError(platform="telegram", external_id="chat:42")
 
-    with patch.object(error_handling, "release_burst_slot", new=AsyncMock()), \
+    with patch(RELEASE, new=AsyncMock()), \
          patch.object(error_handling, "get_max_workflow_retries", return_value=3):
         # handler=None takes the json.dumps SSE branch, easy to parse.
         events = await _consume(error_handling.handle_workflow_error(
@@ -180,7 +191,7 @@ async def test_external_id_conflict_branch_emits_conflict_and_skips_finalize(
             workspace_id="ws-1",
             handler=None,
             token_callback=None,
-            run_handle=None,
+            scope=_scope(),
             start_time=0.0,
             request=_make_request(),
             is_byok=False,
@@ -195,7 +206,7 @@ async def test_external_id_conflict_branch_emits_conflict_and_skips_finalize(
     assert payload["platform"] == "telegram"
     assert payload["external_id"] == "chat:42"
     # Deterministic protocol conflict — not a workflow failure.
-    coordinator.finalize_turn.assert_not_awaited()
+    coordinator.finalize_run.assert_not_awaited()
     coordinator.fail_open_run.assert_not_awaited()
 
 
@@ -214,7 +225,7 @@ async def test_query_conflict_branch_emits_turn_conflict_and_skips_finalize(
         thread_id="t-qc", turn_index=3, existing_content="other content"
     )
 
-    with patch.object(error_handling, "release_burst_slot", new=AsyncMock()), \
+    with patch(RELEASE, new=AsyncMock()), \
          patch.object(error_handling, "get_max_workflow_retries", return_value=3):
         events = await _consume(error_handling.handle_workflow_error(
             e=err,
@@ -223,7 +234,7 @@ async def test_query_conflict_branch_emits_turn_conflict_and_skips_finalize(
             workspace_id="ws-1",
             handler=None,
             token_callback=None,
-            run_handle=None,
+            scope=_scope(),
             start_time=0.0,
             request=_make_request(),
             is_byok=False,
@@ -238,5 +249,5 @@ async def test_query_conflict_branch_emits_turn_conflict_and_skips_finalize(
     assert payload["code"] == "turn_conflict"
     # The existing row's content must never leak into the SSE payload.
     assert "other content" not in events[0]
-    coordinator.finalize_turn.assert_not_awaited()
+    coordinator.finalize_run.assert_not_awaited()
     coordinator.fail_open_run.assert_not_awaited()

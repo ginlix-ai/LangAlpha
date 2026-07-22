@@ -5,6 +5,7 @@ while a workflow is already running. Messages are stored in Redis and consumed b
 SteeringMiddleware (main agent) or SubagentSteeringMiddleware (subagents).
 """
 
+import logging
 import json
 import time
 import uuid
@@ -14,7 +15,9 @@ from fastapi import HTTPException
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.config.settings import get_redis_ttl_steering
 
-from ._common import logger
+# Same hard-coded logger name request_prep uses — existing log routing keys off it.
+logger = logging.getLogger("src.server.handlers.chat_handler")
+
 
 
 async def drain_steering_return_event(thread_id: str) -> str | None:
@@ -163,7 +166,7 @@ async def _steering_identity_from_ledger(
     when the ledger knows nothing (pre-ledger or unstamped tasks included:
     without a routing identity there is no queue to publish to).
     """
-    from src.server.database import subagent_runs as sr_db
+    from src.server.database.runs import subagent_runs as sr_db
 
     active = await sr_db.get_active_task_run(thread_id, task_id)
     if active is None:
@@ -247,7 +250,7 @@ async def steer_subagent(
     else:
         # 2b. Foreign or lost task: the meta hash carries routing identity
         # (tool_call_id) and writer liveness.
-        from ptc_agent.agent.middleware.background_subagent.registry import (
+        from ptc_agent.agent.middleware.background_subagent.redis_stream import (
             read_task_meta,
         )
 
@@ -276,7 +279,7 @@ async def steer_subagent(
         )
 
     try:
-        from ptc_agent.agent.middleware.background_subagent.registry import (
+        from ptc_agent.agent.middleware.background_subagent.redis_stream import (
             steering_queue_key,
         )
 
@@ -303,7 +306,7 @@ async def steer_subagent(
         # our entry; anything else means it may already be behind us — so
         # reclaim the entry and refuse instead of acknowledging input
         # nobody will ever read.
-        from ptc_agent.agent.middleware.background_subagent.registry import (
+        from ptc_agent.agent.middleware.background_subagent.redis_stream import (
             read_task_meta as _read_meta,
         )
 
@@ -316,7 +319,7 @@ async def steer_subagent(
                     == expected_task_run_id
                 )
             else:
-                from src.server.database import subagent_runs as sr_db
+                from src.server.database.runs import subagent_runs as sr_db
 
                 row = await sr_db.get_active_task_run(thread_id, task_id)
                 still_live = row is not None and (

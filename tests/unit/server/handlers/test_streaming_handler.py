@@ -1,9 +1,9 @@
 """
-Tests for src/server/handlers/streaming_handler.py
+Tests for src/server/services/runs/sse_producer.py
 
 Covers:
 - StreamEventAccumulator: accumulation, merging, max buffer size
-- WorkflowStreamHandler: SSE event formatting, keepalive, error events
+- RunSSEProducer: SSE event formatting, keepalive, error events
 """
 
 import asyncio
@@ -21,7 +21,7 @@ class TestStreamEventAccumulator:
     """Tests for the StreamEventAccumulator class."""
 
     def _make_accumulator(self, max_bytes=16 * 1024):
-        from src.server.handlers.streaming_handler import StreamEventAccumulator
+        from src.server.services.runs.sse_producer import StreamEventAccumulator
 
         return StreamEventAccumulator(max_merged_bytes=max_bytes)
 
@@ -189,17 +189,17 @@ class TestStreamEventAccumulator:
 
 
 # ---------------------------------------------------------------------------
-# WorkflowStreamHandler — SSE formatting helpers
+# RunSSEProducer — SSE formatting helpers
 # ---------------------------------------------------------------------------
 
 
-class TestWorkflowStreamHandlerFormatting:
-    """Tests for WorkflowStreamHandler SSE formatting methods."""
+class TestRunSSEProducerFormatting:
+    """Tests for RunSSEProducer SSE formatting methods."""
 
     def _make_handler(self, thread_id="test-thread"):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(thread_id=thread_id, run_id="r-test")
+        return RunSSEProducer(thread_id=thread_id, run_id="r-test")
 
     def test_format_sse_event_basic(self):
         handler = self._make_handler()
@@ -356,7 +356,7 @@ class TestWorkflowStreamHandlerFormatting:
 
     def test_classify_stream_exception_parses_status_from_message(self):
         """When status_code isn't on the exception, parse it from the message."""
-        from src.server.handlers.streaming_handler import classify_stream_exception
+        from src.server.services.runs.sse_producer import classify_stream_exception
         import httpx
 
         exc = httpx.HTTPError("got HTTP 429 from upstream, backing off")
@@ -405,7 +405,7 @@ class TestWorkflowStreamHandlerFormatting:
 
 
 # ---------------------------------------------------------------------------
-# WorkflowStreamHandler — tool call filtering
+# RunSSEProducer — tool call filtering
 # ---------------------------------------------------------------------------
 
 
@@ -413,9 +413,9 @@ class TestToolCallFiltering:
     """Tests for the _filter_tool_calls method."""
 
     def _make_handler(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(thread_id="test-thread", run_id="r-test")
+        return RunSSEProducer(thread_id="test-thread", run_id="r-test")
 
     def test_filters_empty_name(self):
         handler = self._make_handler()
@@ -446,7 +446,7 @@ class TestToolCallFiltering:
 
 
 # ---------------------------------------------------------------------------
-# WorkflowStreamHandler — _extract_reasoning_summary_index
+# RunSSEProducer — _extract_reasoning_summary_index
 # ---------------------------------------------------------------------------
 
 
@@ -454,28 +454,28 @@ class TestExtractReasoningSummaryIndex:
     """Tests for _extract_reasoning_summary_index static method."""
 
     def test_returns_index_from_reasoning_dict(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
         content = {
             "type": "reasoning",
             "summary": [{"type": "summary_text", "text": "thought", "index": 2}],
         }
-        assert WorkflowStreamHandler._extract_reasoning_summary_index(content) == 2
+        assert RunSSEProducer._extract_reasoning_summary_index(content) == 2
 
     def test_returns_none_for_non_reasoning(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        assert WorkflowStreamHandler._extract_reasoning_summary_index("hello") is None
+        assert RunSSEProducer._extract_reasoning_summary_index("hello") is None
 
     def test_returns_none_for_reasoning_without_summary(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
         content = {"type": "reasoning", "status": "in_progress"}
-        assert WorkflowStreamHandler._extract_reasoning_summary_index(content) is None
+        assert RunSSEProducer._extract_reasoning_summary_index(content) is None
 
 
 # ---------------------------------------------------------------------------
-# WorkflowStreamHandler — interrupt handling
+# RunSSEProducer — interrupt handling
 # ---------------------------------------------------------------------------
 
 
@@ -483,9 +483,9 @@ class TestInterruptHandling:
     """Tests for _handle_interrupt method."""
 
     def _make_handler(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(thread_id="int-thread", run_id="r-test")
+        return RunSSEProducer(thread_id="int-thread", run_id="r-test")
 
     def test_handles_dict_interrupt_value(self):
         handler = self._make_handler()
@@ -521,7 +521,7 @@ class TestInterruptHandling:
 
 
 # ---------------------------------------------------------------------------
-# WorkflowStreamHandler — event_counter integration
+# RunSSEProducer — event_counter integration
 # ---------------------------------------------------------------------------
 
 
@@ -535,9 +535,9 @@ class TestTaskArtifactEvent:
     """
 
     def _make_handler(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(thread_id="t-task-artifact", run_id="r-test")
+        return RunSSEProducer(thread_id="t-task-artifact", run_id="r-test")
 
     def test_task_artifact_event_includes_tool_call_id(self):
         """Artifact event for a spawned task must carry tool_call_id."""
@@ -584,7 +584,7 @@ class TestTaskArtifactEvent:
 
 
 # ---------------------------------------------------------------------------
-# WorkflowStreamHandler — provenance custom-event dispatch
+# RunSSEProducer — provenance custom-event dispatch
 # ---------------------------------------------------------------------------
 
 
@@ -597,13 +597,12 @@ class TestProvenanceEvent:
     fields land at the top level (matching the frontend's ProvenanceEvent).
     """
 
-    def _make_handler(self, background_registry=None):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+    def _make_handler(self):
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(
+        return RunSSEProducer(
             thread_id="t-provenance",
             run_id="r-test",
-            background_registry=background_registry,
         )
 
     def _dispatch(self, handler, event_data, agent_from_stream):
@@ -678,7 +677,7 @@ class TestProvenanceEvent:
 
 
 # ---------------------------------------------------------------------------
-# WorkflowStreamHandler — event_counter integration
+# RunSSEProducer — event_counter integration
 # ---------------------------------------------------------------------------
 
 
@@ -686,9 +685,9 @@ class TestEventCounter:
     """Test that event_counter (shared counter) is respected."""
 
     def test_uses_event_counter_when_set(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        handler = WorkflowStreamHandler(thread_id="t1", run_id="r-test")
+        handler = RunSSEProducer(thread_id="t1", run_id="r-test")
         counter = MagicMock()
         counter.next.side_effect = [42, 43]
         handler.event_counter = counter
@@ -708,8 +707,8 @@ class TestToolNodeInnerLLMSuppression:
     namespace resolves to a subagent identity (task:*/research:*)."""
 
     def _handler(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
-        return WorkflowStreamHandler(thread_id="t-tool-gate", run_id="r-test")
+        from src.server.services.runs.sse_producer import RunSSEProducer
+        return RunSSEProducer(thread_id="t-tool-gate", run_id="r-test")
 
     def _chunk(self, content, kwargs=None):
         from langchain_core.messages import AIMessageChunk
@@ -870,9 +869,9 @@ class TestResolveTokenThreshold:
     lie from the user's perspective."""
 
     def _handler(self, agent_config=None):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(thread_id="t1", run_id="r-test", agent_config=agent_config)
+        return RunSSEProducer(thread_id="t1", run_id="r-test", agent_config=agent_config)
 
     def _cfg(self, threshold: int):
         cfg = MagicMock()
@@ -915,9 +914,9 @@ class TestCompactionChunkRouting:
     regular output as compaction)."""
 
     def _handler(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(thread_id="t1", run_id="r-test")
+        return RunSSEProducer(thread_id="t1", run_id="r-test")
 
     def test_reasoning_signal_routes_to_compaction_when_flagged(self):
         handler = self._handler()
@@ -987,9 +986,9 @@ class TestFinalizeStoppedEvents:
     partial fragments marked 'stopped' instead of live-looking zombies."""
 
     def _handler(self, thread_id="t-stop"):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(thread_id=thread_id, run_id="r-stop")
+        return RunSSEProducer(thread_id=thread_id, run_id="r-stop")
 
     def _events(self, handler):
         return handler.get_sse_events() or []
@@ -1146,17 +1145,17 @@ class TestCompactionWindowGuard:
     )
 
     def _make_handler(self, thread_id="test-thread"):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(thread_id=thread_id, run_id="r-test")
+        return RunSSEProducer(thread_id=thread_id, run_id="r-test")
 
     def test_first_window_opens_guard(self):
         handler = self._make_handler()
         runner = MagicMock()
-        runner.open_window.return_value = True
+        runner.open_auto_compaction_window.return_value = True
         with patch(self.RUNNER, return_value=runner):
             handler._open_compaction_window(())
-        runner.open_window.assert_called_once_with("test-thread")
+        runner.open_auto_compaction_window.assert_called_once_with("test-thread")
         assert handler._compaction_active is True
         assert () in handler._compaction_windows
 
@@ -1166,22 +1165,22 @@ class TestCompactionWindowGuard:
         with patch(self.RUNNER, return_value=runner):
             handler._open_compaction_window(())
             handler._open_compaction_window(("sub",))
-        runner.open_window.assert_called_once_with("test-thread")
+        runner.open_auto_compaction_window.assert_called_once_with("test-thread")
         assert handler._compaction_windows == {(), ("sub",)}
 
     def test_guard_released_only_when_last_window_closes(self):
         handler = self._make_handler()
         runner = MagicMock()
-        runner.open_window.return_value = True
+        runner.open_auto_compaction_window.return_value = True
         with patch(self.RUNNER, return_value=runner):
             handler._open_compaction_window(())
             handler._open_compaction_window(("sub",))
             handler._close_compaction_window(("sub",))
             # One window remains → the admission window must stay open.
-            runner.close_window.assert_not_called()
+            runner.close_auto_compaction_window.assert_not_called()
             assert handler._compaction_active is True
             handler._close_compaction_window(())
-        runner.close_window.assert_called_once_with("test-thread")
+        runner.close_auto_compaction_window.assert_called_once_with("test-thread")
         assert handler._compaction_active is False
         assert handler._compaction_windows == set()
 
@@ -1190,22 +1189,22 @@ class TestCompactionWindowGuard:
         runner = MagicMock()
         with patch(self.RUNNER, return_value=runner):
             handler._close_compaction_window(())
-        runner.close_window.assert_not_called()
+        runner.close_auto_compaction_window.assert_not_called()
         assert handler._compaction_active is False
 
-    def test_open_window_skips_release_when_guard_not_owned(self):
-        """open_window returning False means another op already holds the
+    def test_open_auto_compaction_window_skips_release_when_guard_not_owned(self):
+        """open_auto_compaction_window returning False means another op already holds the
         thread's mutation slot. This handler must NOT take ownership:
         _compaction_active stays False so closing the window (or the
-        outer-finally net) never close_window()s a slot it does not own."""
+        outer-finally net) never close_auto_compaction_window()s a slot it does not own."""
         handler = self._make_handler()
         runner = MagicMock()
-        runner.open_window.return_value = False
+        runner.open_auto_compaction_window.return_value = False
         with patch(self.RUNNER, return_value=runner):
             handler._open_compaction_window(())
             assert handler._compaction_active is False
             handler._close_compaction_window(())
-        runner.close_window.assert_not_called()
+        runner.close_auto_compaction_window.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_outer_finally_releases_guard_on_stream_error(self):
@@ -1215,7 +1214,7 @@ class TestCompactionWindowGuard:
         stranded."""
         handler = self._make_handler(thread_id="t-finally")
         runner = MagicMock()
-        runner.open_window.return_value = True
+        runner.open_auto_compaction_window.return_value = True
         graph = MagicMock()
         graph.astream.side_effect = RuntimeError("graph blew up")
         with patch(self.RUNNER, return_value=runner):
@@ -1225,19 +1224,19 @@ class TestCompactionWindowGuard:
                     graph, {}, {"configurable": {}}
                 ):
                     pass
-        runner.close_window.assert_called_once_with("t-finally")
+        runner.close_auto_compaction_window.assert_called_once_with("t-finally")
         assert handler._compaction_active is False
 
     @pytest.mark.asyncio
     async def test_outer_finally_clears_windows_so_guard_is_reacquirable(self):
         """The safety net must also clear _compaction_windows, not just
         _compaction_active. A stale window left behind would make a later
-        _open_compaction_window see was_empty=False and skip open_window,
+        _open_compaction_window see was_empty=False and skip open_auto_compaction_window,
         silently failing to re-arm the admission window if the handler is
         ever reused."""
         handler = self._make_handler(thread_id="t-reopen")
         runner = MagicMock()
-        runner.open_window.return_value = True
+        runner.open_auto_compaction_window.return_value = True
         graph = MagicMock()
         graph.astream.side_effect = RuntimeError("graph blew up")
         with patch(self.RUNNER, return_value=runner):
@@ -1249,10 +1248,10 @@ class TestCompactionWindowGuard:
                     pass
             # The safety net left no stale windows behind...
             assert handler._compaction_windows == set()
-            runner.open_window.reset_mock()
+            runner.open_auto_compaction_window.reset_mock()
             # ...so a subsequent open re-arms the window from scratch.
             handler._open_compaction_window(())
-        runner.open_window.assert_called_once_with("t-reopen")
+        runner.open_auto_compaction_window.assert_called_once_with("t-reopen")
         assert handler._compaction_active is True
 
 
@@ -1281,9 +1280,9 @@ class _CustomEventGraph:
 
 class TestModelResilienceEvents:
     def _make_handler(self, thread_id="res-thread"):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(thread_id=thread_id, run_id="r-test")
+        return RunSSEProducer(thread_id=thread_id, run_id="r-test")
 
     async def _collect(self, handler, events, namespace=()):
         return [
@@ -1424,9 +1423,9 @@ class TestModelResilienceEvents:
 
 class TestFormatErrorEventResilienceTrace:
     def _make_handler(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(thread_id="err-thread", run_id="r-test")
+        return RunSSEProducer(thread_id="err-thread", run_id="r-test")
 
     @staticmethod
     def _trace():
@@ -1521,21 +1520,21 @@ class TestSanitizeErrorText:
     """Credential shapes are masked before error text reaches the wire."""
 
     def test_url_userinfo_stripped(self):
-        from src.server.handlers.streaming_handler import _sanitize_error_text
+        from src.server.services.runs.sse_producer import _sanitize_error_text
 
         out = _sanitize_error_text("GET https://user:hunter2@api.example.com/v1 failed")
         assert "hunter2" not in out
         assert "https://api.example.com/v1" in out
 
     def test_bearer_token_masked(self):
-        from src.server.handlers.streaming_handler import _sanitize_error_text
+        from src.server.services.runs.sse_producer import _sanitize_error_text
 
         out = _sanitize_error_text("401 with header Authorization: Bearer abc123def456xyz")
         assert "abc123def456xyz" not in out
         assert "[REDACTED]" in out
 
     def test_key_params_masked(self):
-        from src.server.handlers.streaming_handler import _sanitize_error_text
+        from src.server.services.runs.sse_producer import _sanitize_error_text
 
         out = _sanitize_error_text('request had api_key="tok_0123456789abcdef" set')
         assert "tok_0123456789abcdef" not in out
@@ -1543,13 +1542,13 @@ class TestSanitizeErrorText:
         assert "somelongsecretvalue1" not in out
 
     def test_sk_style_token_masked(self):
-        from src.server.handlers.streaming_handler import _sanitize_error_text
+        from src.server.services.runs.sse_producer import _sanitize_error_text
 
         out = _sanitize_error_text("Invalid API key provided: sk-abcdef0123456789")
         assert "sk-abcdef0123456789" not in out
 
     def test_url_query_key_param_masked(self):
-        from src.server.handlers.streaming_handler import _sanitize_error_text
+        from src.server.services.runs.sse_producer import _sanitize_error_text
 
         out = _sanitize_error_text(
             "400 for url https://example.googleapis.com/v1/models/m:generateContent"
@@ -1560,7 +1559,7 @@ class TestSanitizeErrorText:
         assert "&alt=json" in out
 
     def test_plain_error_text_unchanged(self):
-        from src.server.handlers.streaming_handler import _sanitize_error_text
+        from src.server.services.runs.sse_producer import _sanitize_error_text
 
         text = "Error code: 404 - model 'some-model' not found"
         assert _sanitize_error_text(text) == text
@@ -1588,12 +1587,10 @@ class TestTaskLaneOwnership:
     stream (their canonical copies live in the per-task channel), and a
     task-namespace interrupt never enters root lifecycle."""
 
-    def _make_handler(self, registry=None):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+    def _make_handler(self):
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(
-            thread_id="lane-thread", run_id="r-lane", background_registry=registry
-        )
+        return RunSSEProducer(thread_id="lane-thread", run_id="r-lane")
 
     async def _collect(self, handler, events):
         return [
@@ -1699,7 +1696,7 @@ class TestTaskLaneOwnership:
         # still open for task namespaces (the stream-end finally closes it).
         handler = self._make_handler()
         runner = MagicMock()
-        runner.open_window.return_value = True
+        runner.open_auto_compaction_window.return_value = True
         events = [
             (
                 ("task:e88Ssw",),
@@ -1710,5 +1707,5 @@ class TestTaskLaneOwnership:
         ]
         with patch(TestCompactionWindowGuard.RUNNER, return_value=runner):
             chunks = await self._collect(handler, events)
-        runner.open_window.assert_called_once_with("lane-thread")
+        runner.open_auto_compaction_window.assert_called_once_with("lane-thread")
         assert not any("event: context_window\n" in c for c in chunks)

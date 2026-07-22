@@ -12,13 +12,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.server.handlers.chat.stream_from_log import (
+from src.server.handlers.chat.legacy_task_sse_reader import (
     _subagent_writer_settled,
     _wait_for_subagent_task,
     stream_subagent_from_log,
 )
 
-_MOD = "src.server.handlers.chat.stream_from_log"
+_MOD = "src.server.handlers.chat.legacy_task_sse_reader"
 
 
 # ---------------------------------------------------------------------------
