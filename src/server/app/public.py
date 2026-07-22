@@ -32,19 +32,21 @@ from src.server.database.conversation import (
     get_responses_for_thread,
 )
 from src.server.database.workspace import get_workspace as db_get_workspace
-from src.server.app.workspace_files import (
+from src.server.app.workspace_files._shared import (
+    DEFAULT_READ_LIMIT_LINES,
     _get_work_dir,
-    _has_traversal,
     _is_always_hidden_path,
+    _is_binary,
     _is_hidden_path,
     _is_system_path,
     _is_text_content_type,
     _is_utf8,
     _normalize_requested_path,
-    _is_binary,
+)
+from src.server.app.workspace_files.serve import (
+    _has_traversal,
     render_workspace_file_pdf,
     serve_workspace_file,
-    DEFAULT_READ_LIMIT_LINES,
 )
 
 logger = logging.getLogger(__name__)
@@ -289,7 +291,7 @@ async def replay_shared_thread(share_token: str):
                 replay_data = dict(data)
                 # workspace_id is the bearer credential for GET /api/v1/wsfiles/
                 # {workspace_id}/{path}; stored workspace_status events carry it
-                # (see handlers/chat/ptc_workflow.py). Leaking it to a public,
+                # (see handlers/chat/ptc_run.py). Leaking it to a public,
                 # unauthenticated viewer would grant access to ALL workspace
                 # files, so strip it (plus the server-internal sandbox_state).
                 replay_data.pop("workspace_id", None)
@@ -400,7 +402,7 @@ async def list_shared_files(
             sandbox = getattr(session, "sandbox", None) if session else None
             if sandbox:
                 absolute_paths = await sandbox.aglob_files("**/*", path=path)
-                from src.server.app.workspace_files import _to_client_path
+                from src.server.app.workspace_files._shared import _to_client_path
                 for ap in absolute_paths:
                     cp = _to_client_path(sandbox, ap)
                     if _is_always_hidden_path(cp) or _is_hidden_path(cp) or _is_system_path(cp):
@@ -497,7 +499,7 @@ async def read_shared_file(
                 text_content = get_redactor().redact(text_content, vault_secrets=vault_secrets)
                 lines = text_content.splitlines()
                 content = "\n".join(lines[offset:offset + limit])
-                from src.server.app.workspace_files import _to_client_path
+                from src.server.app.workspace_files._shared import _to_client_path
                 client_path = _to_client_path(sandbox, norm)
                 mime_type, _ = mimetypes.guess_type(client_path)
 
@@ -591,7 +593,7 @@ async def download_shared_file(
                 if content is None:
                     raise HTTPException(status_code=404, detail="File not found")
 
-                from src.server.app.workspace_files import _to_client_path
+                from src.server.app.workspace_files._shared import _to_client_path
                 client_path = _to_client_path(sandbox, norm)
                 if _is_always_hidden_path(client_path):
                     raise HTTPException(status_code=404, detail="File not found")
