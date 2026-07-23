@@ -4,8 +4,8 @@
 existing violations are allowlisted below with exact counts and asserted by
 equality in BOTH directions — a new violation fails immediately, and repairing
 one also fails until its entry is deleted, so the allowlist can only burn down.
-The one sanctioned residual (automation_executor) keeps its entry permanently;
-see the disposition table in scratchpad/structure_stage_spec.md §1.6.
+The one sanctioned residual (automation_executor) keeps its entry permanently
+(a ``TODO(layering)`` marks the site).
 """
 
 import ast
@@ -28,6 +28,19 @@ ALLOWED_VIOLATIONS: dict[tuple[str, str], int] = {
 # alias module -> removal milestone. Empty until a phase actually ships an
 # alias; the guard below forbids NEW imports of any listed path.
 LEGACY_ALIASED_PATHS: dict[str, str] = {}
+
+# The Postgres checkpoint saver may only be touched by these modules: the
+# app-level pooled factory, the read-side helpers, and the two fenced writers
+# (WriterGuard's per-run saver, the thread-mutation fence). A new importer is
+# how a run path bypasses the guard session — extend this ONLY with a stated
+# cross-worker story (src/server/AGENTS.md § Multi-worker review checklist).
+POSTGRES_SAVER_MODULE = "langgraph.checkpoint.postgres"
+ALLOWED_SAVER_IMPORTERS = {
+    "src/server/services/thread_mutation.py",
+    "src/server/services/writer_guard.py",
+    "src/server/utils/checkpoint_helpers.py",
+    "src/server/utils/checkpointer.py",
+}
 
 
 def _module_prefix_parts(py_file: Path) -> list[str]:
@@ -98,3 +111,29 @@ def test_no_new_imports_of_legacy_aliased_paths():
         "Imports of legacy aliased paths (import the new location instead; "
         f"aliases are transitional and carry a removal milestone): {offenders}"
     )
+
+
+def test_postgres_saver_imports_are_confined():
+    found: set[str] = set()
+    for py_file in sorted((SRC / "server").rglob("*.py")):
+        for mod in _resolved_imports(py_file):
+            if mod == POSTGRES_SAVER_MODULE or mod.startswith(
+                POSTGRES_SAVER_MODULE + "."
+            ):
+                found.add(str(py_file.relative_to(REPO_ROOT)))
+    new = found - ALLOWED_SAVER_IMPORTERS
+    stale = ALLOWED_SAVER_IMPORTERS - found
+    msg = []
+    if new:
+        msg.append(
+            "NEW importers of the Postgres checkpoint saver — checkpoint "
+            "writes must ride a fenced session (WriterGuard / thread-mutation "
+            "fence) or the app factory; see src/server/AGENTS.md § "
+            f"Multi-worker: {sorted(new)}"
+        )
+    if stale:
+        msg.append(
+            "Stale ALLOWED_SAVER_IMPORTERS entries — the module no longer "
+            f"imports the saver, delete its row(s): {sorted(stale)}"
+        )
+    assert not msg, "\n".join(msg)
