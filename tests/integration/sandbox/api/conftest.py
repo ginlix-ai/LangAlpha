@@ -90,14 +90,24 @@ async def files_client(mock_session, sandbox):
     mock_manager.config = MagicMock()
     mock_manager.config.to_core_config.return_value = sandbox.config
 
+    # The dual-router package resolves sessions from three modules — patch
+    # WorkspaceManager at every import site or the real singleton gets hit.
     with (
         patch(
             "src.server.app.workspace_files.crud.db_get_workspace",
             AsyncMock(return_value=_make_workspace()),
         ),
         patch("src.server.app.workspace_files.crud.WorkspaceManager") as MockWM,
+        patch(
+            "src.server.app.workspace_files._shared.WorkspaceManager"
+        ) as MockWMShared,
+        patch(
+            "src.server.app.workspace_files.serve.WorkspaceManager"
+        ) as MockWMServe,
     ):
         MockWM.get_instance.return_value = mock_manager
+        MockWMShared.get_instance.return_value = mock_manager
+        MockWMServe.get_instance.return_value = mock_manager
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
