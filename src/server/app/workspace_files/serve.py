@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import mimetypes
 import re
 from typing import Any
 from urllib.parse import quote
@@ -18,6 +17,7 @@ from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.services.workspace_manager import WorkspaceManager
 from src.server.services.persistence.file import FilePersistenceService
 from src.server.utils.secret_redactor import get_redactor, get_vault_secrets_for_redaction
+from src.utils.mime import resolve_content_type
 
 from ._shared import (
     _acquire_sandbox,
@@ -87,35 +87,6 @@ _WSFILES_CSP = (
     "form-action 'none'"
 )
 
-# Explicit MIME map for common web asset types. mimetypes' platform tables are
-# inconsistent for several of these (notably .js, .mjs, .woff2), so we pin them.
-_EXPLICIT_MIME_TYPES: dict[str, str] = {
-    ".html": "text/html; charset=utf-8",
-    ".htm": "text/html; charset=utf-8",
-    ".js": "text/javascript; charset=utf-8",
-    ".mjs": "text/javascript; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".json": "application/json; charset=utf-8",
-    ".map": "application/json; charset=utf-8",
-    ".svg": "image/svg+xml",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".ico": "image/x-icon",
-    ".avif": "image/avif",
-    ".woff": "font/woff",
-    ".woff2": "font/woff2",
-    ".ttf": "font/ttf",
-    ".otf": "font/otf",
-    ".txt": "text/plain; charset=utf-8",
-    ".csv": "text/csv; charset=utf-8",
-    ".xml": "application/xml; charset=utf-8",
-    ".pdf": "application/pdf",
-    ".wasm": "application/wasm",
-}
-
 # Theme-sync script spliced after <head> when `?inject=theme` is set. Listens
 # for `widget:themeUpdate` postMessages and applies the `--color-*` custom
 # properties to :root via a dedicated style element. The payload field (`css`,
@@ -137,14 +108,8 @@ _THEME_INJECTION = (
 
 
 def _guess_content_type(path: str) -> str:
-    """Resolve a Content-Type for a served file, preferring the explicit map."""
-    suffix = ""
-    if "." in path:
-        suffix = "." + path.rsplit(".", 1)[-1].lower()
-    if suffix in _EXPLICIT_MIME_TYPES:
-        return _EXPLICIT_MIME_TYPES[suffix]
-    guessed, _enc = mimetypes.guess_type(path)
-    return guessed or "application/octet-stream"
+    """Resolve a Content-Type for a served file via the canonical pinned map."""
+    return resolve_content_type(path)
 
 
 def _is_html_content_type(content_type: str) -> bool:

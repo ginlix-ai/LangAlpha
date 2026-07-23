@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import mimetypes
 import shlex
 from typing import Any
 
@@ -20,6 +19,7 @@ from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.services.workspace_manager import WorkspaceManager
 from src.server.services.persistence.file import FilePersistenceService
 from src.server.utils.secret_redactor import get_redactor, get_vault_secrets_for_redaction
+from src.utils.mime import resolve_content_type
 
 from ._shared import (
     DEFAULT_READ_LIMIT_LINES,
@@ -328,7 +328,7 @@ async def read_workspace_file(
     if _is_always_hidden_path(client_path):
         raise HTTPException(status_code=404, detail="File not found")
 
-    mime, _enc = mimetypes.guess_type(client_path)
+    mime = resolve_content_type(client_path, default="text/plain")
 
     _record_fs_bytes("read", len(raw_bytes))
 
@@ -338,7 +338,7 @@ async def read_workspace_file(
         "offset": offset,
         "limit": limit,
         "content": content,
-        "mime": mime or "text/plain",
+        "mime": mime,
         "truncated": False,  # limit is enforced; UI can request more with offset.
     }
 
@@ -519,17 +519,15 @@ async def download_workspace_file(
         raise HTTPException(status_code=404, detail="File not found")
 
     filename = client_path.split("/")[-1] if client_path else "download"
-    mime, _enc = mimetypes.guess_type(filename)
+    mime = resolve_content_type(filename)
 
-    if _is_text_content_type(mime or "") or _is_utf8(content):
+    if _is_text_content_type(mime) or _is_utf8(content):
         vault_secrets = await get_vault_secrets_for_redaction(workspace_id)
         content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
 
     _record_fs_bytes("download", len(content))
 
-    return _build_download_response(
-        content, filename, mime or "application/octet-stream", request
-    )
+    return _build_download_response(content, filename, mime, request)
 
 
 @router.post("/{workspace_id}/files/upload")
