@@ -40,7 +40,7 @@ Flag any diff that introduces one of these, and require a stated cross-worker st
 - **Read-modify-write on shared rows without a CAS/guarded UPDATE or the right advisory lock.** Terminal transitions go through `RunCoordinator`'s single finalize; never a second writer.
 - **Checkpoint writes outside a `WriterGuard` session.** The saver must share the guard's physical connection so lock loss fails writes structurally.
 
-Verification: run `scripts/multiworker_gate/` (automated subset of the Gate 2 fault-injection matrix) plus the relevant `e2e-chat` cases against this worktree's 2-worker stack — and repeat wire assertions a few times, since worker routing is probabilistic.
+Verification: run `scripts/multiworker_gate/` (the automated subset of the fault-injection matrix) plus live wire checks (send/stream, reconnect, cancel, subagent report-back) against a 2-worker stack — and repeat wire assertions a few times, since worker routing is probabilistic.
 
 ## Working principles
 

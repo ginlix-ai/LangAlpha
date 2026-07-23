@@ -76,6 +76,7 @@ The core differentiator: the LLM does **not** call MCP tools directly. It writes
 - **Package managers**: `uv` (Python), `pnpm` (frontend).
 - **Deployment**: `docker-compose.yml` / `docker-compose.prod.yml`; Dockerfiles in `deploy/` + root `Dockerfile.sandbox`; `make deploy` / `make prod-up`.
 - **⚠️ Pinned agent-facing docstrings**: the market-data MCP server tools (`mcp_servers/*_mcp_server.py`) and direct market tools (`src/tools/market_data/tool.py`) ship into agent prompts and are snapshot-locked (`tests/unit/mcp_servers/agent_docstring_lock.json`). Any edit fails the default unit suite — don't reword them as a side effect. Editing an MCP tool's signature/docstring also requires bumping `MCP_CLIENT_CODEGEN_VERSION` (`src/ptc_agent/core/tool_generator.py`) — warm sandboxes cache the generated wrappers by that version and won't otherwise pick up the change. See `mcp_servers/AGENT_CONTRACT.md`.
+- **⚠️ Multi-worker server**: the backend runs `--workers N` — a request, its SSE consumer, the outbox drainer, and the recovery scanner may each land on **different processes**. Truth lives in Postgres (run ledger + advisory locks); Redis is coordination/transport; process memory is execution context only — never introduce module-level state that a request path consults, and never treat local registries as liveness/status truth. Before touching turn lifecycle, streaming, or subagent ownership, read `src/server/AGENTS.md` § Multi-worker (review checklist); verify with `scripts/multiworker_gate/`.
 
 ## Working principles
 

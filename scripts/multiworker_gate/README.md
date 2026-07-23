@@ -1,11 +1,11 @@
 # Multi-worker gate
 
 Re-runnable fault-injection suite for the v4 turn-lifecycle multi-worker
-contract. Derived from the Gate 2 matrix (17/17 PASS, 2026-07-14); run the
-automated cells whenever a change touches **turn lifecycle, streaming/SSE,
-the hook outbox, or subagent ownership** — the failure mode they catch is
-always the same: *works when producer and consumer land on the same worker,
-breaks ~50% of the time at `--workers 2`.*
+contract, distilled from the pre-merge fault-injection matrix (17/17 PASS).
+Run the automated cells whenever a change touches **turn lifecycle,
+streaming/SSE, the hook outbox, or subagent ownership** — the failure mode
+they catch is always the same: *works when producer and consumer land on
+the same worker, breaks ~50% of the time at `--workers 2`.*
 
 ## Topology
 
@@ -58,8 +58,9 @@ the run and which worker attacks it.
 | 16 | `--workers 2` boot / split-DB / pool exhaustion | manual | 16b: split unreachable by construction in the server path; 16c: `POSTGRES_WRITER_POOL_MAX=1` → bounded 503 |
 | 17 | Graceful SIGTERM with open run | ✅ | owner-finalized `cancelled` (`cancelled_by_user=false`, no `recovery`) before exit |
 
-Manual procedures and full evidence for every cell: the original Gate 2 report
-(kept out of the repo — see the turn-lifecycle build notes / PR description).
+Manual procedures and full evidence for every cell live in the original
+fault-injection report (kept out of the repo — summarized in the PR that
+introduced this suite).
 
 ## Reading failures
 
