@@ -13,21 +13,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ptc_agent.agent.middleware.background_subagent.registry import BackgroundTask
-from src.server.services.background_task_manager import BackgroundTaskManager
+from src.server.services.runs.executor import LocalRunExecutor
+
+REGISTRY_STORE_MOD = "src.server.services.background_registry_store"
 
 USAGE_MODULE = "src.server.services.persistence.usage"
 
 
-def _make_btm() -> BackgroundTaskManager:
-    with patch("src.server.services.background_task_manager.get_max_concurrent_workflows", return_value=10), \
-         patch("src.server.services.background_task_manager.get_workflow_result_ttl", return_value=3600), \
-         patch("src.server.services.background_task_manager.get_abandoned_workflow_timeout", return_value=3600), \
-         patch("src.server.services.background_task_manager.get_cleanup_interval", return_value=60), \
-         patch("src.server.services.background_task_manager.is_intermediate_storage_enabled", return_value=False), \
-         patch("src.server.services.background_task_manager.get_max_stored_messages_per_agent", return_value=1000), \
-         patch("src.server.services.background_task_manager.get_event_storage_backend", return_value="memory"), \
-         patch("src.server.services.background_task_manager.get_redis_ttl_workflow_events", return_value=86400):
-        return BackgroundTaskManager()
+def _make_btm() -> LocalRunExecutor:
+    with patch("src.server.services.runs.executor.get_max_concurrent_workflows", return_value=10), \
+         patch("src.server.services.runs.executor.get_workflow_result_ttl", return_value=3600), \
+         patch("src.server.services.runs.executor.get_abandoned_workflow_timeout", return_value=3600), \
+         patch("src.server.services.runs.executor.get_cleanup_interval", return_value=60), \
+         patch("src.server.services.runs.executor.is_intermediate_storage_enabled", return_value=False), \
+         patch("src.server.services.runs.executor.get_max_stored_messages_per_agent", return_value=1000), \
+         patch("src.server.services.runs.executor.get_event_storage_backend", return_value="memory"), \
+         patch("src.server.services.runs.executor.get_redis_ttl_workflow_events", return_value=86400):
+        return LocalRunExecutor()
 
 
 def _make_task(task_id: str = "task01", **kwargs) -> BackgroundTask:
@@ -168,17 +170,21 @@ async def test_cleanup_clears_tool_usage():
     """_await_drain_and_cleanup_tasks resets tool_usage so a reused task
     object can't be billed twice."""
     btm = _make_btm()
-    task = _make_task(tool_usage={"TavilySearchTool:deep": 1})
+    task = _make_task(
+        tool_usage={"TavilySearchTool:deep": 1}, collector_response_id="resp-1"
+    )
     task.sse_drain_complete.set()
 
     with patch.object(btm, "_await_drain_and_cleanup_tasks", wraps=btm._await_drain_and_cleanup_tasks), \
-         patch("src.server.services.background_task_manager.get_sse_drain_timeout", return_value=0.1), \
-         patch("src.server.services.background_task_manager.get_cache_client", side_effect=Exception("no cache")), \
+         patch("src.server.services.runs.subagent_collection.get_sse_drain_timeout", return_value=0.1), \
+         patch("src.server.services.runs.subagent_collection.get_cache_client", side_effect=Exception("no cache")), \
          patch(
-             "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance"
+             f"{REGISTRY_STORE_MOD}.BackgroundRegistryStore.get_instance"
          ) as mock_store:
         mock_store.return_value.get_registry = AsyncMock(return_value=None)
-        await btm._await_drain_and_cleanup_tasks([task], thread_id="thread-1")
+        await btm._await_drain_and_cleanup_tasks(
+            [task], thread_id="thread-1", response_id="resp-1"
+        )
 
     assert task.tool_usage == {}
     assert task.per_call_records == []
@@ -206,7 +212,7 @@ async def _persist_with_registry(btm, registry, task, response_id="resp-1"):
 
     with patch(f"{USAGE_MODULE}.UsagePersistenceService", return_value=fake_service), \
          patch(
-             "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance"
+             f"{REGISTRY_STORE_MOD}.BackgroundRegistryStore.get_instance"
          ) as mock_store:
         mock_store.return_value.get_registry = AsyncMock(return_value=registry)
         await btm._persist_subagent_usage(

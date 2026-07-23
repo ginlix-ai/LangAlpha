@@ -7,6 +7,7 @@ agent_config.yaml via AgentConfig (ptc_agent.config).
 """
 
 import logging
+import math
 import os
 from typing import Any, Dict, List, Optional
 
@@ -247,6 +248,30 @@ def get_checkpointer_pool_max() -> int:
 def get_conversation_pool_max() -> int:
     """Env POSTGRES_CONVERSATION_POOL_MAX, default 50."""
     return _env_pool_size("POSTGRES_CONVERSATION_POOL_MAX", default=50)
+
+
+def get_writer_pool_max() -> int:
+    """Env POSTGRES_WRITER_POOL_MAX, default 25.
+
+    The pinned-session budget: one physical connection is held per live run
+    (WriterGuard), so this IS the effective concurrent-run cap when the
+    guard is active. Exhaustion is a bounded 503, never an unfenced run.
+    """
+    return _env_pool_size("POSTGRES_WRITER_POOL_MAX", default=25)
+
+
+def get_recovery_scan_interval() -> float:
+    """Env RECOVERY_SCAN_INTERVAL seconds, default 30. Bounds how long a
+    dead worker's orphaned runs stay in_progress before another worker's
+    scanner finalizes them."""
+    raw = os.getenv("RECOVERY_SCAN_INTERVAL", "30")
+    try:
+        value = float(raw)
+    except ValueError:
+        return 30.0
+    # isfinite: "Infinity" parses as a float > 0 but would silently disable
+    # scanning forever.
+    return value if math.isfinite(value) and value > 0 else 30.0
 
 
 def get_replay_projection_cache_ttl() -> int:

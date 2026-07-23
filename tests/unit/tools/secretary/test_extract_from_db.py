@@ -28,7 +28,7 @@ from src.tools.secretary.utils import (
     _truncate_single,
 )
 
-_RECENT = "src.server.database.conversation.get_recent_responses_for_thread"
+_RECENT = "src.server.database.conversation.responses.get_recent_responses_for_thread"
 
 
 def _chunk(text: str) -> dict:

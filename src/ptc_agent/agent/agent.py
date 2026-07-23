@@ -221,6 +221,7 @@ class PTCAgent:
         llm: Any | None = None,
         operation_callback: Any | None = None,
         background_registry: BackgroundTaskRegistry | None = None,
+        namespace_owner: Any | None = None,
         user_profile: dict | None = None,
         plan_mode: bool = False,
         thread_id: str | None = None,
@@ -231,11 +232,18 @@ class PTCAgent:
         user_id: str | None = None,
         user_data_counts: dict[str, Any] | None = None,
         tool_summary: str | None = None,
+        disable_subagents: bool = False,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
 
         Key non-obvious parameters:
             checkpointer: Required for submit_plan interrupt/resume workflow.
+            disable_subagents: Build the agent WITHOUT the subagent machinery
+                (no Task/TaskOutput tools, no SubAgentMiddleware) — the
+                structural recursion gate for synthetic notification turns.
+            namespace_owner: Writer fence for background-subagent checkpoint
+                namespaces (acquire_task_ns/release_task_ns, e.g. the run's
+                WriterGuard). None = no fence (single-writer deployment).
             thread_id: First 8 chars used as thread directory name under
                 ``.agents/threads/{id}/``.
             user_id: First component of memory-namespace tuples. When ``None``,
@@ -566,13 +574,14 @@ class PTCAgent:
 
         background_middleware = BackgroundSubagentMiddleware(
             timeout=background_timeout,
-            enabled=True,
+            enabled=not disable_subagents,
             registry=_bg_registry,
-            event_capture_middleware=event_capture_middleware,
             checkpointer=checkpointer,
+            namespace_owner=namespace_owner,
         )
         main_only_middleware.append(background_middleware)
-        tools.extend(background_middleware.tools)
+        if not disable_subagents:
+            tools.extend(background_middleware.tools)
 
         if HumanInTheLoopMiddleware is not None:
             interrupt_config: Any = create_plan_mode_interrupt_config()
@@ -616,15 +625,19 @@ class PTCAgent:
             thread_id=short_thread_id,
             config=self.config,
         )
-        subagents = create_subagents(
-            registry=subagent_registry,
-            enabled_names=subagent_names,
-            compiler=subagent_compiler,
-            event_capture_middleware=event_capture_middleware,
-        )
-
-        if additional_subagents:
-            subagents.extend(additional_subagents)
+        if disable_subagents:
+            # Recursion gate: no subagents compiled, none advertised in the
+            # prompt ("No sub-agents configured."), no Task tool below.
+            subagents = []
+        else:
+            subagents = create_subagents(
+                registry=subagent_registry,
+                enabled_names=subagent_names,
+                compiler=subagent_compiler,
+                event_capture_middleware=event_capture_middleware,
+            )
+            if additional_subagents:
+                subagents.extend(additional_subagents)
 
         # Prefer the session-cached summary (precomputed once per session in the
         # WorkspaceManager) so the hot path never recomputes it — that's what
@@ -740,6 +753,10 @@ class PTCAgent:
                 LargeResultEvictionMiddleware(
                     backend=backend, eviction_dir=eviction_dir
                 ),
+                # Absent entirely under the recursion gate: this middleware
+                # is the sole provider of the Task tool, so skipping it (plus
+                # the TaskOutput extend above) makes a notification turn
+                # structurally unable to spawn subagents.
                 SubAgentMiddleware(
                     default_model=model,
                     default_tools=tools,
@@ -747,7 +764,9 @@ class PTCAgent:
                     default_middleware=subagent_middleware,
                     registry=background_middleware.registry,
                     checkpointer=checkpointer,
-                ),
+                )
+                if not disable_subagents
+                else None,
                 *shared_middleware,
                 *main_only_middleware,
                 image_capture,

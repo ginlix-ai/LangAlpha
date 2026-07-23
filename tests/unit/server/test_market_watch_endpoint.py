@@ -14,6 +14,8 @@ from httpx import ASGITransport, AsyncClient
 
 from tests.conftest import create_test_app
 
+THREADS_MOD = "src.server.app.threads.crud"
+
 THREAD_ID = "11111111-1111-1111-1111-111111111111"
 OWNER_ID = "test-user-123"  # matches create_test_app's auth override
 
@@ -38,11 +40,11 @@ class TestGetMarketWatch:
                 new=AsyncMock(return_value=OWNER_ID),
             ),
             patch(
-                "src.server.app.threads.user_feature_enabled",
+                f"{THREADS_MOD}.user_feature_enabled",
                 new=AsyncMock(return_value=True),
             ),
             patch(
-                "src.server.app.threads.get_watchlist",
+                f"{THREADS_MOD}.get_watchlist",
                 new=AsyncMock(return_value=["NVDA", "TSLA"]),
             ),
         ):
@@ -62,11 +64,11 @@ class TestGetMarketWatch:
                 new=AsyncMock(return_value=OWNER_ID),
             ),
             patch(
-                "src.server.app.threads.user_feature_enabled",
+                f"{THREADS_MOD}.user_feature_enabled",
                 new=AsyncMock(return_value=True),
             ),
             patch(
-                "src.server.app.threads.get_watchlist",
+                f"{THREADS_MOD}.get_watchlist",
                 new=AsyncMock(return_value=[]),
             ),
         ):
@@ -89,8 +91,8 @@ class TestGetMarketWatchDisabled:
                 "src.server.database.conversation.get_thread_owner_id",
                 new=AsyncMock(return_value=OWNER_ID),
             ),
-            patch("src.server.app.threads.user_feature_enabled", new=feature_gate),
-            patch("src.server.app.threads.get_watchlist", new=watchlist),
+            patch(f"{THREADS_MOD}.user_feature_enabled", new=feature_gate),
+            patch(f"{THREADS_MOD}.get_watchlist", new=watchlist),
         ):
             resp = await threads_client.get(
                 f"/api/v1/threads/{THREAD_ID}/market-watch"

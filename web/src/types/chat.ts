@@ -248,7 +248,7 @@ export interface SubagentTask {
   prompt: string;
   type: string;
   action: 'init' | 'update' | 'resume';
-  status: 'running' | 'completed';
+  status: 'running' | 'completed' | 'cancelled' | 'error';
   resumeTargetId?: string;
   result?: string;
   toolCallResult?: string;

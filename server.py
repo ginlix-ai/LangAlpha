@@ -65,24 +65,15 @@ if __name__ == "__main__":
     if args.reload:
         reload = True
 
-    # SINGLE-WORKER invariant — authoritative rationale. The concurrent-PTC
-    # report-back system (report_back.py) serializes dispatch caps with an
-    # in-process asyncio.Lock and drains its queue with LINDEX-peek + LREM, and
-    # background_task_manager.py's compaction guard is in-memory — none of these
-    # are atomic across processes, so N workers can double-drain report-backs or
-    # overshoot caps. Warn (don't crash): multi-worker deploys that never use
-    # report-back still boot fine. Checked here, not in the lifespan, because
-    # uvicorn never exposes the worker count to the app.
-    if args.workers > 1:
-        logger.warning(
-            "Starting with %d uvicorn workers: the concurrent-PTC report-back "
-            "serialization (in-process dispatch caps + LINDEX/LREM queue drain) "
-            "assumes a SINGLE worker and is not atomic across processes — it can "
-            "double-drain report-backs or overshoot caps, and the /status BTM "
-            "liveness cross-check can heal a run held by another worker to "
-            "COMPLETED. Use 1 worker if this deployment relies on report-back.",
-            args.workers,
-        )
+    # Uvicorn never exposes the worker count to the app, so hand it over via
+    # env: the lifespan refuses --workers>1 when the WriterGuard fence cannot
+    # activate (non-Postgres checkpointer or split app/checkpoint databases).
+    # That hard gate is the whole multi-worker admission story — the old
+    # single-worker warning's mechanisms (in-process report-back caps/drain,
+    # in-memory compaction guard, BTM liveness healing) are all distributed
+    # or deleted as of v4 Phase 2 (accepted residual: same-pair dispatch
+    # lifecycle overlap across processes, gen-CAS-bounded last-writer-wins).
+    os.environ["LANGALPHA_WORKERS"] = str(args.workers)
 
     try:
         logger.info(f"Starting server on {args.host}:{args.port}")

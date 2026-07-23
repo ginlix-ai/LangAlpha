@@ -1,7 +1,7 @@
 """Tests for currency-aware market-data display formatting.
 
 Covers the pure helpers in currency.py plus output-golden checks that exercise
-the real formatting paths in implementations.py. The US goldens assert
+the real formatting paths in prices.py. The US goldens assert
 byte-identical output to the legacy hardcoded ``$`` formatting (compat
 guarantee); the XLON/XHKG goldens assert the localized prefixes.
 """
@@ -18,16 +18,16 @@ from src.tools.market_data.currency import (
     fmt_money,
     fmt_price,
 )
-from src.tools.market_data.implementations import (
+from src.tools.market_data.display import _symbol_currency
+from src.tools.market_data.prices import (
     _format_price_data_as_table,
     _format_price_summary,
-    _symbol_currency,
-    fetch_stock_screener,
 )
+from src.tools.market_data.screener import fetch_stock_screener
 from src.tools.market_data.utils import format_number
 from src.market_protocol import to_canonical
 
-_MOD = "src.tools.market_data.implementations"
+_SCREEN_MOD = "src.tools.market_data.screener"
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +276,7 @@ class TestScreenerPerRowCurrency:
         ]
         provider = _screener_provider(results)
 
-        with patch(f"{_MOD}.get_financial_data_provider", return_value=provider):
+        with patch(f"{_SCREEN_MOD}.get_financial_data_provider", return_value=provider):
             content, _ = await fetch_stock_screener(sector="Technology")
 
         # US row keeps "$"; HK row localizes to "HK$" for both price and cap.

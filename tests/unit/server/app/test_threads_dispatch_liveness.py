@@ -1,118 +1,55 @@
 """Route coverage for ``GET /threads/dispatches/liveness``.
 
-The batched dispatch-status read-model: one MGET of the cheap ``workflow:status``
-blobs, ownership filtered by each blob's ``user_id`` (no per-thread DB read), so
-N dispatch cards cost one round-trip instead of N heavy ``/status`` polls.
+The batched dispatch-status read-model (v4 2.4): one ownership-filtered
+ledger query (latest attempt per thread) resolves N dispatch cards in a
+single round-trip. Worker-agnostic by construction — no tracker blobs, no
+in-process liveness cross-check, no reader-side healing (the recovery
+scanner converges orphaned in_progress rows). Threads with no attempt row
+yet are omitted so the card keeps polling as 'starting'.
 """
 
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 CALLER = "test-user-123"  # create_test_app's bypassed user id
-OTHER = "other-user-456"
+
+LEDGER = "src.server.database.runs.lifecycle.get_latest_attempts_for_threads"
 
 
-def _tracker_returning(blobs: dict):
-    tracker = MagicMock()
-    tracker.get_statuses = AsyncMock(return_value=blobs)
-    tracker.mark_completed = AsyncMock()
-    return tracker
+def _row(tid, status, *, run_id=None, cancel_requested_at=None):
+    return {
+        "conversation_thread_id": tid,
+        "conversation_response_id": run_id or str(uuid.uuid4()),
+        "status": status,
+        "cancel_requested_at": cancel_requested_at,
+    }
 
 
-def _btm_all_live():
-    """Fake BackgroundTaskManager whose every thread has a live task, so an ACTIVE
-    blob's liveness cross-check keeps it running (no heal)."""
-    manager = MagicMock()
-    manager.get_live_task_info = AsyncMock(
-        return_value={"live": True, "run_id": "btm-run", "active_tasks": []}
-    )
-    return manager
-
-
-def _btm_not_found():
-    """Fake BackgroundTaskManager with no live task for any thread (a restart
-    orphaned the no-TTL ACTIVE blob), so an ACTIVE cross-check heals it."""
-    manager = MagicMock()
-    manager.get_live_task_info = AsyncMock(
-        return_value={"live": False, "run_id": None, "active_tasks": []}
-    )
-    return manager
-
-
-def _patch_btm(manager):
-    return patch(
-        "src.server.services.background_task_manager.BackgroundTaskManager.get_instance",
-        return_value=manager,
-    )
-
-
-def _terminal_db(rows):
-    """Fake get_db_connection whose cursor simulates the ownership-filtered
-    ``get_threads_terminal_status`` query.
-
-    ``rows`` = list of ``(thread_id, owner_user_id, current_status)`` standing in
-    for the conversation_threads JOIN workspaces contents; the cursor returns only
-    rows whose id is in the bound ANY(...) list and whose owner is the bound user.
-    Returns ``(fake_get_db_connection, cursor)`` for post-hoc assertions.
-    """
-    cursor = AsyncMock()
-
-    async def _execute(sql, params):
-        cursor.last_params = params
-
-    cursor.execute = AsyncMock(side_effect=_execute)
-
-    async def _fetchall():
-        ids, owner = cursor.last_params
-        idset = set(ids)
-        return [
-            {"conversation_thread_id": tid, "current_status": status}
-            for (tid, row_owner, status) in rows
-            if tid in idset and row_owner == owner
-        ]
-
-    cursor.fetchall = AsyncMock(side_effect=_fetchall)
-
-    conn = AsyncMock()
-
-    @asynccontextmanager
-    async def _cursor_cm(**kwargs):
-        yield cursor
-
-    conn.cursor = _cursor_cm
-
-    @asynccontextmanager
-    async def _fake_get_db_connection():
-        yield conn
-
-    return _fake_get_db_connection, cursor
+async def _liveness(threads_client, rows, ids):
+    with patch(LEDGER, AsyncMock(return_value=rows)) as ledger:
+        resp = await threads_client.get(
+            "/api/v1/threads/dispatches/liveness", params={"ids": ids}
+        )
+    return resp, ledger
 
 
 @pytest.mark.asyncio
-async def test_filters_to_owner_and_maps_liveness(threads_client):
-    """Only the caller's own threads come back, mapped to the liveness shape."""
-    tracker = _tracker_returning({
-        "t-own": {"status": "active", "run_id": "r-1", "user_id": CALLER},
-        "t-foreign": {"status": "active", "run_id": "r-x", "user_id": "someone-else"},
-    })
-    with patch(
-        "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-        return_value=tracker,
-    ), _patch_btm(_btm_all_live()):
-        resp = await threads_client.get(
-            "/api/v1/threads/dispatches/liveness",
-            params={"ids": "t-own,t-foreign"},
-        )
+async def test_live_run_maps_to_running_with_reconnect(threads_client):
+    tid = str(uuid.uuid4())
+    resp, _ = await _liveness(
+        threads_client, {tid: _row(tid, "in_progress", run_id="r-1")}, tid
+    )
 
     assert resp.status_code == 200
     assert resp.json() == {
         "liveness": [
             {
-                "thread_id": "t-own",
-                "status": "active",
+                "thread_id": tid,
+                "status": "running",
                 "run_id": "r-1",
                 "can_reconnect": True,
             }
@@ -121,71 +58,36 @@ async def test_filters_to_owner_and_maps_liveness(threads_client):
 
 
 @pytest.mark.asyncio
-async def test_dedups_ids_into_one_mget(threads_client):
-    tracker = _tracker_returning({})
-    with patch(
-        "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-        return_value=tracker,
-    ):
-        resp = await threads_client.get(
-            "/api/v1/threads/dispatches/liveness",
-            params={"ids": "t-1,t-1,t-2, ,t-2"},
-        )
+async def test_cancel_requested_maps_to_stopping_still_reconnectable(threads_client):
+    """Durable cancel intent refines the live slice to 'stopping'; the stream
+    is still attachable until the finalize lands."""
+    tid = str(uuid.uuid4())
+    resp, _ = await _liveness(
+        threads_client,
+        {
+            tid: _row(
+                tid,
+                "in_progress",
+                run_id="r-1",
+                cancel_requested_at=datetime.now(timezone.utc),
+            )
+        },
+        tid,
+    )
 
     assert resp.status_code == 200
-    tracker.get_statuses.assert_awaited_once_with(["t-1", "t-2"])
-
-
-@pytest.mark.asyncio
-async def test_empty_ids_returns_empty_without_tracker_call(threads_client):
-    tracker = _tracker_returning({"should": "not be read"})
-    with patch(
-        "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-        return_value=tracker,
-    ):
-        resp = await threads_client.get(
-            "/api/v1/threads/dispatches/liveness", params={"ids": " , ,"}
-        )
-
-    assert resp.status_code == 200
-    assert resp.json() == {"liveness": []}
-    tracker.get_statuses.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
-# Durable-status fallback for ids absent from the blob pass (expired TTL). The
-# real ``get_threads_terminal_status`` runs against a simulated DB so the
-# ownership scoping and UUID normalization are genuinely exercised.
-# ---------------------------------------------------------------------------
-
-
-async def _liveness(threads_client, tracker_blobs, db_rows, ids, manager=None):
-    """Drive the endpoint with a blob-less/present tracker and a simulated DB.
-
-    ``manager`` fakes the BTM liveness cross-check; defaults to all-live so a
-    present ACTIVE blob keeps its running slice (heal behavior is exercised by the
-    dedicated stale-active tests below)."""
-    tracker = _tracker_returning(tracker_blobs)
-    fake_db, cursor = _terminal_db(db_rows)
-    with (
-        patch(
-            "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-            return_value=tracker,
-        ),
-        _patch_btm(manager or _btm_all_live()),
-        patch(
-            "src.server.database.conversation.get_db_connection",
-            new=fake_db,
-        ),
-    ):
-        resp = await threads_client.get(
-            "/api/v1/threads/dispatches/liveness", params={"ids": ids}
-        )
-    return resp, cursor
+    assert resp.json()["liveness"] == [
+        {
+            "thread_id": tid,
+            "status": "stopping",
+            "run_id": "r-1",
+            "can_reconnect": True,
+        }
+    ]
 
 
 @pytest.mark.parametrize(
-    "db_status,expected_status",
+    "ledger_status,expected_status",
     [
         ("completed", "completed"),
         ("error", "failed"),
@@ -194,15 +96,13 @@ async def _liveness(threads_client, tracker_blobs, db_rows, ids, manager=None):
     ],
 )
 @pytest.mark.asyncio
-async def test_absent_owned_terminal_resolves_from_db(
-    threads_client, db_status, expected_status
+async def test_terminal_attempt_maps_to_public_vocabulary(
+    threads_client, ledger_status, expected_status
 ):
-    """An id gone from the blob pass resolves to its durable status as the enum
-    value (not the raw DB string), so the card doesn't re-freeze on 'starting'."""
+    """Terminal rows come back as the public enum value (not the raw internal
+    spelling), with no run_id and no reconnect."""
     tid = str(uuid.uuid4())
-    resp, _ = await _liveness(
-        threads_client, {}, [(tid, CALLER, db_status)], tid
-    )
+    resp, _ = await _liveness(threads_client, {tid: _row(tid, ledger_status)}, tid)
 
     assert resp.status_code == 200
     assert resp.json() == {
@@ -218,217 +118,105 @@ async def test_absent_owned_terminal_resolves_from_db(
 
 
 @pytest.mark.asyncio
-async def test_absent_in_progress_owned_is_omitted(threads_client):
-    """A just-dispatched run whose blob isn't written yet stays 'starting' — its
-    in_progress DB row must not resolve the card as terminal."""
+async def test_thread_absent_from_ledger_is_omitted(threads_client):
+    """No attempt row (a dispatch still pre-START, an unowned thread, or a
+    malformed id) → omitted, so the card keeps polling as 'starting' instead
+    of freezing on a fabricated terminal."""
     tid = str(uuid.uuid4())
-    resp, _ = await _liveness(
-        threads_client, {}, [(tid, CALLER, "in_progress")], tid
-    )
+    resp, _ = await _liveness(threads_client, {}, tid)
 
     assert resp.status_code == 200
     assert resp.json() == {"liveness": []}
 
 
 @pytest.mark.asyncio
-async def test_absent_owned_by_other_user_is_omitted(threads_client):
-    """IDOR guard: a completed thread owned by a different user is omitted, and
-    the caller's id is what the ownership filter binds."""
+async def test_ownership_binds_the_authenticated_caller(threads_client):
+    """IDOR guard: the ledger query is scoped by the authenticated caller's
+    id — never anything client-supplied."""
     tid = str(uuid.uuid4())
-    resp, cursor = await _liveness(
-        threads_client, {}, [(tid, OTHER, "completed")], tid
-    )
+    _, ledger = await _liveness(threads_client, {}, tid)
+
+    ledger.assert_awaited_once_with([tid], CALLER)
+
+
+@pytest.mark.asyncio
+async def test_dedups_ids_into_one_query(threads_client):
+    _, ledger = await _liveness(threads_client, {}, "t-1,t-1,t-2, ,t-2")
+
+    ledger.assert_awaited_once_with(["t-1", "t-2"], CALLER)
+
+
+@pytest.mark.asyncio
+async def test_empty_ids_returns_empty_without_query(threads_client):
+    resp, ledger = await _liveness(threads_client, {}, " , ,")
 
     assert resp.status_code == 200
     assert resp.json() == {"liveness": []}
-    # The durable query scopes by the authenticated caller, never the target id's
-    # real owner.
-    assert cursor.last_params[1] == CALLER
+    ledger.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_absent_malformed_id_is_omitted_without_error(threads_client):
-    """A non-UUID absent id is dropped before the ANY(...) bind — no 500, no
-    query, and the card is simply omitted."""
-    resp, cursor = await _liveness(
-        threads_client, {}, [], "not-a-uuid"
-    )
-
-    assert resp.status_code == 200
-    assert resp.json() == {"liveness": []}
-    cursor.execute.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_present_blob_resolves_via_blob_pass_not_db(threads_client):
-    """Regression: an id resolved by a live blob is never in the absent set, so
-    the durable DB fallback is not consulted for it."""
-    tid = str(uuid.uuid4())
-    resp, cursor = await _liveness(
-        threads_client,
-        {tid: {"status": "active", "run_id": "r-1", "user_id": CALLER}},
-        [(tid, CALLER, "completed")],
-        tid,
-    )
-
-    assert resp.status_code == 200
-    assert resp.json() == {
-        "liveness": [
-            {
-                "thread_id": tid,
-                "status": "active",
-                "run_id": "r-1",
-                "can_reconnect": True,
-            }
-        ]
-    }
-    cursor.execute.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_present_blob_and_absent_terminal_coexist(threads_client):
-    """The blob pass and the durable fallback merge: a live id and an expired,
-    completed id both come back in one response."""
-    live = str(uuid.uuid4())
-    expired = str(uuid.uuid4())
-    resp, _ = await _liveness(
-        threads_client,
-        {live: {"status": "active", "run_id": "r-1", "user_id": CALLER}},
-        [(expired, CALLER, "completed")],
-        f"{live},{expired}",
-    )
-
-    assert resp.status_code == 200
-    by_id = {s["thread_id"]: s for s in resp.json()["liveness"]}
-    assert by_id[live] == {
-        "thread_id": live,
-        "status": "active",
-        "run_id": "r-1",
-        "can_reconnect": True,
-    }
-    assert by_id[expired] == {
-        "thread_id": expired,
-        "status": "completed",
-        "run_id": None,
-        "can_reconnect": False,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Stale-ACTIVE self-heal: a no-TTL ACTIVE blob orphaned by a process restart
-# would otherwise report {running, can_reconnect} forever (card zombie). The
-# endpoint cross-checks the in-process BTM (authoritative under the single-worker
-# invariant) and heals a stale ACTIVE to a terminal slice — mirroring /status.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_active_blob_healed_when_btm_has_no_task(threads_client):
-    """ACTIVE blob + BTM 'not_found' -> healed to a terminal slice, and the stale
-    no-TTL blob is marked completed so it stops zombie-reporting."""
-    tid = str(uuid.uuid4())
-    tracker = _tracker_returning(
-        {tid: {"status": "active", "run_id": "r-1", "user_id": CALLER}}
-    )
-    with patch(
-        "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-        return_value=tracker,
-    ), _patch_btm(_btm_not_found()):
-        resp = await threads_client.get(
-            "/api/v1/threads/dispatches/liveness", params={"ids": tid}
-        )
-
-    assert resp.status_code == 200
-    assert resp.json() == {
-        "liveness": [
-            {
-                "thread_id": tid,
-                "status": "completed",
-                "run_id": None,
-                "can_reconnect": False,
-            }
-        ]
-    }
-    tracker.mark_completed.assert_awaited_once()
-    assert tracker.mark_completed.await_args.args[0] == tid
-
-
-@pytest.mark.asyncio
-async def test_active_blob_unchanged_when_btm_has_task(threads_client):
-    """ACTIVE blob + BTM has the live task -> running slice unchanged, no heal."""
-    tid = str(uuid.uuid4())
-    tracker = _tracker_returning(
-        {tid: {"status": "active", "run_id": "r-1", "user_id": CALLER}}
-    )
-    with patch(
-        "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-        return_value=tracker,
-    ), _patch_btm(_btm_all_live()):
-        resp = await threads_client.get(
-            "/api/v1/threads/dispatches/liveness", params={"ids": tid}
-        )
-
-    assert resp.status_code == 200
-    assert resp.json() == {
-        "liveness": [
-            {
-                "thread_id": tid,
-                "status": "active",
-                "run_id": "r-1",
-                "can_reconnect": True,
-            }
-        ]
-    }
-    tracker.mark_completed.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_interrupted_blob_not_healed_even_without_btm_task(threads_client):
-    """INTERRUPTED is resumable-by-design with no live task; the ACTIVE-only
-    cross-check must leave it untouched (never queried, never healed)."""
-    tid = str(uuid.uuid4())
-    tracker = _tracker_returning(
-        {tid: {"status": "interrupted", "run_id": "r-1", "user_id": CALLER}}
-    )
-    manager = _btm_not_found()
-    with patch(
-        "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-        return_value=tracker,
-    ), _patch_btm(manager):
-        resp = await threads_client.get(
-            "/api/v1/threads/dispatches/liveness", params={"ids": tid}
-        )
-
-    assert resp.status_code == 200
-    assert resp.json() == {
-        "liveness": [
-            {
-                "thread_id": tid,
-                "status": "interrupted",
-                "run_id": "r-1",
-                "can_reconnect": False,
-            }
-        ]
-    }
-    tracker.mark_completed.assert_not_awaited()
-    manager.get_live_task_info.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_caps_ids_at_max_and_only_first_100_reach_mget(threads_client):
-    """>100 distinct ids: only the first _MAX_LIVENESS_IDS (100) reach the single
-    MGET; the remainder are dropped for this request."""
+async def test_caps_ids_at_max_and_only_first_100_reach_query(threads_client):
+    """>100 distinct ids: only the first _MAX_LIVENESS_IDS (100) reach the
+    ledger query; the remainder are dropped for this request."""
     ids = [f"t-{i}" for i in range(101)]
-    tracker = _tracker_returning({})
-    with patch(
-        "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-        return_value=tracker,
-    ):
-        resp = await threads_client.get(
-            "/api/v1/threads/dispatches/liveness", params={"ids": ",".join(ids)}
-        )
+    _, ledger = await _liveness(threads_client, {}, ",".join(ids))
 
-    assert resp.status_code == 200
-    called_with = tracker.get_statuses.await_args.args[0]
+    called_with = ledger.await_args.args[0]
     assert len(called_with) == 100
     assert called_with == ids[:100]
+
+
+# ---------------------------------------------------------------------------
+# get_latest_attempts_for_threads itself — the pre-bind UUID guard. The
+# conversation_thread_id column is uuid: one malformed client id in the
+# ANY(...) bind would 22P02 the whole batch, so non-UUIDs must drop before
+# the query.
+# ---------------------------------------------------------------------------
+
+
+def _fake_db():
+    cursor = AsyncMock()
+    cursor.execute = AsyncMock()
+    cursor.fetchall = AsyncMock(return_value=[])
+    conn = MagicMock()
+
+    @asynccontextmanager
+    async def _cursor_cm(**kwargs):
+        yield cursor
+
+    conn.cursor = _cursor_cm
+
+    @asynccontextmanager
+    async def _get_db_connection():
+        yield conn
+
+    return _get_db_connection, cursor
+
+
+@pytest.mark.asyncio
+async def test_helper_drops_non_uuid_ids_before_bind():
+    from src.server.database.runs import lifecycle as tl_db
+
+    fake_db, cursor = _fake_db()
+    with patch("src.server.database.pool.get_db_connection", new=fake_db):
+        got = await tl_db.get_latest_attempts_for_threads(
+            ["not-a-uuid", ""], CALLER
+        )
+
+    assert got == {}
+    cursor.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_helper_binds_normalized_ids_and_owner():
+    from src.server.database.runs import lifecycle as tl_db
+
+    valid = str(uuid.uuid4())
+    fake_db, cursor = _fake_db()
+    with patch("src.server.database.pool.get_db_connection", new=fake_db):
+        await tl_db.get_latest_attempts_for_threads([valid, "junk"], CALLER)
+
+    bound_ids, bound_user = cursor.execute.await_args.args[1]
+    assert bound_ids == [valid]
+    assert bound_user == CALLER

@@ -1,8 +1,10 @@
-"""Tests for BackgroundTaskManager._buffer_event_redis.
+"""Tests for LocalRunExecutor._buffer_event_redis.
 
 Verifies that every spilled event hits the atomic ``pipelined_event_buffer``
-helper exactly once with the right keys and parsed event id, and that
-Redis-disabled / pipeline-failure paths quietly drop the event.
+helper exactly once with the right keys and parsed event id, and that every
+transport failure is FATAL (I6): a dropped event would silently desync the
+replay archive, so the buffer raises ``TransportLostError`` and the run
+finalizes failed(transport_lost) instead of completing with holes.
 """
 
 from __future__ import annotations
@@ -12,37 +14,38 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.server.services.background_task_manager import (
-    BackgroundTaskManager,
-    TaskInfo,
-    TaskStatus,
+from src.server.services.runs.executor import (
+    LocalRunExecutor,
+    LocalRunExecution,
+    LocalRunStatus,
 )
+from src.server.services.runs.stream_writer import TransportLostError
 
 
-def _make_btm(backend: str = "redis") -> BackgroundTaskManager:
-    with patch("src.server.services.background_task_manager.get_max_concurrent_workflows", return_value=10), \
-         patch("src.server.services.background_task_manager.get_workflow_result_ttl", return_value=3600), \
-         patch("src.server.services.background_task_manager.get_abandoned_workflow_timeout", return_value=3600), \
-         patch("src.server.services.background_task_manager.get_cleanup_interval", return_value=60), \
-         patch("src.server.services.background_task_manager.is_intermediate_storage_enabled", return_value=False), \
-         patch("src.server.services.background_task_manager.get_max_stored_messages_per_agent", return_value=1000), \
-         patch("src.server.services.background_task_manager.get_event_storage_backend", return_value=backend), \
-         patch("src.server.services.background_task_manager.get_redis_ttl_workflow_events", return_value=86400):
-        btm = BackgroundTaskManager()
+def _make_btm(backend: str = "redis") -> LocalRunExecutor:
+    with patch("src.server.services.runs.executor.get_max_concurrent_workflows", return_value=10), \
+         patch("src.server.services.runs.executor.get_workflow_result_ttl", return_value=3600), \
+         patch("src.server.services.runs.executor.get_abandoned_workflow_timeout", return_value=3600), \
+         patch("src.server.services.runs.executor.get_cleanup_interval", return_value=60), \
+         patch("src.server.services.runs.executor.is_intermediate_storage_enabled", return_value=False), \
+         patch("src.server.services.runs.executor.get_max_stored_messages_per_agent", return_value=1000), \
+         patch("src.server.services.runs.executor.get_event_storage_backend", return_value=backend), \
+         patch("src.server.services.runs.executor.get_redis_ttl_workflow_events", return_value=86400):
+        btm = LocalRunExecutor()
     return btm
 
 
 def _register_task(
-    btm: BackgroundTaskManager, thread_id: str = "thread-1", run_id: str = "run-1"
-) -> TaskInfo:
-    task_info = TaskInfo(
+    btm: LocalRunExecutor, thread_id: str = "thread-1", run_id: str = "run-1"
+) -> LocalRunExecution:
+    task_info = LocalRunExecution(
         thread_id=thread_id,
         run_id=run_id,
-        status=TaskStatus.RUNNING,
+        status=LocalRunStatus.RUNNING,
         created_at=datetime.now(),
         started_at=datetime.now(),
     )
-    btm.tasks[(thread_id, run_id)] = task_info
+    btm.executions[(thread_id, run_id)] = task_info
     return task_info
 
 
@@ -59,7 +62,7 @@ class TestBufferEventRedisHappyPath:
         mock_cache.pipelined_event_buffer = AsyncMock(return_value=(True, 1))
 
         with patch(
-            "src.server.services.background_task_manager.get_cache_client",
+            "src.server.services.runs.stream_writer.get_cache_client",
             return_value=mock_cache,
         ):
             await btm._buffer_event_redis("thread-1", "run-1", "id: 42\nevent: x\ndata: hi\n\n")
@@ -72,18 +75,15 @@ class TestBufferEventRedisHappyPath:
         assert call.kwargs["meta_key"] == "workflow:events:meta:thread-1:run-1"
         assert call.kwargs["stream_key"] == "workflow:stream:thread-1:run-1"
         assert call.kwargs["last_event_id"] == 42
-        assert call.kwargs["max_size"] == 1000
-        assert call.kwargs["ttl"] == 86400
+        # Retention contract: 2x MAXLEN backstop over the quota, no TTL on
+        # active writes (attach-grace is stamped at terminal).
+        assert call.kwargs["max_size"] == 2000
+        assert call.kwargs["ttl"] is None
 
     @pytest.mark.asyncio
-    async def test_malformed_event_id_is_dropped(self):
-        """An event without a parseable ``id:`` line bails out without writing.
-
-        Pre-cutover the legacy List RPUSH still captured these events. Now
-        that the Stream is the only durable store and XADD needs an explicit
-        ``<seq>-0`` id, we drop the event and skip the meta HINCRBY so the
-        next valid event keeps the counter in lock-step with the stream.
-        """
+    async def test_malformed_event_id_is_fatal(self):
+        """An event without a parseable ``id:`` line must not be silently
+        skipped — the archive would diverge from what the model produced."""
         btm = _make_btm()
         _register_task(btm)
 
@@ -92,26 +92,27 @@ class TestBufferEventRedisHappyPath:
         mock_cache.pipelined_event_buffer = AsyncMock(return_value=(True, 1))
 
         with patch(
-            "src.server.services.background_task_manager.get_cache_client",
+            "src.server.services.runs.stream_writer.get_cache_client",
             return_value=mock_cache,
         ):
-            await btm._buffer_event_redis("thread-1", "run-1", "event: x\ndata: hi\n\n")
+            with pytest.raises(TransportLostError):
+                await btm._buffer_event_redis(
+                    "thread-1", "run-1", "event: x\ndata: hi\n\n"
+                )
 
         assert mock_cache.pipelined_event_buffer.await_count == 0
 
 
 class TestBufferEventRedisFailureModes:
-    """Redis-unavailable paths drop the event without raising.
+    """Every Redis-backend transport failure raises TransportLostError (I6).
 
-    Pre-Streams there was an in-memory deque fallback; with the Streams
-    cutover the only consumer is XREAD on the Stream key, so a Redis blip
-    means the event simply doesn't reach any consumer. The producer must
-    not crash the workflow over a transient Redis failure.
+    The failure handler turns it into failed(transport_lost); the run must
+    never complete with events missing from its stream/archive. Only the
+    memory backend (no stream consumers by configuration) stays best-effort.
     """
 
     @pytest.mark.asyncio
-    async def test_pipeline_failure_does_not_raise(self):
-        """Pipeline returns False → log + drop, no exception bubbled up."""
+    async def test_pipeline_failure_is_fatal(self):
         btm = _make_btm()
         _register_task(btm)
 
@@ -120,29 +121,32 @@ class TestBufferEventRedisFailureModes:
         mock_cache.pipelined_event_buffer = AsyncMock(return_value=(False, 0))
 
         with patch(
-            "src.server.services.background_task_manager.get_cache_client",
+            "src.server.services.runs.stream_writer.get_cache_client",
             return_value=mock_cache,
         ):
-            # Must not raise.
-            await btm._buffer_event_redis("thread-1", "run-1", "id: 1\ndata: lost-if-broken\n\n")
+            with pytest.raises(TransportLostError):
+                await btm._buffer_event_redis(
+                    "thread-1", "run-1", "id: 1\ndata: lost-if-dropped\n\n"
+                )
 
         assert mock_cache.pipelined_event_buffer.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_cache_client_raises_does_not_raise(self):
-        """A misconfigured cache singleton must not crash the workflow."""
+    async def test_cache_client_failure_is_fatal(self):
         btm = _make_btm()
         _register_task(btm)
 
         with patch(
-            "src.server.services.background_task_manager.get_cache_client",
+            "src.server.services.runs.stream_writer.get_cache_client",
             side_effect=RuntimeError("cache singleton init failed"),
         ):
-            await btm._buffer_event_redis("thread-1", "run-1", "id: 42\ndata: must-survive\n\n")
+            with pytest.raises(TransportLostError):
+                await btm._buffer_event_redis(
+                    "thread-1", "run-1", "id: 42\ndata: x\n\n"
+                )
 
     @pytest.mark.asyncio
-    async def test_redis_disabled_skips_pipeline(self):
-        """When ``cache.enabled`` is False, no pipeline call is issued."""
+    async def test_redis_disabled_is_fatal_for_redis_backend(self):
         btm = _make_btm()
         _register_task(btm)
 
@@ -151,9 +155,50 @@ class TestBufferEventRedisFailureModes:
         mock_cache.pipelined_event_buffer = AsyncMock()
 
         with patch(
-            "src.server.services.background_task_manager.get_cache_client",
+            "src.server.services.runs.stream_writer.get_cache_client",
             return_value=mock_cache,
         ):
-            await btm._buffer_event_redis("thread-1", "run-1", "id: 1\ndata: x\n\n")
+            with pytest.raises(TransportLostError):
+                await btm._buffer_event_redis("thread-1", "run-1", "id: 1\ndata: x\n\n")
 
         assert mock_cache.pipelined_event_buffer.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_quota_breach_is_fatal_before_trim_can_engage(self):
+        """Retention contract: at quota the run finalizes error(transport_lost)
+        — the 2x MAXLEN backstop must never FIFO-trim a served head. Exactly
+        at quota still passes; one past it raises."""
+        btm = _make_btm()  # quota = 1000
+        _register_task(btm)
+
+        mock_cache = MagicMock()
+        mock_cache.enabled = True
+        mock_cache.pipelined_event_buffer = AsyncMock(return_value=(True, 1000))
+
+        with patch(
+            "src.server.services.runs.stream_writer.get_cache_client",
+            return_value=mock_cache,
+        ):
+            await btm._buffer_event_redis(
+                "thread-1", "run-1", "id: 1000\ndata: x\n\n"
+            )
+
+            mock_cache.pipelined_event_buffer = AsyncMock(
+                return_value=(True, 1001)
+            )
+            with pytest.raises(TransportLostError, match="quota"):
+                await btm._buffer_event_redis(
+                    "thread-1", "run-1", "id: 1001\ndata: x\n\n"
+                )
+
+    @pytest.mark.asyncio
+    async def test_memory_backend_stays_best_effort(self):
+        """No stream transport configured -> nothing to lose, no raise."""
+        btm = _make_btm(backend="memory")
+        _register_task(btm)
+
+        with patch(
+            "src.server.services.runs.stream_writer.get_cache_client",
+            side_effect=RuntimeError("never called"),
+        ):
+            await btm._buffer_event_redis("thread-1", "run-1", "id: 1\ndata: x\n\n")

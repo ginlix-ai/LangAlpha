@@ -14,7 +14,7 @@ from typing import Any
 
 from psycopg.rows import dict_row
 
-from src.server.database.conversation import get_db_connection
+from src.server.database.pool import get_db_connection
 from src.server.utils.pg_sanitize import SafeJson, strip_pg_nul_str
 
 logger = logging.getLogger(__name__)
@@ -316,11 +316,15 @@ async def sync_provenance_for_response(
     conversation_thread_id: str,
     turn_index: int,
     sse_events: list[dict[str, Any]] | None,
+    strict: bool = False,
 ) -> int:
     """Extract provenance from sse_events and (re)write rows for one response.
 
-    Single entry point for both persistence hook sites. Best-effort: never
-    raises, so a provenance failure can't break turn persistence.
+    Single entry point for both persistence hook sites. Best-effort by
+    default so a provenance failure can't break a standalone persist;
+    ``strict=True`` re-raises for transaction-bound callers, where a
+    swallowed SQL error would poison the enclosing transaction and turn its
+    commit into a silent rollback.
     """
     try:
         records = extract_provenance_from_sse_events(sse_events)
@@ -332,6 +336,8 @@ async def sync_provenance_for_response(
             records=records,
         )
     except Exception as e:
+        if strict:
+            raise
         logger.warning(
             f"[provenance] sync failed for response_id={conversation_response_id}: {e}"
         )

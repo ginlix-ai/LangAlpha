@@ -14,7 +14,10 @@ from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.middleware.background_subagent.middleware import (
     BackgroundSubagentMiddleware,
 )
-from ptc_agent.agent.middleware.background_subagent.utils import build_message_checker
+# Module-attribute binding (not a direct symbol import) so a single patch of
+# utils.build_message_checker governs every caller — tools.py binds the same way.
+from ptc_agent.agent.middleware.background_subagent import utils
+from ptc_agent.agent.middleware.background_subagent.utils import config_own_run_id
 
 logger = structlog.get_logger(__name__)
 
@@ -123,7 +126,9 @@ class BackgroundSubagentOrchestrator:
             # If there are still pending background tasks, wait for them.
             if self.middleware.registry.has_pending_tasks():
                 thread_id = (config.get("configurable") or {}).get("thread_id")
-                checker = await build_message_checker(thread_id)
+                checker = await utils.build_message_checker(
+                    thread_id, own_run_id=config_own_run_id(config)
+                )
                 logger.info(
                     "Waiting for pending background tasks",
                     pending_count=self.middleware.registry.pending_count,
@@ -278,7 +283,9 @@ class BackgroundSubagentOrchestrator:
 
             # Wait for all background tasks to complete
             thread_id = (config.get("configurable") or {}).get("thread_id")
-            checker = await build_message_checker(thread_id)
+            checker = await utils.build_message_checker(
+                thread_id, own_run_id=config_own_run_id(config)
+            )
             logger.info(
                 "Waiting for pending background tasks after stream",
                 pending_count=self.middleware.registry.pending_count,
@@ -312,17 +319,6 @@ class BackgroundSubagentOrchestrator:
 
             # NOTE: Do NOT clear registry here - agent needs to call TaskOutput()
             # to retrieve results in the next iteration.
-
-    def _format_notification(self) -> str:
-        """Format notification message for all completed background tasks.
-
-        Returns:
-            Notification string prompting agent to call TaskOutput()
-        """
-        completed_tasks = [
-            task for task in self.middleware.registry._tasks.values() if task.completed
-        ]
-        return self._format_notification_for_tasks(completed_tasks)
 
     def _format_notification_for_tasks(self, tasks: list) -> str:
         """Format notification message for specific tasks.
@@ -386,9 +382,11 @@ class BackgroundSubagentOrchestrator:
         return self.middleware.registry.has_pending_tasks()
 
     async def _has_pending_steering(self, config: dict[str, Any]) -> bool:
-        """Check if there are pending steering messages in Redis."""
+        """Check if there are pending steering messages this run would consume."""
         thread_id = (config.get("configurable") or {}).get("thread_id")
-        checker = await build_message_checker(thread_id)
+        checker = await utils.build_message_checker(
+            thread_id, own_run_id=config_own_run_id(config)
+        )
         if checker is None:
             return False
         try:
@@ -435,6 +433,14 @@ class BackgroundSubagentOrchestrator:
         Returns:
             Notification string if tasks completed, None otherwise
         """
+        # A disabled middleware means this turn has no TaskOutput tool (e.g.
+        # a disable_subagents notification turn): never point the agent at a
+        # tool it doesn't have. The shared per-thread registry may still hold
+        # completed tasks from other turns — they're not this turn's to
+        # announce.
+        if not self.middleware.enabled:
+            return None
+
         # Sync completion status first
         for task in self.middleware.registry._tasks.values():
             if not task.completed and task.asyncio_task and task.asyncio_task.done():
@@ -445,9 +451,12 @@ class BackgroundSubagentOrchestrator:
                     task.error = str(e)
                     task.result = {"success": False, "error": str(e)}
 
-        # Check for completed tasks whose results haven't been seen yet
+        # Completed tasks whose results the agent hasn't seen. Server-side
+        # report-back is outbox-owned and never reaches this CLI-only path.
         all_tasks = list(self.middleware.registry._tasks.values())
-        unseen_tasks = [t for t in all_tasks if t.completed and not t.result_seen]
+        unseen_tasks = [
+            t for t in all_tasks if t.completed and not t.result_seen
+        ]
 
         logger.debug(
             "check_and_get_notification",

@@ -69,18 +69,6 @@ _ALL_TABLES = [
     "users",
 ]
 
-# Additional tables created by migrations (LangGraph, market_insights, etc.)
-_EXTRA_TABLES = [
-    "market_insights",
-    "user_oauth_tokens",
-    "store_migrations",
-    "store",
-    "checkpoint_writes",
-    "checkpoint_blobs",
-    "checkpoints",
-    "checkpoint_migrations",
-]
-
 
 def _build_db_uri() -> str:
     """Build PostgreSQL connection string from env vars (CI-compatible defaults).
@@ -139,15 +127,18 @@ async def test_db_pool(test_db_uri):
     """
     import psycopg
 
-    # Drop all existing tables to ensure a clean slate before migrations
+    # Nuke the whole schema for a clean slate before migrations. A named
+    # drop-list goes stale every time a migration adds a table (it silently
+    # missed subagent_runs/subagent_tasks/hook_outbox/provenance_*), and a
+    # survivor breaks the re-run: alembic starts from scratch against
+    # objects that still exist. CI never sees this — its postgres is fresh
+    # per run; local reruns are the case this must survive.
     async with await psycopg.AsyncConnection.connect(
         test_db_uri, autocommit=False
     ) as conn:
         async with conn.cursor() as cur:
-            for table in _ALL_TABLES + _EXTRA_TABLES:
-                await cur.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
-            # Clear alembic version so migrations run from scratch
-            await cur.execute("DROP TABLE IF EXISTS alembic_version CASCADE")
+            await cur.execute("DROP SCHEMA public CASCADE")
+            await cur.execute("CREATE SCHEMA public")
         await conn.commit()
 
     # Run alembic migrations -- the single source of truth for schema
@@ -221,9 +212,9 @@ async def patched_get_db_connection(test_db_pool):
     # get_db_connection` holds its own local reference, so each one needs
     # its own patch target. Modules that import lazily inside a function
     # (market_insight, services.workspace_manager) automatically pick up
-    # the source patch on conversation.get_db_connection.
+    # the source patch on pool.get_db_connection.
     targets = [
-        "src.server.database.conversation.get_db_connection",
+        "src.server.database.pool.get_db_connection",
         "src.server.database.workspace.get_db_connection",
         "src.server.database.workspace_file.get_db_connection",
         "src.server.database.user.get_db_connection",
@@ -243,6 +234,59 @@ async def patched_get_db_connection(test_db_pool):
         for target in targets:
             stack.enter_context(patch(target, _test_get_db_connection))
         yield _test_get_db_connection
+
+
+@pytest_asyncio.fixture
+async def seed_response(patched_get_db_connection):
+    """Async callable that seeds a response row the trigger-compliant way.
+
+    The terminal-immutability trigger rejects INSERTs with a terminal
+    status, so seeding inserts ``in_progress`` and finalizes with an
+    UPDATE — the same shape production takes through the lifecycle API,
+    including the ``SafeJson`` bind that strips NULs.
+    """
+    from src.server.utils.pg_sanitize import SafeJson
+
+    async def _seed(
+        conversation_response_id: str,
+        conversation_thread_id: str,
+        turn_index: int,
+        status: str = "completed",
+        execution_time=None,
+        sse_events=None,
+    ):
+        async with patched_get_db_connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO conversation_responses
+                        (conversation_response_id, conversation_thread_id,
+                         turn_index, status, created_at)
+                    VALUES (%s, %s, %s, 'in_progress', NOW())
+                    """,
+                    (
+                        conversation_response_id,
+                        conversation_thread_id,
+                        turn_index,
+                    ),
+                )
+                await cur.execute(
+                    """
+                    UPDATE conversation_responses
+                    SET status = %s,
+                        execution_time = COALESCE(%s, execution_time),
+                        sse_events = COALESCE(%s::jsonb, sse_events)
+                    WHERE conversation_response_id = %s
+                    """,
+                    (
+                        status,
+                        execution_time,
+                        SafeJson(sse_events) if sse_events is not None else None,
+                        conversation_response_id,
+                    ),
+                )
+
+    return _seed
 
 
 @pytest.fixture

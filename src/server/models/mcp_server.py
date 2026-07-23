@@ -28,7 +28,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
-from src.ptc_agent.core.mcp_sanitize import VAULT_REF_RE
+from ptc_agent.core.mcp_sanitize import VAULT_REF_RE
 
 
 def _format_validation_error(exc: ValidationError) -> str:

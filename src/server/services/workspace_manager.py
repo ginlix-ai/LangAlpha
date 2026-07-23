@@ -33,7 +33,7 @@ from src.observability import (
 from src.observability.tracing import hash_id as _obs_hash_id
 from src.observability.tracing import safe_aspan
 
-from src.server.services.background_task_manager import BackgroundTaskManager
+from src.server.services.runs.executor import LocalRunExecutor
 
 from src.server.database.workspace import (
     create_workspace as db_create_workspace,
@@ -350,7 +350,7 @@ class WorkspaceManager(WorkspaceEntitlementsMixin):
         ):
             return None
 
-        from src.server.handlers.chat.mcp_config import resolve_mcp_config
+        from src.server.services.mcp_config import resolve_mcp_config
 
         try:
             resolved = await resolve_mcp_config(
@@ -508,7 +508,7 @@ class WorkspaceManager(WorkspaceEntitlementsMixin):
                     session.mcp_config_version == version
                     and _session_live()
                 ):
-                    from src.server.handlers.chat.mcp_config import (
+                    from src.server.services.mcp_config import (
                         resolve_mcp_config,
                     )
 
@@ -912,7 +912,7 @@ class WorkspaceManager(WorkspaceEntitlementsMixin):
         """
         from psycopg.types.json import Json
 
-        from src.server.database.conversation import get_db_connection
+        from src.server.database.pool import get_db_connection
 
         try:
             async with get_db_connection() as conn:
@@ -2560,7 +2560,7 @@ class WorkspaceManager(WorkspaceEntitlementsMixin):
         # Get running workspaces
         running_workspaces = await get_workspaces_by_status("running", limit=1000)
 
-        task_mgr = BackgroundTaskManager.get_instance()
+        task_mgr = LocalRunExecutor.get_instance()
 
         # First pass: reconcile always-on entitlements. The returned set stays
         # exempt from the idle-reaping loop below (still-entitled rows, plus any

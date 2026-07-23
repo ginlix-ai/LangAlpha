@@ -23,7 +23,9 @@ from src.utils.cache.redis_cache import get_cache_client
 
 logger = logging.getLogger(__name__)
 
-_KEY_PREFIX = "replay:turn:v1"
+# v2: per-run task-namespace projection + task-lane user_message events —
+# v1 entries carry the whole-namespace-at-spawn-turn shape and must not mix.
+_KEY_PREFIX = "replay:turn:v2"
 # Entries beyond this are pathological (widget-heavy legacy stored events);
 # skip caching rather than bloat Redis — replay just rebuilds those threads.
 _MAX_ENTRY_BYTES = 512 * 1024
@@ -82,6 +84,19 @@ async def store_turn(
         logger.warning(f"[ProjectionCache] store failed for {thread_id}: {e}")
 
 
+async def delete_turns(thread_id: str, tail_checkpoint_ids: list[str]) -> None:
+    """Best-effort eviction — keeps salvage-bearing turns out of the cache so
+    the fast path can't replay them without their trailing salvage."""
+    if not tail_checkpoint_ids or not cache_active():
+        return
+    try:
+        client = get_cache_client()
+        for tail_checkpoint_id in tail_checkpoint_ids:
+            await client.delete(_key(thread_id, tail_checkpoint_id))
+    except Exception as e:
+        logger.warning(f"[ProjectionCache] delete failed for {thread_id}: {e}")
+
+
 async def task_streams_live(thread_id: str, task_ids: set[str]) -> bool:
     """True when any task's per-task Redis stream is still unfinalized.
 
@@ -123,7 +138,7 @@ def _is_stream_end_sentinel(raw: Any) -> bool:
     """Match forwarder.finalize()'s ``{"event": "subagent_stream_end"}``
     sentinel (a JSON dict without ``seq`` — same test as the reconnect
     consumer's payload classifier)."""
-    from ptc_agent.agent.middleware.background_subagent.registry import (
+    from ptc_agent.agent.middleware.background_subagent.redis_stream import (
         SUBAGENT_STREAM_END_EVENT,
     )
 

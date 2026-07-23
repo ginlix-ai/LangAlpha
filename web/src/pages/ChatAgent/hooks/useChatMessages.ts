@@ -10,592 +10,64 @@ import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { useUser } from '@/hooks/useUser';
-import { sendChatMessageStream, replayThreadHistory, getWorkflowStatus, getReportBackStatus, reconnectToWorkflowStream, sendHitlResponse, streamSubagentTaskEvents, fetchThreadTurns, submitFeedback, removeFeedback, getThreadFeedback, cancelWorkflow } from '../utils/api';
-import type { WorkflowStatusResponse, ReportBackStatusResponse } from '../utils/api';
+import { sendChatMessageStream, sendRetryStream, getWorkflowStatus, sendHitlResponse, fetchThreadTurns, cancelWorkflow } from '../utils/api';
+import { peekThreadMux } from '../session/stream/threadStreamMux';
+import type { WorkflowStatusResponse } from '../utils/api';
 // Imported from the dependency-free signal module (not `../utils/api`) so this
 // keeps decoding wire status even in the hook tests that fully mock `../utils/api`.
-import { decodeReportBackSignal, shouldArmReportBack } from '../utils/reportBackSignal';
-import { useReportBackWatch, REPORT_BACK_IDLE_MAX_REARMS } from './useReportBackWatch';
+import { shouldArmForStatus } from '../utils/reportBackSignal';
+import { useReportBackWatch } from './useReportBackWatch';
+import { useChatFeedback } from './useChatFeedback';
 import { toast } from '@/components/ui/use-toast';
-import { buildRateLimitError, isUpstreamHint, type StructuredError } from '@/utils/rateLimitError';
+import { buildRateLimitError, type StructuredError } from '@/utils/rateLimitError';
 import { getStoredThreadId, setStoredThreadId } from './utils/threadStorage';
-import { countToolCalls } from '../utils/subagentMetrics';
-import { type SubagentTokenUsage, ZERO_USAGE, extractTokenUsageDelta, accumulateTokenUsage } from '../utils/tokenUsage';
-import { computeSteeringBoundary, shouldSkipSteeringRollback } from '../utils/steeringRollback';
+import { type SubagentTokenUsage, ZERO_USAGE } from '../utils/tokenUsage';
+import { computeSteeringBoundary } from '../session/stream/steeringRollback';
 import { bumpThreadNavOrder } from './useNavigationData';
 export { removeStoredThreadId } from './utils/threadStorage';
 import { createUserMessage, createAssistantMessage, createNotificationMessage, appendMessage, updateMessage, type AttachmentMeta } from './utils/messageHelpers';
-import type { ChatMessage, AssistantMessage, UserMessage, NotificationSegment } from '@/types/chat';
-import type { ActionRequest, ToolCallData, TodoItem } from '@/types/sse';
-import type { HtmlWidgetData, PreviewData } from './utils/types';
+import type { AssistantMessage, UserMessage } from '@/types/chat';
+import type { PreviewData } from './utils/types';
 import { createRecentlySentTracker } from './utils/recentlySentTracker';
-import {
-  handleReasoningSignal,
-  handleReasoningContent,
-  handleTextContent,
-  handleToolCalls,
-  handleToolCallResult,
-  handleToolCallChunks,
-  handleTodoUpdate,
-  handleHtmlWidget,
-  handleProvenance,
-  isSubagentEvent,
-  handleSubagentMessageChunk,
-  handleSubagentToolCallChunks,
-  handleSubagentToolCalls,
-  handleSubagentToolCallResult,
-  handleTaskSteeringAccepted,
-  handleMarketWatchUpdate,
-  getOrCreateTaskRefs,
-} from './utils/streamEventHandlers';
-import {
-  handleHistoryUserMessage,
-  handleHistoryReasoningSignal,
-  handleHistoryReasoningContent,
-  handleHistoryTextContent,
-  handleHistoryToolCalls,
-  handleHistoryToolCallResult,
-  handleHistoryTodoUpdate,
-  handleHistoryHtmlWidget,
-  handleHistoryProvenance,
-  handleHistorySteeringDelivered,
-  isSubagentHistoryEvent,
-} from './utils/historyEventHandlers';
+import { createRequestKeyTracker } from './utils/requestKey';
+import { handleReasoningSignal, handleTextContent } from './utils/streamEventHandlers';
 import { useMarketWatch } from './useMarketWatch';
 // Chart-annotation live bridge: writes agent-drawn annotations into the
 // shared MarketView store so the desktop MarketView chat panel (which uses
 // this engine for both flash and PTC) renders them live. Harmless on the
 // standalone /chat page — the store simply has no chart consumer there.
-import { applyAnnotationArtifact } from '@/pages/MarketView/stores/chartAnnotationStore';
 
-// --- Internal types for useChatMessages ---
+// --- Module scope extracted to session/types + utils (W1) ---
+import type {
+  MessageRecord, TokenUsage, PendingInterrupt, PendingRejection,
+  SSEEvent, ModelOptions, OffloadBatch, SubagentHistoryEntry, TaskRefs,
+  HistoryInterruptInfo,
+  ModelStatus, FallbackSuggestion,
+} from '../session/types';
+import { SECRETARY_ACTION_TYPES } from '../session/interrupts/buckets';
+export type { ModelStatus, FallbackSuggestion } from '../session/types';
+import type { ChatSessionRuntime } from '../session/runtime';
+import { projectSubagentHistory } from '../session/subagents/projectHistory';
+import { createSubagentMuxController, getTaskIdFromEvent } from '../session/subagents/muxSink';
+import { loadConversationHistory as replayConversationHistory } from '../session/history/replayHistory';
+import { createStreamEventProcessor, type StreamRouterDeps } from '../session/stream/processStreamEvent';
+import {
+  acquireStreamOwnership as acquireOwnership,
+  releaseStreamOwnership as releaseOwnership,
+  reconnectToStream as reconnectToStreamImpl,
+  attemptReconnectAfterDisconnect as attemptReconnectImpl,
+  cleanupAfterStreamEnd as cleanupAfterStreamEndImpl,
+  type RecoveryDeps, type ReconnectOptions,
+} from '../session/stream/lifecycle';
+import { collectRenderedInterruptIds, finalizeTodoListProcessesInMessages } from './utils/messageFinalizers';
+export { finalizeTodoListProcessesInMessages, mapToolCallIdToAgentId } from './utils/messageFinalizers';
 
-/** Message record — now properly typed as ChatMessage. */
-type MessageRecord = ChatMessage;
-
-/** React state setter for messages array. */
-type SetMessages = React.Dispatch<React.SetStateAction<MessageRecord[]>>;
-
-/** Token usage state for context window progress ring. */
-interface TokenUsage {
-  totalInput: number;
-  totalOutput: number;
-  lastOutput: number;
-  total: number;
-  threshold: number;
-}
-
-/** Interrupt types that map to proposal-based HITL cards (workspace, question, ptc, secretary). */
-const PROPOSAL_INTERRUPT_TYPES = new Set([
-  'create_workspace', 'start_question', 'ptc_agent',
-  'delete_workspace', 'stop_workspace', 'delete_thread',
-]);
-
-/** Maps interrupt types to their proposal bucket key on AssistantMessage. */
-const PROPOSAL_DATA_KEY_MAP: Record<string, string> = {
-  create_workspace: 'workspaceProposals',
-  start_question: 'questionProposals',
-  ptc_agent: 'ptcAgentProposals',
-  delete_workspace: 'secretaryActionProposals',
-  stop_workspace: 'secretaryActionProposals',
-  delete_thread: 'secretaryActionProposals',
-};
-
-/** Secretary action interrupt types (for type guard in handlers). */
-const SECRETARY_ACTION_TYPES = new Set(['delete_workspace', 'stop_workspace', 'delete_thread']);
-
-/**
- * Message-map buckets whose entries carry an `interruptId` (rendered HITL
- * cards). `satisfies keyof AssistantMessage` makes a renamed/added bucket a
- * compile error here instead of a silently-wrong dedup rebuild.
- */
-const INTERRUPT_CARD_BUCKETS = [
-  'planApprovals', 'userQuestions', 'workspaceProposals',
-  'questionProposals', 'ptcAgentProposals', 'secretaryActionProposals',
-] as const satisfies readonly (keyof AssistantMessage)[];
-
-/** Collects the interrupt_ids of every HITL card rendered on the given messages. */
-function collectRenderedInterruptIds(messages: ChatMessage[]): Set<string> {
-  const ids = new Set<string>();
-  for (const m of messages) {
-    if (m.role !== 'assistant') continue;
-    for (const bucket of INTERRUPT_CARD_BUCKETS) {
-      const entries = m[bucket];
-      if (!entries) continue;
-      for (const entry of Object.values(entries)) {
-        if (entry?.interruptId) ids.add(entry.interruptId);
-      }
-    }
-  }
-  return ids;
-}
-
-/** Pending HITL interrupt state. */
-interface PendingInterrupt {
-  type?: string;
-  interruptId?: string;
-  assistantMessageId?: string;
-  planApprovalId?: string;
-  questionId?: string;
-  proposalId?: string;
-  planMode?: boolean;
-  actionRequests?: ActionRequest[];
-  threadId?: string;
-  toolCallId?: string;
-}
-
-/** Pending rejection (user rejected a plan). */
-interface PendingRejection {
-  interruptId: string;
-  planMode: boolean;
-}
-
-/** Loosely-typed SSE event — all event shapes merged. */
-// TODO: type properly — use discriminated union from src/types/sse.ts
-interface SSEEvent {
-  event?: string;
-  agent?: string;
-  content?: string | Record<string, unknown>;
-  content_type?: string;
-  role?: string;
-  turn_index?: number;
-  _eventId?: number | string;
-  timestamp?: string | number;
-  metadata?: Record<string, unknown>;
-  tool_calls?: ToolCallData[];
-  tool_call_id?: string;
-  tool_call_chunks?: Array<{ id?: string; name?: string; args?: string }>;
-  finish_reason?: string;
-  artifact_type?: string;
-  artifact_id?: string;
-  artifact?: Record<string, unknown>;
-  payload?: Record<string, unknown>;
-  thread_id?: string;
-  messages?: Record<string, unknown>[];
-  interrupt_id?: string;
-  action_requests?: ActionRequest[];
-  status?: string;
-  signal?: string;
-  action?: string;
-  error?: string;
-  message?: string;
-  input_tokens?: number;
-  output_tokens?: number;
-  total_tokens?: number;
-  threshold?: number;
-  original_message_count?: number;
-  offloaded_args?: number;
-  offloaded_reads?: number;
-  kind?: string;
-  position?: number;
-  active_tasks?: string[];
-  can_reconnect?: boolean;
-  is_shared?: boolean;
-  run_id?: string;
-  [key: string]: unknown;
-}
-
-/**
- * Transient model-resilience status surfaced as a pill above the chat input
- * during streaming: the provider is retrying the current model, or has fallen
- * back to a secondary. Cleared on the first content/tool event, on error, on
- * stream end, and on stop.
- */
-export type ModelStatus =
-  | { kind: 'retrying'; model: string; attempt: number; maxRetries: number }
-  | { kind: 'fallback'; fromModel: string; toModel: string };
-
-/**
- * Suggestion surfaced as a pill above the chat input after a turn was
- * answered by a fallback model: the user-configured `fromModel` had trouble;
- * offer switching to `toModel`, the model that actually answered.
- */
-export interface FallbackSuggestion {
-  fromModel: string;
-  toModel: string;
-}
-
-/**
- * Build the transcript notification segment for a model_fallback event.
- * Shared by the live-stream and history-replay branches. The expandable
- * detail carries the failed model's error + HTTP status / attempt count;
- * `suggestedModel` lets the renderer offer switching to the model that
- * actually answered.
- */
-function buildModelFallbackSegment(
-  event: Record<string, unknown>,
-  t: (key: string, opts?: Record<string, unknown>) => string,
-  order: number,
-): NotificationSegment {
-  const fromModel = (event.from_model as string) || '';
-  const toModel = (event.to_model as string) || '';
-  const errText = typeof event.error === 'string' ? event.error.trim() : '';
-  const statusCode = typeof event.status_code === 'number' ? event.status_code : null;
-  const attempts = typeof event.attempts_on_from === 'number' ? event.attempts_on_from : null;
-  const metaBits: string[] = [];
-  if (statusCode != null) metaBits.push(`HTTP ${statusCode}`);
-  if (attempts != null && attempts > 0) metaBits.push(t('chat.modelFallbackAttempts', { count: attempts }));
-  const detail = [metaBits.join(' · '), errText].filter(Boolean).join('\n') || undefined;
-  const segment: NotificationSegment = {
-    type: 'notification',
-    content: t('chat.modelFallbackNotification', { from: fromModel, to: toModel }),
-    order,
-  };
-  if (detail) {
-    segment.detail = detail;
-    segment.detailKind = 'error';
-  }
-  return segment;
-}
-
-/**
- * Append a notification segment unless one with the same order already exists.
- * Redelivery guard: a reconnect or replay that re-sends a persisted event
- * (same _eventId-derived order) must not create a duplicate divider.
- */
-function appendNotificationSegmentOnce(
-  aMsg: AssistantMessage,
-  segment: NotificationSegment,
-): AssistantMessage {
-  const existing = aMsg.contentSegments || [];
-  if (existing.some((s) => s.type === 'notification' && s.order === segment.order)) {
-    return aMsg;
-  }
-  return { ...aMsg, contentSegments: [...existing, segment] };
-}
-
-/** Model options for send/edit/regenerate. */
-interface ModelOptions {
-  model?: string | null;
-  reasoningEffort?: string | null;
-  fastMode?: boolean | null;
-  /**
-   * Widget context snapshots attached to this send. Stored on the
-   * UserMessage so the chat history can render them as inline chip cards
-   * below the user bubble (like attachments).
-   */
-  widgetSnapshots?: import('@/pages/Dashboard/widgets/framework/contextSnapshot').WidgetContextSnapshot[];
-  /**
-   * Chart selections attached to this send. Stored on the UserMessage so the
-   * chat renders read-only pills below the user bubble (like widgetSnapshots).
-   */
-  chartSelections?: import('@/pages/MarketView/stores/chartSelectionStore').ChartSelectionSnapshot[];
-}
-
-/** Offload batch ref state. */
-interface OffloadBatch {
-  args: number;
-  reads: number;
-  timer: ReturnType<typeof setTimeout> | null;
-  msgId?: string | null;
-}
-
-/** Callbacks for handleContextWindowEvent. */
-interface ContextWindowCallbacks {
-  getMsgId: () => string | null;
-  nextOrder: () => number;
-  setMessages: SetMessages;
-  setTokenUsage: React.Dispatch<React.SetStateAction<TokenUsage | null>>;
-  setIsCompacting: ((v: string | false) => void) | null;
-  insertNotification: (text: string, variant?: 'info' | 'success' | 'warning', detail?: string) => void;
-  t: (key: string, opts?: Record<string, unknown>) => string;
-  offloadBatch: React.MutableRefObject<OffloadBatch>;
-}
-
-/** Subagent history entry stored in subagentHistoryRef. */
-interface SubagentHistoryEntry {
-  taskId: string;
-  description: string;
-  prompt: string;
-  type: string;
-  messages: Record<string, unknown>[];
-  status: string;
-  toolCalls: number;
-  tokenUsage: SubagentTokenUsage;
-  currentTool: string;
-}
-
-/** Per-task ref state used by stream handlers.
- *  messages is Record<string, unknown>[] to match the handler module's MessageRecord type. */
-interface TaskRefs {
-  contentOrderCounterRef: { current: number };
-  currentReasoningIdRef: { current: string | null };
-  currentToolCallIdRef: { current: string | null };
-  messages: Record<string, unknown>[];
-  runIndex: number;
-}
-
-/** History interrupt info stored during replay. */
-interface HistoryInterruptInfo {
-  type: string;
-  assistantMessageId: string;
-  planApprovalId?: string;
-  questionId?: string;
-  proposalId?: string;
-  interruptId?: string;
-  answer?: string | null;
-}
-
-/** Subagent history data accumulated during replay. */
-interface SubagentHistoryData {
-  messages: Record<string, unknown>[];
-  events: SSEEvent[];
-  description?: string;
-  prompt?: string;
-  type?: string;
-  resumePoints: Array<{ description: string; turnIndex?: number }>;
-}
-
-/** Refs passed to createStreamEventProcessor and its processEvent closure. */
-interface StreamProcessorRefs {
-  contentOrderCounterRef: { current: number };
-  currentReasoningIdRef: { current: string | null };
-  currentToolCallIdRef: { current: string | null };
-  steeringAtOrderRef?: { current: number | null };
-  updateTodoListCard?: ((data: Record<string, unknown>, isNew: boolean) => void) | undefined;
-  isNewConversation?: boolean;
-  subagentStateRefs?: Record<string, TaskRefs>;
-  updateSubagentCard?: ((agentId: string, data: Record<string, unknown>) => void);
-  isReconnect?: boolean;
-  unresolvedHistoryInterruptRef?: React.MutableRefObject<HistoryInterruptInfo[]>;
-  [key: string]: unknown;
-}
-
-/** Pair state tracked per turn_index during history replay. */
-interface PairState {
-  contentOrderCounter: number;
-  reasoningId: string | null;
-  toolCallId: string | null;
-}
-
-
-/**
- * Checks if a tool result indicates an onboarding-related success.
- * Onboarding tools: update_user_data for risk_preference, watchlist_item, portfolio_holding.
- * @param {string|object} resultContent - Raw result content (JSON string or parsed object)
- * @returns {boolean}
- */
-function isOnboardingRelatedToolSuccess(resultContent: unknown): boolean {
-  if (resultContent == null) return false;
-  let parsed;
-  if (typeof resultContent === 'string') {
-    try {
-      parsed = JSON.parse(resultContent);
-    } catch {
-      return false;
-    }
-  } else if (typeof resultContent === 'object') {
-    parsed = resultContent;
-  } else {
-    return false;
-  }
-  if (!parsed || parsed.success !== true) return false;
-  return !!(parsed.risk_preference || parsed.watchlist_item || parsed.portfolio_holding);
-}
-
-/**
- * Shared handler for context_window SSE events (token_usage, summarize, offload).
- * Used by both history replay and live stream to avoid duplication.
- *
- * @param {Object} event - The context_window event
- * @param {Object} callbacks
- * @param {Function} callbacks.getMsgId - Returns current assistant message ID (or null)
- * @param {Function} callbacks.nextOrder - Returns next content order counter value
- * @param {Function} callbacks.setMessages - React state setter for messages
- * @param {Function} callbacks.setTokenUsage - React state setter for token usage
- * @param {Function|null} callbacks.setIsCompacting - React state setter (null for history)
- * @param {Function} callbacks.insertNotification - Fallback: inserts standalone notification message
- * @param {Function} callbacks.t - i18n translation function
- * @param {React.MutableRefObject} callbacks.offloadBatch - Mutable ref for batching offload events
- */
-function handleContextWindowEvent(event: SSEEvent, { getMsgId, nextOrder, setMessages, setTokenUsage, setIsCompacting, insertNotification, t, offloadBatch }: ContextWindowCallbacks): void {
-  const action = event.action;
-
-  if (action === 'token_usage') {
-    const callInput = event.input_tokens || 0;
-    const callOutput = event.output_tokens || 0;
-    setTokenUsage((prev: TokenUsage | null) => ({
-      totalInput: (prev?.totalInput || 0) + callInput,
-      totalOutput: (prev?.totalOutput || 0) + callOutput,
-      lastOutput: callOutput,
-      total: event.total_tokens || 0,
-      threshold: event.threshold || prev?.threshold || 0,
-    }));
-    return;
-  }
-
-  if (action === 'summarize') {
-    // SSE action value "summarize" preserved as wire protocol; the UI surfaces
-    // this as context compaction.
-    if (setIsCompacting && event.signal === 'start') {
-      setIsCompacting('summarize');
-      return;
-    }
-    if (setIsCompacting) setIsCompacting(false);
-    if (event.signal === 'complete') {
-      const text = t('chat.compactedNotification', { from: event.original_message_count });
-      const detail = (event.summary_text as string | undefined) || undefined;
-      const msgId = getMsgId();
-      if (msgId) {
-        const order = nextOrder();
-        setMessages((prev) => updateMessage(prev,msgId, (msg) => {
-          if (msg.role !== 'assistant') return msg;
-          const aMsg = msg as AssistantMessage;
-          return {
-            ...aMsg,
-            contentSegments: [...(aMsg.contentSegments || []), { type: 'notification' as const, content: text, order, detail }],
-          };
-        }));
-      } else {
-        insertNotification(text, 'info', detail);
-      }
-    }
-    return;
-  }
-
-  if (action === 'offload') {
-    if (event.signal === 'complete') {
-      const batch = offloadBatch;
-
-      // Accumulate counts
-      if (event.kind === 'reads') {
-        batch.current.reads += event.offloaded_reads || 0;
-      } else if (event.kind === 'args') {
-        batch.current.args += event.offloaded_args || 0;
-      } else {
-        // Manual /offload — combined event
-        batch.current.args += event.offloaded_args || 0;
-        batch.current.reads += event.offloaded_reads || 0;
-      }
-
-      // Capture msgId from first event in batch
-      if (batch.current.msgId === undefined) {
-        batch.current.msgId = getMsgId();
-      }
-
-      // Debounce: merge back-to-back offload events into a single notification
-      if (batch.current.timer) clearTimeout(batch.current.timer);
-      batch.current.timer = setTimeout(() => {
-        const { args, reads, msgId } = batch.current;
-        let text;
-        if (args > 0 && reads > 0) {
-          text = t('chat.offloadedNotification', { args, reads });
-        } else if (reads > 0) {
-          text = t('chat.offloadedReadsNotification', { count: reads });
-        } else if (args > 0) {
-          text = t('chat.offloadedArgsNotification', { count: args });
-        }
-
-        if (text) {
-          if (msgId) {
-            const order = nextOrder();
-            setMessages((prev) => updateMessage(prev,msgId, (msg) => {
-              if (msg.role !== 'assistant') return msg;
-              const aMsg = msg as AssistantMessage;
-              return {
-                ...aMsg,
-                contentSegments: [...(aMsg.contentSegments || []), { type: 'notification' as const, content: text, order }],
-              };
-            }));
-          } else {
-            insertNotification(text);
-          }
-        }
-
-        // Reset batch
-        batch.current = { args: 0, reads: 0, timer: null, msgId: undefined };
-      }, 100);
-    }
-    return;
-  }
-}
-
-/**
- * Marks incomplete todos as 'stale' in todoListProcesses of assistant messages.
- * Used when the agent stream ends without completing all todos.
- * @param messages - Current messages array
- * @param targetMessageId - If provided, only finalize the specific message; otherwise finalize all
- */
-export function finalizeTodoListProcessesInMessages(
-  messages: MessageRecord[],
-  targetMessageId?: string
-): MessageRecord[] {
-  let anyChanged = false;
-  const updated = messages.map((m) => {
-    if (m.role !== 'assistant') return m;
-    if (targetMessageId && m.id !== targetMessageId) return m;
-    const am = m as AssistantMessage;
-    if (!am.todoListProcesses || Object.keys(am.todoListProcesses).length === 0) return m;
-    const entries = Object.entries(am.todoListProcesses);
-    const lastEntry = entries.reduce((a, b) => ((a[1].order || 0) >= (b[1].order || 0) ? a : b));
-    const [lastKey, lastVal] = lastEntry;
-    if (!Array.isArray(lastVal.todos)) return m;
-    const hasIncomplete = lastVal.todos.some(
-      (todo: TodoItem) => todo.status !== 'completed' && todo.status !== 'stale'
-    );
-    if (!hasIncomplete) return m;
-    anyChanged = true;
-    const finalizedTodos: TodoItem[] = lastVal.todos.map((todo: TodoItem) =>
-      todo.status === 'completed' || todo.status === 'stale'
-        ? todo
-        : { ...todo, status: 'stale' as const }
-    );
-    return {
-      ...am,
-      todoListProcesses: {
-        ...am.todoListProcesses,
-        [lastKey]: { ...lastVal, todos: finalizedTodos, in_progress: 0, pending: 0 },
-      },
-    };
-  });
-  return anyChanged ? updated : messages;
-}
-
-/**
- * Map a task artifact event's tool_call_id to its agentId and drain the pending queue.
- *
- * When multiple Task tool calls are in a single tool_calls event, the pending queue
- * holds their IDs in array order. Because LangGraph processes tool calls in parallel,
- * artifact events may arrive in a different order. This function uses a direct mapping
- * (by value) when tool_call_id is available, falling back to FIFO for legacy events.
- *
- * @returns Updated pending queue after draining.
- */
-export function mapToolCallIdToAgentId(
-  eventToolCallId: string | undefined,
-  agentId: string,
-  action: string,
-  pendingToolCallIds: string[],
-  toolCallIdMap: Map<string, string>,
-): string[] {
-  if (eventToolCallId) {
-    toolCallIdMap.set(eventToolCallId, agentId);
-  }
-  if (action !== 'init') {
-    return pendingToolCallIds;
-  }
-  if (pendingToolCallIds.length === 0) {
-    return pendingToolCallIds;
-  }
-  if (eventToolCallId) {
-    // Direct mapping — remove by value (not FIFO) since parallel tool calls
-    // may complete in different order than the tool_calls array.
-    return pendingToolCallIds.filter(id => id !== eventToolCallId);
-  }
-  // Legacy fallback: FIFO drain for events without tool_call_id.
-  const [firstId, ...rest] = pendingToolCallIds;
-  if (!toolCallIdMap.has(firstId)) {
-    toolCallIdMap.set(firstId, agentId);
-  }
-  return rest;
-}
 
 export function useChatMessages(
   workspaceId: string,
   initialThreadId: string | null = null,
   updateTodoListCard: ((todoData: Record<string, unknown>, isNew?: boolean) => void) | null = null,
   updateSubagentCard: ((agentId: string, data: Record<string, unknown>) => void) | null = null,
-  inactivateAllSubagents: (() => void) | null = null,
   finalizePendingTodos: (() => void) | null = null,
   onOnboardingRelatedToolComplete: (() => void) | null = null,
   onFileArtifact: ((event: SSEEvent) => void) | null = null,
@@ -750,7 +222,6 @@ export function useChatMessages(
 
   // Refs for history loading state
   const historyLoadingRef = useRef(false);
-  const historyMessagesRef = useRef(new Set<string>()); // Track message IDs from history
   const newMessagesStartIndexRef = useRef(0); // Index where new messages start
   // Guards against the load-history effect doing a redundant replay when
   // (workspaceId, threadId, reloadTrigger) re-resolve to a tuple this hook
@@ -776,21 +247,15 @@ export function useChatMessages(
   // Track if streaming is in progress to prevent history loading during streaming
   const isStreamingRef = useRef(false);
 
-  // (isStreamingRef, streamingThreadIdRef) are one invariant: a reconnect stream
-  // is owned by exactly one thread, or none. Mutate them only through these so
-  // the flag and the owner can never drift out of sync (the supersede logic and
-  // the thread-load guard both depend on them agreeing).
-  const acquireStreamOwnership = (tid: string | null) => {
-    isStreamingRef.current = true;
-    streamingThreadIdRef.current = tid;
-  };
-  const releaseStreamOwnership = () => {
-    isStreamingRef.current = false;
-    streamingThreadIdRef.current = null;
-  };
+  const acquireStreamOwnership = (tid: string | null) => acquireOwnership(runtime, tid);
+  // A mux resync that arrived mid-stream waits here: bumping the reload
+  // trigger while streaming would run the load effect's cleanup (detaching
+  // the mux) and then bail on the streaming guard — losing the reload.
+  const pendingMuxResyncRef = useRef(false);
 
-  // Feedback state: { [turnIndex]: { rating, ... } }
-  const feedbackMapRef = useRef<Record<number, { rating: string | null; [key: string]: unknown }>>({});
+  const releaseStreamOwnership = () => releaseOwnership(runtime);
+
+  const { handleThumbUp, handleThumbDown, getFeedbackForMessage, loadFeedback } = useChatFeedback(threadId, messages);
 
   // Track if history replay found an unresolved interrupt (skip reconnection in that case)
   const historyHasUnresolvedInterruptRef = useRef(false);
@@ -837,6 +302,10 @@ export function useChatMessages(
   // over-triggers one corrective reload, while over-counting would suppress a
   // genuinely-needed one.
   const lastRenderedTurnIndexRef = useRef<number | null>(null);
+  // Terminal-run ids the latest history replay rendered; consumed by the
+  // load flow's markRunsRendered call so the report-back catch-up can't
+  // re-attach an already-on-screen turn as a duplicate bubble.
+  const replayedRunIdsRef = useRef<string[]>([]);
   // Ref-based thread ID for use inside closures (avoids stale React state in callbacks)
   const threadIdRef = useRef(threadId);
 
@@ -847,7 +316,7 @@ export function useChatMessages(
   // watch.onStreamEnd). The ref starts as a no-op and is assigned the real reader
   // right after its definition — before any async watch callback can fire.
   const reconnectToStreamRef = useRef<
-    (opts?: { activeTasks?: string[]; runId?: string | null; resetCursor?: boolean; idleAbortMs?: number }) => Promise<void>
+    (opts?: { activeTasks?: string[]; runId?: string | null; resetCursor?: boolean; idleAbortMs?: number; snapshotAtMs?: number }) => Promise<void>
   >(async () => {});
   // Counter to re-trigger loadAndMaybeReconnect (failed reconnection, or a
   // stale-run reactivation of a cached view). Declared before the watch so
@@ -885,6 +354,12 @@ export function useChatMessages(
     historyLoadingRef,
     reconnectToStream: (opts) => reconnectToStreamRef.current(opts),
     requestHistoryReload: () => setReloadTrigger((n) => n + 1),
+    // Producer-undecided grace: while subagent run channels are open on the
+    // thread mux, an idle /status read must not tear the watch down (tail
+    // report-backs only become pending once their subagent completes).
+    // Deferred call — the helper is declared below and initialized before
+    // any watch event can fire.
+    hasOpenProducers: () => muxOpenTaskIds().size > 0,
   });
   // `arm` is identity-stable (facade over a latest-impl ref), so callbacks that
   // dispatch through it can dep on it without churning per render — the whole
@@ -906,15 +381,32 @@ export function useChatMessages(
 
   // Recently sent messages tracker
   const recentlySentTrackerRef = useRef(createRecentlySentTracker());
+  // v4 idempotent delivery: one request_key per logical send, reused across
+  // retransmits of the same send until response headers prove acceptance.
+  const requestKeyRef = useRef(createRequestKeyTracker());
 
   // Map tool call IDs (from main agent's task tool calls) to agent_ids for routing subagent events
   const toolCallIdToTaskIdMapRef = useRef(new Map<string, string>()); // Map<toolCallId, agentId>
 
-  // Per-task SSE connections: taskId → AbortController
-  const subagentStreamsRef = useRef(new Map<string, AbortController>());
+  // The CURRENT stream processor for subagent frames off the thread mux.
+  // Send, reconnect and HITL resume each install theirs at attach time, so
+  // task frames always route through live refs instead of a stale closure.
+  const subagentProcessEventRef = useRef<((event: SSEEvent) => void) | null>(null);
 
-  // Track completed task IDs to prevent reactivation by stale artifact events
-  const completedTaskIdsRef = useRef(new Set<string>());
+  // Open subagent run channels, from mux truth (empty when no mux exists).
+  const muxOpenTaskIds = (): Set<string> => {
+    const tid = threadIdRef.current;
+    const mux = tid ? peekThreadMux(tid) : null;
+    return mux ? mux.openTaskIds() : new Set<string>();
+  };
+
+  // Terminal outcomes the client has observed live (per-task chan_close), keyed by
+  // short task id. Authoritative and monotonic: once a task settles here, no stale
+  // liveness signal (a reconnect pre-seed off an older /status snapshot, a duplicate
+  // spawn artifact, a stale-history refresh) may revert its card to active. Lives
+  // with the subagent-card projection — cleared only alongside clearSubagentCards()
+  // on a full history-backed reset; a genuine resume deletes just that task's entry.
+  const terminalTaskOutcomesRef = useRef(new Map<string, 'completed' | 'cancelled' | 'error'>());
 
   // Track subagent history loaded from replay so it can be shown lazily
   // Keyed by agent_id. Structure: { [agentId]: { taskId, description, type, messages, status, ... } }
@@ -923,6 +415,33 @@ export function useChatMessages(
   // Persistent subagent state refs — survives across turns so resumed subagents
   // retain messages from previous runs. Keyed by taskId (e.g., "task:k7Xm2p").
   const subagentStateRefsRef = useRef<Record<string, TaskRefs>>({});
+
+  /**
+   * Handler-refs bag shared by every stream entry point. One construction
+   * site so a new ref reaches all streams at once; reconnect paths get the
+   * isReconnect-stamping card updater, and only the main reconnect path
+   * carries unresolvedHistoryInterruptRef (withUnresolvedInterrupt).
+   */
+  const buildStreamRefs = (o: {
+    isNewConversation?: boolean;
+    isReconnect?: boolean;
+    withUnresolvedInterrupt?: boolean;
+  } = {}) => ({
+    contentOrderCounterRef,
+    currentReasoningIdRef,
+    currentToolCallIdRef,
+    steeringAtOrderRef,
+    updateTodoListCard: updateTodoListCard || undefined,
+    isNewConversation: o.isNewConversation ?? false,
+    subagentStateRefs: subagentStateRefsRef.current,
+    updateSubagentCard: !updateSubagentCard
+      ? (() => {})
+      : o.isReconnect
+        ? (agentId: string, data: Record<string, unknown>) => updateSubagentCard(agentId, { ...data, isReconnect: true })
+        : updateSubagentCard,
+    ...(o.isReconnect ? { isReconnect: true } : {}),
+    ...(o.withUnresolvedInterrupt ? { unresolvedHistoryInterruptRef } : {}),
+  });
 
   // Per-task running total of token usage. Backend emits per-call deltas via
   // `context_window/token_usage` events; we sum here. The ref is the source
@@ -934,6 +453,79 @@ export function useChatMessages(
 
   // During history load: queue task tool call IDs until the matching artifact 'spawned' event drains them
   const historyPendingTaskToolCallIdsRef = useRef<string[]>([]);
+
+  /**
+   * Composition-root runtime: the one per-render literal every carved
+   * session/ lane consumes through its narrow port (freshness contract in
+   * session/runtime.ts). Deliberately NOT memoized — render-current fields
+   * (workspaceId, t, card updaters) must stay fresh.
+   */
+  const runtime: ChatSessionRuntime = {
+    // render-current
+    workspaceId,
+    threadId,
+    messages,
+    t,
+    updateSubagentCard,
+    updateTodoListCard,
+    onWorkspaceCreated,
+    streamingThreadIdRef,
+    mainStreamAbortRef,
+    isReconnectingOwnerRef,
+    wasStoppedRef,
+    backgroundReconnectRef,
+    setIsReconnecting,
+    onFileArtifact,
+    onPreviewUrl,
+    onOnboardingRelatedToolComplete,
+    // setters (stable)
+    setMessages,
+    setIsLoading,
+    setIsLoadingHistory,
+    setIsCompacting,
+    setMessageError,
+    setFallbackSuggestion,
+    setThreadModels,
+    setLastThreadModel,
+    setTokenUsage,
+    setReloadTrigger,
+    setHasActiveSubagents,
+    setPendingInterrupt,
+    setReturnedSteering,
+    setThreadId,
+    setWorkspaceStarting,
+    // ref containers (stable identity, ref-current reads)
+    threadIdRef,
+    isStreamingRef,
+    contentOrderCounterRef,
+    currentReasoningIdRef,
+    currentToolCallIdRef,
+    currentMessageRef,
+    currentRunIdRef,
+    currentPlanModeRef,
+    steeringAtOrderRef,
+    lastEventIdRef,
+    pendingInterruptIdsRef,
+    renderedInterruptIdsRef,
+    pendingPTCBackfillRef,
+    historyLoadingRef,
+    historyLoadedKeyRef,
+    historyHasUnresolvedInterruptRef,
+    unresolvedHistoryInterruptRef,
+    lastRenderedTurnIndexRef,
+    newMessagesStartIndexRef,
+    historyPendingTaskToolCallIdsRef,
+    recentlySentTrackerRef,
+    offloadBatchRef,
+    replayedRunIdsRef,
+    subagentStateRefsRef,
+    subagentHistoryRef,
+    subagentProcessEventRef,
+    subagentTokenUsageRef,
+    terminalTaskOutcomesRef,
+    toolCallIdToTaskIdMapRef,
+    pendingMuxResyncRef,
+  };
 
   // Keep threadIdRef in sync with state (for use inside closures)
   useEffect(() => {
@@ -1037,7 +629,6 @@ export function useChatMessages(
         steeringAtOrderRef.current = null;
         historyLoadingRef.current = false;
         historyLoadedKeyRef.current = null;
-        historyMessagesRef.current.clear();
         newMessagesStartIndexRef.current = 0;
         recentlySentTrackerRef.current.clear();
         turnCheckpointsRef.current = null;
@@ -1054,1816 +645,49 @@ export function useChatMessages(
    * Loads conversation history for the current workspace and thread
    * Uses the threadId from state (which should be a valid thread ID, not '__default__')
    */
-  const loadConversationHistory = async (): Promise<boolean> => {
-    if (!workspaceId || !threadId || threadId === '__default__' || historyLoadingRef.current) {
-      return false;
-    }
-
-    try {
-      historyLoadingRef.current = true;
-      historyHasUnresolvedInterruptRef.current = false;
-      setIsLoadingHistory(true);
-      setMessageError(null);
-
-      // Reset history-tracking state so a re-replay (e.g. after a failed
-      // reconnect → setReloadTrigger increment) starts from a clean slate.
-      // Without this, the bubble-creation handlers in historyEventHandlers
-      // would re-insert bubbles atop the prior load's bubbles. With the
-      // newly deterministic bubble ids (`history-{role}-{pairIndex}`), the
-      // duplicate insert would also trip React's same-key warnings.
-      // ``isHistory: true`` only marks bubbles produced by this loader, so
-      // any in-flight streaming bubble survives the filter.
-      historyMessagesRef.current.clear();
-      newMessagesStartIndexRef.current = 0;
-      // A re-replay rebuilds every history bubble from persisted events, so the
-      // rendered-interrupt set must start empty and be repopulated by this pass;
-      // otherwise stale ids would suppress cards this replay legitimately renders.
-      renderedInterruptIdsRef.current.clear();
-      setMessages((prev) => prev.filter((m) => !m.isHistory));
-
-      // Fresh attach (refresh or thread switch): clear the live-stream cursor so
-      // the subsequent reconnect replays the run's stream from the start. We
-      // hold no live events yet, and the replay id-space must not leak into the
-      // live reconnect (see the note in the replay handler below). The
-      // mid-stream disconnect-retry path does NOT call this loader, so its
-      // resume cursor is preserved.
-      lastEventIdRef.current = null;
-
-      const threadIdToUse = threadId;
-
-      // Track pairs being processed - use Map to handle multiple pairs
-      const assistantMessagesByPair = new Map<number, string>(); // Map<turn_index, assistantMessageId>
-      const pairStateByPair = new Map<number, PairState>(); // Map<turn_index, { contentOrderCounter, reasoningId, toolCallId }>
-
-      // Track the currently active pair for artifacts (which don't have turn_index)
-      // This ensures artifacts get the correct chronological order
-      let currentActivePairIndex: number | null = null;
-      let currentActivePairState: PairState | null | undefined = null;
-
-      // Highest turn_index this replay delivered (every persisted turn emits at
-      // least its user_message with turn_index). Assigned — not maxed — into
-      // lastRenderedTurnIndexRef after the replay, so a post-fork re-replay can
-      // lower the watermark. -1 = replay delivered zero turns.
-      let maxReplayedTurnIndex = -1;
-
-      // Track pending HITL interrupts from history to resolve status on next user_message
-      const pendingHistoryInterrupts: HistoryInterruptInfo[] = [];
-
-      // Track subagent events by task ID for this history load
-      // Map<taskId, { messages: Array, events: Array, description?: string, type?: string }>
-      const subagentHistoryByTaskId = new Map<string, SubagentHistoryData>();
-      // Track which agentIds had steering_accepted actions (for inline card "Updated" label)
-      const steeredAgentIds = new Set<string>();
-      try {
-        await replayThreadHistory(threadIdToUse, (_rawEvent) => {
-        // Cast to SSEEvent for type-safe field access within this callback
-        const event = _rawEvent as SSEEvent;
-        const eventType = event.event;
-        const contentType = event.content_type;
-        const hasRole = event.role !== undefined;
-        const hasPairIndex = event.turn_index !== undefined;
-
-        // NOTE: do NOT write `event._eventId` into `lastEventIdRef` here.
-        // Replay (`/messages/replay`) numbers events with a cumulative
-        // per-thread counter, while the live workflow stream
-        // (`workflow:stream:{tid}:{rid}`) resets its ids to 1 per run. After a
-        // refresh, carrying the replay cursor into the live reconnect overshoots
-        // the run's id space — the backend's XREAD blocks forever and the stream
-        // delivers zero events (frozen response). `lastEventIdRef` must only ever
-        // track ids received on the LIVE stream (set in the streaming
-        // `processEvent` handler); history dedup uses deterministic bubble ids.
-
-        // compaction_chunk is the side channel for LLM output from the
-        // compaction middleware (bracketed by context_window summarize
-        // start/complete events). Drop here so it never merges into the
-        // assistant message — future UI can subscribe separately to show
-        // what was summarized.
-        if (eventType === 'compaction_chunk') {
-          return;
-        }
-
-        // Check if this is a subagent event - filter it out from main chat view
-        const isSubagent = isSubagentHistoryEvent(event as Record<string, unknown>);
-
-        // Update current active pair when we see an event with turn_index
-        if (hasPairIndex) {
-          const pairIndex = event.turn_index!;
-          currentActivePairIndex = pairIndex;
-          currentActivePairState = pairStateByPair.get(pairIndex);
-          if (pairIndex > maxReplayedTurnIndex) maxReplayedTurnIndex = pairIndex;
-        }
-
-        // Handle context_window events from history (token_usage, summarize, offload)
-        // Subagent context_window events are routed through the isSubagent block below.
-        if (eventType === 'context_window' && !isSubagent) {
-          handleContextWindowEvent(event, {
-            getMsgId: () => currentActivePairIndex !== null
-              ? (assistantMessagesByPair.get(currentActivePairIndex) ?? null) : null,
-            nextOrder: () => {
-              const eventId = event._eventId;
-              if (eventId != null) return Number(eventId);
-              if (currentActivePairState) {
-                currentActivePairState.contentOrderCounter++;
-                return currentActivePairState.contentOrderCounter;
-              }
-              return 0;
-            },
-            setMessages,
-            setTokenUsage,
-            setIsCompacting: null,  // no start events in replayed history
-            insertNotification: () => {},  // standalone notifications not needed in replay
-            t,
-            offloadBatch: offloadBatchRef,
-          });
-          return;
-        }
-
-        // Persisted model_fallback replays as its transcript notification
-        // divider on the turn's assistant message (no transient pill on reload).
-        // model_retry is not persisted, so there's no replay branch for it.
-        if (eventType === 'model_fallback' && !isSubagent) {
-          // Thread-level switch suggestion — history replays chronologically,
-          // so the last turn's fallbacks win (user_message boundaries and
-          // replayed error events clear it along the way).
-          applyFallbackSuggestion(event);
-          const msgId = currentActivePairIndex !== null
-            ? (assistantMessagesByPair.get(currentActivePairIndex) ?? null) : null;
-          if (msgId) {
-            const order = event._eventId != null
-              ? Number(event._eventId)
-              : (currentActivePairState ? ++currentActivePairState.contentOrderCounter : 0);
-            const segment = buildModelFallbackSegment(event, t, order);
-            setMessages((prev) => updateMessage(prev, msgId, (msg) => {
-              if (msg.role !== 'assistant') return msg;
-              return appendNotificationSegmentOnce(msg as AssistantMessage, segment);
-            }));
-          }
-          return;
-        }
-
-        // An errored turn replays its persisted error event: the fallback
-        // model didn't save the turn, so drop any switch suggestion its
-        // model_fallback events set above. (No other replay reconstruction
-        // happens for error events today — deliberately no `return`.)
-        if (eventType === 'error' && !isSubagent) {
-          setFallbackSuggestion(null);
-        }
-
-        // Backward compat: handle old token_usage events from history
-        if (eventType === 'token_usage') {
-          const callInput = event.input_tokens || 0;
-          const callOutput = event.output_tokens || 0;
-          setTokenUsage((prev: TokenUsage | null) => ({
-            totalInput: (prev?.totalInput || 0) + callInput,
-            totalOutput: (prev?.totalOutput || 0) + callOutput,
-            lastOutput: callOutput,
-            total: event.total_tokens || 0,
-            threshold: event.threshold || prev?.threshold || 0,
-          }));
-          return;
-        }
-
-        // Handle steering_delivered events from sse_events (main agent only;
-        // subagent steering_delivered events are routed through the isSubagent block below)
-        if (eventType === 'steering_delivered' && hasPairIndex && !isSubagent) {
-          handleHistorySteeringDelivered({
-            event: event as Record<string, unknown>,
-            pairIndex: event.turn_index!,
-            assistantMessagesByPair,
-            pairStateByPair,
-            refs: { newMessagesStartIndexRef, historyMessagesRef },
-            setMessages: setMessagesForHandlers,
-          });
-          return;
-        }
-
-        // Handle provenance events from history replay. Re-attach the
-        // accessed-data record to the turn's assistant message via the replay
-        // `turn_index` envelope. Placed BEFORE the isSubagent block so
-        // subagent-emitted records (agent="task:...") still re-attach to the
-        // main turn's message on reload, mirroring the live dispatch.
-        if (eventType === 'provenance' && hasPairIndex) {
-          const pairIndex = event.turn_index!;
-          currentActivePairIndex = pairIndex;
-          currentActivePairState = pairStateByPair.get(pairIndex);
-
-          const currentAssistantMessageId = assistantMessagesByPair.get(pairIndex);
-          if (!currentAssistantMessageId) {
-            console.warn('[History] Received provenance for unknown turn_index:', pairIndex);
-            return;
-          }
-
-          handleHistoryProvenance({
-            assistantMessageId: currentAssistantMessageId,
-            event: event as unknown as import('@/types/sse').ProvenanceEvent,
-            setMessages: setMessagesForHandlers,
-          });
-          return;
-        }
-
-        // Handle subagent events - store them separately, don't process in main chat
-        if (isSubagent) {
-          // With task:{task_id} format, the agent field IS the task key
-          const taskId = event.agent;
-
-          if (taskId) {
-            // Initialize subagent history storage if needed
-            if (!subagentHistoryByTaskId.has(taskId)) {
-              subagentHistoryByTaskId.set(taskId, {
-                messages: [],
-                events: [],
-                resumePoints: [],
-              });
-            }
-
-            const subagentHistory = subagentHistoryByTaskId.get(taskId)!;
-            // Store the event for later processing
-            subagentHistory.events.push(event);
-          } else {
-            console.warn('[History] Subagent event without agent field:', {
-              eventType,
-              agent: event.agent,
-            });
-          }
-
-          // Don't process subagent events in main chat view
-          return;
-        }
-
-        // Handle user_message events from history
-        // Note: event.content may be empty for HITL resume pairs (plan approval/rejection)
-        if (eventType === 'user_message' && hasPairIndex) {
-          // New-turn boundary: the switch suggestion only reflects the most
-          // recent turn, so any earlier turn's fallback suggestion is stale.
-          setFallbackSuggestion(null);
-          // Collect LLM models from query metadata (may differ across turns)
-          if (event.metadata?.llm_model) {
-            const llmModel = event.metadata.llm_model as string;
-            setThreadModels(prev => prev.includes(llmModel) ? prev : [...prev, llmModel]);
-            // History replays chronologically, so the last write wins = most recent query's model.
-            setLastThreadModel(llmModel);
-          }
-          // Resolve pending plan_approval interrupt from content (empty = approved, non-empty = rejected).
-          {
-            const idx = pendingHistoryInterrupts.findIndex((p) => p.type === 'plan_approval');
-            if (idx !== -1) {
-              const matched = pendingHistoryInterrupts[idx];
-              const hasContent = typeof event.content === 'string' && event.content.trim();
-              const resolvedStatus = hasContent ? 'rejected' : 'approved';
-              setMessages((prev) =>
-                updateMessage(prev,matched.assistantMessageId, (msg) => {
-                  if (msg.role !== 'assistant') return msg;
-                  const aMsg = msg as AssistantMessage;
-                  const approvals = aMsg.planApprovals || {};
-                  const key = matched.planApprovalId!;
-                  return {
-                    ...aMsg,
-                    planApprovals: {
-                      ...approvals,
-                      [key]: {
-                        ...(approvals[key] || {}),
-                        status: resolvedStatus,
-                      },
-                    },
-                  };
-                })
-              );
-              pendingHistoryInterrupts.splice(idx, 1);
-            }
-          }
-
-          // Resolve ask_user_question interrupts from resume query metadata (hitl_answers).
-          // Persisted immediately by persist_query_start(), keyed by interrupt_id.
-          {
-            const hitlAnswers = event.metadata?.hitl_answers as Record<string, unknown> | undefined;
-            if (hitlAnswers && pendingHistoryInterrupts.length > 0) {
-              for (const [interruptId, answerValue] of Object.entries(hitlAnswers)) {
-                const idx = pendingHistoryInterrupts.findIndex(
-                  (p) => p.type === 'ask_user_question' && p.interruptId === interruptId
-                );
-                if (idx !== -1) {
-                  const matched = pendingHistoryInterrupts[idx];
-                  const resolvedStatus = answerValue !== null ? 'answered' : 'skipped';
-                  const qKey = matched.questionId!;
-                  setMessages((prev) =>
-                    updateMessage(prev,matched.assistantMessageId, (msg) => {
-                      if (msg.role !== 'assistant') return msg;
-                      const aMsg = msg as AssistantMessage;
-                      const questions = aMsg.userQuestions || {};
-                      return {
-                        ...aMsg,
-                        userQuestions: {
-                          ...questions,
-                          [qKey]: {
-                            ...(questions[qKey] || {}),
-                            status: resolvedStatus,
-                            answer: answerValue as string | null,
-                          },
-                        },
-                      };
-                    })
-                  );
-                  pendingHistoryInterrupts.splice(idx, 1);
-                }
-              }
-            }
-          }
-
-          const pairIndex = event.turn_index!;
-          const refs = {
-            recentlySentTracker: recentlySentTrackerRef.current,
-            currentMessageRef,
-            newMessagesStartIndexRef,
-            historyMessagesRef,
-          };
-
-          handleHistoryUserMessage({
-            event: event as Record<string, unknown>,
-            pairIndex,
-            assistantMessagesByPair,
-            pairStateByPair,
-            refs,
-            messages: messages as unknown as Record<string, unknown>[],
-            setMessages: setMessagesForHandlers,
-          });
-          return;
-        }
-
-        // Handle message_chunk events (assistant messages)
-        if (eventType === 'message_chunk' && hasRole && event.role === 'assistant' && hasPairIndex) {
-          const pairIndex = event.turn_index!;
-          const currentAssistantMessageId = assistantMessagesByPair.get(pairIndex);
-          const pairState = pairStateByPair.get(pairIndex);
-
-          if (!currentAssistantMessageId || !pairState) {
-            console.warn('[History] Received message_chunk for unknown turn_index:', pairIndex);
-            return;
-          }
-
-          // Process reasoning_signal
-          if (contentType === 'reasoning_signal') {
-            const signalContent = (event.content as string) || '';
-            handleHistoryReasoningSignal({
-              assistantMessageId: currentAssistantMessageId,
-              signalContent,
-              pairIndex,
-              pairState,
-              setMessages: setMessagesForHandlers,
-              eventId: event._eventId as number | undefined,
-            });
-            return;
-          }
-
-          // Handle reasoning content
-          if (contentType === 'reasoning' && event.content) {
-            handleHistoryReasoningContent({
-              assistantMessageId: currentAssistantMessageId,
-              content: event.content as string,
-              pairState,
-              setMessages: setMessagesForHandlers,
-            });
-            return;
-          }
-
-          // Handle text content
-          if (contentType === 'text' && event.content) {
-            handleHistoryTextContent({
-              assistantMessageId: currentAssistantMessageId,
-              content: event.content as string,
-              finishReason: event.finish_reason,
-              pairState,
-              setMessages: setMessagesForHandlers,
-              eventId: event._eventId as number | undefined,
-            });
-            return;
-          }
-
-          // Handle finish_reason (end of assistant message)
-          if (event.finish_reason) {
-            setMessages((prev) =>
-              updateMessage(prev,currentAssistantMessageId, (msg) => ({
-                ...msg,
-                isStreaming: false,
-              }))
-            );
-            return;
-          }
-        }
-
-        // Filter out tool_call_chunks events
-        if (eventType === 'tool_call_chunks') {
-          return;
-        }
-
-        // Handle artifact events (e.g., todo_update)
-        // In history replay, artifacts DO have turn_index, so we can use it directly
-        //
-        // NOTE: `chart_annotation` artifacts are intentionally NOT replayed here
-        // (only the live stream applies them to the annotation store). On reload,
-        // MarketView's `useChartAnnotationSync` REST fetch is the authoritative
-        // source that repopulates the store from Postgres, and the inline card
-        // renders from the replayed `tool_call_result.artifact`. If a live chart
-        // surface is ever added to the standalone chat page, add a
-        // `chart_annotation` branch here so reloads stay consistent.
-        if (eventType === 'artifact') {
-          const artifactType = event.artifact_type;
-          if (artifactType === 'todo_update') {
-            const payload = event.payload || {};
-
-            // Update floating todo card from history (last event wins, shows final state)
-            if (updateTodoListCard) {
-              updateTodoListCard({
-                todos: Array.isArray(payload.todos) ? payload.todos : [],
-                total: payload.total || 0,
-                completed: payload.completed || 0,
-                in_progress: payload.in_progress || 0,
-                pending: payload.pending || 0,
-              });
-            }
-
-            // Artifacts in history replay have turn_index - use it!
-            if (hasPairIndex) {
-              const pairIndex = event.turn_index!;
-              // Update active pair tracking
-              currentActivePairIndex = pairIndex;
-              currentActivePairState = pairStateByPair.get(pairIndex);
-
-              const currentAssistantMessageId = assistantMessagesByPair.get(pairIndex);
-              const pairState = pairStateByPair.get(pairIndex);
-
-              if (!currentAssistantMessageId || !pairState) {
-                console.warn('[History] Received artifact for unknown turn_index:', pairIndex);
-                return;
-              }
-
-              handleHistoryTodoUpdate({
-                assistantMessageId: currentAssistantMessageId,
-                artifactType: artifactType as string,
-                artifactId: event.artifact_id as string,
-                payload,
-                pairState: pairState,
-                setMessages: setMessagesForHandlers,
-                eventId: event._eventId as number | undefined,
-              });
-            } else {
-              // Fallback: artifacts without turn_index (shouldn't happen in history, but handle gracefully)
-              console.warn('[History] Artifact without turn_index, using active pair fallback');
-              let targetAssistantMessageId = null;
-              let targetPairState = null;
-
-              if (currentActivePairIndex !== null && currentActivePairState) {
-                targetAssistantMessageId = assistantMessagesByPair.get(currentActivePairIndex);
-                targetPairState = currentActivePairState;
-              } else if (assistantMessagesByPair.size > 0) {
-                const pairIndices = Array.from(assistantMessagesByPair.keys()).sort((a, b) => b - a);
-                const lastPairIndex = pairIndices[0];
-                targetAssistantMessageId = assistantMessagesByPair.get(lastPairIndex);
-                targetPairState = pairStateByPair.get(lastPairIndex);
-              }
-
-              if (targetAssistantMessageId && targetPairState) {
-                handleHistoryTodoUpdate({
-                  assistantMessageId: targetAssistantMessageId,
-                  artifactType: artifactType as string,
-                  artifactId: event.artifact_id as string,
-                  payload,
-                  pairState: targetPairState,
-                  setMessages: setMessagesForHandlers,
-                  eventId: event._eventId as number | undefined,
-                });
-              }
-            }
-          }
-          if (artifactType === 'html_widget') {
-            const payload = (event.payload || {}) as unknown as HtmlWidgetData;
-
-            if (hasPairIndex) {
-              const pairIndex = event.turn_index!;
-              currentActivePairIndex = pairIndex;
-              currentActivePairState = pairStateByPair.get(pairIndex);
-
-              const currentAssistantMessageId = assistantMessagesByPair.get(pairIndex);
-              const pairState = pairStateByPair.get(pairIndex);
-
-              if (currentAssistantMessageId && pairState) {
-                handleHistoryHtmlWidget({
-                  assistantMessageId: currentAssistantMessageId,
-                  artifactType: artifactType as string,
-                  artifactId: event.artifact_id as string,
-                  payload: payload as HtmlWidgetData | null,
-                  pairState,
-                  setMessages: setMessagesForHandlers,
-                  eventId: event._eventId as number | undefined,
-                });
-              }
-            } else {
-              let targetAssistantMessageId = null;
-              let targetPairState = null;
-
-              if (currentActivePairIndex !== null && currentActivePairState) {
-                targetAssistantMessageId = assistantMessagesByPair.get(currentActivePairIndex);
-                targetPairState = currentActivePairState;
-              } else if (assistantMessagesByPair.size > 0) {
-                const pairIndices = Array.from(assistantMessagesByPair.keys()).sort((a, b) => b - a);
-                const lastPairIndex = pairIndices[0];
-                targetAssistantMessageId = assistantMessagesByPair.get(lastPairIndex);
-                targetPairState = pairStateByPair.get(lastPairIndex);
-              }
-
-              if (targetAssistantMessageId && targetPairState) {
-                handleHistoryHtmlWidget({
-                  assistantMessageId: targetAssistantMessageId,
-                  artifactType: artifactType as string,
-                  artifactId: event.artifact_id as string,
-                  payload: payload as HtmlWidgetData | null,
-                  pairState: targetPairState,
-                  setMessages: setMessagesForHandlers,
-                  eventId: event._eventId as number | undefined,
-                });
-              }
-            }
-          }
-          if (artifactType === 'task') {
-            const payload = event.payload || {};
-            const task_id = payload.task_id as string | undefined;
-            const rawAction = payload.action as string | undefined;
-            const description = payload.description as string | undefined;
-            const prompt = payload.prompt as string | undefined;
-            const type = payload.type as string | undefined;
-            const action = (() => { if (rawAction === 'spawned') return 'init'; if (rawAction === 'steering_accepted') return 'update'; if (rawAction === 'resumed') return 'resume'; return rawAction || 'init'; })();
-            if (task_id) {
-              const agentId = `task:${task_id}`;
-              if (!subagentHistoryByTaskId.has(agentId)) {
-                subagentHistoryByTaskId.set(agentId, {
-                  messages: [],
-                  events: [],
-                  description: description || '',
-                  prompt: prompt || description || '',
-                  type: type || 'general-purpose',
-                  resumePoints: [],
-                });
-              } else {
-                const existing = subagentHistoryByTaskId.get(agentId)!;
-                if (description && !existing.description) existing.description = description;
-                if (prompt && !existing.prompt) existing.prompt = prompt || description || '';
-                if (type && !existing.type) existing.type = type;
-              }
-              // Track resume boundaries for history replay
-              if (action === 'resume') {
-                const existing = subagentHistoryByTaskId.get(agentId);
-                if (existing) {
-                  existing.resumePoints = existing.resumePoints || [];
-                  existing.resumePoints.push({
-                    description: description || 'Resume',
-                    turnIndex: event.turn_index,
-                  });
-                }
-              }
-              // Track steering_accepted actions for inline card "Updated" label
-              if (action === 'update') {
-                steeredAgentIds.add(agentId);
-              }
-              historyPendingTaskToolCallIdsRef.current = mapToolCallIdToAgentId(
-                event.tool_call_id as string | undefined,
-                agentId,
-                action,
-                historyPendingTaskToolCallIdsRef.current,
-                toolCallIdToTaskIdMapRef.current,
-              );
-            }
-          }
-          return;
-        }
-
-        // Handle tool_calls events
-        if (eventType === 'tool_calls' && hasPairIndex) {
-          const pairIndex = event.turn_index!;
-          // Update active pair tracking
-          currentActivePairIndex = pairIndex;
-          currentActivePairState = pairStateByPair.get(pairIndex);
-
-          const currentAssistantMessageId = assistantMessagesByPair.get(pairIndex);
-          const pairState = pairStateByPair.get(pairIndex);
-
-          if (!currentAssistantMessageId || !pairState) {
-            console.warn('[History] Received tool_calls for unknown turn_index:', pairIndex);
-            return;
-          }
-
-          // Queue task tool call IDs for matching against artifact 'spawned' events
-          // Skip follow-up/resume calls (task_id present) — they target existing subagents
-          if (event.tool_calls) {
-            const taskToolCalls = event.tool_calls.filter(
-              (tc) => (tc.name === 'task' || tc.name === 'Task') && tc.id && !tc.args?.task_id
-            );
-            const toolCallIds = taskToolCalls.map((tc) => tc.id).filter(Boolean) as string[];
-            if (toolCallIds.length > 0) {
-              historyPendingTaskToolCallIdsRef.current = [
-                ...historyPendingTaskToolCallIdsRef.current,
-                ...toolCallIds,
-              ];
-            }
-          }
-
-          handleHistoryToolCalls({
-            assistantMessageId: currentAssistantMessageId,
-            toolCalls: (event.tool_calls || []) as unknown as Record<string, unknown>[],
-            pairState,
-            setMessages: setMessagesForHandlers,
-            eventId: event._eventId as number | undefined,
-          });
-          return;
-        }
-
-        // Handle tool_call_result events
-        if (eventType === 'tool_call_result' && hasPairIndex) {
-          const pairIndex = event.turn_index!;
-          // Update active pair tracking
-          currentActivePairIndex = pairIndex;
-          currentActivePairState = pairStateByPair.get(pairIndex);
-
-          const currentAssistantMessageId = assistantMessagesByPair.get(pairIndex);
-          const pairState = pairStateByPair.get(pairIndex);
-
-          if (!currentAssistantMessageId || !pairState) {
-            console.warn('[History] Received tool_call_result for unknown turn_index:', pairIndex);
-            return;
-          }
-
-          // Build toolCallId → agentId mapping from Task tool artifact (preferred over order-based)
-          const artifact = event.artifact as Record<string, unknown> | undefined;
-          if (artifact?.task_id && event.tool_call_id) {
-            const agentId = `task:${artifact.task_id}`;
-            toolCallIdToTaskIdMapRef.current.set(event.tool_call_id, agentId);
-
-            // Ensure subagentHistoryByTaskId has description from artifact.
-            // Resume calls are filtered out of the tool_calls handler, so this
-            // is the only place to pick up the description for resumed tasks.
-            if (artifact.description) {
-              const existing = subagentHistoryByTaskId.get(agentId);
-              if (existing) {
-                if (!existing.description) existing.description = artifact.description as string;
-                if (!existing.prompt) existing.prompt = (artifact.prompt || artifact.description || '') as string;
-              } else {
-                subagentHistoryByTaskId.set(agentId, {
-                  messages: [],
-                  events: [],
-                  description: artifact.description as string,
-                  prompt: (artifact.prompt || artifact.description || '') as string,
-                  type: (artifact.type || 'general-purpose') as string,
-                  resumePoints: [],
-                });
-              }
-            }
-          }
-
-          handleHistoryToolCallResult({
-            assistantMessageId: currentAssistantMessageId,
-            toolCallId: event.tool_call_id as string,
-            result: {
-              content: event.content,
-              content_type: event.content_type,
-              tool_call_id: event.tool_call_id,
-              artifact: event.artifact,
-            },
-            pairState,
-            setMessages: setMessagesForHandlers,
-          });
-
-          // Resolve pending ask_user_question interrupt from tool_call_result
-          // (fallback for conversations where hitl_answers wasn't persisted)
-          {
-            const idx = pendingHistoryInterrupts.findIndex((p) => p.type === 'ask_user_question');
-            if (idx !== -1 && typeof event.content === 'string' &&
-                (event.content.startsWith('User answered:') || event.content.startsWith('User skipped'))) {
-              const matched = pendingHistoryInterrupts[idx];
-              const content = event.content;
-              const isAnswered = content.startsWith('User answered:');
-              const answerText = isAnswered ? content.replace('User answered: ', '') : null;
-              const qKey = matched.questionId!;
-              setMessages((prev) =>
-                updateMessage(prev, matched.assistantMessageId, (msg) => {
-                  if (msg.role !== 'assistant') return msg;
-                  const aMsg = msg as AssistantMessage;
-                  const questions = aMsg.userQuestions || {};
-                  return {
-                    ...aMsg,
-                    userQuestions: {
-                      ...questions,
-                      [qKey]: {
-                        ...(questions[qKey] || {}),
-                        status: isAnswered ? 'answered' : 'skipped',
-                        answer: answerText,
-                      },
-                    },
-                  };
-                })
-              );
-              pendingHistoryInterrupts.splice(idx, 1);
-            }
-          }
-
-          // Resolve pending create_workspace, start_question, ptc_agent, or secretary action interrupt from tool_call_result
-          {
-            const idx = pendingHistoryInterrupts.findIndex((p) => PROPOSAL_INTERRUPT_TYPES.has(p.type));
-            if (idx !== -1 && typeof event.content === 'string') {
-              const matched = pendingHistoryInterrupts[idx];
-              const content = event.content;
-              const dataKey = PROPOSAL_DATA_KEY_MAP[matched.type] || 'questionProposals';
-
-              let resolvedStatus = 'approved';
-              let resultPayload: Record<string, unknown> | null = null;
-              if (content.startsWith('User declined')) {
-                resolvedStatus = 'rejected';
-              } else {
-                try {
-                  const parsed = JSON.parse(content);
-                  if (parsed?.success === false) resolvedStatus = 'rejected';
-                  resultPayload = parsed;
-                } catch { /* non-JSON → treat as approved */ }
-              }
-
-              const pKey = matched.proposalId!;
-              // Extract thread_id/workspace_id from ptc_agent result for navigation
-              const extraFields: Record<string, unknown> = {};
-              if (matched.type === 'ptc_agent' && resultPayload) {
-                if (resultPayload.thread_id) extraFields.thread_id = resultPayload.thread_id;
-                if (resultPayload.workspace_id) extraFields.workspace_id = resultPayload.workspace_id;
-              }
-              setMessages((prev) =>
-                updateMessage(prev,matched.assistantMessageId, (msg) => {
-                  if (msg.role !== 'assistant') return msg;
-                  const aMsg = msg as AssistantMessage;
-                  const existing = ((aMsg as unknown as Record<string, unknown>)[dataKey] || {}) as Record<string, Record<string, unknown>>;
-                  return {
-                    ...aMsg,
-                    [dataKey]: {
-                      ...existing,
-                      [pKey]: {
-                        ...(existing[pKey] || {}),
-                        status: resolvedStatus,
-                        ...extraFields,
-                      },
-                    },
-                  };
-                })
-              );
-              pendingHistoryInterrupts.splice(idx, 1);
-            }
-          }
-
-          return;
-        }
-
-        // Handle interrupt events during history replay
-        if (eventType === 'interrupt') {
-          // Skip a re-raised interrupt: LangGraph re-emits an unanswered
-          // interrupt with the same interrupt_id on every resume, landing on a
-          // later turn's bubble. The first occurrence owns the card (and its
-          // pendingHistoryInterrupts entry, which answer-replay resolves by id);
-          // re-emissions would append a duplicate card and a phantom pending
-          // entry, so drop them wholesale.
-          if (event.interrupt_id && renderedInterruptIdsRef.current.has(event.interrupt_id)) return;
-          const pairIndex = event.turn_index ?? currentActivePairIndex;
-          const interruptAssistantId = pairIndex != null ? assistantMessagesByPair.get(pairIndex) : null;
-          const pairState = pairIndex != null ? pairStateByPair.get(pairIndex) : null;
-
-          if (interruptAssistantId && pairState) {
-            // Mark rendered only once a card will actually attach — a pair-less
-            // event must not poison the set and drop a later valid re-raise.
-            if (event.interrupt_id) renderedInterruptIdsRef.current.add(event.interrupt_id);
-            const actionRequests = event.action_requests || [];
-            const actionType = actionRequests[0]?.type as string | undefined;
-
-            if (actionType === 'ask_user_question') {
-              // --- User question interrupt (history) ---
-              const questionId = event.interrupt_id || `question-history-${Date.now()}`;
-              const questionData = actionRequests[0];
-              const order = event._eventId != null ? Number(event._eventId) : ++pairState.contentOrderCounter;
-
-              setMessages((prev) =>
-                updateMessage(prev,interruptAssistantId, (m) => {
-                  if (m.role !== 'assistant') return m;
-                  const msg = m as AssistantMessage;
-                  return {
-                    ...msg,
-                    contentSegments: [...(msg.contentSegments || []), { type: 'user_question' as const, questionId, order }],
-                    userQuestions: {
-                      ...(msg.userQuestions || {}),
-                      [questionId]: {
-                        question: questionData.question,
-                        options: questionData.options || [],
-                        allow_multiple: questionData.allow_multiple || false,
-                        interruptId: event.interrupt_id,
-                        status: 'pending',
-                        answer: null,
-                      },
-                    },
-                  };
-                })
-              );
-
-              pendingHistoryInterrupts.push({
-                type: 'ask_user_question',
-                assistantMessageId: interruptAssistantId,
-                questionId,
-                interruptId: event.interrupt_id,
-                answer: null,
-              });
-            } else if (actionType === 'create_workspace') {
-              // --- Create workspace interrupt (history) ---
-              const proposalId = event.interrupt_id || `workspace-history-${Date.now()}`;
-              const proposalData = actionRequests[0];
-              const order = event._eventId != null ? Number(event._eventId) : ++pairState.contentOrderCounter;
-
-              setMessages((prev) =>
-                updateMessage(prev,interruptAssistantId, (m) => {
-                  if (m.role !== 'assistant') return m;
-                  const msg = m as AssistantMessage;
-                  return {
-                    ...msg,
-                    contentSegments: [...(msg.contentSegments || []), { type: 'create_workspace' as const, proposalId, order }],
-                    workspaceProposals: {
-                      ...(msg.workspaceProposals || {}),
-                      [proposalId]: {
-                        workspace_name: proposalData.workspace_name,
-                        workspace_description: proposalData.workspace_description,
-                        interruptId: event.interrupt_id,
-                        status: 'pending',
-                      },
-                    },
-                  };
-                })
-              );
-
-              pendingHistoryInterrupts.push({
-                type: 'create_workspace',
-                assistantMessageId: interruptAssistantId,
-                proposalId,
-                interruptId: event.interrupt_id,
-              });
-            } else if (actionType === 'start_question') {
-              // --- Start question interrupt (history) ---
-              const proposalId = event.interrupt_id || `question-start-history-${Date.now()}`;
-              const proposalData = actionRequests[0];
-              const order = event._eventId != null ? Number(event._eventId) : ++pairState.contentOrderCounter;
-
-              setMessages((prev) =>
-                updateMessage(prev,interruptAssistantId, (m) => {
-                  if (m.role !== 'assistant') return m;
-                  const msg = m as AssistantMessage;
-                  return {
-                    ...msg,
-                    contentSegments: [...(msg.contentSegments || []), { type: 'start_question' as const, proposalId, order }],
-                    questionProposals: {
-                      ...(msg.questionProposals || {}),
-                      [proposalId]: {
-                        workspace_id: proposalData.workspace_id,
-                        question: proposalData.question,
-                        interruptId: event.interrupt_id,
-                        status: 'pending',
-                      },
-                    },
-                  };
-                })
-              );
-
-              pendingHistoryInterrupts.push({
-                type: 'start_question',
-                assistantMessageId: interruptAssistantId,
-                proposalId,
-                interruptId: event.interrupt_id,
-              });
-            } else if (actionType === 'ptc_agent') {
-              // --- PTC agent interrupt (history) ---
-              const proposalId = event.interrupt_id || `ptc-agent-history-${Date.now()}`;
-              const proposalData = actionRequests[0];
-              const order = event._eventId != null ? Number(event._eventId) : ++pairState.contentOrderCounter;
-
-              setMessages((prev) =>
-                updateMessage(prev,interruptAssistantId, (m) => {
-                  if (m.role !== 'assistant') return m;
-                  const msg = m as AssistantMessage;
-                  return {
-                    ...msg,
-                    contentSegments: [...(msg.contentSegments || []), { type: 'ptc_agent' as const, proposalId, order }],
-                    ptcAgentProposals: {
-                      ...(msg.ptcAgentProposals || {}),
-                      [proposalId]: {
-                        workspace_id: proposalData.workspace_id,
-                        workspace_name: proposalData.workspace_name,
-                        question: proposalData.question,
-                        report_back: proposalData.report_back ?? true,
-                        interruptId: event.interrupt_id,
-                        tool_call_id: proposalData.tool_call_id,
-                        status: 'pending',
-                      },
-                    },
-                  };
-                })
-              );
-
-              pendingHistoryInterrupts.push({
-                type: 'ptc_agent',
-                assistantMessageId: interruptAssistantId,
-                proposalId,
-                interruptId: event.interrupt_id,
-              });
-            } else if (actionType === 'delete_workspace' || actionType === 'stop_workspace' || actionType === 'delete_thread') {
-              // --- Secretary action interrupt (history) ---
-              const proposalId = event.interrupt_id || `secretary-${actionType}-history-${Date.now()}`;
-              const proposalData = actionRequests[0];
-              const order = event._eventId != null ? Number(event._eventId) : ++pairState.contentOrderCounter;
-
-              setMessages((prev) =>
-                updateMessage(prev,interruptAssistantId, (m) => {
-                  if (m.role !== 'assistant') return m;
-                  const msg = m as AssistantMessage;
-                  return {
-                    ...msg,
-                    contentSegments: [...(msg.contentSegments || []), { type: actionType as 'delete_workspace' | 'stop_workspace' | 'delete_thread', proposalId, order }],
-                    secretaryActionProposals: {
-                      ...(msg.secretaryActionProposals || {}),
-                      [proposalId]: {
-                        actionType: actionType as 'delete_workspace' | 'stop_workspace' | 'delete_thread',
-                        workspace_id: proposalData.workspace_id,
-                        thread_id: proposalData.thread_id,
-                        interruptId: event.interrupt_id,
-                        status: 'pending',
-                      },
-                    },
-                  };
-                })
-              );
-
-              pendingHistoryInterrupts.push({
-                type: actionType,
-                assistantMessageId: interruptAssistantId,
-                proposalId,
-                interruptId: event.interrupt_id,
-              });
-            } else {
-              // --- Plan approval interrupt (existing) ---
-              const planApprovalId = event.interrupt_id || `plan-history-${Date.now()}`;
-              const description =
-                (actionRequests[0]?.description as string) ||
-                (actionRequests[0]?.args?.plan as string) ||
-                'No plan description provided.';
-              const order = event._eventId != null ? Number(event._eventId) : ++pairState.contentOrderCounter;
-
-              setMessages((prev) =>
-                updateMessage(prev,interruptAssistantId, (m) => {
-                  if (m.role !== 'assistant') return m;
-                  const msg = m as AssistantMessage;
-                  return {
-                    ...msg,
-                    contentSegments: [...(msg.contentSegments || []), { type: 'plan_approval' as const, planApprovalId, order }],
-                    planApprovals: {
-                      ...(msg.planApprovals || {}),
-                      [planApprovalId]: {
-                        description,
-                        interruptId: event.interrupt_id,
-                        status: 'pending',
-                      },
-                    },
-                  };
-                })
-              );
-
-              pendingHistoryInterrupts.push({
-                type: 'plan_approval',
-                assistantMessageId: interruptAssistantId,
-                planApprovalId,
-                interruptId: event.interrupt_id,
-              });
-            }
-          }
-          return;
-        }
-
-        // Handle replay_done event (final event)
-        if (eventType === 'replay_done') {
-          if (event.thread_id && event.thread_id !== threadId && event.thread_id !== '__default__') {
-            setThreadId(event.thread_id);
-            setStoredThreadId(workspaceId, event.thread_id);
-          }
-        } else if (eventType === 'credit_usage') {
-          // credit_usage indicates the end of one conversation pair — no-op boundary marker
-        } else if (!eventType) {
-          // Fallback: Handle events without event type
-          if (event.thread_id && !hasRole && !contentType) {
-            if (event.thread_id !== threadId && event.thread_id !== '__default__') {
-              setThreadId(event.thread_id);
-              setStoredThreadId(workspaceId, event.thread_id);
-            }
-          }
-        }
-      });
-
-        // If there's still a pending interrupt after replay (no subsequent user_message
-        // resolved it), store it in a ref. loadAndMaybeReconnect will decide whether to
-        // make it interactive (workflow paused) or reconnect to get resolution events
-        // (workflow active = interrupt was answered but resolution is in Redis buffer).
-        if (pendingHistoryInterrupts.length > 0) {
-          historyHasUnresolvedInterruptRef.current = true;
-          unresolvedHistoryInterruptRef.current = pendingHistoryInterrupts.map((p) => ({ ...p }));
-          pendingHistoryInterrupts.length = 0;
-        }
-
-        // Process stored subagent events and build their messages
-        // NOTE: During history replay we DO NOT open floating cards automatically.
-        // We only build per-task message history here; cards are created lazily
-        // when the user clicks \"Open subagent details\" in the main chat view.
-        if (subagentHistoryByTaskId.size > 0) {
-          // Process each subagent's events
-          for (const [taskId, subagentHistory] of subagentHistoryByTaskId.entries()) {
-            // Create temporary refs structure for processing
-            let currentRunIndex = 0;
-            // Per-task token-usage accumulator: backend emits per-call deltas
-            // and we sum them into a running total before storing on the
-            // SubagentHistoryEntry below.
-            let tempTokenUsage: SubagentTokenUsage = ZERO_USAGE;
-            const tempSubagentStateRefs: Record<string, TaskRefs> = {
-              [taskId]: {
-                contentOrderCounterRef: { current: 0 },
-                currentReasoningIdRef: { current: null },
-                currentToolCallIdRef: { current: null },
-                messages: [] as Record<string, unknown>[],
-                runIndex: 0,
-              },
-            };
-
-            // tempRefs matches StreamProcessorRefs; tempSubagentStateRefs is already Record<string, TaskRefs>
-            const tempRefs: StreamProcessorRefs = {
-              contentOrderCounterRef: { current: 0 },
-              currentReasoningIdRef: { current: null },
-              currentToolCallIdRef: { current: null },
-              subagentStateRefs: tempSubagentStateRefs,
-              isReconnect: true, // Suppress Date.now() timestamps so items go straight to accordion zone
-            };
-
-            // History-specific no-op updater: prevents floating cards from being
-            // created during history load while still letting handlers build
-            // the in-memory message structures in tempSubagentStateRefs.
-            const historyUpdateSubagentCard = () => {};
-
-            // Pre-compute resume boundary turn indices from stored resumePoints
-            const resumePoints = subagentHistory.resumePoints || [];
-            const resumeByTurnIndex = new Map();
-            for (const rp of resumePoints) {
-              if (rp.turnIndex != null) {
-                resumeByTurnIndex.set(rp.turnIndex, rp);
-              }
-            }
-            let lastTurnIndex = null;
-
-            // Process each event in chronological order
-            for (let i = 0; i < subagentHistory.events.length; i++) {
-              const event = subagentHistory.events[i];
-              const eventType = event.event;
-              const contentType = event.content_type;
-
-              // Side channel for compaction-middleware LLM output; drop so
-              // it does not mingle with the subagent's own messages.
-              if (eventType === 'compaction_chunk') {
-                continue;
-              }
-
-              // Detect resume boundary: turn_index transitions to a resume turn
-              const eventTurnIndex = event.turn_index;
-              if (eventTurnIndex != null && eventTurnIndex !== lastTurnIndex && resumeByTurnIndex.has(eventTurnIndex)) {
-                const resumePoint = resumeByTurnIndex.get(eventTurnIndex);
-                const taskRefsLocal = tempSubagentStateRefs[taskId];
-
-                // Finalize the previous run's last assistant message
-                for (let j = taskRefsLocal.messages.length - 1; j >= 0; j--) {
-                  const taskMsg = taskRefsLocal.messages[j];
-                  if (taskMsg.role === 'assistant' && taskMsg.isStreaming) {
-                    taskRefsLocal.messages[j] = { ...taskMsg, isStreaming: false };
-                    break;
-                  }
-                }
-
-                // Inject user message with resume instruction
-                taskRefsLocal.messages.push({
-                  id: `resume-${taskId}-${currentRunIndex + 1}`,
-                  role: 'user',
-                  content: resumePoint.description || 'Resume',
-                  contentSegments: [{ type: 'text', content: resumePoint.description || 'Resume', order: 0 }],
-                  reasoningProcesses: {},
-                  toolCallProcesses: {},
-                });
-
-                // Bump run index and reset per-run counters
-                currentRunIndex++;
-                taskRefsLocal.runIndex = currentRunIndex;
-                taskRefsLocal.contentOrderCounterRef.current = 0;
-                taskRefsLocal.currentReasoningIdRef.current = null;
-                taskRefsLocal.currentToolCallIdRef.current = null;
-              }
-              if (eventTurnIndex != null) {
-                lastTurnIndex = eventTurnIndex;
-              }
-
-              // Use per-run assistant message ID
-              const assistantMessageId = `subagent-${taskId}-assistant-${currentRunIndex}`;
-
-              if (eventType === 'message_chunk' && event.role === 'assistant') {
-                handleSubagentMessageChunk({
-                  taskId,
-                  assistantMessageId,
-                  contentType: contentType as string,
-                  content: event.content as string,
-                  finishReason: event.finish_reason,
-                  refs: tempRefs,
-                  updateSubagentCard: historyUpdateSubagentCard,
-                });
-              } else if (eventType === 'tool_calls' && event.tool_calls) {
-                handleSubagentToolCalls({
-                  taskId,
-                  assistantMessageId,
-                  toolCalls: event.tool_calls as unknown as Record<string, unknown>[],
-                  refs: tempRefs,
-                  updateSubagentCard: historyUpdateSubagentCard,
-                });
-              } else if (eventType === 'tool_call_result') {
-                handleSubagentToolCallResult({
-                  taskId,
-                  assistantMessageId,
-                  toolCallId: event.tool_call_id as string,
-                  result: {
-                    content: event.content,
-                    content_type: event.content_type,
-                    tool_call_id: event.tool_call_id,
-                    artifact: event.artifact,
-                  },
-                  refs: tempRefs,
-                  updateSubagentCard: historyUpdateSubagentCard,
-                });
-              } else if (eventType === 'subagent_followup_injected' || eventType === 'turn_start') {
-                // Legacy subagent_followup_injected had content (steering user message).
-                // turn_start was an inter-model-call boundary — no longer emitted,
-                // but old persisted data may still contain it. Just extract content.
-                if (event.content) {
-                  handleTaskSteeringAccepted({
-                    taskId,
-                    content: event.content as string,
-                    refs: tempRefs,
-                    updateSubagentCard: historyUpdateSubagentCard,
-                  });
-                  // Sync local run index — handleTaskSteeringAccepted bumps runIndex
-                  currentRunIndex = tempSubagentStateRefs[taskId].runIndex;
-                }
-              } else if (eventType === 'steering_delivered') {
-                if (event.content) {
-                  handleTaskSteeringAccepted({
-                    taskId,
-                    content: event.content as string,
-                    refs: tempRefs,
-                    updateSubagentCard: historyUpdateSubagentCard,
-                  });
-                  // Sync local run index — handleTaskSteeringAccepted bumps runIndex
-                  currentRunIndex = tempSubagentStateRefs[taskId].runIndex;
-                }
-              } else if (eventType === 'context_window') {
-                // Embed notification as content segment in the assistant message
-                const action = event.action;
-                if (action === 'token_usage') {
-                  tempTokenUsage = accumulateTokenUsage(tempTokenUsage, extractTokenUsageDelta(event));
-                } else {
-                  let text;
-                  let detail: string | undefined;
-                  if (action === 'summarize' && event.signal === 'complete') {
-                    text = t('chat.compactedNotification', { from: event.original_message_count });
-                    detail = (event.summary_text as string | undefined) || undefined;
-                  } else if (action === 'offload' && event.signal === 'complete') {
-                    const args = event.offloaded_args || 0;
-                    const reads = event.offloaded_reads || 0;
-                    if (args > 0 && reads > 0) text = t('chat.offloadedNotification', { args, reads });
-                    else if (reads > 0) text = t('chat.offloadedReadsNotification', { count: reads });
-                    else if (args > 0) text = t('chat.offloadedArgsNotification', { count: args });
-                  }
-                  if (text) {
-                    const taskRefsLocal = tempSubagentStateRefs[taskId];
-                    const order = ++taskRefsLocal.contentOrderCounterRef.current;
-                    // Find the last assistant message and append notification segment
-                    const msgIdx = taskRefsLocal.messages.findLastIndex((m) => m.role === 'assistant');
-                    if (msgIdx !== -1) {
-                      const taskMsg = taskRefsLocal.messages[msgIdx];
-                      if (taskMsg.role === 'assistant') {
-                        const aMsg = taskMsg as unknown as AssistantMessage;
-                        taskRefsLocal.messages[msgIdx] = { ...aMsg, contentSegments: [...(aMsg.contentSegments || []), { type: 'notification' as const, content: text, order, detail }] } as unknown as Record<string, unknown>;
-                      }
-                    }
-                  }
-                }
-              } else {
-                console.warn('[History] Unhandled subagent event type:', eventType);
-              }
-            }
-            
-            // Get final messages from temp refs
-            const rawMessages = tempSubagentStateRefs[taskId]?.messages || [];
-
-            // Finalize messages: set isStreaming=false and close open reasoning/tool
-            // processes on the last assistant message so SubagentStatusBar shows 'completed'.
-            const finalMessages = rawMessages.map((msg) => {
-              if (msg.role !== 'assistant') return msg;
-              const aMsg = msg as unknown as AssistantMessage;
-              // Only finalize the last assistant message (or all, to be safe)
-              const m = { ...aMsg, isStreaming: false as const };
-              if (m.toolCallProcesses) {
-                const procs = { ...m.toolCallProcesses };
-                for (const [id, proc] of Object.entries(procs)) {
-                  if (proc.isInProgress) {
-                    procs[id] = { ...proc, isInProgress: false, isComplete: true };
-                  }
-                }
-                m.toolCallProcesses = procs;
-              }
-              if (m.reasoningProcesses) {
-                const rps = { ...m.reasoningProcesses };
-                for (const [id, rp] of Object.entries(rps)) {
-                  if (rp.isReasoning) {
-                    rps[id] = { ...rp, isReasoning: false, reasoningComplete: true };
-                  }
-                }
-                m.reasoningProcesses = rps;
-              }
-              return m;
-            });
-
-            // Get task metadata from stored history
-            const taskMetadata = subagentHistoryByTaskId.get(taskId);
-
-            // Store history in ref so it can be used when the user explicitly
-            // opens the subagent card from the main chat view. We do NOT
-            // create the floating card here.
-            if (!subagentHistoryRef.current) {
-              subagentHistoryRef.current = {};
-            }
-            subagentHistoryRef.current[taskId] = {
-              taskId,
-              description: taskMetadata?.description || '',
-              prompt: taskMetadata?.prompt || taskMetadata?.description || '',
-              type: taskMetadata?.type || 'general-purpose',
-              messages: finalMessages,
-              status: 'completed', // History events are always completed
-              toolCalls: countToolCalls(finalMessages),
-              tokenUsage: tempTokenUsage,
-              currentTool: '',
-            };
-
-            // Seed persistent subagent state refs from history so that
-            // reconnect or future resume can append to the existing messages.
-            subagentStateRefsRef.current[taskId] = {
-              contentOrderCounterRef: { current: tempSubagentStateRefs[taskId].contentOrderCounterRef.current },
-              currentReasoningIdRef: { current: null },
-              currentToolCallIdRef: { current: null },
-              messages: finalMessages,
-              runIndex: currentRunIndex,
-            };
-          }
-        }
-      } catch (replayError: unknown) {
-        // Handle 404 gracefully - it's expected for brand new threads that haven't been fully initialized yet
-        if ((replayError as Error).message && (replayError as Error).message.includes('404')) {
-          // Thread not found (404) is expected for brand-new threads — skip silently.
-          // Don't set error message for 404 - it's expected for new threads
-        } else {
-          throw replayError; // Re-throw other errors
-        }
-      }
-
-      // Replay settled (a 404 counts: brand-new thread, zero turns) — record
-      // the watermark the reactivation staleness check compares against.
-      lastRenderedTurnIndexRef.current = maxReplayedTurnIndex;
-
-      // NOTE: markAllSubagentTasksCompleted() is NOT called here because
-      // loadAndMaybeReconnect will call it after determining whether the
-      // workflow is still active (reconnect case) or truly completed.
-
-      // Post-process: update inline cards for steering_accepted actions to show "Updated"
-      if (steeredAgentIds.size > 0) {
-        setMessages(prev => prev.map(msg => {
-          if (msg.role !== 'assistant') return msg;
-          const aMsg = msg as AssistantMessage;
-          if (!aMsg.subagentTasks) return msg;
-          let changed = false;
-          const newTasks = { ...aMsg.subagentTasks };
-          for (const [tcId, task] of Object.entries(newTasks)) {
-            if (task.resumeTargetId && steeredAgentIds.has(task.resumeTargetId) && task.action === 'resume') {
-              newTasks[tcId] = { ...task, action: 'update' };
-              changed = true;
-            }
-          }
-          return changed ? { ...aMsg, subagentTasks: newTasks } : msg;
-        }));
-      }
-
-      setIsLoadingHistory(false);
-      historyLoadingRef.current = false;
-
-      // Fetch feedback state for the thread
-      if (threadId) {
-        try {
-          const feedbackList = await getThreadFeedback(threadId);
-          const map: Record<number, { rating: string | null; [key: string]: unknown }> = {};
-          feedbackList.forEach((fb: Record<string, unknown>) => { map[fb.turn_index as number] = fb as { rating: string | null; [key: string]: unknown }; });
-          feedbackMapRef.current = map;
-        } catch (e) {
-          // Non-critical — feedback display is best-effort
-          console.warn('[History] Failed to load feedback:', e);
-        }
-      }
-      return true;
-    } catch (error: unknown) {
-      console.error('[History] Error loading conversation history:', error);
-      // Only show error if it's not a 404 (404 is expected for new threads).
-      // 404 still counts as a successful "no prior history" load — caller can
-      // safely mark the idempotency key.
-      const errMsg = (error as Error).message || '';
-      const isNotFound = errMsg.includes('404');
-      if (errMsg && !isNotFound) {
-        setMessageError(errMsg || 'Failed to load conversation history');
-      }
-      setIsLoadingHistory(false);
-      historyLoadingRef.current = false;
-      return isNotFound;
-    }
-  };
-
-  /**
-   * Reconnects to an in-progress workflow stream after page refresh.
-   * Creates an assistant message placeholder and processes live SSE events.
-   */
-  const reconnectToStream = async ({ activeTasks = [], runId, resetCursor = false, idleAbortMs }: { activeTasks?: string[]; runId?: string | null; resetCursor?: boolean; idleAbortMs?: number } = {}) => {
-    // Reconnect targets the LATCHED thread, not the threadId prop. A brand-new
-    // chat keeps the prop at '__default__' until the first SSE event updates the
-    // route, but Content-Location already latched the real id into threadIdRef.
-    // Keying off the prop would bail this whole first-answer window (the most
-    // common "ask, background the tab, come back" moment). Snapshot once so the
-    // id stays stable across this single reconnect attempt.
-    const tid = threadIdRef.current;
-    if (!tid || tid === '__default__') return;
-
-    // Callers that (re)attach to the thread's CURRENT active run — thread-load,
-    // cross-thread navigation, post-HITL resume, report-back — pass that run's
-    // id and rewind the cursor. Without this, currentRunIdRef/lastEventIdRef
-    // still point at the PRIOR thread's stream, so we attach to a dead key
-    // (zero live events → content only appears on a later refetch). The
-    // mid-stream disconnect path omits both and keeps its in-progress cursor.
-    if (runId !== undefined) currentRunIdRef.current = runId;
-    if (resetCursor) lastEventIdRef.current = null;
-
-    console.log('[Reconnect] Starting reconnection for thread:', tid);
-
-    // Clear subagent cards to prevent duplicate content from cache + Redis overlap
-    if (clearSubagentCards) {
-      clearSubagentCards();
-    }
-    completedTaskIdsRef.current.clear();
-
-    setIsLoading(true);
-    setIsReconnecting(true);
-    acquireStreamOwnership(tid);
-    // Fresh stream: clear any stale stop flag from a PRIOR turn (e.g. user
-    // hard-stopped thread A, then switched to live thread B). Without this the
-    // stop-during-reconnect guards below (result.aborted || wasStoppedRef) would
-    // bail this legitimate reconnect and leave isLoading stuck. Matches the reset
-    // every other stream entry point does (handleSendMessage, resume, steering).
-    wasStoppedRef.current = false;
-    backgroundReconnectRef.current = false;
-
-    // Create assistant message placeholder for reconnection
-    const assistantMessageId = `assistant-reconnect-${Date.now()}`;
-    contentOrderCounterRef.current = 0;
-    currentReasoningIdRef.current = null;
-    currentToolCallIdRef.current = null;
-
-    // Strip interrupt segments populated by history replay before the reconnect stream
-    // re-delivers them; otherwise the same question/proposal renders twice (once on the
-    // history bubble, once on the reconnect bubble). The reconnect stream is
-    // authoritative for live interrupt state. Also redirect any unresolved-interrupt
-    // refs to point at the new reconnect bubble so the tool_call_result history-resolver
-    // writes resolution status to where the proposal actually lives now.
-    const stripList = unresolvedHistoryInterruptRef.current;
-    if (stripList.length > 0) {
-      // Release the stripped ids from the rendered-interrupt set, synchronously
-      // before the stream opens: the reconnect stream re-delivers a still-pending
-      // interrupt with the same interrupt_id, and after this strip that
-      // re-delivery is the ONLY copy — a stale entry would suppress it and leave
-      // the interrupt with no card anywhere, unanswerable until a full reload.
-      for (const info of stripList) {
-        if (info.interruptId) renderedInterruptIdsRef.current.delete(info.interruptId);
-      }
-      const stripsByMsgId = new Map<string, HistoryInterruptInfo[]>();
-      for (const info of stripList) {
-        const arr = stripsByMsgId.get(info.assistantMessageId) || [];
-        arr.push(info);
-        stripsByMsgId.set(info.assistantMessageId, arr);
-      }
-      setMessages((prev) =>
-        prev.map((m) => {
-          if (m.role !== 'assistant') return m;
-          const strips = stripsByMsgId.get(m.id);
-          if (!strips) return m;
-          const msg = m as AssistantMessage;
-          const stripQuestionIds = new Set(
-            strips.filter((s) => s.type === 'ask_user_question' && s.questionId).map((s) => s.questionId!),
-          );
-          const stripProposalIds = new Set(strips.filter((s) => s.proposalId).map((s) => s.proposalId!));
-          const stripPlanApprovalIds = new Set(
-            strips.filter((s) => s.type === 'plan_approval' && s.planApprovalId).map((s) => s.planApprovalId!),
-          );
-          const newSegments = (msg.contentSegments || []).filter((seg) => {
-            if (seg.type === 'user_question') return !stripQuestionIds.has(seg.questionId);
-            if (
-              seg.type === 'create_workspace' ||
-              seg.type === 'start_question' ||
-              seg.type === 'ptc_agent' ||
-              seg.type === 'delete_workspace' ||
-              seg.type === 'stop_workspace' ||
-              seg.type === 'delete_thread'
-            ) {
-              return !stripProposalIds.has(seg.proposalId);
-            }
-            if (seg.type === 'plan_approval') return !stripPlanApprovalIds.has(seg.planApprovalId);
-            return true;
-          });
-          const next: AssistantMessage = { ...msg, contentSegments: newSegments };
-          if (stripQuestionIds.size > 0 && msg.userQuestions) {
-            const map = { ...msg.userQuestions };
-            for (const qid of stripQuestionIds) delete map[qid];
-            next.userQuestions = map;
-          }
-          if (stripProposalIds.size > 0) {
-            for (const key of ['workspaceProposals', 'questionProposals', 'ptcAgentProposals', 'secretaryActionProposals'] as const) {
-              const bucket = msg[key];
-              if (!bucket) continue;
-              const map = { ...bucket };
-              for (const pid of stripProposalIds) delete (map as Record<string, unknown>)[pid];
-              (next as unknown as Record<string, unknown>)[key] = map;
-            }
-          }
-          if (stripPlanApprovalIds.size > 0 && msg.planApprovals) {
-            const map = { ...msg.planApprovals };
-            for (const pid of stripPlanApprovalIds) delete map[pid];
-            next.planApprovals = map;
-          }
-          return next;
-        }),
-      );
-      // Redirect refs so the tool_call_result history-resolver targets the new bubble.
-      for (const info of stripList) info.assistantMessageId = assistantMessageId;
-    }
-
-    {
-      const assistantMessage = createAssistantMessage(assistantMessageId);
-      // Replace trailing empty history assistant message (created by history replay for the
-      // in-progress pair) to avoid a duplicate bubble. If the last message is a non-empty
-      // history assistant or something else, just append normally.
-      setMessages((prev) => {
-        if (prev.length > 0) {
-          const lastMsg = prev[prev.length - 1];
-          if (
-            lastMsg.role === 'assistant' &&
-            (lastMsg as AssistantMessage).isHistory &&
-            (!(lastMsg as AssistantMessage).contentSegments || (lastMsg as AssistantMessage).contentSegments.length === 0) &&
-            !lastMsg.content
-          ) {
-            return [...prev.slice(0, -1), assistantMessage];
-          }
-        }
-        return appendMessage(prev,assistantMessage);
-      });
-      currentMessageRef.current = assistantMessageId;
-    }
-
-    // Prepare refs for event handlers — use persistent subagent state
-    const refs = {
-      contentOrderCounterRef,
-      currentReasoningIdRef,
-      currentToolCallIdRef,
-      steeringAtOrderRef,
-      updateTodoListCard: updateTodoListCard || undefined,
-      isNewConversation: false,
-      subagentStateRefs: subagentStateRefsRef.current,
-      updateSubagentCard: updateSubagentCard
-        ? (agentId: string, data: Record<string, unknown>) => updateSubagentCard(agentId, { ...data, isReconnect: true })
-        : (() => {}),
-      isReconnect: true,
-      unresolvedHistoryInterruptRef,
-    };
-
-    const wasInterruptedRef = { current: false };
-    const baseProcessEvent = createStreamEventProcessor(assistantMessageId, refs, getTaskIdFromEvent, wasInterruptedRef);
-
-    // Register the reconnect reader on mainStreamAbortRef so a user stop aborts
-    // it. Without this, stopWorkflow's abort is a no-op during a reconnect: the
-    // reader keeps consuming SSE + mutating messages and the finally below
-    // re-runs cleanup (re-toggling isLoading / re-opening report-back) after the
-    // stop already tore everything down.
-    const abortController = new AbortController();
-    mainStreamAbortRef.current = abortController;
-    // This reconnect now owns the spinner set above (setIsReconnecting(true)).
-    isReconnectingOwnerRef.current = abortController;
-
-    // Idle watchdog (report-back catch-up only — gated on idleAbortMs). The
-    // per-run stream has no terminal sentinel (~8s handshake after the summary,
-    // forever for a wedged run), so a reader that never resolves would strand
-    // the spinner + isStreamingRef unrecoverably. A quiet window is NOT proof of
-    // terminality, though: when it elapses, PROBE /status and finalize only if
-    // the queue drained or a newer head run superseded us — a blind finalize
-    // would dismiss a slow-but-live run #1 in favor of run #2. Otherwise re-arm,
-    // bounded, so a genuinely wedged run still force-releases.
-    let idleClosed = false;
-    // Whether ANY event arrived. A latched run that never streamed must release
-    // currentRunIdRef in the finally, or attach() dedups on the stale id and the
-    // still-pending summary only surfaces on reload.
-    let receivedEvent = false;
-    let idleTimer: ReturnType<typeof setTimeout> | null = null;
-    // The run this reconnect attached to, captured stably so the gate can tell
-    // "still our run, just slow" from "superseded" via /status.report_back_run_id.
-    const attachedRunId = runId ?? currentRunIdRef.current;
-    let idleRearms = 0;
-    // Mark a clean idle-close and abort: the finally then finalizes the bubble
-    // and runs teardown (release isStreamingRef, poke the watch) instead of bailing.
-    const finalizeIdleClose = () => {
-      idleClosed = true;
-      abortController.abort();
-    };
-    const bumpIdle = idleAbortMs
-      ? () => {
-          if (abortController.signal.aborted) return;
-          if (idleTimer) clearTimeout(idleTimer);
-          idleTimer = setTimeout(() => {
-            // Terminality gate: probe the run's real status before finalizing.
-            void (async () => {
-              let status: ReportBackStatusResponse | null = null;
-              try {
-                status = await getReportBackStatus(tid);
-              } catch {
-                status = null; // probe blip → unknown; never finalize on it
-              }
-              // Re-check ownership after the await: a newer reconnect or a real
-              // finalize/stop may have taken over while the probe was in flight.
-              if (mainStreamAbortRef.current !== abortController || abortController.signal.aborted) return;
-
-              const signal = status ? decodeReportBackSignal(status.pending_report_back) : 'unknown';
-              const rearmOrRelease = () => {
-                if (idleRearms++ < REPORT_BACK_IDLE_MAX_REARMS) bumpIdle?.();
-                else finalizeIdleClose();
-              };
-              if (status === null || signal === 'unknown') {
-                // The whole /status read is suspect — checked FIRST so a stale
-                // report_back_run_id under a failed read can't trip the finalize.
-                rearmOrRelease();
-              } else if (
-                (status.report_back_run_id && status.report_back_run_id !== attachedRunId) ||
-                signal === 'idle'
-              ) {
-                // A newer head run is current, or the queue drained — genuinely done.
-                finalizeIdleClose();
-              } else {
-                // Still our turn (pending/none, same-or-no run id) — slow, not terminal.
-                rearmOrRelease();
-              }
-            })();
-          }, idleAbortMs);
-        }
-      : null;
-    // Clear the "Reconnecting…" spinner the moment content flows: a LIVE run's
-    // reader stays open for the whole turn, so the spinner would otherwise
-    // linger while tokens visibly arrive. isLoading (the stop button) stays on.
-    // Ownership-guarded so a superseded stream can't clear a newer reconnect's
-    // spinner; nulling the owner makes it idempotent.
-    const markReconnected = () => {
-      if (isReconnectingOwnerRef.current === abortController) {
-        setIsReconnecting(false);
-        isReconnectingOwnerRef.current = null;
-      }
-    };
-    const processEvent = (event: SSEEvent) => {
-      receivedEvent = true;
-      // Progress resets the re-arm budget: a healthy run with an occasional
-      // >idleAbortMs gap must never accrue toward the wedged-run cap.
-      idleRearms = 0;
-      baseProcessEvent(event);
-      markReconnected();
-      bumpIdle?.();
-    };
-    // Arm before the first read so an un-started run (no events at all) still
-    // trips the watchdog instead of hanging forever.
-    bumpIdle?.();
-
-    try {
-      // Replay buffered events first — this processes artifact{task,spawned} events
-      // which create subagent cards with the correct description/type. Per-task streams
-      // are opened AFTER so they merge into existing cards instead of creating empty ones.
-      const result = await reconnectToWorkflowStream(
-        tid,
-        currentRunIdRef.current,
-        lastEventIdRef.current as number | null,
-        processEvent,
-        abortController.signal,
-      );
-      // User stop aborted the reader — stopWorkflow owns teardown; bail.
-      // Exception: a foreground handler aborted this stream because the tab
-      // resumed (background abort, not a user stop) — re-kick the reconnect.
-      // A report-back idle-close (idleClosed) is NOT a bail: fall through so the
-      // summary bubble is finalized and the normal completion teardown runs.
-      if ((result?.aborted && !idleClosed) || wasStoppedRef.current) {
-        if (backgroundReconnectRef.current && !wasStoppedRef.current) {
-          backgroundReconnectRef.current = false;
-          attemptReconnectAfterDisconnect(currentMessageRef.current || assistantMessageId);
-        }
-        return;
-      }
-      if (result?.disconnected) {
-        throw new Error('Reconnection stream disconnected');
-      }
-
-      // Mark message as complete
-      setMessages((prev) =>
-        updateMessage(prev,assistantMessageId, (msg) => ({
-          ...msg,
-          isStreaming: false,
-        }))
-      );
-      markTranscriptPersisted();
-
-      // Pre-seed subagent cards from history for tasks whose artifact events were
-      // cleared from the Redis buffer after the spawning turn persisted to DB.
-      // This mirrors the Scenario B pre-seed at lines 1611-1626.
-      if (activeTasks.length > 0 && updateSubagentCard && subagentHistoryRef.current) {
-        for (const taskId of activeTasks) {
-          const agentId = `task:${taskId}`;
-          const historyData = subagentHistoryRef.current[agentId];
-          if (historyData) {
-            // Seed the live token-usage ref from history so subsequent live
-            // deltas accumulate on top of the historical total instead of
-            // starting from zero.
-            subagentTokenUsageRef.current[agentId] = historyData.tokenUsage ?? ZERO_USAGE;
-            updateSubagentCard(agentId, {
-              agentId,
-              displayId: `Task-${taskId}`,
-              taskId: agentId,
-              description: historyData.description || '',
-              prompt: historyData.prompt || historyData.description || '',
-              type: historyData.type || 'general-purpose',
-              tokenUsage: historyData.tokenUsage ?? ZERO_USAGE,
-              status: 'active',
-              isActive: true,
-              isReconnect: true,
-            });
-          }
-        }
-      }
-
-      // Now open per-task SSE streams for active subagents. Per-task endpoints
-      // replay from their own Redis buffer so no events are lost.
-      if (activeTasks.length > 0) {
-        console.log('[Reconnect] Opening per-task streams for active tasks:', activeTasks);
-        for (const taskId of activeTasks) {
-          openSubagentStream(tid, taskId, processEvent);
-        }
-      }
-    } catch (err: unknown) {
-      // User stop aborted the reader — stopWorkflow owns teardown; bail before
-      // surfacing this as a reconnect error.
-      if ((err as Error)?.name === 'AbortError' || wasStoppedRef.current) {
-        return;
-      }
-      // 404/410 = workflow no longer available, not a real error
-      const status = (err as Error).message?.match(/status:\s*(\d+)/)?.[1];
-      if (status === '404' || status === '410') {
-        console.log('[Reconnect] Workflow no longer available (', status, '), cleaning up');
-      } else {
-        console.error('[Reconnect] Error during reconnection:', err);
-        setMessageError((err as Error).message || 'Failed to reconnect to stream');
-      }
-    } finally {
-      // Stop the idle watchdog (no-op when it already fired or was never armed).
-      if (idleTimer) clearTimeout(idleTimer);
-      // Clean up empty reconnect messages (no content segments = nothing was
-      // streamed). Skip on a user stop: finalizeStreamingMessage just stamped
-      // this bubble `stopped: true` (with the "⏹ Stopped" chip) but left it
-      // content-empty, so removing it here would erase the stop marker.
-      setMessages((prev) => {
-        if (wasStoppedRef.current) return prev;
-        const msg = prev.find((m) => m.id === assistantMessageId);
-        if (msg && msg.role === 'assistant' && (!(msg as AssistantMessage).contentSegments || (msg as AssistantMessage).contentSegments.length === 0) && !msg.content) {
-          return prev.filter((m) => m.id !== assistantMessageId);
-        }
-        return prev;
-      });
-
-      // Only finalize if this reconnect is still the active stream. Navigation
-      // can supersede it (the thread-load effect aborts a report-back stream on
-      // the prior thread and starts a fresh stream for the new thread); running
-      // cleanup here would then reset isStreamingRef / re-arm watches and clobber
-      // the new thread's stream. The owner that superseded us manages that state.
-      const stillActive = mainStreamAbortRef.current === abortController;
-      // ANY zero-content stream end (idle-close before the first event, a
-      // 404/410 the catch discarded, a thrown fetch) releases the run-id latch —
-      // otherwise the next reconcile's attach() dedups against the stale id and
-      // the still-pending summary only appears on reload. The watch's attach()
-      // reads this null as "never rendered" and un-records the run for a bounded
-      // retry. Guarded on stillActive so a stream that superseded us (which
-      // already latched its own run id) is never clobbered.
-      if (!receivedEvent && stillActive) {
-        currentRunIdRef.current = null;
-      }
-      // Skip cleanup on a user stop too — stopWorkflow already cleared isLoading /
-      // hasActiveSubagents and ran finalize; re-running it here would re-toggle
-      // loading and re-open the report-back watch after the stop. Also skip when
-      // this reconnect's own stream was aborted (a foreground re-kick on tab
-      // resume): the re-kicked reconnect, suspended at its getWorkflowStatus
-      // await, still owns mainStreamAbortRef, so cleaning up here would null the
-      // spinner mid-resume. EXCEPTION: a report-back idle-close aborts
-      // deliberately and MUST run cleanup (release isStreamingRef, clear
-      // isLoading, poke the watch) — stranding those is what the watchdog exists
-      // to prevent.
-      if (
-        stillActive &&
-        !wasInterruptedRef.current &&
-        !wasStoppedRef.current &&
-        (!abortController.signal.aborted || idleClosed)
-      ) {
-        cleanupAfterStreamEnd(assistantMessageId);
-      }
-      // Clear the spinner only if THIS reconnect still owns it. A newer reconnect
-      // (cross-thread nav) took ownership and manages its own spinner — clobbering
-      // it would hide the new thread's reconnect. Any other teardown that swapped
-      // the stream out from under us (user stop, steering demoted to a new turn)
-      // leaves ownership with us, so we still clear and never strand the spinner.
-      if (isReconnectingOwnerRef.current === abortController) {
-        setIsReconnecting(false);
-        isReconnectingOwnerRef.current = null;
-      }
-      // Null the abort ref only under a LIVE re-check, never the stillActive
-      // snapshot above: cleanupAfterStreamEnd → onStreamEnd can SYNCHRONOUSLY
-      // chain-attach the next queued report-back run, which registers a fresh
-      // AbortController here before its first await — the stale snapshot would
-      // null that NEW registration, orphaning the stream (un-stoppable, cleanup
-      // skipped, isLoading + isStreamingRef wedged true forever).
-      if (mainStreamAbortRef.current === abortController) {
-        mainStreamAbortRef.current = null;
-      }
-    }
-  };
+  /** History replay lives in session/history/replayHistory; the hook binds
+   * the runtime and the cross-lane callbacks. */
+  const loadConversationHistory = (): Promise<boolean> =>
+    replayConversationHistory(runtime, {
+      applyFallbackSuggestion,
+      loadFeedback,
+      projectSubagentHistory: (byTaskId) => projectSubagentHistory(runtime, byTaskId),
+    });
+
+  /** Recovery/ownership lifecycle lives in session/stream/lifecycle; the hook
+   * binds the runtime and the composition-level recovery callbacks. */
+  const reconnectToStream = (opts?: ReconnectOptions) =>
+    reconnectToStreamImpl(runtime, recoveryDeps, opts);
 
   // Expose the latest reader to the report-back watch (wired via a ref up top to
   // break the render-time cycle described at the useReportBackWatch call site).
   reconnectToStreamRef.current = reconnectToStream;
 
+  const attemptReconnectAfterDisconnect = (assistantMessageId: string) =>
+    attemptReconnectImpl(runtime, recoveryDeps, assistantMessageId);
+
   /**
-   * Attempts to auto-reconnect after a mid-stream network disconnect.
-   * Uses exponential backoff (1s, 2s, 4s, 8s, 16s) with up to 5 retries.
-   * Falls back to cleanupAfterStreamEnd if workflow completes or retries exhaust.
+   * v4 request_key dedup: a 409 `duplicate_request` means an earlier copy of
+   * this logical send was already accepted and only its response was lost.
+   * Adopt the existing run — latch its thread/run ids and reconnect (a live
+   * run replays its stream; a settled one falls through to the history
+   * reload) — instead of surfacing an error banner for a turn that exists.
+   * Returns true when adopted; the caller must skip its own error/finalize
+   * path (the reconnect owns teardown from here).
    */
-  const attemptReconnectAfterDisconnect = async (assistantMessageId: string) => {
-    const MAX_RETRIES = 5;
-    const BASE_DELAY = 1000;
-
-    setIsReconnecting(true);
-
-    // Target the latched thread, not the threadId prop: a first-turn disconnect
-    // (background during a brand-new chat's first answer) still has the prop at
-    // '__default__' while the real id lives in threadIdRef. Snapshot once so the
-    // ~31s retry loop stays pinned to the run we started reconnecting, matching
-    // the prior closure-captured semantics.
-    const tid = threadIdRef.current;
-
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-      if (!tid || tid === '__default__') break;
-
-      if (attempt > 0) {
-        await new Promise((r) => setTimeout(r, BASE_DELAY * Math.pow(2, attempt - 1)));
-      }
-
-      try {
-        const status = await getWorkflowStatus(tid);
-        if (!status.can_reconnect) {
-          console.log('[Reconnect] Workflow no longer reconnectable, cleaning up');
-          break;
-        }
-
-        console.log('[Reconnect] Attempt', attempt + 1, 'of', MAX_RETRIES);
-        await reconnectToStream({ activeTasks: status.active_tasks || [] });
-
-        setIsReconnecting(false);
-        return;
-      } catch (err: unknown) {
-        console.warn('[Reconnect] Attempt', attempt + 1, 'failed:', (err as Error).message);
-      }
-    }
-
-    setIsReconnecting(false);
-    cleanupAfterStreamEnd(assistantMessageId);
-    // Reload conversation to show complete response after failed reconnection
-    setReloadTrigger((n) => n + 1);
+  const adoptDuplicateRun = (err: unknown, assistantMessageId: string): boolean => {
+    const e = err as { status?: number; errorInfo?: Record<string, unknown> };
+    if (e?.status !== 409 || e?.errorInfo?.code !== 'duplicate_request') return false;
+    const runId = e.errorInfo.run_id as string | undefined;
+    const dupThreadId = e.errorInfo.thread_id as string | undefined;
+    // Run identity not disclosed (the key belongs to another user's run —
+    // shouldn't happen for an honest client): fall through to a plain error.
+    if (!runId || !dupThreadId) return false;
+    requestKeyRef.current.clear(); // consumed by the accepted copy
+    threadIdRef.current = dupThreadId;
+    currentRunIdRef.current = runId;
+    attemptReconnectAfterDisconnect(assistantMessageId);
+    return true;
   };
 
   // Load history when workspace or threadId changes, then check for reconnection
@@ -2921,6 +745,10 @@ export function useChatMessages(
       // persists Turn N (on_background_workflow_complete) while /status already
       // sees COMPLETED — which would cause the frontend to skip reconnect and
       // miss the latest turn's events entirely.
+      // Snapshot moment = the client's knowledge horizon: everything below
+      // (active_tasks above all) reflects the world at this instant, and the
+      // mux attach may lag it by the whole history load.
+      const snapshotAtMs = Date.now();
       const status: WorkflowStatusResponse = await getWorkflowStatus(threadId).catch((statusErr: unknown) => {
         console.log('[Reconnect] Could not check workflow status:', (statusErr as Error).message);
         return { can_reconnect: false, status: 'error' } as WorkflowStatusResponse;
@@ -2949,7 +777,14 @@ export function useChatMessages(
         // The replay rendered every persisted turn, so this load's recents slice
         // is now ON SCREEN. Record it BEFORE arming the watch below, or the
         // recent-runs catch-up would re-attach each run as a duplicate turn.
-        reportBackWatch.markRunsRendered(status.recent_report_back_run_ids);
+        // The replay's own terminal-run ids are recorded too: a run in the
+        // post-finalize/pre-ack outbox window is persisted (and just rendered)
+        // but not yet in recents, while /status still names it — without this,
+        // the arm's seed or a latched wake re-attaches it as a duplicate.
+        reportBackWatch.markRunsRendered([
+          ...(status.recent_report_back_run_ids ?? []),
+          ...replayedRunIdsRef.current,
+        ]);
       }
 
       // Arm the report-back watch BEFORE the reconnect branch below, so it runs
@@ -2957,9 +792,8 @@ export function useChatMessages(
       // the report-back becomes due can report both; reconnecting to
       // status.run_id alone can miss the report-back run). The watch stays
       // dormant while a reconnect stream is live and attach() skips the run
-      // already on screen, so this never double-streams. Arms on `pending` OR
-      // `unknown` (draining is only ever an explicit `false`).
-      if (shouldArmReportBack(decodeReportBackSignal(status.pending_report_back))) {
+      // already on screen, so this never double-streams.
+      if (shouldArmForStatus(status)) {
         if (import.meta.env.DEV) console.log('[ReportBack] Pending report-back detected on load, opening watch');
         // Key the watch to THIS thread (pending_report_back is a flash-thread
         // property) and seed the run /status already named. Poke a catch-up
@@ -2973,7 +807,7 @@ export function useChatMessages(
         // Workflow is active → interrupt was answered, reconnect will deliver resolution
         console.log('[Reconnect] Unresolved interrupt from history, reconnecting to get resolution events');
         historyHasUnresolvedInterruptRef.current = false;
-        await reconnectToStream({ activeTasks: status.active_tasks || [], runId: status.run_id ?? null, resetCursor: true });
+        await reconnectToStream({ activeTasks: status.active_tasks || [], runId: status.run_id ?? null, resetCursor: true, snapshotAtMs });
         unresolvedHistoryInterruptRef.current = [];
       } else if (historyHasUnresolvedInterruptRef.current && !status.can_reconnect) {
         // Workflow genuinely paused → make interrupt(s) interactive
@@ -3040,28 +874,20 @@ export function useChatMessages(
         historyHasUnresolvedInterruptRef.current = false;
       } else if (status.can_reconnect) {
         console.log('[Reconnect] Workflow status:', status.status, 'can_reconnect:', status.can_reconnect, 'active_tasks:', status.active_tasks);
-        await reconnectToStream({ activeTasks: status.active_tasks || [], runId: status.run_id ?? null, resetCursor: true });
-      } else if (status.active_tasks && status.active_tasks.length > 0) {
+        await reconnectToStream({ activeTasks: status.active_tasks || [], runId: status.run_id ?? null, resetCursor: true, snapshotAtMs });
+      } else if ((status.active_tasks || []).some((t) => !isSettledTask(t))) {
         // Main workflow completed but subagent tasks still running.
-        // Reopen per-task SSE streams so cards stay live after refresh.
-        console.log('[Reconnect] Main workflow done, reopening per-task streams for active subagents:', status.active_tasks);
+        // Attach the thread mux so cards stay live after refresh. Tasks the
+        // stale /status snapshot calls active but that are already settled
+        // (terminal in history, or seen closing live) are never re-activated —
+        // the mux would have no closure to send for them.
+        const muxTasks = (status.active_tasks || []).filter((t) => !isSettledTask(t));
+        console.log('[Reconnect] Main workflow done, attaching mux for active subagents:', muxTasks);
         const dummyAssistantId = `assistant-subagent-reconnect-${Date.now()}`;
-        const refs = {
-          contentOrderCounterRef,
-          currentReasoningIdRef,
-          currentToolCallIdRef,
-          steeringAtOrderRef,
-          updateTodoListCard: updateTodoListCard || undefined,
-          isNewConversation: false,
-          subagentStateRefs: subagentStateRefsRef.current,
-          updateSubagentCard: updateSubagentCard
-            ? (agentId: string, data: Record<string, unknown>) => updateSubagentCard(agentId, { ...data, isReconnect: true })
-            : (() => {}),
-          isReconnect: true,
-        };
-        const processEvent = createStreamEventProcessor(dummyAssistantId, refs, getTaskIdFromEvent);
+        const refs = buildStreamRefs({ isReconnect: true });
+        const processEvent = createStreamEventProcessor(runtime, streamRouterDeps, dummyAssistantId, refs, getTaskIdFromEvent);
         // Pre-seed cards from history so per-task events don't create empty cards
-        for (const taskId of status.active_tasks) {
+        for (const taskId of muxTasks) {
           const agentId = `task:${taskId}`;
           const historyData = subagentHistoryRef.current?.[agentId];
           if (updateSubagentCard && historyData) {
@@ -3079,14 +905,14 @@ export function useChatMessages(
               isReconnect: true,
             });
           }
-          openSubagentStream(threadId, taskId, processEvent);
         }
+        attachSubagentMux(threadId, processEvent, snapshotAtMs);
         setHasActiveSubagents(true);
       } else {
-        // Workflow is not active — mark all subagent tasks as completed.
-        // (Skipped when reconnecting because per-task SSE streams
-        //  will deliver live events with the real status.)
-        markAllSubagentTasksCompleted();
+        // Workflow is not active. Inline subagent cards are already born with
+        // their real status from the replayed task-artifact stamp
+        // (handleHistoryTaskArtifactStatus), so no blanket completion here —
+        // that would clobber a legitimately 'cancelled' card.
         // Finalize any incomplete todos as stale (they weren't completed by the agent)
         if (finalizePendingTodos) finalizePendingTodos();
         // Also patch inline todoListProcesses in messages
@@ -3105,7 +931,10 @@ export function useChatMessages(
     return () => {
       cancelled = true;
       historyLoadingRef.current = false;
-      closeAllSubagentStreams();
+      // Thread switch/unmount: tear the mux down without marking anything
+      // completed, and drop the processor so no stale closure can fire.
+      if (threadId) peekThreadMux(threadId)?.detach();
+      subagentProcessEventRef.current = null;
       subagentStateRefsRef.current = {};
     };
     // Note: loadConversationHistory is not in deps because it uses workspaceId and threadId from closure
@@ -3117,141 +946,17 @@ export function useChatMessages(
   // teardown, so the thread-load effect above deliberately doesn't touch it.
 
   /**
-   * Marks all subagentTasks in messages as 'completed'.
-   * Called when the SSE stream ends or history finishes loading, because a finished
-   * workflow implies all subagents are done. This is a safety net — artifact events
-   * and per-task SSE streams should have already updated most of them, but the final
-   * completion may not be persisted in sse_events or may have been missed.
+   * Subagent mux settlement (sink, positive per-task closure, drain dedup)
+   * lives in session/subagents/muxSink — the domain owns the monotonicity
+   * contract; the hook wires in the two cross-lane callbacks.
    */
-  const markAllSubagentTasksCompleted = () => {
-    // Skip tasks with open per-task SSE streams (still active)
-    const activeShortIds = new Set(subagentStreamsRef.current.keys());
+  const { isSettledTask, attachSubagentMux } = createSubagentMuxController(runtime, {
+    muxOpenTaskIds,
+    armReportBackWatch,
+  });
 
-    setMessages((prev) => {
-      let anyChanged = false;
-      const updated = prev.map((msg) => {
-        if (msg.role !== 'assistant') return msg;
-        const aMsg = msg as AssistantMessage;
-        if (!aMsg.subagentTasks || Object.keys(aMsg.subagentTasks).length === 0) return msg;
-        let changed = false;
-        const updatedTasks = { ...aMsg.subagentTasks };
-        Object.keys(updatedTasks).forEach((toolCallId) => {
-          const agentId = toolCallIdToTaskIdMapRef.current.get(toolCallId);
-          // If the task still has an open per-task stream, skip it
-          if (agentId) {
-            const shortId = agentId.replace('task:', '');
-            if (activeShortIds.has(shortId)) return;
-          }
-
-          if (updatedTasks[toolCallId].status !== 'completed') {
-            updatedTasks[toolCallId] = { ...updatedTasks[toolCallId], status: 'completed' };
-            changed = true;
-          }
-        });
-        if (changed) anyChanged = true;
-        return changed ? { ...aMsg, subagentTasks: updatedTasks } : msg;
-      });
-      return anyChanged ? updated : prev;
-    });
-  };
-
-  /**
-   * Open a dedicated per-task SSE stream for a subagent.
-   * Events from the stream are routed through processEvent (same handler as the main stream).
-   * Idempotent — skips if a stream is already open for this taskId.
-   *
-   * @param {string} tid - Thread ID
-   * @param {string} shortTaskId - The 6-char task identifier (e.g., 'k7Xm2p')
-   * @param {Function} processEvent - The event processor (from createStreamEventProcessor)
-   */
-  const openSubagentStream = (tid: string, shortTaskId: string, processEvent: (event: SSEEvent) => void) => {
-    if (subagentStreamsRef.current.has(shortTaskId)) return; // already open
-    const controller = new AbortController();
-    subagentStreamsRef.current.set(shortTaskId, controller);
-
-    streamSubagentTaskEvents(tid, shortTaskId, processEvent, controller.signal)
-      .catch((err) => {
-        if (err.name !== 'AbortError') {
-          console.error(`[SubagentStream:${shortTaskId}]`, err);
-        }
-      })
-      .finally(() => {
-        subagentStreamsRef.current.delete(shortTaskId);
-        completedTaskIdsRef.current.add(shortTaskId);
-        // Per-task stream close = task completion signal
-        if (updateSubagentCard) {
-          updateSubagentCard(`task:${shortTaskId}`, { status: 'completed', isActive: false });
-        }
-        // Flip the chat-card status for the just-closed task. The function
-        // skips tasks whose stream is still in subagentStreamsRef (active),
-        // so calling on every close marks only the just-finished one.
-        markAllSubagentTasksCompleted();
-        // Workflow-level cleanup only when ALL streams have closed.
-        if (subagentStreamsRef.current.size === 0) {
-          setHasActiveSubagents(false);
-          if (inactivateAllSubagents) inactivateAllSubagents();
-        }
-      });
-  };
-
-  /**
-   * Abort all open per-task subagent streams.
-   */
-  const closeAllSubagentStreams = () => {
-    for (const [, controller] of subagentStreamsRef.current) {
-      controller.abort();
-    }
-    subagentStreamsRef.current.clear();
-  };
-
-  /**
-   * Helper to get taskId from event.
-   * Routes subagent events to the correct task based on agent ID mapping.
-   * Defined at hook level so it can be shared between handleSendMessage and reconnectToStream.
-   */
-  const getTaskIdFromEvent = (event: SSEEvent): string | null => {
-    // With task:{task_id} format, the task ID is embedded in the agent field.
-    // e.g., agent = "task:pkyRHQ" → taskId = "task:pkyRHQ"
-    // This is the agent_id used as key throughout the frontend.
-    const agent = event?.agent;
-    if (!agent || typeof agent !== 'string' || !agent.startsWith('task:')) {
-      if (import.meta.env.DEV) {
-        console.warn('[Stream] Subagent event without task: agent field:', event);
-      }
-      return null;
-    }
-    return agent;
-  };
-
-  /**
-   * Shared cleanup logic for all stream-end paths (send, reconnect, HITL resume).
-   * Resets loading/streaming state, finalizes subagents, and auto-completes todos.
-   */
-  const cleanupAfterStreamEnd = (assistantMessageId: string) => {
-    setIsLoading(false);
-    setWorkspaceStarting(false);
-    setIsCompacting(false);
-    clearModelStatus();
-    currentMessageRef.current = null;
-    releaseStreamOwnership();
-
-    const hasOpenStreams = subagentStreamsRef.current.size > 0;
-    if (!hasOpenStreams) {
-      if (inactivateAllSubagents) inactivateAllSubagents();
-      markAllSubagentTasksCompleted();
-      closeAllSubagentStreams();
-    }
-    setHasActiveSubagents(hasOpenStreams);
-
-    // Finalize pending todos as stale
-    if (finalizePendingTodos) finalizePendingTodos();
-    setMessages((prev) => finalizeTodoListProcessesInMessages(prev, assistantMessageId));
-
-    // Re-arm the keyed report-back watch and poke a catch-up reconcile (no-op
-    // when not awaiting): this turn's stream just ended, and the next ordered
-    // report-back may already be queued.
-    reportBackWatch.onStreamEnd();
-  };
+  const cleanupAfterStreamEnd = (assistantMessageId: string) =>
+    cleanupAfterStreamEndImpl(runtime, recoveryDeps, assistantMessageId);
 
   /**
    * Synthesizes terminal events for a stopped turn and dispatches them through
@@ -3321,7 +1026,7 @@ export function useChatMessages(
     // Finalize each active subagent card: close its open reasoning block and
     // mark its last streaming message complete. Per-task state lives in
     // subagentStateRefsRef, separate from the main message refs.
-    const activeShortIds = new Set(subagentStreamsRef.current.keys());
+    const activeShortIds = muxOpenTaskIds();
     for (const shortId of activeShortIds) {
       const agentId = `task:${shortId}`;
       const taskRefs = subagentStateRefsRef.current[agentId];
@@ -3365,7 +1070,9 @@ export function useChatMessages(
       }
       taskRefs.messages = msgs;
       if (updateSubagentCard) {
-        updateSubagentCard(agentId, { messages: taskRefs.messages, status: 'completed', isActive: false });
+        // A user Stop is a cancellation, not a completion — stamping
+        // 'completed' would launder the stop as success in the card header.
+        updateSubagentCard(agentId, { messages: taskRefs.messages, status: 'cancelled', isActive: false });
       }
     }
   };
@@ -3441,12 +1148,13 @@ export function useChatMessages(
       markTranscriptPersisted();
     }
 
-    // (c) Abort per-task subagent streams (they belong to THIS turn). Leave the
+    // (c) The thread mux stays attached: the backend cancel finalizes this
+    // turn's task runs, and their terminal frames flip the cards to their
+    // real outcome (cancelled) instead of a client-side guess. Leave the
     // report-back watch running: this flash-thread cancel does not stop the
     // background PTC analyses on their own threads, so their summaries should
     // still surface live. The aborted reader's finally clears isStreamingRef, so
     // the watch's next reconcile can attach the next head run or drain.
-    closeAllSubagentStreams();
 
     // (d) Tell the backend to hard-cancel: one retry, then a visible error
     // toast so a failed cancel doesn't silently diverge UI from backend.
@@ -3492,1088 +1200,8 @@ export function useChatMessages(
     }
   };
 
-  /**
-   * Creates a stream event processor that handles SSE events from the backend.
-   * Used by both handleSendMessage (live) and reconnectToStream (reconnection).
-   *
-   * @param {string} assistantMessageId - The assistant message ID to update
-   * @param {Object} refs - Refs for event handlers (contentOrderCounterRef, etc.)
-   * @param {Function} getTaskIdFromEvent - Helper to route subagent events
-   * @returns {Function} Event handler: (event) => void
-   */
-  // TODO: type properly — refs should use a proper interface matching StreamRefs from streamEventHandlers
-  const createStreamEventProcessor = (assistantMessageId: string, refs: StreamProcessorRefs, getTaskIdFromEvent: (event: SSEEvent) => string | null, wasInterruptedRef: { current: boolean } | null = null) => {
-    // Snapshot of the old assistant message's content order at the time the user
-    // sent a steering message.  Used to roll back any content that leaked into the
-    // old bubble due to stream-mode multiplexing (custom events can arrive after
-    // message chunks from the post-injection model call).
-    let steeringAtOrder: number | null = null;
-
-    // FIFO queue for matching Task tool call IDs to artifact 'spawned' events.
-    // Populated by the tool_calls handler, drained by the artifact/spawned handler.
-    // This ensures toolCallIdToTaskIdMapRef is populated before tool_call_result.
-    const pendingTaskToolCallIds: string[] = [];
-
-    const processEvent = (event: SSEEvent): void => {
-      const eventType = event.event || 'message_chunk';
-
-      // Track last event ID for reconnection
-      if (event._eventId != null) {
-        lastEventIdRef.current = event._eventId;
-      }
-
-      // The ``metadata`` event is the first event of every workflow stream
-      // and carries the authoritative run_id for this turn. Latch it so
-      // reconnect targets ``workflow:stream:{tid}:{rid}`` precisely.
-      if (eventType === 'metadata') {
-        if (event.run_id) {
-          currentRunIdRef.current = event.run_id;
-        }
-        return;
-      }
-
-      // compaction_chunk is the side channel for LLM output from the
-      // compaction middleware; swallow so it does not leak into the
-      // assistant message stream. The context_window summarize
-      // start/complete/error events already surface compaction state.
-      if (eventType === 'compaction_chunk') {
-        return;
-      }
-
-      // Update thread_id if provided in the event (ref = synchronous for closures)
-      if (event.thread_id && event.thread_id !== '__default__') {
-        threadIdRef.current = event.thread_id;
-        if (event.thread_id !== threadId) {
-          setThreadId(event.thread_id);
-          setStoredThreadId(workspaceId, event.thread_id);
-        }
-      }
-
-      // Handle workspace_status events (workspace starting/ready).
-      // An optional `sandbox_state: "archived"` refinement event follows the
-      // generic `starting` on the slow cold-restore path — branch copy on it.
-      if (eventType === 'workspace_status') {
-        if (event.status === 'starting') {
-          const state = event.sandbox_state === 'archived' ? 'archived' : 'starting';
-          setWorkspaceStarting(state);
-        } else {
-          setWorkspaceStarting(false);
-        }
-        return;
-      }
-
-      // (b) Live market-watch stamp — keep the persistent watch chip current
-      // mid-turn. Swallowed here so it never leaks into the message stream.
-      if (eventType === 'market_watch_update') {
-        handleMarketWatchUpdate({ event, setMarketWatch });
-        return;
-      }
-
-      // Check if this is a subagent event - filter it out from main chat view
-      const isSubagent = isSubagentEvent(event);
-
-      // Handle steering_accepted events for the MAIN agent (user sent a message while agent streams).
-      // Subagent steering_accepted events are handled below in the isSubagent block.
-      if (eventType === 'steering_accepted' && !isSubagent) {
-        // The steering_accepted event's own `_eventId` is the boundary: every
-        // earlier event in the Redis stream has a smaller id, every later one
-        // has a larger id. Use it directly so the rollback filter knows what
-        // to keep vs. drop. Fall back to the local counter for tests/legacy
-        // flows where SSE events carry no `_eventId`.
-        const boundary = computeSteeringBoundary(event, refs.contentOrderCounterRef.current);
-        steeringAtOrder = boundary;
-        if (refs.steeringAtOrderRef) refs.steeringAtOrderRef.current = boundary;
-        return;
-      }
-
-      // Handle steering_delivered custom events (middleware picked up the steering message).
-      // Subagent steering_delivered events are handled in the isSubagent block below.
-      if (eventType === 'steering_delivered' && !isSubagent) {
-        const oldAssistantId = assistantMessageId;
-
-        // 1. Roll back old assistant message to the snapshot taken at steering_accepted
-        //    time, removing any content that leaked due to stream-mode multiplexing.
-        //    Then finalize it (isStreaming: false).
-        setMessages((prev) =>
-          prev.map((msg) => {
-            if (msg.id !== oldAssistantId) return msg;
-            if (msg.role !== 'assistant') return msg;
-            const aMsg = msg as AssistantMessage;
-
-            // Use closure-local snapshot or fall back to the shared ref
-            // (steering_accepted only arrives on the secondary POST stream, so
-            // the closure-local steeringAtOrder is typically null — the shared
-            // ref is set by handleSendSteering on the secondary stream).
-            const effectiveSteeringAtOrder = steeringAtOrder ?? refs.steeringAtOrderRef?.current ?? null;
-
-            // If no snapshot — or snapshot is non-positive / NaN (steering
-            // arrived before any ordered content was emitted, or `_eventId`
-            // was a non-numeric fallback) — skip the destructive filter and
-            // just finalize. Real segment orders are always positive; any
-            // other boundary would drop every segment, wiping the visible turn.
-            if (shouldSkipSteeringRollback(effectiveSteeringAtOrder)) {
-              const tp: typeof aMsg.toolCallProcesses = {};
-              for (const [id, val] of Object.entries(aMsg.toolCallProcesses || {})) {
-                tp[id] = val.isInProgress ? { ...val, isInProgress: false, isComplete: true } : val;
-              }
-              const rp: typeof aMsg.reasoningProcesses = {};
-              for (const [id, val] of Object.entries(aMsg.reasoningProcesses || {})) {
-                rp[id] = val.isReasoning ? { ...val, isReasoning: false, reasoningComplete: true } : val;
-              }
-              return { ...aMsg, isStreaming: false, toolCallProcesses: tp, reasoningProcesses: rp };
-            }
-
-            // Keep only segments at or before the steering point. Guard
-            // already proved boundary is a positive finite number.
-            const boundary = effectiveSteeringAtOrder as number;
-            const keptSegments = (aMsg.contentSegments || []).filter(
-              (s) => s.order <= boundary
-            );
-
-            // Rebuild plain-text content from kept text segments
-            const keptContent = keptSegments
-              .filter((s): s is import('@/types/chat').TextSegment => s.type === 'text')
-              .map((s) => s.content || '')
-              .join('');
-
-            // Collect IDs of kept processes so we can prune orphans
-            const keptReasoningIds = new Set(
-              keptSegments.filter((s): s is import('@/types/chat').ReasoningSegment => s.type === 'reasoning').map((s) => s.reasoningId)
-            );
-            const keptToolCallIds = new Set(
-              keptSegments.filter((s): s is import('@/types/chat').ToolCallSegment => s.type === 'tool_call').map((s) => s.toolCallId)
-            );
-            const keptTodoListIds = new Set(
-              keptSegments.filter((s): s is import('@/types/chat').TodoListSegment => s.type === 'todo_list').map((s) => s.todoListId)
-            );
-            const keptSubagentIds = new Set(
-              keptSegments.filter((s): s is import('@/types/chat').SubagentTaskSegment => s.type === 'subagent_task').map((s) => s.subagentId)
-            );
-
-            const filterObj = <V>(obj: Record<string, V> | undefined, keepSet: Set<string>): Record<string, V> => {
-              if (!obj) return {} as Record<string, V>;
-              const out: Record<string, V> = {};
-              for (const [id, val] of Object.entries(obj)) {
-                if (keepSet.has(id)) out[id] = val;
-              }
-              return out;
-            };
-
-            // Finalize retained processes: mark in-progress as complete
-            const keptToolCalls = filterObj(aMsg.toolCallProcesses, keptToolCallIds);
-            for (const [id, val] of Object.entries(keptToolCalls)) {
-              if (val.isInProgress) keptToolCalls[id] = { ...val, isInProgress: false, isComplete: true };
-            }
-            const keptReasoning = filterObj(aMsg.reasoningProcesses, keptReasoningIds);
-            for (const [id, val] of Object.entries(keptReasoning)) {
-              if (val.isReasoning) keptReasoning[id] = { ...val, isReasoning: false, reasoningComplete: true };
-            }
-
-            return {
-              ...aMsg,
-              contentSegments: keptSegments,
-              content: keptContent,
-              reasoningProcesses: keptReasoning,
-              toolCallProcesses: keptToolCalls,
-              todoListProcesses: filterObj(aMsg.todoListProcesses, keptTodoListIds),
-              subagentTasks: filterObj(aMsg.subagentTasks, keptSubagentIds),
-              isStreaming: false,
-            };
-          })
-        );
-        steeringAtOrder = null;
-        if (refs.steeringAtOrderRef) refs.steeringAtOrderRef.current = null;
-
-        // 2. Mark steering user messages as delivered, OR create them from event
-        //    data if none exist (reconnect scenario — in-memory state was lost).
-        setMessages((prev) => {
-          const hasSteeringMessages = prev.some((msg) => 'steering' in msg && msg.steering);
-          if (hasSteeringMessages) {
-            // Live path: mark existing steering messages as delivered
-            return prev.map((msg) =>
-              'steering' in msg && msg.steering ? { ...msg, steering: false, steeringDelivered: true } : msg
-            );
-          }
-          // Reconnect path: create user bubbles from event payload
-          const steeringMsgs = (event.messages || []).filter((qMsg) => qMsg.content);
-          if (steeringMsgs.length === 0) return prev;
-          const newUserMessages: MessageRecord[] = steeringMsgs.map((qMsg) => ({
-            id: `steering-user-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-            role: 'user' as const,
-            content: qMsg.content as string,
-            contentType: 'text' as const,
-            timestamp: qMsg.timestamp ? new Date((qMsg.timestamp as number) * 1000) : new Date(),
-            isStreaming: false as const,
-            steeringDelivered: true,
-          }));
-          return [...prev, ...newUserMessages];
-        });
-
-        // 3. Create new assistant message placeholder (steering continuation — not a new backend turn)
-        const newAssistantId = `assistant-${Date.now()}`;
-        const newAssistant = { ...createAssistantMessage(newAssistantId), isSteering: true };
-        setMessages((prev) => appendMessage(prev,newAssistant));
-
-        // 4. Switch closure & refs to new assistant message
-        assistantMessageId = newAssistantId;
-        currentMessageRef.current = newAssistantId;
-
-        // 5. Reset content counters
-        refs.contentOrderCounterRef.current = 0;
-        refs.currentReasoningIdRef.current = null;
-        refs.currentToolCallIdRef.current = null;
-        return;
-      }
-
-      // Handle steering_returned — agent finished before consuming the steering message.
-      // Remove the steering user message from chat and restore text to input box.
-      if (eventType === 'steering_returned') {
-        const returnedMessages = event.messages || [];
-        if (returnedMessages.length > 0) {
-          // Remove steering user messages from the chat
-          setMessages((prev) => prev.filter((msg) => !('steering' in msg && msg.steering)));
-          // Restore the text to the input box via state
-          const combinedText = returnedMessages.map((m) => m.content).join('\n');
-          setReturnedSteering(combinedText);
-        }
-        return;
-      }
-
-      // Handle unified context_window events (token_usage, summarize, offload)
-      if (eventType === 'context_window') {
-        if (isSubagent) {
-          // For subagent context_window events, embed notification as a content
-          // segment inside the current assistant message (same as main chat) so
-          // it appears at the correct chronological position.
-          const taskId = getTaskIdFromEvent(event);
-          if (taskId && event.action === 'token_usage') {
-            // Sum per-call delta into the per-task running total, then push
-            // the new total onto SubagentData so the AgentInfo projection
-            // (and the inline subagent card) re-renders with it.
-            const prev = subagentTokenUsageRef.current[taskId] ?? ZERO_USAGE;
-            const next = accumulateTokenUsage(prev, extractTokenUsageDelta(event));
-            subagentTokenUsageRef.current[taskId] = next;
-            if (updateSubagentCard) {
-              updateSubagentCard(taskId, { tokenUsage: next });
-            }
-            return;
-          }
-          // token_usage is handled and returned above; this branch is now
-          // for summarize / offload / future actions only.
-          if (taskId) {
-            const action = event.action;
-            let text;
-            let detail: string | undefined;
-            if (action === 'summarize' && event.signal === 'complete') {
-              text = t('chat.compactedNotification', { from: event.original_message_count });
-              detail = (event.summary_text as string | undefined) || undefined;
-            } else if (action === 'offload' && event.signal === 'complete') {
-              const args = event.offloaded_args || 0;
-              const reads = event.offloaded_reads || 0;
-              if (args > 0 && reads > 0) text = t('chat.offloadedNotification', { args, reads });
-              else if (reads > 0) text = t('chat.offloadedReadsNotification', { count: reads });
-              else if (args > 0) text = t('chat.offloadedArgsNotification', { count: args });
-            }
-            if (text && updateSubagentCard) {
-              const taskRefs = getOrCreateTaskRefs(refs, taskId);
-              const order = ++taskRefs.contentOrderCounterRef.current;
-              // Find the last assistant message and append the notification segment
-              const updatedMessages = [...taskRefs.messages] as Record<string, unknown>[];
-              const msgIdx = updatedMessages.findLastIndex((m) => m.role === 'assistant');
-              if (msgIdx !== -1) {
-                const existingMsg = updatedMessages[msgIdx];
-                const segs = (existingMsg.contentSegments || []) as Record<string, unknown>[];
-                updatedMessages[msgIdx] = { ...existingMsg, contentSegments: [...segs, { type: 'notification', content: text, order, detail }] };
-              }
-              taskRefs.messages = updatedMessages;
-              updateSubagentCard(taskId, { messages: updatedMessages });
-            }
-          }
-          return;
-        }
-        handleContextWindowEvent(event, {
-          getMsgId: () => currentMessageRef.current,
-          nextOrder: () => {
-            const eventId = event._eventId;
-            return eventId != null ? Number(eventId) : ++refs.contentOrderCounterRef.current;
-          },
-          setMessages,
-          setTokenUsage,
-          setIsCompacting,
-          insertNotification,
-          t,
-          offloadBatch: offloadBatchRef,
-        });
-        return;
-      }
-
-      // Surface model retry/fallback resilience to the user. Both carry their
-      // own `task:` prefix guard: v1 ignores subagent-attributed events
-      // (agent="task:...") entirely — the pill and transcript notification are
-      // main-agent only.
-      if (eventType === 'model_retry') {
-        if (!isSubagent) {
-          applyModelStatus({
-            kind: 'retrying',
-            model: (event.model as string) || '',
-            attempt: typeof event.attempt === 'number' ? event.attempt : 0,
-            maxRetries: typeof event.max_retries === 'number' ? event.max_retries : 0,
-          });
-        }
-        return;
-      }
-
-      if (eventType === 'model_fallback') {
-        if (!isSubagent) {
-          const fromModel = (event.from_model as string) || '';
-          const toModel = (event.to_model as string) || '';
-          applyModelStatus({ kind: 'fallback', fromModel, toModel });
-          applyFallbackSuggestion(event);
-          // Persistent transcript notification — survives reload via the
-          // persisted model_fallback replay in loadConversationHistory.
-          const order = event._eventId != null
-            ? Number(event._eventId)
-            : ++refs.contentOrderCounterRef.current;
-          const segment = buildModelFallbackSegment(event, t, order);
-          setMessages((prev) => updateMessage(prev, assistantMessageId, (msg) => {
-            if (msg.role !== 'assistant') return msg;
-            return appendNotificationSegmentOnce(msg as AssistantMessage, segment);
-          }));
-        }
-        return;
-      }
-
-      // Handle provenance events BEFORE the isSubagent filter so subagent-emitted
-      // accessed-data records still attach to the main turn's assistant message
-      // (with their `agent="task:..."` attribution preserved on the record).
-      // The event is flat — fields top-level on `event` — matching the live
-      // tool_call_result reader.
-      if (eventType === 'provenance') {
-        handleProvenance({
-          assistantMessageId,
-          event: event as unknown as import('@/types/sse').ProvenanceEvent,
-          setMessages: setMessagesForHandlers,
-        });
-        return;
-      }
-
-      // Handle subagent message events (filter them out from main chat view)
-      if (isSubagent) {
-        // With task:{task_id} format, the agent field IS the task key
-        const taskId = getTaskIdFromEvent(event);
-
-        if (!taskId) {
-          return; // Don't process in main chat view
-        }
-
-        // Process the event with the correct taskId
-        if (updateSubagentCard) {
-
-          // Use a stable message ID per task+run so all events from the same run
-          // go into one message. Each resume bumps runIndex, creating a new message
-          // so the card shows a unified conversation across resume boundaries.
-          const taskRefs = getOrCreateTaskRefs(refs, taskId);
-          const subagentAssistantMessageId = `subagent-${taskId}-assistant-${taskRefs.runIndex}`;
-
-          if (eventType === 'message_chunk') {
-            const contentType = (event.content_type || 'text') as string;
-            handleSubagentMessageChunk({
-              taskId,
-              assistantMessageId: subagentAssistantMessageId,
-              contentType,
-              content: event.content as string,
-              finishReason: event.finish_reason,
-              refs,
-              updateSubagentCard,
-            });
-          } else if (eventType === 'tool_call_chunks') {
-            handleSubagentToolCallChunks({
-              taskId,
-              assistantMessageId: subagentAssistantMessageId,
-              chunks: (event.tool_call_chunks || []) as unknown as Record<string, unknown>[],
-              refs,
-              updateSubagentCard,
-            });
-          } else if (eventType === 'tool_calls') {
-            handleSubagentToolCalls({
-              taskId,
-              assistantMessageId: subagentAssistantMessageId,
-              toolCalls: (event.tool_calls || []) as unknown as Record<string, unknown>[],
-              refs,
-              updateSubagentCard,
-            });
-          } else if (eventType === 'tool_call_result') {
-            const toolCallId = event.tool_call_id as string;
-
-            handleSubagentToolCallResult({
-              taskId,
-              assistantMessageId: subagentAssistantMessageId,
-              toolCallId: toolCallId,
-              result: {
-                content: event.content,
-                content_type: event.content_type,
-                tool_call_id: toolCallId,
-                artifact: event.artifact,
-              },
-              refs,
-              updateSubagentCard,
-            });
-          } else if (eventType === 'artifact') {
-            // Subagent artifact events are intentionally filtered out of the main chat view.
-          } else if (eventType === 'steering_delivered') {
-            if (event.content) {
-              handleTaskSteeringAccepted({
-                taskId,
-                content: event.content as string,
-                refs,
-                updateSubagentCard,
-              });
-            }
-          }
-        }
-        return; // Don't process subagent events in main chat view
-      }
-
-      if (eventType === 'message_chunk') {
-        // First content of the (possibly retried/fell-back) model call — the
-        // transient retry/fallback pill has served its purpose.
-        clearModelStatus();
-        const contentType = event.content_type || 'text';
-        const eventId = event._eventId as number | undefined;
-
-        // Handle reasoning_signal events
-        if (contentType === 'reasoning_signal') {
-          const signalContent = (event.content || '') as string;
-          if (handleReasoningSignal({
-            assistantMessageId,
-            signalContent,
-            refs,
-            setMessages: setMessagesForHandlers,
-            eventId,
-          })) {
-            return;
-          }
-        }
-
-        // Handle reasoning content chunks
-        if (contentType === 'reasoning' && event.content) {
-          if (handleReasoningContent({
-            assistantMessageId,
-            content: event.content as string,
-            refs,
-            setMessages: setMessagesForHandlers,
-          })) {
-            return;
-          }
-        }
-
-        // Handle text content chunks
-        if (contentType === 'text') {
-          if (handleTextContent({
-            assistantMessageId,
-            content: event.content as string,
-            finishReason: event.finish_reason,
-            refs,
-            setMessages: setMessagesForHandlers,
-            eventId,
-          })) {
-            return;
-          }
-        }
-
-        // Skip other content types
-        return;
-      } else if (eventType === 'error' || event.error) {
-        // The turn failed — clear any lingering retry/fallback pill, and any
-        // switch suggestion (the fallback model didn't save the turn either).
-        clearModelStatus();
-        setFallbackSuggestion(null);
-        const errorMessage = event.error || event.message || 'An error occurred while processing your request.';
-        // Backend (streaming_handler.format_error_event) enriches the event
-        // with ``error_kind``, ``status_code`` and ``hints``. We route the
-        // display by kind to avoid showing the same error twice:
-        //   - upstream → inline card on the failed assistant turn (part of
-        //     the transcript; the user's model choice is what triggered it)
-        //   - internal → banner near the chat input (our service failed;
-        //     don't pollute the conversation history)
-        const kind = event.error_kind as 'upstream' | 'internal' | undefined;
-        // Models the resilience middleware tried this turn (primary + fallbacks).
-        // Type-filtered defensively — the backend fields may be absent or partial.
-        const attemptedModels = Array.isArray(event.attempted_models)
-          ? (event.attempted_models as unknown[])
-              .filter((m): m is Record<string, unknown> => !!m && typeof m === 'object')
-              .map((m) => ({
-                model: typeof m.model === 'string' ? (m.model as string) : '',
-                error: typeof m.error === 'string' ? (m.error as string) : undefined,
-                statusCode: typeof m.status_code === 'number'
-                  ? (m.status_code as number)
-                  : (m.status_code === null ? null : undefined),
-                attempts: typeof m.attempts === 'number' ? (m.attempts as number) : undefined,
-              }))
-              .filter((m) => m.model)
-          : undefined;
-        const structured: StructuredError | undefined =
-          kind === 'upstream' || kind === 'internal'
-            ? {
-                message: errorMessage as string,
-                kind,
-                statusCode: typeof event.status_code === 'number' ? event.status_code : undefined,
-                // ``hints`` are only meaningful for upstream provider errors
-                // (the bullets say "check your API key / plan / provider
-                // status"). An internal error doesn't get hints even if the
-                // backend ever starts emitting them for some future variant.
-                hints: kind === 'upstream' && Array.isArray(event.hints)
-                  ? (event.hints.filter(isUpstreamHint) as StructuredError['hints'])
-                  : undefined,
-                // User-configured model + the full attempt list, so the display
-                // can show a model-aware headline and an "Also tried" line.
-                model: typeof event.model === 'string' ? event.model : undefined,
-                attemptedModels: attemptedModels && attemptedModels.length > 0 ? attemptedModels : undefined,
-              }
-            : undefined;
-
-        if (kind === 'internal') {
-          // Banner only — drop the optimistic assistant bubble entirely so the
-          // transcript stays clean. Matches the 429 rate-limit path; leaving a
-          // content-less bubble under the banner looks broken.
-          setMessageError(structured ?? (errorMessage as string));
-          setMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
-        } else {
-          // Upstream (or unclassified legacy) — render inline. Clear any
-          // stale banner from a prior turn so the error lives in one place.
-          setMessageError(null);
-          setMessages((prev) =>
-            updateMessage(prev, assistantMessageId, (msg) => ({
-              ...msg,
-              content: msg.content || errorMessage,
-              contentType: 'text',
-              isStreaming: false,
-              error: true,
-              ...(structured ? { structuredError: structured } : {}),
-            }))
-          );
-        }
-      } else if (eventType === 'tool_call_chunks') {
-        handleToolCallChunks({
-          assistantMessageId,
-          chunks: (event.tool_call_chunks || []) as unknown as Record<string, unknown>[],
-          setMessages: setMessagesForHandlers,
-        });
-        return;
-      } else if (eventType === 'artifact') {
-        const artifactType = event.artifact_type as string;
-        if (artifactType === 'todo_update') {
-          handleTodoUpdate({
-            assistantMessageId,
-            artifactType,
-            artifactId: event.artifact_id as string,
-            payload: event.payload || {},
-            refs,
-            setMessages: setMessagesForHandlers,
-            eventId: event._eventId as number,
-          });
-        } else if (artifactType === 'html_widget') {
-          handleHtmlWidget({
-            assistantMessageId,
-            artifactType,
-            artifactId: event.artifact_id as string,
-            payload: (event.payload || {}) as unknown as HtmlWidgetData,
-            refs,
-            setMessages: setMessagesForHandlers,
-            eventId: event._eventId as number,
-          });
-        } else if (artifactType === 'chart_annotation') {
-          applyAnnotationArtifact(artifactType, (event.payload || {}) as Record<string, unknown>);
-        } else if (artifactType === 'file_operation' && onFileArtifact) {
-          onFileArtifact(event);
-        } else if (artifactType === 'preview_url' && onPreviewUrl) {
-          const payload = (event.payload || {}) as Record<string, unknown>;
-          onPreviewUrl({
-            url: '',  // resolved by ChatView via authenticated endpoint
-            port: payload.port as number,
-            title: payload.title as string | undefined,
-            command: payload.command as string | undefined,
-            path: payload.path as string | undefined,
-            loading: true,
-          });
-        } else if (artifactType === 'task') {
-          const payload = (event.payload || {}) as Record<string, unknown>;
-          const { task_id, action: rawAction, description, prompt, type } = payload;
-          const action = (() => { if (rawAction === 'spawned') return 'init'; if (rawAction === 'steering_accepted') return 'update'; if (rawAction === 'resumed') return 'resume'; return rawAction || 'init'; })() as string;
-          if (!task_id) return;
-          const agentId = `task:${task_id}`;
-
-          // Establish toolCallId → agentId mapping immediately, so clicking
-          // the inline card before tool_call_result resolves correctly.
-          {
-            const updated = mapToolCallIdToAgentId(
-              event.tool_call_id as string | undefined,
-              agentId,
-              action,
-              pendingTaskToolCallIds,
-              toolCallIdToTaskIdMapRef.current,
-            );
-            pendingTaskToolCallIds.length = 0;
-            pendingTaskToolCallIds.push(...updated);
-          }
-
-          if (action === 'init') {
-            const alreadyCompleted = completedTaskIdsRef.current.has(task_id as string);
-            if (updateSubagentCard) {
-              updateSubagentCard(agentId, {
-                agentId,
-                displayId: `Task-${task_id}`,
-                taskId: agentId,
-                type: (type || 'general-purpose') as string,
-                description: (description || '') as string,
-                prompt: (prompt || description || '') as string,
-                status: alreadyCompleted ? 'completed' : 'active',
-                isActive: !alreadyCompleted,
-              });
-            }
-            if (!alreadyCompleted) {
-              const currentThreadId = (event.thread_id || threadIdRef.current) as string;
-              openSubagentStream(currentThreadId, task_id as string, processEvent);
-            }
-          } else if (action === 'resume') {
-            // Resume: preserve existing messages, inject user boundary, bump runIndex
-            const taskRefsForResume = getOrCreateTaskRefs(refs, agentId);
-
-            // Finalize the last assistant message from the previous run
-            const updatedMessages = [...taskRefsForResume.messages] as Record<string, unknown>[];
-            for (let i = updatedMessages.length - 1; i >= 0; i--) {
-              if (updatedMessages[i].role === 'assistant' && updatedMessages[i].isStreaming) {
-                updatedMessages[i] = { ...updatedMessages[i], isStreaming: false };
-                break;
-              }
-            }
-
-            // Inject user message with resume instruction
-            updatedMessages.push({
-              id: `resume-${agentId}-${Date.now()}`,
-              role: 'user',
-              content: prompt || description || 'Resume',
-              contentSegments: [{ type: 'text', content: prompt || description || 'Resume', order: 0 }],
-              reasoningProcesses: {},
-              toolCallProcesses: {},
-            });
-
-            // Bump runIndex and reset per-run counters
-            taskRefsForResume.runIndex = (taskRefsForResume.runIndex || 0) + 1;
-            taskRefsForResume.contentOrderCounterRef.current = 0;
-            taskRefsForResume.currentReasoningIdRef.current = null;
-            taskRefsForResume.currentToolCallIdRef.current = null;
-            taskRefsForResume.messages = updatedMessages;
-
-            if (updateSubagentCard) {
-              // Prefer preserving the original spawn description (already on the card).
-              // But after reconnect the card may have been wiped + recreated without a
-              // description, so fall back to subagentHistoryRef as a safety net.
-              const historyDesc = subagentHistoryRef.current?.[agentId]?.description;
-              const historyPrompt = subagentHistoryRef.current?.[agentId]?.prompt;
-              updateSubagentCard(agentId, {
-                agentId,
-                displayId: `Task-${task_id}`,
-                taskId: agentId,
-                type: (type || 'general-purpose') as string,
-                status: 'active',
-                isActive: true,
-                messages: updatedMessages,
-                ...(historyDesc ? { description: historyDesc } : {}),
-                ...(historyPrompt ? { prompt: historyPrompt } : {}),
-              });
-            }
-
-            // Abort existing stream before opening new one (race condition safety)
-            const existingController = subagentStreamsRef.current.get(task_id as string);
-            if (existingController) {
-              existingController.abort();
-              subagentStreamsRef.current.delete(task_id as string);
-            }
-
-            const currentThreadId = (event.thread_id || threadIdRef.current) as string;
-            openSubagentStream(currentThreadId, task_id as string, processEvent);
-          } else if (action === 'update') {
-            if (updateSubagentCard) {
-              updateSubagentCard(agentId, { steeringMessage: prompt || payload.description });
-            }
-            // Update inline card to show "Updated" instead of "Resumed"
-            setMessages(prev => prev.map(msg => {
-              if (msg.role !== 'assistant') return msg;
-              const aMsg = msg as AssistantMessage;
-              if (!aMsg.subagentTasks) return msg;
-              let changed = false;
-              const newTasks = { ...aMsg.subagentTasks };
-              for (const [tcId, task] of Object.entries(newTasks)) {
-                if (task.resumeTargetId === agentId && task.action === 'resume') {
-                  newTasks[tcId] = { ...task, action: 'update' };
-                  changed = true;
-                }
-              }
-              return changed ? { ...aMsg, subagentTasks: newTasks } : msg;
-            }));
-          }
-        }
-        return;
-      } else if (eventType === 'tool_calls') {
-        // A tool call means the model call succeeded — drop the retry/fallback pill.
-        clearModelStatus();
-        handleToolCalls({
-          assistantMessageId,
-          toolCalls: (event.tool_calls || []) as unknown as Record<string, unknown>[],
-          finishReason: event.finish_reason,
-          refs,
-          setMessages: setMessagesForHandlers,
-          eventId: event._eventId as number,
-        });
-        // Queue new Task tool call IDs for matching with upcoming artifact 'spawned' events
-        if (event.tool_calls) {
-          for (const tc of event.tool_calls) {
-            if ((tc.name === 'task' || tc.name === 'Task') && tc.id && !tc.args?.task_id) {
-              pendingTaskToolCallIds.push(tc.id);
-            }
-          }
-        }
-      } else if (eventType === 'tool_call_result') {
-        // A tool result means the turn is producing output — drop the pill.
-        clearModelStatus();
-        // Check if this resolves an unresolved interrupt from history replay (FIFO array matching)
-        const unresolvedList = refs.unresolvedHistoryInterruptRef?.current as HistoryInterruptInfo[] | undefined;
-        if (unresolvedList && unresolvedList.length > 0 && typeof event.content === 'string') {
-          const content = event.content as string;
-
-          // Try create_workspace / start_question / ptc_agent / secretary actions
-          const matchIdx = unresolvedList.findIndex((u: HistoryInterruptInfo) => PROPOSAL_INTERRUPT_TYPES.has(u.type));
-          if (matchIdx !== -1) {
-            const matched = unresolvedList[matchIdx];
-            const dataKey = PROPOSAL_DATA_KEY_MAP[matched.type] || 'questionProposals';
-            let resolvedStatus = 'approved';
-            let resultPayload: Record<string, unknown> | null = null;
-            if (content.startsWith('User declined')) {
-              resolvedStatus = 'rejected';
-            } else {
-              try { const p = JSON.parse(content); if (p?.success === false) resolvedStatus = 'rejected'; resultPayload = p; } catch { /* not JSON */ }
-            }
-            const proposalId = matched.proposalId!;
-            const extraFields: Record<string, unknown> = {};
-            if (matched.type === 'ptc_agent' && resultPayload) {
-              if (resultPayload.thread_id) extraFields.thread_id = resultPayload.thread_id;
-              if (resultPayload.workspace_id) extraFields.workspace_id = resultPayload.workspace_id;
-            }
-            setMessages((prev) =>
-              updateMessage(prev,matched.assistantMessageId, (m) => { if (m.role !== 'assistant') return m; const msg = m as AssistantMessage; return {
-                ...msg,
-                [dataKey]: {
-                  ...((msg as unknown as Record<string, Record<string, unknown>>)[dataKey] || {}),
-                  [proposalId]: {
-                    ...((msg as unknown as Record<string, Record<string, Record<string, unknown>>>)[dataKey]?.[proposalId] || {}),
-                    status: resolvedStatus,
-                    ...extraFields,
-                  },
-                },
-              }; })
-            );
-            unresolvedList.splice(matchIdx, 1);
-          }
-        }
-
-        const toolCallId = event.tool_call_id as string;
-
-        // Build toolCallId → agentId mapping from Task tool artifact
-        if (event.artifact?.task_id && toolCallId) {
-          const agentId = `task:${event.artifact.task_id}`;
-          toolCallIdToTaskIdMapRef.current.set(toolCallId, agentId);
-        }
-
-        handleToolCallResult({
-          assistantMessageId,
-          toolCallId,
-          result: {
-            content: event.content,
-            content_type: event.content_type,
-            tool_call_id: toolCallId,
-            artifact: event.artifact,
-          },
-          refs,
-          setMessages: setMessagesForHandlers,
-        });
-
-        // When onboarding-related tools succeed, sync onboarding_completed via PUT
-        if (onOnboardingRelatedToolComplete && isOnboardingRelatedToolSuccess(event.content)) {
-          onOnboardingRelatedToolComplete();
-        }
-
-        // Detect navigate_to_workspace action from start_question tool result
-        if (onWorkspaceCreated && typeof event.content === 'string') {
-          try {
-            const parsed = JSON.parse(event.content);
-            if (parsed?.success && parsed?.action === 'navigate_to_workspace') {
-              onWorkspaceCreated({ workspaceId: parsed.workspace_id, question: parsed.question });
-            }
-          } catch { /* not JSON, ignore */ }
-        }
-
-        // Update ptcAgentProposals with thread_id/workspace_id from tool result.
-        // After HITL resume, the tool_call_result arrives on a NEW assistant message
-        // while the proposals live on the OLD one (from the interrupt turn).
-        // Match by tool_call_id for exact correlation (safe under concurrent dispatches).
-        if (pendingPTCBackfillRef.current.size > 0 && typeof event.content === 'string') {
-          const backfillPid = toolCallId ? pendingPTCBackfillRef.current.get(toolCallId) : undefined;
-          if (backfillPid) {
-            try {
-              const parsed = JSON.parse(event.content);
-              if (parsed?.success && parsed?.thread_id && parsed?.workspace_id) {
-                pendingPTCBackfillRef.current.delete(toolCallId);
-                setMessages((prev) =>
-                  prev.map((m) => {
-                    if (m.role !== 'assistant') return m;
-                    const msg = m as AssistantMessage;
-                    const proposals = msg.ptcAgentProposals;
-                    if (!proposals?.[backfillPid]) return m;
-                    return {
-                      ...msg,
-                      ptcAgentProposals: {
-                        ...proposals,
-                        [backfillPid]: {
-                          ...proposals[backfillPid],
-                          thread_id: parsed.thread_id,
-                          workspace_id: parsed.workspace_id,
-                        },
-                      },
-                    };
-                  })
-                );
-              }
-            } catch { /* not JSON, ignore */ }
-          }
-        }
-      } else if (eventType === 'interrupt') {
-        const actionRequests = event.action_requests || [];
-        const actionType = actionRequests[0]?.type as string | undefined;
-
-        // A still-pending interrupt re-raised after a HITL resume streams into a
-        // fresh `assistant-hitl-*` bubble with the same interrupt_id. Suppress the
-        // duplicate CARD (the segment push) while keeping the map write + pending
-        // tracking below, so the original card stays answerable and the resume's
-        // pending set (cleared at resume start) still re-tracks it.
-        const interruptAlreadyRendered = event.interrupt_id
-          ? renderedInterruptIdsRef.current.has(event.interrupt_id)
-          : false;
-        if (event.interrupt_id) renderedInterruptIdsRef.current.add(event.interrupt_id);
-        // Every branch below MUST push its card segment through this helper so
-        // the re-raise suppression can't be forgotten on a future interrupt type.
-        const appendCardSegment = (
-          segs: AssistantMessage['contentSegments'] | undefined,
-          seg: AssistantMessage['contentSegments'][number],
-        ): AssistantMessage['contentSegments'] =>
-          interruptAlreadyRendered ? (segs || []) : [...(segs || []), seg];
-
-        if (actionType === 'ask_user_question') {
-          // --- User question interrupt ---
-          const questionId = event.interrupt_id || `question-${Date.now()}`;
-          const questionData = actionRequests[0];
-          const order = event._eventId != null ? Number(event._eventId) : ++refs.contentOrderCounterRef.current;
-
-          setMessages((prev) =>
-            updateMessage(prev,assistantMessageId, (m) => { if (m.role !== 'assistant') return m; const msg = m as AssistantMessage; return {
-              ...msg,
-              contentSegments: appendCardSegment(msg.contentSegments, { type: 'user_question', questionId, order }),
-              userQuestions: {
-                ...(msg.userQuestions || {}),
-                [questionId]: {
-                  question: questionData.question,
-                  options: questionData.options || [],
-                  allow_multiple: questionData.allow_multiple || false,
-                  interruptId: event.interrupt_id,
-                  status: 'pending',
-                  answer: null,
-                },
-              },
-              isStreaming: false,
-            }; })
-          );
-
-          pendingInterruptIdsRef.current.add(event.interrupt_id!);
-          setPendingInterrupt({
-            type: 'ask_user_question',
-            interruptId: event.interrupt_id,
-            assistantMessageId,
-            questionId,
-          });
-        } else if (actionType === 'create_workspace') {
-          // --- Create workspace interrupt ---
-          const proposalId = event.interrupt_id || `workspace-${Date.now()}`;
-          const proposalData = actionRequests[0];
-          const order = event._eventId != null ? Number(event._eventId) : ++refs.contentOrderCounterRef.current;
-
-          setMessages((prev) =>
-            updateMessage(prev,assistantMessageId, (m) => { if (m.role !== 'assistant') return m; const msg = m as AssistantMessage; return {
-              ...msg,
-              contentSegments: appendCardSegment(msg.contentSegments, { type: 'create_workspace', proposalId, order }),
-              workspaceProposals: {
-                ...(msg.workspaceProposals || {}),
-                [proposalId]: {
-                  workspace_name: proposalData.workspace_name,
-                  workspace_description: proposalData.workspace_description,
-                  interruptId: event.interrupt_id,
-                  status: 'pending',
-                },
-              },
-              isStreaming: false,
-            }; })
-          );
-
-          pendingInterruptIdsRef.current.add(event.interrupt_id!);
-          setPendingInterrupt({
-            type: 'create_workspace',
-            interruptId: event.interrupt_id,
-            assistantMessageId,
-            proposalId,
-          });
-        } else if (actionType === 'start_question') {
-          // --- Start question interrupt ---
-          const proposalId = event.interrupt_id || `question-start-${Date.now()}`;
-          const proposalData = actionRequests[0];
-          const order = event._eventId != null ? Number(event._eventId) : ++refs.contentOrderCounterRef.current;
-
-          setMessages((prev) =>
-            updateMessage(prev,assistantMessageId, (m) => { if (m.role !== 'assistant') return m; const msg = m as AssistantMessage; return {
-              ...msg,
-              contentSegments: appendCardSegment(msg.contentSegments, { type: 'start_question', proposalId, order }),
-              questionProposals: {
-                ...(msg.questionProposals || {}),
-                [proposalId]: {
-                  workspace_id: proposalData.workspace_id,
-                  question: proposalData.question,
-                  interruptId: event.interrupt_id,
-                  status: 'pending',
-                },
-              },
-              isStreaming: false,
-            }; })
-          );
-
-          pendingInterruptIdsRef.current.add(event.interrupt_id!);
-          setPendingInterrupt({
-            type: 'start_question',
-            interruptId: event.interrupt_id,
-            assistantMessageId,
-            proposalId,
-          });
-        } else if (actionType === 'ptc_agent') {
-          // --- PTC agent interrupt ---
-          const proposalId = event.interrupt_id || `ptc-agent-${Date.now()}`;
-          const proposalData = actionRequests[0];
-          const order = event._eventId != null ? Number(event._eventId) : ++refs.contentOrderCounterRef.current;
-
-          setMessages((prev) =>
-            updateMessage(prev,assistantMessageId, (m) => { if (m.role !== 'assistant') return m; const msg = m as AssistantMessage; return {
-              ...msg,
-              contentSegments: appendCardSegment(msg.contentSegments, { type: 'ptc_agent' as const, proposalId, order }),
-              ptcAgentProposals: {
-                ...(msg.ptcAgentProposals || {}),
-                [proposalId]: {
-                  workspace_id: proposalData.workspace_id,
-                  workspace_name: proposalData.workspace_name,
-                  question: proposalData.question,
-                  report_back: proposalData.report_back ?? true,
-                  interruptId: event.interrupt_id,
-                  // Persist tool_call_id ON the proposal so the clicked card
-                  // self-identifies for backfill — never read from
-                  // `pendingInterrupt`, which N parallel dispatches overwrite.
-                  tool_call_id: proposalData.tool_call_id,
-                  status: 'pending',
-                },
-              },
-              isStreaming: false,
-            }; })
-          );
-
-          pendingInterruptIdsRef.current.add(event.interrupt_id!);
-          setPendingInterrupt({
-            type: 'ptc_agent',
-            interruptId: event.interrupt_id,
-            assistantMessageId,
-            proposalId,
-            toolCallId: proposalData.tool_call_id,
-          });
-        } else if (actionType === 'delete_workspace' || actionType === 'stop_workspace' || actionType === 'delete_thread') {
-          // --- Secretary action interrupt ---
-          const proposalId = event.interrupt_id || `secretary-${actionType}-${Date.now()}`;
-          const proposalData = actionRequests[0];
-          const order = event._eventId != null ? Number(event._eventId) : ++refs.contentOrderCounterRef.current;
-
-          setMessages((prev) =>
-            updateMessage(prev,assistantMessageId, (m) => { if (m.role !== 'assistant') return m; const msg = m as AssistantMessage; return {
-              ...msg,
-              contentSegments: appendCardSegment(msg.contentSegments, { type: actionType as 'delete_workspace' | 'stop_workspace' | 'delete_thread', proposalId, order }),
-              secretaryActionProposals: {
-                ...(msg.secretaryActionProposals || {}),
-                [proposalId]: {
-                  actionType: actionType as 'delete_workspace' | 'stop_workspace' | 'delete_thread',
-                  workspace_id: proposalData.workspace_id,
-                  thread_id: proposalData.thread_id,
-                  interruptId: event.interrupt_id,
-                  status: 'pending',
-                },
-              },
-              isStreaming: false,
-            }; })
-          );
-
-          pendingInterruptIdsRef.current.add(event.interrupt_id!);
-          setPendingInterrupt({
-            type: actionType,
-            interruptId: event.interrupt_id,
-            assistantMessageId,
-            proposalId,
-          });
-        } else {
-          // --- Plan approval interrupt (existing) ---
-          const planApprovalId = event.interrupt_id || `plan-${Date.now()}`;
-          const description =
-            actionRequests[0]?.description ||
-            (actionRequests[0]?.args?.plan as string) ||
-            'No plan description provided.';
-
-          const order = event._eventId != null ? Number(event._eventId) : ++refs.contentOrderCounterRef.current;
-
-          setMessages((prev) =>
-            updateMessage(prev,assistantMessageId, (m) => { if (m.role !== 'assistant') return m; const msg = m as AssistantMessage; return {
-              ...msg,
-              contentSegments: appendCardSegment(msg.contentSegments, { type: 'plan_approval', planApprovalId, order }),
-              planApprovals: {
-                ...(msg.planApprovals || {}),
-                [planApprovalId]: {
-                  description,
-                  interruptId: event.interrupt_id,
-                  status: 'pending',
-                },
-              },
-              isStreaming: false,
-            }; })
-          );
-
-          pendingInterruptIdsRef.current.add(event.interrupt_id!);
-          setPendingInterrupt({
-            interruptId: event.interrupt_id,
-            actionRequests: actionRequests,
-            threadId: event.thread_id,
-            assistantMessageId,
-            planApprovalId,
-            planMode: actionRequests.some((r) => r.name === 'SubmitPlan') || currentPlanModeRef.current,
-          });
-        }
-
-        setIsLoading(false);
-        releaseStreamOwnership();
-        currentMessageRef.current = null;
-        if (wasInterruptedRef) wasInterruptedRef.current = true;
-      }
-    };
-
-    return processEvent;
-  };
+  /** Live event routing lives in session/stream/processStreamEvent; the
+   * hook binds the runtime + cross-lane callbacks per stream start. */
 
   /**
    * Handles sending a message while the agent is already streaming (steering).
@@ -4649,19 +1277,15 @@ export function useChatMessages(
       wasStoppedRef.current = false;
       backgroundReconnectRef.current = false;
       mainStreamAbortRef.current = steeringAbort;
-      const refs = {
-        contentOrderCounterRef,
-        currentReasoningIdRef,
-        currentToolCallIdRef,
-        steeringAtOrderRef,
-        updateTodoListCard: updateTodoListCard || undefined,
-        isNewConversation: false,
-        subagentStateRefs: subagentStateRefsRef.current,
-        updateSubagentCard: updateSubagentCard || (() => {}),
-      };
-      demotedProcessor = createStreamEventProcessor(newAssistantId, refs, getTaskIdFromEvent, demotedInterruptedRef);
+      const refs = buildStreamRefs();
+      demotedProcessor = createStreamEventProcessor(runtime, streamRouterDeps, newAssistantId, refs, getTaskIdFromEvent, demotedInterruptedRef);
     };
 
+    // Same fingerprint form as handleSendMessage: if this POST is demoted to
+    // a new turn and its response is lost, the user's re-send (which will
+    // route through handleSendMessage once loading clears) reuses the key and
+    // dedups against the accepted run.
+    const requestKey = requestKeyRef.current.take(`send|${threadId}|${message}`);
     try {
       // Send to same endpoint — backend will auto-accept steering and return steering_accepted SSE
       const result = await sendChatMessageStream(
@@ -4718,9 +1342,11 @@ export function useChatMessages(
         // overwrite the active workflow's run_id with a stream key that
         // never gets written to.
         (runId) => {
+          requestKeyRef.current.clear();
           pendingRunIdFromHeader = runId;
         },
         steeringAbort.signal,
+        requestKey,
       );
       if (mainStreamAbortRef.current === steeringAbort) {
         mainStreamAbortRef.current = null;
@@ -4917,7 +1543,11 @@ export function useChatMessages(
     setMessageError(null);
     setFallbackSuggestion(null);
     setHasActiveSubagents(false);
-    completedTaskIdsRef.current.clear();
+    // NB: do NOT clear terminalTaskOutcomesRef here. A fresh send appends a turn
+    // without resetting the subagent-card projection, so a tail subagent that
+    // already settled (this turn or a prior one) must keep its observed terminal
+    // outcome — otherwise a later reconnect off a stale /status snapshot would
+    // re-activate its card. The map is cleared only on a full history-backed reset.
     // Clear the stopped guard so a fresh send can finalize again on stop.
     wasStoppedRef.current = false;
     backgroundReconnectRef.current = false;
@@ -4956,23 +1586,18 @@ export function useChatMessages(
     });
     currentMessageRef.current = assistantMessageId;
 
+    // One request_key per logical send, reused if this exact send is
+    // retransmitted after a lost response (fingerprint match) — see
+    // createRequestKeyTracker.
+    const requestKey = requestKeyRef.current.take(`send|${threadId}|${message}`);
     let wasDisconnected = false;
     const wasInterruptedRef = { current: false };
     try {
       // Prepare refs for event handlers — use persistent subagent state
-      const refs = {
-        contentOrderCounterRef,
-        currentReasoningIdRef,
-        currentToolCallIdRef,
-        steeringAtOrderRef,
-        updateTodoListCard: updateTodoListCard || undefined,
-        isNewConversation: isNewConversationRef.current,
-        subagentStateRefs: subagentStateRefsRef.current,
-        updateSubagentCard: updateSubagentCard || (() => {}),
-      };
+      const refs = buildStreamRefs({ isNewConversation: isNewConversationRef.current });
 
       // Create the event processor using the shared factory
-      const processEvent = createStreamEventProcessor(assistantMessageId, refs, getTaskIdFromEvent, wasInterruptedRef);
+      const processEvent = createStreamEventProcessor(runtime, streamRouterDeps, assistantMessageId, refs, getTaskIdFromEvent, wasInterruptedRef);
 
       const result = await sendChatMessageStream(
         message,
@@ -4995,12 +1620,14 @@ export function useChatMessages(
         // run instead of skipping cancel. The first event still drives the
         // route/storage update (see the thread_id branch in processEvent).
         (runId, resolvedThreadId) => {
+          requestKeyRef.current.clear();
           currentRunIdRef.current = runId;
           if (resolvedThreadId && resolvedThreadId !== '__default__') {
             threadIdRef.current = resolvedThreadId;
           }
         },
         abortController.signal,
+        requestKey,
       );
 
       // The user hit stop: stopWorkflow already finalized the message and ran
@@ -5038,6 +1665,13 @@ export function useChatMessages(
           // streamFetch normally swallows AbortError and returns { aborted },
           // but guard here too so a stop never surfaces an error banner.
           if ((err as Error)?.name === 'AbortError' || wasStoppedRef.current) {
+            return;
+          }
+          // 409 duplicate_request: an earlier copy of this send was already
+          // accepted (its response was lost) — adopt that run instead of
+          // erroring; the reconnect owns finalization from here.
+          if (adoptDuplicateRun(err, assistantMessageId)) {
+            wasDisconnected = true;
             return;
           }
           // Handle rate limit (429) — show limit message and remove optimistic assistant message
@@ -5190,20 +1824,16 @@ export function useChatMessages(
     mainStreamAbortRef.current = abortController;
 
     // Prepare refs for event handlers — use persistent subagent state
-    const refs = {
-      contentOrderCounterRef,
-      currentReasoningIdRef,
-      currentToolCallIdRef,
-      steeringAtOrderRef,
-      updateTodoListCard: updateTodoListCard || undefined,
-      isNewConversation: false,
-      subagentStateRefs: subagentStateRefsRef.current,
-      updateSubagentCard: updateSubagentCard || (() => {}),
-    };
+    const refs = buildStreamRefs();
 
     const wasInterruptedRef = { current: false };
-    const processEvent = createStreamEventProcessor(assistantMessageId, refs, getTaskIdFromEvent, wasInterruptedRef);
+    const processEvent = createStreamEventProcessor(runtime, streamRouterDeps, assistantMessageId, refs, getTaskIdFromEvent, wasInterruptedRef);
 
+    // One request_key per resume (keyed by the interrupt answers), reused on
+    // a retransmit after a lost response — see createRequestKeyTracker.
+    const requestKey = requestKeyRef.current.take(
+      `hitl|${threadId}|${JSON.stringify(hitlResponse)}`,
+    );
     let wasDisconnected = false;
     try {
       const result = await sendHitlResponse(
@@ -5220,9 +1850,11 @@ export function useChatMessages(
         // attemptReconnectAfterDisconnect fall back to the prior run's
         // TaskInfo and silently hang.
         (runId) => {
+          requestKeyRef.current.clear();
           currentRunIdRef.current = runId;
         },
         abortController.signal,
+        requestKey,
       );
 
       // User hit stop: stopWorkflow already finalized + tore down. Exception: a
@@ -5260,6 +1892,12 @@ export function useChatMessages(
       if ((err as Error)?.name === 'AbortError' || wasStoppedRef.current) {
         return;
       }
+      // 409 duplicate_request: an earlier copy of this resume was already
+      // accepted (its response was lost) — adopt that run instead of erroring.
+      if (adoptDuplicateRun(err, assistantMessageId)) {
+        wasDisconnected = true;
+        return;
+      }
       console.error('[HITL] Error resuming workflow:', err);
       setMessageError((err as Error).message || 'Failed to resume workflow');
       setMessages((prev) =>
@@ -5285,7 +1923,7 @@ export function useChatMessages(
       // assistant bubbles. MessageList hides empty settled bubbles instead.
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, threadId, updateTodoListCard, updateSubagentCard, inactivateAllSubagents, finalizePendingTodos]);
+  }, [workspaceId, threadId, updateTodoListCard, updateSubagentCard, finalizePendingTodos]);
 
   const handleApproveInterrupt = useCallback(() => {
     if (!pendingInterrupt) return;
@@ -5537,7 +2175,7 @@ export function useChatMessages(
   // =====================================================================
 
   /** Lazy-cached turn checkpoint data. Invalidated after each edit/regenerate. */
-  const turnCheckpointsRef = useRef<{ turns: Array<{ edit_checkpoint_id: string | null; regenerate_checkpoint_id: string; turn_index: number }>; retry_checkpoint_id: string | null } | null>(null);
+  const turnCheckpointsRef = useRef<{ turns: Array<{ edit_checkpoint_id: string | null; regenerate_checkpoint_id: string; turn_index: number }> } | null>(null);
 
   /**
    * Helper: get or fetch turn checkpoints for the current thread.
@@ -5558,10 +2196,13 @@ export function useChatMessages(
   }, []);
 
   /**
-   * Helper: run a checkpoint-based stream (shared by edit, regenerate, retry).
-   * Sets up assistant placeholder, event processor, and handles the stream lifecycle.
+   * Helper: stream a forked or retried turn (shared by edit, regenerate, retry).
+   * Edit/regenerate fork from an explicit `checkpointId`; retry goes through the
+   * POST /retry attempt chain with `checkpointId=null` (the server resolves the
+   * retry checkpoint). Sets up the assistant placeholder, event processor, and
+   * stream lifecycle.
    */
-  const streamFromCheckpoint = useCallback(async (message: string | null, checkpointId: string, truncateIndex: number, forkFromTurn: number | null = null, modelOptions: ModelOptions = {}) => {
+  const streamFromCheckpoint = useCallback(async (message: string | null, checkpointId: string | null, truncateIndex: number, forkFromTurn: number | null = null, modelOptions: ModelOptions = {}, viaRetryEndpoint: boolean = false) => {
     if (isStreamingRef.current) return;
 
     // Edit/regenerate/retry are chat activity — bump like a fresh send.
@@ -5571,7 +2212,10 @@ export function useChatMessages(
     setMessageError(null);
     setFallbackSuggestion(null);
     setHasActiveSubagents(false);
-    completedTaskIdsRef.current.clear();
+    // Like the fresh-send path, do NOT clear terminalTaskOutcomesRef here: a
+    // fork/retry rewrites the turn but does not tear down the subagent-card
+    // projection, and a re-run spawns fresh task ids — stale evidence for the
+    // old ids is harmless, while wiping it could un-settle a live-closed sibling.
     wasStoppedRef.current = false;
     backgroundReconnectRef.current = false;
     acquireStreamOwnership(threadId);
@@ -5625,45 +2269,61 @@ export function useChatMessages(
     // Invalidate turn checkpoints cache (branch creates new checkpoints)
     turnCheckpointsRef.current = null;
 
+    // One request_key per retry click / fork, reused on a retransmit after a
+    // lost response — see createRequestKeyTracker.
+    const requestKey = requestKeyRef.current.take(
+      viaRetryEndpoint
+        ? `retry|${threadId}`
+        : `fork|${threadId}|${checkpointId ?? ''}|${forkFromTurn ?? ''}|${message ?? ''}`,
+    );
     let wasDisconnected = false;
     const wasInterruptedRef = { current: false };
     try {
-      const refs = {
-        contentOrderCounterRef,
-        currentReasoningIdRef,
-        currentToolCallIdRef,
-        steeringAtOrderRef,
-        updateTodoListCard: updateTodoListCard || undefined,
-        isNewConversation: false,
-        subagentStateRefs: subagentStateRefsRef.current,
-        updateSubagentCard: updateSubagentCard || (() => {}),
-      };
-      const processEvent = createStreamEventProcessor(assistantMessageId, refs, getTaskIdFromEvent, wasInterruptedRef);
+      const refs = buildStreamRefs();
+      const processEvent = createStreamEventProcessor(runtime, streamRouterDeps, assistantMessageId, refs, getTaskIdFromEvent, wasInterruptedRef);
 
-      const result = await sendChatMessageStream(
-        message || '',
-        workspaceId,
-        threadId,
-        [],
-        false,
-        processEvent,
-        null,
-        agentMode,
-        userLocale,
-        userTimezone,
-        checkpointId,
-        forkFromTurn,
-        modelOptions.model || null,
-        modelOptions.reasoningEffort || null,
-        modelOptions.fastMode || null,
-        platform,
-        // Latch run_id from response headers — see handleSendMessage for the
-        // same closing-the-race rationale.
-        (runId) => {
-          currentRunIdRef.current = runId;
-        },
-        abortController.signal,
-      );
+      // Retry goes through POST /retry (v4 attempt chain: server validates
+      // the latest attempt + resolves the checkpoint, no truncation); edit/
+      // regenerate keep the fork path.
+      // Latch run_id from response headers — see handleSendMessage for the same
+      // closing-the-race rationale. Shared by both branches.
+      const latchRunId = (runId: string) => {
+        requestKeyRef.current.clear();
+        currentRunIdRef.current = runId;
+      };
+      const result = viaRetryEndpoint
+        ? await sendRetryStream(
+            workspaceId,
+            threadId,
+            processEvent,
+            modelOptions.model || null,
+            modelOptions.reasoningEffort || null,
+            modelOptions.fastMode || null,
+            latchRunId,
+            abortController.signal,
+            requestKey,
+          )
+        : await sendChatMessageStream(
+            message || '',
+            workspaceId,
+            threadId,
+            [],
+            false,
+            processEvent,
+            null,
+            agentMode,
+            userLocale,
+            userTimezone,
+            checkpointId,
+            forkFromTurn,
+            modelOptions.model || null,
+            modelOptions.reasoningEffort || null,
+            modelOptions.fastMode || null,
+            platform,
+            latchRunId,
+            abortController.signal,
+            requestKey,
+          );
 
       // User hit stop: stopWorkflow already finalized + tore down. Exception: a
       // foreground handler aborted this stream on tab resume (background abort,
@@ -5694,6 +2354,12 @@ export function useChatMessages(
       markTranscriptPersisted();
     } catch (err: unknown) {
       if ((err as Error)?.name === 'AbortError' || wasStoppedRef.current) {
+        return;
+      }
+      // 409 duplicate_request: an earlier copy of this retry/fork was already
+      // accepted (its response was lost) — adopt that run instead of erroring.
+      if (adoptDuplicateRun(err, assistantMessageId)) {
+        wasDisconnected = true;
         return;
       }
       console.error('[streamFromCheckpoint] Error:', err);
@@ -5809,78 +2475,47 @@ export function useChatMessages(
   }, [messages, getTurnCheckpoints, streamFromCheckpoint]);
 
   /**
-   * Retry the last failed/errored turn from the latest checkpoint.
+   * Retry the last failed turn as a new attempt on the same turn (v4 attempt
+   * chain). The backend validates the latest attempt and resolves the retry
+   * checkpoint itself — no client checkpoint fetch, no fork/truncation of
+   * persisted turns. The UI still replaces the errored bubble in place so the
+   * positional assistant-bubble count stays aligned with backend turn_index.
    */
   const handleRetry = useCallback(async (modelOptions: ModelOptions = {}) => {
-    const turnsData = await getTurnCheckpoints();
-    const checkpointId = turnsData?.retry_checkpoint_id;
-    if (!checkpointId) {
-      setMessageError('Unable to retry: no checkpoint available');
-      return;
-    }
-
-    if (!turnsData.turns?.length) {
-      setMessageError('Unable to retry: checkpoint data unavailable');
-      return;
-    }
-
-    // Find the last error message and truncate from there
     const lastErrorIndex = messages.findLastIndex((m) => m.role === 'assistant' && (m as AssistantMessage).error);
     const truncateIndex = lastErrorIndex !== -1 ? lastErrorIndex : messages.length;
+    await streamFromCheckpoint(null, null, truncateIndex, null, modelOptions, true);
+  }, [messages, streamFromCheckpoint]);
 
-    // Retry overwrites the last turn
-    const forkFromTurn = turnsData.turns.length - 1;
-    await streamFromCheckpoint(null, checkpointId, truncateIndex, forkFromTurn, modelOptions);
-  }, [messages, getTurnCheckpoints, streamFromCheckpoint]);
+  /** Cross-lane callbacks for the live event router; direct references, so
+   * this literal must stay below every referent. */
+  const streamRouterDeps: StreamRouterDeps = {
+    applyFallbackSuggestion,
+    applyModelStatus,
+    clearModelStatus,
+    handleSendSteering,
+    insertNotification,
+    loadConversationHistory,
+    releaseStreamOwnership,
+    attachSubagentMux,
+    setMarketWatch,
+  };
 
-  // ==================== Feedback ====================
-
-  const deriveTurnIndex = useCallback((messageId: string): number => {
-    const msgIndex = messages.findIndex(m => m.id === messageId);
-    if (msgIndex === -1) return -1;
-    return messages.slice(0, msgIndex + 1).filter(m => m.role === 'assistant' && !m.isSteering).length - 1;
-  }, [messages]);
-
-  const handleThumbUp = useCallback(async (messageId: string) => {
-    const turnIndex = deriveTurnIndex(messageId);
-    if (turnIndex === -1) return null;
-
-    const existing = feedbackMapRef.current[turnIndex];
-    try {
-      if (existing?.rating === 'thumbs_up') {
-        await removeFeedback(threadId, turnIndex);
-        delete feedbackMapRef.current[turnIndex];
-        return { rating: null };
-      } else {
-        const result = await submitFeedback(threadId, turnIndex, 'thumbs_up');
-        feedbackMapRef.current[turnIndex] = result;
-        return { rating: 'thumbs_up' };
-      }
-    } catch (e) {
-      console.error('[Feedback] Error:', e);
-      return null;
-    }
-  }, [deriveTurnIndex, threadId]);
-
-  const handleThumbDown = useCallback(async (messageId: string, issueCategories: string[], comment: string | null, consentHumanReview: boolean) => {
-    const turnIndex = deriveTurnIndex(messageId);
-    if (turnIndex === -1) return null;
-
-    try {
-      const result = await submitFeedback(threadId, turnIndex, 'thumbs_down', issueCategories, comment, consentHumanReview);
-      feedbackMapRef.current[turnIndex] = result;
-      return { rating: 'thumbs_down' };
-    } catch (e) {
-      console.error('[Feedback] Error:', e);
-      return null;
-    }
-  }, [deriveTurnIndex, threadId]);
-
-  const getFeedbackForMessage = useCallback((messageId: string) => {
-    const turnIndex = deriveTurnIndex(messageId);
-    if (turnIndex === -1) return null;
-    return feedbackMapRef.current[turnIndex] || null;
-  }, [deriveTurnIndex]);
+  /** Composition-level callbacks for the recovery/ownership lifecycle; direct
+   * references, so this literal must stay below every referent. */
+  const recoveryDeps: RecoveryDeps = {
+    createProcessor: (assistantMessageId, refs, wasInterruptedRef) =>
+      createStreamEventProcessor(runtime, streamRouterDeps, assistantMessageId, refs, getTaskIdFromEvent, wasInterruptedRef),
+    buildStreamRefs,
+    clearSubagentCards,
+    isSettledTask,
+    attachSubagentMux,
+    muxOpenTaskIds,
+    markTranscriptPersisted,
+    clearModelStatus,
+    finalizePendingTodos,
+    reportBackWatch,
+  };
 
   return {
     messages,

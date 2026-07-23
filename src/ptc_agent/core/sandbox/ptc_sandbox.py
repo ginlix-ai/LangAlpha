@@ -1,34 +1,19 @@
 """PTC Sandbox - Manages sandbox for Programmatic Tool Calling execution."""
 
 import asyncio
-import base64
-import hashlib
 import json
 import shlex
-import textwrap
 import time
-import uuid
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
 from typing import Any
 
 import structlog
 
-from src.observability import (
-    safe_record,
-    sandbox_asset_sync_phase_duration_ms,
-    sandbox_asset_sync_total_ms,
-    sandbox_execute_duration_ms,
-    workspace_fs_bytes,
-)
-from src.observability.tracing import tracer as _otel_tracer
 
 from ptc_agent.config.core import CoreConfig
-from ptc_agent.core.paths import ALWAYS_HIDDEN_DIR_NAMES
 from ptc_agent.core.sandbox._defaults import DEFAULT_DEPENDENCIES, SNAPSHOT_PYTHON_VERSION
-from ptc_agent.core.sandbox.migration import CURRENT_LAYOUT_VERSION, run_layout_migrations
 from ptc_agent.core.sandbox.providers import create_provider
 from ptc_agent.core.sandbox.retry import RetryPolicy, async_retry_with_backoff
 from ptc_agent.core.sandbox.runtime import (
@@ -37,149 +22,26 @@ from ptc_agent.core.sandbox.runtime import (
     SandboxGoneError,
     SandboxRuntime,
     SandboxTransientError,
-    SessionCommandResult,
 )
 
 from ..mcp_registry import MCPRegistry
 from ..mcp_sanitize import (
-    discovery_affecting_payload,
     is_user_server,
-    sanitize_tool_name,
 )
-from ..tool_generator import MCP_CLIENT_CODEGEN_VERSION, ToolFunctionGenerator
+from ..tool_generator import ToolFunctionGenerator
+
+from ptc_agent.core.sandbox._shared import (
+    ExecutionResult,
+    SyncResult,
+    _internal_package_files,
+)
+from ptc_agent.core.sandbox import assets as _assets
+from ptc_agent.core.sandbox import execution as _execution
+from ptc_agent.core.sandbox import files as _files
+from ptc_agent.core.sandbox import mcp_setup as _mcp_setup
+from ptc_agent.core.sandbox import sessions as _sessions
 
 logger = structlog.get_logger(__name__)
-
-# Lock entry fields excluded from skills manifest hash — these timestamps
-# change on every computation and would force needless re-uploads.
-_LOCK_VOLATILE_KEYS: frozenset[str] = frozenset({"installedAt", "updatedAt"})
-
-# Shared runtime modules the builtin MCP server files import as siblings
-# (``import _bootstrap`` / ``from mcp_servers._envelope import ...``). They are
-# not server entry points, so the per-server upload loop never sees them —
-# ship and hash them explicitly whenever any builtin server file ships, or the
-# servers crash on import in synced sandboxes (and prune would delete them).
-_MCP_SHARED_RUNTIME_FILES: tuple[str, ...] = (
-    "_bootstrap.py",
-    "_envelope.py",
-    "_yf_common.py",
-)
-
-# Internal ``src.<pkg>`` packages mirrored into the sandbox's ``_internal/src/``
-# so sandbox code and the builtin MCP servers can ``import src.<pkg>`` without
-# the full repo. Shipped and hashed as ONE manifest module (``internal_packages``)
-# because the upload is all-or-nothing; every regular file ships so data seeds
-# (e.g. ``market_protocol/instruments.yaml``) can never silently drop.
-_SANDBOX_INTERNAL_PACKAGES: tuple[str, ...] = ("data_client", "market_protocol")
-
-
-@dataclass
-class ChartData:
-    """Captured chart from matplotlib execution."""
-
-    type: str
-    title: str
-    png_base64: str | None = None
-    elements: list[Any] = field(default_factory=list)
-
-
-@dataclass
-class ExecutionResult:
-    """Result of code execution in sandbox."""
-
-    success: bool
-    stdout: str
-    stderr: str
-    duration: float
-    files_created: list[str]
-    files_modified: list[str]
-    execution_id: str
-    code_hash: str
-    charts: list[ChartData] = field(default_factory=list)
-    mcp_trace: list[dict] = field(default_factory=list)
-
-
-@dataclass
-class SyncResult:
-    """Result of a unified sandbox asset sync operation."""
-
-    refreshed_modules: list[str]
-    forced: bool
-
-
-def _sha256_file(path: Path) -> str:
-    """Return the hex SHA-256 digest of a file's contents."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _hash_dict(d: dict[str, str]) -> str:
-    """Deterministic SHA-256 hash of a string→string dict."""
-    payload = "\n".join(f"{k}:{v}" for k, v in sorted(d.items()))
-    return hashlib.sha256(payload.encode()).hexdigest()
-
-
-def _internal_package_files(src_dir: Path) -> list[tuple[Path, Path]]:
-    """``(local_path, path relative to src/)`` for every internal-package file.
-
-    Walks ``_SANDBOX_INTERNAL_PACKAGES`` with ``rglob("*")`` — every regular
-    file except ``__pycache__`` ships, so data seeds can never silently drop
-    out of the sync. Empty when ``src/__init__.py`` is missing.
-    """
-    src_init = src_dir / "__init__.py"
-    if not src_init.exists():
-        return []
-    files: list[tuple[Path, Path]] = [(src_init, Path("__init__.py"))]
-    for pkg in _SANDBOX_INTERNAL_PACKAGES:
-        pkg_dir = (src_dir / pkg).resolve()
-        if not pkg_dir.exists():
-            logger.warning(
-                "Internal package not found - skipping",
-                package=pkg,
-                package_dir=str(pkg_dir),
-            )
-            continue
-        for file_path in sorted(pkg_dir.rglob("*")):
-            if not file_path.is_file() or "__pycache__" in file_path.parts:
-                continue
-            files.append((file_path, file_path.relative_to(src_dir)))
-    return files
-
-
-def _resolve_local_path(local_path: str, config_dir: Path | None) -> str | None:
-    """Resolve a relative file path, trying *config_dir* first, then CWD."""
-    p = Path(local_path)
-    if not p.is_absolute() and config_dir:
-        candidate = (config_dir / local_path).resolve()
-        if candidate.exists():
-            return str(candidate)
-    if p.exists():
-        return str(p)
-    return None
-
-
-def _entry_name(entry) -> str:
-    """Extract name from a file entry — handles both dict and object forms."""
-    if isinstance(entry, dict):
-        return str(entry.get("name", entry))
-    return str(getattr(entry, "name", entry))
-
-
-def _entry_is_dir(entry) -> bool:
-    """Extract is_dir from a file entry — handles both dict and object forms."""
-    if isinstance(entry, dict):
-        return bool(entry.get("is_dir", False))
-    return bool(getattr(entry, "is_dir", False))
-
-
-def _get_sandbox_eligible_skills() -> tuple[set[str], set[str]]:
-    """Return (sandbox_skill_names, all_registry_names) for flash-only filtering.
-
-    Skills present in SKILL_REGISTRY but not in sandbox_skill_names are
-    flash-only and should be skipped during sandbox operations.
-    """
-    from ptc_agent.agent.middleware.skills import SKILL_REGISTRY, get_sandbox_skill_names
-
-    return get_sandbox_skill_names(), set(SKILL_REGISTRY.keys())
 
 
 class PTCSandbox:
@@ -395,22 +257,6 @@ class PTCSandbox:
                     mcp_packages.append(server.args[1])
         return mcp_packages
 
-    def _normalize_search_path(self, path: str) -> str:
-        """Normalize search path to absolute sandbox path.
-
-        Converts relative/virtual paths to absolute paths for search operations.
-
-        Args:
-            path: Path to normalize (".", relative, or absolute)
-
-        Returns:
-            Absolute sandbox path
-        """
-        if path == ".":
-            return self._work_dir
-        if not path.startswith("/"):
-            return f"{self._work_dir}/{path}"
-        return path
 
     def _build_sandbox_env_vars(self) -> dict[str, str]:
         """Build environment variables to inject at sandbox creation time.
@@ -1049,605 +895,12 @@ class PTCSandbox:
 
     # ── Unified manifest helpers ────────────────────────────────────────
 
-    def _compute_tool_schema_hash(self) -> str:
-        """Hash the current MCP tool schemas from the live registry.
-
-        Captures tool names + input schemas so that adding/removing/modifying
-        a tool on a running MCP server is detected even if the .py file is unchanged.
-        """
-        if not self.mcp_registry:
-            return ""
-        all_tools = self.mcp_registry.get_all_tools()
-        parts: list[str] = []
-        for server_name in sorted(all_tools):
-            for tool in sorted(all_tools[server_name], key=lambda t: t.name):
-                parts.append(
-                    f"{server_name}:{tool.name}:{json.dumps(tool.input_schema, sort_keys=True)}"
-                )
-        return hashlib.sha256("\n".join(parts).encode()).hexdigest()
-
-    def _compute_user_mcp_config_hash(self) -> str:
-        """Hash user (``source='workspace'``) server CONFIG — never secret values.
-
-        Captures transport/command/args/url, the full env/header maps (literal
-        values AND ``${vault:NAME}`` ref strings — the stored values are never
-        resolved secrets), and the effective secret-less-discovery decision, so a
-        config-only edit — a literal ``MODE=prod`` -> ``staging`` change, a new
-        authenticated header, or a vault-ref retarget under the same key — always
-        re-uploads the regenerated ``mcp_client.py``. Shares
-        :func:`discovery_affecting_payload` with the per-server discovery-cache
-        key so the upload hash and the cache key can never disagree. Returns ""
-        when there are no user servers so builtin-only workspaces are untouched.
-        """
-        user_servers = self._user_servers()
-        if not user_servers:
-            return ""
-
-        parts: list[str] = []
-        for server in sorted(user_servers, key=lambda s: s.name):
-            payload = discovery_affecting_payload(server, include_identity=True)
-            parts.append(json.dumps(payload, sort_keys=True))
-        return hashlib.sha256("\n".join(parts).encode()).hexdigest()
-
-    async def _compute_skills_module(self, skill_roots: list[str]) -> dict[str, Any]:
-        """Compute a skills module manifest with content-based SHA-256 hashing.
-
-        Unlike the legacy ``_compute_skills_manifest`` (size+mtime), this hashes
-        actual file contents so the manifest is deterministic and portable.
-        """
-
-        skills_base = f"{self._work_dir}/.agents/skills"
-
-        def build() -> dict[str, Any]:
-            from ptc_agent.agent.middleware.skills.discovery import (
-                parse_skill_metadata,
-            )
-
-            sandbox_skill_names, all_registry_names = _get_sandbox_eligible_skills()
-
-            files: dict[str, str] = {}  # rel_path → sha256
-            skills_metadata: dict[str, dict[str, Any]] = {}
-            seen_skill_names: set[str] = set()
-
-            for root_str in skill_roots:
-                root = Path(root_str).expanduser()
-                if not root.exists():
-                    continue
-
-                for skill_dir in root.iterdir():
-                    if not skill_dir.is_dir():
-                        continue
-                    if not (skill_dir / "SKILL.md").exists():
-                        continue
-
-                    skill_name = skill_dir.name
-                    # Skip flash-only skills (not needed in sandbox)
-                    if (
-                        skill_name not in sandbox_skill_names
-                        and skill_name in all_registry_names
-                    ):
-                        continue
-
-                    # Later sources override earlier ones
-                    if skill_name in seen_skill_names:
-                        prefix = f"{skill_name}/"
-                        files = {
-                            k: v for k, v in files.items() if not k.startswith(prefix)
-                        }
-                    seen_skill_names.add(skill_name)
-
-                    for fp in skill_dir.rglob("*"):
-                        if not fp.is_file():
-                            continue
-                        if "__pycache__" in fp.parts or fp.name == "LICENSE.txt":
-                            continue
-                        rel = f"{skill_name}/{fp.relative_to(skill_dir)}"
-                        files[rel] = _sha256_file(fp)
-
-                    # Parse SKILL.md frontmatter
-                    try:
-                        content = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-                    except (OSError, UnicodeDecodeError):
-                        continue
-                    sandbox_path = f"{skills_base}/{skill_name}/SKILL.md"
-                    meta = parse_skill_metadata(content, sandbox_path, skill_name)
-                    skills_metadata[skill_name] = dict(meta)
-
-                    # Build lock entry for platform skill
-                    from ptc_agent.agent.middleware.skills.lock import build_lock_entry
-
-                    content_hash = f"sha256:{_sha256_file(skill_dir / 'SKILL.md')}"
-                    lock_entry = build_lock_entry(
-                        meta,
-                        owner="platform",
-                        source="platform",
-                        source_type="platform",
-                        content_hash=content_hash,
-                    )
-                    skills_metadata[skill_name]["lock_entry"] = dict(lock_entry)
-
-            version = _hash_dict(files)
-
-            # Include lock entries in version hash so manifest detects ownership changes.
-            # Exclude volatile timestamp fields (installedAt, updatedAt) — they change
-            # on every manifest computation and would force a full skills re-upload
-            # on every workspace restart even when no skill files changed.
-            lock_hash_parts = []
-            for name in sorted(skills_metadata):
-                entry = skills_metadata[name].get("lock_entry")
-                if entry:
-                    stable = {k: v for k, v in entry.items() if k not in _LOCK_VOLATILE_KEYS}
-                    lock_hash_parts.append(f"{name}:{json.dumps(stable, sort_keys=True)}")
-            if lock_hash_parts:
-                lock_payload = "\n".join(lock_hash_parts)
-                combined = f"{version}\n{lock_payload}"
-                version = hashlib.sha256(combined.encode()).hexdigest()
-
-            return {"version": version, "files": files, "skills": skills_metadata}
-
-        return await asyncio.to_thread(build)
-
-    async def _compute_sandbox_manifest(
-        self,
-        *,
-        skill_roots: list[str] | None = None,
-        tokens: dict | None = None,
-        user_id: str | None = None,
-        workspace_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Compute the unified local manifest for all sandbox asset modules."""
-        modules: dict[str, Any] = {}
-        config_dir = getattr(self.config, "config_file_dir", None)
-
-        # ── Module: mcp_servers ──
-        # Built-ins only: this module ships local ``uv run python`` server files
-        # from the host repo. User servers never ship host-local .py files, so
-        # the mcp_servers hash stays byte-identical for builtin-only workspaces.
-        mcp_files: dict[str, str] = {}  # filename → sha256
-        for server in self._builtin_servers():
-            if not server.enabled:
-                continue
-            if server.transport != "stdio" or server.command != "uv":
-                continue
-            if (
-                len(server.args) < 3
-                or server.args[0] != "run"
-                or server.args[1] != "python"
-            ):
-                continue
-            resolved = _resolve_local_path(server.args[2], config_dir)
-            if resolved:
-                mcp_files[Path(resolved).name] = _sha256_file(Path(resolved))
-        if mcp_files:
-            for shared_name in _MCP_SHARED_RUNTIME_FILES:
-                shared = _resolve_local_path(f"mcp_servers/{shared_name}", config_dir)
-                if shared:
-                    mcp_files[shared_name] = _sha256_file(Path(shared))
-        mcp_version = _hash_dict(mcp_files)
-        modules["mcp_servers"] = {"version": mcp_version, "files": mcp_files}
-
-        # ── Module: internal_packages (src/data_client, src/market_protocol) ──
-        # One module for the whole set: the upload is all-or-nothing, so a single
-        # version is the honest re-upload gate. Hashes the exact file set the
-        # upload ships (same collection helper), so nothing can drift or drop.
-        repo_root = config_dir or Path.cwd()
-        src_dir = (repo_root / "src").resolve()
-        internal_files = {
-            str(rel): _sha256_file(local)
-            for local, rel in _internal_package_files(src_dir)
-        }
-        modules["internal_packages"] = {
-            "version": _hash_dict(internal_files),
-            "files": internal_files,
-        }
-
-        # ── Module: tool_modules (derived) ──
-        tool_schema_hash = self._compute_tool_schema_hash()
-        source_versions = {
-            "mcp_servers": mcp_version,
-            "tool_schemas": tool_schema_hash,
-            # Generated-client output version. Folded in unconditionally so a
-            # codegen bump (e.g. new _trace_mcp_call template) changes tm_version
-            # for EVERY workspace and re-uploads the regenerated mcp_client.py on
-            # the next sync — the manifest otherwise hashes only generation inputs.
-            "client_codegen": MCP_CLIENT_CODEGEN_VERSION,
-        }
-        # User-server config hash — GATED on the presence of user servers so a
-        # builtin-only workspace's source_versions dict (and thus tool_modules
-        # version) is byte-identical to pre-change. A config-only edit (transport
-        # /command/args/url/header-NAMES — never values) changes this hash and
-        # so re-uploads the regenerated mcp_client.py via the tool_modules diff.
-        user_mcp_hash = self._compute_user_mcp_config_hash()
-        if user_mcp_hash:
-            source_versions["user_mcp_config"] = user_mcp_hash
-        tm_version = _hash_dict(source_versions)
-        modules["tool_modules"] = {
-            "version": tm_version,
-            "source_versions": source_versions,
-        }
-
-        # ── Module: skills ──
-        if skill_roots:
-            modules["skills"] = await self._compute_skills_module(skill_roots)
-
-        # ── Module: tokens ──
-        if tokens:
-            # Version captures the config identity; freshness is checked via minted_at.
-            token_config_parts = {
-                "user_id": user_id or "",
-                "workspace_id": workspace_id or "",
-                "client_id": tokens.get("client_id", ""),
-            }
-            modules["tokens"] = {
-                "version": _hash_dict(token_config_parts),
-                "minted_at": time.time(),
-                "user_id": user_id or "",
-                "workspace_id": workspace_id or "",
-            }
-
-        return {
-            "schema_version": 1,
-            "layout_version": CURRENT_LAYOUT_VERSION,
-            "modules": modules,
-        }
 
     # ── Unified manifest I/O ─────────────────────────────────────────
 
-    async def _read_unified_manifest(self) -> dict[str, Any] | None:
-        """Read the unified manifest from the sandbox.
-
-        Bypasses path validation for ``_internal/``.
-        Returns None if missing, corrupt, or wrong ``schema_version``
-        (triggers full refresh in the caller).
-        """
-        assert self.runtime is not None
-        try:
-            raw = await self._runtime_call(
-                self.runtime.download_file,
-                self._unified_manifest_path,
-                retry_policy=RetryPolicy.SAFE,
-            )
-            if raw:
-                text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-                parsed = json.loads(text)
-                if isinstance(parsed, dict) and parsed.get("schema_version") == 1:
-                    return parsed
-        except Exception:
-            pass  # Missing file, decode error, or JSON error → full refresh
-        return None
-
-    async def _write_unified_manifest(self, manifest: dict[str, Any]) -> None:
-        """Write the unified manifest to the sandbox.
-
-        Bypasses path validation since ``_internal/`` is a protected directory
-        that the agent cannot access, but the system needs to write to.
-        """
-        assert self.runtime is not None
-        await self._runtime_call(
-            self.runtime.upload_file,
-            json.dumps(manifest, sort_keys=True).encode("utf-8"),
-            self._unified_manifest_path,
-            retry_policy=RetryPolicy.SAFE,
-        )
-
-    async def _cleanup_legacy_manifests(self) -> None:
-        """Remove old per-module manifest files after migration to unified manifest."""
-        work_dir = self._work_dir
-        legacy_paths = [
-            f"{work_dir}/mcp_servers/.mcp_manifest.json",
-            f"{work_dir}/skills/.skills_manifest.json",
-            f"{work_dir}/.agents/skills/.skills_manifest.json",
-        ]
-        assert self.runtime is not None
-        try:
-            rm_cmd = "rm -f " + " ".join(shlex.quote(p) for p in legacy_paths)
-            await self._runtime_call(
-                self.runtime.exec,
-                rm_cmd,
-                retry_policy=RetryPolicy.SAFE,
-            )
-        except Exception:
-            pass  # Best-effort cleanup
-
-    async def _upload_mcp_server_files_impl(self) -> None:
-        """Upload MCP server .py files to sandbox (pure upload, no manifest check)."""
-        work_dir = self._work_dir
-        mcp_servers_dir = f"{work_dir}/mcp_servers"
-        config_dir = getattr(self.config, "config_file_dir", None)
-
-        files_to_upload: list[tuple[str, str, str]] = []
-        expected_files: set[str] = set()
-
-        # Built-ins only: only built-in servers ship host-local ``uv run python``
-        # files. User servers run via npx/uvx/http and have nothing to upload here.
-        for server in self._builtin_servers():
-            if not server.enabled:
-                continue
-            if server.transport == "stdio" and server.command == "uv":
-                if (
-                    len(server.args) >= 3
-                    and server.args[0] == "run"
-                    and server.args[1] == "python"
-                ):
-                    resolved = _resolve_local_path(server.args[2], config_dir)
-                    if resolved:
-                        filename = Path(resolved).name
-                        sandbox_path = f"{mcp_servers_dir}/{filename}"
-                        expected_files.add(filename)
-                        files_to_upload.append((server.name, resolved, sandbox_path))
-                    else:
-                        searched = [server.args[2]]
-                        if config_dir:
-                            searched.append(str(config_dir / server.args[2]))
-                        logger.warning(
-                            f"MCP server file not found: {server.args[2]}",
-                            server=server.name,
-                            searched_paths=searched,
-                        )
-
-        # Shared runtime siblings (imported by the server files) ship alongside
-        # them; adding them to expected_files also shields them from the prune.
-        if files_to_upload:
-            for shared_name in _MCP_SHARED_RUNTIME_FILES:
-                shared = _resolve_local_path(f"mcp_servers/{shared_name}", config_dir)
-                if shared:
-                    expected_files.add(shared_name)
-                    files_to_upload.append(
-                        ("_shared", shared, f"{mcp_servers_dir}/{shared_name}")
-                    )
-
-        assert self.runtime is not None
-        sandbox = self.runtime
-
-        await self._runtime_call(
-            sandbox.exec,
-            f"mkdir -p {mcp_servers_dir}",
-            retry_policy=RetryPolicy.SAFE,
-        )
-
-        # Prune stale files — single rm command instead of N
-        existing_entries = await self.als_directory(mcp_servers_dir)
-        if existing_entries:
-            files_to_remove = [
-                entry["path"]
-                for entry in existing_entries
-                if not entry.get("is_dir", False)
-                and entry.get("name") not in expected_files
-                and entry.get("name")
-                not in (".mcp_manifest.json", ".sandbox_manifest.json")
-            ]
-            if files_to_remove:
-                rm_cmd = "rm -f " + " ".join(shlex.quote(p) for p in files_to_remove)
-                await self._runtime_call(
-                    sandbox.exec,
-                    rm_cmd,
-                    retry_policy=RetryPolicy.SAFE,
-                )
-                logger.info(
-                    "Pruned MCP server files",
-                    removed=len(files_to_remove),
-                    sandbox_root=mcp_servers_dir,
-                )
-
-        # Batch upload — single HTTP request via upload_files
-        if files_to_upload:
-            batch = [
-                (local, remote)
-                for _, local, remote in files_to_upload
-            ]
-            await self._runtime_call(
-                sandbox.upload_files,
-                batch,
-                retry_policy=RetryPolicy.SAFE,
-            )
-            for name, local, remote in files_to_upload:
-                logger.info(
-                    "Uploaded MCP server file",
-                    server=name,
-                    local_path=local,
-                    sandbox_path=remote,
-                )
 
     # ── Unified sync entry point ─────────────────────────────────────
 
-    async def sync_sandbox_assets(
-        self,
-        *,
-        skill_dirs: list[tuple[str, str]] | None = None,
-        reusing_sandbox: bool = False,
-        force_refresh: bool = False,
-        tokens: dict | None = None,
-        user_id: str | None = None,
-        workspace_id: str | None = None,
-        on_progress: Callable[[str], None] | None = None,
-    ) -> SyncResult:
-        """Sync all sandbox assets using a single unified manifest.
-
-        Replaces the previous ``sync_tools()`` and ``sync_skills()`` methods
-        with a single entry point that tracks MCP servers, data client, tool
-        modules, skills, and tokens in one manifest file.
-
-        Args:
-            skill_dirs: Ordered list of (local_path, sandbox_path) for skills.
-            reusing_sandbox: Whether reconnecting to an existing sandbox.
-            force_refresh: Force re-upload of all modules regardless of manifest.
-            tokens: Pre-minted OAuth tokens (from workspace_manager).
-            user_id: User ID for token tracking.
-            workspace_id: Workspace ID for token tracking.
-            on_progress: Optional callback for reporting progress.
-
-        Returns:
-            SyncResult with list of refreshed module names.
-        """
-        await self._wait_ready()
-
-        async with self._tool_refresh_lock:
-            await self.ensure_sandbox_ready()
-
-            _t0 = time.time()
-            _sync_phases: dict[str, float] = {}
-
-            def _mark_sync(name: str) -> None:
-                nonlocal _t0
-                now = time.time()
-                _sync_phases[name] = (now - _t0) * 1000
-                _t0 = now
-
-            # Steps 0+1+2: all three are independent — parallelize
-            # _prune_disabled_tool_modules → sandbox rm (disjoint from manifest paths)
-            # _compute_sandbox_manifest → local CPU/disk only
-            # _read_unified_manifest → sandbox HTTP GET
-            skill_roots = [d for d, _ in skill_dirs] if skill_dirs else None
-
-            _, local_manifest, remote_manifest = await asyncio.gather(
-                self._prune_disabled_tool_modules(),
-                self._compute_sandbox_manifest(
-                    skill_roots=skill_roots,
-                    tokens=tokens,
-                    user_id=user_id,
-                    workspace_id=workspace_id,
-                ),
-                self._read_unified_manifest(),
-            )
-            _mark_sync("manifest")
-
-            # 2b. Run layout migrations if needed (zero cost when current)
-            remote_layout = (remote_manifest or {}).get("layout_version", 1)
-            await run_layout_migrations(
-                self.runtime, self._work_dir, remote_layout
-            )
-
-            # 3. Determine which modules changed (pure CPU)
-            if force_refresh or remote_manifest is None or not reusing_sandbox:
-                changed_modules = set(local_manifest["modules"].keys())
-            else:
-                changed_modules: set[str] = set()
-                for mod_name, mod_data in local_manifest["modules"].items():
-                    remote_mod = remote_manifest.get("modules", {}).get(mod_name)
-                    if mod_name == "tokens":
-                        if self._token_needs_refresh(
-                            remote_mod, tokens, user_id, workspace_id
-                        ):
-                            changed_modules.add("tokens")
-                    elif (
-                        remote_mod is None
-                        or remote_mod.get("version") != mod_data["version"]
-                    ):
-                        changed_modules.add(mod_name)
-
-            if not changed_modules:
-                if "skills" in local_manifest["modules"]:
-                    self._skills_manifest = local_manifest["modules"]["skills"]
-                return SyncResult(refreshed_modules=[], forced=False)
-
-            refreshed: list[str] = []
-
-            # 4. Upload changed modules
-            # Intent-based ordering: tool_modules after mcp_servers (derived from
-            # MCP definitions). All other modules write to disjoint sandbox paths
-            # and are safe to run in parallel.
-
-            async def _do_skills_upload() -> None:
-                """Skills sub-chain: collect → prune → upload (internally sequential)."""
-                local_skill_names = await self._collect_local_skill_names(
-                    [d for d, _ in skill_dirs]  # type: ignore[union-attr]
-                )
-                sandbox_base = skill_dirs[-1][1].rstrip("/")  # type: ignore[index]
-
-                # Download existing lock file once (shared by prune + upload)
-                existing_lock = await self._download_skills_lock(sandbox_base)
-
-                await self._prune_remote_skills(
-                    sandbox_base, local_skill_names, existing_lock=existing_lock
-                )
-                skills_mod = local_manifest["modules"].get("skills", {})
-                if skills_mod.get("files"):
-                    merged_lock = await self._upload_skills(
-                        skill_dirs,
-                        manifest=skills_mod,  # type: ignore[arg-type]
-                        existing_lock=existing_lock,
-                    )
-                    # Build complete skills cache from merged lock data
-                    if merged_lock:
-                        self._build_complete_skills_cache(
-                            skills_mod, merged_lock, sandbox_base
-                        )
-
-            # Group 1: independent uploads in parallel
-            parallel_uploads: list[tuple[str, Any]] = []
-            if "mcp_servers" in changed_modules:
-                if on_progress:
-                    on_progress("Syncing MCP server files...")
-                parallel_uploads.append(
-                    ("mcp_servers", self._upload_mcp_server_files_impl())
-                )
-            if "internal_packages" in changed_modules:
-                if on_progress:
-                    on_progress("Syncing internal packages...")
-                parallel_uploads.append(
-                    ("internal_packages", self._upload_internal_packages())
-                )
-            if "skills" in changed_modules and skill_dirs:
-                if on_progress:
-                    on_progress("Syncing skills...")
-                parallel_uploads.append(("skills", _do_skills_upload()))
-            if "tokens" in changed_modules and tokens:
-                if on_progress:
-                    on_progress("Uploading tokens...")
-                parallel_uploads.append(("tokens", self.upload_token_file(tokens)))
-
-            if parallel_uploads:
-                await asyncio.gather(*[coro for _, coro in parallel_uploads])
-                refreshed.extend(name for name, _ in parallel_uploads)
-            _mark_sync("uploads")
-
-            # Group 2: tool_modules AFTER mcp_servers (intent: derived from MCP definitions)
-            if "tool_modules" in changed_modules:
-                if on_progress:
-                    on_progress("Regenerating tool modules...")
-                await self._install_tool_modules()
-                refreshed.append("tool_modules")
-                _mark_sync("tool_modules")
-                try:
-                    await self._start_internal_mcp_servers()
-                except Exception as e:
-                    logger.warning("Failed to refresh MCP servers", error=str(e))
-                _mark_sync("mcp_start")
-
-            # Cache skills metadata (only if not already set by _build_complete_skills_cache,
-            # which includes user-installed skills from the lock file)
-            if self._skills_manifest is None and "skills" in local_manifest["modules"]:
-                self._skills_manifest = local_manifest["modules"]["skills"]
-
-            # Steps 5+6: independent — parallelize
-            await asyncio.gather(
-                self._write_unified_manifest(local_manifest),
-                self._cleanup_legacy_manifests(),
-            )
-            _mark_sync("finalize")
-
-            total = sum(_sync_phases.values())
-            phases = " ".join(f"{k}={v:.0f}ms" for k, v in _sync_phases.items())
-            logger.info(
-                f"[ASSET_SYNC] total={total:.0f}ms ({phases}) "
-                f"changed={','.join(sorted(refreshed)) or 'none'}"
-            )
-            # Mirror the [ASSET_SYNC] log into OTel: one phase histogram sample
-            # per bucket + a total, labeled by whether any module changed (so
-            # dashboards can split fast no-op syncs from expensive ones).
-            _reuse_label = "reuse" if reusing_sandbox else "fresh"
-            safe_record(
-                sandbox_asset_sync_total_ms,
-                total,
-                {"changed": "yes" if refreshed else "no", "sandbox": _reuse_label},
-            )
-            for _phase, _ms in _sync_phases.items():
-                safe_record(
-                    sandbox_asset_sync_phase_duration_ms,
-                    _ms,
-                    {"phase": _phase, "sandbox": _reuse_label},
-                )
-            return SyncResult(refreshed_modules=refreshed, forced=force_refresh)
 
     @staticmethod
     def _token_needs_refresh(
@@ -1679,34 +932,6 @@ class PTCSandbox:
             return True
         return False
 
-    async def _prune_disabled_tool_modules(self) -> None:
-        if not self.runtime or self._disabled_modules_pruned:
-            return
-
-        sandbox = self.runtime
-        disabled = [
-            server.name for server in self.config.mcp.servers if not server.enabled
-        ]
-        if not disabled:
-            self._disabled_modules_pruned = True
-            return
-
-        work_dir = self._work_dir
-        paths: list[str] = []
-        for name in disabled:
-            paths.append(f"{work_dir}/tools/{name}.py")
-            paths.append(f"{work_dir}/tools/docs/{name}")
-
-        async def remove_one(path: str) -> None:
-            await self._runtime_call(
-                sandbox.exec,
-                f"rm -rf {shlex.quote(path)}",
-                retry_policy=RetryPolicy.SAFE,
-            )
-
-        await asyncio.gather(*[remove_one(path) for path in paths])
-        self._disabled_modules_pruned = True
-        logger.debug("Pruned disabled tool modules", removed=len(paths))
 
     @staticmethod
     def _classify_execution_error(
@@ -1777,761 +1002,6 @@ class PTCSandbox:
             **kwargs,
         )
 
-    async def _collect_local_skill_names(
-        self, local_skill_roots: list[str]
-    ) -> set[str]:
-        def build() -> set[str]:
-            sandbox_skill_names, all_registry_names = _get_sandbox_eligible_skills()
-
-            names: set[str] = set()
-            for root_str in local_skill_roots:
-                root = Path(root_str).expanduser()
-                if not root.exists():
-                    continue
-                for skill_dir in root.iterdir():
-                    if not skill_dir.is_dir():
-                        continue
-                    if not (skill_dir / "SKILL.md").exists():
-                        continue
-                    skill_name = skill_dir.name
-                    # Skip flash-only skills so they get pruned from sandbox
-                    if (
-                        skill_name not in sandbox_skill_names
-                        and skill_name in all_registry_names
-                    ):
-                        continue
-                    names.add(skill_name)
-            return names
-
-        return await asyncio.to_thread(build)
-
-    async def _download_skills_lock(
-        self, sandbox_skills_base: str
-    ) -> dict[str, Any] | None:
-        """Download and parse the existing skills-lock.json from sandbox.
-
-        Returns parsed skill entries dict, or None if missing/corrupt.
-        """
-        from ptc_agent.agent.middleware.skills.lock import LOCK_FILENAME, parse_skills_lock
-
-        lock_path = f"{sandbox_skills_base}/{LOCK_FILENAME}"
-        assert self.runtime is not None
-        try:
-            raw = await self._runtime_call(
-                self.runtime.download_file,
-                lock_path,
-                retry_policy=RetryPolicy.SAFE,
-            )
-            if raw:
-                text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-                return parse_skills_lock(text)
-        except Exception:
-            logger.debug("No existing skills-lock.json (fresh sandbox or error)")
-        return None
-
-    def _build_complete_skills_cache(
-        self,
-        skills_mod: dict[str, Any],
-        merged_lock: dict[str, Any],
-        sandbox_skills_base: str,
-    ) -> None:
-        """Merge user-installed skills from lock file into the skills manifest cache.
-
-        This ensures known_skills in agent.py includes both platform and
-        user-installed skills, eliminating per-message downloads.
-        """
-        from ptc_agent.agent.middleware.skills.lock import lock_entry_to_skill_metadata
-
-        all_skills = dict(skills_mod.get("skills", {}))
-
-        lock_skills = merged_lock.get("skills", {})
-        for name, entry in lock_skills.items():
-            if entry.get("owner") == "user" and name not in all_skills:
-                skill_path = f"{sandbox_skills_base}/{name}/SKILL.md"
-                meta = lock_entry_to_skill_metadata(entry, skill_path)
-                all_skills[name] = dict(meta)
-
-        self._skills_manifest = {**skills_mod, "skills": all_skills}
-
-    async def sync_skills_lock(self) -> None:
-        """Reconcile skills-lock.json with the actual filesystem state.
-
-        Bidirectional sync in a single sandbox exec (1 API call):
-        - **Remove** lock entries whose skill directories no longer exist
-        - **Add** lock entries for skill directories not yet in the lock
-          (parses SKILL.md frontmatter to populate name/description/metadata)
-
-        Fast path: if no lock file exists and no skill directories exist,
-        exits immediately.  If lock is perfectly in sync, no write occurs.
-
-        Intended to be called post-completion alongside file backup.
-        Self-healing in discovery.py serves as a fallback if this fails.
-        """
-        if not self.runtime:
-            return
-        skills_base = f"{self._work_dir}/.agents/skills"
-        lock_path = f"{skills_base}/skills-lock.json"
-
-        # Single inline Python script that runs entirely in the sandbox.
-        # Reads dirs + lock file, diffs, parses SKILL.md for new entries,
-        # writes updated lock — all in one exec round trip.
-        # Uses json.dumps() for path interpolation (not shlex.quote) because
-        # values appear as Python string literals inside python3 -c.
-        script = textwrap.dedent(f"""\
-            python3 -c '
-import json, os, re, hashlib, sys
-from datetime import datetime, timezone
-
-SKILLS_BASE = {json.dumps(skills_base)}
-LOCK_PATH = {json.dumps(lock_path)}
-
-# 1. List skill dirs (only dirs containing SKILL.md)
-dirs = set()
-if os.path.isdir(SKILLS_BASE):
-    for name in os.listdir(SKILLS_BASE):
-        p = os.path.join(SKILLS_BASE, name)
-        if os.path.isdir(p) and os.path.isfile(os.path.join(p, "SKILL.md")):
-            dirs.add(name)
-
-# 2. Read existing lock
-lock_data = {{"version": 1, "skills": {{}}}}
-if os.path.isfile(LOCK_PATH):
-    try:
-        with open(LOCK_PATH) as f:
-            lock_data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        pass
-skills = lock_data.get("skills", {{}})
-
-# 3. Compute diff
-locked_names = set(skills.keys())
-to_remove = locked_names - dirs
-to_add = dirs - locked_names
-
-if not to_remove and not to_add:
-    print(json.dumps({{"status": "noop", "removed": 0, "added": 0}}))
-    sys.exit(0)
-
-# 4. Remove stale entries
-for name in to_remove:
-    del skills[name]
-
-# 5. Add new entries by parsing SKILL.md frontmatter
-now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-for name in sorted(to_add):
-    skill_md = os.path.join(SKILLS_BASE, name, "SKILL.md")
-    desc = ""
-    confirmed = False
-    meta = {{}}
-    license_val = None
-    allowed_tools = []
-    try:
-        with open(skill_md, errors="replace") as f:
-            content = f.read(1048576)  # 1MB cap
-        content = content.replace("\\r\\n", "\\n")
-        m = re.match(r"^---\\s*\\n(.*?)\\n---\\s*(?:\\n|$)", content, re.DOTALL)
-        if m:
-            # Minimal YAML-like parser for simple key: value frontmatter
-            # Avoids PyYAML dependency in sandbox
-            for line in m.group(1).splitlines():
-                line = line.strip()
-                if ":" in line:
-                    k, _, v = line.partition(":")
-                    k, v = k.strip(), v.strip()
-                    if k == "description":
-                        desc = v.strip("\\"\\x27")
-                        confirmed = True
-                    elif k == "license":
-                        license_val = v.strip("\\"\\x27") or None
-            confirmed = confirmed and bool(name)
-        content_hash = "sha256:" + hashlib.sha256(content.encode()).hexdigest()
-    except Exception:
-        content_hash = ""
-
-    skills[name] = {{
-        "name": name,
-        "description": desc,
-        "owner": "user",
-        "source": "local",
-        "sourceType": "local",
-        "computedHash": content_hash,
-        "confirmed": confirmed,
-        "license": license_val,
-        "metadata": meta,
-        "allowed_tools": allowed_tools,
-        "installedAt": now,
-        "updatedAt": now,
-    }}
-
-# 6. Write updated lock atomically
-lock_data["skills"] = skills
-os.makedirs(os.path.dirname(LOCK_PATH), exist_ok=True)
-tmp = LOCK_PATH + ".tmp"
-try:
-    with open(tmp, "w") as f:
-        json.dump(lock_data, f, sort_keys=True, indent=2, ensure_ascii=False)
-        f.write("\\n")
-    os.replace(tmp, LOCK_PATH)
-    print(json.dumps({{"status": "ok", "removed": len(to_remove), "added": len(to_add)}}))
-except OSError as e:
-    try:
-        os.unlink(tmp)
-    except OSError:
-        pass
-    print(json.dumps({{"status": "error", "error": str(e)}}))
-    sys.exit(1)
-'
-        """)
-
-        try:
-            result = await self._runtime_call(
-                self.runtime.exec,
-                script.strip(),
-                retry_policy=RetryPolicy.SAFE,
-            )
-            stdout = (getattr(result, "stdout", "") or "").strip()
-            if stdout:
-                try:
-                    info = json.loads(stdout)
-                    if info.get("status") == "ok":
-                        logger.info(
-                            "Skills lock synced",
-                            removed=info.get("removed", 0),
-                            added=info.get("added", 0),
-                            skills_base=skills_base,
-                        )
-                    elif info.get("status") == "noop":
-                        logger.debug("Skills lock already in sync")
-                except json.JSONDecodeError:
-                    pass
-        except Exception as e:
-            logger.debug("Skills lock sync failed (non-critical)", error=str(e))
-
-    async def _prune_remote_skills(
-        self,
-        sandbox_base: str,
-        local_skill_names: set[str],
-        *,
-        existing_lock: dict[str, Any] | None = None,
-    ) -> None:
-        """Prune stale platform skills from sandbox, protecting user-installed ones.
-
-        Safe default: if lock is unavailable or a skill has no lock entry,
-        it is preserved to prevent data loss on transient failures.
-        """
-        assert self.runtime is not None
-        sandbox = self.runtime
-        entries = await self.als_directory(sandbox_base)
-        if not entries:
-            return
-
-        paths_to_remove: list[str] = []
-        for entry in entries:
-            name = entry.get("name")
-            if not name:
-                continue
-            if not entry.get("is_dir", False):
-                continue
-            if name in local_skill_names:
-                continue  # Current platform skill — will be re-uploaded
-
-            # Unknown skill — check lock for ownership
-            if existing_lock is None:
-                # Lock unavailable — safe default: preserve everything
-                continue
-            lock_entry = existing_lock.get(name)
-            if lock_entry is None:
-                # Not in lock — unknown origin, preserve (safe default)
-                continue
-            if lock_entry.get("owner") == "user":
-                # User-installed — never prune
-                logger.debug("Preserving user-installed skill", skill=name)
-                continue
-            # Platform skill no longer in local set — stale, prune it
-            paths_to_remove.append(entry["path"])
-
-        if not paths_to_remove:
-            return
-
-        async def remove_one(path: str) -> None:
-            await self._runtime_call(
-                sandbox.exec,
-                f"rm -rf {shlex.quote(path)}",
-                retry_policy=RetryPolicy.SAFE,
-            )
-
-        await asyncio.gather(*[remove_one(path) for path in paths_to_remove])
-        logger.info(
-            "Pruned stale platform skills from sandbox",
-            removed=len(paths_to_remove),
-            sandbox_root=sandbox_base,
-        )
-
-    async def _upload_skills(
-        self,
-        local_skills_dirs: list[tuple[str, str]],
-        *,
-        manifest: dict[str, Any] | None = None,
-        existing_lock: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | None:
-        """Upload skill files from local filesystem to sandbox.
-
-        Uses a two-pass approach to fix override precedence:
-        - Pass 1 (local I/O only): Walk all sources, later sources overwrite earlier
-          ones for the same skill_name — each skill appears exactly once.
-        - Pass 2 (sandbox I/O): Single rm, single mkdir, parallel per-skill batch uploads.
-
-        Args:
-            local_skills_dirs: List of (local_path, sandbox_path) tuples.
-                Example: [("~/.ptc-agent/skills", "{working_directory}/skills")]
-            manifest: Pre-computed skills manifest. If None, computed from local_skills_dirs.
-            existing_lock: Previously downloaded lock entries, or None for fresh sandbox.
-
-        Returns:
-            Merged lock file dict if lock entries were written, else None.
-        """
-        assert self.runtime is not None
-        sandbox = self.runtime
-
-        if manifest is None:
-            local_roots = [local_dir for local_dir, _ in local_skills_dirs]
-            manifest = await self._compute_skills_module(local_roots)
-
-        if not manifest.get("files"):
-            logger.debug("No skills found; skipping upload")
-            return
-
-        # Skills eligible for sandbox upload (exposure "ptc" or "both")
-        sandbox_skill_names, all_registry_names = _get_sandbox_eligible_skills()
-
-        # ── Pass 1: Planning (local I/O only) ──
-        # For each skill, collect files from the *last* source that provides it.
-        # Key: skill_name → (sandbox_skill_dir, list of (local_file, sandbox_dest))
-        @dataclass
-        class _SkillPlan:
-            sandbox_dir: str
-            files: list[tuple[Path, str]] = field(default_factory=list)
-            subdirs: set[str] = field(default_factory=set)
-
-        final_skills: dict[str, _SkillPlan] = {}
-
-        def _list_skill_dirs(local_root: Path) -> list[Path]:
-            dirs: list[Path] = []
-            for entry in local_root.iterdir():
-                if not entry.is_dir():
-                    continue
-                if not (entry / "SKILL.md").exists():
-                    continue
-                dirs.append(entry)
-            return dirs
-
-        def _list_skill_files(skill_dir: Path) -> list[Path]:
-            return [
-                p
-                for p in skill_dir.rglob("*")
-                if p.is_file()
-                and "__pycache__" not in p.parts
-                and p.name != "LICENSE.txt"
-            ]
-
-        def _plan_all() -> None:
-            for local_dir, sandbox_dir in local_skills_dirs:
-                local_path = Path(local_dir).expanduser()
-                if not local_path.exists():
-                    continue
-
-                for skill_dir in _list_skill_dirs(local_path):
-                    skill_name = skill_dir.name
-                    if skill_name in ("", ".", ".."):
-                        continue
-                    if (
-                        skill_name not in sandbox_skill_names
-                        and skill_name in all_registry_names
-                    ):
-                        continue
-
-                    sandbox_skill_dir = f"{sandbox_dir.rstrip('/')}/{skill_name}"
-                    plan = _SkillPlan(sandbox_dir=sandbox_skill_dir)
-
-                    for fp in _list_skill_files(skill_dir):
-                        rel = fp.relative_to(skill_dir)
-                        dest = f"{sandbox_skill_dir}/{rel}"
-                        plan.files.append((fp, dest))
-                        if len(rel.parts) > 1:
-                            plan.subdirs.add(f"{sandbox_skill_dir}/{rel.parent}")
-
-                    # Later source overwrites earlier for same skill_name
-                    final_skills[skill_name] = plan
-
-        await asyncio.to_thread(_plan_all)
-
-        if not final_skills:
-            logger.debug("No skills to upload after planning")
-            return
-
-        # ── Pass 2: Execute (minimal sandbox I/O) ──
-        # 1. Single rm for clean slate (all skill dirs that will be uploaded)
-        rm_targets = [plan.sandbox_dir for plan in final_skills.values()]
-        if rm_targets:
-            rm_cmd = "rm -rf " + " ".join(shlex.quote(d) for d in rm_targets)
-            await self._runtime_call(
-                sandbox.exec,
-                rm_cmd,
-                retry_policy=RetryPolicy.SAFE,
-            )
-
-        # 2. Single mkdir for all skill dirs + subdirs
-        mkdir_targets: set[str] = set()
-        for plan in final_skills.values():
-            mkdir_targets.add(plan.sandbox_dir)
-            mkdir_targets.update(plan.subdirs)
-        if mkdir_targets:
-            mkdir_cmd = "mkdir -p " + " ".join(
-                shlex.quote(d) for d in sorted(mkdir_targets)
-            )
-            await self._runtime_call(
-                sandbox.exec,
-                mkdir_cmd,
-                retry_policy=RetryPolicy.SAFE,
-            )
-
-        # 3. Parallel per-skill batch uploads — no race since planning collapsed duplicates
-        upload_coros = []
-        for plan in final_skills.values():
-            if plan.files:
-                batch = [
-                    (str(fp), dest)
-                    for fp, dest in plan.files
-                ]
-                upload_coros.append(
-                    self._runtime_call(
-                        sandbox.upload_files,
-                        batch,
-                        retry_policy=RetryPolicy.SAFE,
-                    )
-                )
-        if upload_coros:
-            await asyncio.gather(*upload_coros)
-
-        logger.debug(
-            "Uploaded skills to sandbox",
-            skill_count=len(final_skills),
-            file_count=len(manifest.get("files", {})),
-        )
-
-        # --- Lock file merge + write ---
-        # Build platform lock entries from the manifest
-        platform_entries = {}
-        skills_metadata = manifest.get("skills", {})
-        for skill_name, skill_meta in skills_metadata.items():
-            lock_entry = skill_meta.get("lock_entry")
-            if lock_entry:
-                platform_entries[skill_name] = lock_entry
-
-        if platform_entries or existing_lock:
-            from ptc_agent.agent.middleware.skills.lock import (
-                LOCK_FILENAME,
-                merge_lock_files,
-                serialize_skills_lock,
-            )
-
-            merged = merge_lock_files(platform_entries, existing_lock)
-            lock_content = serialize_skills_lock(merged)
-
-            # Write lock file to sandbox
-            sandbox_base = local_skills_dirs[-1][1].rstrip("/")
-            lock_path = f"{sandbox_base}/{LOCK_FILENAME}"
-            await self._runtime_call(
-                sandbox.upload_file,
-                lock_content.encode("utf-8"),
-                lock_path,
-                retry_policy=RetryPolicy.SAFE,
-            )
-            logger.debug(
-                "Skills lock file written",
-                path=lock_path,
-                platform_count=len(platform_entries),
-                user_count=sum(
-                    1
-                    for e in merged["skills"].values()
-                    if e.get("owner") == "user"
-                ),
-            )
-            return dict(merged)
-
-        return None
-
-    async def _install_dependencies(self) -> None:
-        """Install required Python packages in sandbox (no-snapshot fallback)."""
-        logger.info("Installing dependencies (no snapshot)")
-
-        # yfinance pins curl_cffi<0.14 but scrapling[all] requires >=0.14.
-        # Override resolves the conflict (tested, yfinance works with 0.14+).
-        install_cmd = (
-            "echo 'curl_cffi>=0.14' > /tmp/_overrides.txt && "
-            f"uv pip install -q --override /tmp/_overrides.txt {' '.join(DEFAULT_DEPENDENCIES)} && "
-            "rm -f /tmp/_overrides.txt"
-        )
-
-        try:
-            assert self.runtime is not None
-            result = await self._runtime_call(
-                self.runtime.exec,
-                install_cmd,
-                retry_policy=RetryPolicy.SAFE,
-            )
-            if result.exit_code != 0:
-                logger.warning(
-                    "Dependency install exited with non-zero code",
-                    exit_code=result.exit_code,
-                    output=result.stdout[:500],
-                )
-            else:
-                logger.info("Dependencies installed")
-        except OSError as e:
-            logger.error(f"Failed to install dependencies: {e}")
-            raise
-
-        # Install Scrapling browsers (Camoufox for StealthyFetcher)
-        try:
-            result = await self._runtime_call(
-                self.runtime.exec,
-                "scrapling install",
-                retry_policy=RetryPolicy.SAFE,
-            )
-            if result.exit_code != 0:
-                logger.warning(
-                    "Scrapling browser install failed",
-                    output=result.stdout[:300] if result.stdout else "",
-                )
-            else:
-                logger.info("Scrapling browsers installed")
-        except Exception as e:
-            logger.warning(f"Scrapling browser install skipped: {e}")
-
-    async def _upload_discovery_client(
-        self, extra_servers: list[Any] | None = None
-    ) -> str:
-        """Upload a config-only discovery client to a UNIQUE path; return it.
-
-        The client depends only on the effective server configs (no schemas),
-        so it can be generated before any discovery has run. It is written to
-        a per-call ``_internal`` temp path — never ``tools/mcp_client.py`` —
-        because concurrent discoveries (a bulk import fires several probes plus
-        the background kick at once) would otherwise clobber one another's
-        config and report spurious ``unknown server`` errors, and a probe must
-        never replace the runtime client the agent's wrappers import.
-
-        ``extra_servers`` carries freshly-resolved configs for an on-demand
-        discovery whose session may predate the edit. They are merged over the
-        session's enabled set by name (override an edited server, append a new
-        one) so the probe sees pending changes.
-        """
-        assert self.runtime is not None
-        work_dir = self._work_dir
-        enabled_servers = [
-            server for server in self.config.mcp.servers if server.enabled
-        ]
-        if extra_servers:
-            for srv in extra_servers:
-                if not getattr(srv, "enabled", True):
-                    continue
-                idx = next(
-                    (i for i, s in enumerate(enabled_servers) if s.name == srv.name),
-                    None,
-                )
-                if idx is None:
-                    enabled_servers.append(srv)
-                else:
-                    enabled_servers[idx] = srv
-        # Pass the sandbox's real work dir (Lane A handoff): the client embeds
-        # the vault path + mcp_servers path from it. Defaulting would point the
-        # vault/server paths at the wrong directory after a working-dir change.
-        mcp_client_code = self.tool_generator.generate_mcp_client_code(
-            enabled_servers, working_dir=work_dir
-        )
-        client_path = (
-            f"{work_dir}/_internal/.mcp_discover_client_{uuid.uuid4().hex}.py"
-        )
-        await self._runtime_call(
-            self.runtime.exec,
-            f"mkdir -p {shlex.quote(f'{work_dir}/_internal')}",
-            retry_policy=RetryPolicy.SAFE,
-        )
-        await self._runtime_call(
-            self.runtime.upload_file,
-            mcp_client_code.encode("utf-8"),
-            client_path,
-            retry_policy=RetryPolicy.SAFE,
-        )
-        logger.debug("MCP discovery client installed", path=client_path)
-        return client_path
-
-    async def _install_tool_modules(self) -> None:
-        """Generate and install tool modules + the MCP client from MCP servers."""
-        logger.debug("Installing tool modules")
-
-        # Get work directory (set by _setup_workspace)
-        work_dir = self._work_dir
-
-        # Collect all files to upload (content generation is CPU-bound, fast)
-        uploads: list[tuple[bytes, str, tuple[str, dict[str, str]] | None]] = []
-
-        # 1. MCP client module — config-only, regenerated with the real work dir
-        #    so user-server vault/path references resolve correctly.
-        enabled_servers = [
-            server for server in self.config.mcp.servers if server.enabled
-        ]
-        mcp_client_code = self.tool_generator.generate_mcp_client_code(
-            enabled_servers, working_dir=work_dir
-        )
-        mcp_client_path = f"{work_dir}/tools/mcp_client.py"
-        uploads.append(
-            (
-                mcp_client_code.encode("utf-8"),
-                mcp_client_path,
-                ("MCP client module installed", {"path": mcp_client_path}),
-            )
-        )
-
-        # Per-server source map (builtin vs untrusted workspace) drives codegen
-        # sanitization + neutral framing for user-server tools.
-        source_by_name = {
-            s.name: getattr(s, "source", "builtin")
-            for s in self.config.mcp.servers
-        }
-
-        # 2. Tool modules and documentation
-        assert self.mcp_registry is not None
-        tools_by_server = self.mcp_registry.get_all_tools()
-
-        assert self.runtime is not None
-
-        # Prune stale doc dirs AND stale wrapper modules for servers no longer in
-        # the effective set (a disabled built-in, a deleted/edited user server).
-        # The diff-prune runs every sync, so the one-shot _disabled_modules_pruned
-        # guard is moot here; this removes ``tools/{name}.py`` + ``tools/docs/{name}``.
-        docs_root = f"{work_dir}/tools/docs"
-        tools_root = f"{work_dir}/tools"
-        stale_paths: list[str] = []
-        try:
-            existing_docs = await self.als_directory(docs_root)
-            if existing_docs:
-                stale_paths.extend(
-                    entry["path"]
-                    for entry in existing_docs
-                    if entry.get("is_dir") and entry.get("name") not in tools_by_server
-                )
-        except Exception:
-            pass  # docs dir may not exist yet on fresh sandbox
-        try:
-            existing_tools = await self.als_directory(tools_root)
-            if existing_tools:
-                expected_wrappers = {f"{name}.py" for name in tools_by_server}
-                stale_paths.extend(
-                    entry["path"]
-                    for entry in existing_tools
-                    if not entry.get("is_dir")
-                    and entry.get("name", "").endswith(".py")
-                    and entry.get("name") not in expected_wrappers
-                    and entry.get("name") not in ("mcp_client.py", "__init__.py")
-                )
-        except Exception:
-            pass  # tools dir may not exist yet on fresh sandbox
-        if stale_paths:
-            rm_cmd = "rm -rf " + " ".join(shlex.quote(p) for p in stale_paths)
-            await self._runtime_call(
-                self.runtime.exec,
-                rm_cmd,
-                retry_policy=RetryPolicy.SAFE,
-            )
-
-        for server_name, tools in tools_by_server.items():
-            source = source_by_name.get(server_name, "builtin")
-            # Generate Python module
-            module_code = self.tool_generator.generate_tool_module(
-                server_name, tools, source=source
-            )
-            module_path = f"{work_dir}/tools/{server_name}.py"
-            uploads.append(
-                (
-                    module_code.encode("utf-8"),
-                    module_path,
-                    (
-                        "Tool module installed",
-                        {
-                            "server": server_name,
-                            "path": module_path,
-                            "tool_count": str(len(tools)),
-                        },
-                    ),
-                )
-            )
-
-            # Generate documentation for each tool
-            for tool in tools:
-                doc = self.tool_generator.generate_tool_documentation(
-                    tool, source=source
-                )
-                # Untrusted workspace tool names could contain ``..`` or ``/`` and
-                # traverse out of the docs dir; use the sanitized identifier for
-                # the filename. Builtin names are already valid identifiers, so
-                # sanitize_tool_name leaves them unchanged (byte-identical path).
-                if source == "workspace":
-                    doc_name = sanitize_tool_name(tool.name) or "_invalid_tool"
-                else:
-                    doc_name = tool.name
-                doc_path = f"{work_dir}/tools/docs/{server_name}/{doc_name}.md"
-                upload_item: tuple[bytes, str, tuple[str, dict[str, str]] | None] = (
-                    doc.encode("utf-8"),
-                    doc_path,
-                    None,
-                )
-                uploads.append(upload_item)
-
-        # 3. __init__.py for tools package
-        init_content = '"""Auto-generated tool modules from MCP servers."""\n'
-        init_path = f"{work_dir}/tools/__init__.py"
-        init_item: tuple[bytes, str, tuple[str, dict[str, str]] | None] = (
-            init_content.encode("utf-8"),
-            init_path,
-            None,
-        )
-        uploads.append(init_item)
-
-        # Batch mkdir — all dirs in one command
-        all_dirs = [f"{work_dir}/tools"] + [
-            f"{work_dir}/tools/docs/{name}" for name in tools_by_server
-        ]
-        mkdir_cmd = "mkdir -p " + " ".join(shlex.quote(d) for d in all_dirs)
-        await self._runtime_call(
-            self.runtime.exec,
-            mkdir_cmd,
-            retry_policy=RetryPolicy.SAFE,
-        )
-
-        # Batch upload — single HTTP request for all generated content
-        batch = [
-            (content, path) for content, path, _ in uploads
-        ]
-        await self._runtime_call(
-            self.runtime.upload_files,
-            batch,
-            retry_policy=RetryPolicy.SAFE,
-        )
-        # Log after batch
-        for _, _, log_info in uploads:
-            if log_info:
-                msg, kwargs = log_info
-                logger.debug(msg, **kwargs)
-
-        server_count = len(tools_by_server)
-        tool_count = sum(len(t) for t in tools_by_server.values())
-        logger.info(
-            "Tool modules installed",
-            servers=server_count,
-            tools=tool_count,
-        )
 
     # Bound concurrent discovery so a burst of servers can't exhaust the
     # sandbox; one hung server still can't starve others (each runs isolated).
@@ -2540,580 +1010,6 @@ except OSError as e:
     # select timeout; give a little headroom for npx/uvx fetch + JSON write.
     _DISCOVERY_EXEC_TIMEOUT_S = 90
 
-    async def discover_user_mcp_schemas(
-        self, servers: list[Any]
-    ) -> dict[str, dict[str, Any]]:
-        """Discover tool schemas for user MCP servers via the in-sandbox client.
-
-        For each server: run ``mcp_client.py discover <name> <out>`` (file IPC —
-        the CLI writes its result JSON to a temp file, never stdout), read the
-        file back, delete it. Per-server error isolation; one hung/broken server
-        never blocks the others. Returns ``{name: {"status","error","tools"}}``.
-        No vault file is needed — the client substitutes inert placeholders.
-        """
-        await self._wait_ready()
-        assert self.runtime is not None
-        work_dir = self._work_dir
-
-        # Upload a config-current discovery client FIRST (it depends only on
-        # config, not on schemas) so discovery runs against the latest server
-        # set. Pass the servers being discovered so an on-demand probe reflects
-        # a pending add/edit the live session has not re-resolved yet (≤30s
-        # window). The path is unique per call: concurrent discoveries must not
-        # read each other's config (spurious "unknown server" otherwise).
-        client_path = await self._upload_discovery_client(extra_servers=servers)
-
-        sem = asyncio.Semaphore(self._DISCOVERY_CONCURRENCY)
-
-        async def _discover_one(server: Any) -> tuple[str, dict[str, Any]]:
-            name = server.name
-            # Unique per invocation: concurrent discoveries of the same server
-            # (background kick + on-demand /discover) must not share a file.
-            out_path = f"{work_dir}/_internal/.mcp_discover_{uuid.uuid4().hex}.json"
-            async with sem:
-                try:
-                    # python3, not python: the no-snapshot fallback image never
-                    # gets the /usr/bin/python alias the snapshot build adds.
-                    cmd = (
-                        f"cd {shlex.quote(work_dir)} && python3 "
-                        f"{shlex.quote(client_path)} discover "
-                        f"{shlex.quote(name)} {shlex.quote(out_path)}"
-                    )
-                    await self._runtime_call(
-                        self.runtime.exec,
-                        cmd,
-                        timeout=self._DISCOVERY_EXEC_TIMEOUT_S,
-                        retry_policy=RetryPolicy.SAFE,
-                        total_timeout=float(self._DISCOVERY_EXEC_TIMEOUT_S + 30),
-                    )
-                    raw = await self.adownload_file_bytes(out_path)
-                    if not raw:
-                        return name, {
-                            "status": "error",
-                            "error": "discovery produced no output",
-                            "tools": [],
-                        }
-                    parsed = json.loads(
-                        raw.decode("utf-8") if isinstance(raw, bytes) else raw
-                    )
-                    return name, {
-                        "status": parsed.get("status", "error"),
-                        "error": parsed.get("error", "") or "",
-                        "tools": parsed.get("tools") or [],
-                    }
-                except Exception as e:  # noqa: BLE001 — isolate one bad server
-                    logger.warning(
-                        "MCP discovery failed for server", server=name, error=str(e)
-                    )
-                    return name, {"status": "error", "error": str(e), "tools": []}
-                finally:
-                    # Best-effort temp-file cleanup; never fail discovery on it.
-                    try:
-                        await self._runtime_call(
-                            self.runtime.exec,
-                            f"rm -f {shlex.quote(out_path)}",
-                            retry_policy=RetryPolicy.SAFE,
-                        )
-                    except Exception:
-                        pass
-
-        try:
-            pairs = await asyncio.gather(*[_discover_one(s) for s in servers])
-        finally:
-            # Best-effort removal of this call's discovery client; never fail
-            # discovery on cleanup.
-            try:
-                await self._runtime_call(
-                    self.runtime.exec,
-                    f"rm -f {shlex.quote(client_path)}",
-                    retry_policy=RetryPolicy.SAFE,
-                )
-            except Exception:
-                pass
-        return dict(pairs)
-
-    async def _start_internal_mcp_servers(self) -> None:
-        """Start MCP servers as background processes inside sandbox."""
-        logger.debug("Starting internal MCP servers")
-
-        # Track server sessions for lifecycle management
-        self.mcp_server_sessions = {}
-
-        # Built-ins only: user stdio servers are spawned at call time by the
-        # in-sandbox mcp_client (npx/uvx fetch then), never pre-started here.
-        for server in self._builtin_servers():
-            if not server.enabled:
-                continue
-            if server.transport != "stdio":
-                logger.warning(
-                    f"Skipping non-stdio server {server.name}",
-                    transport=server.transport,
-                )
-                continue
-
-            try:
-                # Build the command to start the MCP server
-                if server.command == "npx":
-                    # npx -y package-name [args...]
-                    cmd_parts = [server.command, *server.args]
-                    cmd = " ".join(cmd_parts)
-                else:
-                    # Custom command
-                    cmd = f"{server.command} {' '.join(server.args)}"
-
-                # Add environment variables if specified
-                env_vars = []
-                if hasattr(server, "env") and server.env:
-                    for key, value in server.env.items():
-                        # Environment variables might have ${VAR} syntax, resolve them
-                        # For now, we'll pass them as-is and they'll need to be set in sandbox
-                        env_vars.append(f"{key}={value}")
-
-                # Create PTY session for the MCP server
-                session_name = f"mcp-{server.name}"
-
-                logger.debug(
-                    "Creating MCP server session",
-                    server=server.name,
-                    session=session_name,
-                    command=cmd,
-                )
-
-                # Create session (but don't start the server yet, we'll do that when needed)
-                # For now, just track that this server should be available
-                self.mcp_server_sessions[server.name] = {
-                    "session_name": session_name,
-                    "command": cmd,
-                    "env": env_vars,
-                    "started": False,
-                }
-
-                logger.debug(
-                    "MCP server session configured",
-                    server=server.name,
-                    session=session_name,
-                )
-
-            except OSError as e:
-                logger.error(
-                    "Failed to configure MCP server session",
-                    server=server.name,
-                    error=str(e),
-                )
-
-        logger.debug(
-            "Internal MCP server configuration complete",
-            servers=list(self.mcp_server_sessions.keys()),
-        )
-
-    def _detect_missing_imports(self, stderr: str) -> list[str]:
-        """Extract missing module names from ImportError/ModuleNotFoundError.
-
-        Args:
-            stderr: Standard error output from code execution
-
-        Returns:
-            List of missing package names (base package only, e.g., 'foo' from 'foo.bar')
-        """
-        import re
-
-        patterns = [
-            r"ModuleNotFoundError: No module named ['\"]([^'\"]+)['\"]",
-            r"ImportError: No module named ['\"]([^'\"]+)['\"]",
-        ]
-
-        matches = []
-        for pattern in patterns:
-            matches.extend(re.findall(pattern, stderr))
-
-        # Handle submodule imports (e.g., "foo.bar" -> "foo")
-        # Also deduplicate
-        base_packages = list({m.split(".")[0] for m in matches})
-
-        if base_packages:
-            logger.info(
-                "Detected missing imports",
-                packages=base_packages,
-            )
-
-        return base_packages
-
-    async def _install_package(self, package: str) -> bool:
-        """Install a Python package in the sandbox.
-
-        Args:
-            package: Package name to install
-
-        Returns:
-            True if installation succeeded, False otherwise
-        """
-        try:
-            logger.info(f"Auto-installing missing package: {package}")
-            assert self.runtime is not None
-            result = await self._runtime_call(
-                self.runtime.exec,
-                f"uv pip install -q {package}",
-                retry_policy=RetryPolicy.SAFE,
-            )
-            exit_code = getattr(result, "exit_code", 1)
-            if exit_code == 0:
-                logger.info(f"Successfully installed package: {package}")
-                return True
-            logger.warning(
-                f"Failed to install package: {package}, exit_code={exit_code}"
-            )
-            return False
-        except OSError as e:
-            logger.warning(f"Failed to install {package}: {e}")
-            return False
-
-    async def _collect_mcp_trace(self, trace_path: str) -> list[dict]:
-        """Read + parse the per-execution MCP trace JSONL, then best-effort delete it.
-
-        Returns one dict per valid JSON line; malformed lines are skipped so a
-        partial write (e.g. after a crash) never breaks result assembly. Never
-        raises — tracing is provenance-only and must not affect execution.
-        """
-        # Host-memory bound on the read. The generated client's per-execution
-        # body budget caps what IT emits, but MCP_TRACE_FILE is visible to
-        # agent-authored sandbox code, which can append to the JSONL directly —
-        # so the budget is not a host-side safety bound. Size the file first and
-        # skip a file far past any legit trace rather than pulling it (possibly
-        # GBs) into memory. ~4x the body budget (RESULT_BODY_TRACE_BUDGET_BYTES)
-        # leaves slack for snippets/args/metadata; the extractor clamps anyway.
-        _MCP_TRACE_READ_MAX_BYTES = 16 * 1024 * 1024
-
-        records: list[dict] = []
-        content: str | None = None
-        try:
-            size_res = await self._runtime_call(
-                self.runtime.exec,
-                f"wc -c < {shlex.quote(trace_path)} 2>/dev/null",
-                retry_policy=RetryPolicy.SAFE,
-            )
-            trace_bytes = int((getattr(size_res, "stdout", "") or "").strip() or 0)
-            if trace_bytes == 0:
-                # No trace written — the common case for a bash command that
-                # imported no MCP wrappers (git/npm/ls/...). The file was never
-                # created, so skip BOTH the read and the rm below (nothing to
-                # delete): saves two sandbox round-trips on every non-MCP bash run.
-                return records
-            if trace_bytes > _MCP_TRACE_READ_MAX_BYTES:
-                logger.warning(
-                    "MCP trace file over read cap; skipping",
-                    path=trace_path,
-                    bytes=trace_bytes,
-                    cap=_MCP_TRACE_READ_MAX_BYTES,
-                )
-            else:
-                content = await self.aread_file_text(trace_path)
-        except Exception as e:
-            logger.debug("Failed to read MCP trace file", path=trace_path, error=str(e))
-            content = None
-        if content:
-            for line in content.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if isinstance(entry, dict):
-                    records.append(entry)
-        try:
-            # Delete via the same raw absolute trace_path the read above used.
-            # trace_path is already rooted at the live work_dir; normalize_path
-            # would re-prepend work_dir when it isn't under allowed_directories,
-            # so the rm would miss and leak the file (read uses the raw path).
-            await self._runtime_call(
-                self.runtime.exec,
-                f"rm -f {shlex.quote(trace_path)}",
-                retry_policy=RetryPolicy.SAFE,
-            )
-        except Exception as e:
-            logger.debug("Failed to clean up MCP trace file", path=trace_path, error=str(e))
-        return records
-
-    async def execute(
-        self,
-        code: str,
-        timeout: int | None = None,
-        *,
-        auto_install: bool = True,
-        max_retries: int = 2,
-        thread_id: str | None = None,
-        _carry_mcp_trace: list[dict] | None = None,
-    ) -> ExecutionResult:
-        """Execute Python code in the sandbox with optional auto-install for missing dependencies.
-
-        Args:
-            code: Python code to execute
-            timeout: Optional timeout in seconds
-            auto_install: Whether to automatically install missing packages on ImportError (default: True)
-            max_retries: Maximum number of retries after auto-installing packages (default: 2)
-            thread_id: Optional thread ID (first 8 chars) for thread-scoped code storage
-            _carry_mcp_trace: MCP trace accumulated from prior auto-install
-                attempts, prepended to this attempt's trace so provenance from
-                a failed-then-retried run isn't lost (internal).
-
-        Returns:
-            ExecutionResult with execution details
-        """
-        await self._wait_ready()
-
-        self.execution_count += 1
-        execution_id = f"exec_{self.execution_count:04d}"
-        code_hash = hashlib.sha256(code.encode()).hexdigest()[:16]
-
-        logger.debug(
-            "Executing code",
-            execution_id=execution_id,
-            code_hash=code_hash,
-            code_length=len(code),
-            auto_install=auto_install,
-            thread_id=thread_id,
-        )
-
-        timeout_val = timeout or self.config.security.max_execution_time
-        start_time = time.time()
-
-        _exec_span = _otel_tracer.start_span(
-            "sandbox.execute",
-            attributes={"code_bytes": len(code), "execution_id": execution_id},
-        )
-        # finally — guarantees end() runs on asyncio.CancelledError too
-        # (it's a BaseException so the except-clauses below would skip it).
-        # Set before the try so the crash path can still read any trace lines
-        # flushed before the failure (durability).
-        trace_path: str | None = None
-        # True once _collect_mcp_trace has run (it reads AND deletes the file).
-        # The finally block only cleans up when this stayed False — i.e. an
-        # asyncio.CancelledError unwound the turn before either the success or
-        # crash path collected, which would otherwise orphan the JSONL.
-        trace_collected = False
-        carry_trace = list(_carry_mcp_trace or [])
-        try:
-            # Write code to thread dir or fallback to code/
-            if thread_id:
-                code_path = f".agents/threads/{thread_id}/code/{execution_id}.py"
-                # Ensure per-thread code dir exists (lazy, once per thread)
-                if thread_id not in self._thread_dirs_created:
-                    await self._runtime_call(
-                        self.runtime.exec,
-                        f"mkdir -p {self.normalize_path(f'.agents/threads/{thread_id}/code')}",
-                        retry_policy=RetryPolicy.SAFE,
-                    )
-                    self._thread_dirs_created.add(thread_id)
-            else:
-                code_path = f".system/code/{execution_id}.py"
-            try:
-                await self._runtime_call(
-                    self.runtime.upload_file,
-                    code.encode("utf-8"),
-                    self.normalize_path(code_path),
-                    retry_policy=RetryPolicy.SAFE,
-                )
-            except Exception as upload_err:
-                logger.warning(
-                    "Failed to save code file to sandbox (non-fatal)",
-                    code_path=code_path,
-                    error=str(upload_err),
-                )
-
-            # Get list of files before execution
-            files_before = await self._list_result_files()
-
-            # Execute code
-            # Set PYTHONPATH so code can import from tools/ and _internal/
-            # MCP + GitHub env vars are injected at sandbox creation time
-            work_dir = await self.runtime.fetch_working_dir()
-
-            internal_dir = f"{work_dir}/_internal"
-            exec_env = {"PYTHONPATH": f"{work_dir}:{internal_dir}/src:{internal_dir}"}
-
-            # Per-execution MCP provenance trace file. A unique id (uuid suffix)
-            # keeps the file unique across concurrent executions on a shared
-            # sandbox (parallel subagents). The generated mcp_client creates the
-            # parent dir lazily; we read + delete it after the run.
-            trace_path = f"{work_dir}/.system/trace/{execution_id}_{uuid.uuid4().hex}.jsonl"
-            exec_env["MCP_TRACE_FILE"] = trace_path
-
-            # Use code_run() for native artifact support (captures matplotlib charts)
-            result = await self._runtime_call(
-                self.runtime.code_run,
-                code,
-                env=exec_env,
-                timeout=timeout_val,
-                retry_policy=RetryPolicy.UNSAFE,
-                total_timeout=timeout_val + 30,
-            )
-
-            stdout = result.stdout
-            stderr = result.stderr
-            exit_code = result.exit_code
-            success = exit_code == 0
-
-            # Extract charts from artifacts
-            charts = []
-            for artifact in result.artifacts:
-                charts.append(
-                    ChartData(
-                        type=artifact.type,
-                        title=artifact.name or "",
-                        png_base64=artifact.data if artifact.data else None,
-                        elements=[],
-                    )
-                )
-            # Get files after execution
-            files_after = await self._list_result_files()
-
-            # Determine file changes
-            files_created = [f for f in files_after if f not in files_before]
-            files_modified: list[str] = []  # TODO: Implement modification tracking
-
-            duration = time.time() - start_time
-
-            # Collect MCP provenance trace written in-sandbox (best-effort),
-            # prepending any trace carried over from prior retry attempts so a
-            # failed-then-retried run keeps the pre-failure sources (dedup is
-            # handled downstream by the extractor).
-            mcp_trace = [*carry_trace, *await self._collect_mcp_trace(trace_path)]
-            trace_collected = True
-
-            execution_result = ExecutionResult(
-                success=success,
-                stdout=stdout,
-                stderr=stderr,
-                duration=duration,
-                files_created=files_created,
-                files_modified=files_modified,
-                execution_id=execution_id,
-                code_hash=code_hash,
-                charts=charts,
-                mcp_trace=mcp_trace,
-            )
-
-            # Auto-install missing packages and retry if enabled
-            if not success and auto_install and max_retries > 0:
-                missing_packages = self._detect_missing_imports(stderr)
-                if missing_packages:
-                    logger.info(
-                        "Attempting auto-install and retry",
-                        execution_id=execution_id,
-                        missing_packages=missing_packages,
-                        retries_remaining=max_retries,
-                    )
-
-                    # Install missing packages
-                    for package in missing_packages:
-                        await self._install_package(package)
-
-                    # Retry execution with decremented retry count, carrying this
-                    # attempt's trace forward so its provenance survives the retry.
-                    return await self.execute(
-                        code=code,
-                        timeout=timeout,
-                        auto_install=auto_install,
-                        max_retries=max_retries - 1,
-                        thread_id=thread_id,
-                        _carry_mcp_trace=mcp_trace,
-                    )
-
-            logger.info(
-                "Code execution completed",
-                execution_id=execution_id,
-                success=success,
-                duration=duration,
-                files_created=len(files_created),
-                charts_captured=len(charts),
-            )
-
-            _exec_span.set_attribute("success", True)
-            safe_record(
-                sandbox_execute_duration_ms,
-                (time.time() - start_time) * 1000.0,
-                {"success": "true", "kind": "code"},
-            )
-
-            return execution_result
-
-        except Exception as e:
-            duration = time.time() - start_time
-            is_timeout, error_detail, stderr_msg = self._classify_execution_error(
-                e,
-                duration,
-                timeout_val,
-                f"Execution timed out after {duration:.0f}s (limit: {timeout_val}s). "
-                "The script was killed before completion — no output was captured. "
-                "Split into smaller steps or optimize the script to run faster.",
-            )
-
-            logger.error(
-                "Code execution failed",
-                execution_id=execution_id,
-                error=error_detail,
-                duration=duration,
-                is_timeout=is_timeout,
-            )
-
-            _exec_span.record_exception(e)
-            _exec_span.set_attribute("success", False)
-            _exec_span.set_attribute("is_timeout", is_timeout)
-            safe_record(
-                sandbox_execute_duration_ms,
-                duration * 1000.0,
-                {"success": "false", "kind": "code"},
-            )
-
-            # Recover any MCP trace lines flushed before the crash (durability),
-            # plus any trace carried over from prior retry attempts.
-            crash_mcp_trace: list[dict] = list(carry_trace)
-            if trace_path:
-                crash_mcp_trace.extend(await self._collect_mcp_trace(trace_path))
-                trace_collected = True
-
-            return ExecutionResult(
-                success=False,
-                stdout="",
-                stderr=stderr_msg,
-                duration=duration,
-                files_created=[],
-                files_modified=[],
-                execution_id=execution_id,
-                code_hash=code_hash,
-                charts=[],
-                mcp_trace=crash_mcp_trace,
-            )
-        finally:
-            _exec_span.end()
-            # asyncio.CancelledError (BaseException) skips the except above, so a
-            # disconnect/cancel after MCP_TRACE_FILE was set would leave the JSONL
-            # behind. Delete it here when neither path collected. shield() so the
-            # rm still runs even though this await is itself unwinding a cancel.
-            if (
-                trace_path is not None
-                and not trace_collected
-                and self.runtime is not None
-            ):
-                try:
-                    await asyncio.shield(
-                        self._runtime_call(
-                            self.runtime.exec,
-                            f"rm -f {shlex.quote(trace_path)}",
-                            retry_policy=RetryPolicy.SAFE,
-                        )
-                    )
-                except asyncio.CancelledError:
-                    # Propagate the cancel we're unwinding; the shielded rm above
-                    # has already been dispatched and runs to completion detached.
-                    raise
-                except Exception as e:
-                    logger.debug(
-                        "Failed to clean up MCP trace file on cancel",
-                        path=trace_path,
-                        error=str(e),
-                    )
 
     @property
     def proxy_domain(self) -> str | None:
@@ -3122,1441 +1018,15 @@ except OSError as e:
             return None
         return self.runtime.proxy_domain
 
-    async def get_preview_url(self, port: int, expires_in: int = 3600) -> PreviewInfo:
-        """Get a signed preview URL for a service running on the given port.
-
-        Args:
-            port: Port number (3000-9999) the service is listening on.
-            expires_in: URL expiry in seconds (default: 3600 = 1 hour).
-
-        Returns:
-            PreviewInfo with url and token.
-        """
-        await self._wait_ready()
-        assert self.runtime is not None
-        return await self._runtime_call(
-            self.runtime.get_preview_url,
-            port,
-            expires_in,
-            retry_policy=RetryPolicy.SAFE,
-        )
-
-    async def get_preview_link(self, port: int) -> PreviewInfo:
-        """Get a standard preview URL with header-based auth token.
-
-        Results are cached per-port since the standard URL doesn't change
-        while the sandbox is running. Cache is cleared on sandbox restart.
-        """
-        cached = self._preview_link_cache.get(port)
-        if cached is not None:
-            return cached
-        await self._wait_ready()
-        assert self.runtime is not None
-        result = await self._runtime_call(
-            self.runtime.get_preview_link,
-            port,
-            retry_policy=RetryPolicy.SAFE,
-        )
-        self._preview_link_cache[port] = result
-        return result
-
-    async def start_preview_server(self, command: str, port: int) -> str:
-        """Start a command in a dedicated per-port session for preview URL serving.
-
-        Each port gets its own Daytona session so blocking server commands
-        (e.g. ``python -m http.server``) don't interfere with each other.
-        If a session for this port already exists the old one is deleted first.
-
-        Returns:
-            The command ID from the session.
-        """
-        await self._wait_ready()
-        assert self.runtime is not None
-
-        session_id = f"preview-{port}"
-
-        # Tear down stale session for this port if one exists
-        if port in self._preview_sessions:
-            old_sid, _old_cmd = self._preview_sessions[port]
-            try:
-                await self._runtime_call(
-                    self.runtime.delete_session,
-                    old_sid,
-                    retry_policy=RetryPolicy.SAFE,
-                )
-            except Exception:
-                logger.debug("Stale preview session cleanup failed", port=port)
-            del self._preview_sessions[port]
-
-        try:
-            await self._runtime_call(
-                self.runtime.create_session,
-                session_id,
-                retry_policy=RetryPolicy.SAFE,
-            )
-        except Exception as e:
-            if "already exists" in str(e).lower():
-                # Stale session from a previous server process — delete and
-                # recreate to avoid inheriting a running command from the old
-                # session (same pattern as _create_bg_session).
-                try:
-                    await self._runtime_call(
-                        self.runtime.delete_session,
-                        session_id,
-                        retry_policy=RetryPolicy.SAFE,
-                    )
-                    await self._runtime_call(
-                        self.runtime.create_session,
-                        session_id,
-                        retry_policy=RetryPolicy.SAFE,
-                    )
-                except Exception:
-                    logger.debug(
-                        "Stale preview session cleanup failed, reusing",
-                        session_id=session_id,
-                    )
-            else:
-                raise
-
-        result = await self._runtime_call(
-            self.runtime.session_execute,
-            session_id,
-            command,
-            run_async=True,
-            retry_policy=RetryPolicy.UNSAFE,
-            total_timeout=30,
-        )
-        self._preview_sessions[port] = (session_id, result.cmd_id)
-        logger.info(
-            "Preview server started",
-            cmd_id=result.cmd_id,
-            session_id=session_id,
-            port=port,
-        )
-        return result.cmd_id
-
-    async def _is_preview_reachable(self, port: int, *, timeout: float = 3.0) -> bool:
-        """Check if a preview port is reachable via the Daytona proxy.
-
-        Uses the preview link (proxy URL + auth headers) to verify the server
-        is accessible from outside the sandbox — not just locally.  A server
-        binding to 127.0.0.1 passes an in-sandbox ``/dev/tcp`` check but
-        returns 502 through the proxy.
-        """
-        import httpx
-
-        try:
-            link = await self.get_preview_link(port)
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.head(
-                    link.url,
-                    headers=link.auth_headers,
-                    follow_redirects=True,
-                )
-                # 4xx means the server IS running (path not found, etc.)
-                # 5xx (especially 502) means the proxy can't reach the backend
-                return 200 <= resp.status_code < 500 and resp.status_code != 502
-        except Exception:
-            return False
-
-    async def start_and_get_preview_url(
-        self,
-        command: str,
-        port: int,
-        *,
-        expires_in: int = 3600,
-        startup_timeout: float = 10.0,
-    ) -> PreviewInfo:
-        """Start a server command in background and return a signed preview URL.
-
-        Combines start_preview_server + port readiness poll + get_preview_url.
-        If the port is already reachable through the Daytona proxy the server
-        start is skipped entirely, making this method safe to call repeatedly.
-
-        Polls for up to ``startup_timeout`` seconds to confirm the port is
-        actually listening before generating the URL.  If the port never
-        becomes reachable the URL is still returned — the frontend
-        health-check polling handles dead-server detection.
-
-        If the server command fails (e.g. port already in use), the preview
-        URL is still generated — the existing server keeps serving.
-        """
-        await self._wait_ready()
-        assert self.runtime is not None
-
-        if port not in self._preview_locks:
-            self._preview_locks[port] = asyncio.Lock()
-        async with self._preview_locks[port]:
-            # Quick probe: is the server already reachable through the proxy?
-            # This catches the common case where the server is already running
-            # and avoids an unnecessary (destructive) session teardown + restart.
-            # We check the proxy — not an in-sandbox /dev/tcp — because a server
-            # binding to 127.0.0.1 would pass the in-sandbox check but return 502
-            # through the proxy.
-            if await self._is_preview_reachable(port):
-                logger.info("Preview already reachable via proxy, skipping server start", port=port)
-                return await self.get_preview_url(port, expires_in=expires_in)
-
-            try:
-                await self.start_preview_server(command, port)
-            except Exception as e:
-                logger.warning("Failed to start preview server", command=command, error=str(e))
-
-            # Poll until the port is listening.
-            # Uses bash built-in /dev/tcp (no external tools like nc needed) via
-            # a single lightweight runtime.exec call with an internal retry loop.
-            max_attempts = max(int(startup_timeout / 0.5), 1)
-            try:
-                result = await self._runtime_call(
-                    self.runtime.exec,
-                    f"bash -c 'for i in $(seq 1 {max_attempts}); do"
-                    f" (echo > /dev/tcp/localhost/{port}) 2>/dev/null && echo READY && exit 0;"
-                    f" sleep 0.5; done; echo TIMEOUT'",
-                    timeout=int(startup_timeout) + 5,
-                    retry_policy=RetryPolicy.SAFE,
-                )
-                if "READY" in result.stdout:
-                    logger.info("Preview server port ready", port=port)
-                else:
-                    logger.warning(
-                        "Preview server port not reachable after startup timeout",
-                        port=port,
-                        startup_timeout=startup_timeout,
-                    )
-            except Exception:
-                logger.warning(
-                    "Port readiness check failed, proceeding anyway",
-                    port=port,
-                    exc_info=True,
-                )
-
-            return await self.get_preview_url(port, expires_in=expires_in)
 
     _MAX_BG_SESSIONS = 20
 
-    async def _evict_finished_bg_sessions(self) -> None:
-        """Evict finished background sessions to stay under the cap."""
-        assert self.runtime is not None
-        # Collect finished sessions (skip sentinel keys)
-        finished: list[str] = []
-        for cmd_id, sid in list(self._bg_sessions.items()):
-            if cmd_id.startswith("_pending:"):
-                continue
-            try:
-                result = await self._runtime_call(
-                    self.runtime.session_command_logs,
-                    sid, cmd_id,
-                    retry_policy=RetryPolicy.SAFE,
-                )
-                if result.exit_code is not None:
-                    finished.append(cmd_id)
-            except Exception:
-                # Can't check status (e.g. sandbox restarted) — treat as
-                # finished to avoid zombie entries that permanently block the cap.
-                finished.append(cmd_id)
-        # Delete finished sessions. A finished command's MCP trace is normally
-        # harvested by the BashOutput that observes completion (provenance is
-        # attributed to that observation). A command that finished but was never
-        # observed before the cap forced eviction has no tool-call surface to
-        # attribute its trace to, so it's dropped — log it so the rare provenance
-        # gap is observable, not silent. (Faithful harvest-on-evict would need a
-        # deferred-trace channel keyed to the original launch; out of scope here.)
-        for cmd_id in finished:
-            dropped_trace = self._bg_trace_paths.pop(cmd_id, None)
-            if dropped_trace:
-                logger.info(
-                    "Evicting finished bg session with unharvested MCP trace",
-                    cmd_id=cmd_id,
-                )
-                # The pop above drops the last host-side reference to this trace,
-                # so delete the JSONL now — otherwise it leaks on the sandbox
-                # until teardown (no later path knows the filename to reap it).
-                try:
-                    await self._runtime_call(
-                        self.runtime.exec,
-                        f"rm -f {shlex.quote(dropped_trace)}",
-                        retry_policy=RetryPolicy.SAFE,
-                    )
-                except Exception:
-                    logger.debug("Evict bg trace cleanup failed", path=dropped_trace)
-            sid = self._bg_sessions.pop(cmd_id, None)
-            if sid:
-                try:
-                    await self._runtime_call(
-                        self.runtime.delete_session, sid,
-                        retry_policy=RetryPolicy.SAFE,
-                    )
-                except Exception:
-                    logger.debug("Evict bg session failed", session_id=sid)
-
-    async def _create_bg_session(self, label: str) -> str:
-        """Create a dedicated session for a background command.
-
-        Each background command gets its own Daytona session so blocking
-        commands don't prevent subsequent ones from executing.
-        Evicts finished sessions when the cap is reached.
-        """
-        await self._wait_ready()
-        assert self.runtime is not None
-
-        # Evict finished sessions if at or above the cap
-        active_count = sum(1 for k in self._bg_sessions if not k.startswith("_pending:"))
-        if active_count >= self._MAX_BG_SESSIONS:
-            await self._evict_finished_bg_sessions()
-
-        session_id = f"bg-{label}"
-        try:
-            await self._runtime_call(
-                self.runtime.create_session,
-                session_id,
-                retry_policy=RetryPolicy.SAFE,
-            )
-        except Exception as e:
-            if "already exists" in str(e).lower():
-                # Stale session from a previous run — delete and recreate
-                # to avoid inheriting env/state from the old session
-                try:
-                    await self._runtime_call(
-                        self.runtime.delete_session,
-                        session_id,
-                        retry_policy=RetryPolicy.SAFE,
-                    )
-                    await self._runtime_call(
-                        self.runtime.create_session,
-                        session_id,
-                        retry_policy=RetryPolicy.SAFE,
-                    )
-                except Exception:
-                    logger.debug("Stale bg session cleanup failed, reusing", session_id=session_id)
-            else:
-                raise
-        return session_id
-
-    async def get_background_command_status(self, cmd_id: str) -> dict[str, Any]:
-        """Get status and logs for a background command.
-
-        Args:
-            cmd_id: Command ID returned when the background command was started.
-
-        Returns:
-            Dict with keys: success, is_running, exit_code, stdout, stderr, cmd_id.
-        """
-        await self._wait_ready()
-        assert self.runtime is not None
-
-        session_id = self._bg_sessions.get(cmd_id)
-        if not session_id:
-            return {
-                "success": False,
-                "is_running": False,
-                "exit_code": None,
-                "stdout": "",
-                "stderr": "No background session found for this command",
-                "cmd_id": cmd_id,
-                "mcp_trace": [],
-            }
-
-        result: SessionCommandResult = await self._runtime_call(
-            self.runtime.session_command_logs,
-            session_id,
-            cmd_id,
-            retry_policy=RetryPolicy.SAFE,
-        )
-        is_running = result.exit_code is None
-
-        # Harvest the backgrounded command's MCP provenance trace exactly once,
-        # when it finishes. This rides the same status path that returns the
-        # command's output to the agent, so there's no result-bearing path that
-        # skips provenance (the stop action returns no output). Best-effort.
-        mcp_trace: list[dict] = []
-
-        # Auto-clean: if the command finished (e.g. killed via pkill), tear
-        # down the orphaned session so it doesn't leak on the Daytona side.
-        if not is_running:
-            trace_path = self._bg_trace_paths.pop(cmd_id, None)
-            if trace_path:
-                mcp_trace = await self._collect_mcp_trace(trace_path)
-            sid = self._bg_sessions.pop(cmd_id, None)
-            if sid:
-                try:
-                    await self._runtime_call(
-                        self.runtime.delete_session, sid,
-                        retry_policy=RetryPolicy.SAFE,
-                    )
-                except Exception:
-                    logger.debug("Auto-clean bg session failed", session_id=sid)
-
-        return {
-            "success": not is_running and result.exit_code == 0,
-            "is_running": is_running,
-            "exit_code": result.exit_code,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "cmd_id": cmd_id,
-            "mcp_trace": mcp_trace,
-        }
-
-    async def stop_background_command(self, cmd_id: str) -> bool:
-        """Stop a background command by deleting its session.
-
-        Returns True if the session was found and deleted.
-        """
-        session_id = self._bg_sessions.get(cmd_id)
-        if not session_id:
-            return False
-        await self._wait_ready()
-        assert self.runtime is not None
-        # Drop the trace mapping (the ephemeral sandbox FS owns the file itself).
-        # A stopped command yields no output, so there's nothing to attest.
-        self._bg_trace_paths.pop(cmd_id, None)
-        try:
-            await self._runtime_call(
-                self.runtime.delete_session,
-                session_id,
-                retry_policy=RetryPolicy.SAFE,
-            )
-        except Exception:
-            logger.warning("Failed to delete bg session", session_id=session_id)
-            self._bg_sessions.pop(cmd_id, None)
-            return False
-        self._bg_sessions.pop(cmd_id, None)
-        return True
-
-    async def get_preview_server_logs(self, port: int) -> dict[str, Any]:
-        """Get logs for the preview server running on the given port.
-
-        Returns:
-            Dict with keys: success, is_running, stdout, stderr, port.
-        """
-        entry = self._preview_sessions.get(port)
-        if not entry:
-            return {
-                "success": False,
-                "is_running": False,
-                "stdout": "",
-                "stderr": f"No preview session for port {port}",
-                "port": port,
-            }
-        session_id, cmd_id = entry
-        await self._wait_ready()
-        assert self.runtime is not None
-        try:
-            result: SessionCommandResult = await self._runtime_call(
-                self.runtime.session_command_logs,
-                session_id,
-                cmd_id,
-                retry_policy=RetryPolicy.SAFE,
-            )
-            is_running = result.exit_code is None
-            return {
-                "success": True,
-                "is_running": is_running,
-                "exit_code": result.exit_code,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "port": port,
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "is_running": False,
-                "stdout": "",
-                "stderr": f"Failed to get logs: {e!s}",
-                "port": port,
-            }
-
-    async def stop_preview_server(self, port: int) -> bool:
-        """Stop the preview server on the given port by deleting its session.
-
-        Returns True if the session was found and deleted.
-        """
-        entry = self._preview_sessions.get(port)
-        if not entry:
-            return False
-        session_id, _cmd_id = entry
-        await self._wait_ready()
-        assert self.runtime is not None
-        try:
-            await self._runtime_call(
-                self.runtime.delete_session,
-                session_id,
-                retry_policy=RetryPolicy.SAFE,
-            )
-            logger.info("Preview server stopped", port=port, session_id=session_id)
-        except Exception:
-            logger.debug("Failed to delete preview session", session_id=session_id)
-        self._preview_sessions.pop(port, None)
-        return True
-
-    async def execute_bash_command(
-        self,
-        command: str,
-        working_dir: str | None = None,
-        timeout: int = 60,
-        *,
-        background: bool = False,
-        thread_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Execute a bash command in the sandbox.
-
-        Args:
-            command: Bash command to execute
-            working_dir: Working directory for command execution (default: sandbox working dir)
-            timeout: Maximum execution time in seconds (default: 60)
-            background: Run command in background
-            thread_id: Optional thread ID (first 8 chars) for thread-scoped script storage
-
-        Returns:
-            Dictionary with success, stdout, stderr, exit_code, bash_id, command_hash
-        """
-        if working_dir is None:
-            working_dir = self._work_dir
-        await self._wait_ready()
-        start_time = time.time()
-
-        # Per-execution MCP provenance trace file (foreground only; set just
-        # before exec). Initialized here so the finally can clean it up on a
-        # cancel that skips the except below.
-        trace_path: str | None = None
-        trace_collected = False
-
-        try:
-            # Generate bash execution ID for tracking
-            self.bash_execution_count += 1
-            bash_id = f"bash_{self.bash_execution_count:04d}"
-            command_hash = hashlib.sha256(command.encode()).hexdigest()[:16]
-            from datetime import UTC, datetime
-
-            timestamp = datetime.now(tz=UTC).isoformat()
-
-            logger.debug(
-                "Executing bash command",
-                bash_id=bash_id,
-                command_hash=command_hash,
-                command=command[:100],
-                working_dir=working_dir,
-            )
-
-            # Build the full bash command with working directory
-            # Use cd to change directory, then execute command
-            full_command = f"cd {working_dir} && {command}"
-
-            # Audit: save .sh script for traceability (non-fatal)
-            script_content = textwrap.dedent(f"""\
-                #!/bin/bash
-                # Bash Execution Log
-                # ID: {bash_id}
-                # Working Directory: {working_dir}
-                # Timestamp: {timestamp}
-                # Command Hash: {command_hash}
-
-                set -e
-                {full_command}
-            """)
-
-            if thread_id:
-                script_relative_path = f".agents/threads/{thread_id}/code/{bash_id}.sh"
-                if thread_id not in self._thread_dirs_created:
-                    await self._runtime_call(
-                        self.runtime.exec,
-                        f"mkdir -p {self.normalize_path(f'.agents/threads/{thread_id}/code')}",
-                        retry_policy=RetryPolicy.SAFE,
-                    )
-                    self._thread_dirs_created.add(thread_id)
-            else:
-                script_relative_path = f".system/code/{bash_id}.sh"
-
-            try:
-                assert self.runtime is not None
-                await self._runtime_call(
-                    self.runtime.upload_file,
-                    script_content.encode("utf-8"),
-                    self.normalize_path(script_relative_path),
-                    retry_policy=RetryPolicy.SAFE,
-                )
-            except Exception as upload_err:
-                logger.warning(
-                    "Failed to save bash script to sandbox (non-fatal)",
-                    bash_id=bash_id,
-                    error=str(upload_err),
-                )
-
-            # Background execution via dedicated Daytona session per command
-            if background:
-                session_id = await self._create_bg_session(bash_id)
-                assert self.runtime is not None
-                # Inject the same MCP provenance trace env the foreground path
-                # uses so a backgrounded `python script.py` that imports the MCP
-                # wrappers records its mcp_trace too — harvested on completion in
-                # get_background_command_status. The audit .sh stays clean; only
-                # the executed command carries the exports.
-                bg_trace_path, bg_command = self._build_trace_env_command(
-                    bash_id, full_command
-                )
-                # Track immediately so cleanup() can find it if execute fails
-                sentinel_key = f"_pending:{session_id}"
-                self._bg_sessions[sentinel_key] = session_id
-                try:
-                    result = await self._runtime_call(
-                        self.runtime.session_execute,
-                        session_id,
-                        bg_command,
-                        run_async=True,
-                        retry_policy=RetryPolicy.UNSAFE,
-                        total_timeout=30,
-                    )
-                except Exception:
-                    # Clean up the session to avoid leaking on the Daytona side
-                    try:
-                        await self._runtime_call(
-                            self.runtime.delete_session,
-                            session_id,
-                            retry_policy=RetryPolicy.SAFE,
-                        )
-                    except Exception:
-                        logger.debug("Failed to clean up bg session after execute failure", session_id=session_id)
-                    self._bg_sessions.pop(sentinel_key, None)
-                    raise
-                # Replace sentinel with real cmd_id key
-                self._bg_sessions.pop(sentinel_key, None)
-                self._bg_sessions[result.cmd_id] = session_id
-                self._bg_trace_paths[result.cmd_id] = bg_trace_path
-                logger.debug(
-                    "Background command started",
-                    bash_id=bash_id,
-                    cmd_id=result.cmd_id,
-                    session_id=session_id,
-                )
-                return {
-                    "success": True,
-                    "stdout": (
-                        f"Background command started (command_id: {result.cmd_id})\n"
-                        f"Use BashOutput tool with command_id=\"{result.cmd_id}\" to check output and status."
-                    ),
-                    "stderr": "",
-                    "exit_code": 0,
-                    "bash_id": bash_id,
-                    "command_hash": command_hash,
-                }
-
-            # Execute directly via process.exec — no file upload dependency.
-            # Inject a per-execution MCP provenance trace file + the wrapper
-            # import path so a python script run here (e.g. `python analysis.py`
-            # importing `tools.{server}`) records the same mcp_trace ExecuteCode
-            # does — closing the bash provenance bypass. PYTHONPATH is prepended
-            # (preserving any existing value). The audit .sh above stays clean;
-            # only the executed command carries the exports.
-            assert self.runtime is not None
-            trace_path, exec_command = self._build_trace_env_command(
-                bash_id, full_command
-            )
-            exec_result = await self._runtime_call(
-                self.runtime.exec,
-                exec_command,
-                timeout=timeout,
-                retry_policy=RetryPolicy.UNSAFE,
-                total_timeout=timeout + 30,
-            )
-
-            exit_code = exec_result.exit_code
-            stdout = exec_result.stdout
-            safe_record(
-                sandbox_execute_duration_ms,
-                (time.time() - start_time) * 1000.0,
-                {"success": "true" if exit_code == 0 else "false", "kind": "bash"},
-            )
-
-            # Harvest the in-sandbox MCP trace (best-effort; reads + deletes the
-            # file). No MCP call → file absent → empty list, no behavior change.
-            mcp_trace = await self._collect_mcp_trace(trace_path)
-            trace_collected = True
-
-            if exit_code == 0:
-                return {
-                    "success": True,
-                    "stdout": stdout,
-                    "stderr": "",
-                    "exit_code": 0,
-                    "bash_id": bash_id,
-                    "command_hash": command_hash,
-                    "mcp_trace": mcp_trace,
-                }
-
-            return {
-                "success": False,
-                "stdout": stdout,
-                "stderr": "",  # runtime.exec() returns combined output in stdout only
-                "exit_code": exit_code,
-                "bash_id": bash_id,
-                "command_hash": command_hash,
-                "mcp_trace": mcp_trace,
-            }
-
-        except Exception as e:
-            duration = time.time() - start_time
-            safe_record(
-                sandbox_execute_duration_ms,
-                duration * 1000.0,
-                {"success": "false", "kind": "bash"},
-            )
-            is_timeout, error_detail, stderr_msg = self._classify_execution_error(
-                e,
-                duration,
-                timeout,
-                f"Command timed out after {duration:.0f}s (limit: {timeout}s). "
-                "The command was killed before completion. "
-                "Split into smaller steps or increase the timeout.",
-            )
-
-            logger.error(
-                f"Failed to execute bash command: {e}",
-                exc_info=True,
-                extra={"is_timeout": is_timeout},
-            )
-            # Recover any MCP trace flushed before the failure (best-effort).
-            recovered_trace: list[dict] = []
-            if trace_path is not None:
-                recovered_trace = await self._collect_mcp_trace(trace_path)
-                trace_collected = True
-            return {
-                "success": False,
-                "stdout": "",
-                "stderr": stderr_msg,
-                "exit_code": -1,
-                "bash_id": locals().get("bash_id"),
-                "command_hash": None,
-                "mcp_trace": recovered_trace,
-            }
-        finally:
-            # asyncio.CancelledError (BaseException) skips the except above, so a
-            # cancel after MCP_TRACE_FILE was set would leave the JSONL behind.
-            # Delete it here when neither path collected. shield() so the rm still
-            # runs even though this await is itself unwinding a cancel.
-            if (
-                trace_path is not None
-                and not trace_collected
-                and self.runtime is not None
-            ):
-                try:
-                    await asyncio.shield(
-                        self._runtime_call(
-                            self.runtime.exec,
-                            f"rm -f {shlex.quote(trace_path)}",
-                            retry_policy=RetryPolicy.SAFE,
-                        )
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    logger.debug(
-                        "Failed to clean up bash MCP trace file on cancel",
-                        path=trace_path,
-                        error=str(e),
-                    )
-
-    def _build_trace_env_command(
-        self, bash_id: str, full_command: str
-    ) -> tuple[str, str]:
-        """Wrap a bash command with the MCP-provenance trace env.
-
-        Returns ``(trace_path, command)``. ``command`` exports ``MCP_TRACE_FILE``
-        plus the wrapper ``PYTHONPATH`` (prepended, preserving any existing value)
-        before running ``full_command``, so a ``python script.py`` that imports the
-        MCP wrappers records the same ``mcp_trace`` ExecuteCode does. Shared by the
-        foreground and background bash paths so the two can't drift in how they
-        build PYTHONPATH or quote the trace path.
-        """
-        # Use the cached working dir (set on create/reconnect via
-        # fetch_working_dir, and used by normalize_path on this same bash path) so
-        # wrapping a command doesn't add a Daytona round-trip per bash invocation.
-        sandbox_root = self._work_dir
-        internal_dir = f"{sandbox_root}/_internal"
-        pythonpath = f"{sandbox_root}:{internal_dir}/src:{internal_dir}"
-        trace_path = f"{sandbox_root}/.system/trace/{bash_id}_{uuid.uuid4().hex}.jsonl"
-        command = (
-            f"export MCP_TRACE_FILE={shlex.quote(trace_path)} && "
-            f"export PYTHONPATH={shlex.quote(pythonpath)}"
-            f"${{PYTHONPATH:+:$PYTHONPATH}} && "
-            f"{full_command}"
-        )
-        return trace_path, command
-
-    async def _list_result_files(self) -> list[str]:
-        """List files in the results directory.
-
-        Returns:
-            List of file paths relative to workspace (e.g., "results/file.csv")
-        """
-        try:
-            assert self.runtime is not None
-            file_infos = await self._runtime_call(
-                self.runtime.list_files,
-                "results",
-                retry_policy=RetryPolicy.SAFE,
-            )
-            if not file_infos:
-                return []
-            # Return paths relative to workspace, not just filenames
-            return [
-                f"results/{_entry_name(f)}"
-                for f in file_infos
-            ]
-        except (OSError, AttributeError) as e:
-            logger.warning(f"Error listing result files: {e}")
-            return []
-
-    async def adownload_file_bytes(self, filepath: str) -> bytes | None:
-        """Download raw bytes from sandbox.
-
-        This path is safe to retry automatically. Concurrency is bounded by a
-        semaphore to limit event-loop pressure from concurrent downloads.
-
-        Returns:
-            Bytes if downloaded, or None if missing.
-
-        Raises:
-            SandboxTransientError: If a transient sandbox transport error persists.
-        """
-        await self._wait_ready()
-
-        try:
-            async with self._download_semaphore:
-                result = await self._runtime_call(
-                    self.runtime.download_file,
-                    filepath,
-                    retry_policy=RetryPolicy.SAFE,
-                )
-            if result:
-                safe_record(workspace_fs_bytes, len(result), {"op": "read"})
-            return result
-        except SandboxTransientError:
-            raise
-        except Exception as e:
-            logger.debug(
-                "Failed to download file bytes", filepath=filepath, error=str(e)
-            )
-            return None
-
-    async def aread_file_text(self, filepath: str) -> str | None:
-        """Read a UTF-8 text file from the sandbox.
-
-        This path is safe to retry automatically.
-        """
-        content_bytes = await self.adownload_file_bytes(filepath)
-        if not content_bytes:
-            return None
-        try:
-            return content_bytes.decode("utf-8")
-        except UnicodeDecodeError as e:
-            logger.debug(
-                "Failed to decode file as utf-8", filepath=filepath, error=str(e)
-            )
-            return None
-
-    async def aupload_file_bytes(self, filepath: str, content: bytes) -> bool:
-        """Upload raw bytes to the sandbox.
-
-        This path is safe to retry automatically because uploads overwrite the target.
-
-        Raises:
-            SandboxTransientError: If a transient sandbox transport error persists.
-        """
-        await self._wait_ready()
-
-        # Normalize the path to ensure it's absolute for the sandbox runtime
-        normalized_path = self.normalize_path(filepath)
-
-        if self.config.filesystem.enable_path_validation and not self.validate_path(
-            normalized_path
-        ):
-            logger.error(f"Access denied: {filepath} is not in allowed directories")
-            return False
-
-        try:
-            assert self.runtime is not None
-            # Use normalized path for upload - runtime expects absolute paths
-            await self._runtime_call(
-                self.runtime.upload_file,
-                content,
-                normalized_path,
-                retry_policy=RetryPolicy.SAFE,
-            )
-            safe_record(workspace_fs_bytes, len(content), {"op": "write"})
-            return True
-        except SandboxTransientError:
-            raise
-        except Exception as e:
-            logger.debug(
-                "Failed to upload file bytes",
-                filepath=filepath,
-                normalized_path=normalized_path,
-                error=str(e),
-            )
-            return False
-
-    async def awrite_file_text(self, filepath: str, content: str) -> bool:
-        """Write UTF-8 text to a sandbox file (overwrites).
-
-        This path is safe to retry automatically.
-        """
-        try:
-            return await self.aupload_file_bytes(filepath, content.encode("utf-8"))
-        except UnicodeEncodeError as e:
-            logger.debug(
-                "Failed to encode file as utf-8", filepath=filepath, error=str(e)
-            )
-            return False
-
-    async def aread_file_range(
-        self, file_path: str, offset: int = 0, limit: int = 2000
-    ) -> str | None:
-        """Read a specific range of lines from a UTF-8 text file.
-
-        Uses sed via process.exec to extract lines server-side, avoiding
-        full-file download through the multipart parser hot path.
-
-        Args:
-            file_path: Path to the file.
-            offset: Line offset (0-indexed).
-            limit: Maximum number of lines.
-        """
-        await self._wait_ready()
-        normalized = self.normalize_path(file_path)
-        start = max(0, offset)
-        start_line = start + 1  # sed is 1-indexed
-        end_line = start + limit
-        cmd = f"sed -n '{start_line},{end_line}p' {shlex.quote(normalized)}"
-
-        try:
-            result = await self._runtime_call(
-                self.runtime.exec,
-                cmd,
-                timeout=30,
-                retry_policy=RetryPolicy.SAFE,
-            )
-            if result.exit_code != 0:
-                return await self._aread_file_range_fallback(file_path, offset, limit)
-            return result.stdout or ""
-        except SandboxTransientError:
-            raise
-        except Exception as e:
-            logger.debug("Failed to read file range", filepath=file_path, error=str(e))
-            return await self._aread_file_range_fallback(file_path, offset, limit)
-
-    async def _aread_file_range_fallback(
-        self, file_path: str, offset: int, limit: int
-    ) -> str | None:
-        """Fallback: download full file and slice (original behavior)."""
-        content = await self.aread_file_text(file_path)
-        if content is None:
-            return None
-        lines = content.splitlines()
-        start = max(0, offset)
-        end = start + limit
-        return "\n".join(lines[start:end])
 
     @staticmethod
     def _extract_sandbox_id(sandbox: object) -> str:
         """Extract a stable ID string from a sandbox object."""
         return sandbox.id if hasattr(sandbox, "id") else str(id(sandbox))
 
-    def normalize_path(self, path: str) -> str:
-        """Normalize virtual path to absolute sandbox path (input normalization).
-
-        Converts agent's virtual paths to real sandbox paths:
-            "/" or "." or "" -> {working_directory}
-            "/results/file.txt" -> {working_directory}/results/file.txt
-            "data/file.txt" -> {working_directory}/data/file.txt
-            "{working_directory}/file.txt" -> unchanged
-            "/tmp/file.txt" -> unchanged
-
-        Args:
-            path: Virtual or relative path from agent
-
-        Returns:
-            Absolute sandbox path
-        """
-        # Use live working directory (updated by fetch_working_dir)
-        work_dir = self._work_dir
-
-        if path in (None, "", ".", "/"):
-            return work_dir
-
-        path = path.strip()
-
-        # Already in allowed directories - keep as is (just normalize . and ..)
-        for allowed_dir in self.config.filesystem.allowed_directories:
-            if path.startswith(allowed_dir):
-                return str(Path(path))
-
-        # Virtual absolute path: /foo -> {working_directory}/foo
-        if path.startswith("/"):
-            return str(Path(f"{work_dir}{path}"))
-
-        # Relative path: foo -> {working_directory}/foo
-        return str(Path(f"{work_dir}/{path}"))
-
-    def virtualize_path(self, path: str) -> str:
-        """Convert real sandbox path to virtual path (output normalization).
-
-        Strips working_directory prefix from paths returned to agent:
-            {working_directory}/results/file.txt -> /results/file.txt
-            {working_directory}/tools/docs/foo.md -> /tools/docs/foo.md
-            /tmp/file.txt -> /tmp/file.txt (unchanged)
-
-        Args:
-            path: Absolute sandbox path
-
-        Returns:
-            Virtual path for agent consumption
-        """
-        # Use live working directory (updated by fetch_working_dir)
-        work_dir = self._work_dir
-
-        if path.startswith(work_dir + "/"):
-            return path[len(work_dir) :]  # Strip prefix, keep leading /
-        if path == work_dir:
-            return "/"
-
-        return path  # /tmp or other paths unchanged
-
-    def validate_path(self, filepath: str) -> bool:
-        """Validate if a path is within allowed directories.
-
-        Args:
-            filepath: Path to validate (virtual or absolute)
-
-        Returns:
-            True if path is allowed, False otherwise
-        """
-        if not self.config.filesystem.enable_path_validation:
-            return True
-
-        # Normalize the path first (handles virtual paths like /results/...)
-        normalized_path = self.normalize_path(filepath)
-
-        # Denylist takes priority over allowlist
-        for denied_dir in self.config.filesystem.denied_directories:
-            if normalized_path == denied_dir or normalized_path.startswith(
-                denied_dir + "/"
-            ):
-                return False
-
-        # Check against allowed directories
-        for allowed_dir in self.config.filesystem.allowed_directories:
-            # Exact match or path within allowed directory
-            if normalized_path == allowed_dir or normalized_path.startswith(
-                allowed_dir + "/"
-            ):
-                return True
-
-        logger.warning(
-            "Path validation failed",
-            path=filepath,
-            normalized_path=normalized_path,
-            allowed_dirs=self.config.filesystem.allowed_directories,
-        )
-        return False
-
-    def validate_and_normalize_path(self, path: str) -> tuple[str, str | None]:
-        """Normalize path and validate access.
-
-        Combines path normalization and validation into a single operation.
-
-        Args:
-            path: Virtual or relative path from agent
-
-        Returns:
-            Tuple of (normalized_path, error_message_or_none)
-        """
-        normalized = self.normalize_path(path)
-        if self.config.filesystem.enable_path_validation and not self.validate_path(
-            normalized
-        ):
-            return normalized, f"Access denied: {path} is not in allowed directories"
-        return normalized, None
-
-    async def als_directory(self, directory: str = ".") -> list[dict[str, Any]]:
-        """List contents of a directory.
-
-        Returns entries as dicts with at least: name, path, is_dir.
-        """
-        await self._wait_ready()
-
-        try:
-            if self.config.filesystem.enable_path_validation and not self.validate_path(
-                directory
-            ):
-                logger.error(
-                    f"Access denied: {directory} is not in allowed directories"
-                )
-                return []
-
-            assert self.runtime is not None
-            file_infos = await self._runtime_call(
-                self.runtime.list_files,
-                directory,
-                retry_policy=RetryPolicy.SAFE,
-            )
-            if not file_infos:
-                return []
-
-            results: list[dict[str, Any]] = []
-            for entry in file_infos:
-                name = _entry_name(entry)
-                is_dir = _entry_is_dir(entry)
-                entry_path = f"{directory}/{name}" if directory != "." else name
-                results.append({"name": name, "path": entry_path, "is_dir": is_dir})
-            return results
-        except Exception as e:
-            logger.debug("Error listing directory", directory=directory, error=str(e))
-            return []
-
-    async def acreate_directory(self, dirpath: str) -> bool:
-        """Create a directory in the sandbox."""
-        await self._wait_ready()
-
-        try:
-            if self.config.filesystem.enable_path_validation and not self.validate_path(
-                dirpath
-            ):
-                logger.error(f"Access denied: {dirpath} is not in allowed directories")
-                return False
-
-            assert self.runtime is not None
-            await self._runtime_call(
-                self.runtime.exec,
-                f"mkdir -p {shlex.quote(dirpath)}",
-                retry_policy=RetryPolicy.SAFE,
-            )
-            return True
-        except Exception as e:
-            logger.debug("Failed to create directory", dirpath=dirpath, error=str(e))
-            return False
-
-    async def acreate_directories(self, dirpaths: Iterable[str]) -> bool:
-        """Create multiple directories in a single ``mkdir -p`` exec call.
-
-        Much faster than N separate ``acreate_directory`` calls for bulk
-        setup (e.g. file restore), collapsing N round-trips into one.
-        ``mkdir -p`` is idempotent. Returns False if any validation or
-        exec fails; callers can fall back to per-dir creates.
-        """
-        paths = [p for p in dirpaths if p]
-        if not paths:
-            return True
-
-        await self._wait_ready()
-
-        if self.config.filesystem.enable_path_validation:
-            for p in paths:
-                if not self.validate_path(p):
-                    logger.error(f"Access denied: {p} is not in allowed directories")
-                    return False
-
-        try:
-            assert self.runtime is not None
-            quoted = " ".join(shlex.quote(p) for p in paths)
-            await self._runtime_call(
-                self.runtime.exec,
-                f"mkdir -p {quoted}",
-                retry_policy=RetryPolicy.SAFE,
-            )
-            return True
-        except Exception as e:
-            logger.debug(
-                "Failed to bulk-create directories",
-                count=len(paths),
-                error=str(e),
-            )
-            return False
-
-    async def aedit_file_text(
-        self,
-        filepath: str,
-        old_string: str,
-        new_string: str,
-        *,
-        replace_all: bool = False,
-    ) -> dict[str, Any]:
-        """Async edit for tools; safe to retry underlying I/O.
-
-        This does not retry the logical edit itself; it only makes file I/O resilient.
-        """
-        await self._wait_ready()
-
-        try:
-            if self.config.filesystem.enable_path_validation and not self.validate_path(
-                filepath
-            ):
-                return {
-                    "success": False,
-                    "error": f"Access denied: {filepath} is not in allowed directories",
-                }
-
-            content = await self.aread_file_text(filepath)
-            if content is None:
-                return {"success": False, "error": "File not found"}
-
-            if old_string == new_string:
-                return {
-                    "success": False,
-                    "error": "old_string and new_string must be different",
-                }
-
-            if old_string not in content:
-                return {
-                    "success": False,
-                    "error": f"old_string not found in file: {filepath}",
-                }
-
-            if not replace_all:
-                occurrences = content.count(old_string)
-                if occurrences > 1:
-                    return {
-                        "success": False,
-                        "error": "old_string found multiple times and requires more code context to uniquely identify the intended match",
-                    }
-
-            updated = (
-                content.replace(old_string, new_string)
-                if replace_all
-                else content.replace(old_string, new_string, 1)
-            )
-
-            if updated == content:
-                return {"success": False, "error": "Edit produced no changes"}
-
-            write_ok = await self.awrite_file_text(filepath, updated)
-            if not write_ok:
-                return {"success": False, "error": "Failed to write updated file"}
-
-            return {
-                "success": True,
-                "message": "File edited successfully",
-            }
-
-        except Exception as e:
-            logger.debug("Async edit_file failed", filepath=filepath, error=str(e))
-            return {"success": False, "error": f"Edit operation failed: {e!s}"}
-
-    def _validate_path_allow_denied(self, path: str) -> bool:
-        """Validate path against allowlist only (ignores denied_directories).
-
-        Intended for user-initiated inspection flows where we want to keep
-        internal directories hidden by default, but still allow explicit access.
-        """
-
-        normalized_path = self._normalize_search_path(path)
-        for allowed_dir in self.config.filesystem.allowed_directories:
-            if normalized_path == allowed_dir or normalized_path.startswith(
-                allowed_dir + "/"
-            ):
-                return True
-        return False
-
-    async def aglob_files(
-        self, pattern: str, path: str = ".", *, allow_denied: bool = False
-    ) -> list[str]:
-        """Async glob; safe to retry automatically."""
-        await self._wait_ready()
-
-        try:
-            if self.config.filesystem.enable_path_validation:
-                is_allowed = (
-                    self._validate_path_allow_denied(path)
-                    if allow_denied
-                    else self.validate_path(path)
-                )
-                if not is_allowed:
-                    logger.error(f"Access denied: {path} is not in allowed directories")
-                    return []
-
-            search_path = self._normalize_search_path(path)
-
-            if "**" not in pattern and "/" not in pattern:
-                pattern = f"**/{pattern}"
-
-            # Drop dependency/build/cache dirs (node_modules, .git, caches, …) so a
-            # recursive glob can't walk a huge dependency tree into the model context.
-            # AGENT_SYSTEM_DIRS (.agents, .system) are intentionally NOT in this set,
-            # so the agent's own workspace stays visible. __pycache__ is added since
-            # paths.py tracks it as a segment rather than a bare dir name.
-            excluded_dirs = sorted(ALWAYS_HIDDEN_DIR_NAMES | {"__pycache__"})
-
-            glob_code = textwrap.dedent(f"""\
-                import fnmatch
-                import glob
-                import os
-
-                pattern = {pattern!r}
-                search_path = {search_path!r}
-                excluded_dirs = set({excluded_dirs!r})
-
-                # Fast path: '**/<tail>' with a basename-only tail — the recursive
-                # patterns ('**/*', '**/*.py', …) that would otherwise walk the whole
-                # tree. Prune excluded dirs *during* the walk so we never descend into
-                # node_modules/.git/etc. instead of enumerating them and filtering
-                # afterward. For these patterns this is equivalent to glob's recursive
-                # match: a case-sensitive basename match at any non-excluded depth.
-                tail = pattern[3:] if pattern.startswith("**/") else None
-                if tail is not None and "/" not in tail and "**" not in tail:
-                    files = []
-                    for dirpath, dirnames, filenames in os.walk(search_path):
-                        dirnames[:] = [d for d in dirnames if d not in excluded_dirs]
-                        for fn in filenames:
-                            if fnmatch.fnmatchcase(fn, tail):
-                                full = os.path.join(dirpath, fn)
-                                if os.path.isfile(full):
-                                    files.append(full)
-                else:
-                    # General path: exact glob semantics, then drop matches whose
-                    # *intermediate* dir components intersect the excluded set — never
-                    # the search-root prefix (so globbing directly into an excluded dir
-                    # still works) and never the basename (so a regular file that shares
-                    # a noise-dir name is not dropped).
-                    full_pattern = os.path.join(search_path, pattern)
-                    matches = glob.glob(full_pattern, recursive=True, include_hidden=True)
-                    files = []
-                    for f in matches:
-                        if not os.path.isfile(f):
-                            continue
-                        inner_dirs = os.path.relpath(f, search_path).split(os.sep)[:-1]
-                        if not (set(inner_dirs) & excluded_dirs):
-                            files.append(f)
-
-                try:
-                    files_with_mtime = [(f, os.path.getmtime(f)) for f in files]
-                    sorted_files = sorted(files_with_mtime, key=lambda x: x[1], reverse=True)
-                    for f, _ in sorted_files:
-                        print(f)  # noqa: T201
-                except OSError:
-                    for f in files:
-                        print(f)  # noqa: T201
-            """)
-
-            encoded_code = base64.b64encode(glob_code.encode()).decode()
-            cmd = f"python3 -c \"import base64; exec(base64.b64decode('{encoded_code}').decode())\""
-
-            assert self.runtime is not None
-            result = await self._runtime_call(
-                self.runtime.exec,
-                cmd,
-                timeout=30,
-                retry_policy=RetryPolicy.SAFE,
-            )
-
-            output = result.stdout.strip() if result.stdout else ""
-            if not output:
-                return []
-            return output.split("\n")
-
-        except Exception as e:
-            logger.warning(
-                "Async glob failed", pattern=pattern, path=path, error=str(e)
-            )
-            return []
-
-    async def agrep_content(
-        self,
-        pattern: str,
-        path: str = ".",
-        output_mode: str = "files_with_matches",
-        glob: str | None = None,
-        type: str | None = None,  # noqa: A002 - matches ripgrep's --type flag
-        *,
-        case_insensitive: bool = False,
-        show_line_numbers: bool = True,
-        lines_after: int | None = None,
-        lines_before: int | None = None,
-        lines_context: int | None = None,
-        multiline: bool = False,
-        head_limit: int | None = None,
-        offset: int = 0,
-    ) -> Any:
-        """Async ripgrep; safe to retry automatically."""
-        await self._wait_ready()
-
-        try:
-            if self.config.filesystem.enable_path_validation and not self.validate_path(
-                path
-            ):
-                logger.error(f"Access denied: {path} is not in allowed directories")
-                return []
-
-            cmd = ["rg"]
-            if output_mode == "files_with_matches":
-                cmd.append("-l")
-            elif output_mode == "count":
-                cmd.append("-c")
-
-            if case_insensitive:
-                cmd.append("-i")
-
-            if output_mode == "content" and show_line_numbers:
-                cmd.append("-n")
-
-            if lines_before:
-                cmd.extend(["-B", str(lines_before)])
-            if lines_after:
-                cmd.extend(["-A", str(lines_after)])
-            if lines_context:
-                cmd.extend(["-C", str(lines_context)])
-
-            if multiline:
-                cmd.extend(["-U", "--multiline-dotall"])
-
-            if glob:
-                cmd.extend(["--glob", glob])
-            if type:
-                cmd.extend(["--type", type])
-
-            cmd.append(pattern)
-            search_path = self._normalize_search_path(path)
-            cmd.append(search_path)
-
-            cmd_str = " ".join(shlex.quote(c) for c in cmd)
-            assert self.runtime is not None
-            result = await self._runtime_call(
-                self.runtime.exec,
-                cmd_str,
-                timeout=60,
-                retry_policy=RetryPolicy.SAFE,
-            )
-
-            output = result.stdout.strip() if result.stdout else ""
-            if not output:
-                return []
-
-            if output_mode == "count":
-                count_results: list[tuple[str, int]] = []
-                for line in output.split("\n"):
-                    if ":" in line:
-                        parts = line.rsplit(":", 1)
-                        if len(parts) == 2:
-                            try:
-                                count_results.append((parts[0], int(parts[1])))
-                            except ValueError:
-                                count_results.append((line, 0))
-                    else:
-                        count_results.append((line, 0))
-
-                if offset > 0:
-                    count_results = count_results[offset:]
-                if head_limit:
-                    count_results = count_results[:head_limit]
-                return count_results
-
-            results_strs = output.split("\n")
-            if offset > 0:
-                results_strs = results_strs[offset:]
-            if head_limit:
-                results_strs = results_strs[:head_limit]
-            return results_strs
-
-        except Exception as e:
-            logger.debug("Async grep failed", pattern=pattern, path=path, error=str(e))
-            return []
 
     async def cleanup(self) -> None:
         """Clean up and destroy the sandbox."""
@@ -4613,3 +1083,291 @@ except OSError as e:
     ) -> None:
         """Async context manager exit."""
         await self.cleanup()
+
+    # ------------------------------------------------------------------
+    # Delegators — implementations live in the sibling function modules
+    # (assets, mcp_setup, execution, sessions, files); each function takes
+    # this sandbox as its explicit first argument.
+    # ------------------------------------------------------------------
+
+    # -- assets --
+
+    def _compute_tool_schema_hash(self) -> str:
+        return _assets._compute_tool_schema_hash(self)
+
+    def _compute_user_mcp_config_hash(self) -> str:
+        return _assets._compute_user_mcp_config_hash(self)
+
+    async def _compute_skills_module(self, skill_roots: list[str]) -> dict[str, Any]:
+        return await _assets._compute_skills_module(self, skill_roots)
+
+    async def _compute_sandbox_manifest(
+        self,
+        *,
+        skill_roots: list[str] | None = None,
+        tokens: dict | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await _assets._compute_sandbox_manifest(self, skill_roots=skill_roots, tokens=tokens, user_id=user_id, workspace_id=workspace_id)
+
+    async def _read_unified_manifest(self) -> dict[str, Any] | None:
+        return await _assets._read_unified_manifest(self)
+
+    async def _write_unified_manifest(self, manifest: dict[str, Any]) -> None:
+        return await _assets._write_unified_manifest(self, manifest)
+
+    async def _cleanup_legacy_manifests(self) -> None:
+        return await _assets._cleanup_legacy_manifests(self)
+
+    async def _upload_mcp_server_files_impl(self) -> None:
+        return await _assets._upload_mcp_server_files_impl(self)
+
+    async def sync_sandbox_assets(
+        self,
+        *,
+        skill_dirs: list[tuple[str, str]] | None = None,
+        reusing_sandbox: bool = False,
+        force_refresh: bool = False,
+        tokens: dict | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> SyncResult:
+        return await _assets.sync_sandbox_assets(self, skill_dirs=skill_dirs, reusing_sandbox=reusing_sandbox, force_refresh=force_refresh, tokens=tokens, user_id=user_id, workspace_id=workspace_id, on_progress=on_progress)
+
+    async def _prune_disabled_tool_modules(self) -> None:
+        return await _assets._prune_disabled_tool_modules(self)
+
+    async def _collect_local_skill_names(
+        self, local_skill_roots: list[str]
+    ) -> set[str]:
+        return await _assets._collect_local_skill_names(self, local_skill_roots)
+
+    async def _download_skills_lock(
+        self, sandbox_skills_base: str
+    ) -> dict[str, Any] | None:
+        return await _assets._download_skills_lock(self, sandbox_skills_base)
+
+    def _build_complete_skills_cache(
+        self,
+        skills_mod: dict[str, Any],
+        merged_lock: dict[str, Any],
+        sandbox_skills_base: str,
+    ) -> None:
+        return _assets._build_complete_skills_cache(self, skills_mod, merged_lock, sandbox_skills_base)
+
+    async def sync_skills_lock(self) -> None:
+        return await _assets.sync_skills_lock(self)
+
+    async def _prune_remote_skills(
+        self,
+        sandbox_base: str,
+        local_skill_names: set[str],
+        *,
+        existing_lock: dict[str, Any] | None = None,
+    ) -> None:
+        return await _assets._prune_remote_skills(self, sandbox_base, local_skill_names, existing_lock=existing_lock)
+
+    async def _upload_skills(
+        self,
+        local_skills_dirs: list[tuple[str, str]],
+        *,
+        manifest: dict[str, Any] | None = None,
+        existing_lock: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        return await _assets._upload_skills(self, local_skills_dirs, manifest=manifest, existing_lock=existing_lock)
+
+
+    # -- mcp_setup --
+
+    async def _install_dependencies(self) -> None:
+        return await _mcp_setup._install_dependencies(self)
+
+    async def _upload_discovery_client(
+        self, extra_servers: list[Any] | None = None
+    ) -> str:
+        return await _mcp_setup._upload_discovery_client(self, extra_servers)
+
+    async def _install_tool_modules(self) -> None:
+        return await _mcp_setup._install_tool_modules(self)
+
+    async def discover_user_mcp_schemas(
+        self, servers: list[Any]
+    ) -> dict[str, dict[str, Any]]:
+        return await _mcp_setup.discover_user_mcp_schemas(self, servers)
+
+    async def _start_internal_mcp_servers(self) -> None:
+        return await _mcp_setup._start_internal_mcp_servers(self)
+
+    def _detect_missing_imports(self, stderr: str) -> list[str]:
+        return _mcp_setup._detect_missing_imports(self, stderr)
+
+    async def _install_package(self, package: str) -> bool:
+        return await _mcp_setup._install_package(self, package)
+
+
+    # -- execution --
+
+    async def _collect_mcp_trace(self, trace_path: str) -> list[dict]:
+        return await _execution._collect_mcp_trace(self, trace_path)
+
+    async def execute(
+        self,
+        code: str,
+        timeout: int | None = None,
+        *,
+        auto_install: bool = True,
+        max_retries: int = 2,
+        thread_id: str | None = None,
+        _carry_mcp_trace: list[dict] | None = None,
+    ) -> ExecutionResult:
+        return await _execution.execute(self, code, timeout, auto_install=auto_install, max_retries=max_retries, thread_id=thread_id, _carry_mcp_trace=_carry_mcp_trace)
+
+    async def execute_bash_command(
+        self,
+        command: str,
+        working_dir: str | None = None,
+        timeout: int = 60,
+        *,
+        background: bool = False,
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await _execution.execute_bash_command(self, command, working_dir, timeout, background=background, thread_id=thread_id)
+
+    def _build_trace_env_command(
+        self, bash_id: str, full_command: str
+    ) -> tuple[str, str]:
+        return _execution._build_trace_env_command(self, bash_id, full_command)
+
+    async def _list_result_files(self) -> list[str]:
+        return await _execution._list_result_files(self)
+
+
+    # -- sessions --
+
+    async def get_preview_url(self, port: int, expires_in: int = 3600) -> PreviewInfo:
+        return await _sessions.get_preview_url(self, port, expires_in)
+
+    async def get_preview_link(self, port: int) -> PreviewInfo:
+        return await _sessions.get_preview_link(self, port)
+
+    async def start_preview_server(self, command: str, port: int) -> str:
+        return await _sessions.start_preview_server(self, command, port)
+
+    async def _is_preview_reachable(self, port: int, *, timeout: float = 3.0) -> bool:
+        return await _sessions._is_preview_reachable(self, port, timeout=timeout)
+
+    async def start_and_get_preview_url(
+        self,
+        command: str,
+        port: int,
+        *,
+        expires_in: int = 3600,
+        startup_timeout: float = 10.0,
+    ) -> PreviewInfo:
+        return await _sessions.start_and_get_preview_url(self, command, port, expires_in=expires_in, startup_timeout=startup_timeout)
+
+    async def _evict_finished_bg_sessions(self) -> None:
+        return await _sessions._evict_finished_bg_sessions(self)
+
+    async def _create_bg_session(self, label: str) -> str:
+        return await _sessions._create_bg_session(self, label)
+
+    async def get_background_command_status(self, cmd_id: str) -> dict[str, Any]:
+        return await _sessions.get_background_command_status(self, cmd_id)
+
+    async def stop_background_command(self, cmd_id: str) -> bool:
+        return await _sessions.stop_background_command(self, cmd_id)
+
+    async def get_preview_server_logs(self, port: int) -> dict[str, Any]:
+        return await _sessions.get_preview_server_logs(self, port)
+
+    async def stop_preview_server(self, port: int) -> bool:
+        return await _sessions.stop_preview_server(self, port)
+
+
+    # -- files --
+
+    def _normalize_search_path(self, path: str) -> str:
+        return _files._normalize_search_path(self, path)
+
+    async def adownload_file_bytes(self, filepath: str) -> bytes | None:
+        return await _files.adownload_file_bytes(self, filepath)
+
+    async def aread_file_text(self, filepath: str) -> str | None:
+        return await _files.aread_file_text(self, filepath)
+
+    async def aupload_file_bytes(self, filepath: str, content: bytes) -> bool:
+        return await _files.aupload_file_bytes(self, filepath, content)
+
+    async def awrite_file_text(self, filepath: str, content: str) -> bool:
+        return await _files.awrite_file_text(self, filepath, content)
+
+    async def aread_file_range(
+        self, file_path: str, offset: int = 0, limit: int = 2000
+    ) -> str | None:
+        return await _files.aread_file_range(self, file_path, offset, limit)
+
+    async def _aread_file_range_fallback(
+        self, file_path: str, offset: int, limit: int
+    ) -> str | None:
+        return await _files._aread_file_range_fallback(self, file_path, offset, limit)
+
+    def normalize_path(self, path: str) -> str:
+        return _files.normalize_path(self, path)
+
+    def virtualize_path(self, path: str) -> str:
+        return _files.virtualize_path(self, path)
+
+    def validate_path(self, filepath: str) -> bool:
+        return _files.validate_path(self, filepath)
+
+    def validate_and_normalize_path(self, path: str) -> tuple[str, str | None]:
+        return _files.validate_and_normalize_path(self, path)
+
+    async def als_directory(self, directory: str = ".") -> list[dict[str, Any]]:
+        return await _files.als_directory(self, directory)
+
+    async def acreate_directory(self, dirpath: str) -> bool:
+        return await _files.acreate_directory(self, dirpath)
+
+    async def acreate_directories(self, dirpaths: Iterable[str]) -> bool:
+        return await _files.acreate_directories(self, dirpaths)
+
+    async def aedit_file_text(
+        self,
+        filepath: str,
+        old_string: str,
+        new_string: str,
+        *,
+        replace_all: bool = False,
+    ) -> dict[str, Any]:
+        return await _files.aedit_file_text(self, filepath, old_string, new_string, replace_all=replace_all)
+
+    def _validate_path_allow_denied(self, path: str) -> bool:
+        return _files._validate_path_allow_denied(self, path)
+
+    async def aglob_files(
+        self, pattern: str, path: str = ".", *, allow_denied: bool = False
+    ) -> list[str]:
+        return await _files.aglob_files(self, pattern, path, allow_denied=allow_denied)
+
+    async def agrep_content(
+        self,
+        pattern: str,
+        path: str = ".",
+        output_mode: str = "files_with_matches",
+        glob: str | None = None,
+        type: str | None = None,  # noqa: A002 - matches ripgrep's --type flag
+        *,
+        case_insensitive: bool = False,
+        show_line_numbers: bool = True,
+        lines_after: int | None = None,
+        lines_before: int | None = None,
+        lines_context: int | None = None,
+        multiline: bool = False,
+        head_limit: int | None = None,
+        offset: int = 0,
+    ) -> Any:
+        return await _files.agrep_content(self, pattern, path, output_mode, glob, type, case_insensitive=case_insensitive, show_line_numbers=show_line_numbers, lines_after=lines_after, lines_before=lines_before, lines_context=lines_context, multiline=multiline, head_limit=head_limit, offset=offset)

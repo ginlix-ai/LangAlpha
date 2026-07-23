@@ -18,7 +18,7 @@ from collections.abc import Iterable
 
 from psycopg.rows import dict_row
 
-from src.server.database.conversation import get_db_connection
+from src.server.database.pool import get_db_connection
 from src.server.utils.pg_sanitize import strip_pg_nul_str
 from src.utils.storage import (
     delete_object as _storage_delete_object,

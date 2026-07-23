@@ -12,19 +12,17 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_appends_via_append_sse_event_not_full_rewrite():
-    from src.server.handlers.workflow_handler import _persist_context_window_event
+    from src.server.handlers.thread_maintenance import _persist_context_window_event
 
     append_mock = AsyncMock(return_value=True)
-    # The old read-modify-write path must be gone: these would fail loudly.
+    # The old read-modify-write path must be gone: this would fail loudly.
     get_all = AsyncMock(side_effect=AssertionError("must not read all responses"))
-    update_full = AsyncMock(side_effect=AssertionError("must not full-rewrite blob"))
 
     with (
         patch("src.server.database.conversation.append_sse_event", new=append_mock),
         patch(
             "src.server.database.conversation.get_responses_for_thread", new=get_all
         ),
-        patch("src.server.database.conversation.update_sse_events", new=update_full),
     ):
         await _persist_context_window_event("thread-1", {"action": "summarize"})
 
@@ -38,7 +36,7 @@ async def test_appends_via_append_sse_event_not_full_rewrite():
 
 @pytest.mark.asyncio
 async def test_best_effort_swallows_errors():
-    from src.server.handlers.workflow_handler import _persist_context_window_event
+    from src.server.handlers.thread_maintenance import _persist_context_window_event
 
     boom = AsyncMock(side_effect=RuntimeError("db down"))
     with patch("src.server.database.conversation.append_sse_event", new=boom):

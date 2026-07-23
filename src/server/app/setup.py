@@ -42,7 +42,7 @@ from src.config.settings import (
     get_allowed_origins,
 )
 from src.observability import init_otel, init_otel_runtime, shutdown_otel_runtime
-from src.server.services.background_task_manager import BackgroundTaskManager
+from src.server.services.runs.executor import LocalRunExecutor
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.server.utils.api import find_malformed_route_ids  # TEMP (malformed-id-diag)
 
@@ -146,7 +146,7 @@ async def lifespan(app: FastAPI):
         )
 
     # Initialize and open conversation database pool
-    from src.server.database.conversation import get_or_create_pool
+    from src.server.database.pool import get_or_create_pool
 
     conv_pool = get_or_create_pool()
     # Extract connection details from pool
@@ -214,12 +214,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Market calendar pre-build failed: {e}")
 
-    # Start BackgroundTaskManager cleanup task
+    # Start LocalRunExecutor cleanup task
     try:
-        manager = BackgroundTaskManager.get_instance()
+        manager = LocalRunExecutor.get_instance()
         await manager.start_cleanup_task()
     except Exception as e:
-        logger.warning(f"Failed to start BackgroundTaskManager cleanup task: {e}")
+        logger.warning(f"Failed to start LocalRunExecutor cleanup task: {e}")
 
     # Initialize PTC Agent configuration and session service
     try:
@@ -271,7 +271,7 @@ async def lifespan(app: FastAPI):
         # every server-side utility LLM call (memo metadata, thread titles,
         # follow-up suggestions, etc.) shares a single BYOK/OAuth-aware entry
         # point.
-        from src.server.services.llm_service import LLMService
+        from src.server.services.llm.service import LLMService
 
         llm_service = LLMService(agent_config=agent_config, logger=logger)
         logger.info("LLMService initialized")
@@ -338,12 +338,100 @@ async def lifespan(app: FastAPI):
             logger.warning("Offloaded ID dedup will use in-memory fallback")
             store = None
 
+        # Phase 2 (I2): the pinned-session writer pool. Only meaningful with
+        # a Postgres checkpointer in the SAME database as the app tables —
+        # advisory locks are database-local, so a split deployment gets no
+        # fence (and must stay single-worker).
+        try:
+            from src.server.database.pool import get_db_connection_string
+            from src.server.services import writer_guard
+
+            if checkpointer is not None and hasattr(checkpointer, "conn"):
+                app_dsn = get_db_connection_string()
+                cp_pool = checkpointer.conn
+                cp_dsn = getattr(cp_pool, "conninfo", None) or getattr(
+                    cp_pool, "_conninfo", ""
+                )
+                if writer_guard.same_database(app_dsn, cp_dsn):
+                    await writer_guard.open_writer_pool(app_dsn)
+                else:
+                    logger.warning(
+                        "WriterGuard disabled: checkpointer database differs "
+                        "from the app database; runs are unfenced and "
+                        "--workers>1 is unsupported"
+                    )
+            else:
+                logger.warning(
+                    "WriterGuard disabled: non-Postgres checkpointer; runs "
+                    "are unfenced and --workers>1 is unsupported"
+                )
+        except Exception as e:
+            logger.warning(f"WriterGuard pool setup failed: {e}; running unfenced")
+
     except FileNotFoundError as e:
         logger.warning(f"PTC Agent config not found: {e}")
         logger.warning("PTC Agent endpoints will not be available")
     except Exception as e:
         logger.warning(f"Failed to initialize PTC Agent: {e}")
         logger.warning("PTC Agent endpoints may not work correctly")
+
+    # Multi-worker hard gate (top level — must not be swallowed by the PTC
+    # init catch-all): without the fence, two workers could both write one
+    # thread's checkpoints. Refuse to boot rather than corrupt.
+    _workers = int(os.getenv("LANGALPHA_WORKERS", "1") or 1)
+    if _workers > 1:
+        from src.server.services import writer_guard as _wg
+
+        if not _wg.guard_enabled():
+            raise RuntimeError(
+                f"--workers={_workers} requires the WriterGuard fence: "
+                f"use a Postgres checkpointer in the same database as "
+                f"the app tables, or run a single worker."
+            )
+
+    # Start the hook-outbox drainer BEFORE the stale-run sweep so the jobs
+    # the sweep enqueues (and any left over from the previous process — the
+    # lease-expiry reclaim doubles as startup recovery) start executing
+    # immediately. Executor registration must precede start(): the outbox
+    # never imports handlers, and an unregistered type's jobs nack toward
+    # dead.
+    try:
+        from src.server.services.report_back import subagent
+        from src.server.services.report_back.flash import core as flash_core
+        from src.server.services.hook_outbox import HookOutboxDrainer
+
+        flash_core.register_outbox_executors()
+        subagent.register_outbox_executors()
+        HookOutboxDrainer.get_instance().start()
+        logger.info("HookOutboxDrainer started")
+    except Exception as e:
+        logger.warning(f"Failed to start HookOutboxDrainer: {e}")
+
+    # Recovery scanner (turn lifecycle v4, Phase 2.2): one startup pass
+    # (assume_dead covers the unfenced single-worker case — this process
+    # restarting proves any open run's executor is dead), one-time thread
+    # projection heal, then the periodic guarded loop when the fence is up.
+    try:
+        from src.server.services.runs.recovery import RecoveryScanner
+
+        scanner = RecoveryScanner.get_instance()
+        recovered = await scanner.scan_once(assume_dead=True)
+        if recovered:
+            logger.warning(f"Startup recovery finalized {recovered} stale run(s)")
+        await scanner.heal_thread_projections()
+        scanner.start()
+    except Exception as e:
+        logger.warning(f"Recovery scanner startup failed: {e}")
+
+    # Turn-cancel nudge listener (v4 Phase 2.4e): a /cancel landing on
+    # another worker signals this one's executor via pub/sub.
+    try:
+        from src.server.services.runs.cancel import TurnCancelListener
+
+        TurnCancelListener.get_instance().start()
+        logger.info("TurnCancelListener started")
+    except Exception as e:
+        logger.warning(f"Failed to start TurnCancelListener: {e}")
 
     # Start MarketDataFeed (shared upstream WS to ginlix-data)
     try:
@@ -410,6 +498,23 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Application shutdown started...")
+
+    # 0.0. Stop the recovery scanner first — no new recovery work while the
+    # process drains (live runs hold their guards and are skipped anyway).
+    try:
+        from src.server.services.runs.recovery import RecoveryScanner
+
+        await RecoveryScanner.get_instance().stop()
+    except Exception as e:
+        logger.warning(f"Error stopping RecoveryScanner: {e}")
+
+    # 0.0b. Stop the turn-cancel nudge listener.
+    try:
+        from src.server.services.runs.cancel import TurnCancelListener
+
+        await TurnCancelListener.get_instance().stop()
+    except Exception as e:
+        logger.warning(f"Error stopping TurnCancelListener: {e}")
 
     # 0.1. Shutdown ProvenanceGCService
     try:
@@ -527,14 +632,34 @@ async def lifespan(app: FastAPI):
 
     # 6. Gracefully shutdown background workflows
     try:
-        manager = BackgroundTaskManager.get_instance()
+        manager = LocalRunExecutor.get_instance()
         await manager.shutdown()  # Uses shutdown_timeout from config.yaml
     except Exception as e:
-        logger.error(f"Error during BackgroundTaskManager shutdown: {e}")
+        logger.error(f"Error during LocalRunExecutor shutdown: {e}")
+
+    # 6b. Stop the hook-outbox drainer AFTER BTM shutdown so jobs enqueued by
+    # those final finalizes still execute; anything unclaimed survives
+    # durably for the next startup's reclaim.
+    try:
+        from src.server.services.hook_outbox import HookOutboxDrainer
+
+        await HookOutboxDrainer.get_instance().stop()
+        logger.info("HookOutboxDrainer stopped")
+    except Exception as e:
+        logger.warning(f"Error stopping HookOutboxDrainer: {e}")
+
+    # 6c. Close the writer-guard pool AFTER BTM shutdown: the final
+    # finalizes run on pinned guard sessions checked out of this pool.
+    try:
+        from src.server.services.writer_guard import close_writer_pool
+
+        await close_writer_pool()
+    except Exception as e:
+        logger.warning(f"Error closing writer-guard pool: {e}")
 
     # 7. Close database pools
     try:
-        from src.server.database.conversation import get_or_create_pool
+        from src.server.database.pool import get_or_create_pool
 
         conv_pool = get_or_create_pool()
         if not conv_pool.closed:

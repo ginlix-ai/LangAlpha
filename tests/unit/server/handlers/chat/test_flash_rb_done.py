@@ -14,28 +14,15 @@ from unittest.mock import patch
 
 import pytest
 
-from src.server.handlers.chat import report_back
+from src.server.services.report_back.flash import executor, keys, pointer, status
 from tests.unit.server.handlers.chat.redis_fakes import (
     FakeCache as _FakeCache,
-    drain as _drain,
     seed_dispatched as _seed_dispatched,
 )
 
 
-@pytest.fixture(autouse=True)
-def _reset_consumer_state():
-    """Module-global consumer registries must not leak across tests."""
-    report_back._rb_consumers.clear()
-    report_back._rb_terminal_events.clear()
-    yield
-    for task in list(report_back._rb_consumers.values()):
-        task.cancel()
-    report_back._rb_consumers.clear()
-    report_back._rb_terminal_events.clear()
-
-
 def _seed_pointer(cache: _FakeCache, flash: str, ptc: str, run_id: str) -> None:
-    cache.kv[report_back.flash_rb_run_key(flash, ptc)] = {"run_id": run_id}
+    cache.kv[keys.flash_rb_run_key(flash, ptc)] = {"run_id": run_id}
 
 
 # ---------------------------------------------------------------------------
@@ -51,12 +38,12 @@ async def test_clear_records_drained_run_newest_first_with_ttl():
     _seed_pointer(cache, flash, "ptc-1", "rb-run-1")
     _seed_pointer(cache, flash, "ptc-2", "rb-run-2")
 
-    await report_back.clear_flash_report_back(cache, "ptc-1", flash)
-    await report_back.clear_flash_report_back(cache, "ptc-2", flash)
+    await pointer.clear_flash_report_back(cache, "ptc-1", flash)
+    await pointer.clear_flash_report_back(cache, "ptc-2", flash)
 
-    done_key = report_back.flash_rb_done_key(flash)
+    done_key = keys.flash_rb_done_key(flash)
     assert cache.client.lists[done_key] == ["rb-run-2", "rb-run-1"]  # newest first
-    assert cache.client.ttls[done_key] == report_back._FLASH_RB_DONE_TTL
+    assert cache.client.ttls[done_key] == keys.FLASH_RB_DONE_TTL
 
 
 @pytest.mark.asyncio
@@ -66,11 +53,11 @@ async def test_clear_without_run_pointer_records_nothing():
     flash, ptc = "flash-1", "ptc-1"
     _seed_dispatched(cache, flash, [ptc])
 
-    await report_back.clear_flash_report_back(cache, ptc, flash)
+    await pointer.clear_flash_report_back(cache, ptc, flash)
 
-    assert not cache.client.lists.get(report_back.flash_rb_done_key(flash))
+    assert not cache.client.lists.get(keys.flash_rb_done_key(flash))
     # The teardown itself still ran.
-    assert ptc not in cache.client.sets.get(report_back.flash_watch_key(flash), set())
+    assert ptc not in cache.client.sets.get(keys.flash_watch_key(flash), set())
     assert f"ptc_origin:{ptc}" not in cache.kv
 
 
@@ -78,16 +65,16 @@ async def test_clear_without_run_pointer_records_nothing():
 async def test_done_list_bounded_at_max():
     cache = _FakeCache()
     flash = "flash-1"
-    count = report_back._FLASH_RB_DONE_MAX + 2
+    count = keys.FLASH_RB_DONE_MAX + 2
     ptcs = [f"ptc-{i}" for i in range(1, count + 1)]
     _seed_dispatched(cache, flash, ptcs)
 
     for i, ptc in enumerate(ptcs, 1):
         _seed_pointer(cache, flash, ptc, f"rb-run-{i}")
-        await report_back.clear_flash_report_back(cache, ptc, flash)
+        await pointer.clear_flash_report_back(cache, ptc, flash)
 
-    done = cache.client.lists[report_back.flash_rb_done_key(flash)]
-    assert len(done) == report_back._FLASH_RB_DONE_MAX
+    done = cache.client.lists[keys.flash_rb_done_key(flash)]
+    assert len(done) == keys.FLASH_RB_DONE_MAX
     assert done[0] == f"rb-run-{count}"  # newest kept
     assert "rb-run-1" not in done and "rb-run-2" not in done  # oldest trimmed
 
@@ -101,12 +88,12 @@ async def test_retried_clear_does_not_duplicate_run_id():
     _seed_dispatched(cache, flash, [ptc])
     _seed_pointer(cache, flash, ptc, "rb-run-1")
 
-    await report_back.clear_flash_report_back(cache, ptc, flash)
+    await pointer.clear_flash_report_back(cache, ptc, flash)
     # Retry: the pointer was re-asserted after the first clear.
     _seed_pointer(cache, flash, ptc, "rb-run-1")
-    await report_back.clear_flash_report_back(cache, ptc, flash)
+    await pointer.clear_flash_report_back(cache, ptc, flash)
 
-    assert cache.client.lists[report_back.flash_rb_done_key(flash)] == ["rb-run-1"]
+    assert cache.client.lists[keys.flash_rb_done_key(flash)] == ["rb-run-1"]
 
 
 @pytest.mark.asyncio
@@ -122,13 +109,13 @@ async def test_recording_failure_does_not_break_clear():
 
     cache.client.lpush = _boom
 
-    await report_back.clear_flash_report_back(cache, ptc, flash)  # must not raise
+    await pointer.clear_flash_report_back(cache, ptc, flash)  # must not raise
 
     # Teardown fully applied despite the failed record.
-    assert ptc not in cache.client.sets.get(report_back.flash_watch_key(flash), set())
+    assert ptc not in cache.client.sets.get(keys.flash_watch_key(flash), set())
     assert f"ptc_origin:{ptc}" not in cache.kv
-    assert report_back.flash_rb_run_key(flash, ptc) not in cache.kv
-    assert not cache.client.lists.get(report_back.flash_rb_done_key(flash))
+    assert keys.flash_rb_run_key(flash, ptc) not in cache.kv
+    assert not cache.client.lists.get(keys.flash_rb_done_key(flash))
 
 
 @pytest.mark.asyncio
@@ -140,35 +127,10 @@ async def test_mass_discard_of_deleted_flash_thread_records_nothing():
     _seed_pointer(cache, flash, "ptc-1", "rb-run-1")
     _seed_pointer(cache, flash, "ptc-2", "rb-run-2")
 
-    await report_back._discard_flash_thread(cache, flash)
+    await executor._discard_flash_thread(cache, flash)
 
-    assert not cache.client.lists.get(report_back.flash_rb_done_key(flash))
-    assert not cache.client.sets.get(report_back.flash_watch_key(flash))
-
-
-@pytest.mark.asyncio
-async def test_consumer_drain_records_each_run_newest_first():
-    """End-to-end: each drained report-back's run id lands on the done list in
-    drain order (newest first), mirroring claim-at-admission + terminal clear."""
-    cache = _FakeCache()
-    flash = "flash-1"
-    _seed_dispatched(cache, flash, ["ptc-1", "ptc-2"])
-
-    async def fake_post(c, f, ptc, origin):
-        # Admission claims the run pointer; the terminal clear then drains it.
-        _seed_pointer(c, f, ptc, f"rb-run-{ptc}")
-        await report_back.clear_flash_report_back(c, ptc, f)
-        return "dispatched", f"rb-run-{ptc}"
-
-    with patch(
-        "src.utils.cache.redis_cache.get_cache_client", return_value=cache
-    ), patch.object(report_back, "_post_report_back", side_effect=fake_post):
-        await report_back._flash_report_back("ptc-1")
-        await report_back._flash_report_back("ptc-2")
-        await _drain(flash)
-
-    done = cache.client.lists[report_back.flash_rb_done_key(flash)]
-    assert done == ["rb-run-ptc-2", "rb-run-ptc-1"]
+    assert not cache.client.lists.get(keys.flash_rb_done_key(flash))
+    assert not cache.client.sets.get(keys.flash_watch_key(flash))
 
 
 # ---------------------------------------------------------------------------
@@ -180,10 +142,10 @@ async def test_consumer_drain_records_each_run_newest_first():
 async def test_status_surfaces_recent_run_ids_newest_first():
     cache = _FakeCache()
     flash = "flash-1"
-    cache.client.lists[report_back.flash_rb_done_key(flash)] = ["rb-run-2", "rb-run-1"]
+    cache.client.lists[keys.flash_rb_done_key(flash)] = ["rb-run-2", "rb-run-1"]
 
     with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
-        resp = await report_back.read_report_back_status(flash)
+        resp = await status.read_report_back_status(flash)
 
     assert resp["recent_report_back_run_ids"] == ["rb-run-2", "rb-run-1"]
     # Drained thread: no live members, but the recent list is still served.
@@ -196,6 +158,6 @@ async def test_status_recent_run_ids_empty_when_key_absent():
     cache = _FakeCache()
 
     with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
-        resp = await report_back.read_report_back_status("flash-1")
+        resp = await status.read_report_back_status("flash-1")
 
     assert resp["recent_report_back_run_ids"] == []

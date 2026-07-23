@@ -169,13 +169,13 @@ def _diff_turn(a: dict, b: dict) -> list[str]:
 
 async def _open_infra():
     from src.server.app import setup
-    from src.server.database import conversation as qr_db
+    from src.server.database import pool as db_pool
     from src.server.utils.checkpointer import (
         get_checkpointer,
         open_checkpointer_pool,
     )
 
-    pool = qr_db.get_or_create_pool()
+    pool = db_pool.get_or_create_pool()
     await pool.open()
     checkpointer = get_checkpointer(
         "postgres",
@@ -192,7 +192,7 @@ async def _open_infra():
 async def _thread_ids(only: list[str]) -> list[str]:
     if only:
         return only
-    from src.server.database.conversation import get_db_connection
+    from src.server.database.pool import get_db_connection
 
     async with get_db_connection() as conn:
         cur = await conn.execute(
@@ -205,7 +205,7 @@ async def _thread_ids(only: list[str]) -> list[str]:
 
 async def _compare_thread(thread_id: str, merge: bool, verbose: bool) -> tuple[int, int]:
     """Returns (turns_compared, turns_diff)."""
-    from src.server.database.conversation import get_replay_thread_data
+    from src.server.database.conversation.replay_rows import get_replay_thread_data
     from src.server.services.history import replay
 
     _, thread, queries, responses, usages, provenance = await get_replay_thread_data(
@@ -220,9 +220,9 @@ async def _compare_thread(thread_id: str, merge: bool, verbose: bool) -> tuple[i
 
     sse_items = replay.build_sse_replay_items(thread_id, queries, responses_by_turn)
 
-    original_stored_events = replay._stored_events
+    original_stored_events = replay.stored_merge._stored_events
     if not merge:
-        replay._stored_events = lambda response: []
+        replay.stored_merge._stored_events = lambda response: []
     try:
         checkpoint_items = await replay.build_checkpoint_replay_items(
             thread_id,
@@ -236,7 +236,7 @@ async def _compare_thread(thread_id: str, merge: bool, verbose: bool) -> tuple[i
         print(f"{thread_id}  FALLBACK ({e})")
         return 0, 0
     finally:
-        replay._stored_events = original_stored_events
+        replay.stored_merge._stored_events = original_stored_events
 
     ckpt, sse = _normal_form(checkpoint_items), _normal_form(sse_items)
     diffs = 0

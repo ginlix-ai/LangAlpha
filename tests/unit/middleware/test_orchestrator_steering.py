@@ -4,7 +4,6 @@ Verifies that BackgroundSubagentOrchestrator checks for pending steering
 messages before returning, and re-invokes the agent when steering is found.
 """
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -64,7 +63,7 @@ class TestHasPendingSteering:
         )
         checker = AsyncMock(return_value=True)
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=checker),
         ):
             assert await orch._has_pending_steering(_config()) is True
@@ -76,7 +75,7 @@ class TestHasPendingSteering:
         )
         checker = AsyncMock(return_value=False)
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=checker),
         ):
             assert await orch._has_pending_steering(_config()) is False
@@ -88,7 +87,7 @@ class TestHasPendingSteering:
             _make_agent(), _make_middleware()
         )
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=None),
         ):
             assert await orch._has_pending_steering(_config()) is False
@@ -101,7 +100,7 @@ class TestHasPendingSteering:
         )
         checker = AsyncMock(side_effect=ConnectionError("redis down"))
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=checker),
         ):
             assert await orch._has_pending_steering(_config()) is False
@@ -123,7 +122,7 @@ class TestReinvokeForSteering:
 
         checker = AsyncMock(return_value=True)
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=checker),
         ):
             result = await orch._reinvoke_for_steering(cfg, iteration=1)
@@ -143,7 +142,7 @@ class TestReinvokeForSteering:
 
         checker = AsyncMock(return_value=False)
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=checker),
         ):
             result = await orch._reinvoke_for_steering(_config(), iteration=1)
@@ -179,7 +178,7 @@ class TestAstreamGapB:
             return call_count == 1
 
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=_checker),
         ):
             events = []
@@ -200,7 +199,7 @@ class TestAstreamGapB:
 
         checker = AsyncMock(return_value=False)
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=checker),
         ):
             events = []
@@ -239,7 +238,7 @@ class TestAstreamGapC:
             return call_count == 1
 
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=_checker),
         ):
             events = []
@@ -273,7 +272,7 @@ class TestAinvokeGapD:
             return call_count == 1
 
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=_checker),
         ):
             await orch.ainvoke({"messages": []}, cfg)
@@ -302,7 +301,7 @@ class TestMaxIterationsGuard:
         # Always report steering pending → would loop forever without guard
         checker = AsyncMock(return_value=True)
         with patch(
-            "ptc_agent.agent.middleware.background_subagent.orchestrator.build_message_checker",
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
             new=AsyncMock(return_value=checker),
         ):
             events = []
@@ -311,3 +310,70 @@ class TestMaxIterationsGuard:
 
         # Should stop at max_iterations=2
         assert events.count("ev1") == 2
+
+
+# ---------------------------------------------------------------------------
+# build_message_checker — own-run stamp filter (v4 2.4c)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMessageCheckerStampFilter:
+    """The checker counts only payloads THIS run would consume:
+    SteeringMiddleware never delivers a foreign-stamped payload here, so
+    counting one would wake task waits and re-invoke the agent for a
+    message that cannot arrive."""
+
+    def _cache(self, raws: list) -> MagicMock:
+        cache = MagicMock()
+        cache.enabled = True
+        cache.client = MagicMock()
+        cache.client.lrange = AsyncMock(return_value=raws)
+        return cache
+
+    async def _check(self, raws: list, own_run_id: str | None) -> bool:
+        from ptc_agent.agent.middleware.background_subagent.utils import (
+            build_message_checker,
+        )
+
+        with patch(
+            "src.utils.cache.redis_cache.get_cache_client",
+            return_value=self._cache(raws),
+        ):
+            checker = await build_message_checker("t-1", own_run_id=own_run_id)
+        return await checker()
+
+    @pytest.mark.asyncio
+    async def test_own_stamped_counts(self):
+        raw = '{"content": "hi", "run_id": "r-own"}'
+        assert await self._check([raw], "r-own") is True
+
+    @pytest.mark.asyncio
+    async def test_unstamped_counts(self):
+        assert await self._check(['{"content": "hi"}'], "r-own") is True
+
+    @pytest.mark.asyncio
+    async def test_foreign_stamped_does_not_count(self):
+        raw = '{"content": "hi", "run_id": "r-dead"}'
+        assert await self._check([raw], "r-own") is False
+
+    @pytest.mark.asyncio
+    async def test_foreign_plus_own_counts(self):
+        raws = [
+            '{"content": "a", "run_id": "r-dead"}',
+            b'{"content": "b", "run_id": "r-own"}',
+        ]
+        assert await self._check(raws, "r-own") is True
+
+    @pytest.mark.asyncio
+    async def test_no_identity_counts_everything(self):
+        """Without a run identity (legacy caller) nothing is filtered."""
+        raw = '{"content": "hi", "run_id": "r-dead"}'
+        assert await self._check([raw], None) is True
+
+    @pytest.mark.asyncio
+    async def test_unparseable_does_not_count(self):
+        assert await self._check(["not-json{"], "r-own") is False
+
+    @pytest.mark.asyncio
+    async def test_empty_queue_is_false(self):
+        assert await self._check([], "r-own") is False

@@ -256,6 +256,27 @@ class ChatRequest(BaseModel):
         "(interrupts included) is dropped.",
     )
 
+    # Idempotency (v4 attempt chain): one logical send = one request_key,
+    # reused verbatim across network retransmits. The server dedups on it
+    # (globally unique), so a lost-response resubmit reconnects to the
+    # existing run instead of starting a duplicate. Server-minted fallback
+    # when omitted (no dedup).
+    request_key: Optional[str] = Field(
+        default=None,
+        description="Client-generated UUID identifying this logical send; "
+        "reuse across retransmits for idempotent delivery.",
+    )
+    # Internal retry provenance: only the /retry route sets it, as a
+    # parameter to _handle_send_message — a body-supplied value is
+    # overwritten there unconditionally, so clients cannot chain a new
+    # attempt onto an arbitrary failed run. The new run reuses the
+    # turn_index with attempt_no+1 and no new query row.
+    retry_of_run_id: Optional[str] = Field(
+        default=None,
+        description="Run id this request is an attempt-chain retry of. "
+        "Internal use only; ignored when supplied by clients.",
+    )
+
     # Interrupt/resume support (HITL)
     hitl_response: Optional[Dict[str, HITLResponse]] = Field(
         default=None,
@@ -319,6 +340,45 @@ class ChatRequest(BaseModel):
         default=None,
         description="PTC thread id this flash report-back run consumes. "
         "Internal use only.",
+    )
+
+    # Internal: the flash thread watching this dispatched PTC run. Stamped
+    # into the run's START metadata so finalize can build report-back hook
+    # ordering keys (all completions reporting into one flash thread
+    # serialize) without I/O. An ordering hint only — executors re-resolve
+    # the authoritative origin from Redis at execution time.
+    origin_flash_thread_id: Optional[str] = Field(
+        default=None,
+        description="Flash thread watching this dispatched PTC run. "
+        "Internal use only.",
+    )
+
+    # Internal: dispatch-incarnation token for the report-back pair, minted
+    # per reserve(). Stamped into START metadata; terminal teardowns compare
+    # it against the live origin so a stale clear can never destroy a
+    # re-dispatched pair's watch state.
+    origin_dispatch_gen: Optional[str] = Field(
+        default=None,
+        description="Report-back dispatch generation token. Internal use only.",
+    )
+
+    # Internal: structural recursion gate for synthetic notification turns.
+    # A task report-back turn is built WITHOUT the subagent machinery
+    # (no Task/TaskOutput tools), so it can never spawn background work
+    # whose completion would notify again.
+    disable_subagents: Optional[bool] = Field(
+        default=None,
+        description="Build this turn's agent without subagent tools. "
+        "Internal use only.",
+    )
+
+    # Server-stamped: the burst-guard ZSET member held by this request's
+    # admission. The route overwrites whatever a client sent (a forged value
+    # could only orphan the caller's own slot until reap, but stamping keeps
+    # the release chain trustworthy end to end).
+    burst_slot_id: Optional[str] = Field(
+        default=None,
+        description="Burst-guard slot held for this request. Server-stamped.",
     )
 
     # External thread identity (for channel integrations like Telegram, Slack)

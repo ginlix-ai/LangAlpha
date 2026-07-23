@@ -36,20 +36,7 @@ vi.mock('../utils/threadStorage', () => ({
   removeStoredThreadId: vi.fn(),
 }));
 
-vi.mock('../../utils/api', () => ({
-  fetchMarketWatch: vi.fn().mockResolvedValue({ thread_id: 't', symbols: [] }),
-  sendChatMessageStream: vi.fn(),
-  sendHitlResponse: vi.fn(),
-  replayThreadHistory: vi.fn().mockResolvedValue(undefined),
-  getWorkflowStatus: vi.fn().mockResolvedValue({ can_reconnect: false, status: 'completed' }),
-  reconnectToWorkflowStream: vi.fn(),
-  streamSubagentTaskEvents: vi.fn(),
-  fetchThreadTurns: vi.fn().mockResolvedValue({ turns: [], retry_checkpoint_id: null }),
-  submitFeedback: vi.fn(),
-  removeFeedback: vi.fn(),
-  getThreadFeedback: vi.fn().mockResolvedValue([]),
-  watchThread: vi.fn(),
-}));
+vi.mock('../../utils/api', async () => (await import('./chatHookHarness')).apiMockModule());
 
 import { sendChatMessageStream, replayThreadHistory } from '../../utils/api';
 import { getStoredThreadId } from '../utils/threadStorage';

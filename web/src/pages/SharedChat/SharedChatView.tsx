@@ -16,6 +16,7 @@ import {
   handleHistoryToolCalls,
   handleHistoryToolCallResult,
   handleHistoryTodoUpdate,
+  handleHistoryTaskArtifactStatus,
 } from '../ChatAgent/hooks/utils/historyEventHandlers';
 import {
   getSharedThread,
@@ -100,7 +101,6 @@ export default function SharedChatView() {
       recentlySentTracker: { isRecentlySent: (_content: string) => false },
       currentMessageRef: { current: null as string | null },
       newMessagesStartIndexRef: { current: 0 },
-      historyMessagesRef: { current: new Set<string>() },
     };
 
     // Cast setMessages to the narrower type expected by historyEventHandlers
@@ -212,6 +212,20 @@ export default function SharedChatView() {
                 setMessages: setMessagesCompat,
               });
             }
+            return;
+          }
+
+          // artifact (task) — stamp the inline subagent card's real status.
+          // The task artifact has agent "main" (not "task:"), so it isn't
+          // filtered above. tool_calls replays first, so the card exists here.
+          if (eventType === 'artifact' && event.artifact_type === 'task') {
+            const payload = (event.payload as Record<string, unknown>) || {};
+            handleHistoryTaskArtifactStatus({
+              toolCallId: event.tool_call_id as string | undefined,
+              taskId: payload.task_id as string | undefined,
+              status: payload.status,
+              setMessages: setMessagesCompat,
+            });
             return;
           }
 

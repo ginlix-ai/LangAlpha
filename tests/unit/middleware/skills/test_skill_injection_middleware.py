@@ -15,16 +15,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.ptc_agent.agent.middleware.skills.content import (
+from ptc_agent.agent.middleware.skills.content import (
     SkillPrefixResult,
     loaded_skill_marker,
 )
-from src.ptc_agent.agent.middleware.skills.middleware import (
+from ptc_agent.agent.middleware.skills.middleware import (
     SkillsMiddleware,
     _append_body_to_last_human,
 )
 
-MW = "src.ptc_agent.agent.middleware.skills.middleware"
+MW = "ptc_agent.agent.middleware.skills.middleware"
 
 
 def _config(skill_contexts=None, skill_dirs=None):

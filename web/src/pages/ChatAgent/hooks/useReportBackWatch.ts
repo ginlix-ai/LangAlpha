@@ -1,9 +1,13 @@
 /**
  * Report-back watch, extracted from useChatMessages. After a PTC dispatch the
  * backend fires a follow-up flash "report-back" workflow per completed PTC
- * analysis; this hook drives the flash thread to each report-back turn via a
- * persistent SSE watch (Redis pub/sub wake), catch-up pulls on load /
- * re-activation / re-subscribe / stream-end, and a slow safety backstop.
+ * analysis; a tail subagent on a PTC thread posts a notification turn the same
+ * way. This hook drives the thread to each report-back turn PUSH-FIRST: a
+ * persistent SSE watch delivers a state snapshot on every (re)subscribe plus
+ * pub/sub wakes after it, and catch-up pulls run only on discrete events
+ * (load / re-activation / re-subscribe / stream-end / task-stream-end). There
+ * is no polling loop — a (re)subscribe is gapless by construction because the
+ * snapshot carries everything published while the client was away.
  *
  * The watch is KEYED to the flash thread and survives navigation into the
  * dispatched PTC thread, attaching only while its flash thread is on screen and
@@ -15,6 +19,8 @@
  * cached-view become-active transition.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { queryKeys } from '@/lib/queryKeys';
 import {
   getReportBackStatus,
   getWorkflowStatus,
@@ -24,30 +30,31 @@ import {
 } from '../utils/api';
 // From the dependency-free signal module (not `../utils/api`) so decoding still
 // works where the hook tests mock `../utils/api`.
-import { decodeReportBackSignal, shouldArmReportBack } from '../utils/reportBackSignal';
+import { decodeReportBackSignal, shouldArmForStatus } from '../utils/reportBackSignal';
 
 /**
- * Slow SAFETY backstop interval — the push wake and the event-driven catch-up
- * pulls do the real work; this only recovers gaps they missed.
+ * Re-subscribe pacing for the push watch. The watch NEVER stops retrying while
+ * armed — a wake has no replay, so an orphaned watch loses it silently; only
+ * the request RATE is bounded. A connection that lived the stable window
+ * re-attaches instantly (that is the backend's ~30-min recycle); anything
+ * shorter — network flap, hard-failing endpoint, proxy that closes right after
+ * the snapshot — doubles the delay up to the cap (~2 req/min worst case).
  */
-const REPORT_BACK_BACKSTOP_MS = 60_000;
+const REPORT_BACK_RESUBSCRIBE_MIN_DELAY_MS = 1_000;
+const REPORT_BACK_RESUBSCRIBE_MAX_DELAY_MS = 30_000;
+const REPORT_BACK_STABLE_CONNECTION_MS = 30_000;
 
 /**
- * Give up after this many CONSECUTIVE non-confirming backstop ticks (`unknown`,
- * `none`, or a thrown probe). A `pending` tick is the backend affirmatively
- * confirming a report-back is still due, so it RESETS the budget — a healthy
- * long-running PTC analysis never loses its live stream. The budget also resets
- * on each successful attach.
+ * One idle status read never disarms the watch by itself: every read source
+ * can race a ms-scale server registration gap (approve-path pendingness, a
+ * task settle → outbox enqueue, a notification turn's stream-end against a
+ * sibling task's settle). An idle observation instead schedules ONE confirming
+ * re-read this far out; only a confirm that STILL finds idle-with-no-producers
+ * tears down. Bounded: one extra read per idle observation, no periodic loop.
+ * Sized past dispatch-admission latency (the longest of those gaps); the cost
+ * of oversizing is only a lingering "awaiting" tip on a drained thread.
  */
-export const REPORT_BACK_MAX_POLLS = 10;
-
-/**
- * Cap onClosed-driven re-subscribes: watchThread returns instantly on a non-ok
- * response (no backoff), which would otherwise spin onClosed→subscribe→onClosed.
- * Resets on each successful attach; once spent the backstop timer is the sole
- * recovery path until the next re-arm.
- */
-const REPORT_BACK_MAX_RESUBSCRIBES = 5;
+const REPORT_BACK_IDLE_CONFIRM_MS = 15_000;
 
 /**
  * Max attach attempts per run id within one watch generation. A zero-content
@@ -61,8 +68,8 @@ const REPORT_BACK_MAX_ATTACH_ATTEMPTS = 2;
  * Idle cap for a report-back catch-up reconnect. The per-run stream has no
  * terminal sentinel (it stays open ~8s after the summary, forever if the run is
  * wedged), and a reader that never resolves strands the spinner + isStreamingRef
- * — unrecoverably, since the backstop reconcile bails on isStreamingRef. Chosen
- * well above flash inter-token + first-event gaps so a healthy summary is never
+ * — unrecoverably, since every reconcile bails on isStreamingRef. Chosen well
+ * above flash inter-token + first-event gaps so a healthy summary is never
  * truncated.
  */
 const REPORT_BACK_IDLE_ABORT_MS = 4_000;
@@ -82,6 +89,13 @@ interface ReconnectToStreamOptions {
   runId?: string | null;
   resetCursor?: boolean;
   idleAbortMs?: number;
+  /**
+   * Whether to wipe the subagent detail-card projection before reattaching.
+   * History-backed reconnects set true (they replay the run and would double
+   * cards); a report-back attach sets false (no subagent replay — a wipe would
+   * only strand a live sibling). See reconnectToStream in useChatMessages.
+   */
+  resetSubagentProjection?: boolean;
 }
 
 export interface UseReportBackWatchParams {
@@ -113,6 +127,13 @@ export interface UseReportBackWatchParams {
    * flow (/status → history replay → reconnect to the live run).
    */
   requestHistoryReload: () => void;
+  /**
+   * True while report-back producers are still undecided — open per-task
+   * subagent streams on a PTC thread. While true, an `idle` status read must
+   * NOT tear the watch down: a tail report-back only becomes `pending` once
+   * its subagent completes, so mid-run idleness proves nothing.
+   */
+  hasOpenProducers?: () => boolean;
 }
 
 export interface ReportBackWatch {
@@ -166,8 +187,10 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
     historyLoadingRef,
     reconnectToStream,
     requestHistoryReload,
+    hasOpenProducers,
   } = params;
 
+  const queryClient = useQueryClient();
   const awaitingReportBackRef = useRef(false);
   // React-state mirror of awaitingReportBackRef for the chat-input tip; the ref
   // stays the synchronous source of truth.
@@ -177,7 +200,6 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
     setAwaitingReportBackState(v);
   }, []);
   const reportBackWatchAbortRef = useRef<AbortController | null>(null);
-  const reportBackPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // The active watch's reconcile fn, exposed so gap events outside the watch
   // closure (thread-load, re-activation, stream-end) can poke an immediate
   // catch-up. Stale pokes are ignored by the closure's own epoch check.
@@ -236,10 +258,6 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
       reportBackWatchAbortRef.current.abort();
       reportBackWatchAbortRef.current = null;
     }
-    if (reportBackPollRef.current) {
-      clearInterval(reportBackPollRef.current);
-      reportBackPollRef.current = null;
-    }
   };
 
   // Drive the flash thread to each PTC report-back turn as the PTCs complete.
@@ -266,10 +284,34 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
 
     let consumed = false;
     let inFlight = false;
-    let polls = 0;
-    let resubscribes = 0;
+    // Latched when a reconcile arrives while another is in flight: the
+    // in-flight /status read predates whatever the new signal announced, so
+    // dropping it would strand the update until the next event. Only the
+    // SOURCE is latched — the drain pass re-fetches, which is always at least
+    // as fresh as any payload the latched signal carried.
+    let queuedReconcile: string | null = null;
+    // Re-subscribe pacing state — see REPORT_BACK_RESUBSCRIBE_*.
+    let resubscribeDelayMs = REPORT_BACK_RESUBSCRIBE_MIN_DELAY_MS;
+    let connectedAt = 0;
+    // One-shot idle-confirm — see REPORT_BACK_IDLE_CONFIRM_MS.
+    let idleConfirmTimer: ReturnType<typeof setTimeout> | null = null;
     // Per-run zero-content attach failures — see REPORT_BACK_MAX_ATTACH_ATTEMPTS.
     const attachFailures = new Map<string, number>();
+
+    const clearIdleConfirm = () => {
+      if (idleConfirmTimer !== null) {
+        clearTimeout(idleConfirmTimer);
+        idleConfirmTimer = null;
+      }
+    };
+    const scheduleIdleConfirm = () => {
+      if (idleConfirmTimer !== null) return;
+      idleConfirmTimer = setTimeout(() => {
+        idleConfirmTimer = null;
+        if (reportBackWatchEpochRef.current !== epoch || consumed) return;
+        void reconcile('idleConfirm');
+      }, REPORT_BACK_IDLE_CONFIRM_MS);
+    };
 
     // Attach to the named run's per-run stream (which replays buffered events
     // even after completion) so the summary streams into a fresh bubble — no
@@ -277,15 +319,18 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
     // Skips the run already on screen.
     const attach = async (runId: string | null, activeTasks: string[]) => {
       if (!runId || runId === currentRunIdRef.current) return false;
-      polls = 0; // progress — reset the give-up + re-subscribe budgets
-      resubscribes = 0;
+      clearIdleConfirm(); // attaching IS evidence of life
       // Record BEFORE streaming so a racing reconcile / recents read can't
       // re-enqueue this run; un-recorded below if the stream delivered nothing.
       attachedRunIdsRef.current.add(runId);
       // idleAbortMs self-limits the catch-up: the per-run stream has no terminal
       // sentinel, so the idle watchdog ends the reader once the summary streamed
       // (or never started). See REPORT_BACK_IDLE_ABORT_MS.
-      await reconnectToStream({ activeTasks, runId, resetCursor: true, idleAbortMs: REPORT_BACK_IDLE_ABORT_MS });
+      // resetSubagentProjection:false — a report-back attach replays only the
+      // synthetic notification turn, never subagent events, so the reader's
+      // subagent-card wipe would only destroy a still-running sibling's live
+      // detail projection with nothing to rebuild it. Preserve it.
+      await reconnectToStream({ activeTasks, runId, resetCursor: true, idleAbortMs: REPORT_BACK_IDLE_ABORT_MS, resetSubagentProjection: false });
       // A zero-content stream end releases currentRunIdRef in the reader's
       // teardown — read that as "never actually rendered" and un-record the run
       // for a bounded retry.
@@ -309,7 +354,13 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
       return false;
     };
 
-    const reconcile = async (source: string, wakeRunId?: string | null) => {
+    const reconcileInner = async (
+      source: string,
+      wakeRunId?: string | null,
+      // A status slice delivered by the watch's snapshot frame — used in place
+      // of a /status fetch, making the snapshot path push-only.
+      statusOverride?: ReportBackStatusResponse | null,
+    ) => {
       // Stale generation (re-armed for another thread / hard-stopped / unmounted).
       if (reportBackWatchEpochRef.current !== epoch) return;
       if (consumed) return;
@@ -328,35 +379,41 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
       // identity check (real isolation is per-instance state + the
       // currentRunIdRef dedup); it only fires in the single-instance test
       // harness. isStreamingRef/inFlight prevent double-attaching.
-      if (threadIdRef.current !== tid || isStreamingRef.current || inFlight) return;
+      if (threadIdRef.current !== tid || isStreamingRef.current) return;
+      if (inFlight) {
+        // Don't drop this signal: the in-flight /status read predates it.
+        // Latch one follow-up pass for the wrapper to drain.
+        queuedReconcile = source;
+        return;
+      }
 
       // On the flash thread and idle: attach the queued head immediately. One
       // attach per reconcile; the attached stream's end pokes the next.
       if (await attachQueueHead([])) return;
 
-      inFlight = true;
       let status: ReportBackStatusResponse;
-      try {
-        // Cheap report-back-only slice — skips the checkpoint / background-task /
-        // share reads the full /status does.
-        status = await getReportBackStatus(tid);
-      } catch {
-        inFlight = false;
-        // A transient /status error is NOT a drained queue (the backend returns
-        // a null sentinel, never `false`, when its own read fails) — but a
-        // persistently-failing endpoint counts toward the give-up cap.
-        if (source === 'poll' && ++polls >= REPORT_BACK_MAX_POLLS) {
-          consumed = true;
-          setAwaiting(false);
-          stopReportBackWatch();
+      if (statusOverride) {
+        status = statusOverride;
+      } else {
+        inFlight = true;
+        try {
+          // Cheap report-back-only slice — skips the checkpoint /
+          // background-task / share reads the full /status does.
+          status = await getReportBackStatus(tid);
+        } catch {
+          inFlight = false;
+          // A transient /status error is NOT a drained queue (the backend
+          // returns a null sentinel, never `false`, when its own read fails).
+          // Stay armed — the next event retries.
+          return;
         }
-        return;
+        inFlight = false;
+        // Re-check generation/ownership after the await: the watch may have
+        // been torn down or a stream may have claimed the slot while /status
+        // was in flight.
+        if (consumed || reportBackWatchEpochRef.current !== epoch) return;
+        if (threadIdRef.current !== tid || isStreamingRef.current) return;
       }
-      inFlight = false;
-      // Re-check generation/ownership after the await: the watch may have been
-      // torn down or a stream may have claimed the slot while /status was in flight.
-      if (consumed || reportBackWatchEpochRef.current !== epoch) return;
-      if (threadIdRef.current !== tid || isStreamingRef.current) return;
 
       enqueueReportBackRun(status.report_back_run_id);
       // Recent-runs catch-up (drained-run discovery): once a report-back turn
@@ -379,38 +436,100 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
       // non-empty queue would have attached above and returned; an idle signal
       // alone never discards turns that haven't rendered.
       if (signal === 'idle') {
+        // Producer-undecided grace: tail-subagent writers are still open
+        // (locally, or per the backend's live-writer list) — a task
+        // report-back only becomes `pending` once its subagent completes, so
+        // mid-run idleness proves nothing. Stay armed; a settle surfaces as a
+        // wake, a snapshot, or the task-stream-end poke.
+        if (hasOpenProducers?.() || (status.active_tasks?.length ?? 0) > 0) {
+          clearIdleConfirm();
+          return;
+        }
+        // No source disarms on its own read — EVERY fetch can race a server
+        // registration gap (approve-path pendingness, task settle → outbox
+        // enqueue, a lost `cleared` wake's silent window). One idle
+        // observation schedules one confirming re-read; only a confirm that
+        // still finds this branch tears down. See REPORT_BACK_IDLE_CONFIRM_MS.
+        if (source !== 'idleConfirm') {
+          scheduleIdleConfirm();
+          return;
+        }
+        // Teardown veto: a signal that arrived DURING this confirm's fetch
+        // (latched into queuedReconcile because inFlight was held) is newer
+        // than what this pass read — a snapshot naming a run, a wake, a
+        // producer event. Never consume over it; the wrapper's drain
+        // re-reads fresh and re-schedules a confirm if still idle.
+        if (queuedReconcile !== null) return;
         consumed = true;
         setAwaiting(false);
         stopReportBackWatch();
         return;
       }
 
-      // Still pending but no run named yet, or none coming (dispatch failed).
-      // Only non-confirming backstop ticks (`unknown`/`none`) burn the give-up
-      // budget; a `pending` tick affirmatively confirms and resets it.
-      if (source === 'poll') {
-        if (signal === 'pending') {
-          polls = 0;
-        } else if (++polls >= REPORT_BACK_MAX_POLLS) {
-          consumed = true;
-          setAwaiting(false);
-          stopReportBackWatch();
-        }
+      // Still pending but no run named yet (`pending`), or the backend can't
+      // say (`unknown`/`none`): stay armed — the wake, the next snapshot, or
+      // an event-driven poke resolves it, and this read supersedes any
+      // pending idle-confirm. No timer budget: the watch is push-driven and
+      // lives until a confirmed idle or unmount.
+      clearIdleConfirm();
+    };
+
+    // Public reconcile: one pass, then drain the queued-reconcile latch (a
+    // signal that arrived while a pass held `inFlight`). Bounded — each drain
+    // consumes the latch; only a genuinely new mid-pass signal re-sets it.
+    const reconcile = async (
+      source: string,
+      wakeRunId?: string | null,
+      statusOverride?: ReportBackStatusResponse | null,
+    ) => {
+      await reconcileInner(source, wakeRunId, statusOverride);
+      // `!inFlight`: when another pass holds the fetch, draining here would
+      // re-latch at the inFlight check and spin the microtask queue until
+      // that fetch resolves. The latch is the OWNER's to drain — its wrapper
+      // re-checks this loop after its inner pass clears inFlight and returns.
+      while (
+        queuedReconcile !== null &&
+        !consumed &&
+        !inFlight &&
+        reportBackWatchEpochRef.current === epoch
+      ) {
+        const queued = queuedReconcile;
+        queuedReconcile = null;
+        await reconcileInner(queued);
       }
     };
 
     // Subscribe to the push wake stream. The backend caps it (~30 min) and
-    // transient drops happen, so onClosed re-subscribes event-first and
-    // reconciles once to recover the gap — bounded by `resubscribes` against a
-    // hard-failing endpoint (watchThread returns instantly, no backoff).
+    // transient drops happen, so onClosed re-subscribes as long as the watch
+    // is armed — paced by REPORT_BACK_RESUBSCRIBE_* so a failing endpoint
+    // costs rate, never wakes (each re-attach's snapshot recovers the gap).
     const subscribe = () => {
       if (reportBackWatchEpochRef.current !== epoch) return;
+      connectedAt = Date.now();
       const { abort } = watchThread(
         tid,
         async (payload) => {
           const wakeRunId = payload?.run_id ?? null;
           if (wakeRunId) {
             await reconcile('wake', wakeRunId);
+            return;
+          }
+          // needs_input wake: a dispatched PTC hit a HITL interrupt (no
+          // report-back run — it hasn't completed). Refetch the batched
+          // dispatch-liveness query so its card flips to needs_input now
+          // instead of on the next slow poll.
+          if (payload?.needs_input) {
+            void queryClient.invalidateQueries({
+              queryKey: queryKeys.threads.dispatchLivenessAll(),
+            });
+            return;
+          }
+          // Consumption clear: the backend affirmatively says pending state
+          // was just torn down. Reconcile NOW (no register-delay — nothing is
+          // coming); /status idle then drops the chip sub-second instead of
+          // riding the 60s backstop.
+          if (payload?.cleared) {
+            await reconcile('wake');
             return;
           }
           // Payload-less wake (older backend / malformed): /status reconcile
@@ -424,18 +543,40 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
           if (reportBackWatchEpochRef.current !== epoch) return;
           if (reportBackWatchAbortRef.current !== abort) return;
           reportBackWatchAbortRef.current = null;
-          // Re-subscribe FIRST so a wake arriving during the gap lands on the
-          // fresh connection, THEN reconcile once to recover the gap.
-          if (++resubscribes <= REPORT_BACK_MAX_RESUBSCRIBES) {
+          // Re-subscribe forever while armed, pacing by connection health: a
+          // stable connection (the backend's ~30-min recycle) re-attaches
+          // instantly with the delay reset; a short-lived one (flap, hard
+          // failure, snapshot-then-close proxy) doubles it up to the cap.
+          const lived = Date.now() - connectedAt;
+          const delay =
+            lived >= REPORT_BACK_STABLE_CONNECTION_MS ? 0 : resubscribeDelayMs;
+          resubscribeDelayMs =
+            delay === 0
+              ? REPORT_BACK_RESUBSCRIBE_MIN_DELAY_MS
+              : Math.min(resubscribeDelayMs * 2, REPORT_BACK_RESUBSCRIBE_MAX_DELAY_MS);
+          setTimeout(() => {
+            if (reportBackWatchEpochRef.current !== epoch || consumed) return;
+            if (reportBackWatchAbortRef.current !== null) return; // re-armed already
             subscribe();
-            void reconcile('close');
-          }
+          }, delay);
+          // Catch up NOW, not after the delay: already-named heads attach
+          // immediately, and the eventual snapshot covers anything newer.
+          void reconcile('close');
         },
         () => {
-          // watchThread's in-loop retry re-subscribed after a transient error;
-          // wakes fired during the gap are lost, so reconcile once. NOT a 'poll'
-          // source: a catch-up must never count toward the give-up cap.
+          // watchThread's in-loop retry re-subscribed after a transient error.
+          // The fresh subscription's snapshot frame carries anything published
+          // during the gap; this catch-up covers backends without snapshots.
           void reconcile('resubscribe');
+        },
+        async (snapshot) => {
+          // State-on-attach: the backend mirrors /status?fields=report_back on
+          // every (re)subscribe, making the watch gapless without a fetch.
+          // Deliberately does NOT reset the re-subscribe pacing — a proxy can
+          // emit the snapshot and drop the body, and resetting here would turn
+          // that into an unpaced subscribe loop. Only connection LIFETIME
+          // (onClosed) earns the reset.
+          await reconcile('snapshot', null, snapshot);
         },
       );
       reportBackWatchAbortRef.current = abort;
@@ -443,8 +584,6 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
 
     subscribe();
     reportBackReconcileRef.current = reconcile;
-    // Slow SAFETY backstop — only catches the rare case every event path missed.
-    reportBackPollRef.current = setInterval(() => reconcile('poll'), REPORT_BACK_BACKSTOP_MS);
   };
 
   // See {@link ReportBackWatch.arm}.
@@ -512,12 +651,11 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
       requestHistoryReload();
       return;
     }
-    // No live run, but this re-activated flash thread still has a report-back
-    // pending (or the backend can't say — `unknown` also arms; draining is only
-    // ever an explicit `false`). Without this, a report-back finished while
-    // hidden would not stream until the next slow backstop tick.
-    if (shouldArmReportBack(decodeReportBackSignal(status.pending_report_back))) {
-      arm(threadId, status.report_back_run_id, 'activate');
+    // No live run, but this re-activated flash thread still has work pending.
+    // Without this, a report-back finished while hidden would never stream —
+    // the hidden view holds no watch to hear it.
+    if (shouldArmForStatus(status)) {
+      arm(threadId, status.report_back_run_id ?? null, 'activate');
       return;
     }
     // Everything drained while hidden (explicit idle) but the recents list names

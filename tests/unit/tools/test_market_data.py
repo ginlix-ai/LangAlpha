@@ -9,11 +9,8 @@ from src.tools.market_data.utils import (
     format_percentage,
     get_rating_label,
 )
-from src.tools.market_data.implementations import (
-    _margin,
-    _normalize_market_bars,
-    _safe_result,
-)
+from src.tools.market_data._shared import _normalize_market_bars, _safe_result
+from src.tools.market_data.company import _margin
 
 
 class TestFormatNumber:

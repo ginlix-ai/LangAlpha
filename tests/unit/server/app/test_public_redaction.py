@@ -292,10 +292,10 @@ class TestPublicTraversalGuard:
 # workspace_files module, while the share endpoint resolves the thread and
 # workspace from the public module. We patch each at its source.
 _PUBLIC_DB_GET_WS = "src.server.app.public.db_get_workspace"
-_WS_DB_GET_WS = "src.server.app.workspace_files.db_get_workspace"
-_WS_WORK_DIR = "src.server.app.workspace_files._get_work_dir"
-_WS_FP = "src.server.app.workspace_files.FilePersistenceService"
-_WS_VAULT = "src.server.app.workspace_files.get_vault_secrets_for_redaction"
+_WS_DB_GET_WS = "src.server.app.workspace_files.serve.db_get_workspace"
+_WS_WORK_DIR = "src.server.app.workspace_files.serve._get_work_dir"
+_WS_FP = "src.server.app.workspace_files.serve.FilePersistenceService"
+_WS_VAULT = "src.server.app.workspace_files.serve.get_vault_secrets_for_redaction"
 _RENDER = "src.server.services.pdf_render.render_workspace_pdf"
 _PDF_BASE = "http://127.0.0.1:8000"
 

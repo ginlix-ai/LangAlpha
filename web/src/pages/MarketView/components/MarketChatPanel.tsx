@@ -18,7 +18,7 @@ import { attachmentsToContexts } from '../../ChatAgent/utils/fileUpload';
 import {
   resolveSubagentTelemetry as resolveSubagentTelemetryPure,
   type SubagentHistoryLike,
-} from '../../ChatAgent/utils/resolveSubagentTelemetry';
+} from '../../ChatAgent/session/subagents/resolveSubagentTelemetry';
 import type { ToolCallProcessRecord, SubagentInfo } from '../../ChatAgent/components/ToolCallDetailView';
 import type { PreviewData } from '../../ChatAgent/hooks/utils/types';
 import MarketChatHistoryButton from './MarketChatHistoryButton';
@@ -366,7 +366,6 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     initialThreadId,
     null,                       // updateTodoListCard
     null,                       // updateSubagentCard
-    null,                       // inactivateAllSubagents
     null,                       // finalizePendingTodos
     null,                       // onOnboardingRelatedToolComplete
     null,                       // onFileArtifact

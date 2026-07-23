@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.ptc_agent.core.sandbox.runtime import SandboxTransientError
-from src.ptc_agent.core.session import Session
+from ptc_agent.core.sandbox.runtime import SandboxTransientError
+from ptc_agent.core.session import Session
 
 
 def _make_sandbox(read_result=None, read_side_effect=None):

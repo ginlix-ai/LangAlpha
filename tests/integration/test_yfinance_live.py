@@ -161,10 +161,16 @@ class TestYFinanceFinancialSourceLive:
         assert "epsActual" in e
 
     async def test_search_stocks(self):
+        from yfinance.exceptions import YFRateLimitError
+
         from src.data_client.yfinance.financial_source import YFinanceFinancialSource
 
         src = YFinanceFinancialSource()
-        result = await src.search_stocks("Apple", limit=5)
+        try:
+            result = await src.search_stocks("Apple", limit=5)
+        except YFRateLimitError:
+            # Yahoo throttles shared CI egress IPs; that is not a code failure.
+            pytest.skip("Yahoo rate-limited this runner")
         assert len(result) >= 1
         # AAPL should be in results
         symbols = [r["symbol"] for r in result]

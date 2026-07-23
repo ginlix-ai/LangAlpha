@@ -3,11 +3,12 @@ Tests for sandbox shutdown race condition fix.
 
 Verifies that:
 - cleanup_idle_workspaces skips workspaces with active workflows
-- BackgroundTaskManager.has_active_tasks_for_workspace works correctly
+- LocalRunExecutor.has_active_tasks_for_workspace works correctly
 - _init_task is cancelled during stop_sandbox() and cleanup()
 """
 
 import asyncio
+import contextlib
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -29,10 +30,10 @@ from ptc_agent.core.sandbox.runtime import (
     SandboxProvider,
     SandboxRuntime,
 )
-from src.server.services.background_task_manager import (
-    BackgroundTaskManager,
-    TaskInfo,
-    TaskStatus,
+from src.server.services.runs.executor import (
+    LocalRunExecutor,
+    LocalRunExecution,
+    LocalRunStatus,
 )
 
 
@@ -78,33 +79,41 @@ def mock_provider(mock_runtime):
     return provider
 
 
+@contextlib.contextmanager
+def _durable_probes(*, root_active=False, open_task_runs=0, error=None):
+    """Patch the guard's ledger reads (root-run rows + subagent runs)."""
+    root = AsyncMock(return_value=root_active)
+    if error is not None:
+        root.side_effect = error
+    with (
+        patch(
+            "src.server.database.runs.lifecycle.workspace_has_active_run",
+            new=root,
+        ),
+        patch(
+            "src.server.database.runs.subagent_runs.count_open_runs_for_workspace",
+            new=AsyncMock(return_value=open_task_runs),
+        ),
+    ):
+        yield
+
+
 class TestHasActiveTasksForWorkspace:
-    """BackgroundTaskManager.has_active_tasks_for_workspace returns correct results."""
+    """LocalRunExecutor.has_active_tasks_for_workspace returns correct results."""
 
     @pytest.mark.asyncio
     async def test_no_tasks(self):
-        mgr = BackgroundTaskManager()
-        assert await mgr.has_active_tasks_for_workspace("ws-1") is False
+        mgr = LocalRunExecutor()
+        with _durable_probes():
+            assert await mgr.has_active_tasks_for_workspace("ws-1") is False
 
     @pytest.mark.asyncio
     async def test_running_task_matches(self):
-        mgr = BackgroundTaskManager()
-        mgr.tasks[("thread-1", "run-1")] = TaskInfo(
+        mgr = LocalRunExecutor()
+        mgr.executions[("thread-1", "run-1")] = LocalRunExecution(
             run_id="run-1",
             thread_id="thread-1",
-            status=TaskStatus.RUNNING,
-            created_at=datetime.now(),
-            metadata={"workspace_id": "ws-1"},
-        )
-        assert await mgr.has_active_tasks_for_workspace("ws-1") is True
-
-    @pytest.mark.asyncio
-    async def test_queued_task_matches(self):
-        mgr = BackgroundTaskManager()
-        mgr.tasks[("thread-1", "run-1")] = TaskInfo(
-            run_id="run-1",
-            thread_id="thread-1",
-            status=TaskStatus.QUEUED,
+            status=LocalRunStatus.RUNNING,
             created_at=datetime.now(),
             metadata={"workspace_id": "ws-1"},
         )
@@ -112,27 +121,53 @@ class TestHasActiveTasksForWorkspace:
 
     @pytest.mark.asyncio
     async def test_completed_task_does_not_match(self):
-        mgr = BackgroundTaskManager()
-        mgr.tasks[("thread-1", "run-1")] = TaskInfo(
+        mgr = LocalRunExecutor()
+        mgr.executions[("thread-1", "run-1")] = LocalRunExecution(
             run_id="run-1",
             thread_id="thread-1",
-            status=TaskStatus.COMPLETED,
+            status=LocalRunStatus.COMPLETED,
             created_at=datetime.now(),
             metadata={"workspace_id": "ws-1"},
         )
-        assert await mgr.has_active_tasks_for_workspace("ws-1") is False
+        with _durable_probes():
+            assert await mgr.has_active_tasks_for_workspace("ws-1") is False
 
     @pytest.mark.asyncio
     async def test_different_workspace_does_not_match(self):
-        mgr = BackgroundTaskManager()
-        mgr.tasks[("thread-1", "run-1")] = TaskInfo(
+        mgr = LocalRunExecutor()
+        mgr.executions[("thread-1", "run-1")] = LocalRunExecution(
             run_id="run-1",
             thread_id="thread-1",
-            status=TaskStatus.RUNNING,
+            status=LocalRunStatus.RUNNING,
             created_at=datetime.now(),
             metadata={"workspace_id": "ws-other"},
         )
-        assert await mgr.has_active_tasks_for_workspace("ws-1") is False
+        with _durable_probes():
+            assert await mgr.has_active_tasks_for_workspace("ws-1") is False
+
+    @pytest.mark.asyncio
+    async def test_remote_root_run_counts(self):
+        """An in_progress response row on another worker's thread keeps the
+        workspace active even with an empty local task map."""
+        mgr = LocalRunExecutor()
+        with _durable_probes(root_active=True):
+            assert await mgr.has_active_tasks_for_workspace("ws-1") is True
+
+    @pytest.mark.asyncio
+    async def test_open_subagent_run_counts(self):
+        """A tail-mode subagent (no root run anywhere) still holds the
+        sandbox via its in_progress ledger row."""
+        mgr = LocalRunExecutor()
+        with _durable_probes(open_task_runs=1):
+            assert await mgr.has_active_tasks_for_workspace("ws-1") is True
+
+    @pytest.mark.asyncio
+    async def test_probe_failure_counts_as_active(self):
+        """Fail closed: the callers gate sandbox teardown, so an unreadable
+        ledger must defer, never destroy."""
+        mgr = LocalRunExecutor()
+        with _durable_probes(error=RuntimeError("db down")):
+            assert await mgr.has_active_tasks_for_workspace("ws-1") is True
 
 
 class TestCleanupIdleWorkspacesGuard:
@@ -162,7 +197,7 @@ class TestCleanupIdleWorkspacesGuard:
             ),
             patch.object(mgr, "stop_workspace", new_callable=AsyncMock) as mock_stop,
             patch(
-                "src.server.services.background_task_manager.BackgroundTaskManager.get_instance"
+                "src.server.services.runs.executor.LocalRunExecutor.get_instance"
             ) as mock_get_instance,
         ):
             mock_instance = MagicMock()
@@ -197,7 +232,7 @@ class TestCleanupIdleWorkspacesGuard:
             ),
             patch.object(mgr, "stop_workspace", new_callable=AsyncMock) as mock_stop,
             patch(
-                "src.server.services.background_task_manager.BackgroundTaskManager.get_instance"
+                "src.server.services.runs.executor.LocalRunExecutor.get_instance"
             ) as mock_get_instance,
         ):
             mock_instance = MagicMock()

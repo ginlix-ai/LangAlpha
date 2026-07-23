@@ -9,13 +9,17 @@ foreground SSE run that burns credits for an ack the caller can't parse.
 
 import asyncio
 from contextlib import contextmanager
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from ptc_agent.config.agent import CredentialSource
 from tests.conftest import create_test_app
+
+THREADS_MOD = "src.server.app.threads.messaging"
+RESERVE_MOD = "src.server.services.report_back.flash.reserve"
 
 USER = "usr-dispatch-001"
 TOKEN = "test-internal-service-token"
@@ -37,10 +41,16 @@ def _make_config():
     return cfg
 
 
-def _empty_async_gen():
+def _stub_ptc_workflow(**kwargs):
+    """Stand-in for ``astream_ptc_workflow``: a dispatched generator yields the
+    post-START marker first (v4 2.4c — the handler primes to it before its
+    202), a foreground one streams nothing."""
+
     async def _gen():
-        if False:
-            yield ""
+        if kwargs.get("dispatched"):
+            from src.server.handlers.chat.request_prep import DISPATCH_STARTED_MARKER
+
+            yield DISPATCH_STARTED_MARKER
 
     return _gen()
 
@@ -64,11 +74,12 @@ def _app():
 
 
 @contextmanager
-def _stub_workflow(release_burst=None):
+def _stub_workflow(release_burst=None, admit=None):
     """Patch everything past the dispatch-auth check, for both branches.
 
-    The dispatched branch's admission/tracking singletons are mocked so a
-    background dispatch returns its JSON ack without real Redis/task work.
+    The dispatched branch's admission singletons and phantom-refusal gate
+    are mocked so a background dispatch returns its JSON ack without real
+    Redis/task work. Yields the singleton mocks for call-shape assertions.
     """
     from src.server.app import setup as setup_module
 
@@ -77,15 +88,18 @@ def _stub_workflow(release_burst=None):
 
     btm = MagicMock()
     btm.get_admission_lock = AsyncMock(return_value=asyncio.Lock())
-    btm.wait_for_admission = AsyncMock(return_value="fresh")
-    btm.pre_register = AsyncMock()
+    btm.wait_for_admission = AsyncMock(return_value=("fresh", None))
 
-    tracker = MagicMock()
-    tracker.mark_active = AsyncMock()
+    consume = AsyncMock()
+
+    gate = SimpleNamespace(
+        admit=admit if admit is not None else AsyncMock(return_value=True),
+        retract=AsyncMock(),
+    )
 
     with (
         patch(
-            "src.server.app.threads.get_thread_owner_id",
+            f"{THREADS_MOD}.get_thread_owner_id",
             new=AsyncMock(return_value=USER),
         ),
         patch(
@@ -94,7 +108,7 @@ def _stub_workflow(release_burst=None):
         ),
         patch.object(setup_module, "agent_config", MagicMock()),
         patch(
-            "src.server.handlers.chat.resolve_llm_config",
+            "src.server.services.llm.config.resolve_llm_config",
             new=AsyncMock(return_value=_make_config()),
         ),
         patch(
@@ -107,26 +121,34 @@ def _stub_workflow(release_burst=None):
         ),
         patch(
             "src.server.handlers.chat.astream_ptc_workflow",
-            return_value=_empty_async_gen(),
+            new=_stub_ptc_workflow,
         ),
         patch(
-            "src.server.app.threads.observe_chat_stream",
+            f"{THREADS_MOD}.observe_chat_stream",
             side_effect=lambda gen, **_: gen,
         ),
         patch(
-            "src.server.services.background_task_manager.BackgroundTaskManager.get_instance",
+            "src.server.services.runs.executor.LocalRunExecutor.get_instance",
             return_value=btm,
         ),
         patch(
-            "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-            return_value=tracker,
+            f"{RESERVE_MOD}.admit_dispatch_gen",
+            new=gate.admit,
         ),
-        patch("src.server.app.threads._consume_background_gen", new=AsyncMock()),
+        patch(
+            f"{RESERVE_MOD}.retract_dispatch_gen",
+            new=gate.retract,
+        ),
+        patch(f"{THREADS_MOD}._consume_background_gen", new=consume),
+        patch(
+            f"{THREADS_MOD}._assert_stream_transport_ready",
+            new=AsyncMock(),
+        ),
         # Sync passthrough (patch() would auto-create an AsyncMock for this
         # async function, whose wrapper coroutine returns — never awaits —
         # the inner one, leaking it).
         patch(
-            "src.server.app.threads.observe_background_chat_turn",
+            f"{THREADS_MOD}.observe_background_chat_turn",
             new=lambda coro, **_: coro,
         ),
         patch(
@@ -134,15 +156,17 @@ def _stub_workflow(release_burst=None):
             new=release_burst if release_burst is not None else AsyncMock(),
         ),
     ):
-        yield
+        yield SimpleNamespace(btm=btm, gate=gate, consume=consume)
 
 
-async def _post(app, *, headers=None):
+async def _post(app, *, headers=None, body=None):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as c:
         resp = await c.post(
-            "/api/v1/threads/tid-dispatch/messages", json=_BODY, headers=headers or {}
+            "/api/v1/threads/tid-dispatch/messages",
+            json=body or _BODY,
+            headers=headers or {},
         )
     # Drain the dispatched branch's fire-and-forget task so it finishes while
     # the patches (and the test's event loop) are still alive.
@@ -221,6 +245,159 @@ async def test_platform_stray_dispatch_header_is_rejected(monkeypatch):
     assert resp.status_code == 403
     assert "INTERNAL_SERVICE_TOKEN" in resp.json()["detail"]
     release.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_refused_admission_gate_aborts_dispatch(monkeypatch):
+    """Codex round-9 F1, 2.4d form: the phantom-refusal gate returning False
+    (receipted generation, or a fail-closed unavailable gate) must abort
+    with 503 BEFORE priming/scheduling — and with nothing stamped there
+    is nothing to retract."""
+    monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", TOKEN)
+    release = AsyncMock()
+    app = _app()
+    with _stub_workflow(
+        release_burst=release, admit=AsyncMock(return_value=False)
+    ) as stubs:
+        resp = await _post(
+            app,
+            body={
+                **_BODY,
+                "origin_flash_thread_id": "flash-1",
+                "origin_dispatch_gen": "g-1",
+            },
+            headers={"X-Dispatch": "background", "X-Service-Token": TOKEN},
+        )
+    assert resp.status_code == 503
+    stubs.consume.assert_not_called()
+    stubs.gate.retract.assert_not_awaited()
+    release.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_gen_runs_the_refusal_gate(monkeypatch):
+    """Codex round-13 P0, 2.4d form: a gen-carrying dispatch admits through
+    the receipt-gated intent stamp (one Lua: refuse if the orphan resolver
+    receipted this generation, else stamp pre-START intent), so a receipted
+    phantom can never admit late; a gen-less dispatch has nothing to receipt
+    against and skips the gate."""
+    monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", TOKEN)
+    app = _app()
+    with _stub_workflow() as stubs:
+        resp = await _post(
+            app,
+            body={
+                **_BODY,
+                "origin_flash_thread_id": "flash-1",
+                "origin_dispatch_gen": "g-1",
+            },
+            headers={"X-Dispatch": "background", "X-Service-Token": TOKEN},
+        )
+    assert resp.status_code == 200
+    stubs.gate.admit.assert_awaited_once_with("tid-dispatch", "g-1", ANY)
+    stubs.gate.retract.assert_not_awaited()
+
+    app = _app()
+    with _stub_workflow() as stubs:
+        resp = await _post(
+            app, headers={"X-Dispatch": "background", "X-Service-Token": TOKEN}
+        )
+    assert resp.status_code == 200
+    stubs.gate.admit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc_factory,expected_status",
+    [
+        (lambda: __import__("fastapi").HTTPException(409, "busy"), 409),
+        (lambda: RuntimeError("priming blew up"), 503),
+    ],
+)
+async def test_priming_failure_retracts_intent_stamp(
+    monkeypatch, exc_factory, expected_status
+):
+    """A pre-START priming failure (admission 409 or a wrapped 503) must
+    retract the intent stamp CAS'd to this admission's run — else the
+    resolver reads 'admitted' until the 24h origin TTL and never settles the
+    phantom (the marker-era stuck-stamp bug)."""
+    monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", TOKEN)
+    app = _app()
+
+    exc = exc_factory()
+
+    def _failing_gen(**kwargs):
+        async def _gen():
+            raise exc
+            yield  # unreachable; makes this a generator function
+
+        return _gen()
+
+    with _stub_workflow() as stubs, patch(
+        "src.server.handlers.chat.astream_ptc_workflow", new=_failing_gen
+    ):
+        resp = await _post(
+            app,
+            body={
+                **_BODY,
+                "origin_flash_thread_id": "flash-1",
+                "origin_dispatch_gen": "g-1",
+            },
+            headers={"X-Dispatch": "background", "X-Service-Token": TOKEN},
+        )
+
+    assert resp.status_code == expected_status
+    stubs.gate.retract.assert_awaited_once_with("tid-dispatch", "g-1", ANY)
+    stubs.consume.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_retransmit_race_adopts_existing_run(monkeypatch):
+    """A retransmit that slips past the route-level dedup probe (the first
+    copy's START had not committed at probe time) surfaces in-generator as
+    DuplicateRequestError during priming; the dispatch handler adopts the
+    existing run in its ack instead of orphaning the caller (v4 2.4c) — and
+    must NOT retract the intent stamp: the adopted run IS this generation
+    admitted (2.4d)."""
+    monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", TOKEN)
+    app = _app()
+
+    def _dup_gen(**kwargs):
+        async def _gen():
+            from src.server.database.runs.lifecycle import DuplicateRequestError
+
+            raise DuplicateRequestError(
+                {"conversation_response_id": "run-existing"}
+            )
+            yield  # unreachable; makes this a generator function
+
+        return _gen()
+
+    with _stub_workflow() as stubs, patch(
+        "src.server.handlers.chat.astream_ptc_workflow", new=_dup_gen
+    ):
+        resp = await _post(
+            app,
+            body={
+                **_BODY,
+                "origin_flash_thread_id": "flash-1",
+                "origin_dispatch_gen": "g-1",
+            },
+            headers={"X-Dispatch": "background", "X-Service-Token": TOKEN},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "dispatched"
+    assert body["run_id"] == "run-existing"
+    # The loser's own run never schedules, and the winner's admission
+    # (same gen) keeps its stamp.
+    stubs.consume.assert_not_called()
+    stubs.gate.retract.assert_not_awaited()
 
 
 @pytest.mark.asyncio

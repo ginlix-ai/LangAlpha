@@ -13,6 +13,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+THREADS_MOD = "src.server.app.threads.messaging"
+AUTH_MOD = "src.server.utils.api"
+
 
 def _pubsub_cache(queue):
     """A cache whose pubsub yields each Redis frame in `queue`, then pings."""
@@ -52,7 +55,7 @@ async def test_watch_forwards_every_wake_on_one_subscription(threads_client):
     def fake_monotonic():
         return real_monotonic() + (0 if queue else 10**9)
 
-    with patch("src.server.app.threads.require_thread_owner", new=AsyncMock()), patch(
+    with patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()), patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=cache
     ), patch("time.monotonic", fake_monotonic):
         body = ""
@@ -77,7 +80,7 @@ async def test_watch_emits_error_when_cache_unavailable(threads_client):
     cache.enabled = False
     cache.client = None
 
-    with patch("src.server.app.threads.require_thread_owner", new=AsyncMock()), patch(
+    with patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()), patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=cache
     ):
         async with threads_client.stream(

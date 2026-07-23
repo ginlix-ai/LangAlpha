@@ -5,9 +5,9 @@ allowing the main agent to continue working without blocking.
 """
 
 import asyncio
-import contextvars
 import json
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -20,155 +20,33 @@ from langgraph.types import Command
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTask,
     BackgroundTaskRegistry,
+    TaskRunRejected,
+)
+from ptc_agent.agent.middleware.background_subagent.redis_stream import (
+    steering_queue_key,
 )
 from ptc_agent.agent.middleware.background_subagent.tools import (
     create_task_output_tool,
 )
-from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
-
-from src.observability.tracing import (
-    create_task_with_context,
-    emit_subagent_launch,
+from ptc_agent.agent.middleware.background_subagent import (
+    run_executor,
+    task_actions,
 )
+
 
 if TYPE_CHECKING:
-    from ptc_agent.agent.middleware.background_subagent.event_capture import (
-        SubagentEventCaptureMiddleware,
-    )
-    from src.tools.decorators import ToolUsageTracker
+    pass
 
-# This ContextVar propagates tool_call_id to subagent tool calls, used by
-# SubagentEventCaptureMiddleware to track which background task a tool call
-# belongs to.
-current_background_tool_call_id: contextvars.ContextVar[str | None] = (
-    contextvars.ContextVar("current_background_tool_call_id", default=None)
-)
 
-# This ContextVar propagates the unified agent identity (e.g., "research:uuid4")
-# to subagent tool calls, for internal tool tracking.
-current_background_agent_id: contextvars.ContextVar[str | None] = (
-    contextvars.ContextVar("current_background_agent_id", default=None)
-)
-
-# This ContextVar propagates a dedicated PerCallTokenTracker to the subagent
-# so its LLM calls are tracked separately from the parent agent's tracker.
-current_background_token_tracker: contextvars.ContextVar[PerCallTokenTracker | None] = (
-    contextvars.ContextVar("current_background_token_tracker", default=None)
+# Re-exported for compatibility: every consumer historically imported these
+# ContextVars from this module, and identity must be preserved.
+from ptc_agent.agent.middleware.background_subagent.context import (  # noqa: E402, F401
+    current_background_agent_id,
+    current_background_token_tracker,
+    current_background_tool_call_id,
 )
 
 logger = structlog.get_logger(__name__)
-
-
-def _make_task_done_callback(task: BackgroundTask) -> Callable[[asyncio.Task], None]:
-    """Build a done_callback that bumps ``last_updated_at`` when the asyncio.Task finishes.
-
-    Covers all completion paths (success, failure, cancellation) without
-    having to instrument every ``task.completed = True`` site.
-    """
-
-    def _on_task_done(_t: asyncio.Task) -> None:
-        task.last_updated_at = time.time()
-
-    return _on_task_done
-
-
-def _truncate_description(description: str, max_sentences: int = 2) -> str:
-    """Return the first N sentences of description (period-delimited)."""
-    sentences = []
-    remaining = description
-    for _ in range(max_sentences):
-        period_idx = remaining.find(".")
-        if period_idx == -1:
-            sentences.append(remaining)
-            break
-        sentences.append(remaining[: period_idx + 1])
-        remaining = remaining[period_idx + 1 :].lstrip()
-        if not remaining:
-            break
-    return " ".join(sentences)
-
-
-def _merge_subagent_usage(
-    task: BackgroundTask,
-    tracker: "PerCallTokenTracker",
-    tool_tracker: "ToolUsageTracker",
-) -> None:
-    """Merge this run's token + tool usage into any unpersisted usage on the task.
-
-    Resume re-runs a task before the collector may have persisted the prior
-    run; appending records and summing tool counts (instead of replacing) keeps
-    the prior run's usage until cleanup drops it after a successful persist.
-    """
-    task.per_call_records = (task.per_call_records or []) + (
-        tracker.per_call_records or []
-    )
-    for name, count in tool_tracker.get_summary().items():
-        task.tool_usage[name] = task.tool_usage.get(name, 0) + count
-
-
-async def _run_background_task(
-    task: BackgroundTask,
-    handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
-    request: ToolCallRequest,
-    tracker: "PerCallTokenTracker",
-    label: str,
-) -> dict[str, Any]:
-    """Execute a subagent handler in a background asyncio.Task.
-
-    Shared by both the new-spawn and resume paths.
-    """
-    from src.tools.decorators import ToolUsageTracker, set_tool_tracker
-
-    tool_tracker = ToolUsageTracker()
-
-    async def run_handler() -> ToolMessage | Command:
-        current_background_token_tracker.set(tracker)
-        set_tool_tracker(tool_tracker)
-        return await handler(request)
-
-    handler_task: asyncio.Task[ToolMessage | Command] = asyncio.create_task(
-        run_handler()
-    )
-    task.handler_task = handler_task
-    try:
-        result = await asyncio.shield(handler_task)
-        _merge_subagent_usage(task, tracker, tool_tracker)
-        logger.debug(
-            "%s completed",
-            label,
-            display_id=task.display_id,
-            result_type=type(result).__name__,
-            token_records=len(task.per_call_records),
-        )
-        return {"success": True, "result": result}
-    except asyncio.CancelledError:
-        logger.info(
-            "%s cancellation requested; continuing",
-            label,
-            display_id=task.display_id,
-        )
-        try:
-            result = await handler_task
-            _merge_subagent_usage(task, tracker, tool_tracker)
-            return {"success": True, "result": result}
-        except Exception as e:
-            _merge_subagent_usage(task, tracker, tool_tracker)
-            logger.error(
-                "%s failed after cancellation",
-                label,
-                display_id=task.display_id,
-                error=str(e),
-            )
-            return {"success": False, "error": str(e), "error_type": type(e).__name__}
-    except Exception as e:
-        _merge_subagent_usage(task, tracker, tool_tracker)
-        logger.error(
-            "%s failed",
-            label,
-            display_id=task.display_id,
-            error=str(e),
-        )
-        return {"success": False, "error": str(e), "error_type": type(e).__name__}
 
 
 class BackgroundSubagentMiddleware(AgentMiddleware):
@@ -186,20 +64,30 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         *,
         enabled: bool = True,
         registry: BackgroundTaskRegistry | None = None,
-        event_capture_middleware: "SubagentEventCaptureMiddleware | None" = None,
         checkpointer: Any | None = None,
+        namespace_owner: Any | None = None,
     ) -> None:
         """
         Args:
             checkpointer: LangGraph checkpointer used to hydrate tasks from stored
                 state when the in-memory registry loses them (e.g. server restart).
+            namespace_owner: optional writer fence for task checkpoint namespaces
+                (``acquire_task_ns(task_id) -> bool`` / ``release_task_ns``, e.g.
+                the run's WriterGuard). None = single-writer deployment; spawn and
+                resume skip the fence.
         """
         super().__init__()
         self.registry = registry or BackgroundTaskRegistry()
         self.timeout = timeout
         self.enabled = enabled
-        self.event_capture_middleware = event_capture_middleware
         self.checkpointer = checkpointer
+        self.namespace_owner = namespace_owner
+        # Task ids with a resume mid-flight: the liveness check and the
+        # writer spawn are separated by awaits, so two parallel resume calls
+        # in one model step could otherwise both pass and double-spawn (the
+        # per-session namespace fence is deliberately idempotent for one
+        # run and cannot arbitrate between coroutines sharing it).
+        self._resume_claims: set[str] = set()
 
         # Create native tools for this middleware
         # These allow the main agent to wait for and check on background tasks
@@ -215,59 +103,258 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         """Sync path: no background spawn, falls back to blocking execution."""
         return handler(request)
 
-    async def _queue_followup_to_redis(self, task_id: str, description: str) -> bool:
-        """Push a follow-up message to Redis for a running subagent. Returns True on success."""
+    async def _queue_followup_to_redis(
+        self, task: "BackgroundTask", description: str
+    ) -> str | None:
+        """Push a follow-up message onto the task's steering queue.
+
+        Fenced by run identity: the payload stamps the run the sender
+        believes it is steering, and the queue key is run-scoped so a later
+        resume can never consume it. Returns the message's input_id, or None
+        when queuing failed.
+        """
         try:
             from src.utils.cache.redis_cache import get_cache_client
 
             cache = get_cache_client()
             if not cache.enabled or not cache.client:
-                return False
+                return None
 
-            key = f"subagent:steering:{task_id}"
-            payload = json.dumps(description)
+            input_id = uuid.uuid4().hex
+            key = steering_queue_key(task.tool_call_id, task.task_run_id)
+            payload = json.dumps(
+                {
+                    "content": description,
+                    "expected_task_run_id": task.task_run_id,
+                    "input_id": input_id,
+                }
+            )
             await cache.client.rpush(key, payload)
             # 1 hour TTL — if not consumed, it's stale
             await cache.client.expire(key, 3600)
-            return True
+
+            # Push-then-verify: the terminal sweep drains this queue once,
+            # so a push that lands after it would sit unread until TTL
+            # while the sender reports success. Terminal meta is written
+            # BEFORE the sweep, so a meta read issued AFTER our push that
+            # still says "running" proves the sweep hadn't started — it
+            # will collect our entry if the run ends before delivery.
+            stale = task.completed or task.cancelled
+            try:
+                if not stale:
+                    from ptc_agent.agent.middleware.background_subagent.redis_stream import (
+                        read_task_meta,
+                    )
+
+                    meta = await read_task_meta(
+                        self.registry.thread_id or "", task.task_id
+                    )
+                    if meta is not None:
+                        # "Running" must mean THIS run: a rotated epoch means
+                        # our run-scoped entry sits on a queue whose one sweep
+                        # has already passed.
+                        stale = meta.get("status") != "running" or bool(
+                            task.task_run_id
+                            and (meta.get("task_run_id") or None)
+                            != task.task_run_id
+                        )
+                    else:
+                        # Meta lapsed: the injected ledger (when present) is
+                        # the durable authority. An unknown task fails open —
+                        # the arbitration must never be worse than admission.
+                        ledger = getattr(self.registry, "run_ledger", None)
+                        if ledger is not None:
+                            row = await ledger.get_latest_run(task.task_id)
+                            stale = row is not None and (
+                                row.get("status") != "in_progress"
+                                or bool(
+                                    task.task_run_id
+                                    and str(row.get("task_run_id"))
+                                    != task.task_run_id
+                                )
+                            )
+            except Exception:
+                stale = False  # unreadable authority keeps the admission
+            if stale:
+                await cache.client.lrem(key, 0, payload)
+                return None
+            return input_id
         except Exception as e:
             logger.error(
-                "Failed to queue follow-up to Redis", task_id=task_id, error=str(e)
+                "Failed to queue follow-up to Redis",
+                task_id=task.task_id,
+                error=str(e),
+            )
+            return None
+
+    async def _acquire_task_ns(self, task_id: str) -> bool:
+        """Fail-closed wrapper around the namespace fence: an acquire error
+        refuses the namespace rather than admitting an unfenced writer."""
+        try:
+            return bool(await self.namespace_owner.acquire_task_ns(task_id))
+        except Exception:
+            logger.warning(
+                "task-ns acquire raised; refusing", task_id=task_id, exc_info=True
             )
             return False
+
+    async def _release_task_ns(self, task_id: str) -> None:
+        """Best-effort fence release for admission/setup failure paths — no
+        writer will spawn, so the namespace must not stay held."""
+        if self.namespace_owner is None:
+            return
+        try:
+            await self.namespace_owner.release_task_ns(task_id)
+        except Exception:
+            logger.warning(
+                "task-ns release failed on admission abort",
+                task_id=task_id,
+                exc_info=True,
+            )
+
+    async def _admit_task_run(
+        self,
+        task: BackgroundTask,
+        *,
+        cause: str,
+        description: str,
+        launch_tool_call_id: str,
+        parent_run_id: str | None,
+    ) -> str | ToolMessage:
+        """Bear the ledger row for this execution (admission-authoritative).
+
+        Called under the task's namespace guard, before any spawn side
+        effect. Returns the task_run_id, or — after releasing the guard —
+        an error ToolMessage: on conflict the spawn is rejected, and on
+        ledger infra failure it fails closed (a run we cannot record is a
+        run we do not start). No ledger injected → returns "" and the task
+        keeps task_run_id=None.
+        """
+        ledger = getattr(self.registry, "run_ledger", None)
+        if ledger is None:
+            return ""
+        try:
+            return await ledger.start_task_run(
+                task_id=task.task_id,
+                cause=cause,
+                description=description,
+                subagent_type=task.subagent_type,
+                parent_run_id=parent_run_id,
+                launch_tool_call_id=launch_tool_call_id,
+            )
+        except TaskRunRejected as e:
+            logger.warning(
+                "task-run admission rejected",
+                task_id=task.task_id,
+                cause=cause,
+                reason=e.reason,
+            )
+            await self._release_task_ns(task.task_id)
+            return ToolMessage(
+                content=f"Error: could not start {task.display_id} — {e.reason}.",
+                tool_call_id=launch_tool_call_id,
+                name="Task",
+            )
+        except Exception:
+            logger.error(
+                "task-run ledger unavailable; refusing spawn",
+                task_id=task.task_id,
+                cause=cause,
+                exc_info=True,
+            )
+            await self._release_task_ns(task.task_id)
+            return ToolMessage(
+                content=(
+                    f"Error: could not start {task.display_id} — its run "
+                    f"could not be recorded. Try again."
+                ),
+                tool_call_id=launch_tool_call_id,
+                name="Task",
+            )
+
+    async def _abort_admitted_run(self, task: BackgroundTask, exc: Exception) -> None:
+        """Post-INSERT setup failure: settle the just-born row as error
+        through the owner terminal pipeline — an admitted run either spawns
+        or terminates, it never strands in_progress. Going through
+        ``_settle_terminal_run`` (not a bare ledger finalize) also writes the
+        terminal meta and stamps stream retention, so the aborted run's spill
+        keys expire instead of leaking without a TTL."""
+        await run_executor._settle_terminal_run(
+            task,
+            ledger_status="error",
+            ledger_failure={
+                "error": f"setup failed before spawn: {exc}",
+                "error_type": type(exc).__name__,
+            },
+            registry=self.registry,
+            namespace_owner=self.namespace_owner,
+        )
+
+    async def _finalize_cancelled_before_spawn(self, task: BackgroundTask) -> None:
+        """A stop won the publish race: the admitted run never spawned (or
+        its writer was cancelled before its first tick). Settle through the
+        same owner terminal pipeline as a real writer — an abbreviated
+        finalize would skip the steering sweep (acknowledged input lost
+        before run_end), append run_end onto a torn stream, and leave the
+        opener's stream without its sentinel/retention stamp."""
+        await run_executor._settle_terminal_run(
+            task,
+            ledger_status="cancelled",
+            ledger_failure=None,
+            registry=self.registry,
+            namespace_owner=self.namespace_owner,
+        )
+
+    async def _append_run_opener(self, task: BackgroundTask, prompt: str) -> None:
+        """First stream entry of a run's epoch: the instruction that launched
+        it (spawn and resume alike) — the live counterpart of the checkpointed
+        run-boundary HumanMessage, so live and replay share one transcript
+        shape. Best-effort: the run proceeds without it."""
+        try:
+            await self.registry.append_captured_event(
+                task.tool_call_id,
+                {
+                    "event": "user_message",
+                    "data": {
+                        "agent": f"task:{task.task_id}",
+                        "role": "user",
+                        "content": prompt,
+                    },
+                    "ts": time.time(),
+                },
+            )
+        except Exception:
+            logger.warning(
+                "run-opener user_message append failed",
+                task_id=task.task_id,
+                exc_info=True,
+            )
 
     async def _reset_task_for_resume(self, task: BackgroundTask) -> None:
         """Reset a completed task's state so it can be re-run.
 
-        Clears the Redis event keys first so the resumed run starts fresh.
-        Without this the resumed run's events would interleave with the prior
-        run's (the seq counter resets to 0, causing seq collisions on replay).
+        Steal-then-delete ordering is load-bearing: the collector claim is
+        cleared (and registry membership restored) BEFORE the awaited Redis
+        deletes, so an in-flight collector pass can't pass its ownership
+        fence mid-reset — evicting the entry, nulling the new writer's
+        handles, or claiming the resumed round's result under the prior
+        round's response id. The deletes then clear the event keys so the
+        resumed run starts fresh (the seq counter resets to 0; leftovers
+        would collide on replay), serialized on ``redis_spill_lock`` so a
+        stale cleanup delete can't land after them and erase round-2 data.
         """
-        if self.registry.thread_id:
-            try:
-                from src.utils.cache.redis_cache import get_cache_client
-
-                cache = get_cache_client()
-                if getattr(cache, "enabled", False):
-                    await cache.delete(
-                        f"subagent:events:meta:{self.registry.thread_id}:{task.task_id}"
-                    )
-                    await cache.delete(
-                        f"subagent:stream:{self.registry.thread_id}:{task.task_id}"
-                    )
-                    # One-release backward-compat sweep for the legacy List
-                    # key written by pre-cutover workers. Safe to drop once
-                    # no worker on the old code path is in rotation.
-                    await cache.delete(
-                        f"subagent:events:{self.registry.thread_id}:{task.task_id}"
-                    )
-            except Exception:
-                logger.warning(
-                    "Failed to clear Redis spool on resume; replay may include stale events",
-                    task_id=task.task_id,
-                    exc_info=True,
-                )
+        await self.registry.reclaim_for_resume(task)
         task.completed = False
+        # Unseal: append_captured_event drops appends while ``cancelled`` is
+        # set (killed streams are final) — the resumed round is a fresh
+        # writer and must not inherit the seal.
+        task.cancelled = False
+        # Drop the prior round's settled handles: until the publish fence
+        # installs the new writer this is a STARTING task, and a stale done
+        # handle would make the cancel paths misread it as a finished writer
+        # awaiting its done-callback (unstampable) instead.
+        task.asyncio_task = None
+        task.handler_task = None
         task.result = None
         task.result_seen = False
         task.error = None
@@ -279,9 +366,41 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         task.captured_event_count = 0
         task.captured_event_bytes = 0
         task.redis_write_failed = False
-        task.collector_response_id = None
         task.sse_drain_complete = asyncio.Event()
         task.sse_consumer_count = 0
+        if self.registry.thread_id:
+            try:
+                from src.utils.cache.redis_cache import get_cache_client
+
+                cache = get_cache_client()
+                if getattr(cache, "enabled", False):
+                    from .redis_stream import (
+                        legacy_task_events_key,
+                        task_meta_key,
+                        task_stream_key,
+                    )
+
+                    async with task.redis_spill_lock:
+                        await cache.delete(
+                            task_meta_key(self.registry.thread_id, task.task_id)
+                        )
+                        await cache.delete(
+                            task_stream_key(self.registry.thread_id, task.task_id)
+                        )
+                        # One-release backward-compat sweep for the legacy List
+                        # key written by pre-cutover workers. Safe to drop once
+                        # no worker on the old code path is in rotation.
+                        await cache.delete(
+                            legacy_task_events_key(
+                                self.registry.thread_id, task.task_id
+                            )
+                        )
+            except Exception:
+                logger.warning(
+                    "Failed to clear Redis spool on resume; replay may include stale events",
+                    task_id=task.task_id,
+                    exc_info=True,
+                )
         # Reset timestamps so the LLM sees honest staleness for the
         # resumed run, not leftover values from the prior asyncio.Task.
         task.last_checked_at = time.time()
@@ -332,13 +451,31 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
     ) -> BackgroundTask | None:
         """Reconstruct a BackgroundTask from stored checkpoint metadata.
 
-        Called when the in-memory registry loses a task (e.g. server restart).
-        Returns a minimal BackgroundTask inserted into the registry, or None.
+        Called when the in-memory registry loses a task (e.g. another worker
+        owns it, or a server restart). The Redis task meta supplies routing
+        identity + writer liveness: when it says "running" and a namespace
+        fence is wired (multi-writer deployment), the task hydrates as LIVE
+        with its real tool_call_id, so 'update' routes follow-ups to the
+        steering list the remote writer actually consumes. Without a fence
+        this process is the only writer, so a "running" meta is necessarily
+        stale — keep the completed-shape hydration.
+        Returns the task inserted into the registry, or None.
         """
 
         if not self.checkpointer or not parent_thread_id:
             return None
         try:
+            from ptc_agent.agent.middleware.background_subagent.redis_stream import (
+                read_task_meta,
+            )
+
+            meta = await read_task_meta(parent_thread_id, task_id)
+            running_elsewhere = (
+                self.namespace_owner is not None
+                and meta is not None
+                and meta.get("status") == "running"
+            )
+
             config = {
                 "configurable": {
                     "thread_id": parent_thread_id,
@@ -346,23 +483,55 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 }
             }
             checkpoint_tuple = await self.checkpointer.aget_tuple(config)
-            if not checkpoint_tuple:
+            if not checkpoint_tuple and not running_elsewhere:
                 return None
 
-            metadata = checkpoint_tuple.metadata or {}
-            subagent_type = metadata.get("subagent_type", "general-purpose")
+            metadata = (
+                checkpoint_tuple.metadata if checkpoint_tuple else None
+            ) or {}
+            subagent_type = metadata.get("subagent_type") or (meta or {}).get(
+                "subagent_type", "general-purpose"
+            )
+            description = metadata.get("description") or (meta or {}).get(
+                "description", "Restored subagent"
+            )
 
-            # Reconstruct BackgroundTask and insert into registry
+            # Reconstruct BackgroundTask and insert into registry. The run
+            # fence travels with it: without task_run_id, a cross-worker
+            # update would land on the legacy task-lifetime queue with
+            # expected_task_run_id=null — unreclaimed by the remote run's
+            # run-scoped sweep, and delivered unfenced to any later resume.
             task = BackgroundTask(
-                tool_call_id=f"hydrated-{task_id}",
+                tool_call_id=(
+                    (meta or {}).get("tool_call_id") or f"hydrated-{task_id}"
+                ),
                 task_id=task_id,
-                description=metadata.get("description", "Restored subagent"),
-                prompt=metadata.get("description", "Restored subagent"),
+                description=description,
+                prompt=description,
                 subagent_type=subagent_type,
-                completed=True,
-                result_seen=True,
+                completed=not running_elsewhere,
+                result_seen=not running_elsewhere,
+                spawned_run_id=(meta or {}).get("spawned_run_id") or None,
+                task_run_id=(meta or {}).get("task_run_id") or None,
             )
             async with self.registry._lock:
+                # Publish-once CAS: two concurrent resolves of one lost task
+                # (parallel resume/update calls racing on the same task_id)
+                # both reach here with distinct fresh objects. Letting the
+                # later insert win would repoint the registry at an inert
+                # duplicate while the earlier object spawns the writer —
+                # drains and collectors would then see no writer and release
+                # the namespace under it. First insert wins; losers adopt.
+                published_tcid = self.registry._task_id_to_tool_call_id.get(
+                    task_id
+                )
+                published = (
+                    self.registry._tasks.get(published_tcid)
+                    if published_tcid
+                    else None
+                )
+                if published is not None:
+                    return published
                 self.registry._tasks[task.tool_call_id] = task
                 self.registry._task_id_to_tool_call_id[task_id] = task.tool_call_id
 
@@ -371,6 +540,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 task_id=task_id,
                 parent_thread_id=parent_thread_id,
                 subagent_type=subagent_type,
+                running_elsewhere=running_elsewhere,
             )
             return task
         except Exception:
@@ -382,304 +552,12 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
-        """Intercept task tool calls and spawn in background.
-
-        Routing logic based on ``action`` parameter:
-        1. ``action="update"`` + ``task_id`` → queue follow-up via Redis to running task
-        2. ``action="resume"`` + ``task_id`` → reset completed task and respawn in background
-        3. ``action="init"`` (default) → new task spawn
-
-        For all non-Task tools, passes through to the handler normally.
-        """
-        # Get tool name from request
-        tool_call = request.tool_call
-        tool_name = tool_call.get("name", "")
-
-        # Only intercept 'Task' tool calls when enabled
-        if not self.enabled or tool_name != "Task":
+        """Intercept Task tool calls and route them by ``action``
+        (init/update/resume — see ``task_actions.handle_task_action``).
+        All other tools pass through to the handler."""
+        if not self.enabled or request.tool_call.get("name", "") != "Task":
             return await handler(request)
-
-        # Extract task details
-        tool_call_id = tool_call.get("id", "unknown")
-        if not tool_call_id or tool_call_id == "unknown":
-            raise RuntimeError("Tool call ID is required for background tasks")
-        args = tool_call.get("args", {})
-        description = args.get("description", "unknown task")
-        prompt = args.get("prompt", "")
-        action = args.get("action", "init")
-        target_task_id = args.get("task_id")
-        subagent_type = args.get("subagent_type")
-
-        # Extract parent_thread_id for hydration fallback
-        parent_thread_id = (
-            (request.runtime.config.get("configurable") or {}).get("thread_id", "")
-            if request.runtime
-            else ""
-        )
-
-        # Extract the current turn's run_id from the LangGraph config so the
-        # registry can stamp it on newly-spawned subagents without relying on
-        # ``registry.current_run_id`` (which races when two concurrent turns
-        # on the same thread share the per-thread registry).
-        current_run_id = (
-            request.runtime.config.get("run_id")
-            if request.runtime
-            else None
-        )
-
-        # --- Action-based routing ---
-        if action == "update":
-            # --- UPDATE: Instruct a running task via Redis ---
-            resolved = await self._resolve_or_error(
-                target_task_id,
-                parent_thread_id,
-                tool_call_id,
-                action_name="update",
-            )
-            if isinstance(resolved, ToolMessage):
-                return resolved
-            task = resolved
-
-            # The agent just looked at this task — bump last_checked_at.
-            task.last_checked_at = time.time()
-
-            if task.cancelled:
-                return ToolMessage(
-                    content=f"Error: Task-{target_task_id} was cancelled and cannot be updated.",
-                    tool_call_id=tool_call_id,
-                    name="Task",
-                )
-
-            # Validate subagent_type if explicitly provided
-            if subagent_type and subagent_type != task.subagent_type:
-                return ToolMessage(
-                    content=f"Error: Task-{target_task_id} is a '{task.subagent_type}' agent, not '{subagent_type}'.",
-                    tool_call_id=tool_call_id,
-                    name="Task",
-                )
-
-            if not task.is_pending:
-                return ToolMessage(
-                    content=f"Error: Task-{target_task_id} is not running. Use action='resume' to resume a completed task.",
-                    tool_call_id=tool_call_id,
-                    name="Task",
-                )
-
-            success = await self._queue_followup_to_redis(
-                task.tool_call_id, prompt
-            )
-            if success:
-                task.last_updated_at = time.time()
-                logger.info(
-                    "Queued follow-up for running task",
-                    task_id=target_task_id,
-                    display_id=task.display_id,
-                )
-                return ToolMessage(
-                    content=f"Follow-up sent to **{task.display_id}**. The subagent will receive your instructions before its next reasoning step.",
-                    tool_call_id=tool_call_id,
-                    name="Task",
-                    additional_kwargs={
-                        "task_artifact": {
-                            "task_id": task.task_id,
-                            "action": "update",
-                            "description": description,
-                            "prompt": prompt,
-                        }
-                    },
-                )
-            else:
-                return ToolMessage(
-                    content=f"Error: Could not deliver follow-up to {task.display_id} -- message queue not available.",
-                    tool_call_id=tool_call_id,
-                    name="Task",
-                )
-
-        elif action == "resume":
-            # --- RESUME: Reset a completed task and respawn ---
-            resolved = await self._resolve_or_error(
-                target_task_id,
-                parent_thread_id,
-                tool_call_id,
-                action_name="resume",
-            )
-            if isinstance(resolved, ToolMessage):
-                return resolved
-            task = resolved
-
-            # The agent just looked at this task — bump last_checked_at.
-            task.last_checked_at = time.time()
-
-            if task.cancelled:
-                return ToolMessage(
-                    content=f"Error: Task-{target_task_id} was cancelled and cannot be resumed.",
-                    tool_call_id=tool_call_id,
-                    name="Task",
-                )
-
-            # Validate subagent_type if explicitly provided
-            if subagent_type and subagent_type != task.subagent_type:
-                return ToolMessage(
-                    content=f"Error: Task-{target_task_id} is a '{task.subagent_type}' agent, not '{subagent_type}'.",
-                    tool_call_id=tool_call_id,
-                    name="Task",
-                )
-
-            if task.is_pending:
-                return ToolMessage(
-                    content=f"Error: Task-{target_task_id} is still running. Use action='update' to send instructions to a running task.",
-                    tool_call_id=tool_call_id,
-                    name="Task",
-                )
-
-            logger.info(
-                "Resuming completed task in background",
-                task_id=target_task_id,
-                display_id=task.display_id,
-                checkpoint_ns=task.task_id,
-            )
-
-            await self._reset_task_for_resume(task)
-
-            # Clear stale namespace mappings so new ones can be registered
-            self.registry.clear_namespaces_for_task(task.tool_call_id)
-
-            # Allow re-emission of subagent_identity event
-            if self.event_capture_middleware:
-                self.event_capture_middleware.clear_identity(task.tool_call_id)
-
-            # Set ContextVars for the resumed task
-            current_background_tool_call_id.set(task.tool_call_id)
-            current_background_agent_id.set(task.agent_id)
-
-            # Update args with inferred subagent_type for the handler
-            if subagent_type is None:
-                args = {**args, "subagent_type": task.subagent_type}
-                tool_call = {**tool_call, "args": args}
-                request = request.override(tool_call=tool_call)
-
-            # Create a dedicated token tracker for the resumed subagent
-            subagent_token_tracker = PerCallTokenTracker()
-
-            # Spawn resumed task in background. create_task_with_context
-            # propagates the current OTel context (via contextvars snapshot)
-            # so spans emitted inside the subagent inherit the launching
-            # chat.turn trace.
-            emit_subagent_launch(
-                task.subagent_type, action="resume", description_len=len(description),
-            )
-            asyncio_task = create_task_with_context(
-                _run_background_task(
-                    task, handler, request, subagent_token_tracker,
-                    "Resumed background subagent",
-                ),
-                name=f"background_subagent_resume_{task.display_id}",
-            )
-            task.asyncio_task = asyncio_task
-            asyncio_task.add_done_callback(_make_task_done_callback(task))
-
-            short_description = _truncate_description(description, max_sentences=2)
-            pseudo_result = (
-                f"Resumed **{task.display_id}** in background with new instructions.\n"
-                f"- Type: {task.subagent_type}\n"
-                f"- New task: {short_description}\n"
-                f"- Status: Running (resumed with full previous context)\n\n"
-                f"You can:\n"
-                f"- Continue with other work\n"
-                f'- Use `TaskOutput(task_id="{task.task_id}")` to get progress or result\n'
-                f'- Use `TaskOutput(task_id="{task.task_id}", timeout=60)` to wait until complete'
-            )
-
-            return ToolMessage(
-                content=pseudo_result,
-                tool_call_id=tool_call_id,
-                name="Task",
-                additional_kwargs={
-                    "task_artifact": {
-                        "task_id": task.task_id,
-                        "action": "resume",
-                        "description": description,
-                        "prompt": prompt,
-                        "type": task.subagent_type,
-                    }
-                },
-            )
-
-        else:
-            # --- INIT (default): New task ---
-            if subagent_type is None:
-                subagent_type = "general-purpose"
-
-            # Register the task first to get the task_id
-            task = await self.registry.register(
-                tool_call_id=tool_call_id,
-                description=description,
-                prompt=prompt,
-                subagent_type=subagent_type,
-                asyncio_task=None,  # Will be set after task creation
-                run_id=current_run_id,
-            )
-            logger.info(
-                "Intercepting task tool call for background execution",
-                tool_call_id=tool_call_id,
-                task_id=task.task_id,
-                display_id=task.display_id,
-                subagent_type=subagent_type,
-                description=description[:100],
-            )
-
-            current_background_tool_call_id.set(tool_call_id)
-            current_background_agent_id.set(task.agent_id)
-
-            # Create a dedicated token tracker for this subagent
-            subagent_token_tracker = PerCallTokenTracker()
-
-            # Spawn background task. create_task_with_context propagates the
-            # current OTel context (via contextvars snapshot) so spans emitted
-            # inside the subagent inherit the launching chat.turn trace.
-            emit_subagent_launch(
-                subagent_type, action="init", description_len=len(description),
-            )
-            asyncio_task = create_task_with_context(
-                _run_background_task(
-                    task, handler, request, subagent_token_tracker,
-                    "Background subagent",
-                ),
-                name=f"background_subagent_{task.display_id}",
-            )
-
-            # Update the task with the asyncio task reference
-            task.asyncio_task = asyncio_task
-            asyncio_task.add_done_callback(_make_task_done_callback(task))
-
-            # Return immediate pseudo-result with Task-N format
-            short_description = _truncate_description(description, max_sentences=2)
-            pseudo_result = (
-                f"Background subagent deployed: **{task.display_id}**\n"
-                f"- Type: {subagent_type}\n"
-                f"- Task: {short_description}\n"
-                f"- Status: Running in background\n\n"
-                f"You can:\n"
-                f"- Continue with other work\n"
-                f'- Use `TaskOutput(task_id="{task.task_id}")` to get progress or result\n'
-                f'- Use `TaskOutput(task_id="{task.task_id}", timeout=60)` to wait until complete\n'
-                f"- Use `TaskOutput(timeout=60)` to wait for all background tasks"
-            )
-
-            return ToolMessage(
-                content=pseudo_result,
-                tool_call_id=tool_call_id,
-                name="Task",
-                additional_kwargs={
-                    "task_artifact": {
-                        "task_id": task.task_id,
-                        "action": "init",
-                        "description": description,
-                        "prompt": prompt,
-                        "type": subagent_type,
-                    }
-                },
-            )
+        return await task_actions.handle_task_action(self, request, handler)
 
     def clear_registry(self) -> None:
         """Clear the task registry; called by the orchestrator after all tasks are handled."""

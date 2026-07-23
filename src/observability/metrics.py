@@ -110,7 +110,7 @@ hot_path_first_chunk_duration_ms = meter.create_histogram(
 )
 
 # Per-phase breakdown of the chat-turn setup path (PTC_TIMING in
-# ptc_workflow.py). Phases: db_setup | pre_session | session | graph_build |
+# ptc_run.py). Phases: db_setup | pre_session | session | graph_build |
 # workflow_start. Reuses the existing _phase_times dict at the emit site.
 chat_turn_phase_duration_ms = meter.create_histogram(
     "langalpha.chat.turn.phase.duration_ms",

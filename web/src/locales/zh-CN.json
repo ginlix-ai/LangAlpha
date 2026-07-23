@@ -1243,6 +1243,7 @@
     "modelSwitchFailed": "默认模型更新失败",
     "backgroundTasksRunning": "后台任务仍在运行",
     "reportBackPending": "等待 PTC Agent 汇报结果",
+    "taskReportBackPending": "等待子代理结果汇报",
     "ptcCard": {
       "awaitingApproval": "等待批准",
       "researchDeclined": "已拒绝研究",
@@ -1331,6 +1332,8 @@
       "report-issueDesc": "报告问题并提出改进建议以提升 Agent 能力"
     },
     "compactedNotification": "上下文已压缩 · {{from}} 条消息 → 摘要",
+    "taskErrorNotification": "子任务运行失败",
+    "taskSteeringReturnedNotification": "引导消息已退回 · 运行在送达前已结束",
     "viewSummary": "查看摘要",
     "hideSummary": "隐藏摘要",
     "offloadedArgsNotification": "工具参数已转存 · {{count}} 个工具",

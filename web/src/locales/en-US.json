@@ -1244,6 +1244,7 @@
     "modelSwitchFailed": "Couldn't update the default model",
     "backgroundTasksRunning": "Background tasks are still running",
     "reportBackPending": "Waiting for PTC Agent to report back",
+    "taskReportBackPending": "Waiting for subagent results to report back",
     "ptcCard": {
       "awaitingApproval": "Awaiting approval",
       "researchDeclined": "Research declined",
@@ -1332,6 +1333,8 @@
       "report-issueDesc": "Report issues and propose fixes to improve agent capabilities"
     },
     "compactedNotification": "Context compacted · {{from}} messages → summary",
+    "taskErrorNotification": "Subagent run failed",
+    "taskSteeringReturnedNotification": "Steering message returned — the run ended before it was delivered",
     "viewSummary": "View summary",
     "hideSummary": "Hide summary",
     "offloadedArgsNotification": "Tool arguments offloaded · {{count}} tools",

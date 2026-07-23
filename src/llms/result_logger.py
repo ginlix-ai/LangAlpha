@@ -26,11 +26,6 @@ class ResultLogger:
         # File logging enabled by default (can be disabled with RESULT_LOG_ENABLED env var)
         self.enabled = os.getenv("RESULT_LOG_ENABLED", "true").lower() == "true"
 
-        # Database logging DISABLED - persistence now handled by ConversationPersistenceService
-        # Old path: is_result_log_db_enabled() from config.yaml
-        # New path: BackgroundTaskManager calls ConversationPersistenceService directly
-        self.db_enabled = False  # Force disable - persistence moved to workflow lifecycle
-
         # Override log directory from environment if set
         env_log_dir = os.getenv("RESULT_LOG_DIR")
         if env_log_dir:
@@ -263,148 +258,24 @@ class ResultLogger:
             logger.debug(traceback.format_exc())
             return False
     
-    async def save_to_database(
-        self,
-        session_data: Dict[str, Any],
-    ) -> bool:
-        """
-        Save workflow result to PostgreSQL database.
-
-        Uses a single database connection for all operations to reduce connection churn.
-
-        Args:
-            session_data: Dictionary with query_id, query, response_id, response, thread_id
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if not self.db_enabled:
-            return False
-
-        try:
-            # Import here to avoid circular dependency
-            from src.server.database import conversation as qr_db
-
-            # Ensure required fields exist
-            if "thread_id" not in session_data:
-                logger.warning("No thread_id provided in session_data for database save")
-                return False
-
-            thread_id = session_data["thread_id"]
-            conversation_id = session_data.get("conversation_id")
-            user_id = session_data.get("user_id", "unknown")
-
-            # Use a single connection for all operations
-            async with qr_db.get_db_connection() as conn:
-                # Step 1: Ensure conversation_history exists
-                if conversation_id:
-                    exists = await qr_db.conversation_history_exists(conversation_id, conn=conn)
-                    if not exists:
-                        # Set title from first query content (truncated to 200 chars)
-                        query_content = session_data.get("query", {}).get("content", "")
-                        title = query_content[:200] if query_content else None
-                        await qr_db.create_conversation_history(
-                            user_id=user_id,
-                            conversation_id=conversation_id,
-                            title=title,
-                            conn=conn
-                        )
-
-                # Step 2: Calculate turn_index for this thread
-                turn_index = await qr_db.get_next_turn_index(thread_id, conn=conn)
-
-                # Step 3: Check if thread exists, create if not (backup for cases where eager creation didn't happen)
-                if turn_index == 0 and conversation_id:
-                    # Check if thread already exists (may have been created eagerly)
-                    async with conn.cursor() as cur:
-                        await cur.execute("""
-                            SELECT conversation_thread_id FROM conversation_threads WHERE conversation_thread_id = %s
-                        """, (thread_id,))
-                        thread_exists = await cur.fetchone()
-
-                    if not thread_exists:
-                        # First query-response pair AND thread doesn't exist - create it
-                        response_status = session_data.get("response", {}).get("status", "unknown")
-                        await qr_db.create_thread(
-                            thread_id=thread_id,
-                            conversation_id=conversation_id,
-                            current_status=response_status,
-                            thread_index=None,  # Will be calculated inside create_thread using same conn
-                            conn=conn
-                        )
-                        logger.info(f"Created thread (backup): {thread_id}")
-
-                # Step 4: Create query entry
-                query_data = session_data.get("query", {})
-                query_timestamp_str = query_data.get("timestamp")
-                query_timestamp = datetime.fromisoformat(query_timestamp_str) if query_timestamp_str else datetime.now()
-
-                await qr_db.create_query(
-                    conversation_query_id=session_data["query_id"],
-                    conversation_thread_id=thread_id,
-                    turn_index=turn_index,
-                    content=query_data.get("content", ""),
-                    query_type=query_data.get("type", "unknown"),
-                    feedback_action=query_data.get("feedback_action"),
-                    metadata=query_data.get("metadata", {}),
-                    created_at=query_timestamp,
-                    conn=conn
-                )
-
-                # Step 5: Create response entry
-                response_data = session_data.get("response", {})
-                response_timestamp_str = response_data.get("timestamp")
-                response_timestamp = datetime.fromisoformat(response_timestamp_str) if response_timestamp_str else datetime.now()
-
-                await qr_db.create_response(
-                    conversation_response_id=session_data["response_id"],
-                    conversation_thread_id=thread_id,
-                    turn_index=turn_index,
-                    status=response_data.get("status", "unknown"),
-                    interrupt_reason=response_data.get("interrupt_reason"),
-                    metadata=response_data.get("metadata", {}),
-                    warnings=response_data.get("warnings", []),
-                    errors=response_data.get("errors", []),
-                    execution_time=response_data.get("execution_time"),
-                    created_at=response_timestamp,
-                    conn=conn
-                )
-
-                # Step 6: Update thread status
-                await qr_db.update_thread_status(thread_id, response_data.get("status", "unknown"), conn=conn)
-
-            logger.info(f"Saved query-response pair (turn_index={turn_index}) to database for thread_id={thread_id}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to save to database: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
-            return False
-
     async def save_result_async(
         self,
         session_data: Dict[str, Any],
     ) -> bool:
         """
-        Async version of save_result with database support.
+        Async version of save_result.
 
         Args:
             session_data: Dictionary containing all session data
 
         Returns:
-            True if at least one save succeeded
+            True if the save succeeded
         """
         success_count = 0
 
         # Save to JSON file
         if self.enabled:
             if self.save_result(session_data):
-                success_count += 1
-
-        # Save to database
-        if self.db_enabled:
-            if await self.save_to_database(session_data):
                 success_count += 1
 
         return success_count > 0

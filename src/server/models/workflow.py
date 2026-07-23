@@ -5,7 +5,7 @@ This module provides Pydantic models for retrieving and displaying
 historical workflow states from LangGraph checkpoints.
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -448,3 +448,21 @@ class RetryRequest(BaseModel):
         None,
         description="Specific checkpoint ID to retry from. If not provided, auto-detects the last checkpoint.",
     )
+    run_id: Optional[str] = Field(
+        None,
+        description="The failed run to retry. Must be the thread's latest "
+        "attempt; a stale id is rejected (409) instead of silently retrying "
+        "a different run.",
+    )
+    request_key: Optional[str] = Field(
+        None,
+        description="Client-generated UUID for idempotent delivery; reuse "
+        "across retransmits of the same retry.",
+    )
+    llm_model: Optional[str] = Field(
+        None,
+        description="Model override for the retry attempt (the chat input's "
+        "current selection); None = per-user default.",
+    )
+    reasoning_effort: Optional[Literal["low", "medium", "high", "xhigh"]] = Field(None)
+    fast_mode: Optional[bool] = Field(None)

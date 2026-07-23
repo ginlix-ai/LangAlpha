@@ -2,10 +2,9 @@ import React, { useState, useRef, useEffect, useCallback, useMemo, forwardRef, u
 import {
   Plus, ArrowUp, X, FileText, Loader2, Archive, Square,
   ScrollText, Radar, ChartCandlestick, Zap, FileStack, ChevronDown, ChevronRight, FolderOpen, TextSelect,
-  Terminal, Bot, Shrink, HardDriveDownload, Check, Brain, Flame, Rocket, CircleHelp,
+  Check, Brain, Flame, Rocket, CircleHelp,
   Mic, MicOff, Sparkles,
 } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { TokenUsageRing, type TokenUsageData } from './token-usage-ring';
@@ -20,62 +19,15 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 import { areModelsCompatible, deriveQuickAccessModels, type ModelMetadata } from './chat-input.models';
 import { supportsXhighEffort } from '@/lib/modelCapabilities';
 import { getSkills, getModelMetadata } from '../../pages/ChatAgent/utils/api';
-import { useToast } from './use-toast';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
-import { WidgetContextDeck } from '@/pages/Dashboard/widgets/framework/WidgetContextDeck';
 import './chat-input.css';
+import type { MentionedFile, ModelOptions, ReadyAttachment, SlashCommand, Workspace } from './chat-input.types';
+import { BUILTIN_SLASH_COMMANDS, getModelDisplayName, getSlashCommandIcon, slashRank } from './chat-input.helpers';
+import { ChatInputWidgetDeck, FilePreviewCard, PillToggle } from './chat-input.parts';
+import { speechSupported, useVoiceInput } from './chat-input.useVoiceInput';
+import { useFileAttachments } from './chat-input.useFileAttachments';
 
-/* --- TYPES --- */
-
-interface FileAttachment {
-  id: string;
-  file: File;
-  type: string;
-  preview: string | null;
-  uploadStatus: 'pending' | 'uploading' | 'complete';
-  dataUrl: string | null;
-}
-
-interface MentionedFile {
-  path: string;
-  snippet?: string;
-  label?: string;
-  lineStart?: number;
-  lineEnd?: number;
-  lineCount?: number;
-  source?: string;
-}
-
-interface SlashCommand {
-  type: string;
-  name: string;
-  skillName?: string;
-  description?: string;
-  aliases?: string[];
-}
-
-interface ModelOptions {
-  model: string | null;
-  reasoningEffort: string | null;
-  fastMode: boolean;
-  /** Per-message market-watch toggle — stamps live prices for tracked tickers. */
-  marketWatch?: boolean;
-  /**
-   * Widget context snapshots attached via the deck rail. Forwarded to the
-   * backend as `additional_context` items of `type: "widget"`. Image-bearing
-   * snapshots also produce a sibling `type: "image"` MultimodalContext item;
-   * see `widgetSnapshotsToContexts` in `pages/ChatAgent/utils/fileUpload.ts`.
-   */
-  widgetSnapshots?: WidgetContextSnapshot[];
-}
-
-interface ReadyAttachment {
-  file: File;
-  dataUrl: string | null;
-  type: string;
-  preview: string | null;
-}
 
 export interface ChatInputHandle {
   getModelOptions: () => ModelOptions;
@@ -94,11 +46,6 @@ export interface ChatInputHandle {
   setModel: (model: string) => void;
 }
 
-interface Workspace {
-  workspace_id: string;
-  name: string;
-  [key: string]: unknown;
-}
 
 export interface ChatInputProps {
   onSend: (message: string, planMode: boolean, attachments: ReadyAttachment[], slashCommands: SlashCommand[], modelOptions: ModelOptions) => void;
@@ -142,261 +89,8 @@ export interface ChatInputProps {
   minRows?: number;
 }
 
-/* --- UTILS --- */
-
-/** Return the appropriate icon for a slash command. */
-function getSlashCommandIcon(cmd: SlashCommand, className: string) {
-  if (cmd.type === 'subagent') return <Bot className={className} />;
-  if (cmd.name === 'offload') return <HardDriveDownload className={className} />;
-  if (cmd.type === 'action') return <Shrink className={className} />;
-  return <Terminal className={className} />;
-}
-
-const formatFileSize = (bytes: number): string => {
-  if (bytes === 0) return '0 Bytes';
-  const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
-
-/* --- FILE PREVIEW CARD --- */
-const FilePreviewCard = ({ file, onRemove }: { file: FileAttachment; onRemove: (id: string) => void }) => {
-  const isMobilePreview = useIsMobile();
-  const isImage = file.type.startsWith('image/') && file.preview;
-
-  return (
-    <div className="relative group flex-shrink-0 w-24 h-24 rounded-xl overflow-hidden border border-[var(--color-border-muted)] bg-[var(--color-bg-elevated)] animate-fade-in transition-all hover:border-[var(--color-border-default)]">
-      {isImage ? (
-        <div className="w-full h-full relative">
-          <img src={file.preview!} alt={file.file.name} className="w-full h-full object-cover" />
-          <div className="absolute inset-0 bg-black/20 group-hover:bg-black/0 transition-colors" />
-        </div>
-      ) : (
-        <div className="w-full h-full p-3 flex flex-col justify-between">
-          <div className="flex items-center gap-2">
-            <div className="p-1.5 rounded" style={{ background: 'var(--color-border-muted)' }}>
-              <FileText className="w-4 h-4" style={{ color: 'var(--color-text-tertiary)' }} />
-            </div>
-            <span className="text-[10px] font-medium uppercase tracking-wider truncate" style={{ color: 'var(--color-text-tertiary)' }}>
-              {file.file.name.split('.').pop()}
-            </span>
-          </div>
-          <div className="space-y-0.5">
-            <p className="text-xs font-medium truncate" style={{ color: 'var(--color-text-muted)' }} title={file.file.name}>
-              {file.file.name}
-            </p>
-            <p className="text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>
-              {formatFileSize(file.file.size)}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Remove Button Overlay */}
-      <button
-        onClick={() => onRemove(file.id)}
-        className={`absolute top-1 right-1 p-1 bg-black/50 hover:bg-black/70 rounded-full text-white transition-opacity ${isMobilePreview ? 'opacity-60' : 'opacity-0 group-hover:opacity-100'}`}
-      >
-        <X className="w-3 h-3" />
-      </button>
-
-      {/* Upload Status */}
-      {file.uploadStatus === 'uploading' && (
-        <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-          <Loader2 className="w-5 h-5 text-white animate-spin" />
-        </div>
-      )}
-    </div>
-  );
-};
-
-/* --- CONSTANTS --- */
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-const MAX_FILES = 5;
-const BUILTIN_SLASH_COMMANDS = [
-  { type: 'subagent', name: 'subagent' },
-  { type: 'action', name: 'compact', aliases: ['compaction', 'summarize'] },
-  { type: 'action', name: 'offload', aliases: ['truncate'] },
-];
-
-/**
- * Slash-menu sort key (lower sorts first). Prefix matches (name/alias starts
- * with the query, char-by-char) rank above substring-only matches; within a
- * tier, system/service commands rank above skills. Combined: prefix+system 0,
- * prefix+skill 1, substring+system 2, substring+skill 3.
- */
-function slashRank(item: SlashCommand, query: string): number {
-  const isPrefix =
-    item.name.toLowerCase().startsWith(query) ||
-    !!item.aliases?.some((a) => a.toLowerCase().startsWith(query));
-  const isSkill = item.type === 'skill';
-  return (isPrefix ? 0 : 2) + (isSkill ? 1 : 0);
-}
-
-/** Derive a short display name from a model key string. */
-function getModelDisplayName(key: string | null): string {
-  if (!key) return '';
-  let name = key;
-  // Strip common provider prefixes
-  for (const prefix of ['claude-', 'gpt-', 'chatgpt-', 'o1-', 'o3-', 'o4-']) {
-    if (name.startsWith(prefix)) { name = name.slice(prefix.length); break; }
-  }
-  // Convert version-like patterns: "opus-4-6" → "Opus 4.6", "sonnet-4-6" → "Sonnet 4.6"
-  name = name
-    .replace(/-(\d+)-(\d+)/, ' $1.$2')
-    .replace(/-(\d+\.\d+)/, ' $1')
-    .replace(/-/g, ' ')
-    .replace(/\b\w/g, (c: string) => c.toUpperCase());
-  return name;
-}
-
-/**
- * Composer pill toggle (Plan / Watch). Transparent when off; fills with
- * `--color-border-muted` on hover and while active. `activeClass` tags the
- * active state for CSS hooks; `title` is the hover tooltip.
- */
-function PillToggle({
-  active,
-  onToggle,
-  icon: Icon,
-  label,
-  title,
-  activeClass,
-}: {
-  active: boolean;
-  onToggle: () => void;
-  icon: LucideIcon;
-  label: string;
-  title: string;
-  activeClass: string;
-}) {
-  return (
-    <button
-      className={`inline-flex items-center rounded-full border-none cursor-pointer${active ? ` ${activeClass}` : ''}`}
-      style={{
-        gap: '6px',
-        padding: '6px 10px',
-        fontSize: '13px',
-        fontWeight: 500,
-        background: active ? 'var(--color-border-muted)' : 'transparent',
-        color: 'var(--color-text-muted, #8b8fa3)',
-        border: '1px solid transparent',
-        transition: 'background 0.2s, color 0.2s, border-color 0.2s',
-      }}
-      onClick={(e) => { e.stopPropagation(); onToggle(); }}
-      onMouseEnter={(e) => {
-        if (!active) e.currentTarget.style.background = 'var(--color-border-muted)';
-      }}
-      onMouseLeave={(e) => {
-        if (!active) e.currentTarget.style.background = 'transparent';
-      }}
-      type="button"
-      title={title}
-      aria-pressed={active}
-    >
-      <Icon className="h-4 w-4" style={active ? { color: 'var(--color-accent-light)' } : {}} />
-      <span>{label}</span>
-    </button>
-  );
-}
-
 /* --- MAIN COMPONENT --- */
 
-const speechSupported = typeof window !== 'undefined' && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
-
-/* --- WIDGET CONTEXT DECK ---
- *
- * The chat-input live deck is a thin wrapper around the shared
- * `WidgetContextDeck` component (in `pages/Dashboard/widgets/framework/`).
- * The shared component owns card geometry, fanning, outside-click collapse,
- * and the preview modal; we supply the live-deck-only chrome (eyebrow row
- * with clear button, per-card remove `×`, fan-hint chevron) via render
- * slots so the visual + behavioral contract stays identical to the
- * chat-view inline deck.
- */
-function ChatInputWidgetDeck({
-  snapshots,
-  fanned,
-  onToggle,
-  onCollapse,
-  onRemove,
-  onClear,
-  boundaryRef,
-}: {
-  snapshots: WidgetContextSnapshot[];
-  fanned: boolean;
-  onToggle: () => void;
-  onCollapse: () => void;
-  onRemove: (widgetId: string) => void;
-  onClear: () => void;
-  /** The chat-input outer container. Clicks within this boundary (textarea,
-   *  send button, attach controls) keep the deck fanned; only clicks fully
-   *  outside the chat input collapse it. */
-  boundaryRef: React.RefObject<HTMLElement | null>;
-}) {
-  const { t } = useTranslation();
-  const cardCount = snapshots.length;
-  return (
-    <WidgetContextDeck
-      snapshots={snapshots}
-      fanned={fanned}
-      onToggleFan={onToggle}
-      onCollapse={onCollapse}
-      boundaryRef={boundaryRef}
-      className="widget-drag-cancel"
-      testId="widget-context-deck"
-      eyebrow={
-        <div className="widget-deck-eyebrow">
-          <span className="widget-deck-eyebrow-left">
-            <span className="widget-deck-dot" />
-            {t('chat.widgetContext.inContext', { count: cardCount, defaultValue: '{{count}} in context' })}
-            {cardCount > 1 && !fanned && (
-              <span className="widget-deck-hint">{t('chat.widgetContext.fanHint', { defaultValue: 'click to fan' })}</span>
-            )}
-          </span>
-          <span className="widget-deck-eyebrow-right">
-            {fanned && cardCount > 1 && (
-              <button
-                type="button"
-                className="widget-deck-show-less"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onCollapse();
-                }}
-              >
-                {t('chat.widgetContext.showLess', { defaultValue: 'Show less' })}
-              </button>
-            )}
-            <button
-              type="button"
-              className="widget-deck-clear"
-              onClick={(e) => {
-                e.stopPropagation();
-                onClear();
-              }}
-            >
-              {t('chat.widgetContext.clear', { defaultValue: 'Clear' })}
-            </button>
-          </span>
-        </div>
-      }
-      renderCardSlotEnd={(s) => (
-        <button
-          type="button"
-          className="widget-deck-card-remove"
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove(s.widget_id);
-          }}
-          aria-label={t('chat.widgetContext.removeAria', { defaultValue: 'Remove from context' })}
-        >
-          <X className="h-3 w-3" />
-        </button>
-      )}
-    />
-  );
-}
 
 const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput({
   onSend,
@@ -437,8 +131,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   // Minimum visible rows for the textarea (default 1 = compact; pass 2 for roomier non-ChatView callsites)
   minRows = 1,
 }, ref) {
-  const { t, i18n } = useTranslation();
-  const { toast } = useToast();
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const { preferences } = usePreferences();
   const marketWatchEnabled = useFeatureEnabled('market_watch');
@@ -450,8 +143,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   const preferredModel = (otherPref?.preferred_model as string | undefined) || null;
   const preferredFlashModel = (otherPref?.preferred_flash_model as string | undefined) || null;
   const [message, setMessage] = useState('');
-  const [attachedFiles, setAttachedFiles] = useState<FileAttachment[]>([]);
-  const [isDragging, setIsDragging] = useState(false);
+  const { attachedFiles, setAttachedFiles, isDragging, handleFiles, removeFile, onDragOver, onDragLeave, onDrop, handlePaste } = useFileAttachments({ mode });
   const [planMode, setPlanMode] = useState(false);
   const [watchMode, setWatchMode] = useState(false);
   // Market watch is a PTC capability. The toggle state survives a switch to
@@ -517,126 +209,8 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     getSkills(skillsMode).then((s: unknown[]) => setSkills(s as typeof skills)).catch(() => { });
   }, [skillsMode]);
 
-  // Voice Input (Speech Recognition)
-  const [isListening, setIsListening] = useState(false);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const isStartingRef = useRef(false);
-  const finalTranscriptRef = useRef('');
-  const baseMessageRef = useRef('');
-  const messageRef = useRef(message);
-
-  // Sync message ref
-  useEffect(() => { messageRef.current = message; }, [message]);
-
-  // Stop recognition when loading starts (ghost text fix)
-  useEffect(() => {
-    if (isLoading && recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
-      setIsListening(false);
-    }
-  }, [isLoading]);
-
-  const toggleListening = useCallback(() => {
-    if (isStartingRef.current) return;
-
-    // ALWAYS stop existing instance if it exists (prevents orphaned instances on rapid clicks)
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
-    }
-
-    if (isListening) {
-      setIsListening(false);
-      return;
-    }
-
-    const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognitionAPI) {
-      console.warn("Speech recognition is not supported in this browser.");
-      return;
-    }
-
-    try {
-      const recognition = new SpeechRecognitionAPI();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      // Derived purely from current UI locale
-      recognition.lang = i18n.language.startsWith('zh') ? 'zh-CN' : 'en-US';
-
-      // Capture message BEFORE starting recognition
-      const startMessage = messageRef.current.trim();
-      baseMessageRef.current = startMessage ? startMessage + ' ' : '';
-
-      recognition.onstart = () => {
-        setIsListening(true);
-        isStartingRef.current = false;
-        finalTranscriptRef.current = ''; // Reset for new session
-      };
-
-      recognition.onresult = (event: SpeechRecognitionEvent) => {
-        if (recognitionRef.current !== recognition) return;
-        let interimTranscript = '';
-        // Start from resultIndex to avoid re-processing or duplicating old results
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const result = event.results[i];
-          if (result.isFinal) {
-            finalTranscriptRef.current += result[0].transcript;
-          } else {
-            interimTranscript += result[0].transcript;
-          }
-        }
-        setMessage(baseMessageRef.current + finalTranscriptRef.current + interimTranscript);
-      };
-
-      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-        if (recognitionRef.current !== recognition) return;
-        if (event.error !== 'no-speech' && event.error !== 'aborted') {
-          console.error('Speech recognition error:', event.error);
-          if (event.error === 'not-allowed') {
-            toast({
-              title: t('chat.voice.permissionDenied'),
-              variant: 'destructive',
-            });
-          } else if (event.error === 'service-not-allowed' || event.error === 'network') {
-            toast({
-              title: t('chat.voice.serviceError'),
-              variant: 'destructive',
-            });
-          }
-        }
-        setIsListening(false);
-        isStartingRef.current = false;
-        recognitionRef.current = null;
-      };
-
-      recognition.onend = () => {
-        if (recognitionRef.current !== recognition) return;
-        isStartingRef.current = false; // Release lock in case onstart never fired
-        setIsListening(false);
-        recognitionRef.current = null;
-      };
-
-      recognitionRef.current = recognition;
-      isStartingRef.current = true;
-      recognition.start();
-    } catch (err) {
-      console.error('Failed to start speech recognition:', err);
-      isStartingRef.current = false;
-      recognitionRef.current = null; // Prevent stale ref if start() throws
-      setIsListening(false);
-    }
-  }, [isListening, toast, t, i18n.language]);
-
-  // Clean up recognition on unmount
-  useEffect(() => {
-    return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.abort(); // Terminate immediately without firing callbacks
-        recognitionRef.current = null;
-      }
-    };
-  }, []);
+  // Voice input (speech recognition) — see chat-input.useVoiceInput.
+  const { isListening, toggleListening, stopListening } = useVoiceInput({ message, setMessage, isLoading });
 
   // Stop button state
   const [isStopping, setIsStopping] = useState(false);
@@ -796,97 +370,6 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showWorkspaceMenu]);
-
-  // --- File Upload Handling ---
-  const handleFiles = useCallback((newFilesList: FileList | File[]) => {
-    const currentCount = attachedFiles.length;
-    const fileArray = Array.from(newFilesList);
-    const isFlashMode = mode === 'fast';
-
-    const validFiles = [];
-    for (const file of fileArray) {
-      if (currentCount + validFiles.length >= MAX_FILES) break;
-      if (isFlashMode) {
-        // Flash: only images and PDFs
-        const isImage = file.type.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp)$/i.test(file.name);
-        const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
-        if (!isImage && !isPdf) continue;
-      }
-      // PTC: accept any file
-      if (file.size > MAX_FILE_SIZE) continue;
-      validFiles.push(file);
-    }
-
-    const newFiles: FileAttachment[] = validFiles.map((file) => {
-      const isImage = file.type.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp)$/i.test(file.name);
-      return {
-        id: Math.random().toString(36).substr(2, 9),
-        file,
-        type: file.type || (isImage ? 'image/png' : 'application/octet-stream'),
-        preview: isImage ? URL.createObjectURL(file) : null,
-        uploadStatus: 'pending' as const,
-        dataUrl: null,
-      };
-    });
-
-    if (newFiles.length === 0) return;
-
-    setAttachedFiles((prev) => [...prev, ...newFiles]);
-
-    newFiles.forEach((f) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        setAttachedFiles((prev) =>
-          prev.map((p) =>
-            p.id === f.id ? { ...p, uploadStatus: 'complete' as const, dataUrl: reader.result as string } : p
-          )
-        );
-      };
-      reader.onerror = () => {
-        setAttachedFiles((prev) => prev.filter((p) => p.id !== f.id));
-      };
-      reader.readAsDataURL(f.file);
-    });
-  }, [attachedFiles.length, mode]);
-
-  const removeFile = useCallback((id: string) => {
-    setAttachedFiles((prev) => {
-      const file = prev.find((f) => f.id === id);
-      if (file?.preview) URL.revokeObjectURL(file.preview);
-      return prev.filter((f) => f.id !== id);
-    });
-  }, []);
-
-  // Drag & Drop
-  const onDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  }, []);
-  const onDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-  }, []);
-  const onDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    if (e.dataTransfer.files) handleFiles(e.dataTransfer.files);
-  }, [handleFiles]);
-
-  // Paste Handling
-  const handlePaste = useCallback((e: React.ClipboardEvent) => {
-    const items = e.clipboardData.items;
-    const pastedFiles = [];
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].kind === 'file') {
-        const file = items[i].getAsFile();
-        if (file) pastedFiles.push(file);
-      }
-    }
-    if (pastedFiles.length > 0) {
-      e.preventDefault();
-      handleFiles(pastedFiles);
-    }
-  }, [handleFiles]);
 
   // --- @File Mention Autocomplete ---
   const filteredMentionFiles = useMemo(() => {
@@ -1185,14 +668,14 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [hasContent, disabled, message, planMode, effectiveMarketWatch, attachedFiles, onSend, onAction, mentionedFiles, slashCommands, selectedModel, reasoningEffort, fastMode, widgetSnapshots, t]);
+  }, [hasContent, disabled, message, planMode, effectiveMarketWatch, attachedFiles, setAttachedFiles, onSend, onAction, mentionedFiles, slashCommands, selectedModel, reasoningEffort, fastMode, widgetSnapshots, t]);
 
   // --- Keyboard & Language Detection ---
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // If user starts typing while voice input is active, terminate the voice input.
     // We treat any single character key or delete/backspace as a signal to stop.
-    if (isListening && recognitionRef.current && (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete')) {
-      recognitionRef.current.stop();
+    if (isListening && (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete')) {
+      stopListening();
     }
 
     // Slash command menu keyboard navigation
@@ -1268,7 +751,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     if (e.key === 'Escape' && showAutocomplete) {
       setShowAutocomplete(false);
     }
-  }, [showSlashMenu, filteredSlashCommands, slashActiveIndex, selectSlashCommand, showAutocomplete, filteredMentionFiles, activeIndex, selectFile, handleSend, isListening, message]);
+  }, [showSlashMenu, filteredSlashCommands, slashActiveIndex, selectSlashCommand, showAutocomplete, filteredMentionFiles, activeIndex, selectFile, handleSend, isListening, stopListening, message]);
 
   // Workspace selector helpers
   const selectedWorkspaceName = useMemo(() => {
@@ -1485,8 +968,8 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
               onBlur={handleBlur}
               onCompositionStart={() => {
                 // Terminate voice input if IME starts
-                if (isListening && recognitionRef.current) {
-                  recognitionRef.current.stop();
+                if (isListening) {
+                  stopListening();
                 }
               }}
               placeholder={isListening ? "" : placeholder}

@@ -5,7 +5,7 @@ Under `DeltaChannel`, non-snapshot steps persist the *raw* write (a sentinel in
 runs. A message that entered the channel *without an id* would be persisted
 id-less; if the reducer minted a fresh `uuid4()` for it on every reconstruction,
 two reads of the same checkpoint would disagree on ids and a full-list write-back
-(the hard-stop checkpoint flush in `background_task_manager._flush_checkpoint`, or
+(the hard-stop checkpoint flush in `runs.executor._flush_checkpoint`, or
 a post-`/offload` write) would freeze one id into history while the original
 id-less write kept re-minting → duplicate messages.
 
@@ -99,7 +99,7 @@ def _reconstruct_ids(graph, config) -> list[str]:
 
 
 def _simulate_hard_stop_flush(graph, config) -> None:
-    """Replicate ``background_task_manager._flush_checkpoint`` exactly.
+    """Replicate ``runs.executor._flush_checkpoint`` exactly.
 
     The app does ``aget_state`` then ``aupdate_state(config, snapshot.values)`` —
     a full-list write-back of the reconstructed state. We use the sync

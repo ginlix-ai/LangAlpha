@@ -10,6 +10,8 @@ Pins the optimizations layered onto this endpoint:
 import pytest
 from unittest.mock import AsyncMock, patch
 
+STATUS_MOD = "src.server.services.report_back.flash.status"
+
 CALLER = "test-user-123"  # create_test_app's bypassed user id
 TID = "11111111-1111-1111-1111-111111111111"
 
@@ -29,8 +31,8 @@ async def test_status_report_back_field_uses_cheap_path(threads_client):
     full = AsyncMock(return_value={"should": "not be called"})
     with (
         patch("src.server.database.conversation.get_thread_auth_meta", meta),
-        patch("src.server.handlers.chat.report_back.read_report_back_status", cheap),
-        patch("src.server.handlers.workflow_handler.get_workflow_status", full),
+        patch(f"{STATUS_MOD}.read_report_back_status", cheap),
+        patch("src.server.services.thread_status.read_thread_runtime_status", full),
     ):
         resp = await threads_client.get(
             f"/api/v1/threads/{TID}/status", params={"fields": "report_back"}
@@ -49,17 +51,17 @@ async def test_status_report_back_field_uses_cheap_path(threads_client):
 
 @pytest.mark.asyncio
 async def test_status_full_path_threads_is_shared(threads_client):
-    """is_shared resolved while authorizing is passed into get_workflow_status."""
+    """is_shared resolved while authorizing is passed into read_thread_runtime_status."""
     meta = AsyncMock(return_value={"user_id": CALLER, "is_shared": True})
     full = AsyncMock(return_value={"thread_id": TID, "is_shared": True})
     with (
         patch("src.server.database.conversation.get_thread_auth_meta", meta),
-        patch("src.server.handlers.workflow_handler.get_workflow_status", full),
+        patch("src.server.services.thread_status.read_thread_runtime_status", full),
     ):
         resp = await threads_client.get(f"/api/v1/threads/{TID}/status")
 
     assert resp.status_code == 200
-    full.assert_awaited_once_with(TID, is_shared=True)
+    full.assert_awaited_once_with(TID, is_shared=True, msg_type=None)
 
 
 @pytest.mark.asyncio

@@ -235,6 +235,20 @@ class RedisCacheClient:
             self.stats["errors"] += 1
             return None
 
+    async def get_strict(self, key: str) -> Optional[Any]:
+        """Get with fail-loud semantics: None ONLY for a confirmed-absent key.
+
+        For callers whose retry path is an exception (outbox executors) —
+        the swallowing ``get`` would turn a Redis blip into "no data" and
+        let a required effect ack as a no-op.
+        """
+        if not self.enabled or not self.client:
+            raise RuntimeError("Redis cache disabled — strict read unavailable")
+        value = await self.client.get(key)
+        if value is None:
+            return None
+        return json.loads(value)
+
     async def set(
         self,
         key: str,
@@ -700,7 +714,7 @@ class RedisCacheClient:
         self,
         meta_key: str,
         max_size: int,
-        ttl: int,
+        ttl: Optional[int],
         *,
         event: Optional[str] = None,
         last_event_id: Optional[int] = None,
@@ -721,6 +735,13 @@ class RedisCacheClient:
         ``b"record"`` field with the JSON record payload. The post-turn
         collector (``iter_subagent_events_full``) reads this field via
         XRANGE to rebuild full subagent history without a separate List.
+
+        ``ttl=None`` PERSISTs both keys on every write instead of
+        stamping an EXPIRE — active run streams carry no TTL (retention
+        contract: an active stream must not expire mid-run), and the
+        write path enforces that rather than assuming it, so a TTL
+        inherited from a failed cleanup or a stale collector stamp heals
+        on the next write. The terminal path stamps the attach-grace TTL.
 
         Raises ValueError when a stream write is requested (both
         ``stream_key`` and ``last_event_id`` provided) but neither
@@ -756,7 +777,10 @@ class RedisCacheClient:
                 pipe.hset(meta_key, "updated_at", now_iso_json)
                 if last_event_id is not None:
                     pipe.hset(meta_key, "last_event_id", json.dumps(last_event_id))
-                pipe.expire(meta_key, ttl)
+                if ttl is not None:
+                    pipe.expire(meta_key, ttl)
+                else:
+                    pipe.persist(meta_key)
                 # Stream write when both key and id are provided. Explicit
                 # ID `<seq>-0` keeps the cursor integer-friendly for the
                 # frontend's parseInt-based last_event_id parsing while
@@ -784,7 +808,10 @@ class RedisCacheClient:
                         maxlen=max_size,
                         approximate=True,
                     )
-                    pipe.expire(stream_key, ttl)
+                    if ttl is not None:
+                        pipe.expire(stream_key, ttl)
+                    else:
+                        pipe.persist(stream_key)
                 results = await pipe.execute()
             self.stats["sets"] += 1
             seq = (

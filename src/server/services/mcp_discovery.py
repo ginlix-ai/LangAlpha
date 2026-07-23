@@ -105,7 +105,7 @@ async def _stale_server_names(
     recomputed fingerprint differs (edited mid-discovery). Malformed rows
     count as stale — dropping a result is always safe; clobbering is not.
     """
-    from src.server.handlers.chat.mcp_config import workspace_row_to_server_config
+    from src.server.services.mcp_config import workspace_row_to_server_config
 
     rows = {
         r["name"]: r

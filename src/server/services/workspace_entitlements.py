@@ -13,7 +13,7 @@ from src.observability import (
 )
 from src.observability.tracing import hash_id as _obs_hash_id
 
-from src.server.services.background_task_manager import BackgroundTaskManager
+from src.server.services.runs.executor import LocalRunExecutor
 
 from src.server.database.workspace import (
     create_workspace as db_create_workspace,
@@ -266,7 +266,7 @@ class WorkspaceEntitlementsMixin:
                     # lock, so recreating here would abort it with
                     # SandboxGoneError. Mirror the idle reaper's guard and refuse
                     # (the outer except reverts the persisted tier; maps to 400).
-                    if await BackgroundTaskManager.get_instance().has_active_tasks_for_workspace(
+                    if await LocalRunExecutor.get_instance().has_active_tasks_for_workspace(
                         workspace_id
                     ):
                         raise RuntimeError(

@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-HANDLER = "src.server.handlers.chat.llm_config"
+HANDLER = "src.server.services.llm.config"
 DB_KEYS = "src.server.database.api_keys"
 
 CODING_URL = "https://coding.example/anthropic"
@@ -60,7 +60,7 @@ def _no_custom_model():
 async def test_key_under_variant_slug_uses_own_coding_endpoint():
     """Key stored only under the variant slug → resolves, builds against the
     model's own coding endpoint."""
-    from src.server.handlers.chat.llm_config import resolve_byok_llm_client
+    from src.server.services.llm.config import resolve_byok_llm_client
 
     mc = _mock_mc()
     mock_llm = MagicMock(name="llm")
@@ -84,7 +84,7 @@ async def test_key_under_variant_slug_uses_own_coding_endpoint():
 async def test_key_under_parent_still_uses_own_coding_endpoint():
     """Key stored only under the PARENT slug → walk finds it, but base_url is
     the model's OWN coding endpoint, NOT the parent's openai endpoint."""
-    from src.server.handlers.chat.llm_config import resolve_byok_llm_client
+    from src.server.services.llm.config import resolve_byok_llm_client
 
     mc = _mock_mc()
     mock_llm = MagicMock(name="llm")
@@ -112,7 +112,7 @@ async def test_key_under_sibling_resolves_with_own_parent_endpoint():
     the PARENT slug ``vendor-x`` whose key is stored ONLY under a sibling
     variant ``vendor-x-coding``. Resolves via the sibling, but base_url is
     pinned to the model's OWN provider (vendor-x), not the sibling's."""
-    from src.server.handlers.chat.llm_config import (
+    from src.server.services.llm.config import (
         _walk_byok_candidates,
         resolve_byok_llm_client,
     )
@@ -156,7 +156,7 @@ async def test_key_under_sibling_resolves_with_own_parent_endpoint():
 async def test_cache_miss_falls_back_to_direct_lookup():
     """A candidate slug absent from a provided _byok_cache still resolves via
     the direct-lookup fallback (a cache miss is never a false 'no key')."""
-    from src.server.handlers.chat.llm_config import _walk_byok_candidates
+    from src.server.services.llm.config import _walk_byok_candidates
 
     mc = _mock_mc()
     # Cache has the parent recorded-absent but NOT the variant slug.
@@ -182,7 +182,7 @@ async def test_cache_miss_falls_back_to_direct_lookup():
 async def test_cache_none_value_treated_as_absent_without_requery():
     """A slug present with value None is a confirmed absence — no direct
     re-query for that slug."""
-    from src.server.handlers.chat.llm_config import _walk_byok_candidates
+    from src.server.services.llm.config import _walk_byok_candidates
 
     mc = _mock_mc()
     # Both candidates recorded-absent; parent holds nothing either.
@@ -207,7 +207,7 @@ async def test_cache_none_value_treated_as_absent_without_requery():
 def test_candidate_slugs_include_nested_child_variant():
     """A two-level variant (child of a non-root provider) is walked from its
     parent, before the root family."""
-    from src.server.handlers.chat.llm_config import _candidate_slugs
+    from src.server.services.llm.config import _candidate_slugs
 
     providers = {
         "vendor-x": {},

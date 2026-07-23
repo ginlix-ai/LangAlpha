@@ -102,3 +102,47 @@ async def test_mget_client_error_degrades_to_all_misses(cache):
 
     cache.client = _Boom()
     assert await cache.mget(["a", "b"]) == [None, None]
+
+
+# ---------------------------------------------------------------------------
+# get_strict — fail-loud read for outbox executors
+# ---------------------------------------------------------------------------
+
+
+class _StrictRedis:
+    def __init__(self, store: dict[str, bytes] | None = None, boom: bool = False):
+        self.store = store or {}
+        self.boom = boom
+
+    async def get(self, key):
+        if self.boom:
+            raise ConnectionError("redis down")
+        return self.store.get(key)
+
+
+@pytest.mark.asyncio
+async def test_get_strict_returns_none_only_when_confirmed_absent(cache):
+    cache.client = _StrictRedis({"k": json.dumps({"a": 1}).encode()})
+    assert await cache.get_strict("k") == {"a": 1}
+    assert await cache.get_strict("missing") is None
+
+
+@pytest.mark.asyncio
+async def test_get_strict_raises_on_transport_failure(cache):
+    cache.client = _StrictRedis(boom=True)
+    with pytest.raises(ConnectionError):
+        await cache.get_strict("k")
+
+
+@pytest.mark.asyncio
+async def test_get_strict_raises_when_disabled_or_uninitialized(cache):
+    # `enabled` flips off at runtime on a failed startup connect — strict
+    # readers must treat that identically to a blip (raise), never as
+    # "confirmed absent" (a drainer would ack a dropped effect).
+    cache.enabled = False
+    with pytest.raises(RuntimeError):
+        await cache.get_strict("k")
+    cache.enabled = True
+    cache.client = None
+    with pytest.raises(RuntimeError):
+        await cache.get_strict("k")

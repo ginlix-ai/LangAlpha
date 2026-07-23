@@ -25,6 +25,9 @@ from ptc_agent.agent.middleware.tool.argument_parsing import parse_tool_args
 from src.llms.content_utils import extract_content_with_type
 from src.llms.token_counter import extract_token_usage
 from src.server.utils.content_normalizer import normalize_text_content
+from src.server.utils.error_sanitization import (
+    sanitize_error_text as _sanitize_error_text,
+)
 
 MAIN_AGENT = "main"
 
@@ -37,6 +40,7 @@ HistoryEventKind = Literal[
     "artifact",
     "steering-delivered",
     "context-window",
+    "user-message",
 ]
 
 _STEERING_MARKERS = (
@@ -178,6 +182,19 @@ def history_events_to_sse(
                     },
                 )
             )
+        elif event.kind == "user-message":
+            items.append(
+                _sse(
+                    "user_message",
+                    {
+                        "thread_id": thread_id,
+                        "agent": event.agent,
+                        "id": event.message_id,
+                        "role": "user",
+                        "content": event.data["content"],
+                    },
+                )
+            )
         elif event.kind == "steering-delivered":
             items.append(
                 _sse(
@@ -201,23 +218,49 @@ def _sse(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
     return {"event": event_type, "data": data}
 
 
+def _human_message_kind(message: HumanMessage) -> str:
+    """Classify a HumanMessage by its injection stamp: ``market-watch``,
+    ``steering``, ``summarization``, or ``plain`` (real user input)."""
+    kwargs = message.additional_kwargs or {}
+    source = kwargs.get("lc_source")
+    content = message.content if isinstance(message.content, str) else ""
+    if source == _MARKET_WATCH_SOURCE or content.startswith(_MARKET_WATCH_STAMP_OPEN):
+        # Both guards stay: the content-prefix check is the safety net for
+        # any ephemeral stamp that reaches a message unstamped.
+        return "market-watch"
+    if source == "steering" or content.startswith(_STEERING_MARKERS):
+        return "steering"
+    if source == "summarization":
+        return "summarization"
+    return "plain"
+
+
+def is_run_boundary_message(message: AnyMessage) -> bool:
+    """A plain HumanMessage opens a run in a task namespace (the spawn or
+    resume input); stamped injections (steering, market-watch, summaries)
+    land mid-run and never open one."""
+    return isinstance(message, HumanMessage) and _human_message_kind(message) == "plain"
+
+
 def _project_human_message(message: HumanMessage, agent: str) -> list[HistoryEvent]:
-    """Project marked mid-turn HumanMessage injections; skip plain user input.
+    """Project marked mid-turn HumanMessage injections; skip plain main-agent
+    input (the turn's user input is table-sourced by the replay endpoint).
+    Task-namespace plain input has no other durable surface, so it projects
+    to a ``user-message`` event.
 
     Payloads come from ``additional_kwargs`` stamped at emit time; unstamped
     historical messages fall back to parsing the marker content.
     """
     kwargs = message.additional_kwargs or {}
-    source = kwargs.get("lc_source")
     content = message.content if isinstance(message.content, str) else ""
+    kind = _human_message_kind(message)
 
-    if source == _MARKET_WATCH_SOURCE or content.startswith(_MARKET_WATCH_STAMP_OPEN):
+    if kind == "market-watch":
         # Live-price stamps are model-facing only — skipping them here keeps
-        # them out of history. Both guards stay: the content-prefix check is the
-        # safety net for any ephemeral stamp that reaches a message unstamped.
+        # them out of history.
         return []
 
-    if source == "steering" or content.startswith(_STEERING_MARKERS):
+    if kind == "steering":
         payload = kwargs.get("steering_delivered")
         if not isinstance(payload, dict):
             text = content.split("\n", 1)[1] if "\n" in content else content
@@ -227,7 +270,7 @@ def _project_human_message(message: HumanMessage, agent: str) -> list[HistoryEve
                 payload = {"count": 1, "messages": [{"content": text}]}
         return [HistoryEvent("steering-delivered", agent, message.id, dict(payload))]
 
-    if source == "summarization":
+    if kind == "summarization":
         stamped = kwargs.get("summarize_complete") or {}
         summary_text = parse_summary_message(message)
         return [
@@ -245,6 +288,10 @@ def _project_human_message(message: HumanMessage, agent: str) -> list[HistoryEve
             )
         ]
 
+    if agent != MAIN_AGENT:
+        text = content or normalize_text_content(message.content)[0]
+        if text:
+            return [HistoryEvent("user-message", agent, message.id, {"content": text})]
     return []
 
 
@@ -339,7 +386,8 @@ def _project_tool_message(
                 {
                     "artifact_type": "task",
                     "artifact_id": f"task:{task_artifact['task_id']}",
-                    "status": "completed",
+                    # No top-level status: it can't be known at projection
+                    # time — replay stamps payload.status from liveness truth.
                     "payload": task_artifact,
                     "tool_call_id": message.tool_call_id,
                 },
@@ -483,3 +531,75 @@ def _normalize_todos(todos: Any) -> list[dict[str, Any]]:
 
 def _count_lines(text: str) -> int:
     return len(text.splitlines()) if text else 0
+
+
+MODEL_FALLBACK_UI_NAME = "model_fallback"
+
+MODEL_FALLBACK_FIELDS = (
+    "from_model",
+    "to_model",
+    "from_is_primary",
+    "status_code",
+    "attempts_on_from",
+)
+
+
+def context_signal_items(
+    thread_id: str, turn: Any, *, agent: str = MAIN_AGENT
+) -> list[dict[str, Any]]:
+    """Project a turn's compaction signals from its private-state deltas.
+
+    Offload counts become one aggregated event per kind (live may batch them
+    across several firings); the summarize event projects through its summary
+    message, which carries ``lc_source=summarization`` (+ stamped fields on
+    new threads).
+    """
+    events: list[HistoryEvent] = []
+    for count, kind, field_name in (
+        (turn.newly_offloaded_args, "args", "offloaded_args"),
+        (turn.newly_offloaded_reads, "reads", "offloaded_reads"),
+    ):
+        if count:
+            events.append(
+                HistoryEvent(
+                    "context-window",
+                    agent,
+                    None,
+                    {
+                        "action": "offload",
+                        "signal": "complete",
+                        "kind": kind,
+                        field_name: count,
+                    },
+                )
+            )
+    summarization_event = turn.new_summarization_event
+    if summarization_event is not None:
+        message = summarization_event.get("summary_message")
+        if isinstance(message, HumanMessage):
+            events.extend(messages_to_history_events([message], agent=agent))
+    return history_events_to_sse(events, thread_id=thread_id)
+
+
+def model_fallback_items(
+    thread_id: str, turn: Any, *, agent: str = MAIN_AGENT
+) -> list[dict[str, Any]]:
+    """Project a turn's model_fallback notices from its new ``ui`` records.
+
+    Field whitelist and error sanitization mirror the live handler. ``agent``
+    identifies the namespace being projected (main or ``task:{id}``).
+    """
+    items: list[dict[str, Any]] = []
+    for record in turn.new_ui_records:
+        if record.get("name") != MODEL_FALLBACK_UI_NAME:
+            continue
+        props = record.get("props") or {}
+        data: dict[str, Any] = {"thread_id": thread_id, "agent": agent}
+        for key in MODEL_FALLBACK_FIELDS:
+            if key in props:
+                data[key] = props[key]
+        error_text = props.get("error")
+        if isinstance(error_text, str):
+            data["error"] = _sanitize_error_text(error_text)
+        items.append({"event": "model_fallback", "data": data})
+    return items

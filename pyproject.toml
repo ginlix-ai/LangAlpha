@@ -105,6 +105,7 @@ test = [
     "pytest>=9.0.1",
     "pytest-cov>=4.1.0",
     "pytest-asyncio>=1.3.0",
+    "pytest-socket>=0.7.0",
 ]
 # OpenTelemetry SDK + OTLP exporter + auto-instrumentations. Install when
 # OTEL_EXPORTER_OTLP_ENDPOINT will be set, otherwise the API ships its own
@@ -139,8 +140,17 @@ extend-exclude = ["src/llms/vendor"]
 
 [tool.ruff.lint]
 ignore = ["E741"]  # allow short names like l, O, I (common in OHLCV code)
+extend-select = ["TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# ptc_agent has ONE module identity: the bare package. A src.-prefixed import
+# creates a second copy of every module (separate singletons, unpatched twins).
+"src.ptc_agent".msg = "import ptc_agent bare — src.ptc_agent creates a duplicate module identity"
 
 [tool.ruff.lint.per-file-ignores]
+# Relative imports inside ptc_agent statically resolve to src.ptc_agent in
+# ruff's view but bind to the package's load identity at runtime — exempt.
+"src/ptc_agent/**" = ["TID251"]
 "src/server/app/setup.py" = ["E402"]  # router imports intentionally placed after app creation
 "src/llms/__init__.py" = ["E402"]  # patch must be applied before importing modules that use langchain_anthropic
 
@@ -160,4 +170,5 @@ addopts = "-m 'not integration and not slow and not regression'"
 dev = [
     "pytest>=9.0.1",
     "pytest-asyncio>=1.3.0",
+    "pytest-socket>=0.7.0",
 ]

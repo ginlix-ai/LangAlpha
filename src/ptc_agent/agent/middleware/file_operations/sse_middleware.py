@@ -136,7 +136,7 @@ class FileOperationMiddleware(AgentMiddleware):
                 except Exception:
                     logger.debug("[FILE_OP_MIDDLEWARE] Failed to invalidate agent.md cache")
 
-            # Build completed event with structure expected by streaming_handler
+            # Build completed event with structure expected by the server sse_producer
             # Must include artifact_type for handler to recognize and emit as SSE artifact event
             timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -158,9 +158,9 @@ class FileOperationMiddleware(AgentMiddleware):
                 payload["old_string"] = old_string
                 payload["new_string"] = new_string
 
-            # Structure matches streaming_handler expectations (artifact_type triggers artifact SSE event)
+            # Structure matches sse_producer expectations (artifact_type triggers artifact SSE event)
             completed_event = {
-                "artifact_type": "file_operation",  # Required for streaming_handler recognition
+                "artifact_type": "file_operation",  # Required for sse_producer recognition
                 "artifact_id": tool_call_id,
                 "agent": agent_name,
                 "timestamp": timestamp,
@@ -185,7 +185,7 @@ class FileOperationMiddleware(AgentMiddleware):
 
             failed_timestamp = datetime.now(timezone.utc).isoformat()
             failed_event = {
-                "artifact_type": "file_operation",  # Required for streaming_handler recognition
+                "artifact_type": "file_operation",  # Required for sse_producer recognition
                 "artifact_id": tool_call_id,
                 "agent": agent_name,
                 "timestamp": failed_timestamp,

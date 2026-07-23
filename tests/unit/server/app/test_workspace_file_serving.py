@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from src.server.app.workspace_files import (
+from src.server.app.workspace_files.serve import (
     _guess_content_type,
     _has_traversal,
     serve_workspace_file,
@@ -29,12 +29,12 @@ from src.server.services import pdf_render
 
 WS_ID = "ws-test-0001"
 OWNER = "user-test-1"
-_VAULT_PATCH = "src.server.app.workspace_files.get_vault_secrets_for_redaction"
-_DBWS_PATCH = "src.server.app.workspace_files.db_get_workspace"
-_FP_PATCH = "src.server.app.workspace_files.FilePersistenceService"
-_WD_PATCH = "src.server.app.workspace_files._get_work_dir"
-_SANDBOX_PATCH = "src.server.app.workspace_files._acquire_sandbox"
-_WSMGR_PATCH = "src.server.app.workspace_files.WorkspaceManager"
+_VAULT_PATCH = "src.server.app.workspace_files.serve.get_vault_secrets_for_redaction"
+_DBWS_PATCH = "src.server.app.workspace_files.serve.db_get_workspace"
+_FP_PATCH = "src.server.app.workspace_files.serve.FilePersistenceService"
+_WD_PATCH = "src.server.app.workspace_files.serve._get_work_dir"
+_SANDBOX_PATCH = "src.server.app.workspace_files.serve._acquire_sandbox"
+_WSMGR_PATCH = "src.server.app.workspace_files.serve.WorkspaceManager"
 _RENDER_PATCH = "src.server.services.pdf_render.render_workspace_pdf"
 _PDF_INTERNAL_BASE = "http://127.0.0.1:8000"
 

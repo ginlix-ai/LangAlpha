@@ -7,6 +7,7 @@ import { AUTH_BROADCAST_CHANNEL, OAUTH_POPUP_WINDOW_NAME, OAUTH_POPUP_FEATURES }
 import { clearFlashWorkspaceCache } from '@/pages/MarketView/utils/flashWorkspace';
 import { resetNavPanelExpansion } from '@/pages/ChatAgent/components/navExpansionStore';
 import { resetStableNavOrder, resetSharedWorkspaceThreads } from '@/pages/ChatAgent/hooks/useNavigationData';
+import { runAuthResets } from '../lib/authResets';
 
 import type {
   AuthError,
@@ -180,6 +181,7 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
         resetNavPanelExpansion();
         resetStableNavOrder();
         resetSharedWorkspaceThreads();
+        runAuthResets();
       }
       lastUserIdRef.current = sess?.user?.id ?? null;
       setSession(sess);
@@ -203,6 +205,7 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
         resetNavPanelExpansion();
         resetStableNavOrder();
         resetSharedWorkspaceThreads();
+        runAuthResets();
         setTokenGetter(() => Promise.resolve(null));
         setTokenRefresher(() => Promise.resolve(null));
       }

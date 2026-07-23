@@ -54,7 +54,7 @@ async def test_uses_pool_when_no_conn(mock_connection, mock_cursor):
     async def _fake_pool():
         yield mock_connection
 
-    with patch("src.server.database.conversation.get_db_connection", new=_fake_pool):
+    with patch("src.server.database.pool.get_db_connection", new=_fake_pool):
         ok = await append_sse_event(THREAD_ID, EVENT)
     assert ok is True
     mock_cursor.execute.assert_awaited_once()

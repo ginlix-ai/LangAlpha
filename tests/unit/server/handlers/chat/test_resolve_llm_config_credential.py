@@ -21,7 +21,7 @@ from ptc_agent.config.agent import (
     LLMConfig,
 )
 
-HANDLER = "src.server.handlers.chat.llm_config"
+HANDLER = "src.server.services.llm.config"
 
 
 def _make_config(*, compaction=None, fetch=None, fallback=None, subagents_enabled=None):
@@ -57,7 +57,7 @@ def _common_patches(
     is_byok_active_val=False,
 ):
     """Bundle the standard patch set. ``classify_source`` is a ModelSource."""
-    from src.server.handlers.chat.llm_config import ModelSource
+    from src.server.services.llm.config import ModelSource
 
     src = classify_source if classify_source is not None else ModelSource.SYSTEM
 
@@ -118,7 +118,7 @@ def _entered(patches):
 
 @pytest.mark.asyncio
 async def test_oauth_user_sets_oauth_source():
-    from src.server.handlers.chat.llm_config import resolve_llm_config
+    from src.server.services.llm.config import resolve_llm_config
 
     oauth_client = _FakeClient("oauth")
     with _entered(_common_patches(oauth=oauth_client)):
@@ -130,7 +130,7 @@ async def test_oauth_user_sets_oauth_source():
 
 @pytest.mark.asyncio
 async def test_byok_user_sets_byok_source():
-    from src.server.handlers.chat.llm_config import resolve_llm_config
+    from src.server.services.llm.config import resolve_llm_config
 
     byok_client = _FakeClient("byok")
     with _entered(_common_patches(byok=byok_client)):
@@ -142,7 +142,7 @@ async def test_byok_user_sets_byok_source():
 
 @pytest.mark.asyncio
 async def test_non_byok_reasoning_uses_platform():
-    from src.server.handlers.chat.llm_config import resolve_llm_config
+    from src.server.services.llm.config import resolve_llm_config
 
     platform_client = _FakeClient("platform")
     with _entered(_common_patches(platform_client=platform_client)):
@@ -156,7 +156,7 @@ async def test_non_byok_reasoning_uses_platform():
 
 @pytest.mark.asyncio
 async def test_non_byok_no_reasoning_is_none():
-    from src.server.handlers.chat.llm_config import resolve_llm_config
+    from src.server.services.llm.config import resolve_llm_config
 
     with _entered(_common_patches()):
         cfg = await resolve_llm_config(_make_config(), "u", "main-model", False)
@@ -168,7 +168,7 @@ async def test_non_byok_no_reasoning_is_none():
 @pytest.mark.asyncio
 async def test_byok_on_system_model_is_byok_source():
     """Orthogonality: BYOK key on a SYSTEM-catalog model → cred=BYOK."""
-    from src.server.handlers.chat.llm_config import ModelSource, resolve_llm_config
+    from src.server.services.llm.config import ModelSource, resolve_llm_config
 
     byok_client = _FakeClient("byok")
     with _entered(_common_patches(byok=byok_client, classify_source=ModelSource.SYSTEM)):
@@ -185,7 +185,7 @@ async def test_byok_on_system_model_is_byok_source():
 @pytest.mark.asyncio
 async def test_platform_client_not_copied_into_roles():
     """Non-BYOK+reasoning (PLATFORM) main client must NOT seed subsidiary roles."""
-    from src.server.handlers.chat.llm_config import resolve_llm_config
+    from src.server.services.llm.config import resolve_llm_config
 
     platform_client = _FakeClient("platform")
     # compaction model resolves to no client (no key, no platform fallback for roles)
@@ -205,7 +205,7 @@ async def test_platform_client_not_copied_into_roles():
 @pytest.mark.asyncio
 async def test_byok_main_copied_into_keyless_role():
     """BYOK user with a compaction model they have no key for → role gets a main copy."""
-    from src.server.handlers.chat.llm_config import resolve_llm_config
+    from src.server.services.llm.config import resolve_llm_config
 
     byok_client = _FakeClient("byok-main")
 
@@ -243,7 +243,7 @@ async def test_byok_main_copied_into_keyless_role():
 @pytest.mark.asyncio
 async def test_system_user_leaves_role_keys_absent():
     """A NONE-cred (system/platform) user stores no subsidiary clients (cheap name path)."""
-    from src.server.handlers.chat.llm_config import resolve_llm_config
+    from src.server.services.llm.config import resolve_llm_config
 
     with _entered(_common_patches()):
         cfg = await resolve_llm_config(
@@ -265,7 +265,7 @@ async def test_system_user_leaves_role_keys_absent():
 
 @pytest.mark.asyncio
 async def test_is_byok_none_self_resolves():
-    from src.server.handlers.chat.llm_config import resolve_llm_config
+    from src.server.services.llm.config import resolve_llm_config
 
     is_byok_active = AsyncMock(return_value=False)
     byok = AsyncMock(return_value=None)
@@ -295,7 +295,7 @@ async def test_is_byok_none_self_resolves():
 
 
 def test_role_registry_compaction_fetch_and_subagents():
-    from src.server.handlers.chat.llm_config import LLMRole, role_registry
+    from src.server.services.llm.config import LLMRole, role_registry
 
     cfg = _make_config(compaction="cm", fetch="fm")
     sub_with_model = MagicMock()
@@ -316,7 +316,7 @@ def test_role_registry_compaction_fetch_and_subagents():
 
 
 def test_role_registry_skips_missing_compaction_fetch():
-    from src.server.handlers.chat.llm_config import role_registry
+    from src.server.services.llm.config import role_registry
 
     cfg = _make_config()  # no compaction, no fetch
     roles = role_registry(cfg, [], {})
@@ -325,7 +325,7 @@ def test_role_registry_skips_missing_compaction_fetch():
 
 def test_role_registry_unknown_enabled_name_skipped():
     """An enabled subagent absent from subagent_defs is skipped (no raise)."""
-    from src.server.handlers.chat.llm_config import role_registry
+    from src.server.services.llm.config import role_registry
 
     cfg = _make_config(compaction="cm")
     # 'ghost' is enabled but not in defs (registry.get() returned None → absent)

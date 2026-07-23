@@ -8,7 +8,7 @@ on:
       - src/ptc_agent/agent/backends/**
       - src/ptc_agent/config/core.py
       - src/ptc_agent/config/loaders.py
-      - src/server/app/workspace_files.py
+      - src/server/app/workspace_files/**
       - src/server/app/workspace_sandbox.py
       - src/server/services/workspace_manager.py
       - Dockerfile.sandbox

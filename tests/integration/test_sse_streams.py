@@ -97,7 +97,7 @@ def _ids(events: list[str]) -> list[int]:
 @pytest.mark.asyncio
 async def test_unified_consumer_paths_against_real_redis(real_cache, thread_id, monkeypatch):
     """One stream key, four consumers. Each scenario uses the same call."""
-    from src.server.handlers.chat import stream_from_log as sfl_mod
+    from src.server.handlers.chat import run_stream_reader as sfl_mod
 
     # Patch get_cache_client so the consumer uses our test client.
     monkeypatch.setattr(sfl_mod, "get_cache_client", lambda: real_cache)

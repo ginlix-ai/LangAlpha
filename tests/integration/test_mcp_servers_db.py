@@ -23,7 +23,7 @@ async def _version(workspace_id: str) -> int:
 
 async def _schema_raw_count(workspace_id: str, server_name: str) -> int:
     """Raw row count for one server's snapshots (bypasses DISTINCT ON)."""
-    from src.server.database.conversation import get_db_connection
+    from src.server.database.pool import get_db_connection
 
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:

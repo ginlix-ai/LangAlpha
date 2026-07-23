@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.ptc_agent.agent.middleware.model_resilience import (
+from ptc_agent.agent.middleware.model_resilience import (
     RESILIENCE_TRACE_ATTR,
     ModelResilienceMiddleware,
     build_fallback_pairs,

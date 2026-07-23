@@ -30,7 +30,9 @@ SRC = Path(__file__).resolve().parents[5] / "src"
 _SCAN_ROOTS = (
     SRC / "server" / "handlers",
     SRC / "server" / "services" / "history",
-    SRC / "server" / "app" / "threads.py",
+    SRC / "server" / "services" / "runs",
+    SRC / "server" / "services" / "report_back",
+    SRC / "server" / "app" / "threads",
 )
 
 CHECKPOINT_PROJECTED = {
@@ -57,21 +59,31 @@ LIVE_ONLY = {
     "warning",
     "retry",  # recoverable-error notice, run restarts
     "steering_accepted",  # only on the steering POST's own stream
-    "steering_returned",  # undelivered-steering drain at run end
     "model_retry",  # transient, accumulate=False
     "tool_call_chunks",  # replay's consolidated tool_calls carries full args
     "compaction_chunk",  # summarize context_window carries summary_text
     "subagent_stream_end",  # reconnect-stream sentinel
+    "stream_gap",  # reconnect trim notice (Last-Event-ID < stream head)
+    "run_end",  # post-CAS terminal frame closing the run stream (I6)
     "replay_done",  # replay sentinel
+    "snapshot",  # read-time cursors for the runs replay could not project;
+    # recomputed from ledger+Redis on every load, never replayed from a store
     "market_watch_update",  # transient stamp notice, accumulate=False; the
     # durable watchlist re-seeds the chip via GET /{thread}/market-watch on replay
+    "chan_open",  # mux channel lifecycle (thread_stream_mux)
+    "chan_close",  # mux channel lifecycle (thread_stream_mux)
+    "transport_error",  # mux whole-socket retryable close
+    "timeout",  # watch/mux max-duration autoclose (predates mux; single-quoted emit sites evaded the scan)
 }
 
 # KNOWN GAP: survives replay only through persisted sse_events. Before
 # sse_events writes stop (cutover step 5) each entry here must move to a
-# category above or be explicitly accepted as not replayed. Empty since
-# model_fallback moved to the ui channel — cutover step 5 is unblocked.
-STORED_EVENTS_ONLY: set[str] = set()
+# category above or be explicitly accepted as not replayed.
+STORED_EVENTS_ONLY: set[str] = {
+    "steering_returned",  # undelivered-steering drain at run end; no
+    # checkpoint twin by design (nothing was injected into the graph), so
+    # the collected stored copy is its only durable home
+}
 
 _CATEGORIES = {
     "checkpoint": CHECKPOINT_PROJECTED,
@@ -142,7 +154,7 @@ def test_replay_transition_rules_cover_the_replayable_set():
     """The replay module's passthrough/stored-preferred tuples must stay
     inside the replayable ledger (a stored-preferred type outside the ledger
     would silently vanish post-cutover)."""
-    from src.server.services.history.replay import (
+    from src.server.services.history.replay.stored_merge import (
         _PASSTHROUGH_EVENTS,
         _STORED_PREFERRED_EVENTS,
     )

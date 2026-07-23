@@ -30,7 +30,7 @@ from src.server.database.workspace import (
     get_workspace as db_get_workspace,
 )
 from src.server.services.workspace_manager import WorkspaceManager
-from src.ptc_agent.core.sandbox import PTCSandbox
+from ptc_agent.core.sandbox import PTCSandbox
 from src.utils.cache.redis_cache import get_cache_client
 
 logger = logging.getLogger(__name__)

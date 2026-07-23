@@ -116,23 +116,23 @@ export interface DeleteThreadResponse {
   message: string;
 }
 
-export interface ThreadTurn {
-  turn_index: number;
-  edit_checkpoint_id: string | null;
-  regenerate_checkpoint_id: string;
-}
-
-export interface ThreadTurnsResponse {
-  thread_id: string;
-  turns: ThreadTurn[];
-  retry_checkpoint_id: string | null;
-}
-
-export interface WorkflowStatus {
-  can_reconnect: boolean;
-  status: string;
-  [key: string]: unknown;
-}
+/**
+ * The backend's public workflow-run status vocabulary — the `status` field of the
+ * `/status` and dispatch-liveness responses. Single source of truth for the wire
+ * spellings: `idle` = not yet registered; `queued`/`recovering` = registered but
+ * no output yet; `stopping` = a live run being cancelled. Consumers that read
+ * untrusted wire values still take `unknown` and narrow against these members.
+ */
+export type WorkflowRunStatus =
+  | 'idle'
+  | 'queued'
+  | 'running'
+  | 'stopping'
+  | 'recovering'
+  | 'completed'
+  | 'interrupted'
+  | 'failed'
+  | 'cancelled';
 
 // --- Thread Sharing ---
 

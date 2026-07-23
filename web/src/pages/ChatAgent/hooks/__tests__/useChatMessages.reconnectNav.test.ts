@@ -32,21 +32,7 @@ vi.mock('../utils/threadStorage', () => ({
   removeStoredThreadId: vi.fn(),
 }));
 
-vi.mock('../../utils/api', () => ({
-  fetchMarketWatch: vi.fn().mockResolvedValue({ thread_id: 't', symbols: [] }),
-  sendChatMessageStream: vi.fn(),
-  sendHitlResponse: vi.fn(),
-  cancelWorkflow: vi.fn().mockResolvedValue({ success: true }),
-  replayThreadHistory: vi.fn().mockResolvedValue(undefined),
-  getWorkflowStatus: vi.fn().mockResolvedValue({ can_reconnect: false, status: 'completed' }),
-  reconnectToWorkflowStream: vi.fn().mockResolvedValue({ disconnected: false, aborted: false }),
-  streamSubagentTaskEvents: vi.fn(),
-  fetchThreadTurns: vi.fn().mockResolvedValue({ turns: [], retry_checkpoint_id: null }),
-  submitFeedback: vi.fn(),
-  removeFeedback: vi.fn(),
-  getThreadFeedback: vi.fn().mockResolvedValue([]),
-  watchThread: vi.fn(() => ({ abort: new AbortController() })),
-}));
+vi.mock('../../utils/api', async () => (await import('./chatHookHarness')).apiMockModule());
 
 import { getWorkflowStatus, reconnectToWorkflowStream } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';

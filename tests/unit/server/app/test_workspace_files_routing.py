@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ptc_agent.core.sandbox.runtime import SandboxTransientError
-from src.server.app.workspace_files import list_workspace_files
+from src.server.app.workspace_files.crud import list_workspace_files
 
 
 def _workspace(ws_id: str, user_id: str, status: str) -> dict:
@@ -36,9 +36,9 @@ def _workspace(ws_id: str, user_id: str, status: str) -> dict:
 
 
 @pytest.mark.asyncio
-@patch("src.server.app.workspace_files._get_work_dir", return_value="/home/workspace")
-@patch("src.server.app.workspace_files.FilePersistenceService")
-@patch("src.server.app.workspace_files.db_get_workspace")
+@patch("src.server.app.workspace_files.crud._get_work_dir", return_value="/home/workspace")
+@patch("src.server.app.workspace_files.crud.FilePersistenceService")
+@patch("src.server.app.workspace_files.crud.db_get_workspace")
 async def test_starting_status_routes_to_db_fallback(
     mock_get_ws, mock_fp, _mock_wd,
 ):
@@ -70,9 +70,9 @@ async def test_starting_status_routes_to_db_fallback(
 
 
 @pytest.mark.asyncio
-@patch("src.server.app.workspace_files._get_work_dir", return_value="/home/workspace")
-@patch("src.server.app.workspace_files.FilePersistenceService")
-@patch("src.server.app.workspace_files.db_get_workspace")
+@patch("src.server.app.workspace_files.crud._get_work_dir", return_value="/home/workspace")
+@patch("src.server.app.workspace_files.crud.FilePersistenceService")
+@patch("src.server.app.workspace_files.crud.db_get_workspace")
 async def test_files_during_concurrent_failing_lazy_init(
     mock_get_ws, mock_fp, _mock_wd,
 ):

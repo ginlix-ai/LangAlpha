@@ -14,6 +14,8 @@ from httpx import ASGITransport, AsyncClient
 from ptc_agent.config.agent import CredentialSource
 from tests.conftest import create_test_app
 
+THREADS_MOD = "src.server.app.threads.messaging"
+
 CALLER = "usr-caller-001"
 OWNER = "usr-owner-002"
 
@@ -72,7 +74,7 @@ def _stub_downstream(owner_id, ws_owner=CALLER):
 
     with (
         patch(
-            "src.server.app.threads.get_thread_owner_id",
+            f"{THREADS_MOD}.get_thread_owner_id",
             new=AsyncMock(return_value=owner_id),
         ),
         # Workspace IDOR guard reads the workspace owner via get_workspace.
@@ -82,7 +84,7 @@ def _stub_downstream(owner_id, ws_owner=CALLER):
         ),
         patch.object(setup_module, "agent_config", MagicMock()),
         patch(
-            "src.server.handlers.chat.resolve_llm_config",
+            "src.server.services.llm.config.resolve_llm_config",
             new=AsyncMock(return_value=_make_config()),
         ),
         patch(
@@ -98,12 +100,17 @@ def _stub_downstream(owner_id, ws_owner=CALLER):
             return_value=_empty_async_gen(),
         ),
         patch(
-            "src.server.app.threads.observe_chat_stream",
+            f"{THREADS_MOD}.observe_chat_stream",
             side_effect=lambda gen, **_: gen,
         ),
         # A 403 unwinds through the burst-slot release; keep it hermetic.
         patch(
             "src.server.dependencies.usage_limits.release_burst_slot",
+            new=AsyncMock(),
+        ),
+        # Transport preflight (I6) would 503 in the Redis-less unit env.
+        patch(
+            f"{THREADS_MOD}._assert_stream_transport_ready",
             new=AsyncMock(),
         ),
     ):

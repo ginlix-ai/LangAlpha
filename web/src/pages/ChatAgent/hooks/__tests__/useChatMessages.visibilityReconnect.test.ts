@@ -32,21 +32,7 @@ vi.mock('../utils/threadStorage', () => ({
   removeStoredThreadId: vi.fn(),
 }));
 
-vi.mock('../../utils/api', () => ({
-  fetchMarketWatch: vi.fn().mockResolvedValue({ thread_id: 't', symbols: [] }),
-  sendChatMessageStream: vi.fn(),
-  sendHitlResponse: vi.fn(),
-  cancelWorkflow: vi.fn().mockResolvedValue({ success: true }),
-  replayThreadHistory: vi.fn().mockResolvedValue(undefined),
-  getWorkflowStatus: vi.fn().mockResolvedValue({ can_reconnect: false, status: 'completed' }),
-  reconnectToWorkflowStream: vi.fn().mockResolvedValue({ disconnected: false, aborted: false }),
-  streamSubagentTaskEvents: vi.fn(),
-  fetchThreadTurns: vi.fn().mockResolvedValue({ turns: [], retry_checkpoint_id: null }),
-  submitFeedback: vi.fn(),
-  removeFeedback: vi.fn(),
-  getThreadFeedback: vi.fn().mockResolvedValue([]),
-  watchThread: vi.fn(() => ({ abort: new AbortController() })),
-}));
+vi.mock('../../utils/api', async () => (await import('./chatHookHarness')).apiMockModule());
 
 import { sendChatMessageStream, getWorkflowStatus, reconnectToWorkflowStream } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';
@@ -56,15 +42,15 @@ const mockStatus = getWorkflowStatus as Mock;
 const mockReconnect = reconnectToWorkflowStream as Mock;
 
 // A sendChatMessageStream impl that mimics a long-lived SSE stream: it latches
-// the run_id (2nd-to-last arg) synchronously so currentRunIdRef is set, and the
-// returned promise stays pending until the AbortController.signal (last arg)
-// fires — then it resolves `{ aborted: true }`, exactly as the real streamFetch
-// does when the reader is aborted. This keeps isLoading true until the
-// foreground handler aborts the stream.
+// the run_id (3rd-to-last arg, before signal + requestKey) synchronously so
+// currentRunIdRef is set, and the returned promise stays pending until the
+// AbortController.signal fires — then it resolves `{ aborted: true }`, exactly
+// as the real streamFetch does when the reader is aborted. This keeps
+// isLoading true until the foreground handler aborts the stream.
 function deferredStreamMock(runId = 'run-1', threadId = 'th-1') {
   return vi.fn((...args: unknown[]) => {
-    const latch = args[args.length - 2] as (rid: string, tid: string) => void;
-    const signal = args[args.length - 1] as AbortSignal;
+    const latch = args[args.length - 3] as (rid: string, tid: string) => void;
+    const signal = args[args.length - 2] as AbortSignal;
     latch(runId, threadId);
     return new Promise((resolve) => {
       const onAbort = () => resolve({ disconnected: false, aborted: true, contentLocation: null });
@@ -258,8 +244,8 @@ describe('useChatMessages — foreground (visibility) reconnect', () => {
     let steeringOnEvent: ((e: Record<string, unknown>) => void) | null = null;
     mockSend.mockImplementation((...args: unknown[]) => {
       const onEvent = args[5] as (e: Record<string, unknown>) => void;
-      const latch = args[args.length - 2] as (rid: string, tid: string) => void;
-      const signal = args[args.length - 1] as AbortSignal;
+      const latch = args[args.length - 3] as (rid: string, tid: string) => void;
+      const signal = args[args.length - 2] as AbortSignal;
       if (mockSend.mock.calls.length === 1) {
         // Primary turn: latch a run so isLoading stays true, then hang. We never
         // abort this stream — demotion reassigns mainStreamAbortRef away from it.

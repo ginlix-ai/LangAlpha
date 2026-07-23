@@ -412,6 +412,22 @@ class TestCleanupIdle:
     def teardown_method(self):
         WorkspaceManager.reset_instance()
 
+    @pytest.fixture(autouse=True)
+    def _quiet_durable_probes(self):
+        """The reaper's activity guard also reads the run ledgers; keep both
+        quiet so these tests exercise only the idle-timeout mechanics."""
+        with (
+            patch(
+                "src.server.database.runs.lifecycle.workspace_has_active_run",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "src.server.database.runs.subagent_runs.count_open_runs_for_workspace",
+                new=AsyncMock(return_value=0),
+            ),
+        ):
+            yield
+
     @pytest.mark.asyncio
     @patch("src.server.services.workspace_manager.get_workspaces_by_status", new_callable=AsyncMock)
     async def test_cleanup_idle_stops_old_workspaces(self, mock_get_by_status):
@@ -2041,10 +2057,10 @@ class TestStatusRoutesToDbFallback:
 
     @pytest.mark.parametrize("status", ["stopped", "stopping", "starting"])
     def test_workspace_files_tuple_includes_status(self, status):
-        from src.server.app import workspace_files
+        from src.server.app.workspace_files import crud
         import inspect
 
-        source = inspect.getsource(workspace_files)
+        source = inspect.getsource(crud)
         assert f'"{status}"' in source
         # The authenticated routes compare against this exact tuple.
         assert '"stopped", "stopping", "starting"' in source
@@ -2830,7 +2846,7 @@ class TestSetWorkspaceSpec:
         mock_set_tier.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.BackgroundTaskManager")
+    @patch("src.server.services.workspace_entitlements.LocalRunExecutor")
     @patch("src.server.services.workspace_manager.SessionManager")
     @patch("src.server.services.workspace_entitlements.update_workspace_status")
     @patch("src.server.services.workspace_entitlements.db_set_workspace_resource_tier")
@@ -2863,7 +2879,7 @@ class TestSetWorkspaceSpec:
         assert mock_set_tier.await_args_list[-1].args == (ws["workspace_id"], "standard")
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.BackgroundTaskManager")
+    @patch("src.server.services.workspace_entitlements.LocalRunExecutor")
     @patch("src.server.services.workspace_entitlements.db_set_workspace_resource_tier")
     @patch("src.server.services.workspace_entitlements.db_get_workspace")
     async def test_running_without_attached_session_refuses_and_reverts(
@@ -2888,7 +2904,7 @@ class TestSetWorkspaceSpec:
         assert mock_set_tier.await_args_list[-1].args == (ws["workspace_id"], "standard")
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.BackgroundTaskManager")
+    @patch("src.server.services.workspace_entitlements.LocalRunExecutor")
     @patch("src.server.services.workspace_entitlements.db_set_workspace_resource_tier")
     @patch("src.server.services.workspace_entitlements.db_get_workspace")
     async def test_running_with_active_turn_refuses_and_reverts(

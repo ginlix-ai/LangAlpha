@@ -522,7 +522,7 @@ async def get_company_overview(symbol: str, user_id: CurrentUserId) -> CompanyOv
         if cached is not None:
             return CompanyOverviewResponse(**cached)
 
-        from src.tools.market_data.implementations import fetch_company_overview_data
+        from src.tools.market_data.company import fetch_company_overview_data
 
         artifact = await fetch_company_overview_data(symbol_upper)
 

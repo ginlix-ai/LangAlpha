@@ -509,9 +509,7 @@ class TestPriceDataMcpContract:
 @skip_no_fmp
 class TestLangChainFetcherContract:
     async def test_fetch_company_overview_data(self):
-        from src.tools.market_data.implementations import (
-            fetch_company_overview_data,
-        )
+        from src.tools.market_data.company import fetch_company_overview_data
 
         artifact = await fetch_company_overview_data(SYMBOL)
         assert artifact["type"] == "company_overview"
@@ -522,7 +520,7 @@ class TestLangChainFetcherContract:
         assert "quote" in artifact
 
     async def test_fetch_sector_performance(self):
-        from src.tools.market_data.implementations import fetch_sector_performance
+        from src.tools.market_data.market_overview import fetch_sector_performance
 
         content, artifact = await fetch_sector_performance()
         assert artifact["type"] == "sector_performance"
@@ -535,7 +533,7 @@ class TestLangChainFetcherContract:
         assert isinstance(s["changePercentage"], (int, float))
 
     async def test_fetch_stock_screener(self):
-        from src.tools.market_data.implementations import fetch_stock_screener
+        from src.tools.market_data.screener import fetch_stock_screener
 
         content, artifact = await fetch_stock_screener(
             market_cap_more_than=2_000_000_000_000,
@@ -547,7 +545,7 @@ class TestLangChainFetcherContract:
         assert artifact["count"] >= 0
 
     async def test_fetch_daily_prices(self):
-        from src.tools.market_data.implementations import fetch_daily_prices
+        from src.tools.market_data.prices import fetch_daily_prices
 
         content, artifact = await fetch_daily_prices(SYMBOL)
         assert artifact["type"] == "stock_prices"
@@ -560,7 +558,7 @@ class TestLangChainFetcherContract:
     async def test_fetch_index_day_snapshot(self):
         from datetime import datetime, timezone
 
-        from src.tools.market_data.implementations import _fetch_index_day_snapshot
+        from src.tools.market_data.market_overview import _fetch_index_day_snapshot
 
         today = datetime.now(timezone.utc).date().isoformat()
         content, artifact, snapshot_date = await _fetch_index_day_snapshot(

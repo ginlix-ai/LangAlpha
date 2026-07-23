@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from psycopg.rows import dict_row
 
-from src.server.database.conversation import get_db_connection
+from src.server.database.pool import get_db_connection
 from src.server.utils.pg_sanitize import strip_pg_nul_str
 
 logger = logging.getLogger(__name__)

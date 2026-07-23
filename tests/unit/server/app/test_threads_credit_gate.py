@@ -11,8 +11,7 @@ PLATFORM credential_source must still produce ``byok=False``.  The old check
 for a platform-reasoning user whose eager client build set ``llm_client``.
 """
 
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
@@ -20,6 +19,8 @@ from httpx import ASGITransport, AsyncClient
 
 from ptc_agent.config.agent import CredentialSource
 from tests.conftest import create_test_app
+
+THREADS_MOD = "src.server.app.threads.messaging"
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +116,7 @@ async def test_credit_gate_byok_arg(
     with (
         patch.object(setup_module, "agent_config", MagicMock()),
         patch(
-            "src.server.handlers.chat.resolve_llm_config",
+            "src.server.services.llm.config.resolve_llm_config",
             new=AsyncMock(return_value=stub_config),
         ),
         patch(
@@ -142,8 +143,13 @@ async def test_credit_gate_byok_arg(
             return_value=_empty_async_gen(),
         ),
         patch(
-            "src.server.app.threads.observe_chat_stream",
+            f"{THREADS_MOD}.observe_chat_stream",
             side_effect=lambda gen, **_: gen,
+        ),
+        # Transport preflight (I6) would 503 in the Redis-less unit env.
+        patch(
+            f"{THREADS_MOD}._assert_stream_transport_ready",
+            new=AsyncMock(),
         ),
     ):
         async with threads_client.stream(

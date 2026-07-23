@@ -161,14 +161,14 @@ class TestQueryCRUD:
         )
 
         # Insert two queries
-        q1 = await create_query(
+        await create_query(
             conversation_query_id=str(uuid.uuid4()),
             conversation_thread_id=thread_id,
             turn_index=0,
             content="What is the PE ratio of AAPL?",
             query_type="initial",
         )
-        q2 = await create_query(
+        await create_query(
             conversation_query_id=str(uuid.uuid4()),
             conversation_thread_id=thread_id,
             turn_index=1,
@@ -246,10 +246,9 @@ class TestResponseCRUD:
     """Test response creation and retrieval."""
 
     async def test_create_and_get_responses(
-        self, seed_workspace, patched_get_db_connection
+        self, seed_workspace, patched_get_db_connection, seed_response
     ):
         from src.server.database.conversation import (
-            create_response,
             create_thread,
             get_responses_for_thread,
         )
@@ -263,7 +262,7 @@ class TestResponseCRUD:
             msg_type="ptc",
         )
 
-        await create_response(
+        await seed_response(
             conversation_response_id=str(uuid.uuid4()),
             conversation_thread_id=thread_id,
             turn_index=0,
@@ -323,11 +322,10 @@ class TestThreadLifecycle:
         assert updated["title"] == "Updated title"
 
     async def test_delete_thread_cascades(
-        self, seed_workspace, patched_get_db_connection
+        self, seed_workspace, patched_get_db_connection, seed_response
     ):
         from src.server.database.conversation import (
             create_query,
-            create_response,
             create_thread,
             delete_thread,
             get_queries_for_thread,
@@ -350,7 +348,7 @@ class TestThreadLifecycle:
             content="Test query",
             query_type="initial",
         )
-        await create_response(
+        await seed_response(
             conversation_response_id=str(uuid.uuid4()),
             conversation_thread_id=thread_id,
             turn_index=0,

@@ -21,8 +21,8 @@ from ptc_agent.config.core import (
 )
 
 
-HANDLER = "src.server.handlers.workflow_handler"
-LLM_HANDLER = "src.server.handlers.chat.llm_config"
+HANDLER = "src.server.handlers.thread_maintenance"
+LLM_HANDLER = "src.server.services.llm.config"
 
 
 def _make_agent_config(compaction_model: str | None = "system-compaction") -> AgentConfig:
@@ -73,11 +73,13 @@ def _stub_resolve_graph_and_state():
     backend = None
     lg_config = {"configurable": {"thread_id": "thread-1"}}
 
-    async def _stub(thread_id, verb, config=None):
+    async def _stub(thread_id, verb, config=None, checkpointer=None):
         _stub.captured_config = config
+        _stub.captured_checkpointer = checkpointer
         return graph, lg_config, state, messages, backend
 
     _stub.captured_config = None
+    _stub.captured_checkpointer = None
     return _stub
 
 
@@ -85,10 +87,51 @@ async def _noop_persist(*args, **kwargs):
     return None
 
 
+RUNNER_GET_INSTANCE = (
+    "src.server.services.thread_mutation.ThreadMutationRunner.get_instance"
+)
+
+
+def _fake_runner(refusal: Exception | None = None, saver=None):
+    """A ThreadMutationRunner stand-in: ``exclusive`` yields an unfenced
+    session (or the given saver), or raises the given refusal. ``held`` /
+    ``released`` record the fence lifecycle."""
+    from contextlib import asynccontextmanager
+
+    from src.server.services.thread_mutation import MutationSession
+
+    runner = MagicMock()
+    runner.held = []
+    runner.released = []
+
+    @asynccontextmanager
+    async def _exclusive(thread_id, verb):
+        if refusal is not None:
+            raise refusal
+        runner.held.append((thread_id, verb))
+        try:
+            yield MutationSession(conn=None, saver=saver)
+        finally:
+            runner.released.append((thread_id, verb))
+
+    runner.exclusive = _exclusive
+    return runner
+
+
+@pytest.fixture(autouse=True)
+def mutation_runner():
+    """Handler tests exercise the compact/offload logic, not the fence: stub
+    the runner with an unfenced pass-through session. Fence tests re-patch
+    ``get_instance`` inside their own with-blocks (the inner patch wins)."""
+    runner = _fake_runner()
+    with patch(RUNNER_GET_INSTANCE, return_value=runner):
+        yield runner
+
+
 @pytest.mark.asyncio
 async def test_manual_compact_uses_user_compaction_model(base_config):
     """When user_id is passed and pref sets compaction_model, that model is used."""
-    from src.server.handlers.workflow_handler import trigger_compaction
+    from src.server.handlers.thread_maintenance import trigger_compaction
 
     stub_resolve = _stub_resolve_graph_and_state()
 
@@ -149,7 +192,7 @@ async def test_manual_compact_uses_user_compaction_model(base_config):
 @pytest.mark.asyncio
 async def test_manual_compact_without_user_id_uses_base_config(base_config):
     """No user_id → no resolve_llm_config call; base YAML compaction model is used."""
-    from src.server.handlers.workflow_handler import trigger_compaction
+    from src.server.handlers.thread_maintenance import trigger_compaction
 
     stub_resolve = _stub_resolve_graph_and_state()
 
@@ -188,7 +231,7 @@ async def test_manual_compact_without_user_id_uses_base_config(base_config):
 @pytest.mark.asyncio
 async def test_resolve_failure_falls_back_to_base_config(base_config):
     """If resolve_llm_config raises, manual /compact logs and falls back cleanly."""
-    from src.server.handlers.workflow_handler import trigger_compaction
+    from src.server.handlers.thread_maintenance import trigger_compaction
 
     stub_resolve = _stub_resolve_graph_and_state()
 
@@ -233,7 +276,7 @@ async def test_manual_compact_forwards_subsidiary_oauth_client(base_config):
     same client the auto path uses), manual /compact must hand it to
     compact_messages rather than re-resolving via the system LLM factory.
     Otherwise users on Codex/Claude OAuth or BYOK get billed wrong or 4xx."""
-    from src.server.handlers.workflow_handler import trigger_compaction
+    from src.server.handlers.thread_maintenance import trigger_compaction
 
     stub_resolve = _stub_resolve_graph_and_state()
 
@@ -295,7 +338,7 @@ async def test_manual_compact_falls_back_to_main_llm_client(base_config):
     """When no compaction-specific subsidiary client is present but the main
     agent has a BYOK/OAuth llm_client, forward that — mirrors the middleware's
     priority order in PTCAgent.create_agent."""
-    from src.server.handlers.workflow_handler import trigger_compaction
+    from src.server.handlers.thread_maintenance import trigger_compaction
 
     stub_resolve = _stub_resolve_graph_and_state()
 
@@ -356,7 +399,7 @@ async def test_manual_compact_copies_llm_client_before_forwarding(base_config):
     mutated and all subsequent chat workflows lose SSE token streaming.
     Mirrors the ``.model_copy()`` pattern in ``PTCAgent.create_agent``.
     """
-    from src.server.handlers.workflow_handler import trigger_compaction
+    from src.server.handlers.thread_maintenance import trigger_compaction
 
     stub_resolve = _stub_resolve_graph_and_state()
 
@@ -397,43 +440,46 @@ async def test_manual_compact_copies_llm_client_before_forwarding(base_config):
 # ---------------------------------------------------------------------------
 
 
-class TestActiveWorkflowGate:
-    """The gate prevents manual /compact and /offload from racing a live chat
-    workflow on the same thread. Two concrete races it closes:
+class TestMutationFence:
+    """trigger_compaction/trigger_offload hold the ThreadMutationRunner
+    exclusive fence (v4 2.4): the runner's ledger gate + exclusive T(thread)
+    lock replaced the old tracker gate and in-memory compaction guard. The
+    handler's job — pinned here — is mapping the runner's refusals onto the
+    HTTP contract the frontend branches on (409 ``workflow_active`` /
+    ``compaction_in_progress`` / ``thread_busy``, 503 on budget exhaustion),
+    holding the fence across the critical section (released even on error or
+    a user Stop), and threading the fence-bound saver into graph building so
+    checkpoint writes die with the lock session."""
 
-    1. _persist_context_window_event's read-modify-write of
-       ``conversation_responses.sse_events`` can clobber events the
-       streaming handler is concurrently appending.
-    2. trigger_compaction / trigger_offload call ``graph.aupdate_state`` on
-       ``_summarization_event`` / ``_offloaded_tool_call_ids`` while the
-       running middleware is writing those same fields via ``Command``.
+    def _compact_result(self):
+        return {
+            "event": {"summary_text": "ok"},
+            "summary_text": "ok",
+            "original_count": 2,
+            "preserved_count": 1,
+            "offloaded_arg_ids": set(),
+            "offloaded_read_ids": set(),
+        }
 
-    Both endpoints return 409 with a structured detail
-    ``{code: "workflow_active", verb, message}`` so the frontend can surface
-    a specific "wait until streaming finishes" banner.
-    """
+    def _conflict(self, code: str, verb: str):
+        from src.server.services.thread_mutation import MutationConflict
 
-    def _tracker(self, status_value):
-        tracker = MagicMock()
-        tracker.get_status = AsyncMock(
-            return_value={"status": status_value} if status_value else None
-        )
-        return tracker
+        return MutationConflict(code, verb, f"refused: {code}")
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("status", ["active", "interrupted"])
-    async def test_compact_rejected_when_workflow_is_running(
-        self, base_config, status
-    ):
-        """Manual /compact must 409 for every non-terminal workflow state so
-        the in-flight workflow can finish its writes cleanly."""
+    @pytest.mark.parametrize(
+        "code", ["workflow_active", "compaction_in_progress", "thread_busy"]
+    )
+    async def test_compact_maps_runner_refusal_to_409(self, base_config, code):
+        """Every MutationConflict — live run on any worker, a rival mutation,
+        or tail writers still holding shared T — surfaces as 409 with the
+        runner's structured detail, before any graph read or LLM call."""
         from fastapi import HTTPException
 
-        from src.server.handlers.workflow_handler import trigger_compaction
+        from src.server.handlers.thread_maintenance import trigger_compaction
 
-        compact_mock = AsyncMock()  # should NEVER be called
+        compact_mock = AsyncMock()  # must NEVER run
         stub_resolve = _stub_resolve_graph_and_state()
-        tracker_instance = self._tracker(status)
 
         with (
             patch("src.server.app.setup.agent_config", base_config),
@@ -443,8 +489,8 @@ class TestActiveWorkflowGate:
                 new=compact_mock,
             ),
             patch(
-                "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-                return_value=tracker_instance,
+                RUNNER_GET_INSTANCE,
+                return_value=_fake_runner(refusal=self._conflict(code, "compact")),
             ),
         ):
             with pytest.raises(HTTPException) as exc_info:
@@ -453,62 +499,18 @@ class TestActiveWorkflowGate:
         assert exc_info.value.status_code == 409
         detail = exc_info.value.detail
         assert isinstance(detail, dict)
-        assert detail["code"] == "workflow_active"
+        assert detail["code"] == code
         assert detail["verb"] == "compact"
-        assert "streaming" in detail["message"].lower()
-        # Crucially: we never reached the graph state read/write or the LLM.
         assert compact_mock.await_count == 0
         assert stub_resolve.captured_config is None
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "status", ["completed", "cancelled", None]
-    )
-    async def test_compact_allowed_when_workflow_is_terminal_or_absent(
-        self, base_config, status
-    ):
-        """completed/cancelled statuses and no-status-in-Redis must NOT block
-        manual /compact — otherwise users could never compact a finished
-        conversation."""
-        from src.server.handlers.workflow_handler import trigger_compaction
-
-        stub_resolve = _stub_resolve_graph_and_state()
-        compact_mock = AsyncMock(
-            return_value={
-                "event": {"summary_text": "ok"},
-                "summary_text": "ok",
-                "original_count": 2,
-                "preserved_count": 1,
-                "offloaded_arg_ids": set(),
-                "offloaded_read_ids": set(),
-            }
-        )
-
-        with (
-            patch("src.server.app.setup.agent_config", base_config),
-            patch(f"{HANDLER}._resolve_graph_and_state", new=stub_resolve),
-            patch(f"{HANDLER}._persist_context_window_event", new=_noop_persist),
-            patch(
-                "ptc_agent.agent.middleware.compaction.compact_messages",
-                new=compact_mock,
-            ),
-            patch(
-                "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-                return_value=self._tracker(status),
-            ),
-        ):
-            await trigger_compaction("thread-1", keep_messages=5)
-
-        assert compact_mock.await_count == 1
-
-    @pytest.mark.asyncio
-    async def test_offload_rejected_when_workflow_is_running(self, base_config):
-        """Same gate applies to /offload — it also writes checkpoint state."""
+    async def test_offload_maps_runner_refusal_to_409(self, base_config):
         from fastapi import HTTPException
 
-        from src.server.handlers.workflow_handler import trigger_offload
+        from src.server.handlers.thread_maintenance import trigger_offload
 
-        offload_mock = AsyncMock()  # should NEVER be called
+        offload_mock = AsyncMock()  # must NEVER run
         stub_resolve = _stub_resolve_graph_and_state()
 
         with (
@@ -519,8 +521,10 @@ class TestActiveWorkflowGate:
                 new=offload_mock,
             ),
             patch(
-                "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-                return_value=self._tracker("active"),
+                RUNNER_GET_INSTANCE,
+                return_value=_fake_runner(
+                    refusal=self._conflict("workflow_active", "offload")
+                ),
             ),
         ):
             with pytest.raises(HTTPException) as exc_info:
@@ -534,243 +538,50 @@ class TestActiveWorkflowGate:
         assert offload_mock.await_count == 0
 
     @pytest.mark.asyncio
-    async def test_offload_fails_closed_when_tracker_disabled(self, base_config):
-        """Redis outage → tracker.enabled=False → /offload (a non-critical
-        optimization) is SKIPPED with 409 rather than writing into a
-        possibly-active turn. Contrast /compact, which fails open."""
+    async def test_compact_maps_budget_exhaustion_to_503(self, base_config):
+        """MutationUnavailable (pinned-session budget) is a bounded retryable
+        503, mirroring WriterGuardUnavailable at the chat boundary."""
         from fastapi import HTTPException
 
-        from src.server.handlers.workflow_handler import trigger_offload
-
-        offload_mock = AsyncMock()  # should NEVER be called
-        stub_resolve = _stub_resolve_graph_and_state()
-
-        tracker = MagicMock()
-        tracker.enabled = False
-        tracker.get_status = AsyncMock(
-            side_effect=AssertionError("get_status must not be called when disabled")
-        )
-
-        with (
-            patch("src.server.app.setup.agent_config", base_config),
-            patch(f"{HANDLER}._resolve_graph_and_state", new=stub_resolve),
-            patch(
-                "ptc_agent.agent.middleware.compaction.offload_tool_args",
-                new=offload_mock,
-            ),
-            patch(
-                "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-                return_value=tracker,
-            ),
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                await trigger_offload("thread-1")
-
-        assert exc_info.value.status_code == 409
-        assert exc_info.value.detail["code"] == "workflow_unverifiable"
-        assert exc_info.value.detail["verb"] == "offload"
-        assert offload_mock.await_count == 0
-
-    @pytest.mark.asyncio
-    async def test_offload_fails_closed_on_transient_tracker_error(self, base_config):
-        """Redis blip mid-request → get_status raises → /offload fails closed
-        (409) instead of running blind."""
-        from fastapi import HTTPException
-
-        from src.server.handlers.workflow_handler import trigger_offload
-
-        offload_mock = AsyncMock()  # should NEVER be called
-        stub_resolve = _stub_resolve_graph_and_state()
-
-        tracker = MagicMock()
-        tracker.enabled = True
-        tracker.get_status = AsyncMock(
-            side_effect=RuntimeError("redis: connection reset")
-        )
-
-        with (
-            patch("src.server.app.setup.agent_config", base_config),
-            patch(f"{HANDLER}._resolve_graph_and_state", new=stub_resolve),
-            patch(
-                "ptc_agent.agent.middleware.compaction.offload_tool_args",
-                new=offload_mock,
-            ),
-            patch(
-                "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-                return_value=tracker,
-            ),
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                await trigger_offload("thread-1")
-
-        assert exc_info.value.status_code == 409
-        assert exc_info.value.detail["code"] == "workflow_unverifiable"
-        assert offload_mock.await_count == 0
-
-    @pytest.mark.asyncio
-    async def test_compact_fails_open_when_tracker_disabled(self, base_config):
-        """Redis outage → tracker.enabled=False → gate bypasses so admin
-        actions stay usable while chat workflows are already degraded."""
-        from src.server.handlers.workflow_handler import trigger_compaction
-
-        stub_resolve = _stub_resolve_graph_and_state()
-        compact_mock = AsyncMock(
-            return_value={
-                "event": {"summary_text": "ok"},
-                "summary_text": "ok",
-                "original_count": 2,
-                "preserved_count": 1,
-                "offloaded_arg_ids": set(),
-                "offloaded_read_ids": set(),
-            }
-        )
-
-        tracker = MagicMock()
-        tracker.enabled = False
-        # If the gate accidentally reads status, this would raise and we'd
-        # want the test to fail loudly rather than pass for the wrong reason.
-        tracker.get_status = AsyncMock(
-            side_effect=AssertionError("get_status must not be called when disabled")
-        )
-
-        with (
-            patch("src.server.app.setup.agent_config", base_config),
-            patch(f"{HANDLER}._resolve_graph_and_state", new=stub_resolve),
-            patch(f"{HANDLER}._persist_context_window_event", new=_noop_persist),
-            patch(
-                "ptc_agent.agent.middleware.compaction.compact_messages",
-                new=compact_mock,
-            ),
-            patch(
-                "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-                return_value=tracker,
-            ),
-        ):
-            await trigger_compaction("thread-1", keep_messages=5)
-
-        assert compact_mock.await_count == 1
-
-    @pytest.mark.asyncio
-    async def test_compact_fails_open_on_transient_tracker_error(self, base_config):
-        """Redis blip mid-request → get_status raises → gate fails open with
-        a warning instead of surfacing HTTP 500 via the broad except."""
-        from src.server.handlers.workflow_handler import trigger_compaction
-
-        stub_resolve = _stub_resolve_graph_and_state()
-        compact_mock = AsyncMock(
-            return_value={
-                "event": {"summary_text": "ok"},
-                "summary_text": "ok",
-                "original_count": 2,
-                "preserved_count": 1,
-                "offloaded_arg_ids": set(),
-                "offloaded_read_ids": set(),
-            }
-        )
-
-        tracker = MagicMock()
-        tracker.enabled = True
-        tracker.get_status = AsyncMock(
-            side_effect=RuntimeError("redis: connection reset")
-        )
-
-        with (
-            patch("src.server.app.setup.agent_config", base_config),
-            patch(f"{HANDLER}._resolve_graph_and_state", new=stub_resolve),
-            patch(f"{HANDLER}._persist_context_window_event", new=_noop_persist),
-            patch(
-                "ptc_agent.agent.middleware.compaction.compact_messages",
-                new=compact_mock,
-            ),
-            patch(
-                "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-                return_value=tracker,
-            ),
-        ):
-            await trigger_compaction("thread-1", keep_messages=5)
-
-        assert compact_mock.await_count == 1
-
-
-BTM_GET_INSTANCE = (
-    "src.server.services.background_task_manager."
-    "BackgroundTaskManager.get_instance"
-)
-
-
-class TestManualCompactionGuard:
-    """begin_compaction/end_compaction wrap the manual /compact and /offload
-    critical sections so a concurrent message POST waits the compaction out
-    (admission gate), and a second concurrent compaction is rejected with 409
-    ``compaction_in_progress`` rather than clobbering the first (manual-vs-
-    manual race). The guard is always released in a finally, even on error."""
-
-    def _passing_tracker(self):
-        """A tracker that lets the workflow-active gate pass (no live turn)."""
-        tracker = MagicMock()
-        tracker.enabled = True
-        tracker.get_status = AsyncMock(return_value=None)
-        return tracker
-
-    def _manager(self, begin_returns: bool):
-        manager = MagicMock()
-        manager.begin_compaction = MagicMock(return_value=begin_returns)
-        manager.end_compaction = MagicMock()
-        return manager
-
-    @pytest.mark.asyncio
-    async def test_compact_rejected_when_another_compaction_active(self, base_config):
-        """begin_compaction → False (a window is already open) ⇒ 409 and the
-        critical section never runs; we must NOT close the other window."""
-        from fastapi import HTTPException
-
-        from src.server.handlers.workflow_handler import trigger_compaction
+        from src.server.handlers.thread_maintenance import trigger_compaction
+        from src.server.services.thread_mutation import MutationUnavailable
 
         compact_mock = AsyncMock()  # must NEVER run
-        stub_resolve = _stub_resolve_graph_and_state()
-        manager = self._manager(begin_returns=False)
 
         with (
             patch("src.server.app.setup.agent_config", base_config),
-            patch(f"{HANDLER}._resolve_graph_and_state", new=stub_resolve),
+            patch(
+                f"{HANDLER}._resolve_graph_and_state",
+                new=_stub_resolve_graph_and_state(),
+            ),
             patch(
                 "ptc_agent.agent.middleware.compaction.compact_messages",
                 new=compact_mock,
             ),
             patch(
-                "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-                return_value=self._passing_tracker(),
+                RUNNER_GET_INSTANCE,
+                return_value=_fake_runner(
+                    refusal=MutationUnavailable("budget exhausted")
+                ),
             ),
-            patch(BTM_GET_INSTANCE, return_value=manager),
         ):
             with pytest.raises(HTTPException) as exc_info:
                 await trigger_compaction("thread-1", keep_messages=5)
 
-        assert exc_info.value.status_code == 409
-        detail = exc_info.value.detail
-        assert isinstance(detail, dict)
-        assert detail["code"] == "compaction_in_progress"
-        assert detail["verb"] == "compact"
+        assert exc_info.value.status_code == 503
         assert compact_mock.await_count == 0
-        assert stub_resolve.captured_config is None
-        manager.end_compaction.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_compact_releases_guard_on_success(self, base_config):
-        from src.server.handlers.workflow_handler import trigger_compaction
+    async def test_compact_holds_fence_and_threads_fence_saver(self, base_config):
+        """The critical section runs inside the fence (held+released exactly
+        once) and graph building receives the fence-bound saver, not the
+        global pooled one."""
+        from src.server.handlers.thread_maintenance import trigger_compaction
 
+        fence_saver = object()
+        runner = _fake_runner(saver=fence_saver)
         stub_resolve = _stub_resolve_graph_and_state()
-        compact_mock = AsyncMock(
-            return_value={
-                "event": {"summary_text": "ok"},
-                "summary_text": "ok",
-                "original_count": 2,
-                "preserved_count": 1,
-                "offloaded_arg_ids": set(),
-                "offloaded_read_ids": set(),
-            }
-        )
-        manager = self._manager(begin_returns=True)
+        compact_mock = AsyncMock(return_value=self._compact_result())
 
         with (
             patch("src.server.app.setup.agent_config", base_config),
@@ -780,126 +591,104 @@ class TestManualCompactionGuard:
                 "ptc_agent.agent.middleware.compaction.compact_messages",
                 new=compact_mock,
             ),
-            patch(
-                "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-                return_value=self._passing_tracker(),
-            ),
-            patch(BTM_GET_INSTANCE, return_value=manager),
+            patch(RUNNER_GET_INSTANCE, return_value=runner),
         ):
             await trigger_compaction("thread-1", keep_messages=5)
 
-        manager.begin_compaction.assert_called_once_with("thread-1")
-        manager.end_compaction.assert_called_once_with("thread-1")
+        assert runner.held == [("thread-1", "compact")]
+        assert runner.released == [("thread-1", "compact")]
+        assert stub_resolve.captured_checkpointer is fence_saver
 
     @pytest.mark.asyncio
-    async def test_compact_registers_and_clears_task(self, base_config):
-        """The request task is registered so a user Stop can cancel the in-flight
-        summarize, and cleared in finally so a later Stop can't hit a dead task."""
-        import asyncio
+    async def test_offload_threads_fence_saver(self, base_config):
+        from src.server.handlers.thread_maintenance import trigger_offload
 
-        from src.server.handlers.workflow_handler import trigger_compaction
-
+        fence_saver = object()
+        runner = _fake_runner(saver=fence_saver)
         stub_resolve = _stub_resolve_graph_and_state()
-        compact_mock = AsyncMock(
+        offload_mock = AsyncMock(
             return_value={
-                "event": {"summary_text": "ok"},
-                "summary_text": "ok",
+                "offloaded_args": 0,
+                "offloaded_reads": 0,
+                "messages": [],
                 "original_count": 2,
-                "preserved_count": 1,
-                "offloaded_arg_ids": set(),
-                "offloaded_read_ids": set(),
             }
         )
-        manager = self._manager(begin_returns=True)
-        manager.set_compaction_task = MagicMock()
-        manager.clear_compaction_task = MagicMock()
 
         with (
             patch("src.server.app.setup.agent_config", base_config),
             patch(f"{HANDLER}._resolve_graph_and_state", new=stub_resolve),
             patch(f"{HANDLER}._persist_context_window_event", new=_noop_persist),
             patch(
-                "ptc_agent.agent.middleware.compaction.compact_messages",
-                new=compact_mock,
+                "ptc_agent.agent.middleware.compaction.offload_tool_args",
+                new=offload_mock,
             ),
-            patch(
-                "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-                return_value=self._passing_tracker(),
-            ),
-            patch(BTM_GET_INSTANCE, return_value=manager),
+            patch(RUNNER_GET_INSTANCE, return_value=runner),
         ):
-            await trigger_compaction("thread-1", keep_messages=5)
+            await trigger_offload("thread-1")
 
-        assert manager.set_compaction_task.call_count == 1
-        args = manager.set_compaction_task.call_args.args
-        assert args[0] == "thread-1"
-        assert isinstance(args[1], asyncio.Task)
-        manager.clear_compaction_task.assert_called_once_with("thread-1")
+        assert runner.held == [("thread-1", "offload")]
+        assert runner.released == [("thread-1", "offload")]
+        assert stub_resolve.captured_checkpointer is fence_saver
 
     @pytest.mark.asyncio
-    async def test_compact_releases_guard_on_error(self, base_config):
-        """A failure inside the critical section still releases the guard via
-        finally, so a queued POST is not blocked forever."""
+    async def test_compact_releases_fence_on_error(self, base_config):
+        """A failure inside the critical section still releases the fence, so
+        a queued POST is not blocked past the runner's own cleanup."""
         from fastapi import HTTPException
 
-        from src.server.handlers.workflow_handler import trigger_compaction
+        from src.server.handlers.thread_maintenance import trigger_compaction
 
-        stub_resolve = _stub_resolve_graph_and_state()
+        runner = _fake_runner()
         compact_mock = AsyncMock(side_effect=RuntimeError("boom"))
-        manager = self._manager(begin_returns=True)
 
         with (
             patch("src.server.app.setup.agent_config", base_config),
-            patch(f"{HANDLER}._resolve_graph_and_state", new=stub_resolve),
+            patch(
+                f"{HANDLER}._resolve_graph_and_state",
+                new=_stub_resolve_graph_and_state(),
+            ),
             patch(f"{HANDLER}._persist_context_window_event", new=_noop_persist),
             patch(
                 "ptc_agent.agent.middleware.compaction.compact_messages",
                 new=compact_mock,
             ),
-            patch(
-                "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-                return_value=self._passing_tracker(),
-            ),
-            patch(BTM_GET_INSTANCE, return_value=manager),
+            patch(RUNNER_GET_INSTANCE, return_value=runner),
         ):
             with pytest.raises(HTTPException) as exc_info:
                 await trigger_compaction("thread-1", keep_messages=5)
 
         assert exc_info.value.status_code == 500
-        manager.end_compaction.assert_called_once_with("thread-1")
+        assert runner.released == [("thread-1", "compact")]
 
     @pytest.mark.asyncio
     async def test_compact_cancelled_surfaces_clean_http(self, base_config):
-        """A user Stop (/cancel → cancel_compaction) cancels this request task,
-        often mid summarize-LLM call or mid sandbox-session start.
-        ``CancelledError`` is a BaseException, so without handling it bubbles to
-        ASGI as a raw 500 with no JSON detail — which the frontend mislabels as
-        "Context compaction failed". The shared ``cancellation_as_http`` wrapper
-        converts it to a clean 409 ``request_cancelled`` so the stop reports
-        honestly; the guard must still be released via finally."""
+        """A user Stop (/cancel → runner.request_stop) cancels this request
+        task, often mid summarize-LLM call. ``CancelledError`` is a
+        BaseException, so without handling it bubbles to ASGI as a raw 500 —
+        the shared ``cancellation_as_http`` wrapper converts it to a clean
+        409 ``request_cancelled``; the fence must still be released."""
         import asyncio
 
         from fastapi import HTTPException
 
-        from src.server.handlers.workflow_handler import trigger_compaction
+        from src.server.handlers.thread_maintenance import trigger_compaction
 
-        stub_resolve = _stub_resolve_graph_and_state()
+        runner = _fake_runner()
         compact_mock = AsyncMock(side_effect=asyncio.CancelledError())
-        manager = self._manager(begin_returns=True)
 
         with (
             patch("src.server.app.setup.agent_config", base_config),
-            patch(f"{HANDLER}._resolve_graph_and_state", new=stub_resolve),
+            patch(
+                f"{HANDLER}._resolve_graph_and_state",
+                new=_stub_resolve_graph_and_state(),
+            ),
             patch(f"{HANDLER}._persist_context_window_event", new=_noop_persist),
             patch(
                 "ptc_agent.agent.middleware.compaction.compact_messages",
                 new=compact_mock,
             ),
-            patch(
-                "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-                return_value=self._passing_tracker(),
-            ),
-            patch(BTM_GET_INSTANCE, return_value=manager),
+            patch(RUNNER_GET_INSTANCE, return_value=runner),
         ):
             with pytest.raises(HTTPException) as exc_info:
                 await trigger_compaction("thread-1", keep_messages=5)
@@ -909,70 +698,32 @@ class TestManualCompactionGuard:
         assert isinstance(detail, dict)
         assert detail["code"] == "request_cancelled"
         assert detail["verb"] == "compact"
-        manager.end_compaction.assert_called_once_with("thread-1")
-
-    @pytest.mark.asyncio
-    async def test_offload_rejected_when_another_compaction_active(self, base_config):
-        from fastapi import HTTPException
-
-        from src.server.handlers.workflow_handler import trigger_offload
-
-        offload_mock = AsyncMock()  # must NEVER run
-        stub_resolve = _stub_resolve_graph_and_state()
-        manager = self._manager(begin_returns=False)
-
-        with (
-            patch("src.server.app.setup.agent_config", base_config),
-            patch(f"{HANDLER}._resolve_graph_and_state", new=stub_resolve),
-            patch(
-                "ptc_agent.agent.middleware.compaction.offload_tool_args",
-                new=offload_mock,
-            ),
-            patch(
-                "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-                return_value=self._passing_tracker(),
-            ),
-            patch(BTM_GET_INSTANCE, return_value=manager),
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                await trigger_offload("thread-1")
-
-        assert exc_info.value.status_code == 409
-        detail = exc_info.value.detail
-        assert isinstance(detail, dict)
-        assert detail["code"] == "compaction_in_progress"
-        assert detail["verb"] == "offload"
-        assert offload_mock.await_count == 0
-        manager.end_compaction.assert_not_called()
+        assert runner.released == [("thread-1", "compact")]
 
     @pytest.mark.asyncio
     async def test_offload_cancelled_surfaces_clean_http(self, base_config):
-        """Same as the compact case: a user Stop mid-offload must surface a
-        clean 409 ``request_cancelled`` rather than letting CancelledError
-        escape as a raw ASGI 500, and the guard is still released."""
+        """Same as the compact case for /offload."""
         import asyncio
 
         from fastapi import HTTPException
 
-        from src.server.handlers.workflow_handler import trigger_offload
+        from src.server.handlers.thread_maintenance import trigger_offload
 
-        stub_resolve = _stub_resolve_graph_and_state()
+        runner = _fake_runner()
         offload_mock = AsyncMock(side_effect=asyncio.CancelledError())
-        manager = self._manager(begin_returns=True)
 
         with (
             patch("src.server.app.setup.agent_config", base_config),
-            patch(f"{HANDLER}._resolve_graph_and_state", new=stub_resolve),
+            patch(
+                f"{HANDLER}._resolve_graph_and_state",
+                new=_stub_resolve_graph_and_state(),
+            ),
             patch(f"{HANDLER}._persist_context_window_event", new=_noop_persist),
             patch(
                 "ptc_agent.agent.middleware.compaction.offload_tool_args",
                 new=offload_mock,
             ),
-            patch(
-                "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-                return_value=self._passing_tracker(),
-            ),
-            patch(BTM_GET_INSTANCE, return_value=manager),
+            patch(RUNNER_GET_INSTANCE, return_value=runner),
         ):
             with pytest.raises(HTTPException) as exc_info:
                 await trigger_offload("thread-1")
@@ -982,4 +733,4 @@ class TestManualCompactionGuard:
         assert isinstance(detail, dict)
         assert detail["code"] == "request_cancelled"
         assert detail["verb"] == "offload"
-        manager.end_compaction.assert_called_once_with("thread-1")
+        assert runner.released == [("thread-1", "offload")]

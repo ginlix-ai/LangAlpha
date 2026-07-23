@@ -27,20 +27,10 @@ class TestPackagePublicAPI:
 
         assert callable(astream_ptc_workflow)
 
-    def test_import_resolve_llm_config(self):
-        from src.server.handlers.chat import resolve_llm_config
-
-        assert callable(resolve_llm_config)
-
     def test_import_reconnect_to_workflow_stream(self):
         from src.server.handlers.chat import reconnect_to_workflow_stream
 
         assert callable(reconnect_to_workflow_stream)
-
-    def test_import_stream_subagent_task_events(self):
-        from src.server.handlers.chat import stream_subagent_task_events
-
-        assert callable(stream_subagent_task_events)
 
     def test_import_steer_subagent(self):
         from src.server.handlers.chat import steer_subagent
@@ -55,8 +45,6 @@ class TestPackagePublicAPI:
             "astream_ptc_workflow",
             "steer_subagent",
             "reconnect_to_workflow_stream",
-            "resolve_llm_config",
-            "stream_subagent_task_events",
         }
         assert set(pkg.__all__) == expected
 
@@ -64,29 +52,31 @@ class TestPackagePublicAPI:
 class TestSubmoduleImports:
     """Internal modules can be imported directly without errors."""
 
-    def test_import_common(self):
-        import src.server.handlers.chat._common as mod
+    def test_import_request_prep(self):
+        import src.server.handlers.chat.request_prep as mod
 
-        assert hasattr(mod, "classify_error")
         assert hasattr(mod, "process_hitl_response")
         assert hasattr(mod, "normalize_request_messages")
         assert hasattr(mod, "init_tracking")
         assert hasattr(mod, "apply_fetch_override")
         assert hasattr(mod, "ensure_thread")
-        assert hasattr(mod, "persist_or_skip_replay")
         assert hasattr(mod, "prepare_skill_contexts")
         assert hasattr(mod, "build_graph_config")
-        assert hasattr(mod, "wait_or_steer")
-        assert hasattr(mod, "handle_workflow_error")
         assert hasattr(mod, "serialize_context_metadata")
         assert hasattr(mod, "setup_steering_tracking")
 
-    def test_import_llm_config(self):
-        import src.server.handlers.chat.llm_config as mod
+    def test_import_admission(self):
+        import src.server.handlers.chat.admission_gate as mod
 
-        assert hasattr(mod, "resolve_llm_config")
-        assert hasattr(mod, "resolve_byok_llm_client")
-        assert hasattr(mod, "resolve_oauth_llm_client")
+        assert hasattr(mod, "ADMISSION_CONFLICT_CODES")
+        assert hasattr(mod, "admission_conflict_detail")
+        assert hasattr(mod, "wait_or_steer")
+
+    def test_import_error_handling(self):
+        import src.server.handlers.chat.error_handling as mod
+
+        assert hasattr(mod, "classify_error")
+        assert hasattr(mod, "handle_workflow_error")
 
     def test_import_steering(self):
         import src.server.handlers.chat.steering as mod
@@ -94,23 +84,21 @@ class TestSubmoduleImports:
         assert hasattr(mod, "steer_thread")
         assert hasattr(mod, "steer_subagent")
         assert hasattr(mod, "drain_pending_steerings")
-        assert hasattr(mod, "backfill_steering_queries")
 
     def test_import_flash_workflow(self):
-        import src.server.handlers.chat.flash_workflow as mod
+        import src.server.handlers.chat.flash_run as mod
 
         assert hasattr(mod, "astream_flash_workflow")
 
     def test_import_ptc_workflow(self):
-        import src.server.handlers.chat.ptc_workflow as mod
+        import src.server.handlers.chat.ptc_run as mod
 
         assert hasattr(mod, "astream_ptc_workflow")
 
-    def test_import_stream_reconnect(self):
-        import src.server.handlers.chat.stream_reconnect as mod
+    def test_import_reconnect_admission(self):
+        import src.server.handlers.chat.reconnect_admission as mod
 
         assert hasattr(mod, "reconnect_to_workflow_stream")
-        assert hasattr(mod, "stream_subagent_task_events")
 
 
 class TestNoCircularImports:
@@ -141,8 +129,8 @@ class TestNoCircularImports:
 class TestLoggerName:
     """Logger name is preserved for backward compatibility."""
 
-    def test_common_logger_name(self):
-        from src.server.handlers.chat._common import logger
+    def test_request_prep_logger_name(self):
+        from src.server.handlers.chat.request_prep import logger
 
         assert logger.name == "src.server.handlers.chat_handler"
 

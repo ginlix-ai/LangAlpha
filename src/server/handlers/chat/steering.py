@@ -1,70 +1,23 @@
 """Redis steering utilities for chat workflows.
 
-Handles queuing, draining, and backfilling of user steering messages that arrive
+Handles queuing and draining of user steering messages that arrive
 while a workflow is already running. Messages are stored in Redis and consumed by
 SteeringMiddleware (main agent) or SubagentSteeringMiddleware (subagents).
 """
 
+import logging
 import json
 import time
-from uuid import uuid4
+import uuid
 
 from fastapi import HTTPException
 
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.config.settings import get_redis_ttl_steering
 
-from ._common import logger
+# Same hard-coded logger name request_prep uses — existing log routing keys off it.
+logger = logging.getLogger("src.server.handlers.chat_handler")
 
-
-async def backfill_steering_queries(
-    thread_id: str, steering_messages: list[dict]
-) -> None:
-    """Backfill query records for steering messages that produced orphan responses.
-
-    After a workflow completes, responses may exist at turn indices that have no
-    matching query (because the user message was injected mid-workflow via
-    SteeringMiddleware rather than arriving as a normal HTTP request).
-    This function finds those orphan response turns and creates query records.
-    """
-    if not steering_messages:
-        return
-
-    from src.server.database.conversation import (
-        create_query,
-        get_queries_for_thread,
-        get_responses_for_thread,
-    )
-
-    try:
-        queries, _ = await get_queries_for_thread(thread_id)
-        responses, _ = await get_responses_for_thread(thread_id)
-
-        query_turns = {q["turn_index"] for q in queries}
-        response_turns = {r["turn_index"] for r in responses}
-        orphan_turns = sorted(response_turns - query_turns)
-
-        if not orphan_turns:
-            return
-
-        # Match orphan turns with steering messages (FIFO order)
-        for turn_index, msg in zip(orphan_turns, steering_messages):
-            content = msg.get("content", "")
-            if not content:
-                continue
-            await create_query(
-                conversation_query_id=str(uuid4()),
-                conversation_thread_id=thread_id,
-                turn_index=turn_index,
-                content=content,
-                query_type="steering",
-            )
-            logger.info(
-                f"[CHAT] Backfilled steering query: thread_id={thread_id} "
-                f"turn_index={turn_index}"
-            )
-    except Exception as e:
-        logger.error(f"[CHAT] Failed to backfill steering queries: {e}")
 
 
 async def drain_steering_return_event(thread_id: str) -> str | None:
@@ -129,7 +82,7 @@ async def drain_pending_steerings(thread_id: str) -> list[dict] | None:
 
 
 async def steer_thread(
-    thread_id: str, content: str, user_id: str
+    thread_id: str, content: str, user_id: str, run_id: str | None = None
 ) -> dict | None:
     """Steer a running workflow by injecting a user message via Redis.
 
@@ -139,6 +92,11 @@ async def steer_thread(
         thread_id: The thread with an active workflow
         content: The user's message text
         user_id: User identifier
+        run_id: The live run this steer targets (v4 2.4c). The consuming
+            middleware delivers only payloads stamped with its own run (or
+            legacy unstamped ones), so a message steered into a run that
+            died un-drained is returned by the next turn's end-of-run drain
+            instead of leaking into its context. None = unstamped.
 
     Returns:
         Dict with queue position and the exact queued payload (for a
@@ -153,9 +111,10 @@ async def steer_thread(
 
     try:
         key = f"workflow:steering:{thread_id}"
-        message = json.dumps(
-            {"content": content, "user_id": user_id, "timestamp": time.time()}
-        )
+        payload = {"content": content, "user_id": user_id, "timestamp": time.time()}
+        if run_id is not None:
+            payload["run_id"] = run_id
+        message = json.dumps(payload)
         pipe = cache.client.pipeline()
         pipe.rpush(key, message)
         pipe.llen(key)
@@ -195,6 +154,50 @@ async def unsteer_thread(thread_id: str, payload: str) -> bool:
         return False
 
 
+async def _steering_identity_from_ledger(
+    thread_id: str, task_id: str
+) -> tuple[str, str]:
+    """(tool_call_id, expected_task_run_id) for a live run whose Redis meta
+    has lapsed.
+
+    The queue key the writer drains is keyed by its registry identity — the
+    ORIGINAL tool_call_id, constant across resumes — which the chain's init
+    run recorded as its launch call. Raises 409 for a terminal chain, 404
+    when the ledger knows nothing (pre-ledger or unstamped tasks included:
+    without a routing identity there is no queue to publish to).
+    """
+    from src.server.database.runs import subagent_runs as sr_db
+
+    active = await sr_db.get_active_task_run(thread_id, task_id)
+    if active is None:
+        statuses = await sr_db.get_latest_run_statuses(thread_id, [task_id])
+        status = statuses.get(task_id)
+        if status:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Task-{task_id} has already {status}",
+            )
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task-{task_id} not found in thread {thread_id}",
+        )
+    chain = await sr_db.list_task_runs(thread_id, task_id)
+    init_call = next(
+        (
+            r["launch_tool_call_id"]
+            for r in chain
+            if r.get("cause") == "init" and r.get("launch_tool_call_id")
+        ),
+        None,
+    )
+    if not init_call:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task-{task_id} not found in thread {thread_id}",
+        )
+    return str(init_call), str(active["task_run_id"])
+
+
 async def steer_subagent(
     thread_id: str,
     task_id: str,
@@ -216,32 +219,58 @@ async def steer_subagent(
     """
     from src.utils.cache.redis_cache import get_cache_client
 
-    # 1. Look up the registry for this thread
+    # 1. Resolve the target: local registry first (this worker owns the
+    # writer), else the cross-worker Redis task meta (v4 2.4e) — the consume
+    # side (SubagentSteeringMiddleware) reads the steering list from Redis,
+    # so delivery already works across workers once the target resolves.
     registry_store = BackgroundRegistryStore.get_instance()
     registry = await registry_store.get_registry(thread_id)
-    if registry is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No active workflow for thread {thread_id}",
+    task = await registry.get_by_task_id(task_id) if registry else None
+
+    # A registry entry without a LIVE local writer is history: a hydrated
+    # shadow of another worker's task, or a settled local task whose
+    # namespace a later turn on another worker may since have re-acquired.
+    # Neither tracks what the real writer did next, so the fresh Redis meta
+    # (not the local object) is the authority.
+    if task is not None and (
+        task.asyncio_task is None or task.asyncio_task.done()
+    ):
+        task = None
+
+    if task is not None:
+        # 2a. Local task: reject if already completed or cancelled
+        if task.completed or task.cancelled:
+            status = "cancelled" if task.cancelled else "completed"
+            raise HTTPException(
+                status_code=409,
+                detail=f"Task-{task_id} has already {status}",
+            )
+        tool_call_id = task.tool_call_id
+        expected_task_run_id = task.task_run_id
+    else:
+        # 2b. Foreign or lost task: the meta hash carries routing identity
+        # (tool_call_id) and writer liveness.
+        from ptc_agent.agent.middleware.background_subagent.redis_stream import (
+            read_task_meta,
         )
 
-    # 2. Look up the task by ID
-    task = await registry.get_by_task_id(task_id)
-    if task is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Task-{task_id} not found in thread {thread_id}",
-        )
+        meta = await read_task_meta(thread_id, task_id)
+        if meta is not None and meta.get("tool_call_id"):
+            if meta.get("status") != "running":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Task-{task_id} has already {meta.get('status')}",
+                )
+            tool_call_id = meta["tool_call_id"]
+            expected_task_run_id = meta.get("task_run_id") or None
+        else:
+            # 2c. Meta lapsed (TTL, flush): the durable ledger can still
+            # name a live run — don't 404 a task that is provably running.
+            tool_call_id, expected_task_run_id = (
+                await _steering_identity_from_ledger(thread_id, task_id)
+            )
 
-    # 3. Reject if already completed or cancelled
-    if task.completed or task.cancelled:
-        status = "cancelled" if task.cancelled else "completed"
-        raise HTTPException(
-            status_code=409,
-            detail=f"Task-{task_id} has already {status}",
-        )
-
-    # 4. Queue to Redis (same pattern as _queue_followup_to_redis)
+    # 3. Queue to Redis (same pattern as _queue_followup_to_redis)
     cache = get_cache_client()
     if not cache.enabled or not cache.client:
         raise HTTPException(
@@ -250,8 +279,19 @@ async def steer_subagent(
         )
 
     try:
-        key = f"subagent:steering:{task.tool_call_id}"
-        payload = json.dumps(content)
+        from ptc_agent.agent.middleware.background_subagent.redis_stream import (
+            steering_queue_key,
+        )
+
+        input_id = uuid.uuid4().hex
+        key = steering_queue_key(tool_call_id, expected_task_run_id)
+        payload = json.dumps(
+            {
+                "content": content,
+                "expected_task_run_id": expected_task_run_id,
+                "input_id": input_id,
+            }
+        )
         pipe = cache.client.pipeline()
         pipe.rpush(key, payload)
         pipe.llen(key)
@@ -259,16 +299,61 @@ async def steer_subagent(
         results = await pipe.execute()
         position = results[1]
 
+        # Push-then-verify (accept/sweep arbitration): the owner's terminal
+        # sweep drains this queue exactly once, ordered AFTER its terminal
+        # meta and ledger writes. A liveness read issued AFTER our push that
+        # still shows this run "running" proves the sweep is still ahead of
+        # our entry; anything else means it may already be behind us — so
+        # reclaim the entry and refuse instead of acknowledging input
+        # nobody will ever read.
+        from ptc_agent.agent.middleware.background_subagent.redis_stream import (
+            read_task_meta as _read_meta,
+        )
+
+        try:
+            recheck = await _read_meta(thread_id, task_id)
+            if recheck is not None:
+                still_live = recheck.get("status") == "running" and (
+                    not expected_task_run_id
+                    or (recheck.get("task_run_id") or None)
+                    == expected_task_run_id
+                )
+            else:
+                from src.server.database.runs import subagent_runs as sr_db
+
+                row = await sr_db.get_active_task_run(thread_id, task_id)
+                still_live = row is not None and (
+                    not expected_task_run_id
+                    or str(row["task_run_id"]) == expected_task_run_id
+                )
+        except Exception:
+            # The arbitration is best-effort: an unreadable authority keeps
+            # the pre-push admission rather than failing an accepted input.
+            still_live = True
+        if not still_live:
+            await cache.client.lrem(key, 0, payload)
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Task-{task_id} finished before the message could be "
+                    "delivered"
+                ),
+            )
+
         logger.info(
             f"[SUBAGENT_MSG] Steering for subagent: "
-            f"thread_id={thread_id} task={task.display_id} position={position}"
+            f"thread_id={thread_id} task=Task-{task_id} position={position}"
+            f"{' (via task meta)' if task is None else ''}"
         )
         return {
             "success": True,
-            "tool_call_id": task.tool_call_id,
-            "display_id": task.display_id,
+            "tool_call_id": tool_call_id,
+            "display_id": f"Task-{task_id}",
             "queue_position": position,
+            "input_id": input_id,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[SUBAGENT_MSG] Failed to steer subagent: {e}")
         raise HTTPException(

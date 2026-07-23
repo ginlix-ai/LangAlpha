@@ -104,7 +104,7 @@ async def _invalidate_mcp_for_secret(
         )
 
         from src.server.database import mcp_servers as mcp_db
-        from src.server.handlers.chat.mcp_config import workspace_row_to_server_config
+        from src.server.services.mcp_config import workspace_row_to_server_config
 
         referencing: list[dict] = []
         for row in await mcp_db.list_workspace_servers(workspace_id):

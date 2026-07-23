@@ -25,3 +25,16 @@ export function decodeReportBackSignal(raw: boolean | null | undefined): ReportB
  */
 export const shouldArmReportBack = (s: ReportBackSignal): boolean =>
   s === 'pending' || s === 'unknown';
+
+/**
+ * Arm-on-status predicate, shared by the load path and the watch's reactivation
+ * path so the two can't drift. Live tail subagents arm too: their report-backs
+ * haven't materialized yet, so pendingness alone under-reports (producer-undecided).
+ * Typed structurally to keep this module dependency-free.
+ */
+export const shouldArmForStatus = (status: {
+  pending_report_back?: boolean | null;
+  active_tasks?: string[] | null;
+}): boolean =>
+  shouldArmReportBack(decodeReportBackSignal(status.pending_report_back)) ||
+  (status.active_tasks?.length ?? 0) > 0;

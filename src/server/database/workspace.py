@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from psycopg.rows import dict_row
 
-from src.server.database.conversation import get_db_connection
+from src.server.database.pool import get_db_connection
 from src.server.services.workspace_status_pubsub import publish_status_change
 from src.server.utils.pg_sanitize import normalize_uuid
 
@@ -442,7 +442,8 @@ async def update_workspace_status(
 
         if result:
             logger.debug(f"Updated workspace {workspace_id} status to: {status}")
-            # Best-effort cross-worker notification — wakes any
+            # TODO(layering): services-tier pub/sub called from the database
+            # tier. Best-effort cross-worker notification — wakes any
             # _wait_for_start_completion loop and any /events SSE
             # subscribers in milliseconds. Swallows on failure.
             await publish_status_change(workspace_id, status)

@@ -5,9 +5,9 @@ Covers:
   subagents can't get claimed by a later turn's collector.
 - A7: ``_await_drain_and_cleanup_tasks`` evicts collected tasks from the
   per-thread registry so the dict doesn't grow unboundedly across turns.
-- A8: The claim loop in ``_mark_completed`` holds ``bg_registry._lock``
-  so two concurrent collectors can't both observe ``collector_response_id``
-  is ``None`` for the same task and double-claim.
+- A8: The claim loop in ``_finalize_run`` (``_spawn_subagent_collector``) holds
+  ``bg_registry._lock`` so two concurrent collectors can't both observe
+  ``collector_response_id`` is ``None`` for the same task and double-claim.
 - A4: The legacy-fallback ``stream_from_log`` path polls WorkflowTracker
   instead of exiting eagerly, so a rolling-deploy reconnect can still
   drain in-flight events.
@@ -25,23 +25,25 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTask,
     BackgroundTaskRegistry,
 )
-from src.server.services.background_task_manager import (
-    BackgroundTaskManager,
-    TaskInfo,
-    TaskStatus,
+from src.server.services.runs.executor import (
+    LocalRunExecutor,
+    LocalRunExecution,
+    LocalRunStatus,
 )
 
+REGISTRY_STORE_MOD = "src.server.services.background_registry_store"
 
-def _make_btm() -> BackgroundTaskManager:
-    with patch("src.server.services.background_task_manager.get_max_concurrent_workflows", return_value=10), \
-         patch("src.server.services.background_task_manager.get_workflow_result_ttl", return_value=3600), \
-         patch("src.server.services.background_task_manager.get_abandoned_workflow_timeout", return_value=3600), \
-         patch("src.server.services.background_task_manager.get_cleanup_interval", return_value=60), \
-         patch("src.server.services.background_task_manager.is_intermediate_storage_enabled", return_value=False), \
-         patch("src.server.services.background_task_manager.get_max_stored_messages_per_agent", return_value=1000), \
-         patch("src.server.services.background_task_manager.get_event_storage_backend", return_value="memory"), \
-         patch("src.server.services.background_task_manager.get_redis_ttl_workflow_events", return_value=86400):
-        return BackgroundTaskManager()
+
+def _make_btm() -> LocalRunExecutor:
+    with patch("src.server.services.runs.executor.get_max_concurrent_workflows", return_value=10), \
+         patch("src.server.services.runs.executor.get_workflow_result_ttl", return_value=3600), \
+         patch("src.server.services.runs.executor.get_abandoned_workflow_timeout", return_value=3600), \
+         patch("src.server.services.runs.executor.get_cleanup_interval", return_value=60), \
+         patch("src.server.services.runs.executor.is_intermediate_storage_enabled", return_value=False), \
+         patch("src.server.services.runs.executor.get_max_stored_messages_per_agent", return_value=1000), \
+         patch("src.server.services.runs.executor.get_event_storage_backend", return_value="memory"), \
+         patch("src.server.services.runs.executor.get_redis_ttl_workflow_events", return_value=86400):
+        return LocalRunExecutor()
 
 
 def _make_subagent_task(
@@ -75,15 +77,15 @@ class TestCollectorFiltersBySpawnedRunId:
         collector runs. Prevents the cross-turn event leak."""
         btm = _make_btm()
 
-        # run-2 is the turn whose _mark_completed we are simulating.
+        # run-2 is the turn whose _finalize_run we are simulating.
         run_id_current = "run-2"
         thread_id = "thread-A"
 
         # The current turn is in-flight in BTM
-        btm.tasks[(thread_id, run_id_current)] = TaskInfo(
+        btm.executions[(thread_id, run_id_current)] = LocalRunExecution(
             thread_id=thread_id,
             run_id=run_id_current,
-            status=TaskStatus.RUNNING,
+            status=LocalRunStatus.RUNNING,
             created_at=datetime.now(),
             metadata={"workspace_id": "ws-1", "user_id": "u-1"},
         )
@@ -104,17 +106,17 @@ class TestCollectorFiltersBySpawnedRunId:
         bg_store = MagicMock()
         bg_store.get_registry = AsyncMock(return_value=registry)
 
-        # Patch out everything _mark_completed does AFTER the claim loop so
+        # Patch out everything _finalize_run does AFTER the claim loop so
         # the test only exercises the claim logic.
         with patch(
-            "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance",
+            f"{REGISTRY_STORE_MOD}.BackgroundRegistryStore.get_instance",
             return_value=bg_store,
         ), patch.object(btm, "_release_terminal_refs"), \
              patch.object(btm, "_collect_subagent_results_for_turn",
                           new_callable=AsyncMock) as collect_mock, \
-             patch("src.server.services.background_task_manager.release_burst_slot",
+             patch("src.server.services.runs.executor.release_burst_slot",
                    new_callable=AsyncMock):
-            await btm._mark_completed(thread_id, run_id_current)
+            await btm._finalize_run(thread_id, run_id_current, kind="stream_end")
             # The collector is spawned via asyncio.create_task; yield once
             # to let it run.
             await asyncio.sleep(0)
@@ -138,10 +140,10 @@ class TestCollectorFiltersBySpawnedRunId:
         btm = _make_btm()
         run_id_current = "run-2"
         thread_id = "thread-B"
-        btm.tasks[(thread_id, run_id_current)] = TaskInfo(
+        btm.executions[(thread_id, run_id_current)] = LocalRunExecution(
             thread_id=thread_id,
             run_id=run_id_current,
-            status=TaskStatus.RUNNING,
+            status=LocalRunStatus.RUNNING,
             created_at=datetime.now(),
             metadata={"workspace_id": "ws-1", "user_id": "u-1"},
         )
@@ -157,14 +159,14 @@ class TestCollectorFiltersBySpawnedRunId:
         bg_store.get_registry = AsyncMock(return_value=registry)
 
         with patch(
-            "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance",
+            f"{REGISTRY_STORE_MOD}.BackgroundRegistryStore.get_instance",
             return_value=bg_store,
         ), patch.object(btm, "_release_terminal_refs"), \
              patch.object(btm, "_collect_subagent_results_for_turn",
                           new_callable=AsyncMock) as collect_mock, \
-             patch("src.server.services.background_task_manager.release_burst_slot",
+             patch("src.server.services.runs.executor.release_burst_slot",
                    new_callable=AsyncMock):
-            await btm._mark_completed(thread_id, run_id_current)
+            await btm._finalize_run(thread_id, run_id_current, kind="stream_end")
             await asyncio.sleep(0)
             await asyncio.sleep(0)
 
@@ -183,15 +185,15 @@ class TestClaimLoopHoldsRegistryLock:
 
     @pytest.mark.asyncio
     async def test_claim_blocks_when_lock_held_elsewhere(self):
-        """If a competing coroutine holds bg_registry._lock, _mark_completed's
-        claim loop can't observe collector_response_id mid-mutation. We
-        prove this by holding the lock and timing-out _mark_completed."""
+        """If a competing coroutine holds bg_registry._lock, _finalize_run's
+        collector claim loop can't observe collector_response_id mid-mutation.
+        We prove this by holding the lock and timing-out _finalize_run."""
         btm = _make_btm()
         thread_id = "thread-C"
         run_id = "run-C"
-        btm.tasks[(thread_id, run_id)] = TaskInfo(
+        btm.executions[(thread_id, run_id)] = LocalRunExecution(
             thread_id=thread_id, run_id=run_id,
-            status=TaskStatus.RUNNING, created_at=datetime.now(),
+            status=LocalRunStatus.RUNNING, created_at=datetime.now(),
             metadata={"workspace_id": "ws-1", "user_id": "u-1"},
         )
 
@@ -208,21 +210,23 @@ class TestClaimLoopHoldsRegistryLock:
                 await asyncio.sleep(release_after)
 
         with patch(
-            "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance",
+            f"{REGISTRY_STORE_MOD}.BackgroundRegistryStore.get_instance",
             return_value=bg_store,
         ), patch.object(btm, "_release_terminal_refs"), \
              patch.object(btm, "_collect_subagent_results_for_turn",
                           new_callable=AsyncMock) as collect_mock, \
-             patch("src.server.services.background_task_manager.release_burst_slot",
+             patch("src.server.services.runs.executor.release_burst_slot",
                    new_callable=AsyncMock):
             # Start a hog that holds the lock for ~150ms.
             hog = asyncio.create_task(hold_lock_then_release(0.15))
             await asyncio.sleep(0.01)  # let hog acquire
 
-            # _mark_completed must block on the lock and not proceed past
+            # _finalize_run must block on the lock and not proceed past
             # the claim until the hog releases. We verify by checking that
             # the task has not been claimed before hog releases.
-            mc_task = asyncio.create_task(btm._mark_completed(thread_id, run_id))
+            mc_task = asyncio.create_task(
+                btm._finalize_run(thread_id, run_id, kind="stream_end")
+            )
             await asyncio.sleep(0.05)
             task = registry._tasks["tc-X"]
             assert task.collector_response_id is None, (
@@ -257,10 +261,12 @@ class TestRegistryEvictionAfterDrain:
             tool_call_id="tc-a", task_id="a", spawned_run_id="run-1",
         )
         task_a.sse_drain_complete.set()
+        task_a.collector_response_id = "resp-1"
         task_b = _make_subagent_task(
             tool_call_id="tc-b", task_id="b", spawned_run_id="run-1",
         )
         task_b.sse_drain_complete.set()
+        task_b.collector_response_id = "resp-1"
         registry._tasks["tc-a"] = task_a
         registry._tasks["tc-b"] = task_b
         registry._task_id_to_tool_call_id["a"] = "tc-a"
@@ -271,168 +277,239 @@ class TestRegistryEvictionAfterDrain:
 
         # Stub the cache to a disabled-style object so deletes no-op.
         with patch(
-            "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance",
+            f"{REGISTRY_STORE_MOD}.BackgroundRegistryStore.get_instance",
             return_value=bg_store,
         ), patch(
-            "src.server.services.background_task_manager.get_cache_client",
+            "src.server.services.runs.subagent_collection.get_cache_client",
             side_effect=Exception("no cache"),
         ), patch(
-            "src.server.services.background_task_manager.get_sse_drain_timeout",
+            "src.server.services.runs.subagent_collection.get_sse_drain_timeout",
             return_value=0.1,
         ):
-            await btm._await_drain_and_cleanup_tasks([task_a, task_b], thread_id)
+            await btm._await_drain_and_cleanup_tasks(
+                [task_a, task_b], thread_id, "resp-1"
+            )
 
         assert registry._tasks == {}
         assert registry._task_id_to_tool_call_id == {}
 
+    @pytest.mark.asyncio
+    async def test_cleanup_skips_task_stolen_by_a_resume(self):
+        """A resume steals the entry back mid-collection (clears the claim,
+        installs a live writer). The stale collector's cleanup must not null
+        the new writer's handles or evict the entry — the resuming run's
+        tail drain and collector depend on both."""
+        btm = _make_btm()
+        thread_id = "thread-D"
 
-class TestRegistryRemoveTask:
+        registry = BackgroundTaskRegistry(thread_id=thread_id)
+        task = _make_subagent_task(
+            tool_call_id="tc-a", task_id="a", spawned_run_id="run-2",
+        )
+        task.sse_drain_complete.set()
+        # The steal: resume reset cleared the round-1 claim and respawned.
+        task.collector_response_id = None
+        task.completed = False
+        new_writer = asyncio.create_task(asyncio.sleep(30))
+        task.asyncio_task = new_writer
+        task.per_call_records = [{"model": "m"}]
+        registry._tasks["tc-a"] = task
+        registry._task_id_to_tool_call_id["a"] = "tc-a"
+
+        bg_store = MagicMock()
+        bg_store.get_registry = AsyncMock(return_value=registry)
+        cache = MagicMock()
+        cache.delete = AsyncMock()
+
+        try:
+            with patch(
+                f"{REGISTRY_STORE_MOD}.BackgroundRegistryStore.get_instance",
+                return_value=bg_store,
+            ), patch(
+                "src.server.services.runs.subagent_collection.get_cache_client",
+                return_value=cache,
+            ), patch(
+                "src.server.services.runs.subagent_collection.get_sse_drain_timeout",
+                return_value=0.1,
+            ):
+                await btm._await_drain_and_cleanup_tasks(
+                    [task], thread_id, "resp-1"
+                )
+
+            assert task.asyncio_task is new_writer  # handles untouched
+            assert task.per_call_records == [{"model": "m"}]  # usage kept
+            cache.delete.assert_not_awaited()  # round-2 keys not nuked
+            assert registry._tasks.get("tc-a") is task  # not evicted
+        finally:
+            new_writer.cancel()
 
     @pytest.mark.asyncio
-    async def test_remove_task_drops_all_mappings(self):
-        """remove_task evicts the task, its task_id lookup, results, and
-        any namespace mappings keyed to it."""
+    async def test_remove_task_if_owned_respects_the_claim(self):
+        registry = BackgroundTaskRegistry(thread_id="t")
+        task = _make_subagent_task(
+            tool_call_id="tc1", task_id="id1", spawned_run_id="r1",
+        )
+        task.collector_response_id = "resp-1"
+        registry._tasks["tc1"] = task
+        registry._task_id_to_tool_call_id["id1"] = "tc1"
+
+        assert not await registry.remove_task_if_owned("tc1", "resp-OTHER")
+        assert registry._tasks.get("tc1") is task
+
+        assert await registry.remove_task_if_owned("tc1", "resp-1")
+        assert "tc1" not in registry._tasks
+        assert "id1" not in registry._task_id_to_tool_call_id
+
+
+class TestRegistryRemoveEntry:
+
+    @pytest.mark.asyncio
+    async def test_remove_entry_drops_all_mappings(self):
+        """_remove_entry_unlocked evicts the task, its task_id lookup, and results."""
         registry = BackgroundTaskRegistry(thread_id="t")
         task = _make_subagent_task(
             tool_call_id="tc1", task_id="id1", spawned_run_id="r1",
         )
         registry._tasks["tc1"] = task
         registry._task_id_to_tool_call_id["id1"] = "tc1"
-        registry._ns_uuid_to_tool_call_id["uuid-alpha"] = "tc1"
-        registry._ns_uuid_to_tool_call_id["uuid-other"] = "tc-other"
         registry._results["tc1"] = {"success": True}
 
-        await registry.remove_task("tc1")
+        async with registry._lock:
+            registry._remove_entry_unlocked("tc1")
 
         assert "tc1" not in registry._tasks
         assert "id1" not in registry._task_id_to_tool_call_id
-        assert "uuid-alpha" not in registry._ns_uuid_to_tool_call_id
-        # Unrelated mapping survives.
-        assert registry._ns_uuid_to_tool_call_id["uuid-other"] == "tc-other"
         assert "tc1" not in registry._results
 
     @pytest.mark.asyncio
-    async def test_remove_missing_task_is_noop(self):
+    async def test_remove_missing_entry_is_noop(self):
         registry = BackgroundTaskRegistry(thread_id="t")
-        await registry.remove_task("does-not-exist")  # must not raise
+        async with registry._lock:
+            registry._remove_entry_unlocked("does-not-exist")  # must not raise
         assert registry._tasks == {}
 
 
 # ---------------------------------------------------------------------------
-# A4 — legacy stream_from_log fallback polls WorkflowTracker
+# A4 — run_id-less stream_from_log resolves from the ledger (v4 2.4)
 # ---------------------------------------------------------------------------
 
 
-class TestLegacyFallbackTerminalCheck:
-    """The pre-deploy reconnect path (run_id absent from request, no
-    TaskInfo in process) must NOT eager-exit on the first terminal-check
-    — it should wait until WorkflowTracker reports a terminal status."""
+class TestLedgerFallbackTerminalCheck:
+    """A run_id-less reconnect with no in-process LocalRunExecution resolves the run
+    from the ledger and polls the run row for terminality — worker-agnostic:
+    a peer's live run keeps the watcher attached, and the terminal row
+    (owner finalize or recovery scanner) releases it. No ledger row at all
+    means nothing durable to stream."""
+
+    @staticmethod
+    def _manager():
+        manager = MagicMock()
+        manager._find_latest_for_thread = MagicMock(return_value=None)
+        manager.task_lock = asyncio.Lock()
+        manager.executions = {}  # no local record → terminal_check asks the ledger
+        manager.increment_connection = AsyncMock()
+        manager.decrement_connection = AsyncMock()
+        return manager
 
     @pytest.mark.asyncio
-    async def test_terminal_when_tracker_reports_completed(self):
-        from src.server.handlers.chat import stream_from_log as sfl
+    async def test_resolves_run_from_ledger_and_drains_per_run_stream(self):
+        from src.server.handlers.chat import run_stream_reader as sfl
 
         cache = MagicMock()
         cache.enabled = True
         cache.client = MagicMock()
-        # First xread yields events; second is empty; tracker says
-        # completed so the loop exits cleanly.
+        # One batch on the PER-RUN key, then two empty rounds; the terminal
+        # ledger row lets the two-empty-round handshake exit.
         cache.client.xread = AsyncMock(side_effect=[
-            [(b"workflow:stream:t-leg", [
+            [(b"workflow:stream:t-leg:run-9", [
                 (b"1-0", {b"event": b"id: 1\nevent: x\ndata: a\n\n"}),
             ])],
             [],
             [],
         ])
 
-        tracker = MagicMock()
-        tracker.get_status = AsyncMock(return_value={"status": "completed"})
-
-        manager = MagicMock()
-        manager._find_latest_for_thread = MagicMock(return_value=None)
-        manager.task_lock = asyncio.Lock()
-
         with patch.object(sfl, "get_cache_client", return_value=cache), \
-             patch.object(sfl.WorkflowTracker, "get_instance", return_value=tracker), \
-             patch.object(sfl.BackgroundTaskManager, "get_instance", return_value=manager):
+             patch.object(sfl.LocalRunExecutor, "get_instance",
+                          return_value=self._manager()), \
+             patch("src.server.database.runs.lifecycle.get_active_run",
+                   AsyncMock(return_value=None)), \
+             patch("src.server.database.runs.lifecycle.get_latest_attempt",
+                   AsyncMock(return_value={
+                       "conversation_response_id": "run-9",
+                       "status": "completed",
+                   })), \
+             patch("src.server.database.runs.lifecycle.get_run",
+                   AsyncMock(return_value={"status": "completed"})) as get_run:
             collected: list[str] = []
             async for event in sfl.stream_from_log("t-leg", run_id=None, last_event_id=None):
                 collected.append(event)
 
-        # The actual event was yielded — proves we didn't exit before draining.
+        # The event was yielded — we didn't exit before draining — and the
+        # XREAD attached to the ledger-resolved per-run key.
         assert any("event: x" in e for e in collected)
-        # And we DID consult the tracker.
-        assert tracker.get_status.await_count >= 1
+        xread_key = next(iter(cache.client.xread.await_args.args[0]))
+        assert xread_key == b"workflow:stream:t-leg:run-9"
+        assert get_run.await_count >= 1
 
     @pytest.mark.asyncio
-    async def test_not_terminal_when_tracker_reports_active(self):
-        """Active per the tracker ⇒ terminal_check returns False, so the
-        consumer keeps polling. We bound the test by limiting the xread
-        sequence and switching the tracker to terminal mid-flight."""
-        from src.server.handlers.chat import stream_from_log as sfl
+    async def test_in_progress_row_keeps_polling_until_terminal(self):
+        """A live ledger row (any worker's) ⇒ terminal_check False, so the
+        consumer keeps polling; the row flipping terminal releases it."""
+        from src.server.handlers.chat import run_stream_reader as sfl
 
         cache = MagicMock()
         cache.enabled = True
         cache.client = MagicMock()
-        # Two empty rounds while the tracker says active, then tracker
-        # flips to completed and we exit.
-        cache.client.xread = AsyncMock(side_effect=[
-            [],  # empty round 1
-            [],  # empty round 2
-            [],  # empty round 3 — exits after tracker now says completed
-        ])
+        cache.client.xread = AsyncMock(side_effect=[[], [], [], []])
 
-        states = iter([
-            {"status": "active"},
-            {"status": "active"},
+        rows = iter([
+            {"status": "in_progress"},
+            {"status": "in_progress"},
             {"status": "completed"},
             {"status": "completed"},
         ])
-        tracker = MagicMock()
-        tracker.get_status = AsyncMock(side_effect=lambda _tid: next(states))
-
-        manager = MagicMock()
-        manager._find_latest_for_thread = MagicMock(return_value=None)
-        manager.task_lock = asyncio.Lock()
 
         with patch.object(sfl, "get_cache_client", return_value=cache), \
-             patch.object(sfl.WorkflowTracker, "get_instance", return_value=tracker), \
-             patch.object(sfl.BackgroundTaskManager, "get_instance", return_value=manager):
+             patch.object(sfl.LocalRunExecutor, "get_instance",
+                          return_value=self._manager()), \
+             patch("src.server.database.runs.lifecycle.get_active_run",
+                   AsyncMock(return_value={
+                       "conversation_response_id": "run-9",
+                       "status": "in_progress",
+                   })), \
+             patch("src.server.database.runs.lifecycle.get_run",
+                   AsyncMock(side_effect=lambda _rid: next(rows))) as get_run:
             collected: list[str] = []
             async for event in sfl.stream_from_log("t-leg", run_id=None, last_event_id=None):
                 collected.append(event)
                 if len(collected) > 10:
                     break  # safety
 
-        # Multiple polls — at least the two while active and the terminal ones.
-        assert tracker.get_status.await_count >= 2
+        # Polled through the live rounds and past the terminal flip.
+        assert get_run.await_count >= 3
 
     @pytest.mark.asyncio
-    async def test_terminal_when_tracker_returns_none(self):
-        """No status record at all ⇒ nothing to wait for; the consumer
-        falls through after draining whatever is in the stream."""
-        from src.server.handlers.chat import stream_from_log as sfl
+    async def test_no_ledger_row_yields_nothing(self):
+        """No LocalRunExecution + no ledger row: nothing durable names a run, so the
+        consumer exits without ever touching Redis (the legacy thread-only
+        stream key died with the tracker cutover)."""
+        from src.server.handlers.chat import run_stream_reader as sfl
 
         cache = MagicMock()
         cache.enabled = True
         cache.client = MagicMock()
-        cache.client.xread = AsyncMock(side_effect=[[], []])
-
-        tracker = MagicMock()
-        tracker.get_status = AsyncMock(return_value=None)
-
-        manager = MagicMock()
-        manager._find_latest_for_thread = MagicMock(return_value=None)
-        manager.task_lock = asyncio.Lock()
+        cache.client.xread = AsyncMock(return_value=[])
 
         with patch.object(sfl, "get_cache_client", return_value=cache), \
-             patch.object(sfl.WorkflowTracker, "get_instance", return_value=tracker), \
-             patch.object(sfl.BackgroundTaskManager, "get_instance", return_value=manager):
+             patch.object(sfl.LocalRunExecutor, "get_instance",
+                          return_value=self._manager()), \
+             patch("src.server.database.runs.lifecycle.get_active_run",
+                   AsyncMock(return_value=None)), \
+             patch("src.server.database.runs.lifecycle.get_latest_attempt",
+                   AsyncMock(return_value=None)):
             collected: list[str] = []
             async for event in sfl.stream_from_log("t-leg", run_id=None, last_event_id=None):
                 collected.append(event)
-                if len(collected) > 5:
-                    break
 
-        # We polled the tracker, and exit happens after empty rounds.
-        assert tracker.get_status.await_count >= 1
+        assert collected == []
+        cache.client.xread.assert_not_awaited()

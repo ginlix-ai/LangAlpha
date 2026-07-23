@@ -5,7 +5,7 @@ workflow so it doesn't repeat the upsert. The workflow trusts the row only when
 its id is the caller's canonical (deterministic UUID v5) flash workspace.
 """
 
-from src.server.handlers.chat.flash_workflow import _reusable_flash_workspace
+from src.server.handlers.chat.flash_run import _reusable_flash_workspace
 from src.server.database.workspace import get_flash_workspace_id
 
 USER = "usr-flash-001"

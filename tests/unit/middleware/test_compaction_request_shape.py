@@ -9,6 +9,7 @@ prompt MUST be framed as a ``SystemMessage`` rather than a bare user string.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,6 +20,18 @@ from ptc_agent.agent.middleware.compaction.middleware import (
     _build_summary_request,
 )
 from src.llms import maybe_disable_streaming
+
+
+@pytest.fixture(autouse=True)
+def _offline_token_counter(monkeypatch):
+    """cl100k_base fetches its BPE file on first use; the unit suite blocks
+    sockets, so a cold cache (CI runners) turns counting into a network
+    error. These tests assert request shape, not token math — stub the
+    encoder loader at its definition site so every caller stays offline."""
+    from ptc_agent.agent.middleware.compaction import utils as compaction_utils
+
+    fake = SimpleNamespace(encode=lambda text: [0] * (len(text) // 4 + 1))
+    monkeypatch.setattr(compaction_utils, "_get_tiktoken_encoder", lambda: fake)
 
 
 class TestBuildSummaryRequest:

@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.server.handlers.chat import report_back as rb
+from src.server.services.report_back.flash import executor as rb_executor
 from src.tools.secretary.tools import ptc_agent
 
 USER_ID = "user-1"
@@ -141,7 +141,7 @@ async def test_report_back_drops_when_service_token_unset(monkeypatch):
         "aiohttp.ClientSession",
         MagicMock(side_effect=AssertionError("report-back HTTP must not run")),
     ):
-        status, run_id = await rb._post_report_back(
+        status, run_id = await rb_executor._post_report_back(
             cache, FLASH_THREAD_ID, PTC_THREAD_ID, _ORIGIN
         )
 
@@ -178,7 +178,7 @@ async def test_report_back_oss_mode_posts_without_token(monkeypatch):
 
     session = _FakeSession(_FakeResp(200, {"run_id": "rid-1"}))
     with patch("aiohttp.ClientSession", MagicMock(return_value=session)):
-        outcome = await rb._post_report_back(
+        outcome = await rb_executor._post_report_back(
             cache=None,
             flash_thread_id=FLASH_THREAD_ID,
             ptc_thread_id=PTC_THREAD_ID,

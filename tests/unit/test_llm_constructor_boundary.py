@@ -90,8 +90,12 @@ ALLOWLIST: dict[tuple[str, str], int] = {
     ("src/ptc_agent/agent/middleware/compaction/middleware.py", "init_chat_model"): 1,
     # non-BYOK fetch name path (reached only for non-credentialed users).
     ("src/tools/web/fetch.py", "get_llm"): 1,
+    # The resolution layer itself — the sanctioned constructor home. Entered
+    # scan scope when 3.1 moved it from handlers/chat (never a scan root).
+    ("src/server/services/llm/config.py", "create_llm"): 3,
+    ("src/server/services/llm/config.py", "create_llm_from_custom"): 2,
     # user_id=None system path AND resolved-None platform fallback (two calls).
-    ("src/server/services/llm_service.py", "create_llm"): 2,
+    ("src/server/services/llm/service.py", "create_llm"): 2,
 }
 
 

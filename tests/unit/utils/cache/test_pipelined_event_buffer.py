@@ -24,6 +24,7 @@ def _make_pipeline_mock() -> tuple[MagicMock, MagicMock]:
         "rpush",
         "ltrim",
         "expire",
+        "persist",
         "hincrby",
         "hsetnx",
         "hset",
@@ -247,6 +248,29 @@ async def test_no_dirty_resume_del_when_last_event_id_is_not_one():
     pipe.delete.assert_not_called()
     pipe.hdel.assert_not_called()
     pipe.xadd.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_ttl_none_persists_both_keys_instead_of_expiring():
+    """Active-run writes (ttl=None) PERSIST both keys rather than merely
+    skipping the EXPIRE — a TTL inherited from a failed cleanup delete or a
+    stale collector stamp heals on the next write instead of silently
+    expiring a served active stream (retention contract enforcement)."""
+    pipe, pipeline_ctx = _make_pipeline_mock()
+    cache = _make_client_with_pipeline(pipeline_ctx)
+
+    await cache.pipelined_event_buffer(
+        meta_key="workflow:events:meta:t1",
+        event="id: 7\nevent: x\ndata: hi\n\n",
+        max_size=1000,
+        ttl=None,
+        last_event_id=7,
+        stream_key="workflow:stream:t1",
+    )
+
+    pipe.expire.assert_not_called()
+    persist_keys = [call.args[0] for call in pipe.persist.call_args_list]
+    assert persist_keys == ["workflow:events:meta:t1", "workflow:stream:t1"]
 
 
 @pytest.mark.asyncio

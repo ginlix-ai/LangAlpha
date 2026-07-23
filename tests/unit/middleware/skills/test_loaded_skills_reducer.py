@@ -5,7 +5,7 @@ so the reducer must dedup-union rather than accumulate — otherwise a turn that
 re-seeds an already-loaded skill grows the persisted list unboundedly.
 """
 
-from src.ptc_agent.agent.middleware.skills.middleware import _union_loaded_skills
+from ptc_agent.agent.middleware.skills.middleware import _union_loaded_skills
 
 
 def test_union_appends_new_names():
