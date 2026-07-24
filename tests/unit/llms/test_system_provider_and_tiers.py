@@ -125,8 +125,6 @@ class TestSystemProviderRouting:
 
 
 class TestApiKeyEnvAliases:
-    """Providers may declare fallback environment variable names."""
-
     def _build_llm_instance(self):
         models = {
             "atlas-test": {
@@ -471,8 +469,6 @@ class TestModelsManifestIntegrity:
 
 
 class TestAtlasCloudManifest:
-    """Atlas Cloud should be registered as an OpenAI-compatible provider."""
-
     def test_provider_config_registered(self):
         flat = ModelConfig._flatten_providers(_PROVIDERS_RAW["provider_config"])
         provider = flat["atlascloud"]
