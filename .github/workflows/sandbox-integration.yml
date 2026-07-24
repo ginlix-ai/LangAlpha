@@ -11,6 +11,7 @@ on:
       - src/server/app/workspace_files/**
       - src/server/app/workspace_sandbox.py
       - src/server/services/workspace_manager.py
+      - src/server/services/platform_secret_rollout.py
       - Dockerfile.sandbox
       - docker-compose.yml
       - tests/integration/sandbox/**
@@ -19,6 +20,7 @@ on:
     paths:
       - src/ptc_agent/core/sandbox/**
       - src/ptc_agent/agent/backends/**
+      - src/server/services/platform_secret_rollout.py
       - Dockerfile.sandbox
       - tests/integration/sandbox/**
   workflow_dispatch:
@@ -115,6 +117,7 @@ jobs:
           SANDBOX_TEST_PROVIDERS: daytona
           DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
           DAYTONA_BASE_URL: ${{ secrets.DAYTONA_BASE_URL }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -293,6 +296,7 @@ jobs:
           SANDBOX_TEST_PROVIDERS: ${{ inputs.providers }}
           DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
           DAYTONA_BASE_URL: ${{ secrets.DAYTONA_BASE_URL }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
           DOCKER_SANDBOX_IMAGE: langalpha-sandbox:latest
 
       - uses: actions/upload-artifact@v4
