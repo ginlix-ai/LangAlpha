@@ -20,7 +20,7 @@ class FMPRequestError(Exception):
     """FMP request failure with a sanitized message and optional HTTP status.
 
     ``str(exc)`` is safe to surface to callers/agents: it never embeds the
-    request URL, which carries the API key as a query parameter.
+    request URL or headers; the key travels in the ``apikey`` header.
     """
 
     def __init__(self, message: str, *, status_code: Optional[int] = None):
@@ -112,7 +112,6 @@ class FMPClient:
         use_cache: bool = True,
     ) -> Union[Dict, List]:
         params = params or {}
-        params["apikey"] = self.api_key
 
         cache_key = f"{endpoint}:{json.dumps(params, sort_keys=True)}"
 
@@ -124,7 +123,9 @@ class FMPClient:
         client = await self._get_client()
 
         try:
-            response = await client.get(url, params=params)
+            response = await client.get(
+                url, params=params, headers={"apikey": self.api_key}
+            )
             response.raise_for_status()
             data = response.json()
 
@@ -138,8 +139,8 @@ class FMPClient:
             return data
 
         except httpx.HTTPStatusError as e:
-            # Never stringify the httpx error: its message embeds the request
-            # URL, which carries the API key as a query parameter.
+            # Defense in depth: never stringify the httpx error. Its message
+            # embeds the request URL; auth must never depend on URL hygiene.
             raise FMPRequestError(
                 f"FMP API request failed ({e.response.status_code})",
                 status_code=e.response.status_code,
