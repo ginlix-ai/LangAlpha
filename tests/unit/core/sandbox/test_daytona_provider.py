@@ -240,7 +240,7 @@ class TestDaytonaProvider:
     def test_snapshot_hash_changes_on_resource_retune(self):
         """C1: retuning a tier's cpu (same packages) must change the snapshot
         hash so the stale-sized snapshot isn't silently reused."""
-        from daytona_sdk.common.sandbox import Resources
+        from daytona import Resources
 
         from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
 
@@ -277,7 +277,7 @@ class TestDaytonaProvider:
     async def test_ensure_snapshot_name_changes_on_resource_retune(self):
         """C1 end-to-end: the built snapshot NAME differs across a resize, so a
         retune yields a new snapshot instead of reusing the stale-sized one."""
-        from daytona_sdk.common.sandbox import Resources
+        from daytona import Resources
 
         from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
 

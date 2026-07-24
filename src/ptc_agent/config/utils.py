@@ -120,6 +120,7 @@ def create_daytona_config(data: dict[str, Any]) -> DaytonaConfig:
     }
     return DaytonaConfig(
         api_key=os.getenv("DAYTONA_API_KEY", ""),
+        secret_namespace=os.getenv("DAYTONA_SECRET_NAMESPACE", ""),
         base_url=data["base_url"],
         auto_stop_interval=data["auto_stop_interval"],
         auto_archive_interval=data["auto_archive_interval"],
@@ -164,12 +165,14 @@ def create_sandbox_config(config_data: dict[str, Any]) -> SandboxConfig:
             if "docker" in sandbox_data
             else DockerConfig()
         )
+        platform_secrets = sandbox_data.get("platform_secrets") or []
     elif "daytona" in config_data:
         # Backward compat: top-level "daytona:" key — implicitly daytona provider
         provider_explicit = True
         provider = "daytona"
         daytona_cfg = create_daytona_config(config_data["daytona"])
         docker_cfg = DockerConfig()
+        platform_secrets = []
     else:
         raise ValueError(
             "Missing required section: either 'sandbox' or 'daytona' must be present "
@@ -188,6 +191,7 @@ def create_sandbox_config(config_data: dict[str, Any]) -> SandboxConfig:
         provider=provider,
         daytona=daytona_cfg,
         docker=docker_cfg,
+        platform_secrets=platform_secrets,
     )
 
     # Docker-specific env var overrides

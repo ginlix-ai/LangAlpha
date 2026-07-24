@@ -1,9 +1,16 @@
 """Abstract runtime and provider interfaces for sandbox backends."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ptc_agent.core.sandbox.platform_secrets import (
+        ReconciledPlatformSecret,
+        ResolvedPlatformSecret,
+    )
 
 
 class SandboxTransientError(RuntimeError):
@@ -122,8 +129,8 @@ class SandboxRuntime(ABC):
         ...
 
     @abstractmethod
-    async def stop(self, timeout: int = 60) -> None:
-        """Stop the runtime."""
+    async def stop(self, timeout: int = 60, *, force: bool = False) -> None:
+        """Stop the runtime, forcefully when the provider supports it."""
         ...
 
     @abstractmethod
@@ -135,6 +142,25 @@ class SandboxRuntime(ABC):
     async def get_state(self) -> RuntimeState:
         """Return the current lifecycle state."""
         ...
+
+    async def update_env(
+        self, env: dict[str, str], *, unset: Sequence[str] = ()
+    ) -> None:
+        """Set/unset sandbox-level env vars; providers without support raise."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support sandbox env updates"
+        )
+
+    async def update_secrets(self, secrets: dict[str, str]) -> None:
+        """Attach provider-managed secret bindings; providers without support raise."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support platform secrets"
+        )
+
+    async def refresh_state(self) -> RuntimeState:
+        """Refresh and return lifecycle state; defaults to ``get_state``."""
+
+        return await self.get_state()
 
     # -- Execution --
 
@@ -250,11 +276,20 @@ class SandboxRuntime(ABC):
 class SandboxProvider(ABC):
     """Factory that creates and reconnects to sandbox runtime instances."""
 
+    async def reconcile_platform_secrets(
+        self, secrets: "Sequence[ResolvedPlatformSecret]"
+    ) -> "list[ReconciledPlatformSecret]":
+        """Create/update provider-managed Secrets; capability-absent by default."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support platform secrets"
+        )
+
     @abstractmethod
     async def create(
         self,
         *,
         env_vars: dict[str, str] | None = None,
+        platform_secret_bindings: dict[str, str] | None = None,
         tier: str | None = None,
         auto_stop_minutes: int | None = None,
         **kwargs: Any,
@@ -263,6 +298,8 @@ class SandboxProvider(ABC):
 
         Args:
             env_vars: Environment variables injected at creation time.
+            platform_secret_bindings: Provider-specific secret mounts. Providers
+                without managed-secret support may ignore this mapping.
             tier: Resource tier name (provider-resolved; may be ignored by
                 providers without tiered sizing).
             auto_stop_minutes: Auto-stop interval override in minutes (0 disables).

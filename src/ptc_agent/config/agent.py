@@ -376,6 +376,7 @@ class AgentConfig(BaseModel):
             _daytona_defaults = DaytonaConfig()
             daytona_config = DaytonaConfig(
                 api_key=api_key,
+                secret_namespace=os.getenv("DAYTONA_SECRET_NAMESPACE", ""),
                 base_url=daytona_base_url,
                 auto_stop_interval=kwargs.pop(
                     "auto_stop_interval", _daytona_defaults.auto_stop_interval

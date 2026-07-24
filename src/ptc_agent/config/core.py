@@ -57,6 +57,7 @@ class DaytonaConfig(BaseModel):
 
     api_key: str = ""  # Set via DAYTONA_API_KEY env var, validated later
     base_url: str = "https://app.daytona.io/api"
+    secret_namespace: str = ""  # Set via DAYTONA_SECRET_NAMESPACE
     auto_stop_interval: int = 3600  # 1 hour
     auto_archive_interval: int = 604800  # 7 days — keep stopped (fast restart) before cold storage
     auto_delete_interval: int = 7776000  # 90 days — total dormant lifetime
@@ -290,12 +291,73 @@ class DockerConfig(BaseModel):
     preview_base_url: str | None = None
 
 
+class PlatformSecretDefinition(BaseModel):
+    """One backend-owned platform credential, declared in agent_config.yaml.
+
+    The set of entries is the deployment's platform-secret catalog: convergence,
+    certification, and the fleet generation all operate on every entry at once,
+    and any set change registers as an identity change that re-pends the fleet.
+    Declared in deployment config (not code) so the OSS repo reveals the
+    mechanism without the hosted vendor list.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    source_env_var: str
+    sandbox_env_var: str
+    name_suffix: str
+    description: str
+    hosts: tuple[str, ...]
+
+    @field_validator("source_env_var", "sandbox_env_var")
+    @classmethod
+    def _validate_env_var(cls, v: str) -> str:
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", v):
+            raise ValueError(f"invalid environment variable name: {v!r}")
+        return v
+
+    @field_validator("name_suffix")
+    @classmethod
+    def _validate_name_suffix(cls, v: str) -> str:
+        # Length-bounded so the derived Secret name (namespace + '-' + suffix)
+        # stays under the provider/DB limit enforced in resolve_platform_secrets.
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,62}", v):
+            raise ValueError(f"invalid Secret name suffix: {v!r}")
+        return v
+
+    @field_validator("hosts")
+    @classmethod
+    def _validate_hosts(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        if not v:
+            raise ValueError("hosts must name at least one egress target")
+        for host in v:
+            if not re.fullmatch(r"[a-z0-9]([a-z0-9.-]*[a-z0-9])?", host):
+                raise ValueError(f"invalid egress host: {host!r}")
+        return v
+
+
 class SandboxConfig(BaseModel):
     """Provider-agnostic sandbox configuration wrapper."""
 
     provider: Literal["daytona", "docker", "memory"] = "daytona"
     daytona: DaytonaConfig = Field(default_factory=DaytonaConfig)
     docker: DockerConfig = Field(default_factory=DockerConfig)
+    platform_secrets: tuple[PlatformSecretDefinition, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_unique_platform_secrets(self) -> "SandboxConfig":
+        # Both keys must be unique across the catalog: a duplicate
+        # sandbox_env_var collapses the binding map (and collides the rollout
+        # row keyed on it), and a duplicate name_suffix resolves two entries to
+        # one provider Secret — either silently mounts the wrong credential.
+        for field in ("sandbox_env_var", "name_suffix"):
+            values = [getattr(d, field) for d in self.platform_secrets]
+            duplicates = sorted({v for v in values if values.count(v) > 1})
+            if duplicates:
+                raise ValueError(
+                    f"duplicate {field} in platform_secrets: {duplicates}"
+                )
+        return self
 
 
 class CoreConfig(BaseModel):

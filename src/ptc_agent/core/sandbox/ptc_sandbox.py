@@ -14,6 +14,7 @@ import structlog
 
 from ptc_agent.config.core import CoreConfig
 from ptc_agent.core.sandbox._defaults import DEFAULT_DEPENDENCIES, SNAPSHOT_PYTHON_VERSION
+from ptc_agent.core.sandbox.platform_secrets import build_platform_secret_bindings
 from ptc_agent.core.sandbox.providers import create_provider
 from ptc_agent.core.sandbox.retry import RetryPolicy, async_retry_with_backoff
 from ptc_agent.core.sandbox.runtime import (
@@ -258,11 +259,16 @@ class PTCSandbox:
         return mcp_packages
 
 
-    def _build_sandbox_env_vars(self) -> dict[str, str]:
+    def _build_sandbox_env_vars(
+        self,
+        platform_secret_bindings: dict[str, str],
+    ) -> dict[str, str]:
         """Build environment variables to inject at sandbox creation time.
 
         Resolves MCP server env vars (${VAR} placeholders from host) and
         GitHub bot credentials so they're available to all sandbox processes.
+        Vars named in ``platform_secret_bindings`` are excluded — Daytona
+        mounts those as managed Secrets.
         """
         import os
 
@@ -287,6 +293,11 @@ class PTCSandbox:
                 for key, value in server.env.items():
                     if key == "INTERNAL_SERVICE_TOKEN":
                         continue  # Never inject platform token into sandbox
+                    if key in platform_secret_bindings:
+                        # Daytona injects an opaque placeholder for managed
+                        # platform Secrets. Never put the real host value in
+                        # ordinary sandbox environment variables as fallback.
+                        continue
                     if value.startswith("${") and value.endswith("}"):
                         var_name = value[2:-1]
                         resolved_value = os.getenv(var_name)
@@ -335,13 +346,15 @@ class PTCSandbox:
 
         # Build env vars once — injected at sandbox creation time so they're
         # available to all processes (Python, bash, MCP servers)
-        sandbox_env = self._build_sandbox_env_vars()
+        platform_secret_bindings = build_platform_secret_bindings(self.config)
+        sandbox_env = self._build_sandbox_env_vars(platform_secret_bindings)
 
         # Create sandbox via provider (handles snapshot logic internally)
         mcp_packages = self._get_mcp_packages()
         self.runtime = await self._runtime_call(
             self.provider.create,
             env_vars=sandbox_env or None,
+            platform_secret_bindings=platform_secret_bindings or None,
             mcp_packages=mcp_packages,
             tier=tier,
             auto_stop_minutes=auto_stop_minutes,
@@ -672,6 +685,12 @@ class PTCSandbox:
                 )
             _mark_rc("wait_stopping")
         elif state_value == "archived":
+            metadata = await self.runtime.get_metadata()
+            if metadata.get("recoverable") is False:
+                raise SandboxGoneError(
+                    sandbox_id,
+                    "archived sandbox is no longer recoverable",
+                )
             logger.info(
                 "Starting archived sandbox (restore may take longer)",
                 sandbox_id=sandbox_id,

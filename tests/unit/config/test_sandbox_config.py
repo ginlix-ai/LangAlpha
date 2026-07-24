@@ -23,6 +23,7 @@ from ptc_agent.config.core import (
     FilesystemConfig,
     LoggingConfig,
     MCPConfig,
+    PlatformSecretDefinition,
     SandboxConfig,
     SecurityConfig,
 )
@@ -112,6 +113,7 @@ class TestCreateSandboxConfigNewFormat:
     @pytest.fixture(autouse=True)
     def _clean_env(self, monkeypatch):
         monkeypatch.delenv("SANDBOX_PROVIDER", raising=False)
+        monkeypatch.delenv("DAYTONA_SECRET_NAMESPACE", raising=False)
         monkeypatch.delenv("DOCKER_SANDBOX_IMAGE", raising=False)
         monkeypatch.delenv("DOCKER_SANDBOX_DEV_MODE", raising=False)
         monkeypatch.delenv("DOCKER_SANDBOX_HOST_DIR", raising=False)
@@ -132,6 +134,53 @@ class TestCreateSandboxConfigNewFormat:
         cfg = create_sandbox_config(config_data)
         assert cfg.provider == "daytona"
         assert cfg.daytona.base_url == "https://app.daytona.io/api"
+
+    def test_reads_secret_namespace_from_environment(self, monkeypatch):
+        monkeypatch.setenv("DAYTONA_SECRET_NAMESPACE", "staging")
+        config_data = {
+            "sandbox": {
+                "provider": "daytona",
+                "daytona": {
+                    "base_url": "https://app.daytona.io/api",
+                    "auto_stop_interval": 3600,
+                    "auto_archive_interval": 86400,
+                    "auto_delete_interval": 604800,
+                    "python_version": "3.12",
+                },
+            }
+        }
+        cfg = create_sandbox_config(config_data)
+        assert cfg.daytona.secret_namespace == "staging"
+
+    def test_reads_platform_secrets_catalog(self):
+        config_data = {
+            "sandbox": {
+                "provider": "daytona",
+                "platform_secrets": [
+                    {
+                        "source_env_var": "EXAMPLE_API_KEY",
+                        "sandbox_env_var": "EXAMPLE_API_KEY",
+                        "name_suffix": "platform-example-api-key",
+                        "description": "Platform example API key",
+                        "hosts": ["api.example.com"],
+                    }
+                ],
+            }
+        }
+        cfg = create_sandbox_config(config_data)
+        assert cfg.platform_secrets == (
+            PlatformSecretDefinition(
+                source_env_var="EXAMPLE_API_KEY",
+                sandbox_env_var="EXAMPLE_API_KEY",
+                name_suffix="platform-example-api-key",
+                description="Platform example API key",
+                hosts=("api.example.com",),
+            ),
+        )
+
+    def test_platform_secrets_default_empty(self):
+        config_data = {"sandbox": {"provider": "daytona"}}
+        assert create_sandbox_config(config_data).platform_secrets == ()
 
     def test_reads_docker_provider(self):
         config_data = {
@@ -228,3 +277,48 @@ class TestSandboxProviderEnvOverride:
             os.environ.pop("SANDBOX_PROVIDER", None)
             cfg = create_sandbox_config(config_data)
         assert cfg.provider == "docker"
+
+
+class TestPlatformSecretCatalogValidation:
+    """SandboxConfig rejects a catalog that would silently mis-bind."""
+
+    @staticmethod
+    def _def(*, sandbox_env_var="FMP_API_KEY", name_suffix="platform-fmp"):
+        return PlatformSecretDefinition(
+            source_env_var="SRC_KEY",
+            sandbox_env_var=sandbox_env_var,
+            name_suffix=name_suffix,
+            description="test",
+            hosts=("example.com",),
+        )
+
+    def test_rejects_duplicate_sandbox_env_var(self):
+        # Duplicate sandbox_env_var collapses the binding map (and collides the
+        # rollout row keyed on it).
+        with pytest.raises(ValueError, match="duplicate sandbox_env_var"):
+            SandboxConfig(
+                platform_secrets=(
+                    self._def(name_suffix="a"),
+                    self._def(name_suffix="b"),
+                )
+            )
+
+    def test_rejects_duplicate_name_suffix(self):
+        # Duplicate name_suffix resolves two entries to one provider Secret —
+        # the later credential silently overwrites the former.
+        with pytest.raises(ValueError, match="duplicate name_suffix"):
+            SandboxConfig(
+                platform_secrets=(
+                    self._def(sandbox_env_var="A_KEY", name_suffix="dup"),
+                    self._def(sandbox_env_var="B_KEY", name_suffix="dup"),
+                )
+            )
+
+    def test_accepts_a_unique_catalog(self):
+        cfg = SandboxConfig(
+            platform_secrets=(
+                self._def(sandbox_env_var="A_KEY", name_suffix="a"),
+                self._def(sandbox_env_var="B_KEY", name_suffix="b"),
+            )
+        )
+        assert len(cfg.platform_secrets) == 2

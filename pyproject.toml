@@ -78,7 +78,7 @@ dependencies = [
     # langgraph's ensure_message_ids covers every id-less messages write and no
     # app-side id-stamping shim is needed.
     "deepagents>=0.6.11",
-    "daytona-sdk>=0.130.0",
+    "daytona>=0.200.1",
     "boto3>=1.42.28",
     "tavily-python>=0.7.18",
     "PyJWT[crypto]>=2.8",

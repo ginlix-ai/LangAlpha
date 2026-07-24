@@ -28,7 +28,7 @@ FLASH_WORKSPACE_NAMESPACE = uuid.UUID("f1a50000-0000-5000-e000-f1a500000000")
 _WS_COLS = (
     "workspace_id, user_id, name, description, sandbox_id, status, created_at, "
     "updated_at, last_activity_at, stopped_at, config, artifacts, is_pinned, "
-    "sort_order, resource_tier, is_always_on"
+    "sort_order, resource_tier, is_always_on, platform_secret_version"
 )
 
 # Scalar workspace columns that may be set via `_set_workspace_scalar`. The

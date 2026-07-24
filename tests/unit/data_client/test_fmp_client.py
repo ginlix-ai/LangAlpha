@@ -1,11 +1,12 @@
-"""API-key leak guard for the FMP client's error path.
+"""Auth-mechanism and key-leak guards for the FMP client.
 
-Every FMP request carries the API key as an ``apikey`` query param, so the
-request URL is a secret. httpx bakes that URL into its exception messages
-(``str(HTTPStatusError)`` → ``... for url 'https://...apikey=...'``).
-``FMPClient._make_request`` must therefore never stringify the underlying httpx
-error into ``FMPRequestError`` — it surfaces only the status code (or a static
-message), so the key can't reach a caller, an agent, or a log line.
+The API key travels ONLY in the ``apikey`` request header — never the URL.
+Query-string auth is forbidden because Daytona substitutes sandbox secret
+placeholders exclusively in HTTPS request headers, and because httpx bakes
+request URLs into exception messages. ``FMPClient._make_request``
+additionally never stringifies the underlying httpx error into
+``FMPRequestError`` (defense in depth): it surfaces only the status code or
+a static message.
 """
 
 from unittest.mock import AsyncMock
@@ -67,3 +68,32 @@ class TestFmpErrorKeyLeakGuard:
         assert _SECRET not in str(exc.value)
         assert str(exc.value) == "FMP API request failed"
         assert exc.value.status_code is None
+
+
+class TestFmpHeaderAuth:
+    """The key must travel ONLY in the `apikey` request header.
+
+    Query-string auth is forbidden: Daytona sandbox placeholders are
+    substituted exclusively in HTTPS request headers, so a query-param key
+    breaks hosted sandboxes (placeholder egresses verbatim -> FMP 401).
+    """
+
+    @pytest.mark.asyncio
+    async def test_key_sent_in_header_not_query_or_cache(self):
+        request = httpx.Request(
+            "GET", "https://financialmodelingprep.com/stable/profile?symbol=AAPL"
+        )
+        response = httpx.Response(200, request=request, json=[{"symbol": "AAPL"}])
+        get_mock = AsyncMock(return_value=response)
+        client = _client_with_mocked_http(get_mock)
+        try:
+            await client.get_profile("AAPL")
+        finally:
+            await client.close()
+
+        assert get_mock.await_count == 1
+        kwargs = get_mock.await_args.kwargs
+        assert kwargs["headers"] == {"apikey": _SECRET}
+        assert "apikey" not in kwargs["params"]
+        assert client._cache
+        assert all(_SECRET not in key for key in client._cache)

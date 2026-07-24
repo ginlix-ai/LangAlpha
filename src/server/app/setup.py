@@ -37,6 +37,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
+from ptc_agent.core.sandbox.platform_secrets import PlatformSecretError
 from src.config.logging_config import configure_logging
 from src.config.settings import (
     get_allowed_origins,
@@ -60,6 +61,8 @@ from src.server.utils.api import find_malformed_route_ids  # TEMP (malformed-id-
 _otel_enabled = init_otel()
 
 logger = logging.getLogger(__name__)
+
+
 INTERNAL_SERVER_ERROR_DETAIL = "Internal Server Error"
 
 # Global variables
@@ -77,7 +80,13 @@ llm_service = None  # Generic one-shot LLM call wrapper (BYOK/OAuth-aware)
 # equivalent shim rootless podman injects for `init: true` (catatonit under the
 # hood). Must be in the allowlist or this diagnostic logs a false "init: true
 # failed" warning on every startup of an otherwise-correctly-hardened container.
-_ACCEPTABLE_INIT_COMMS = ("tini", "docker-init", "catatonit", "dumb-init", "podman-init")
+_ACCEPTABLE_INIT_COMMS = (
+    "tini",
+    "docker-init",
+    "catatonit",
+    "dumb-init",
+    "podman-init",
+)
 
 
 def _log_container_hardening() -> None:
@@ -91,7 +100,9 @@ def _log_container_hardening() -> None:
     try:
         with open("/sys/fs/cgroup/pids.max", encoding="utf-8", errors="replace") as f:
             pids_max = f.read().strip()
-        with open("/sys/fs/cgroup/pids.current", encoding="utf-8", errors="replace") as f:
+        with open(
+            "/sys/fs/cgroup/pids.current", encoding="utf-8", errors="replace"
+        ) as f:
             pids_current = f.read().strip()
     except (FileNotFoundError, OSError):
         pids_max = pids_current = "unknown"
@@ -114,7 +125,13 @@ def _log_container_hardening() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize resources when server starts, cleanup when stops."""
-    global agent_config, session_service, workspace_manager, checkpointer, store, llm_service
+    global \
+        agent_config, \
+        session_service, \
+        workspace_manager, \
+        checkpointer, \
+        store, \
+        llm_service
 
     # Configure logging based on environment settings (first thing on startup)
     configure_logging()
@@ -227,8 +244,27 @@ async def lifespan(app: FastAPI):
 
         logger.info("Loading PTC Agent configuration...")
         agent_config = await load_from_files(context=ConfigContext.SDK)
-        agent_config.validate_api_keys()
+
+        from src.server.services.platform_secret_rollout import (
+            reconcile_platform_secrets_at_boot,
+        )
+
+        await reconcile_platform_secrets_at_boot(agent_config)
         logger.info("PTC Agent configuration loaded successfully")
+
+        # Platform-secret migration sweep: converges running sandboxes left
+        # behind the fleet generation (always-on sandboxes never re-init, so
+        # only this sweep ever scrubs them). Inert without an active catalog.
+        try:
+            from src.server.services.platform_secret_sweep import (
+                PlatformSecretSweeper,
+            )
+
+            PlatformSecretSweeper.get_instance().start(
+                agent_config.to_core_config()
+            )
+        except Exception as e:
+            logger.warning(f"Failed to start PlatformSecretSweeper: {e}")
 
         # Connect once, freeze, install as the process-global registry so every
         # Session borrows the same tool snapshot instead of spawning its own
@@ -371,6 +407,10 @@ async def lifespan(app: FastAPI):
     except FileNotFoundError as e:
         logger.warning(f"PTC Agent config not found: {e}")
         logger.warning("PTC Agent endpoints will not be available")
+    except PlatformSecretError:
+        # Required platform Secrets are a configuration gate. Hosted mode
+        # must never continue into a plaintext fallback or partial startup.
+        raise
     except Exception as e:
         logger.warning(f"Failed to initialize PTC Agent: {e}")
         logger.warning("PTC Agent endpoints may not work correctly")
@@ -435,7 +475,10 @@ async def lifespan(app: FastAPI):
 
     # Start MarketDataFeed (shared upstream WS to ginlix-data)
     try:
-        from src.server.services.market_data_feed import DEFAULT_WS_FEEDS, MarketDataFeed
+        from src.server.services.market_data_feed import (
+            DEFAULT_WS_FEEDS,
+            MarketDataFeed,
+        )
 
         for market, interval, tier in DEFAULT_WS_FEEDS:
             ws = MarketDataFeed.get_instance(market, interval, tier)
@@ -507,6 +550,16 @@ async def lifespan(app: FastAPI):
         await RecoveryScanner.get_instance().stop()
     except Exception as e:
         logger.warning(f"Error stopping RecoveryScanner: {e}")
+
+    # 0.0a. Stop the platform-secret sweep — no new scrubs while draining.
+    try:
+        from src.server.services.platform_secret_sweep import (
+            PlatformSecretSweeper,
+        )
+
+        await PlatformSecretSweeper.get_instance().stop()
+    except Exception as e:
+        logger.warning(f"Error stopping PlatformSecretSweeper: {e}")
 
     # 0.0b. Stop the turn-cancel nudge listener.
     try:
@@ -919,7 +972,9 @@ app.include_router(
 )  # /api/v1/workspaces/{id}/chart-annotations - Agent-drawn chart annotations
 app.include_router(cache_router)  # /api/v1/cache/* - Cache management
 app.include_router(market_data_router)  # /api/v1/market-data/* - Market data proxy
-app.include_router(bars_router)  # /api/v1/market-data/bars/* - Protocol-native progressive bars
+app.include_router(
+    bars_router
+)  # /api/v1/market-data/bars/* - Protocol-native progressive bars
 app.include_router(users_router)  # /api/v1/users/* - User management
 app.include_router(features_router)  # /api/v1/features/* - Feature flags (per-user resolved)
 app.include_router(
@@ -929,7 +984,9 @@ app.include_router(
     portfolio_router
 )  # /api/v1/users/me/portfolio/* - Portfolio management
 app.include_router(news_router)  # /api/v1/news - News feed (general + ticker-filtered)
-app.include_router(calendar_router)  # /api/v1/calendar/* - Economic & earnings calendars
+app.include_router(
+    calendar_router
+)  # /api/v1/calendar/* - Economic & earnings calendars
 app.include_router(sec_proxy_router)  # /api/v1/sec-proxy/* - SEC EDGAR document proxy
 app.include_router(
     api_keys_router

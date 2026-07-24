@@ -85,6 +85,7 @@ class TestDaytonaConfig:
         cfg = DaytonaConfig()
         assert cfg.api_key == ""
         assert cfg.base_url == "https://app.daytona.io/api"
+        assert cfg.secret_namespace == ""
         assert cfg.python_version == "3.12"
         assert cfg.auto_stop_interval == 3600
         assert cfg.snapshot_enabled is True

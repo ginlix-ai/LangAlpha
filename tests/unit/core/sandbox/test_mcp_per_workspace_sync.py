@@ -414,8 +414,9 @@ class TestServerSplit:
         sandbox = _make_sandbox(config)
         assert sandbox._get_mcp_packages() == ["builtin-pkg"]
 
-    def test_build_env_vars_excludes_user_env(self):
+    def test_build_env_vars_excludes_user_env(self, monkeypatch):
         """User-server env is never injected into the sandbox os.environ."""
+        monkeypatch.setattr("src.config.env.HOST_MODE", "oss")
         config = _make_config(
             servers=[
                 _builtin("bi", env={"BUILTIN_KEY": "literal-val"}),
@@ -423,7 +424,7 @@ class TestServerSplit:
             ]
         )
         sandbox = _make_sandbox(config)
-        env = sandbox._build_sandbox_env_vars()
+        env = sandbox._build_sandbox_env_vars({})
         assert env.get("BUILTIN_KEY") == "literal-val"
         assert "USER_KEY" not in env
 
