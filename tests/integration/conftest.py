@@ -49,6 +49,7 @@ async def _reset_ginlix_singleton():
 
 # Tables in dependency (FK) order -- children first so TRUNCATE CASCADE is safe
 _ALL_TABLES = [
+    "platform_secret_rollouts",
     "automation_executions",
     "automations",
     "conversation_feedback",
@@ -227,6 +228,7 @@ async def patched_get_db_connection(test_db_pool):
         "src.server.database.mcp_servers.get_db_connection",
         # Services that hold their own from-import of get_db_connection
         "src.server.services.user_data_io.get_db_connection",
+        "src.server.services.platform_secret_rollout.get_db_connection",
     ]
     from contextlib import ExitStack
 

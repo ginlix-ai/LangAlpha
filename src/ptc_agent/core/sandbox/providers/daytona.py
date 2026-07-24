@@ -3,19 +3,21 @@
 import asyncio
 import hashlib
 import json
+from collections.abc import Sequence
 from typing import Any
 
 import structlog
-from daytona_sdk import AsyncDaytona
-from daytona_sdk import DaytonaConfig as SDKDaytonaConfig
-from daytona_sdk import FileUpload
-from daytona_sdk.common.daytona import (
+from daytona import (
+    AsyncDaytona,
+    CodeRunParams,
     CreateSandboxFromSnapshotParams,
+    CreateSnapshotParams,
+    DaytonaConfig as SDKDaytonaConfig,
+    FileUpload,
     Image,
+    Resources,
+    SessionExecuteRequest,
 )
-from daytona_sdk.common.sandbox import Resources
-from daytona_sdk.common.process import CodeRunParams, SessionExecuteRequest
-from daytona_sdk.common.snapshot import CreateSnapshotParams
 
 from ptc_agent.config.core import DaytonaConfig
 from ptc_agent.core.sandbox._defaults import (
@@ -32,6 +34,14 @@ from ptc_agent.core.sandbox.runtime import (
     SandboxProvider,
     SandboxRuntime,
     SessionCommandResult,
+)
+from ptc_agent.core.sandbox.platform_secrets import (
+    ReconciledPlatformSecret,
+    ResolvedPlatformSecret,
+)
+from ptc_agent.core.sandbox.providers.daytona_secrets import (
+    DaytonaSecretReconciler,
+    is_transient_daytona_error,
 )
 
 logger = structlog.get_logger(__name__)
@@ -107,11 +117,21 @@ class DaytonaRuntime(SandboxRuntime):
     async def start(self, timeout: int = 120) -> None:
         await self._sandbox.start(timeout=timeout)
 
-    async def stop(self, timeout: int = 120) -> None:
-        await self._sandbox.stop(timeout=timeout)
+    async def stop(self, timeout: int = 120, *, force: bool = False) -> None:
+        await self._sandbox.stop(timeout=timeout, force=force)
 
     async def delete(self) -> None:
         await self._sandbox.delete()
+
+    async def update_env(
+        self, env: dict[str, str], *, unset: Sequence[str] = ()
+    ) -> None:
+        """Update the daemon environment inherited by newly spawned processes."""
+        await self._sandbox.update_env(env, unset=list(unset))
+
+    async def update_secrets(self, secrets: dict[str, str]) -> None:
+        """Replace the complete set of Daytona Secret mounts."""
+        await self._sandbox.update_secrets(secrets)
 
     async def get_state(self) -> RuntimeState:
         state = getattr(self._sandbox, "state", None)
@@ -119,6 +139,10 @@ class DaytonaRuntime(SandboxRuntime):
             return RuntimeState.ERROR
         state_value = state.value if hasattr(state, "value") else str(state)
         return _STATE_MAP.get(state_value, RuntimeState.ERROR)
+
+    async def refresh_state(self) -> RuntimeState:
+        await self._sandbox.refresh_data()
+        return await self.get_state()
 
     # -- Execution --
 
@@ -158,9 +182,7 @@ class DaytonaRuntime(SandboxRuntime):
         # Parse stderr
         if hasattr(result, "stderr"):
             stderr = result.stderr or ""
-        elif hasattr(result, "artifacts") and hasattr(
-            result.artifacts, "stderr"
-        ):
+        elif hasattr(result, "artifacts") and hasattr(result.artifacts, "stderr"):
             stderr = result.artifacts.stderr or ""
         else:
             stderr = ""
@@ -204,9 +226,7 @@ class DaytonaRuntime(SandboxRuntime):
         await self._sandbox.fs.upload_file(content, dest_path, timeout=_FS_TIMEOUT_S)
 
     async def upload_files(self, files: list[tuple[bytes | str, str]]) -> None:
-        batch = [
-            FileUpload(source=src, destination=dst) for src, dst in files
-        ]
+        batch = [FileUpload(source=src, destination=dst) for src, dst in files]
         await self._sandbox.fs.upload_files(batch, timeout=_FS_TIMEOUT_S)
 
     async def download_file(self, path: str) -> bytes:
@@ -244,15 +264,12 @@ class DaytonaRuntime(SandboxRuntime):
             stderr=result.stderr or "",
         )
 
-
     async def session_command_logs(
         self, session_id: str, command_id: str
     ) -> SessionCommandResult:
         cmd, logs = await asyncio.gather(
             self._sandbox.process.get_session_command(session_id, command_id),
-            self._sandbox.process.get_session_command_logs(
-                session_id, command_id
-            ),
+            self._sandbox.process.get_session_command_logs(session_id, command_id),
         )
         return SessionCommandResult(
             cmd_id=command_id,
@@ -317,15 +334,21 @@ class DaytonaRuntime(SandboxRuntime):
             "id": self.id,
             "working_dir": self.working_dir,
         }
-        for attr in ("cpu", "memory", "disk", "gpu", "created_at", "auto_stop_interval"):
+        for attr in (
+            "cpu",
+            "memory",
+            "disk",
+            "gpu",
+            "created_at",
+            "auto_stop_interval",
+            "recoverable",
+        ):
             val = getattr(self._sandbox, attr, None)
             if val is not None:
                 meta[attr] = val
         state = getattr(self._sandbox, "state", None)
         if state is not None:
-            meta["state"] = (
-                state.value if hasattr(state, "value") else str(state)
-            )
+            meta["state"] = state.value if hasattr(state, "value") else str(state)
         return meta
 
     @property
@@ -347,9 +370,7 @@ class DaytonaProvider(SandboxProvider):
     def __init__(self, config: DaytonaConfig, working_dir: str | None = None) -> None:
         self._config = config
         self._working_dir = working_dir or "/home/workspace"
-        sdk_config = SDKDaytonaConfig(
-            api_key=config.api_key, api_url=config.base_url
-        )
+        sdk_config = SDKDaytonaConfig(api_key=config.api_key, api_url=config.base_url)
         self._client = AsyncDaytona(sdk_config)
 
     # -- SandboxProvider interface --
@@ -358,6 +379,7 @@ class DaytonaProvider(SandboxProvider):
         self,
         *,
         env_vars: dict[str, str] | None = None,
+        platform_secret_bindings: dict[str, str] | None = None,
         mcp_packages: list[str] | None = None,
         tier: str | None = None,
         auto_stop_minutes: int | None = None,
@@ -367,6 +389,8 @@ class DaytonaProvider(SandboxProvider):
 
         Args:
             env_vars: Environment variables injected at creation time.
+            platform_secret_bindings: Environment-variable to organization
+                Secret-name mappings mounted by Daytona.
             mcp_packages: NPM packages for MCP servers (needed for snapshot).
             tier: Resource tier name. Hosted Daytona can't resize a snapshot
                 sandbox or override its resources at create time, so a tier's
@@ -436,6 +460,7 @@ class DaytonaProvider(SandboxProvider):
         params = CreateSandboxFromSnapshotParams(
             snapshot=snapshot_name if snapshot_name else None,
             env_vars=env_vars or None,
+            secrets=platform_secret_bindings or None,
             auto_stop_interval=auto_stop,
             auto_archive_interval=self._config.auto_archive_interval // 60,
             auto_delete_interval=self._config.auto_delete_interval // 60,
@@ -451,7 +476,8 @@ class DaytonaProvider(SandboxProvider):
     async def get(self, sandbox_id: str) -> DaytonaRuntime:
         sdk_sandbox = await self._client.get(sandbox_id)
         return DaytonaRuntime(
-            sdk_sandbox, default_working_dir=self._working_dir,
+            sdk_sandbox,
+            default_working_dir=self._working_dir,
         )
 
     async def close(self) -> None:
@@ -460,38 +486,16 @@ class DaytonaProvider(SandboxProvider):
         except Exception as e:
             logger.debug("Failed to close Daytona client", error=str(e))
 
+    async def reconcile_platform_secrets(
+        self, secrets: Sequence[ResolvedPlatformSecret]
+    ) -> tuple[ReconciledPlatformSecret, ...]:
+        """Create or update every required organization-scoped Secret."""
+
+        return await DaytonaSecretReconciler(self._client).reconcile(secrets)
+
     def is_transient_error(self, exc: Exception) -> bool:
         """Classify whether *exc* is a transient Daytona SDK error."""
-        message = str(exc).lower()
-
-        # A closed HTTP client means the command never reached the server.
-        # The SDK wraps these as "Failed to execute command: Session is closed"
-        # so we must check BEFORE the execution-error guard.
-        client_dead_markers = ("session is closed", "client is closed")
-        if any(marker in message for marker in client_dead_markers):
-            return True
-
-        # Execution errors are not transient — the command ran and the server
-        # responded. Don't let "timeout" in the server message trigger
-        # transient handling.
-        if message.startswith("failed to execute command"):
-            return False
-        transient_markers = (
-            "remote end closed connection",
-            "remotedisconnected",
-            "connection aborted",
-            "connection reset",
-            "broken pipe",
-            "timed out",
-            "timeout",
-            "service unavailable",
-            "no ip address found",
-            "400",
-            "502",
-            "503",
-            "504",
-        )
-        return any(marker in message for marker in transient_markers)
+        return is_transient_daytona_error(exc)
 
     # -- Snapshot management --
 
@@ -555,9 +559,7 @@ class DaytonaProvider(SandboxProvider):
         config_str = json.dumps(config_data, sort_keys=True)
         return hashlib.sha256(config_str.encode()).hexdigest()[:8]
 
-    def _create_snapshot_image(
-        self, mcp_packages: list[str] | None = None
-    ) -> Image:
+    def _create_snapshot_image(self, mcp_packages: list[str] | None = None) -> Image:
         """Build the declarative Image definition for a snapshot."""
         dependencies = self.DEFAULT_DEPENDENCIES
         pkgs = mcp_packages or []
@@ -585,7 +587,7 @@ class DaytonaProvider(SandboxProvider):
                 "mv /root/.local/bin/uv /root/.local/bin/uvx /usr/local/bin/",
                 # Node.js: pinned direct binary (matches Dockerfile.sandbox;
                 # avoids apt-mirror flakiness and unpinned-version drift).
-                "NODE_ARCH=$([ \"$(dpkg --print-architecture)\" = \"arm64\" ]"
+                'NODE_ARCH=$([ "$(dpkg --print-architecture)" = "arm64" ]'
                 " && echo arm64 || echo x64)"
                 f" && curl -fsSL https://nodejs.org/dist/v{SANDBOX_NODE_VERSION}/"
                 f"node-v{SANDBOX_NODE_VERSION}-linux-${{NODE_ARCH}}.tar.xz"
@@ -594,16 +596,16 @@ class DaytonaProvider(SandboxProvider):
                 " && rm /tmp/node.tar.xz",
                 *[f"npm install -g {pkg}" for pkg in pkgs],
                 "npm install -g docx pptxgenjs",
-                'GH_ARCH=$(dpkg --print-architecture)'
+                "GH_ARCH=$(dpkg --print-architecture)"
                 " && curl -fsSL https://github.com/cli/cli/releases/download/"
-                'v2.87.3/gh_2.87.3_linux_${GH_ARCH}.tar.gz -o /tmp/gh.tar.gz'
+                "v2.87.3/gh_2.87.3_linux_${GH_ARCH}.tar.gz -o /tmp/gh.tar.gz"
                 " && tar -xzf /tmp/gh.tar.gz -C /tmp"
-                ' && mv /tmp/gh_2.87.3_linux_${GH_ARCH}/bin/gh /usr/local/bin/gh'
-                ' && rm -rf /tmp/gh.tar.gz /tmp/gh_2.87.3_linux_${GH_ARCH}',
+                " && mv /tmp/gh_2.87.3_linux_${GH_ARCH}/bin/gh /usr/local/bin/gh"
+                " && rm -rf /tmp/gh.tar.gz /tmp/gh_2.87.3_linux_${GH_ARCH}",
                 "POLY_ARCH=$(uname -m)"
                 " && curl -fsSL https://github.com/Polymarket/polymarket-cli/"
                 "releases/download/v0.1.4/"
-                'polymarket-v0.1.4-${POLY_ARCH}-unknown-linux-gnu.tar.gz'
+                "polymarket-v0.1.4-${POLY_ARCH}-unknown-linux-gnu.tar.gz"
                 " -o /tmp/polymarket.tar.gz"
                 " && tar -xzf /tmp/polymarket.tar.gz -C /tmp"
                 " && mv /tmp/polymarket /usr/local/bin/polymarket"
@@ -781,9 +783,7 @@ class DaytonaProvider(SandboxProvider):
                         logger.warning("Snapshot build timed out")
                         snapshot_exists = False
                 else:
-                    logger.warning(
-                        f"Snapshot in unexpected state: {state}"
-                    )
+                    logger.warning(f"Snapshot in unexpected state: {state}")
                     snapshot_exists = False
             else:
                 snapshot_exists = False
@@ -802,9 +802,7 @@ class DaytonaProvider(SandboxProvider):
                     CreateSnapshotParams(
                         name=snapshot_name, image=image, resources=resources
                     ),
-                    on_logs=lambda log: logger.debug(
-                        "Snapshot build", log=log
-                    ),
+                    on_logs=lambda log: logger.debug("Snapshot build", log=log),
                 )
                 logger.info(
                     "Snapshot created successfully",
@@ -823,9 +821,7 @@ class DaytonaProvider(SandboxProvider):
                 return None
 
         if snapshot_exists:
-            logger.info(
-                "Using existing snapshot", snapshot_name=snapshot_name
-            )
+            logger.info("Using existing snapshot", snapshot_name=snapshot_name)
             return snapshot_name
 
         logger.warning("Snapshot not found and auto_create disabled")

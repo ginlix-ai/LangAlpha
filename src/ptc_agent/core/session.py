@@ -53,6 +53,11 @@ class Session:
         self.mcp_tool_summary: str | None = None
         self.mcp_config_version: int | None = None
 
+        # The platform-secret fleet generation whose bindings were last applied
+        # to this session's sandbox (the ``mcp_config_version`` analog) — lets
+        # the per-acquisition resync short-circuit without touching the provider.
+        self.platform_secret_version: int | None = None
+
         # agent.md cache with dirty flag (force first read)
         self._agent_md_cache: str | None = None
         self._agent_md_dirty: bool = True

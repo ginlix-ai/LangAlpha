@@ -140,8 +140,8 @@ class DockerRuntime(SandboxRuntime):
     async def start(self, timeout: int = 120) -> None:
         await self._container.start()
 
-    async def stop(self, timeout: int = 60) -> None:
-        await self._container.stop(t=timeout)
+    async def stop(self, timeout: int = 60, *, force: bool = False) -> None:
+        await self._container.stop(t=0 if force else timeout)
 
     async def delete(self) -> None:
         try:
