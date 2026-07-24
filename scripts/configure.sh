@@ -360,8 +360,22 @@ case $sandbox in
     2)
         key=$(prompt_secret "DAYTONA_API_KEY")
         [ -n "$key" ] && set_env "DAYTONA_API_KEY" "$key"
+        # Daytona Secrets are organization-scoped. Derive a stable default from
+        # this machine + checkout path so local/staging deployments cannot
+        # accidentally update another deployment's platform Secret (path alone
+        # collides across containers that all mount /app), while still letting
+        # operators choose an explicit production namespace.
+        namespace_default="langalpha-local-$(printf '%s' "$(hostname)-$REPO_ROOT" | cksum | awk '{print $1}')"
+        # Enforce the same format resolve_platform_secrets requires at boot so an
+        # invalid entry fails here, not as a fail-closed startup error later.
+        while true; do
+            namespace=$(prompt_choice "DAYTONA_SECRET_NAMESPACE" "$namespace_default")
+            printf '%s' "$namespace" | grep -Eq '^[A-Za-z_][A-Za-z0-9_-]{0,62}$' && break
+            printf "  Invalid namespace: must match ^[A-Za-z_][A-Za-z0-9_-]{0,62}\$ (letters/digits/_/-, max 63 chars)\n" >&2
+        done
+        set_env "DAYTONA_SECRET_NAMESPACE" "$namespace"
         set_env "SANDBOX_PROVIDER" "daytona"
-        success "Daytona configured — cloud sandboxes with workspace persistence"
+        success "Daytona configured — namespace: $namespace"
         ;;
     *)
         info "Skipping sandbox config."

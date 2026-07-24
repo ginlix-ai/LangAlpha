@@ -37,6 +37,21 @@ sandbox:
     snapshot_name: "langalpha" # Base name for snapshot (hash will be appended)
     snapshot_auto_create: true # Automatically create snapshot if it doesn't exist
 
+  # Platform-secret catalog — Daytona provider only (ignored under docker/memory).
+  # Each entry delivers a backend-owned API key into sandboxes as a managed
+  # Secret: the sandbox env var holds an opaque placeholder, and Daytona
+  # substitutes the real value into outbound HTTPS request *headers* for the
+  # allowlisted hosts only. Declared per deployment (not code); an entry is the
+  # opt-in and works in OSS mode too. Uncomment the FMP example to enable —
+  # boot then fail-closes unless DAYTONA_SECRET_NAMESPACE and the source env
+  # var are set.
+  # platform_secrets:
+  #   - source_env_var: "FMP_API_KEY"        # read from the host .env
+  #     sandbox_env_var: "FMP_API_KEY"       # placeholder-bearing var in the sandbox
+  #     name_suffix: "platform-fmp-api-key"  # Secret name = <DAYTONA_SECRET_NAMESPACE>-<suffix>
+  #     description: "Platform FMP API key"
+  #     hosts: ["financialmodelingprep.com"] # egress substitution allowlist
+
   # Docker local sandbox configuration
   # Ignored when provider is "daytona". Override with DOCKER_SANDBOX_* env vars.
   docker:
