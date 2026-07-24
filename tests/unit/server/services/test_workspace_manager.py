@@ -3133,3 +3133,157 @@ class TestDuplicateWorkspace:
         mock_status.assert_awaited_once_with(workspace_id=new_id, status="error")
         # Orphaned sandbox is torn down, not left billing.
         mock_session_mgr.cleanup_session.assert_awaited_once_with(new_id)
+
+
+# ---------------------------------------------------------------------------
+# Platform-secret wiring
+# ---------------------------------------------------------------------------
+
+class TestPlatformSecretWiring:
+    """Wiring between the platform-secret hooks and session lifecycle."""
+
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+
+    def teardown_method(self):
+        WorkspaceManager.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_evict_session_if_present(self):
+        # Public out-of-band invalidation (used by the sweeper after a scrub):
+        # evicts under the workspace lock when cached, no-ops otherwise.
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        session = _make_mock_session()
+        workspace_id = "ws-evict"
+        manager._sessions[workspace_id] = session
+
+        with patch(
+            "src.server.services.workspace_manager."
+            "SessionManager.cleanup_session",
+            AsyncMock(),
+        ) as cleanup:
+            assert await manager.evict_session_if_present(workspace_id) is True
+            cleanup.assert_awaited_once_with(workspace_id)
+            assert workspace_id not in manager._sessions
+            assert await manager.evict_session_if_present(workspace_id) is False
+
+    @pytest.mark.asyncio
+    async def test_hot_resync_failure_propagates_without_evicting_session(self):
+        # The resync is non-destructive and re-checked on every slow-path
+        # acquisition, so a failure must NOT evict the session caches (retry
+        # is structural) and must NOT touch the lazy-start lifecycle state.
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        session = _make_mock_session()
+        session.sandbox.runtime = MagicMock()
+        session.platform_secret_version = None
+        workspace = _make_workspace()
+        workspace_id = workspace["workspace_id"]
+        manager._sessions[workspace_id] = session
+        manager._pending_lazy_sync.add(workspace_id)
+        manager._pending_tier_recheck.add(workspace_id)
+
+        with (
+            patch(
+                "ptc_agent.core.sandbox.platform_secrets."
+                "platform_secrets_active",
+                return_value=True,
+            ),
+            patch(
+                "src.server.services.platform_secret_rollout."
+                "resync_workspace_platform_secret",
+                AsyncMock(side_effect=RuntimeError("remount failed")),
+            ),
+            patch(
+                "src.server.services.workspace_manager."
+                "SessionManager.cleanup_session",
+                AsyncMock(),
+            ) as cleanup,
+        ):
+            with pytest.raises(RuntimeError, match="remount failed"):
+                await manager._apply_session_platform_secret(
+                    workspace_id, session, ws_version=1
+                )
+
+        cleanup.assert_not_awaited()
+        assert manager._sessions.get(workspace_id) is session
+        assert workspace_id in manager._pending_lazy_sync
+        assert workspace_id in manager._pending_tier_recheck
+        assert session.platform_secret_version is None
+
+    @pytest.mark.asyncio
+    async def test_hot_resync_stamps_session_with_applied_generation(self):
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        session = _make_mock_session()
+        session.sandbox.runtime = MagicMock()
+        session.platform_secret_version = None
+        workspace = _make_workspace()
+        workspace_id = workspace["workspace_id"]
+
+        resync = AsyncMock(return_value=3)
+        with (
+            patch(
+                "ptc_agent.core.sandbox.platform_secrets."
+                "platform_secrets_active",
+                return_value=True,
+            ),
+            patch(
+                "src.server.services.platform_secret_rollout."
+                "resync_workspace_platform_secret",
+                resync,
+            ),
+        ):
+            await manager._apply_session_platform_secret(
+                workspace_id, session, ws_version=2
+            )
+
+        assert session.platform_secret_version == 3
+        kwargs = resync.await_args.kwargs
+        assert kwargs["workspace_id"] == workspace_id
+        assert kwargs["sandbox_id"] == "sandbox-abc"
+        assert kwargs["db_version"] == 2
+        assert kwargs["applied_generation"] is None
+
+    @pytest.mark.asyncio
+    async def test_provision_falls_back_to_plain_running_when_certify_is_inert(
+        self,
+    ):
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        session = _make_mock_session()
+        session.sandbox.runtime = MagicMock()
+        workspace = _make_workspace()
+        workspace_id = workspace["workspace_id"]
+
+        certify = AsyncMock(return_value=None)
+        status = AsyncMock(return_value=workspace)
+        with (
+            patch.object(manager, "_mint_sandbox_tokens", AsyncMock(return_value={})),
+            patch(
+                "src.server.services.workspace_manager.SessionManager"
+            ) as session_mgr,
+            patch.object(manager, "_apply_session_mcp", AsyncMock(return_value=None)),
+            patch.object(manager, "_sync_sandbox_assets", AsyncMock()),
+            patch(
+                "src.server.services.platform_secret_rollout."
+                "certify_new_workspace_sandbox",
+                certify,
+            ),
+            patch(
+                "src.server.services.workspace_manager.update_workspace_status",
+                status,
+            ),
+        ):
+            session_mgr.get_session.return_value = session
+            result_session, record = await manager._provision_sandbox_session(
+                workspace_id,
+                "user-1",
+                ws_version=None,
+                kick_discovery=False,
+                post_init=AsyncMock(),
+            )
+
+        assert result_session is session
+        assert record is workspace
+        certify.assert_awaited_once()
+        status.assert_awaited_once_with(
+            workspace_id=workspace_id, status="running", sandbox_id="sandbox-abc"
+        )
