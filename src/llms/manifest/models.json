@@ -570,6 +570,24 @@
       }
     }
   },
+  "atlascloud-qwen3.5-flash": {
+    "model_id": "qwen/qwen3.5-flash",
+    "provider": "atlascloud",
+    "display_name": "Qwen3.5 Flash (Atlas Cloud)",
+    "visible": true,
+    "input_modalities": [
+      "text"
+    ]
+  },
+  "atlascloud-deepseek-v4-pro": {
+    "model_id": "deepseek-ai/deepseek-v4-pro",
+    "provider": "atlascloud",
+    "display_name": "DeepSeek V4 Pro (Atlas Cloud)",
+    "visible": true,
+    "input_modalities": [
+      "text"
+    ]
+  },
   "glm-5.1": {
     "model_id": "glm-5.1",
     "provider": "z-ai",

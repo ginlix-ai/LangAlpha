@@ -355,6 +355,19 @@
     ],
     "lm-studio": [],
     "openrouter": [],
+    "atlascloud": [
+      {
+        "id": "qwen/qwen3.5-flash",
+        "name": "Qwen3.5 Flash (Atlas Cloud)",
+        "description": "Qwen3.5 Flash served through Atlas Cloud's OpenAI-compatible API"
+      },
+      {
+        "id": "deepseek-ai/deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro (Atlas Cloud)",
+        "is_reasoning": true,
+        "description": "DeepSeek V4 Pro served through Atlas Cloud's OpenAI-compatible API"
+      }
+    ],
     "deepseek": [
       {
         "id": "deepseek-v4-pro",
@@ -1615,6 +1628,18 @@
           "comment": "DeepInfra models accessed via OpenRouter with provider routing"
         }
       }
+    },
+    "atlascloud": {
+      "sdk": "openai",
+      "base_url": "https://api.atlascloud.ai/v1",
+      "env_key": "ATLASCLOUD_API_KEY",
+      "env_key_aliases": [
+        "ATLAS_CLOUD_API_KEY"
+      ],
+      "access_type": "api_key",
+      "byok_eligible": true,
+      "use_response_api": false,
+      "display_name": "Atlas Cloud"
     },
     "deepseek": {
       "sdk": "anthropic",
