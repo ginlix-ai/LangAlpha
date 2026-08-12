@@ -7,11 +7,27 @@ Provides common validation functions for URLs, data formats, and other inputs.
 import asyncio
 import io
 import logging
-import httpx
+import re
+from datetime import datetime
 from typing import Optional
+
+import httpx
 from PIL import Image
 
 logger = logging.getLogger(__name__)
+
+
+def validate_date_format(date_str: Optional[str]) -> Optional[str]:
+    """Validate a YYYY-MM-DD date string, returning it unchanged (None passes)."""
+    if date_str is None:
+        return None
+    if not re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
+        raise ValueError(f"Date must be in YYYY-MM-DD format, got: {date_str}")
+    try:
+        datetime.strptime(date_str, '%Y-%m-%d')
+    except ValueError as e:
+        raise ValueError(f"Invalid date: {date_str}. {str(e)}")
+    return date_str
 
 # OpenAI Vision API supported image formats
 # Reference: https://platform.openai.com/docs/guides/vision

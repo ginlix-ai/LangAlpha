@@ -13,6 +13,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import WorkspaceImage from './WorkspaceImage';
 import { isFilePath, isImagePath, normalizeFilePath, parseWsPath } from './FileCard';
 import { normalizeFileRefs } from '../utils/normalizeFileRefs';
+import { mapOutsideCode, mapOutsideMultilineCode } from '../utils/markdownSegments';
 import CitationBubble from './CitationBubble';
 
 // Sanitize schema: extends GitHub-style defaults to allow KaTeX output,
@@ -245,8 +246,8 @@ const chatPre = ({ node: _node, children, ..._props }: MarkdownComponentProps) =
 };
 const chatBlockquote = ({ node: _node, ...props }: MarkdownComponentProps) => (
   <blockquote
-    className="border-l-4 pl-4 my-2 italic"
-    style={{ borderColor: 'var(--color-accent-primary)', color: 'var(--color-text-primary)', opacity: 0.8 }}
+    className="border-l-2 pl-4 my-2 italic"
+    style={{ borderColor: 'var(--color-border-elevated)', color: 'var(--color-text-primary)', opacity: 0.8 }}
     {...props}
   />
 );
@@ -337,7 +338,7 @@ const panelA = ({ node: _node, ...props }: MarkdownComponentProps) => (
 const panelBlockquote = ({ node: _node, ...props }: MarkdownComponentProps) => (
   <blockquote
     className="pl-3 my-2"
-    style={{ borderLeft: '3px solid var(--color-accent-overlay)', color: 'var(--color-text-primary)' }}
+    style={{ borderLeft: '2px solid var(--color-border-elevated)', color: 'var(--color-text-primary)' }}
     {...props}
   />
 );
@@ -615,10 +616,22 @@ interface MarkdownProps {
 
 function Markdown({ content, variant = 'panel', className = '', style, onOpenFile, codeTheme }: MarkdownProps): React.ReactElement {
   const config = VARIANTS[variant];
-  const processed = useMemo(
-    () => normalizeLatexDelimiters(escapeCurrencyDollars(transformCitationBubbles(fixMarkdownTables(normalizeFileRefs(stripFrontMatter(content)))))),
-    [content]
-  );
+  // Every pass below rewrites prose before the markdown parser sees it, so each
+  // one has to say how much of the string it may touch. Inside code, markdown
+  // stops interpreting escapes and raw HTML — a rewrite that lands there is
+  // visible corruption and makes the Copy button return unparseable text.
+  const processed = useMemo(() => {
+    // Whole-string by design: front matter is anchored at the start, and
+    // normalizeFileRefs deliberately unwraps backticks around file refs.
+    const base = normalizeFileRefs(stripFrontMatter(content));
+    // Table repair is line-structural, so it reads whole lines and has to stay
+    // out of the code spans that own one — fenced, or inline across a break.
+    const tables = mapOutsideMultilineCode(base, fixMarkdownTables);
+    // These inject characters and tags, which is corruption inside any code.
+    return mapOutsideCode(tables, (prose) =>
+      normalizeLatexDelimiters(escapeCurrencyDollars(transformCitationBubbles(prose)))
+    );
+  }, [content]);
 
   const lineKey = useMemo(() => (processed.match(/\n/g) || []).length, [processed]);
 
@@ -697,9 +710,11 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
     return { ...result, a: fileAwareA };
   }, [onOpenFile, variant, config.components, codeTheme]);
 
+  // Rendered markdown is always long-form reading content — every call site
+  // (transcript, detail panels, memos, plans) gets the content face here.
   return (
     <div
-      className={`${config.className} ${className}`.trim()}
+      className={`font-content ${config.className} ${className}`.trim()}
       style={{ ...config.style, ...style }}
     >
       <ReactMarkdown key={lineKey} remarkPlugins={[[remarkGfm, { singleTilde: false }], remarkCjkFriendly, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false }], rehypeRaw, [rehypeSanitize, sanitizeSchema]]} components={components}>

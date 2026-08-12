@@ -3,14 +3,44 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Sequence
+import posixpath
+from typing import Any, Protocol, Sequence
 
 import structlog
 
-from ptc_agent.agent.backends.langgraph_store import StoreBackend
 from ptc_agent.agent.backends.sandbox import SandboxBackend
 
 logger = structlog.get_logger(__name__)
+
+
+class FilesystemRoute(Protocol):
+    """Structural contract for a prefix-mounted route (StoreBackend,
+    WorkflowsBackend, UserDataBackend, …): the composite dispatches these
+    seven members and nothing else."""
+
+    @property
+    def root_prefix(self) -> str: ...
+
+    async def aread_text(self, file_path: str) -> str | None: ...
+
+    async def aread_range(
+        self, file_path: str, offset: int = 0, limit: int = 2000
+    ) -> str | None: ...
+
+    async def awrite_text(self, file_path: str, content: str) -> bool: ...
+
+    async def aedit_text(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        *,
+        replace_all: bool = False,
+    ) -> dict[str, Any]: ...
+
+    async def aglob_paths(self, pattern: str, path: str = ".") -> list[str]: ...
+
+    async def agrep_rich(self, pattern: str, path: str = ".", **kwargs: Any) -> Any: ...
 
 
 class CompositeFilesystemBackend:
@@ -20,28 +50,41 @@ class CompositeFilesystemBackend:
         self,
         *,
         sandbox: SandboxBackend,
-        routes: Sequence[StoreBackend],
+        routes: Sequence[FilesystemRoute],
     ) -> None:
         self._sandbox = sandbox
         # Longest prefix wins.
-        self._routes: list[StoreBackend] = sorted(
+        self._routes: list[FilesystemRoute] = sorted(
             routes, key=lambda b: len(b.root_prefix), reverse=True
         )
 
-    @staticmethod
-    def _looks_memory_targeted(raw_path: str) -> bool:
-        return any(
-            f".agents/{tier}/memory/" in raw_path
-            for tier in ("user", "workspace")
-        )
+    def _escapes_a_mount(self, path: str) -> bool:
+        """True if a `..` in `path` steps out of — or into — a mounted route.
+
+        Asked of every route rather than a fixed tier list, so a new mount is
+        covered the moment it is registered. Both directions have to be
+        checked, because the sandbox normalizer preserves `..`: the head
+        before each `..` catches a path leaving a mount, and the collapsed
+        target catches one walking back in, which would otherwise route to
+        the sandbox FS and shadow the store's copy for good.
+        """
+        segments = path.split("/")
+        if ".." not in segments:
+            return False
+        for index, segment in enumerate(segments):
+            if segment != "..":
+                continue
+            head = "/".join(segments[:index])
+            if head and self._route_for(self._sandbox.normalize_path(head)):
+                return True
+        collapsed = posixpath.normpath(self._sandbox.normalize_path(path))
+        return self._route_for(collapsed) is not None
 
     def normalize_path(self, path: str) -> str:
-        # `..` on a memory path could normalize into the sandbox FS and silently
-        # bypass the store. Reject at the perimeter.
-        if ".." in path.split("/") and self._looks_memory_targeted(path):
-            raise ValueError(
-                f"Path traversal not allowed on memory paths: {path!r}"
-            )
+        # `..` on a mounted path could normalize into the sandbox FS and
+        # silently bypass the store. Reject at the perimeter.
+        if self._escapes_a_mount(path):
+            raise ValueError(f"Path traversal not allowed on mounted paths: {path!r}")
         return self._sandbox.normalize_path(path)
 
     def virtualize_path(self, path: str) -> str:
@@ -67,7 +110,7 @@ class CompositeFilesystemBackend:
             raise AttributeError(name)
         return getattr(sandbox, name)
 
-    def _route_for(self, normalized_path: str) -> StoreBackend | None:
+    def _route_for(self, normalized_path: str) -> FilesystemRoute | None:
         for route in self._routes:
             prefix = route.root_prefix
             if normalized_path.startswith(prefix):

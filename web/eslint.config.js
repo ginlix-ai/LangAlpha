@@ -81,8 +81,10 @@ export default [
   },
 
   {
-    files: ['vite.config.js'],
+    files: ['vite.config.js', 'scripts/**/*.mjs'],
     languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
       globals: { ...globals.node },
     },
   },

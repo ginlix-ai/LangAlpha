@@ -9,7 +9,13 @@ This module provides:
 - Helper functions for skill management
 """
 
-from ptc_agent.agent.middleware.skills.content import load_skill_content
+from ptc_agent.agent.middleware.skills.content import (
+    SkillPrefixResult,
+    SkillRequest,
+    build_skill_content,
+    compute_already_loaded,
+    load_skill_content,
+)
 from ptc_agent.agent.middleware.skills.discovery import SkillMetadata
 from ptc_agent.agent.middleware.skills.lock import (
     SkillLockEntry,
@@ -38,7 +44,11 @@ __all__ = [
     "SkillMode",
     "SkillsLockFile",
     "SKILL_REGISTRY",
+    "SkillPrefixResult",
+    "SkillRequest",
     "SkillsMiddleware",
+    "build_skill_content",
+    "compute_already_loaded",
     "get_command_to_skill_map",
     "get_skill",
     "get_skill_registry",

@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from src.server.utils.checkpoint_helpers import (
     build_checkpoint_config,
     get_checkpointer,
+    walk_current_branch_boundaries,
 )
 from src.server.models.workflow import (
     TurnCheckpointInfo,
@@ -41,86 +42,34 @@ async def get_thread_turns(
     Returns:
         ThreadTurnsResponse with per-turn checkpoint info and retry checkpoint ID
     """
-    checkpointer = get_checkpointer()
-    config = build_checkpoint_config(thread_id)
-
-    # Collect all checkpoints (alist returns newest first)
-    checkpoints = []
     try:
-        async for cp_tuple in checkpointer.alist(config):
-            checkpoints.append(cp_tuple)
+        boundaries, tip_id = await walk_current_branch_boundaries(
+            get_checkpointer(), thread_id, branch_tip_checkpoint_id
+        )
     except Exception as e:
         logger.error(f"[CHECKPOINT] Failed to list checkpoints for thread {thread_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve checkpoint history")
 
-    if not checkpoints:
-        return ThreadTurnsResponse(
-            thread_id=thread_id,
-            turns=[],
-            retry_checkpoint_id=None,
-        )
-
-    # Build lookup: checkpoint_id -> cp_tuple
-    cp_by_id = {}
-    for cp in checkpoints:
-        cp_id = cp.config["configurable"]["checkpoint_id"]
-        cp_by_id[cp_id] = cp
-
-    # Determine branch tip: prefer stored checkpoint_id, fall back to newest.
-    if branch_tip_checkpoint_id and branch_tip_checkpoint_id in cp_by_id:
-        latest = cp_by_id[branch_tip_checkpoint_id]
-    else:
-        latest = checkpoints[0]
-    current_branch: set[str] = set()
-    current_id: str | None = latest.config["configurable"]["checkpoint_id"]
-    while current_id and current_id in cp_by_id:
-        current_branch.add(current_id)
-        cp = cp_by_id[current_id]
-        current_id = (
-            cp.parent_config["configurable"].get("checkpoint_id")
-            if cp.parent_config
-            else None
-        )
-
-    # Collect turns: source=input checkpoints (user messages) and HITL resume
-    # boundaries (__resume__ in pending_writes) on the current branch,
-    # processed in chronological order (reverse of alist).
     turns = []
-    for cp_tuple in reversed(checkpoints):
+    for cp_tuple in boundaries:
         cp_id = cp_tuple.config["configurable"]["checkpoint_id"]
-        if cp_id not in current_branch:
-            continue
-        metadata = cp_tuple.metadata or {}
-        is_source_input = metadata.get("source") == "input"
+        # The parent checkpoint is the state BEFORE this turn — only meaningful
+        # for a source=input turn (a resume shares its interrupted turn's state).
+        is_source_input = (cp_tuple.metadata or {}).get("source") == "input"
+        edit_checkpoint_id = None
+        if is_source_input and cp_tuple.parent_config:
+            edit_checkpoint_id = cp_tuple.parent_config["configurable"].get("checkpoint_id")
 
-        # Detect HITL resume: checkpoint has __resume__ in pending_writes.
-        # Command(resume=...) creates source=loop (not source=input), so
-        # we detect these by looking for the __resume__ channel.
-        is_hitl_resume = False
-        if not is_source_input and cp_tuple.pending_writes:
-            is_hitl_resume = any(
-                channel == "__resume__"
-                for _, channel, _ in cp_tuple.pending_writes
-            )
-
-        if is_source_input or is_hitl_resume:
-            # The parent checkpoint is the state BEFORE this turn
-            edit_checkpoint_id = None
-            if is_source_input and cp_tuple.parent_config:
-                edit_checkpoint_id = cp_tuple.parent_config["configurable"].get("checkpoint_id")
-
-            turns.append(TurnCheckpointInfo(
-                turn_index=len(turns),
-                edit_checkpoint_id=edit_checkpoint_id,
-                regenerate_checkpoint_id=cp_id,
-            ))
-
-    retry_checkpoint_id = latest.config["configurable"]["checkpoint_id"]
+        turns.append(TurnCheckpointInfo(
+            turn_index=len(turns),
+            edit_checkpoint_id=edit_checkpoint_id,
+            regenerate_checkpoint_id=cp_id,
+        ))
 
     return ThreadTurnsResponse(
         thread_id=thread_id,
         turns=turns,
-        retry_checkpoint_id=retry_checkpoint_id,
+        retry_checkpoint_id=tip_id,
     )
 
 

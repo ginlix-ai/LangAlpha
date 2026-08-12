@@ -29,6 +29,27 @@ describe('TradingViewEmbed', () => {
     expect(payload.symbols).toBeTruthy();
   });
 
+  // The two halves of the color-scheme fix that jsdom can see: the class
+  // tvEmbed.css keys its reset on, and the iframe living inside the node that
+  // carries it. jsdom has no cascade for color-scheme, so the rule itself is
+  // checked in tvEmbedColorScheme.test.ts and its effect in real Chromium in
+  // e2e/tv-embed-color-scheme.spec.js.
+  it('keeps the tv-embed-container class the color-scheme reset is keyed on', () => {
+    const { container } = render(<TradingViewEmbed scriptKey="ticker-tape" config={{}} />);
+    expect(container.querySelector('.tv-embed-container')).toBeTruthy();
+  });
+
+  // Inheritance is the whole delivery mechanism — we can't style TV's
+  // cross-origin iframe, only the node it grows inside. A refactor that built
+  // the TV subtree as a sibling would silently bring the white sheet back.
+  it('grows the TV subtree inside the reset node, not beside it', () => {
+    const { container } = render(<TradingViewEmbed scriptKey="ticker-tape" config={{}} />);
+    const host = container.querySelector<HTMLElement>('.tv-embed-container')!;
+    const widget = container.querySelector('.tradingview-widget-container__widget');
+    expect(widget).toBeTruthy();
+    expect(host.contains(widget)).toBe(true);
+  });
+
   it('shows the fallback state when no iframe materialises within 10s', () => {
     render(<TradingViewEmbed scriptKey="ticker-tape" config={{}} />);
     // No iframe — the timeout should trip and the fallback appears.

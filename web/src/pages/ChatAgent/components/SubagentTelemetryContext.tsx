@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import type { SubagentTelemetry } from '../utils/resolveSubagentTelemetry';
+import type { SubagentTelemetry } from '../session/subagents/resolveSubagentTelemetry';
 
 export type SubagentTelemetryResolver = (subagentId: string) => SubagentTelemetry | undefined;
 

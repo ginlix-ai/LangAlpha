@@ -38,7 +38,7 @@ export function SymbolField({ label, value, onChange, placeholder, helper }: Pro
         }}
       />
       {helper && (
-        <span className="text-[11px] mt-1 block" style={{ color: 'var(--color-text-tertiary)' }}>
+        <span className="text-[0.6875rem] mt-1 block" style={{ color: 'var(--color-text-tertiary)' }}>
           {helper}
         </span>
       )}

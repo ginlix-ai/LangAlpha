@@ -213,6 +213,32 @@ def _extract_text_from_summary(summary: Any) -> Optional[str]:
     return combined_text if combined_text else None
 
 
+def extract_reasoning_summary_index(content: Any) -> Optional[int]:
+    """Extract the summary_text item index from reasoning content.
+
+    OpenAI Response API streams reasoning chunks where each ``summary_text``
+    item carries an ``index`` (0, 1, 2…) identifying its reasoning "thought
+    step". When that index changes across chunks (e.g. 0→1) a new reasoning
+    section has started, so streaming callers insert a blank-line separator
+    before it — otherwise the next section's ``**Title**`` glues onto the end
+    of the previous section's prose. Returns None when the content is not
+    reasoning or carries no summary index.
+
+    Note: the top-level reasoning dict also has an ``index`` field, but that is
+    the position in the content array (always 0) — NOT the thought-step index.
+    """
+    items = [content] if isinstance(content, dict) else (content if isinstance(content, list) else [])
+    for item in items:
+        if not isinstance(item, dict) or item.get("type") != "reasoning":
+            continue
+        summary = item.get("summary")
+        if isinstance(summary, list):
+            for s in summary:
+                if isinstance(s, dict) and "index" in s:
+                    return s["index"]
+    return None
+
+
 # ============================================================================
 # LangChain Message Content Extraction
 # ============================================================================

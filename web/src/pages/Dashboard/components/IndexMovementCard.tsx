@@ -5,6 +5,7 @@ import { LineChart, Line, ResponsiveContainer, YAxis, Tooltip } from 'recharts';
 import { motion, AnimatePresence, type PanInfo } from 'framer-motion';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { createFormatter } from '@/lib/format';
+import { utcMsToETDate } from '@/lib/utils';
 import type { IndexData } from '@/types/market';
 
 const fmt2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -35,6 +36,7 @@ interface IndexMovementCardProps {
 
 function IndexCardContent({ index }: { index: IndexData }) {
   useTranslation();
+  const hasQuote = index.quoteAvailable !== false;
   const pos = index.isPositive;
   const ch = Number(index.change);
   const pct = Number(index.changePercent);
@@ -44,8 +46,17 @@ function IndexCardContent({ index }: { index: IndexData }) {
     typeof pt === 'object' ? { ...pt, i } : { val: pt as unknown as number, i },
   );
 
-  const today = new Date();
-  const dateStr = `${today.getMonth() + 1}/${today.getDate()}`;
+  // Show the date of the session the data belongs to (e.g. the last trading day
+  // when the market is closed/pre-open), falling back to today (ET) if unknown
+  // or malformed. ET — not browser-local — so the fallback matches the
+  // ET-derived asOfDate on sibling cards for users outside US timezones.
+  const dateStr = (() => {
+    const iso = /^\d{4}-\d{2}-\d{2}$/.test(index.asOfDate ?? '')
+      ? (index.asOfDate as string)
+      : utcMsToETDate(Date.now());
+    const [, mo, d] = iso.split('-');
+    return `${Number(mo)}/${Number(d)}`;
+  })();
 
   return (
     <>
@@ -73,13 +84,17 @@ function IndexCardContent({ index }: { index: IndexData }) {
               className="text-lg font-bold tracking-tight dashboard-mono"
               style={{ color: 'var(--color-text-primary)' }}
             >
-              {fmt2(Number(index.price))}
+              {hasQuote ? fmt2(Number(index.price)) : 'N/A'}
             </div>
             <div
               className="text-xs dashboard-mono"
-              style={{ color: pos ? 'var(--color-profit)' : 'var(--color-loss)' }}
+              style={{
+                color: hasQuote
+                  ? pos ? 'var(--color-profit)' : 'var(--color-loss)'
+                  : 'var(--color-text-secondary)',
+              }}
             >
-              {changeStr} {pctStr}
+              {hasQuote ? `${changeStr} ${pctStr}` : 'N/A'}
             </div>
           </div>
         </div>
@@ -93,7 +108,11 @@ function IndexCardContent({ index }: { index: IndexData }) {
               <Line
                 type="monotone"
                 dataKey="val"
-                stroke={pos ? 'var(--color-profit)' : 'var(--color-loss)'}
+                stroke={
+                  hasQuote
+                    ? pos ? 'var(--color-profit)' : 'var(--color-loss)'
+                    : 'var(--color-text-secondary)'
+                }
                 strokeWidth={1.5}
                 dot={false}
                 isAnimationActive={false}

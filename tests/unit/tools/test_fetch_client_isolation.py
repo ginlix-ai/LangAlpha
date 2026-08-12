@@ -1,6 +1,6 @@
 """Regression tests for web_fetch's extraction LLM handling.
 
-Two bugs collapse into one fix at ``src/tools/fetch.py::_extract_with_llm``:
+Two bugs collapse into one fix at ``src/tools/web/fetch.py::_extract_with_llm``:
 
 1. The shared ``subsidiary_llm_clients["fetch"]`` override was mutated in
    place when streaming was flipped to False — poisoning every subsequent
@@ -15,8 +15,8 @@ These tests pin both behaviors.
 import pytest
 
 from src.llms.extension.codex import ChatCodexOpenAI
-from src.tools import fetch as fetch_module
-from src.tools.fetch import _extract_with_llm, fetch_llm_client_override
+from src.tools.web import fetch as fetch_module
+from src.tools.web.fetch import _extract_with_llm, fetch_llm_client_override
 
 
 class _FakeLLM:
@@ -66,7 +66,7 @@ async def test_fetch_keeps_streaming_for_codex_override(monkeypatch):
     """Codex models ship with ``streaming=True`` for a reason — the proxy
     rejects ``stream=false``. The clone must keep streaming on."""
     override = ChatCodexOpenAI(
-        model="gpt-5.4",
+        model="gpt-5.6-sol",
         api_key="fake",
         output_version="responses/v1",
         store=False,

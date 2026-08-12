@@ -9,12 +9,30 @@ Build interactive web dashboards inside the sandbox and expose them to the user 
 
 ## When to Use
 
-- User asks for a **dashboard**, **tracker**, **monitor**, or **interactive chart**
-- User wants a **web app** or **live visualization** rather than a static image
-- User requests something that benefits from interactivity: filtering, drill-downs, hover tooltips, tab switching
-- User explicitly says "preview", "web view", or "interactive"
+Use this skill for a **live, served web app** — one that needs a running server, not a single file:
 
-**Do NOT use if:** User wants a static chart image (use matplotlib/plotly `savefig` instead) or a document/report (use docx/pptx skills).
+- User asks for a **dashboard**, **tracker**, or **monitor** that **refreshes live data** (polling, auto-update)
+- The app needs **server-side logic** — filtering/screening over a large dataset, on-demand fetches, computed endpoints
+- **Multi-page / routed** apps, or anything that needs React-level component interactivity
+- The dataset is **too large to embed** in a single HTML file
+- User explicitly says "preview", "web view", "web app", or wants it running at a URL
+
+**Do NOT use if:**
+- User wants a **self-contained HTML report** — even an *interactive* one (sortable tables, tabs, hover/zoom charts) over a **data snapshot**. That's `.agents/skills/html-report/SKILL.md`: one file in `results/`, keepable, printable, PDF-exportable, share-linkable. Interactivity by itself does **not** require a dashboard.
+- User wants a **static chart image** → matplotlib/plotly `savefig`.
+- User wants an **in-chat figure** → `inline-widget` (`ShowWidget`).
+
+### Dashboard vs. HTML Report
+
+Both can be interactive, so the divide is **live served app vs. self-contained snapshot file**, not static vs. interactive:
+
+| | interactive-dashboard (this skill) | html-report |
+|---|---|---|
+| Delivery | A **running server**, exposed via `GetPreviewUrl` | One **`.html` file** in `results/` |
+| Data | **Live / refreshing**, fetched from a backend; large datasets OK | A **snapshot** embedded in the file |
+| Interactivity | Full app — routing, server-side filtering, live updates | Client-side over the snapshot — sort, filter, tabs, chart hover/zoom |
+| Keep / print / share | A URL, live only while the workspace runs | Downloadable, PDF-exportable, share-linkable as one artifact |
+| Pick when | Data must be live, or compute/scale needs a server | The answer is a deliverable the user keeps |
 
 ## Architecture
 
@@ -22,7 +40,7 @@ Choose the tier based on complexity:
 
 | Tier | When | Stack | Serve command |
 |------|------|-------|---------------|
-| **Simple** | Static snapshot, few charts, no server-side logic | Self-contained HTML + CDN libs | `python -m http.server 8050 --bind 0.0.0.0` |
+| **Simple** | Snapshot-at-load data, few charts, no backend logic (still served via preview URL) | Self-contained HTML + CDN libs | `python -m http.server 8050 --bind 0.0.0.0` |
 | **FastAPI + HTML** | Live data refresh, server-side logic, no React needed | FastAPI serves `static/` + `fetch()` polling | `bash start.sh` |
 | **Complex** | Filtering, routing, component interactivity, multi-page | FastAPI backend + Vite/React frontend | `bash start.sh` |
 
@@ -186,7 +204,7 @@ html = f"""<!DOCTYPE html>
     <title>AAPL Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
     <style>
-        /* See references/ui-components.md for dark theme CSS */
+        /* See references/ui-components.md for the theme foundation CSS */
     </style>
 </head>
 <body>
@@ -345,21 +363,34 @@ hist = ticker.history(period="1y")
 
 ## UI Design Rules
 
-### Dark Theme (Default)
+Read `.agents/skills/ui-design/SKILL.md` for design quality (typography, color, avoiding generic AI aesthetics).
 
-Match the Ginlix platform aesthetic:
+### Theming
 
-| Element | Color |
-|---------|-------|
-| Page background | `#0f1117` |
-| Card background | `#1a1d27` |
-| Primary text | `#e5e7eb` |
-| Secondary text | `#9ca3af` |
-| Accent / links | `#3b82f6` |
-| Positive / gain | `#10b981` |
-| Negative / loss | `#ef4444` |
-| Border | `#2d3748` |
-| Hover highlight | `#252a36` |
+A dashboard must **follow the theme it is viewed in** — never ship a fixed palette:
+
+- **In the app**, the viewer injects theme tokens (`--color-bg-page`, `--color-text-primary`, …) that flip with the user's light/dark setting.
+- **Standalone** (downloaded and opened directly) no tokens exist, so the dashboard follows the OS via `prefers-color-scheme`.
+
+The **Theme Foundation block** in [references/ui-components.md](references/ui-components.md) §1 implements both: each bridge variable reads the app token first and falls back to an OS-adaptive value. Include that block **verbatim** in every dashboard, then style only with the bridge variables. Canvas/SVG chart code can't read `var()` — read the resolved value with the `pick()` helper (see [references/chart-patterns.md](references/chart-patterns.md)). **Never hardcode a palette hex in styles.**
+
+| Bridge variable | App token | Role |
+|---|---|---|
+| `--bg-page` | `--color-bg-page` | Page background |
+| `--bg-card` | `--color-bg-card` | Card / panel background |
+| `--bg-elevated` | `--color-bg-elevated` | Raised surface (menus, popovers) |
+| `--bg-subtle` | `--color-bg-subtle` | Zebra rows, quiet fills |
+| `--bg-hover` | `--color-bg-hover` | Hover highlight, table headers |
+| `--text-primary` | `--color-text-primary` | Primary text |
+| `--text-secondary` | `--color-text-secondary` | Labels, captions, axis ticks |
+| `--text-tertiary` | `--color-text-tertiary` | De-emphasized text |
+| `--border` | `--color-border-muted` | Borders, grid lines |
+| `--accent` | `--color-accent-primary` | Links, primary series, active tab |
+| `--positive` | `--color-profit` | Gains |
+| `--negative` | `--color-loss` | Losses |
+| `--warning` | `--color-warning` | Cautions |
+
+Light and dark literal values live **only** in the foundation block — don't restate them elsewhere.
 
 ### Layout
 
@@ -646,7 +677,8 @@ Before calling `GetPreviewUrl`:
 - [ ] Complex tier: FastAPI includes `HEAD /` endpoint (use `server-main.py` template)
 
 **UI Quality**
-- [ ] Dark theme applied consistently (see color table above)
+- [ ] Theme foundation block included verbatim; only bridge variables (and `pick()` for canvas colors) used — no palette hexes in styles
+- [ ] Renders correctly in **both** light and dark
 - [ ] Responsive layout — no horizontal scroll
 - [ ] Financial numbers properly formatted (currency, %, abbreviations)
 - [ ] Title passed to `GetPreviewUrl` is descriptive (e.g., "AAPL Stock Dashboard", not "Preview")

@@ -1,29 +1,80 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { RefreshCw } from 'lucide-react';
+import { ArrowLeft, RefreshCw, MessageSquare, ScrollText, X } from 'lucide-react';
 import { queryKeys } from '@/lib/queryKeys';
 import { ErrorBanner } from '@/components/ui/error-banner';
+import { Loader } from '@/components/ui/loader';
 import LogoLoading from '@/components/ui/logo-loading';
-import ChatInput from '@/components/ui/chat-input';
+import ChatInput, { type ChatInputHandle } from '@/components/ui/chat-input';
 import { useNarrowContainer } from '@/hooks/useNarrowContainer';
+import { useStableHandler } from '@/hooks/useStableHandler';
 import MessageList from '../../ChatAgent/components/MessageList';
+import { MessageActionsProvider, type MessageActions } from '../../ChatAgent/components/messageList/MessageActionsContext';
 import { SubagentTelemetryContext } from '../../ChatAgent/components/SubagentTelemetryContext';
+import { ChartSurfaceContext, type ChartSurface } from '../../ChatAgent/contexts/ChartSurfaceContext';
 import { WorkspaceProvider } from '../../ChatAgent/contexts/WorkspaceContext';
 import { useChatMessages } from '../../ChatAgent/hooks/useChatMessages';
-import { getFlashWorkspace } from '../../ChatAgent/utils/api';
+import { useActiveThreadPublisher } from '@/lib/threadLifecycle/useActiveThreadPublisher';
+import { getFlashWorkspace, getPreviewUrl, summarizeThread, offloadThread } from '../../ChatAgent/utils/api';
 import { attachmentsToContexts } from '../../ChatAgent/utils/fileUpload';
 import {
   resolveSubagentTelemetry as resolveSubagentTelemetryPure,
   type SubagentHistoryLike,
-} from '../../ChatAgent/utils/resolveSubagentTelemetry';
+} from '../../ChatAgent/session/subagents/resolveSubagentTelemetry';
 import type { ToolCallProcessRecord, SubagentInfo } from '../../ChatAgent/components/ToolCallDetailView';
 import type { PreviewData } from '../../ChatAgent/hooks/utils/types';
 import MarketChatHistoryButton from './MarketChatHistoryButton';
 import MarketDetailDialog, { type DialogPayload } from './MarketDetailDialog';
 import { getMarketThreadId, setMarketThreadId, clearMarketThreadId } from '../utils/threadPersistence';
+import { normalizeTimeframe } from '../stores/chartAnnotationStore';
+import { chartSelectionStore, useChartSelections, isConfirmedFor } from '../stores/chartSelectionStore';
+import { buildChartSelectionSend } from '../utils/selectionSend';
+import { marketViewAnnotationContext } from '../constants/annotationPrompt';
 import './MarketPanel.css';
+
+/** Compact status banner shown above the input (interrupt, compaction, etc.). */
+function bannerStyle(background: string): React.CSSProperties {
+  return {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '6px 10px',
+    borderRadius: 6,
+    background,
+    color: 'var(--color-text-tertiary)',
+    fontSize: '0.75rem',
+  };
+}
+
+/** Append a URL path suffix (e.g. "/report.html") to a resolved signed URL. */
+function appendPathSuffix(baseUrl: string, path?: string): string {
+  if (!path) return baseUrl;
+  try {
+    const parsed = new URL(baseUrl);
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '') + path;
+    return parsed.toString();
+  } catch {
+    return baseUrl;
+  }
+}
+
+/** Slash-command shapes emitted by ChatInput (skill/subagent pills, action verbs). */
+interface SlashCommandLike {
+  type: string;
+  name: string;
+  skillName?: string;
+}
+interface ActionCommandLike {
+  name: string;
+  type?: string;
+}
+interface ModelOptionsLike {
+  model?: string | null;
+  reasoningEffort?: string | null;
+  fastMode?: boolean | null;
+}
 
 interface Workspace {
   workspace_id: string;
@@ -41,6 +92,8 @@ interface AttachmentItem {
 
 interface MarketChatPanelProps {
   symbol: string;
+  /** Current chart interval — tells the agent which timeframe to annotate. */
+  interval: string;
   mode: 'fast' | 'ptc';
   onModeChange: (mode: 'fast' | 'ptc') => void;
   workspaces: Workspace[];
@@ -57,6 +110,10 @@ interface MarketChatPanelProps {
   onShuffleQueries: () => void;
   onNavigateSubagent?: (threadId: string, taskId: string) => void;
   placeholder?: string;
+  /** When set (navigated from chat context), shows a "Return to Chat" chip in the header. */
+  onReturnToChat?: () => void;
+  /** Switch the live chart to a symbol+timeframe (so a chip can jump to it). */
+  onJumpToChart?: (symbol: string, timeframe: string) => void;
 }
 
 /**
@@ -146,7 +203,7 @@ export default function MarketChatPanel(props: MarketChatPanelProps): React.Reac
   if (mode === 'ptc' && !activeWorkspaceId) {
     return (
       <div className="market-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, padding: 16 }}>
-        <span style={{ color: 'var(--color-text-tertiary)', fontSize: 14 }}>
+        <span style={{ color: 'var(--color-text-tertiary)', fontSize: '0.875rem' }}>
           {t('marketView.chatPanel.noWorkspacePrompt')}
         </span>
       </div>
@@ -187,6 +244,7 @@ interface ChatBodyProps extends MarketChatPanelProps {
 function ChatBody(props: ChatBodyProps): React.ReactElement {
   const {
     symbol,
+    interval,
     mode,
     onModeChange,
     ptcWorkspaces,
@@ -203,6 +261,8 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     onShuffleQueries,
     onNavigateSubagent,
     placeholder,
+    onReturnToChat,
+    onJumpToChart,
     activeWorkspaceId,
     initialThreadId,
     onSelectThread,
@@ -210,12 +270,31 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   } = props;
 
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [, setSearchParams] = useSearchParams();
   const [dialogPayload, setDialogPayload] = useState<DialogPayload | null>(null);
+  // Port of the preview currently shown — guards against a late URL resolution
+  // reopening a dialog the user already closed (or switched away from).
+  const previewPortRef = useRef<number | null>(null);
+  // ChatInput handle — lets edit/regenerate/retry read the current model picker.
+  const chatInputRef = useRef<ChatInputHandle>(null);
+  // Set when the user stops a running turn, so the input placeholder reflects it.
+  const [wasStopped, setWasStopped] = useState(false);
 
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const isNarrowChat = useNarrowContainer(messagesContainerRef, 640);
+
+  // The user's confirmed chart selections (region / price level). Render a chip
+  // per selection that still matches the live chart instance — selections drawn
+  // on another ticker/timeframe are stale and dropped on send anyway.
+  const { selections } = useChartSelections();
+  const liveSym = symbol ? symbol.toUpperCase() : '';
+  const liveTf = normalizeTimeframe(interval);
+  const chips = useMemo(
+    () => selections.filter((s) => isConfirmedFor(s, liveSym, liveTf)),
+    [selections, liveSym, liveTf],
+  );
 
   // PTC zero-state — disable PTC option if user has no non-flash workspaces.
   const ptcDisabledReason = ptcWorkspaces.length === 0
@@ -224,16 +303,66 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
 
   const agentMode = mode === 'fast' ? 'flash' : 'ptc';
 
+  // MarketView always has the live chart beside the chat, so inline
+  // chart-annotation previews collapse to a confirmation chip. Tell the chip
+  // which instance is on screen + how to switch the chart, so a chip for a
+  // different ticker/timeframe can jump the chart to it.
+  const chartSurface = useMemo<ChartSurface>(
+    () => ({
+      chartPresent: true,
+      activeSymbol: symbol ? symbol.toUpperCase() : undefined,
+      // Raw interval, not normalized: the chip compares this against an
+      // annotation's timeframe to decide "shown vs jump". A view-only interval
+      // like 1s (which collapses to 1day) must NOT read as active for a 1day
+      // annotation that the 1s chart can't actually display.
+      activeTimeframe: interval,
+      onJumpToChart,
+    }),
+    [symbol, interval, onJumpToChart],
+  );
+
+  // Open the served-HTML preview. The SSE artifact carries only a port, so —
+  // like ChatView — open immediately in a loading state, then resolve the
+  // authenticated signed URL and swap it in (otherwise the viewer is blank).
   const handlePreview = useCallback((preview: PreviewData) => {
-    setDialogPayload({ type: 'preview', preview });
+    previewPortRef.current = preview.port;
+    setDialogPayload({ type: 'preview', preview: { ...preview, loading: true } });
+
+    if (preview.url || !activeWorkspaceId) return;
+
+    getPreviewUrl(activeWorkspaceId, preview.port, preview.command)
+      .then((result: { url: string }) => {
+        if (previewPortRef.current !== preview.port) return; // closed / superseded
+        const url = appendPathSuffix(result.url, preview.path);
+        setDialogPayload({ type: 'preview', preview: { ...preview, url, loading: false } });
+      })
+      .catch(() => {
+        if (previewPortRef.current !== preview.port) return;
+        setDialogPayload({
+          type: 'preview',
+          preview: { ...preview, url: '', loading: false, error: true },
+        });
+      });
+  }, [activeWorkspaceId]);
+
+  const handleCloseDialog = useCallback(() => {
+    previewPortRef.current = null;
+    setDialogPayload(null);
   }, []);
 
-  // Origin tag — symbol uppercased so AAPL/aapl collapse. Validated server-side
-  // against ^[a-z_]+(:[A-Z][A-Z0-9.]*)?$ — only A-Z, digits, and `.` allowed in
-  // the suffix, so strip anything else from the user-typed symbol.
+  // Origin tag — symbol uppercased so AAPL/aapl collapse. Server validates
+  // `platform` against ^[a-z_]+(:[A-Z0-9][A-Z0-9.-]*)?$ with max_length 50.
+  // Only tag the origin with the symbol when the uppercased symbol already
+  // satisfies that suffix shape (CN/HK symbols like 002851.SZ are digit-first)
+  // AND fits the length budget (`market_view:` is 12 chars, so <=38 left).
+  // Anything else — stray chars, over-long — falls back to the bare namespace
+  // rather than mangling the symbol into a wrong, colliding tag or overflowing
+  // the cap and 422ing the send.
   const platformValue = useMemo(() => {
-    const cleaned = (symbol || '').trim().toUpperCase().replace(/[^A-Z0-9.]/g, '');
-    return cleaned ? `market_view:${cleaned}` : 'market_view';
+    const s = (symbol || '').trim().toUpperCase();
+    return /^[A-Z0-9][A-Z0-9.-]*$/.test(s) && s.length <= 38
+      ? `market_view:${s}`
+      : 'market_view';
   }, [symbol]);
 
   const chat = useChatMessages(
@@ -241,7 +370,6 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     initialThreadId,
     null,                       // updateTodoListCard
     null,                       // updateSubagentCard
-    null,                       // inactivateAllSubagents
     null,                       // finalizePendingTodos
     null,                       // onOnboardingRelatedToolComplete
     null,                       // onFileArtifact
@@ -261,8 +389,45 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     threadModels,
     lastThreadModel,
     handleSendMessage,
+    stopWorkflow,
     getSubagentHistory,
+    // HITL handlers — plan approval, ask-user questions, workspace/PTC/secretary
+    // proposals. Without these wired into MessageList the cards render but their
+    // Accept/Decline buttons are dead.
+    handleApproveInterrupt,
+    handleRejectInterrupt,
+    handleAnswerQuestion,
+    handleSkipQuestion,
+    handleApproveCreateWorkspace,
+    handleRejectCreateWorkspace,
+    handleApproveStartQuestion,
+    handleRejectStartQuestion,
+    handleApprovePTCAgent,
+    handleRejectPTCAgent,
+    handleApproveSecretaryAction,
+    handleRejectSecretaryAction,
+    // Turn/context state — drives the stop button, input gating, and the
+    // interrupted / plan-feedback / compaction status banners.
+    pendingInterrupt,
+    pendingRejection,
+    hasActiveSubagents,
+    workspaceStarting,
+    isCompacting,
+    setIsCompacting,
+    tokenUsage,
+    insertNotification,
+    // Message-level actions — edit, regenerate, retry, and feedback thumbs.
+    handleEditMessage,
+    handleRegenerate,
+    handleRetry,
+    handleThumbUp,
+    handleThumbDown,
+    feedbackByTurn,
   } = chat;
+
+  // The market panel's thread is what the user is looking at — same active
+  // contract as ChatAgent (no unseen dot for watched finishes, seen on open).
+  useActiveThreadPublisher(threadId);
 
   // Subagent telemetry resolver — feeds ActivityBlock's live token counts.
   // MarketView has no floating cards layer, so we resolve through history only.
@@ -292,10 +457,33 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
       message: string,
       planMode: boolean,
       attachments: AttachmentItem[] = [],
-      _slashCommands: unknown[] = [],
-      modelOptions: { model?: string | null; reasoningEffort?: string | null; fastMode?: boolean | null } = {},
+      slashCommands: SlashCommandLike[] = [],
+      modelOptions: ModelOptionsLike = {},
     ) => {
-      const contexts: Record<string, unknown>[] = [];
+      // Always activate the chart-annotation skill so the agent can draw on
+      // the live chart from turn 1, and tell it which ticker + timeframe "the
+      // chart" is (chart_id = SYMBOL:timeframe — drawing on the wrong timeframe
+      // won't show on the view the user is looking at).
+      const sym = symbol ? symbol.toUpperCase() : '';
+      const tf = normalizeTimeframe(interval);
+      const contexts: Record<string, unknown>[] = [
+        {
+          type: 'skills',
+          name: 'chart-annotation',
+          instruction: sym ? marketViewAnnotationContext(sym, tf) : undefined,
+        },
+      ];
+
+      // Skill contexts from typed slash commands (mirrors ChatView). Skip a
+      // second chart-annotation context — it's always injected above.
+      for (const cmd of slashCommands) {
+        if (cmd.type === 'skill' && cmd.skillName && cmd.skillName !== 'chart-annotation') {
+          contexts.push({ type: 'skills', name: cmd.skillName });
+        } else if (cmd.type === 'subagent') {
+          contexts.push({ type: 'directive', content: 'User wishes you to complete this task using subagents.' });
+        }
+      }
+
       const metaItems: Record<string, unknown>[] = [];
 
       if (chartImage) {
@@ -321,14 +509,89 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         });
       }
 
+      // Append every confirmed chart selection (region/price level + note) for
+      // the live (sym, tf); a stale one is dropped. The same set is snapshotted
+      // for the sent message's cards, and a lone note becomes the message text
+      // when the user typed nothing (so the bubble isn't empty).
+      const {
+        contexts: selectionContexts,
+        snapshots: selectionSnapshots,
+        attachments: selectionAttachments,
+        outgoingMessage,
+      } = buildChartSelectionSend(sym, tf, message);
+      contexts.push(...selectionContexts);
+      metaItems.push(...selectionAttachments);
+
       const additionalContext = contexts.length > 0 ? contexts : null;
       const attachmentMeta = metaItems.length > 0 ? metaItems : null;
 
-      handleSendMessage(message, planMode, additionalContext, attachmentMeta, modelOptions);
+      handleSendMessage(outgoingMessage, planMode, additionalContext, attachmentMeta, {
+        ...modelOptions,
+        ...(selectionSnapshots.length > 0 ? { chartSelections: selectionSnapshots } : {}),
+      });
       onClearChartImage();
+      chartSelectionStore.clearAll();
     },
-    [chartImage, chartImageDesc, handleSendMessage, onClearChartImage],
+    [symbol, interval, chartImage, chartImageDesc, handleSendMessage, onClearChartImage],
   );
+
+  // Stop the running turn (the input's Stop button). Mirrors ChatView: the hook's
+  // stopWorkflow aborts the stream reader, finalizes the open message with a
+  // "Stopped" chip, and hard-cancels the backend run; we flip the stopped marker.
+  const handleStop = useCallback(() => {
+    setWasStopped(true);
+    void stopWorkflow();
+  }, [stopWorkflow]);
+
+  // Clear the stopped marker once a new turn starts.
+  useEffect(() => {
+    if (isLoading) setWasStopped(false);
+  }, [isLoading]);
+
+  // Action slash commands (/compact, /offload). Mirrors ChatView's handler so
+  // the input's action verbs do the same thing here.
+  const handleAction = useCallback((cmd: ActionCommandLike) => {
+    if (!threadId || threadId === '__default__') return;
+
+    const surfaceActionError = (err: unknown, fallbackKey: string, busyKey = 'chat.compactBusy') => {
+      const resp = (err as { response?: { status?: number; data?: unknown } } | undefined)?.response;
+      const detail = ((resp?.data ?? undefined) as { detail?: unknown } | undefined)?.detail;
+      if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+        const obj = detail as { code?: string; message?: string };
+        // A user Stop cancels the backend call; the shared cancellation wrapper
+        // returns 409 {code: "request_cancelled"} — report a clean stop, not an error.
+        if (obj.code === 'request_cancelled') { insertNotification(t('chat.compactionStopped'), 'info'); return; }
+        if (obj.code === 'workflow_active') { insertNotification(t(busyKey), 'warning'); return; }
+        if (typeof obj.message === 'string' && obj.message.length > 0) { insertNotification(obj.message, 'warning'); return; }
+        insertNotification(t(fallbackKey), 'warning');
+        return;
+      }
+      if (typeof detail === 'string' && detail.length > 0) { insertNotification(detail, 'warning'); return; }
+      insertNotification(t(fallbackKey), 'warning');
+    };
+
+    if (cmd.name === 'compact') {
+      setIsCompacting?.('summarize');
+      summarizeThread(threadId)
+        .then((data: Record<string, unknown>) => {
+          setIsCompacting?.(false);
+          const detail = (data.summary_text as string | undefined) || undefined;
+          insertNotification(t('chat.compactedNotification', { from: data.original_message_count }), 'info', detail);
+        })
+        .catch((err: unknown) => { surfaceActionError(err, 'chat.compactionError'); setIsCompacting?.(false); });
+    } else if (cmd.name === 'offload') {
+      setIsCompacting?.('offload');
+      offloadThread(threadId)
+        .then((data: Record<string, unknown>) => {
+          setIsCompacting?.(false);
+          insertNotification(t('chat.offloadedNotification', {
+            args: (data.offloaded_args as number) || 0,
+            reads: (data.offloaded_reads as number) || 0,
+          }));
+        })
+        .catch((err: unknown) => { surfaceActionError(err, 'chat.compactionError', 'chat.offloadBusy'); setIsCompacting?.(false); });
+    }
+  }, [threadId, setIsCompacting, insertNotification, t]);
 
   // Track whether the user is currently parked near the bottom of the
   // message list. Auto-scroll only fires while this is true, so a user
@@ -368,9 +631,119 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     setDialogPayload({ type: 'toolcall', toolCallProcess: proc as ToolCallProcessRecord });
   }, []);
 
+  // The panel's transcript action surface. Each member is useStableHandler'd
+  // so the context value survives every streamed chunk — the chat engine
+  // rebuilds its handlers per render, and a fresh value here would re-render
+  // every settled bubble in the panel.
+  const stableOpenSubagentTask = useStableHandler(handleOpenSubagentTask);
+  const stableToolCallDetail = useStableHandler(handleToolCallDetailClick);
+  const stableApprovePlan = useStableHandler(handleApproveInterrupt);
+  const stableRejectPlan = useStableHandler(handleRejectInterrupt);
+  const stableAnswerQuestion = useStableHandler(handleAnswerQuestion);
+  const stableSkipQuestion = useStableHandler(handleSkipQuestion);
+  const stableApproveCreateWorkspace = useStableHandler(handleApproveCreateWorkspace);
+  const stableRejectCreateWorkspace = useStableHandler(handleRejectCreateWorkspace);
+  const stableApproveStartQuestion = useStableHandler(handleApproveStartQuestion);
+  const stableRejectStartQuestion = useStableHandler(handleRejectStartQuestion);
+  const stableApprovePTCAgent = useStableHandler(handleApprovePTCAgent);
+  const stableRejectPTCAgent = useStableHandler(handleRejectPTCAgent);
+  const stableApproveSecretaryAction = useStableHandler(handleApproveSecretaryAction);
+  const stableRejectSecretaryAction = useStableHandler(handleRejectSecretaryAction);
+  const stableEditMessage = useStableHandler((id: string, content: string) =>
+    handleEditMessage(id, content, chatInputRef.current?.getModelOptions?.()));
+  const stableRegenerate = useStableHandler((id: string) =>
+    handleRegenerate(id, chatInputRef.current?.getModelOptions?.()));
+  const stableRetry = useStableHandler(() => handleRetry(chatInputRef.current?.getModelOptions?.()));
+  const stableThumbUp = useStableHandler(handleThumbUp);
+  const stableThumbDown = useStableHandler(handleThumbDown);
+  const stableReportWithAgent = useStableHandler((instruction: string) => {
+    handleSendMessage(`/self-improve ${instruction}`, false, null, null, {});
+  });
+  const stableWidgetSendPrompt = useStableHandler((text: string) => {
+    handleSendMessage(text, false, null, null, {});
+  });
+
+  const messageActions = useMemo<MessageActions>(() => ({
+    onOpenSubagentTask: stableOpenSubagentTask,
+    onToolCallDetailClick: stableToolCallDetail,
+    onApprovePlan: stableApprovePlan,
+    onRejectPlan: stableRejectPlan,
+    onAnswerQuestion: stableAnswerQuestion,
+    onSkipQuestion: stableSkipQuestion,
+    onApproveCreateWorkspace: stableApproveCreateWorkspace,
+    onRejectCreateWorkspace: stableRejectCreateWorkspace,
+    onApproveStartQuestion: stableApproveStartQuestion,
+    onRejectStartQuestion: stableRejectStartQuestion,
+    onApprovePTCAgent: stableApprovePTCAgent,
+    onRejectPTCAgent: stableRejectPTCAgent,
+    onApproveSecretaryAction: stableApproveSecretaryAction,
+    onRejectSecretaryAction: stableRejectSecretaryAction,
+    onEditMessage: stableEditMessage,
+    onRegenerate: stableRegenerate,
+    onRetry: stableRetry,
+    onThumbUp: stableThumbUp,
+    onThumbDown: stableThumbDown,
+    onReportWithAgent: stableReportWithAgent,
+    onWidgetSendPrompt: stableWidgetSendPrompt,
+  }), [
+    stableOpenSubagentTask, stableToolCallDetail, stableApprovePlan, stableRejectPlan,
+    stableAnswerQuestion, stableSkipQuestion, stableApproveCreateWorkspace,
+    stableRejectCreateWorkspace, stableApproveStartQuestion, stableRejectStartQuestion,
+    stableApprovePTCAgent, stableRejectPTCAgent, stableApproveSecretaryAction,
+    stableRejectSecretaryAction, stableEditMessage, stableRegenerate, stableRetry,
+    stableThumbUp, stableThumbDown, stableReportWithAgent, stableWidgetSendPrompt,
+  ]);
+
   const initialModel = lastThreadModel ?? null;
 
+  // In fast mode, carry the source thread/workspace into a PTC-agent proposal so
+  // its "open in chat" deep-link lands back here. Null in PTC mode. Memoized:
+  // a fresh object per render would defeat the memoized bubbles downstream.
+  const flashContext = useMemo(
+    () =>
+      agentMode === 'flash' && threadId && threadId !== '__default__'
+        ? { threadId, workspaceId: activeWorkspaceId }
+        : null,
+    [agentMode, threadId, activeWorkspaceId],
+  );
+
   const showQuickQueries = messages.length === 0 && !isLoading && !isLoadingHistory;
+
+  // Continue the current conversation in the full ChatView page. `/chat/t/:id`
+  // resolves the thread's workspace on its own; we also pass it via state to
+  // skip the lookup. Available once a real thread exists.
+  const canOpenInChat = !!threadId && threadId !== '__default__';
+  const handleOpenInChat = useCallback(() => {
+    if (!threadId || threadId === '__default__') return;
+    navigate(`/chat/t/${threadId}`, { state: { workspaceId: activeWorkspaceId } });
+  }, [navigate, threadId, activeWorkspaceId]);
+
+  // Shared styling for the header's right-hand action chip.
+  const headerBtnStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 5,
+    flexShrink: 0,
+    padding: '4px 10px',
+    background: 'transparent',
+    border: '1px solid var(--color-border-default)',
+    borderRadius: 8,
+    color: 'var(--color-text-secondary)',
+    fontSize: '0.75rem',
+    fontWeight: 500,
+    cursor: 'pointer',
+    transition: 'background 0.15s, border-color 0.15s, color 0.15s',
+  };
+  const headerBtnHover = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.currentTarget.style.background = 'var(--color-bg-hover)';
+    e.currentTarget.style.borderColor = 'var(--color-border-elevated)';
+    e.currentTarget.style.color = 'var(--color-text-primary)';
+  };
+  const headerBtnLeave = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.currentTarget.style.background = 'transparent';
+    e.currentTarget.style.borderColor = 'var(--color-border-default)';
+    e.currentTarget.style.color = 'var(--color-text-secondary)';
+  };
 
   // Session title: first user message text (truncated) or fallback to "New chat".
   const newChatLabel = t('marketView.chatHistory.newChat');
@@ -387,12 +760,15 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
 
   return (
     <div className="market-panel">
-      {/* Header — session title (left) doubles as history dropdown trigger */}
+      {/* Header — session title (left) doubles as history dropdown trigger.
+          When navigated from chat, a compact "Return to Chat" chip sits at the
+          right so it never overlaps the message input. */}
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'flex-start',
+          justifyContent: 'space-between',
+          gap: 8,
           padding: '6px 12px',
           borderBottom: '1px solid var(--color-border-muted)',
           flexShrink: 0,
@@ -405,6 +781,30 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
           onSelectThread={onSelectThread}
           onStartNewChat={onStartNewChat}
         />
+        {canOpenInChat ? (
+          <button
+            type="button"
+            onClick={handleOpenInChat}
+            title={t('marketView.chatPanel.openInChat')}
+            style={headerBtnStyle}
+            onMouseEnter={headerBtnHover}
+            onMouseLeave={headerBtnLeave}
+          >
+            <MessageSquare style={{ width: 13, height: 13 }} />
+            {t('marketView.chatPanel.openInChat')}
+          </button>
+        ) : onReturnToChat ? (
+          <button
+            type="button"
+            onClick={onReturnToChat}
+            style={headerBtnStyle}
+            onMouseEnter={headerBtnHover}
+            onMouseLeave={headerBtnLeave}
+          >
+            <ArrowLeft style={{ width: 13, height: 13 }} />
+            {t('marketView.chatPanel.returnToChat')}
+          </button>
+        ) : null}
       </div>
 
       {/* Messages */}
@@ -426,17 +826,20 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
           </div>
         ) : (
           <div style={{ padding: '16px 24px', maxWidth: '100%' }}>
-            <SubagentTelemetryContext.Provider value={resolveSubagentTelemetry}>
-              <MessageList
-                messages={messages as never[]}
-                isLoading={isLoading}
-                isLoadingHistory={isLoadingHistory}
-                hideAvatar={isNarrowChat}
-                onOpenSubagentTask={handleOpenSubagentTask}
-                onToolCallDetailClick={handleToolCallDetailClick}
-                onWidgetSendPrompt={(text: string) => handleSendMessage(text, false, null, null, {})}
-              />
-            </SubagentTelemetryContext.Provider>
+            <ChartSurfaceContext.Provider value={chartSurface}>
+              <SubagentTelemetryContext.Provider value={resolveSubagentTelemetry}>
+                <MessageActionsProvider actions={messageActions}>
+                  <MessageList
+                    messages={messages as never[]}
+                    isLoading={isLoading}
+                    isLoadingHistory={isLoadingHistory}
+                    hideAvatar={isNarrowChat}
+                    feedbackByTurn={feedbackByTurn}
+                    flashContext={flashContext}
+                  />
+                </MessageActionsProvider>
+              </SubagentTelemetryContext.Provider>
+            </ChartSurfaceContext.Provider>
             {messageError && (
               <div style={{ margin: '8px 0' }}>
                 <ErrorBanner error={messageError} />
@@ -464,9 +867,131 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         </div>
       )}
 
+      {/* Status banners — feedback for plan-rejection, interrupt, background
+          subagents, workspace warming, and context compaction. Mirrors the
+          indicators ChatView shows above its input. */}
+      {(pendingRejection
+        || (hasActiveSubagents && !isLoading)
+        || workspaceStarting
+        || isCompacting) && (
+        <div style={{ padding: '0 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {pendingRejection && (
+            <div style={bannerStyle('var(--color-bg-surface)')}>
+              <ScrollText style={{ width: 14, height: 14, flexShrink: 0, color: 'var(--color-accent-primary)' }} />
+              <span>{t('chat.planFeedbackHint')}</span>
+            </div>
+          )}
+          {hasActiveSubagents && !isLoading && (
+            <div style={bannerStyle('transparent')}>
+              <span style={{ position: 'relative', display: 'flex', height: 8, width: 8 }}>
+                <span style={{ position: 'absolute', display: 'inline-flex', height: '100%', width: '100%', borderRadius: '9999px', background: 'var(--color-accent-primary)', opacity: 0.6 }} className="animate-ping motion-reduce:animate-none" />
+                <span style={{ position: 'relative', display: 'inline-flex', borderRadius: '9999px', height: 8, width: 8, background: 'var(--color-accent-primary)' }} />
+              </span>
+              <span>{t('chat.backgroundTasksRunning')}</span>
+            </div>
+          )}
+          {workspaceStarting && (
+            <div style={bannerStyle('transparent')}>
+              <span aria-hidden="true" style={{ flexShrink: 0 }}>
+                <Loader size={14} className="text-[color:var(--color-accent-primary)]" />
+              </span>
+              <span>{t(workspaceStarting === 'archived' ? 'chat.workspaceRestoring' : 'chat.workspaceStarting')}</span>
+            </div>
+          )}
+          {isCompacting && (
+            <div style={bannerStyle('transparent')}>
+              <span aria-hidden="true" style={{ flexShrink: 0 }}>
+                <Loader size={14} className="text-[color:var(--color-accent-primary)]" />
+              </span>
+              <span>{t(isCompacting === 'offload' ? 'chat.offloading' : 'chat.compacting')}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Chart selection chips — the regions / price levels the user picked on
+          the chart, each with its note, ready to attach to the next send. Click
+          a chip to re-open its note editor on the chart; ✕ removes it. Sits
+          directly above the input, matching the status-banner layout. */}
+      {chips.length > 0 && (
+        <div style={{ padding: '0 12px', marginBottom: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {chips.map((c) => {
+            const baseLabel = c.selectionType === 'region'
+              ? t('marketView.selection.chipRegion', { symbol: c.symbol, timeframe: c.timeframe })
+              : t('marketView.selection.chipPriceLevel', {
+                  price: Number.isFinite(c.priceLow) ? c.priceLow.toFixed(2) : '—',
+                  symbol: c.symbol,
+                  timeframe: c.timeframe,
+                });
+            const label = c.comment ? `${baseLabel} · "${c.comment}"` : baseLabel;
+            return (
+              <span
+                key={c.id}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  maxWidth: '100%',
+                  padding: '4px 6px 4px 10px',
+                  borderRadius: 6,
+                  background: 'var(--color-bg-surface)',
+                  border: '1px solid var(--color-border-muted)',
+                  color: 'var(--color-text-secondary)',
+                  fontSize: '0.75rem',
+                }}
+              >
+                <button
+                  type="button"
+                  title={t('marketView.selection.editChip')}
+                  onClick={() => chartSelectionStore.openEditor(c.id)}
+                  style={{
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    maxWidth: 240,
+                    border: 'none',
+                    background: 'transparent',
+                    color: 'inherit',
+                    font: 'inherit',
+                    padding: 0,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {label}
+                </button>
+                <button
+                  type="button"
+                  aria-label={t('marketView.selection.removeChip')}
+                  onClick={() => chartSelectionStore.remove(c.id)}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                    width: 16,
+                    height: 16,
+                    padding: 0,
+                    border: 'none',
+                    background: 'transparent',
+                    color: 'var(--color-text-tertiary)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <X style={{ width: 12, height: 12 }} />
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+
       {/* Input */}
       <ChatInput
+        ref={chatInputRef}
         onSend={handleSend as never}
+        disabled={isLoadingHistory || !!pendingInterrupt}
+        onStop={handleStop}
+        onAction={handleAction}
         isLoading={isLoading}
         mode={mode}
         onModeChange={onModeChange}
@@ -479,12 +1004,18 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         onRemoveChartImage={onClearChartImage}
         prefillMessage={prefillMessage}
         onClearPrefill={onClearPrefill}
-        placeholder={placeholder ?? t('marketView.chatPanel.defaultPlaceholder')}
+        hasExternalContext={chips.length > 0}
+        placeholder={
+          wasStopped && !isLoading && !pendingInterrupt && !pendingRejection
+            ? t('chat.placeholderStopped')
+            : (placeholder ?? t('marketView.chatPanel.defaultPlaceholder'))
+        }
         initialModel={initialModel}
         threadModels={threadModels}
+        tokenUsage={tokenUsage}
       />
 
-      <MarketDetailDialog payload={dialogPayload} onClose={() => setDialogPayload(null)} />
+      <MarketDetailDialog payload={dialogPayload} onClose={handleCloseDialog} />
     </div>
   );
 }

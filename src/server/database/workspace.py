@@ -12,13 +12,29 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from psycopg.rows import dict_row
 
-from src.server.database.conversation import get_db_connection
+from src.server.database.pool import get_db_connection
 from src.server.services.workspace_status_pubsub import publish_status_change
+from src.server.utils.pg_sanitize import normalize_uuid
 
 logger = logging.getLogger(__name__)
 
 # Deterministic namespace for flash workspace UUIDs
 FLASH_WORKSPACE_NAMESPACE = uuid.UUID("f1a50000-0000-5000-e000-f1a500000000")
+
+# Canonical base column list returned by workspace SELECT/RETURNING queries.
+# Hardcoded literals only (no user data) — safe to interpolate via f-string.
+# Column order and set MUST stay identical across every site; rows are consumed
+# by name via dict_row. `get_workspace` returns this plus `mcp_config_version`.
+_WS_COLS = (
+    "workspace_id, user_id, name, description, sandbox_id, status, created_at, "
+    "updated_at, last_activity_at, stopped_at, config, artifacts, is_pinned, "
+    "sort_order, resource_tier, is_always_on, platform_secret_version"
+)
+
+# Scalar workspace columns that may be set via `_set_workspace_scalar`. The
+# column name is interpolated as a SQL literal (never a bound param), so it must
+# be whitelisted to keep the surface injection-free.
+_SETTABLE_SCALAR_COLUMNS = frozenset({"resource_tier", "is_always_on"})
 
 
 def get_flash_workspace_id(user_id: str) -> str:
@@ -42,13 +58,11 @@ async def get_or_create_flash_workspace(
 
     async def _execute(cur):
         await cur.execute(
-            """
+            f"""
             INSERT INTO workspaces (workspace_id, user_id, name, description, config, status, is_pinned)
             VALUES (%s, %s, %s, %s, %s, %s, TRUE)
             ON CONFLICT (workspace_id) DO UPDATE SET updated_at = NOW(), is_pinned = TRUE
-            RETURNING workspace_id, user_id, name, description, sandbox_id,
-                      status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
-                      is_pinned, sort_order
+            RETURNING {_WS_COLS}
             """,
             (workspace_id, user_id, "Flash", "Flash mode conversations", config_json, "flash"),
         )
@@ -109,24 +123,20 @@ async def create_workspace(
             if workspace_id:
                 # Use specific workspace_id (for flash mode: workspace_id = thread_id)
                 await cur.execute(
-                    """
+                    f"""
                     INSERT INTO workspaces (workspace_id, user_id, name, description, config, status)
                     VALUES (%s, %s, %s, %s, %s, %s)
-                    RETURNING workspace_id, user_id, name, description, sandbox_id,
-                              status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
-                              is_pinned, sort_order
+                    RETURNING {_WS_COLS}
                     """,
                     (workspace_id, user_id, name, description, config_json, status),
                 )
             else:
                 # Auto-generate workspace_id
                 await cur.execute(
-                    """
+                    f"""
                     INSERT INTO workspaces (user_id, name, description, config, status)
                     VALUES (%s, %s, %s, %s, %s)
-                    RETURNING workspace_id, user_id, name, description, sandbox_id,
-                              status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
-                              is_pinned, sort_order
+                    RETURNING {_WS_COLS}
                     """,
                     (user_id, name, description, config_json, status),
                 )
@@ -162,13 +172,19 @@ async def get_workspace(
     Returns:
         Workspace record as dict, or None if not found
     """
+    # Normalize before querying: postgres' uuid type rejects some forms that
+    # uuid.UUID() accepts (e.g. urn:uuid:...), so binding the raw value risks
+    # InvalidTextRepresentation (22P02) → 500. A non-UUID id (e.g. a memory-file
+    # key from the SPA tree) can never match the pk, so treat it as not-found.
+    workspace_id = normalize_uuid(workspace_id)
+    if workspace_id is None:
+        return None
+
     try:
         async def _execute(cur):
             await cur.execute(
-                """
-                SELECT workspace_id, user_id, name, description, sandbox_id,
-                       status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
-                       is_pinned, sort_order
+                f"""
+                SELECT {_WS_COLS}, mcp_config_version
                 FROM workspaces
                 WHERE workspace_id = %s AND status != 'deleted'
                 """,
@@ -247,9 +263,7 @@ async def get_workspaces_for_user(
             # Get paginated results
             await cur.execute(
                 f"""
-                SELECT workspace_id, user_id, name, description, sandbox_id,
-                       status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
-                       is_pinned, sort_order
+                SELECT {_WS_COLS}
                 FROM workspaces
                 WHERE user_id = %s {status_filter} {flash_filter}
                 ORDER BY {order_clause}
@@ -333,9 +347,7 @@ async def update_workspace(
                 UPDATE workspaces
                 SET {update_clause}
                 WHERE workspace_id = %s AND status != 'deleted'
-                RETURNING workspace_id, user_id, name, description, sandbox_id,
-                          status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
-                          is_pinned, sort_order
+                RETURNING {_WS_COLS}
                 """,
                 params,
             )
@@ -383,44 +395,36 @@ async def update_workspace_status(
         # Build update based on status
         if sandbox_id is not None:
             if status == "stopped":
-                query = """
+                query = f"""
                     UPDATE workspaces
                     SET status = %s, sandbox_id = %s, updated_at = %s, stopped_at = %s
                     WHERE workspace_id = %s
-                    RETURNING workspace_id, user_id, name, description, sandbox_id,
-                              status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
-                              is_pinned, sort_order
+                    RETURNING {_WS_COLS}
                 """
                 params = (status, sandbox_id, now, now, workspace_id)
             else:
-                query = """
+                query = f"""
                     UPDATE workspaces
                     SET status = %s, sandbox_id = %s, updated_at = %s
                     WHERE workspace_id = %s
-                    RETURNING workspace_id, user_id, name, description, sandbox_id,
-                              status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
-                              is_pinned, sort_order
+                    RETURNING {_WS_COLS}
                 """
                 params = (status, sandbox_id, now, workspace_id)
         else:
             if status == "stopped":
-                query = """
+                query = f"""
                     UPDATE workspaces
                     SET status = %s, updated_at = %s, stopped_at = %s
                     WHERE workspace_id = %s
-                    RETURNING workspace_id, user_id, name, description, sandbox_id,
-                              status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
-                              is_pinned, sort_order
+                    RETURNING {_WS_COLS}
                 """
                 params = (status, now, now, workspace_id)
             else:
-                query = """
+                query = f"""
                     UPDATE workspaces
                     SET status = %s, updated_at = %s
                     WHERE workspace_id = %s
-                    RETURNING workspace_id, user_id, name, description, sandbox_id,
-                              status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
-                              is_pinned, sort_order
+                    RETURNING {_WS_COLS}
                 """
                 params = (status, now, workspace_id)
 
@@ -438,7 +442,8 @@ async def update_workspace_status(
 
         if result:
             logger.debug(f"Updated workspace {workspace_id} status to: {status}")
-            # Best-effort cross-worker notification — wakes any
+            # TODO(layering): services-tier pub/sub called from the database
+            # tier. Best-effort cross-worker notification — wakes any
             # _wait_for_start_completion loop and any /events SSE
             # subscribers in milliseconds. Swallows on failure.
             await publish_status_change(workspace_id, status)
@@ -470,13 +475,11 @@ async def try_claim_workspace_for_start(
     """
     try:
         now = datetime.now(timezone.utc)
-        query = """
+        query = f"""
             UPDATE workspaces
             SET status = 'starting', updated_at = %s
             WHERE workspace_id = %s AND status = 'stopped'
-            RETURNING workspace_id, user_id, name, description, sandbox_id,
-                      status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
-                      is_pinned, sort_order
+            RETURNING {_WS_COLS}
         """
         params = (now, workspace_id)
 
@@ -498,6 +501,74 @@ async def try_claim_workspace_for_start(
     except Exception as e:
         logger.error(f"Error claiming workspace {workspace_id} for start: {e}")
         raise
+
+
+async def _set_workspace_scalar(
+    workspace_id: str,
+    column: str,
+    value: Any,
+    *,
+    conn=None,
+) -> Optional[Dict[str, Any]]:
+    """Set one whitelisted scalar column; returns updated row, or None if not found.
+
+    `column` is interpolated as a SQL literal, so it must be in
+    `_SETTABLE_SCALAR_COLUMNS`; `value` is always bound as a parameter.
+    """
+    if column not in _SETTABLE_SCALAR_COLUMNS:
+        raise ValueError(f"Column not settable via _set_workspace_scalar: {column!r}")
+
+    try:
+        now = datetime.now(timezone.utc)
+
+        async def _execute(cur):
+            await cur.execute(
+                f"""
+                UPDATE workspaces
+                SET {column} = %s, updated_at = %s
+                WHERE workspace_id = %s AND status != 'deleted'
+                RETURNING {_WS_COLS}
+                """,
+                (value, now, workspace_id),
+            )
+            return await cur.fetchone()
+
+        if conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                result = await _execute(cur)
+        else:
+            async with get_db_connection() as conn:
+                async with conn.cursor(row_factory=dict_row) as cur:
+                    result = await _execute(cur)
+
+        if result:
+            logger.info(f"Set workspace {workspace_id} {column} to: {value}")
+            return dict(result)
+        return None
+
+    except Exception as e:
+        logger.error(f"Error setting workspace {workspace_id} {column}: {e}")
+        raise
+
+
+async def set_workspace_resource_tier(
+    workspace_id: str,
+    tier: str,
+    *,
+    conn=None,
+) -> Optional[Dict[str, Any]]:
+    """Set the workspace resource tier; returns updated row, or None if not found."""
+    return await _set_workspace_scalar(workspace_id, "resource_tier", tier, conn=conn)
+
+
+async def set_workspace_always_on(
+    workspace_id: str,
+    enabled: bool,
+    *,
+    conn=None,
+) -> Optional[Dict[str, Any]]:
+    """Set the workspace always-on flag; returns updated row, or None if not found."""
+    return await _set_workspace_scalar(workspace_id, "is_always_on", enabled, conn=conn)
 
 
 async def update_workspace_activity(
@@ -683,10 +754,8 @@ async def get_workspaces_by_status(
     try:
         async def _execute(cur):
             await cur.execute(
-                """
-                SELECT workspace_id, user_id, name, description, sandbox_id,
-                       status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
-                       is_pinned, sort_order
+                f"""
+                SELECT {_WS_COLS}
                 FROM workspaces
                 WHERE status = %s
                 ORDER BY last_activity_at ASC NULLS FIRST

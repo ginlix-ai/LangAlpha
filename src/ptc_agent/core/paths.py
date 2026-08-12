@@ -35,6 +35,7 @@ BACKUP_EXCLUDE_DIRS: frozenset[str] = frozenset({
 BACKUP_EXCLUDE_AGENT_SUBDIRS: tuple[str, ...] = (
     ".agents/threads",
     ".agents/user",
+    ".agents/workflows",
     ".agents/large_tool_results",
 )
 
@@ -53,6 +54,11 @@ MEMORY_INDEX_FILENAME: str = "memory.md"
 # the agent. Server API writes; agent reads via filesystem tools.
 MEMO_USER_DIR: str = ".agents/user/memo"
 MEMO_INDEX_FILENAME: str = "memo.md"
+
+# Reusable JavaScript workflows — one overlay mount. Repo-shipped scripts are
+# visible here; a write forks the script into the user's store-backed tier,
+# which shadows the shipped copy exactly as name resolution does.
+WORKFLOW_DIR: str = ".agents/workflows"
 
 # User-profile data (portfolio + watchlist + preferences) — backed by DB tables
 # (user_portfolios, watchlists, watchlist_items, user_preferences). Agent reads

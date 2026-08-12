@@ -8,8 +8,9 @@ from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-# Supported intervals for intraday data
-SUPPORTED_INTERVALS = ("1s", "1min", "5min", "15min", "30min", "1hour", "4hour")
+# Supported intervals for intraday data. 1s was removed from the REST API —
+# second-level data exists only as the WS forming-bar stream (ohlcv-1s records).
+SUPPORTED_INTERVALS = ("1min", "5min", "15min", "30min", "1hour", "4hour")
 STOCK_INTERVALS = SUPPORTED_INTERVALS
 INDEX_INTERVALS = SUPPORTED_INTERVALS
 
@@ -63,7 +64,7 @@ class IntradayResponse(BaseModel):
             "count": 1,
             "cache": {
                 "cached": True,
-                "cache_key": "ohlcv:stock:AAPL:1min",
+                "cache_key": "ohlcv:AAPL.XNAS:ohlcv-1m",
                 "ttl_remaining": 45,
                 "refreshed_in_background": False
             }
@@ -96,7 +97,7 @@ class DailyResponse(BaseModel):
             "count": 1,
             "cache": {
                 "cached": True,
-                "cache_key": "ohlcv:stock:AAPL:day",
+                "cache_key": "ohlcv:AAPL.XNAS:ohlcv-1d",
                 "ttl_remaining": 3200,
                 "refreshed_in_background": False
             }
@@ -257,9 +258,14 @@ class SnapshotData(BaseModel):
     low: Optional[float] = Field(None, description="Day low")
     volume: Optional[int] = Field(None, description="Day volume")
     market_status: Optional[str] = Field(None, description="Per-ticker market phase")
+    last_minute_close: Optional[float] = Field(None, description="Latest minute-aggregate close (consolidated last sale; excludes odd-lot prints)")
+    regular_close: Optional[float] = Field(None, description="Regular-session close (provider-exact, unlike the 1dp change fields)")
     regular_trading_change: Optional[float] = Field(None, description="Regular session change (close - prev close)")
+    early_trading_change: Optional[float] = Field(None, description="Pre-market change (absolute)")
     early_trading_change_percent: Optional[float] = Field(None, description="Pre-market change %")
+    late_trading_change: Optional[float] = Field(None, description="After-hours change (absolute)")
     late_trading_change_percent: Optional[float] = Field(None, description="After-hours change %")
+    source: Optional[str] = Field(None, description="Provider that filled this row")
 
 
 class SnapshotResponse(BaseModel):

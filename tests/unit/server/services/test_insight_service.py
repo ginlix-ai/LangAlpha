@@ -215,7 +215,7 @@ class TestLLMExtractFallback:
 
         with (
             patch("src.server.app.setup") as mock_setup,
-            patch("src.server.services.llm_service.LLMService") as MockLLMService,
+            patch("src.server.services.llm.service.LLMService") as MockLLMService,
         ):
             mock_setup.agent_config = mock_agent_config
             mock_instance = MagicMock()
@@ -247,7 +247,7 @@ class TestLLMExtractFallback:
 
         with (
             patch("src.server.app.setup") as mock_setup,
-            patch("src.server.services.llm_service.LLMService") as MockLLMService,
+            patch("src.server.services.llm.service.LLMService") as MockLLMService,
         ):
             mock_setup.agent_config = mock_agent_config
             mock_instance = MagicMock()
@@ -271,7 +271,7 @@ class TestLLMExtractFallback:
 
         with (
             patch("src.server.app.setup") as mock_setup,
-            patch("src.server.services.llm_service.LLMService") as MockLLMService,
+            patch("src.server.services.llm.service.LLMService") as MockLLMService,
             patch("src.llms.llm.create_llm") as mock_create_llm,
         ):
             mock_setup.agent_config = mock_agent_config

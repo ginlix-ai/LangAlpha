@@ -3,6 +3,8 @@
  * All requests are unauthenticated — no Bearer token needed.
  */
 
+import { buildSharedServeUrl } from '../ChatAgent/components/viewers/html/wsfilesUrl';
+
 const baseURL: string = import.meta.env.VITE_API_BASE_URL ?? '';
 
 // ---------------------------------------------------------------------------
@@ -19,15 +21,10 @@ export interface SharedThreadMetadata {
   permissions: Record<string, unknown>;
 }
 
-export interface SharedFileEntry {
-  name: string;
-  type: 'file' | 'directory';
-  size?: number;
-}
-
 export interface SharedFileListResponse {
   path: string;
-  files: SharedFileEntry[];
+  // The backend returns a flat array of workspace-relative file paths.
+  files: string[];
   source: string;
 }
 
@@ -75,8 +72,9 @@ export async function replaySharedThread(
 ): Promise<void> {
   const res = await fetch(`${baseURL}/api/v1/public/shared/${shareToken}/replay`);
   if (!res.ok) throw new Error(`Failed to replay shared thread (${res.status})`);
+  if (!res.body) throw new Error('Replay stream returned no body');
 
-  const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+  const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let ev: { id?: string; event?: string } = {};
@@ -208,4 +206,33 @@ export async function downloadSharedFileAs(
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(a.href);
+}
+
+/**
+ * Fetch a shared file's bytes as an object URL via the serve endpoint.
+ *
+ * Serving is gated on `allow_files` (same as the rendered report), so this is
+ * the right path for byte-access *previews* — inline markdown images,
+ * file-panel image preview. The explicit "save a copy" affordance stays on
+ * `downloadSharedFileAs(..., 'download')` (gated on `allow_download`). Routing
+ * previews through `/files/download` instead would 403 on the common
+ * copy-link share, which grants only `allow_files`.
+ */
+export async function fetchSharedServeObjectUrl(shareToken: string, path: string): Promise<string> {
+  const res = await fetch(buildSharedServeUrl(shareToken, path));
+  if (!res.ok) {
+    if (res.status === 403) throw new Error('File access not permitted');
+    throw new Error(`Failed to load shared file (${res.status})`);
+  }
+  return URL.createObjectURL(await res.blob());
+}
+
+/** Like {@link fetchSharedServeObjectUrl} but returns the raw bytes (binary preview). */
+export async function fetchSharedServeArrayBuffer(shareToken: string, path: string): Promise<ArrayBuffer> {
+  const res = await fetch(buildSharedServeUrl(shareToken, path));
+  if (!res.ok) {
+    if (res.status === 403) throw new Error('File access not permitted');
+    throw new Error(`Failed to load shared file (${res.status})`);
+  }
+  return res.arrayBuffer();
 }

@@ -60,7 +60,7 @@
 .market-sidebar-tab {
   flex: 1;
   padding: 10px 0;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   text-align: center;
   border: none;
@@ -98,7 +98,7 @@
 }
 
 .market-sidebar-section-title {
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.6px;
@@ -112,7 +112,6 @@
   height: 5px;
   border-radius: 50%;
   background: var(--color-profit);
-  box-shadow: 0 0 4px var(--color-profit);
   margin-left: 5px;
   vertical-align: middle;
   animation: pulse-live 2s ease-in-out infinite;
@@ -133,14 +132,14 @@
   background: transparent;
   color: var(--color-text-secondary);
   cursor: pointer;
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1;
   transition: color 0.15s;
   padding: 0;
 }
 
 .market-sidebar-add-btn:hover {
-  color: var(--color-accent-primary);
+  color: var(--color-text-primary);
 }
 
 /* Scrollable list */
@@ -187,20 +186,22 @@
   background: var(--color-border-muted);
 }
 
+/* Same split as the nav rail: the row lifts on a neutral surface and the accent
+   only paints the 2px edge marker. */
 .market-sidebar-row--active {
   border-left-color: var(--color-accent-primary);
-  background: hsl(var(--primary) / 0.06);
+  background: var(--color-bg-hover);
 }
 
 .market-sidebar-row-symbol {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--color-text-primary);
   min-width: 56px;
 }
 
 .market-sidebar-row-price {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 400;
   color: var(--color-text-primary);
   flex: 1;
@@ -209,7 +210,7 @@
 }
 
 .market-sidebar-row-change {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   min-width: 64px;
   text-align: right;
@@ -222,7 +223,7 @@
 
 .market-sidebar-row-ext {
   display: block;
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 400;
   opacity: 0.8;
   line-height: 1.4;
@@ -280,18 +281,18 @@
 }
 
 .market-sidebar-footer-link {
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
-  color: var(--color-accent-primary);
+  color: var(--color-text-secondary);
   background: none;
   border: none;
   cursor: pointer;
   padding: 0;
-  transition: opacity 0.15s;
+  transition: color 0.15s;
 }
 
 .market-sidebar-footer-link:hover {
-  opacity: 0.8;
+  color: var(--color-text-primary);
 }
 
 /* Empty state */
@@ -305,7 +306,7 @@
 }
 
 .market-sidebar-empty-text {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-text-secondary);
   line-height: 1.5;
 }

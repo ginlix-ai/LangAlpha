@@ -1,13 +1,15 @@
 """
 SEC filing parser using regex extraction.
 
-Converts HTML to markdown using html2text, then extracts sections using
-regex patterns. Works as a fallback when edgartools parser fails.
+Converts HTML to plain text using html-to-markdown's PLAIN output, then extracts
+sections using regex patterns. Works as a fallback when edgartools parser fails.
 """
 
 import re
 import logging
 from typing import Dict, Optional, Tuple
+
+import html_to_markdown
 
 from .base import BaseSECParser, ParsingFailedError
 from ..types import SECSection, FilingType
@@ -60,7 +62,7 @@ FORM_10Q_PATTERNS: Dict[str, Tuple[str, str]] = {
 
 class RegexParser(BaseSECParser):
     """
-    Parser using html2text for HTML-to-markdown conversion and regex extraction.
+    Parser using html-to-markdown for HTML-to-text conversion and regex extraction.
 
     This parser is a reliable fallback that works for both 10-K and 10-Q filings.
     """
@@ -232,24 +234,25 @@ class RegexParser(BaseSECParser):
 
     def _html_to_markdown(self, html: str) -> str:
         """
-        Convert HTML to markdown using html2text.
+        Convert HTML to plain text using html-to-markdown's PLAIN output.
+
+        PLAIN flattens tables to tab/newline-separated text (no ``|`` pipe-tables
+        that would split ``Item N.`` headers) and drops inline markdown such as
+        ``**bold**``, so the section regexes match cleanly. Falls back to a stdlib
+        text extractor on failure.
 
         Args:
             html: Raw HTML content
 
         Returns:
-            Markdown/text content
+            Plain-text content
         """
         try:
-            import html2text
-
-            converter = html2text.HTML2Text()
-            converter.ignore_links = False
-            converter.ignore_images = False
-            converter.body_width = 0
-            return converter.handle(html)
+            return html_to_markdown.convert(
+                html, html_to_markdown.ConversionOptions(output_format="plain")
+            ).content
         except Exception as e:
-            logger.debug(f"html2text conversion failed: {e}")
+            logger.debug(f"html-to-markdown conversion failed: {e}")
 
         # Fallback: Simple HTML text extraction
         return self._simple_html_to_text(html)

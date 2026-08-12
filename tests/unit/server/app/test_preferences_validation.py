@@ -209,6 +209,80 @@ class TestValidateCustomProviders:
 
 
 # ---------------------------------------------------------------------------
+# _validate_agent_preference (unit tests via direct import)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateAgentPreference:
+    def _validate(self, agent_pref):
+        from src.server.app.users import _validate_agent_preference
+
+        _validate_agent_preference(agent_pref)
+
+    def test_output_format_markdown_accepted(self):
+        """output_format 'markdown' should pass."""
+        self._validate({"output_format": "markdown"})
+
+    def test_output_format_html_accepted(self):
+        """output_format 'html' should pass."""
+        self._validate({"output_format": "html"})
+
+    def test_output_format_none_accepted(self):
+        """output_format None signals key deletion — should pass."""
+        self._validate({"output_format": None})
+
+    def test_output_format_absent_accepted(self):
+        """Omitted output_format should pass (no-op)."""
+        self._validate({})
+
+    def test_output_format_invalid_string_raises(self):
+        """An unknown output_format string should be rejected with 400."""
+        with pytest.raises(HTTPException, match="output_format must be one of") as exc:
+            self._validate({"output_format": "pdf"})
+        assert exc.value.status_code == 400
+
+    def test_output_format_non_string_raises(self):
+        """A non-string output_format should be rejected with 400."""
+        with pytest.raises(HTTPException, match="output_format must be one of"):
+            self._validate({"output_format": 123})
+
+    def test_other_agent_preference_keys_pass_through(self):
+        """Unrelated agent_preference keys are not validated here (extra=allow)."""
+        self._validate({"output_style": "concise", "some_future_key": "value"})
+
+
+# ---------------------------------------------------------------------------
+# AgentPreference model — output_format round-trips, extra keys preserved
+# ---------------------------------------------------------------------------
+
+
+class TestAgentPreferenceModel:
+    def test_output_format_round_trips(self):
+        from src.server.models.user import AgentPreference
+
+        pref = AgentPreference(output_format="html")
+        assert pref.model_dump(exclude_unset=True) == {"output_format": "html"}
+
+    def test_output_format_none_preserved_when_set(self):
+        """Explicit None must survive model_dump so the JSONB merge can delete the key."""
+        from src.server.models.user import AgentPreference
+
+        pref = AgentPreference(output_format=None)
+        assert pref.model_dump(exclude_unset=True) == {"output_format": None}
+
+    def test_extra_keys_preserved(self):
+        """extra='allow' keeps unknown agent_preference keys for pass-through."""
+        from src.server.models.user import AgentPreference
+
+        pref = AgentPreference.model_validate(
+            {"output_format": "markdown", "custom_key": "custom_value"}
+        )
+        dumped = pref.model_dump(exclude_unset=True)
+        assert dumped["output_format"] == "markdown"
+        assert dumped["custom_key"] == "custom_value"
+
+
+# ---------------------------------------------------------------------------
 # PUT /api/v1/users/me/preferences — end-to-end model preferences
 # ---------------------------------------------------------------------------
 

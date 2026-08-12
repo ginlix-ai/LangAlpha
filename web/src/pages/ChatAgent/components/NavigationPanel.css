@@ -43,9 +43,50 @@
   background-color: var(--color-border-muted);
 }
 
-/* Agent group — visually nested under thread with a left guide line */
+/* Hover action overlay (pin/archive) — floats over the title's tail so
+   revealing the buttons never reflows the text. Only visible while the row
+   is hovered. The row's hover tint (--color-border-muted) is translucent, so
+   masking the text needs TWO stacked gradients in the same geometry: solid
+   page bg underneath, the tint on top — reproducing exactly what the hovered
+   row (plain or active — they share the tint) looks like, opaque where the
+   buttons sit, with the title fading out through the leading edge. */
+.nav-panel-row-actions {
+  position: absolute;
+  /* Full row height to the pill's right edge — a right-side radius matching
+     the row's own corner clips the opaque mask along the pill, so there's no
+     visible seam between overlay and row background. */
+  right: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 0 6px 6px 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 26px;
+  padding-right: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+  background:
+    linear-gradient(to right, transparent, var(--color-border-muted) 20px),
+    linear-gradient(to right, transparent, var(--color-bg-page) 20px);
+}
+
+.nav-panel-row-active .nav-panel-row-actions {
+  border-radius: 0 8px 8px 0;
+}
+
+.nav-panel-row:hover .nav-panel-row-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Agent group — visually nested under thread with a left guide line.
+   margin-right matches .nav-panel-row's 6px so the agent pills' tails align
+   with the thread/workspace pills above instead of overhanging to the edge. */
 .nav-panel-agent-group {
   margin-left: 44px;
+  margin-right: 6px;
   margin-top: 2px;
   margin-bottom: 2px;
   padding-left: 10px;
@@ -84,6 +125,38 @@
   color: var(--color-text-secondary);
 }
 
+/* Drag lift preview — a single header row rendered in a DragOverlay portal so
+   the dragged workspace follows the cursor at a fixed size instead of the tall
+   expanded section distorting in place. Override the panel's right border (the
+   chip is free-floating) and give it a lifted shadow. */
+.nav-panel-drag-chip {
+  /* Compact lift pill: hug the icon + name, never outgrow the row it left
+     (a fixed 300px used to make the chip visibly wider than the sidebar). */
+  width: fit-content;
+  max-width: 240px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  cursor: grabbing;
+  overflow: hidden;
+}
+
+.nav-panel-drag-chip .nav-panel-row {
+  cursor: grabbing;
+  margin: 0;
+}
+
+/* Header row holding the panel controls (pin, minimize) — its own row above
+   the list so the buttons don't overlay the first workspace row. */
+.nav-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 8px 12px 0;
+  flex-shrink: 0;
+}
+
 /* Dismiss buttons (minimize + fold) */
 .nav-panel-dismiss-btn {
   opacity: 0.4;
@@ -101,4 +174,13 @@
 @media (max-width: 767px) {
   .nav-panel-row { min-height: 44px; padding: 10px 16px; }
   .nav-panel-agent-row { min-height: 44px; padding: 10px 16px; }
+}
+
+/* Subagent avatar glyph: solid white on the charcoal tile; light theme flips
+   it to a solid dark glyph — a forced-white PNG vanishes on the paper fills. */
+.subagent-avatar-glyph {
+  filter: brightness(0) saturate(100%) invert(100%);
+}
+[data-theme='light'] .subagent-avatar-glyph {
+  filter: brightness(0) saturate(100%);
 }

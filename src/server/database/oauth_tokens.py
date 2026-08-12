@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 
 from psycopg.rows import dict_row
 
-from src.server.database.conversation import get_db_connection
+from src.server.database.pool import get_db_connection
 from src.server.database.encryption import get_encryption_key
 
 logger = logging.getLogger(__name__)

@@ -6,9 +6,15 @@ from typing import Optional
 import asyncio
 from contextlib import asynccontextmanager
 
-from .fmp_client import FMPClient
+from .fmp_client import FMPClient, FMPRequestError
 
-__all__ = ["FMPClient", "get_fmp_client", "close_fmp_client", "fmp_lifespan"]
+__all__ = [
+    "FMPClient",
+    "FMPRequestError",
+    "get_fmp_client",
+    "close_fmp_client",
+    "fmp_lifespan",
+]
 
 # Async singleton for FMPClient
 _fmp_client: Optional[FMPClient] = None

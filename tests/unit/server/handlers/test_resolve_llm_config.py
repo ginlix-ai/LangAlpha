@@ -33,7 +33,7 @@ from ptc_agent.config.core import (
 # ---------------------------------------------------------------------------
 
 
-HANDLER = "src.server.handlers.chat.llm_config"
+HANDLER = "src.server.services.llm.config"
 
 
 def _make_config(**llm_overrides) -> AgentConfig:
@@ -75,7 +75,7 @@ class TestModelPriority:
     @pytest.mark.asyncio
     async def test_system_default_used(self, base_config):
         """No per-request or preference → system default."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -89,7 +89,7 @@ class TestModelPriority:
     @pytest.mark.asyncio
     async def test_user_preference_overrides_default(self, base_config):
         """User preferred_model overrides system default."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -107,7 +107,7 @@ class TestModelPriority:
     @pytest.mark.asyncio
     async def test_per_request_overrides_preference(self, base_config):
         """Per-request llm_model overrides both preference and default."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -127,7 +127,7 @@ class TestModelPriority:
     @pytest.mark.asyncio
     async def test_does_not_mutate_base_config(self, base_config):
         """resolve_llm_config should deep-copy, not mutate the base config."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         original_name = base_config.llm.name
         mock_mc = _mock_model_config()
@@ -155,7 +155,7 @@ class TestModeModelField:
     @pytest.mark.asyncio
     async def test_flash_mode_uses_flash_field(self, base_config):
         """Flash mode reads/writes the 'flash' field, not 'name'."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -172,7 +172,7 @@ class TestModeModelField:
     @pytest.mark.asyncio
     async def test_flash_mode_per_request_override(self, base_config):
         """Per-request model in flash mode sets the flash field."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -188,7 +188,7 @@ class TestModeModelField:
     @pytest.mark.asyncio
     async def test_flash_mode_user_preference(self, base_config):
         """Flash mode uses preferred_flash_model preference key."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -214,7 +214,7 @@ class TestModeModelField:
 class TestOtherModelPreferences:
     @pytest.mark.asyncio
     async def test_compaction_model_preference(self, base_config):
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -232,7 +232,7 @@ class TestOtherModelPreferences:
     @pytest.mark.asyncio
     async def test_legacy_summarization_model_preference(self, base_config):
         """Platform DB may still carry the legacy ``summarization_model`` key."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -250,7 +250,7 @@ class TestOtherModelPreferences:
     @pytest.mark.asyncio
     async def test_compaction_model_wins_when_both_keys_present(self, base_config):
         """New ``compaction_model`` must override legacy ``summarization_model``."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -270,7 +270,7 @@ class TestOtherModelPreferences:
 
     @pytest.mark.asyncio
     async def test_fetch_model_preference(self, base_config):
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -287,7 +287,7 @@ class TestOtherModelPreferences:
 
     @pytest.mark.asyncio
     async def test_fallback_models_preference(self, base_config):
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -304,7 +304,7 @@ class TestOtherModelPreferences:
 
     @pytest.mark.asyncio
     async def test_compaction_profile_aggressive_applies_preset(self, base_config):
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
         from ptc_agent.config.agent import COMPACTION_PROFILES
 
         mock_mc = _mock_model_config()
@@ -325,7 +325,7 @@ class TestOtherModelPreferences:
 
     @pytest.mark.asyncio
     async def test_compaction_profile_extended_applies_preset(self, base_config):
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
         from ptc_agent.config.agent import COMPACTION_PROFILES
 
         mock_mc = _mock_model_config()
@@ -347,7 +347,7 @@ class TestOtherModelPreferences:
     @pytest.mark.asyncio
     async def test_compaction_profile_relaxed_applies_preset(self, base_config):
         """Relaxed profile targets 1M-context models with a 300k threshold."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
         from ptc_agent.config.agent import COMPACTION_PROFILES
 
         mock_mc = _mock_model_config()
@@ -369,7 +369,7 @@ class TestOtherModelPreferences:
     @pytest.mark.asyncio
     async def test_compaction_profile_invalid_falls_through_to_yaml(self, base_config):
         """Unknown strings and non-string values leave compaction config unchanged."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         baseline = base_config.compaction.model_copy(deep=True)
         mock_mc = _mock_model_config()
@@ -398,7 +398,7 @@ class TestReasoningEffort:
     @pytest.mark.asyncio
     async def test_per_request_reasoning(self, base_config):
         """Per-request reasoning_effort takes precedence."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         mock_llm = MagicMock()
@@ -423,7 +423,7 @@ class TestReasoningEffort:
     @pytest.mark.asyncio
     async def test_user_pref_reasoning(self, base_config):
         """User pref reasoning_effort used when no per-request value."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         mock_llm = MagicMock()
@@ -454,7 +454,7 @@ class TestBYOKResolution:
     @pytest.mark.asyncio
     async def test_byok_client_injected(self, base_config):
         """When BYOK is active, a fresh LLM client should be created and injected."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         mock_byok_llm = MagicMock(name="byok-llm-client")
@@ -476,7 +476,7 @@ class TestBYOKResolution:
     @pytest.mark.asyncio
     async def test_byok_not_active_no_client(self, base_config):
         """When is_byok=False, BYOK resolution is skipped."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -500,7 +500,7 @@ class TestBYOKResolution:
         lazy ``AgentConfig.get_llm_client()`` can pass it through to
         ``create_llm(cache_key=...)``. Without this, the most common chat
         path silently drops ``prompt_cache_key``."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -529,7 +529,7 @@ class TestOAuthResolution:
     @pytest.mark.asyncio
     async def test_oauth_takes_precedence_over_byok(self, base_config):
         """OAuth client is tried first; if found, BYOK is skipped."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         mock_oauth_llm = MagicMock(name="oauth-llm-client")
@@ -566,7 +566,7 @@ class TestCustomModelFallback:
         instead of a silent downgrade to the platform default."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         # Model not in system models → treated as custom
         mock_mc = _mock_model_config(system_models={"system-default-model", "system-flash-model"})
@@ -601,7 +601,7 @@ class TestCustomModelFallback:
         'Model K2.6 not found in models.json'."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config(system_models={"system-default-model", "system-flash-model"})
         with (
@@ -632,7 +632,7 @@ class TestCustomModelFallback:
     @pytest.mark.asyncio
     async def test_custom_model_byok_on_with_key_returns_custom_client(self, base_config):
         """Custom model + BYOK on + key present → BYOK client is injected (no error)."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config(system_models={"system-default-model", "system-flash-model"})
         mock_client = MagicMock(name="custom-byok-client")
@@ -665,7 +665,7 @@ class TestCustomModelFallback:
         built-in share the same ``name``, the custom entry wins. The custom
         entry's ``input_modalities`` (and routing) must take precedence over
         the built-in's metadata."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         # gpt-4o exists as a system model AND the user has a custom entry
         # with the same name — the variant-routing use case.
@@ -710,7 +710,7 @@ class TestCustomModelFallback:
         up to the parent. The wizard stores the key under ``moonshot-coding`` —
         looking it up under ``moonshot`` would falsely raise ``byok_key_required``.
         """
-        from src.server.handlers.chat.llm_config import _resolve_custom_model_byok
+        from src.server.services.llm.config import _resolve_custom_model_byok
 
         mc = MagicMock()
         mc.get_parent_provider.return_value = "moonshot"
@@ -756,7 +756,7 @@ class TestCustomModelFallback:
         This covers the flow where the user added a custom model under the
         parent in Settings but their only key is on the coding-plan variant.
         """
-        from src.server.handlers.chat.llm_config import _resolve_custom_model_byok
+        from src.server.services.llm.config import _resolve_custom_model_byok
 
         mc = MagicMock()
         # Parent has no further parent — get_parent_provider returns self.
@@ -805,7 +805,7 @@ class TestCustomModelFallback:
     async def test_custom_fallback_without_key_skipped_without_crash(self, base_config):
         """A custom fallback model without a BYOK key is silently skipped with a
         warning instead of crashing the whole request via create_llm()."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         # Only the main model is in models.json; "my-fallback" is custom.
         mock_mc = _mock_model_config(
@@ -852,7 +852,7 @@ class TestFastMode:
     @pytest.mark.asyncio
     async def test_fast_mode_per_request(self, base_config):
         """Per-request fast_mode should be passed to OAuth resolver as service_tier."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -874,7 +874,7 @@ class TestFastMode:
     @pytest.mark.asyncio
     async def test_fast_mode_from_preference(self, base_config):
         """User pref fast_mode used when no per-request value."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -906,7 +906,7 @@ class TestResolveOneFallbackGuard:
     @pytest.mark.asyncio
     async def test_resolve_one_catches_exception_from_oauth(self, base_config):
         """If resolve_oauth_llm_client raises for a fallback model, it should be skipped (not crash)."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config(system_models={"system-default-model", "system-flash-model", "oauth-model"})
 
@@ -938,7 +938,7 @@ class TestResolveOneFallbackGuard:
     @pytest.mark.asyncio
     async def test_mixed_fallback_valid_and_invalid(self, base_config):
         """Mixed fallback list: valid API-key model resolves, invalid OAuth model is skipped."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config(
             system_models={"system-default-model", "system-flash-model", "valid-model", "oauth-model"}
@@ -978,6 +978,8 @@ class TestResolveOneFallbackGuard:
         # Valid model resolved, invalid skipped
         assert len(config.fallback_llm_clients) == 1
         assert config.fallback_llm_clients[0] is mock_valid_client
+        # Names stay aligned index-for-index with clients (skips drop from both)
+        assert config.fallback_llm_names == ["valid-model"]
 
 
 # ---------------------------------------------------------------------------
@@ -996,7 +998,7 @@ class TestClassifyModelDirect:
 
     @pytest.mark.asyncio
     async def test_returns_custom_when_user_has_entry(self):
-        from src.server.handlers.chat.llm_config import classify_model, ModelSource
+        from src.server.services.llm.config import classify_model, ModelSource
 
         custom_entry = {"name": "my-model", "model_id": "m1", "provider": "my-provider"}
         with patch(
@@ -1011,23 +1013,23 @@ class TestClassifyModelDirect:
 
     @pytest.mark.asyncio
     async def test_returns_system_when_only_in_manifest(self):
-        from src.server.handlers.chat.llm_config import classify_model, ModelSource
+        from src.server.services.llm.config import classify_model, ModelSource
 
-        system_info = {"provider": "openai", "model_id": "gpt-5.4"}
+        system_info = {"provider": "openai", "model_id": "gpt-5.6-sol"}
         mock_mc = MagicMock()
         mock_mc.get_model_config.return_value = system_info
         with (
             patch(f"{HANDLER}.get_custom_model_config", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
-            source, cfg = await classify_model("user-1", "gpt-5.4")
+            source, cfg = await classify_model("user-1", "gpt-5.6-sol")
 
         assert source == ModelSource.SYSTEM
         assert cfg is system_info
 
     @pytest.mark.asyncio
     async def test_returns_unknown_when_neither(self):
-        from src.server.handlers.chat.llm_config import classify_model, ModelSource
+        from src.server.services.llm.config import classify_model, ModelSource
 
         mock_mc = MagicMock()
         mock_mc.get_model_config.return_value = None
@@ -1045,7 +1047,7 @@ class TestClassifyModelDirect:
         """When a name appears in BOTH custom and manifest, custom wins.
         Regression guard for the shadow-semantics flip — without it, a user's
         ``gpt-5`` custom entry would be invisible at routing time."""
-        from src.server.handlers.chat.llm_config import classify_model, ModelSource
+        from src.server.services.llm.config import classify_model, ModelSource
 
         custom_entry = {"name": "gpt-5", "model_id": "gpt-5", "provider": "my-openai"}
         mock_mc = MagicMock()
@@ -1075,7 +1077,7 @@ class TestClassifyModelDedup:
         about (the per-name count is an implementation detail of the STEP-0
         prefetch + per-model primitive resolution).
         """
-        from src.server.handlers.chat.llm_config import (
+        from src.server.services.llm.config import (
             resolve_llm_config,
             ModelSource,
         )
@@ -1124,7 +1126,7 @@ class TestStaleModelPreference:
         model_removed CTA. Next request won't re-hit the same wall."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config(
             system_models={"system-default-model", "system-flash-model"}
@@ -1184,7 +1186,7 @@ class TestStaleModelPreference:
         errors on subsequent requests."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config(
             system_models={"system-default-model", "system-flash-model", "good-model"}
@@ -1238,7 +1240,7 @@ class TestStaleModelPreference:
         saved prefs — there's nothing in them to clean."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config(
             system_models={"system-default-model", "system-flash-model"}
@@ -1286,7 +1288,7 @@ class TestStaleModelPreference:
         """If effective_model came from agent_config.yaml (not user pref),
         fall through so the downstream error path surfaces the server bug —
         raising model_removed would mislead every user on the instance."""
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         # YAML default is a model the mock_mc doesn't know about → UNKNOWN,
         # but no user pref references it, so cleanup shouldn't flag it as
@@ -1346,7 +1348,7 @@ class TestStaleModelPreference:
         name it originally detected."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from src.server.services.llm.config import resolve_llm_config
 
         mock_mc = _mock_model_config(
             system_models={"system-default-model", "system-flash-model", "freshly-saved"}
@@ -1405,3 +1407,505 @@ class TestStaleModelPreference:
         # Cache was invalidated once (pre-read), never a second time because
         # no write happened.
         assert mock_invalidate.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Per-user search provider selection + platform-tier gating
+# ---------------------------------------------------------------------------
+
+
+class TestSearchProviderPreference:
+    """The ``search_provider`` model preference selects the web-search engine.
+
+    OSS mode honours any valid engine; platform mode gates it behind
+    ``_fetch_platform_tier(user_id) >= SEARCH_PROVIDER_MIN_TIER``. An unknown
+    engine string is ignored (validity check runs before the tier gate, so the
+    membership fetch is skipped). When honoured, the returned config is a
+    copy-on-write copy with ``search_api`` set; when ignored, ``search_api``
+    stays the AgentConfig default ("tavily").
+    """
+
+    @pytest.mark.asyncio
+    async def test_oss_mode_honors_valid_provider(self, base_config, monkeypatch):
+        """OSS mode: a valid search_provider is honored without any tier check."""
+        from src.server.services.llm.config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
+        tier_mock = AsyncMock(return_value=0)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+
+        mock_mc = _mock_model_config()
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value={"search_provider": "serper"},
+            ),
+            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+
+        assert config.search_api == "serper"
+        # OSS short-circuits before consulting membership.
+        tier_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_platform_mode_tier_at_min_honors_provider(self, base_config, monkeypatch):
+        """Platform mode: tier == min tier (1) → provider honored."""
+        from src.server.services.llm.config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
+        tier_mock = AsyncMock(return_value=1)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+
+        mock_mc = _mock_model_config()
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value={"search_provider": "serper"},
+            ),
+            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+
+        assert config.search_api == "serper"
+        tier_mock.assert_awaited_once_with("user-1")
+
+    @pytest.mark.asyncio
+    async def test_platform_mode_tier_below_min_ignores_provider(self, base_config, monkeypatch):
+        """Platform mode: tier 0 (< min) → provider ignored, search_api stays default.
+
+        Asserts the gate consulted membership (``_fetch_platform_tier`` called)."""
+        from src.server.services.llm.config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
+        tier_mock = AsyncMock(return_value=0)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+
+        mock_mc = _mock_model_config()
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value={"search_provider": "serper"},
+            ),
+            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+
+        # Default AgentConfig.search_api is "tavily"; the pref was rejected.
+        assert config.search_api == "tavily"
+        tier_mock.assert_awaited_once_with("user-1")
+
+    @pytest.mark.asyncio
+    async def test_unknown_provider_ignored_without_tier_check(self, base_config, monkeypatch):
+        """An unknown engine string is rejected at the validity check, BEFORE the
+        search tier gate — no tier fetch happens, and nothing raises."""
+        from src.server.services.llm.config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
+        tier_mock = AsyncMock(return_value=2)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+
+        mock_mc = _mock_model_config()
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value={"search_provider": "duckduckgo"},
+            ),
+            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+
+        # Validity check fails first → search_api untouched, tier never fetched.
+        assert config.search_api == "tavily"
+        tier_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_platform_byok_user_honors_provider_via_tier(self, base_config, monkeypatch):
+        """Platform mode + is_byok=True: the tier still comes from
+        ``_fetch_platform_tier`` (not ChatAuthResult, which is -1 for BYOK
+        users), so a paid BYOK user (tier 1) still gets their provider."""
+        from src.server.services.llm.config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
+        tier_mock = AsyncMock(return_value=1)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+
+        mock_mc = _mock_model_config()
+        mock_byok_llm = MagicMock(name="byok-llm-client")
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value={"search_provider": "bocha"},
+            ),
+            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(
+                f"{HANDLER}.resolve_byok_llm_client",
+                new_callable=AsyncMock,
+                return_value=mock_byok_llm,
+            ),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            config = await resolve_llm_config(base_config, "user-1", None, True)  # is_byok=True
+
+        assert config.search_api == "bocha"
+        tier_mock.assert_awaited_once_with("user-1")
+
+    @pytest.mark.asyncio
+    async def test_platform_mode_tier_negative_one_ignores_provider(self, base_config, monkeypatch):
+        """Platform mode: tier -1 (membership fetch failed / no access) → ignored,
+        no raise. The fallback path returns -1 < min tier, so the pref is dropped."""
+        from src.server.services.llm.config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
+        tier_mock = AsyncMock(return_value=-1)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+
+        mock_mc = _mock_model_config()
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value={"search_provider": "serper"},
+            ),
+            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+
+        assert config.search_api == "tavily"
+        tier_mock.assert_awaited_once_with("user-1")
+
+    @pytest.mark.asyncio
+    async def test_no_search_provider_pref_leaves_config_untouched(self, base_config, monkeypatch):
+        """No ``search_provider`` pref at all → search_api unchanged; the search
+        block is skipped entirely and nothing resolves the tier."""
+        from src.server.services.llm.config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
+        tier_mock = AsyncMock(return_value=2)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+
+        mock_mc = _mock_model_config()
+        with (
+            patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value={}),
+            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+
+        assert config.search_api == "tavily"
+        tier_mock.assert_not_awaited()  # no search tier check; crawl not opted in
+
+    @pytest.mark.asyncio
+    async def test_non_string_provider_ignored_without_tier_check(self, base_config, monkeypatch):
+        """A non-string pref value (reachable via the untyped JSONB field) is
+        treated as invalid — ignored with no TypeError and no search-gate
+        tier fetch."""
+        from src.server.services.llm.config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
+        tier_mock = AsyncMock(return_value=2)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+
+        mock_mc = _mock_model_config()
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value={"search_provider": {"engine": "serper"}},
+            ),
+            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+
+        assert config.search_api == "tavily"
+        tier_mock.assert_not_awaited()  # no search tier check; crawl not opted in
+
+
+class TestSearchDepthPreference:
+    """The ``search_depth`` model preference selects a depth level of the
+    *effective* provider (post-provider-resolution). Levels and their tiers
+    come from the search manifest; entries without an explicit min_tier
+    resolve to the SEARCH_PROVIDER_MIN_TIER floor. Unknown / wrong-provider
+    levels are ignored before any tier fetch; the tier is fetched at most
+    once for the provider + depth pair.
+    """
+
+    def _patches(self, prefs):
+        mock_mc = _mock_model_config()
+        return (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value=prefs,
+            ),
+            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        )
+
+    @pytest.mark.asyncio
+    async def test_oss_mode_honors_depth_without_tier_check(self, base_config, monkeypatch):
+        from src.server.services.llm.config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
+        tier_mock = AsyncMock(return_value=0)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+
+        p1, p2, p3 = self._patches({"search_depth": "deep"})
+        with p1, p2, p3:
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+
+        assert config.search_depth == "deep"
+        tier_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_platform_tier_at_min_honors_depth(self, base_config, monkeypatch):
+        from src.server.services.llm.config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
+        tier_mock = AsyncMock(return_value=1)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+
+        p1, p2, p3 = self._patches({"search_depth": "deep"})
+        with p1, p2, p3:
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+
+        assert config.search_depth == "deep"
+        tier_mock.assert_awaited_once_with("user-1")
+
+    @pytest.mark.asyncio
+    async def test_platform_tier_below_min_ignores_depth(self, base_config, monkeypatch):
+        """Below-tier depth pref is dropped; config keeps the deployment
+        default ("standard")."""
+        from src.server.services.llm.config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
+        tier_mock = AsyncMock(return_value=0)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+
+        p1, p2, p3 = self._patches({"search_depth": "deep"})
+        with p1, p2, p3:
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+
+        assert config.search_depth == "standard"
+        tier_mock.assert_awaited_once_with("user-1")
+
+    @pytest.mark.asyncio
+    async def test_depth_not_on_effective_provider_ignored_without_tier_check(
+        self, base_config, monkeypatch
+    ):
+        """A level name the effective provider doesn't declare is rejected at
+        the membership check, BEFORE the search-gate tier fetch (the crawl
+        gate's shared resolve is the only one)."""
+        from src.server.services.llm.config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
+        tier_mock = AsyncMock(return_value=2)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+
+        p1, p2, p3 = self._patches({"search_depth": "warp9"})
+        with p1, p2, p3:
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+
+        assert config.search_depth == "standard"
+        tier_mock.assert_not_awaited()  # no search tier check; crawl not opted in
+
+    @pytest.mark.asyncio
+    async def test_depth_validated_against_resolved_provider(self, base_config, monkeypatch):
+        """Provider + depth combined: the provider pref is honored first, then
+        the depth is checked against THAT provider. 'deep' isn't a serper
+        level, so it degrades to the default while the provider sticks."""
+        from src.server.services.llm.config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
+        tier_mock = AsyncMock(return_value=5)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+
+        p1, p2, p3 = self._patches({"search_provider": "serper", "search_depth": "deep"})
+        with p1, p2, p3:
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+
+        assert config.search_api == "serper"
+        assert config.search_depth == "standard"
+        tier_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_provider_and_depth_share_a_single_tier_fetch(self, base_config, monkeypatch):
+        """Platform mode with both prefs set fetches the platform tier once."""
+        from src.server.services.llm.config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
+        tier_mock = AsyncMock(return_value=2)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+
+        p1, p2, p3 = self._patches({"search_provider": "tavily", "search_depth": "deep"})
+        with p1, p2, p3:
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+
+        assert config.search_api == "tavily"
+        assert config.search_depth == "deep"
+        tier_mock.assert_awaited_once_with("user-1")
+
+    @pytest.mark.asyncio
+    async def test_provider_honored_while_depth_tier_gated(self, base_config, monkeypatch):
+        """Provider passes the tier gate but the depth requires a higher tier:
+        the provider sticks, the depth degrades to the provider default, and
+        the tier is still fetched only once."""
+        from src.server.services.llm.config import resolve_llm_config
+
+        from src.tools.web.manifest import LevelSpec
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
+        # Raise the bar for depth levels only; provider/crawl capabilities stay open.
+        monkeypatch.setattr(
+            "src.tools.web.manifest.resolve_min_tier",
+            lambda spec: 2 if isinstance(spec, LevelSpec) else 0,
+        )
+        tier_mock = AsyncMock(return_value=1)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+
+        p1, p2, p3 = self._patches({"search_provider": "tavily", "search_depth": "deep"})
+        with p1, p2, p3:
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+
+        assert config.search_api == "tavily"
+        assert config.search_depth == "standard"
+        tier_mock.assert_awaited_once_with("user-1")
+
+    @pytest.mark.asyncio
+    async def test_non_string_depth_ignored_without_tier_check(self, base_config, monkeypatch):
+        from src.server.services.llm.config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        monkeypatch.setattr("src.config.settings.SEARCH_PROVIDER_MIN_TIER", 1)
+        tier_mock = AsyncMock(return_value=2)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+
+        p1, p2, p3 = self._patches({"search_depth": {"level": "deep"}})
+        with p1, p2, p3:
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+
+        assert config.search_depth == "standard"
+        tier_mock.assert_not_awaited()  # no search tier check; crawl not opted in
+
+
+# ---------------------------------------------------------------------------
+# Crawl tool tier gate
+# ---------------------------------------------------------------------------
+
+
+def _crawl_min_tier() -> int:
+    from src.config.tool_settings import get_crawl_provider
+    from src.tools.web.manifest import CAPABILITY_CRAWL, get_capability, resolve_min_tier
+
+    return resolve_min_tier(get_capability(get_crawl_provider(), CAPABILITY_CRAWL))
+
+
+class TestCrawlFeatureGate:
+    """WebCrawl/WebMap require the site_crawl opt-in; opted-in platform users
+    must additionally meet the crawl capability's min_tier."""
+
+    def _patches(self, prefs):
+        mock_mc = _mock_model_config()
+        return (
+            patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value=prefs),
+            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        )
+
+    async def _resolve(self, base_config, monkeypatch, host_mode, tier, opted_in):
+        from src.server.services.llm.config import resolve_llm_config
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", host_mode)
+        tier_mock = AsyncMock(return_value=tier)
+        monkeypatch.setattr(
+            "src.server.dependencies.usage_limits._fetch_platform_tier", tier_mock
+        )
+        prefs = {"feature_overrides": {"site_crawl": True}} if opted_in else {}
+        p1, p2, p3 = self._patches(prefs)
+        with p1, p2, p3:
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+        return config, tier_mock
+
+    @pytest.mark.asyncio
+    async def test_off_without_opt_in_and_skips_tier_fetch(self, base_config, monkeypatch):
+        config, tier_mock = await self._resolve(
+            base_config, monkeypatch, "platform", _crawl_min_tier(), opted_in=False
+        )
+        assert config.feature_enabled("site_crawl") is False
+        tier_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_opted_in_platform_below_tier_disables_crawl(self, base_config, monkeypatch):
+        config, _ = await self._resolve(
+            base_config, monkeypatch, "platform", _crawl_min_tier() - 1, opted_in=True
+        )
+        assert config.feature_enabled("site_crawl") is False
+
+    @pytest.mark.asyncio
+    async def test_opted_in_platform_at_tier_keeps_crawl(self, base_config, monkeypatch):
+        config, _ = await self._resolve(
+            base_config, monkeypatch, "platform", _crawl_min_tier(), opted_in=True
+        )
+        assert config.feature_enabled("site_crawl") is True
+
+    @pytest.mark.asyncio
+    async def test_opted_in_oss_mode_never_tier_gated(self, base_config, monkeypatch):
+        config, _ = await self._resolve(
+            base_config, monkeypatch, "oss", _crawl_min_tier() - 1, opted_in=True
+        )
+        assert config.feature_enabled("site_crawl") is True

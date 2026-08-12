@@ -18,6 +18,7 @@ from src.server.models.conversation import (
     ResponseFullDetail,
     SharePermissions,
     ThreadDeleteResponse,
+    ThreadExternalIdRequest,
     ThreadShareRequest,
     ThreadShareResponse,
     ThreadUpdateRequest,
@@ -221,7 +222,7 @@ class TestWorkspaceMessagesResponse:
 
 
 class TestThreadUpdateRequest:
-    """ThreadUpdateRequest title constraint."""
+    """ThreadUpdateRequest title constraint (rename only)."""
 
     def test_valid_title(self):
         req = ThreadUpdateRequest(title="My Thread")
@@ -234,3 +235,37 @@ class TestThreadUpdateRequest:
     def test_empty_allowed(self):
         req = ThreadUpdateRequest()
         assert req.title is None
+
+
+# ---------------------------------------------------------------------------
+# ThreadExternalIdRequest
+# ---------------------------------------------------------------------------
+
+
+class TestThreadExternalIdRequest:
+    """ThreadExternalIdRequest — both fields required and non-empty."""
+
+    def test_valid(self):
+        req = ThreadExternalIdRequest(platform="telegram", external_id="chat:42")
+        assert req.platform == "telegram"
+        assert req.external_id == "chat:42"
+
+    def test_platform_required(self):
+        with pytest.raises(ValidationError):
+            ThreadExternalIdRequest(external_id="chat:42")
+
+    def test_external_id_required(self):
+        with pytest.raises(ValidationError):
+            ThreadExternalIdRequest(platform="telegram")
+
+    def test_empty_rejected(self):
+        with pytest.raises(ValidationError):
+            ThreadExternalIdRequest(platform="", external_id="")
+
+    def test_platform_too_long(self):
+        with pytest.raises(ValidationError):
+            ThreadExternalIdRequest(platform="x" * 51, external_id="chat:42")
+
+    def test_external_id_too_long(self):
+        with pytest.raises(ValidationError):
+            ThreadExternalIdRequest(platform="telegram", external_id="x" * 256)

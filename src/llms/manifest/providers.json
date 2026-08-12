@@ -53,60 +53,64 @@
         }
       },
       {
-        "id": "gpt-5.4-mini",
-        "name": "GPT-5.4 Mini",
+        "id": "gpt-5.6-sol",
+        "name": "GPT-5.6 Sol",
         "is_reasoning": true,
-        "description": "OpenAI's strongest mini model for coding, computer use, and subagents",
-        "alias": [
-          "gpt-5.4-mini-2026-03-17"
-        ],
-        "context_window": 400000,
-        "max_output": 128000,
+        "description": "OpenAI's flagship GPT-5.6 reasoning model with tiered short/long-context pricing",
         "pricing": {
-          "input": 0.75,
-          "cached_input": 0.075,
-          "output": 4.5,
+          "input_tiers": [
+            {
+              "max_tokens": 272000,
+              "rate": 5.0,
+              "cached_input": 0.5,
+              "cache_5m": 6.25
+            },
+            {
+              "max_tokens": null,
+              "rate": 10.0,
+              "cached_input": 1.0,
+              "cache_5m": 12.5
+            }
+          ],
+          "cache_5m": 6.25,
+          "output_tiers": [
+            {
+              "max_tokens": 272000,
+              "rate": 30.0
+            },
+            {
+              "max_tokens": null,
+              "rate": 45.0
+            }
+          ],
+          "output_pricing_mode": "input_dependent",
+          "input_pricing_mode": "input_dependent",
           "unit": "per_1m_tokens"
-        }
+        },
+        "context_window": 1050000,
+        "max_output": 128000
       },
       {
-        "id": "gpt-5.4-nano",
-        "name": "GPT-5.4 Nano",
+        "id": "gpt-5.6-terra",
+        "name": "GPT-5.6 Terra",
         "is_reasoning": true,
-        "description": "OpenAI's cheapest GPT-5.4-class model for simple high-volume tasks",
-        "alias": [
-          "gpt-5.4-nano-2026-03-17"
-        ],
-        "context_window": 400000,
-        "max_output": 128000,
-        "pricing": {
-          "input": 0.2,
-          "cached_input": 0.02,
-          "output": 1.25,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "gpt-5.4",
-        "name": "GPT-5.4",
-        "is_reasoning": true,
-        "description": "OpenAI's latest and most capable reasoning model with tiered pricing",
-        "alias": [
-          "gpt-5.4-2026-03-05"
-        ],
+        "description": "OpenAI's mid-tier GPT-5.6 reasoning model with tiered short/long-context pricing",
         "pricing": {
           "input_tiers": [
             {
               "max_tokens": 272000,
               "rate": 2.5,
-              "cached_input": 0.25
+              "cached_input": 0.25,
+              "cache_5m": 3.125
             },
             {
               "max_tokens": null,
               "rate": 5.0,
-              "cached_input": 0.5
+              "cached_input": 0.5,
+              "cache_5m": 6.25
             }
           ],
+          "cache_5m": 3.125,
           "output_tiers": [
             {
               "max_tokens": 272000,
@@ -118,11 +122,94 @@
             }
           ],
           "output_pricing_mode": "input_dependent",
+          "input_pricing_mode": "input_dependent",
           "unit": "per_1m_tokens"
-        }
+        },
+        "context_window": 1050000,
+        "max_output": 128000
+      },
+      {
+        "id": "gpt-5.6-luna",
+        "name": "GPT-5.6 Luna",
+        "is_reasoning": true,
+        "description": "OpenAI's most cost-efficient GPT-5.6 reasoning model with tiered short/long-context pricing",
+        "pricing": {
+          "input_tiers": [
+            {
+              "max_tokens": 272000,
+              "rate": 1.0,
+              "cached_input": 0.1,
+              "cache_5m": 1.25
+            },
+            {
+              "max_tokens": null,
+              "rate": 2.0,
+              "cached_input": 0.2,
+              "cache_5m": 2.5
+            }
+          ],
+          "cache_5m": 1.25,
+          "output_tiers": [
+            {
+              "max_tokens": 272000,
+              "rate": 6.0
+            },
+            {
+              "max_tokens": null,
+              "rate": 9.0
+            }
+          ],
+          "output_pricing_mode": "input_dependent",
+          "input_pricing_mode": "input_dependent",
+          "unit": "per_1m_tokens"
+        },
+        "context_window": 1050000,
+        "max_output": 128000
       }
     ],
     "anthropic": [
+      {
+        "id": "claude-fable-5",
+        "name": "Claude Fable 5",
+        "is_reasoning": true,
+        "description": "Claude Fable 5 model",
+        "pricing": {
+          "input": 10.0,
+          "cached_input": 1.0,
+          "cache_5m": 12.5,
+          "cache_1h": 20.0,
+          "output": 50.0,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "claude-opus-5",
+        "name": "Claude Opus 5",
+        "is_reasoning": true,
+        "description": "Claude Opus 5 model",
+        "pricing": {
+          "input": 5.0,
+          "cached_input": 0.5,
+          "cache_5m": 6.25,
+          "cache_1h": 10.0,
+          "output": 25.0,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "claude-sonnet-5",
+        "name": "Claude Sonnet 5",
+        "is_reasoning": true,
+        "description": "Claude Sonnet 5 model",
+        "pricing": {
+          "input": 3.0,
+          "cached_input": 0.3,
+          "cache_5m": 3.75,
+          "cache_1h": 6.0,
+          "output": 15.0,
+          "unit": "per_1m_tokens"
+        }
+      },
       {
         "id": "claude-opus-4-8",
         "name": "Claude 4.8 Opus",
@@ -135,6 +222,7 @@
           "input": 5.0,
           "cached_input": 0.5,
           "cache_5m": 6.25,
+          "cache_1h": 10.0,
           "output": 25.0,
           "unit": "per_1m_tokens"
         }
@@ -172,7 +260,7 @@
           ],
           "output_pricing_mode": "input_dependent",
           "cache_5m": 3.75,
-          "cache_1h": 7.5,
+          "cache_1h": 6.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -312,6 +400,18 @@
         }
       },
       {
+        "id": "glm-5.2",
+        "name": "GLM-5.2",
+        "is_reasoning": true,
+        "description": "Z.AI's flagship GLM-5.2 model with 1M context and extended thinking",
+        "pricing": {
+          "input": 1.4,
+          "cached_input": 0.26,
+          "output": 4.4,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
         "id": "glm-5v-turbo",
         "name": "GLM-5V-Turbo",
         "is_reasoning": true,
@@ -378,6 +478,18 @@
             }
           ],
           "output_pricing_mode": "input_dependent",
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "glm-5.2",
+        "name": "GLM-5.2",
+        "is_reasoning": true,
+        "description": "Z.AI's flagship GLM-5.2 model with 1M context, flat domestic pricing",
+        "pricing": {
+          "input": 1.14,
+          "cached_input": 0.29,
+          "output": 4.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -718,6 +830,40 @@
         }
       },
       {
+        "id": "qwen3.7-plus",
+        "name": "Qwen3.7 Plus",
+        "is_reasoning": true,
+        "description": "Alibaba's Qwen3.7 Plus — cost-efficient multimodal model with upgraded vision-language and agentic coding, GUI operation, and 1M context",
+        "context_window": 1000000,
+        "max_output": 65536,
+        "pricing": {
+          "input_tiers": [
+            {
+              "max_tokens": 256000,
+              "rate": 0.286,
+              "cached_input": 0.057
+            },
+            {
+              "max_tokens": 1000000,
+              "rate": 0.857,
+              "cached_input": 0.171
+            }
+          ],
+          "output_tiers": [
+            {
+              "max_tokens": 256000,
+              "rate": 1.143
+            },
+            {
+              "max_tokens": 1000000,
+              "rate": 3.429
+            }
+          ],
+          "output_pricing_mode": "input_dependent",
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
         "id": "qwen3.6-plus",
         "name": "Qwen3.6 Plus",
         "is_reasoning": true,
@@ -969,7 +1115,41 @@
           "input": 2.677,
           "cached_input": 0.535,
           "cache_5m": 3.346,
-          "output": 8.030,
+          "output": 8.03,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "qwen3.7-plus",
+        "name": "Qwen3.7 Plus (SG)",
+        "is_reasoning": true,
+        "description": "Alibaba's Qwen3.7 Plus — Singapore international region",
+        "context_window": 1000000,
+        "max_output": 65536,
+        "pricing": {
+          "input_tiers": [
+            {
+              "max_tokens": 256000,
+              "rate": 0.428,
+              "cached_input": 0.086
+            },
+            {
+              "max_tokens": 1000000,
+              "rate": 1.285,
+              "cached_input": 0.257
+            }
+          ],
+          "output_tiers": [
+            {
+              "max_tokens": 256000,
+              "rate": 1.713
+            },
+            {
+              "max_tokens": 1000000,
+              "rate": 5.139
+            }
+          ],
+          "output_pricing_mode": "input_dependent",
           "unit": "per_1m_tokens"
         }
       },
@@ -1120,6 +1300,19 @@
     ],
     "moonshot": [
       {
+        "id": "kimi-k3",
+        "name": "Kimi K3",
+        "is_reasoning": true,
+        "description": "Moonshot AI's flagship Kimi K3 multi-modal model with 1M-token context",
+        "context_window": 1000000,
+        "pricing": {
+          "input": 3.0,
+          "cached_input": 0.3,
+          "output": 15.0,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
         "id": "kimi-k2.6",
         "name": "Kimi K2.6",
         "is_reasoning": true,
@@ -1147,6 +1340,19 @@
       }
     ],
     "moonshot-coding": [
+      {
+        "id": "kimi-k3",
+        "name": "Kimi K3",
+        "is_reasoning": true,
+        "description": "Moonshot AI's flagship Kimi K3 multi-modal model with 1M-token context",
+        "context_window": 1000000,
+        "pricing": {
+          "input": 3.0,
+          "cached_input": 0.3,
+          "output": 15.0,
+          "unit": "per_1m_tokens"
+        }
+      },
       {
         "id": "kimi-for-coding",
         "name": "Kimi for Coding",
@@ -1241,6 +1447,7 @@
       "use_response_api": true,
       "prompt_cache_key": true,
       "display_name": "OpenAI",
+      "reasoning_compat_group": "openai",
       "variants": {
         "codex-oauth": {
           "sdk": "codex",
@@ -1248,7 +1455,8 @@
           "env_key": null,
           "access_type": "oauth",
           "use_response_api": true,
-          "display_name": "ChatGPT Codex"
+          "display_name": "ChatGPT Codex",
+          "reasoning_compat_group": "codex-oauth"
         }
       }
     },
@@ -1258,6 +1466,7 @@
       "access_type": "api_key",
       "byok_eligible": true,
       "display_name": "Anthropic",
+      "reasoning_compat_group": "anthropic",
       "variants": {
         "claude-oauth": {
           "base_url": "https://api.anthropic.com",
@@ -1349,22 +1558,31 @@
       }
     },
     "z-ai": {
-      "sdk": "anthropic",
-      "base_url": "https://api.z.ai/api/anthropic",
+      "sdk": "glm",
+      "base_url": "https://api.z.ai/api/paas/v4/",
       "env_key": "ZAI_API_KEY",
       "access_type": "api_key",
       "byok_eligible": true,
       "display_name": "Zhipu AI",
       "variants": {
         "z-ai-cn": {
-          "base_url": "https://open.bigmodel.cn/api/anthropic",
+          "base_url": "https://open.bigmodel.cn/api/paas/v4/",
           "env_key": "ZAI_CN_API_KEY",
           "region": "cn"
         },
         "z-ai-coding": {
+          "sdk": "anthropic",
           "base_url": "https://api.z.ai/api/anthropic",
           "env_key": "ZAI_CODING_API_KEY",
           "access_type": "coding_plan"
+        },
+        "z-ai-cn-coding": {
+          "sdk": "anthropic",
+          "base_url": "https://open.bigmodel.cn/api/anthropic",
+          "env_key": "ZAI_CN_CODING_API_KEY",
+          "access_type": "coding_plan",
+          "region": "cn",
+          "parent_provider": "z-ai-cn"
         }
       }
     },
@@ -1449,34 +1667,7 @@
       "display_name": "Ollama"
     }
   },
-  "infrastructure_pricing": {
-    "TavilySearchTool": {
-      "credits_per_use": 16,
-      "search_type": "advanced"
-    },
-    "TavilySearchImages": {
-      "credits_per_use": 16,
-      "search_type": "advanced"
-    },
-    "BochaSearchTool": {
-      "credits_per_use": 8,
-      "search_type": "ai_search",
-      "pricing_note": "0.06 RMB per call"
-    },
-    "SerperSearchTool": {
-      "credits_per_use": 1,
-      "search_type": "web_search",
-      "pricing_note": "$0.001 per query ($50/50k credits)"
-    },
-    "TavilyResearchMini": {
-      "credits_per_use": 880,
-      "search_type": "research_mini"
-    },
-    "TavilyResearchPro": {
-      "credits_per_use": 2000,
-      "search_type": "research_pro"
-    }
-  },
+  "infrastructure_pricing": {},
   "credit_conversion": {
     "usd_to_credits_rate": 1000,
     "description": "Conversion rate from USD to credits (1 USD = 1000 credits)"

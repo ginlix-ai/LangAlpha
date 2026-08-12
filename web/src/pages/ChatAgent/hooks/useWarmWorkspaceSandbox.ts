@@ -76,7 +76,6 @@ export function useWarmWorkspaceSandbox(
         );
       } catch (err) {
         if (import.meta.env?.DEV) {
-          // eslint-disable-next-line no-console
           console.warn(
             '[useWarmWorkspaceSandbox] events stream ended',
             workspaceId,

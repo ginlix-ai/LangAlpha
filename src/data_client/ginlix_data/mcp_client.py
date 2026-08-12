@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 GINLIX_INTERVAL_MAP: dict[str, str] = {
-    "1s": "1/second",
     "1min": "1/minute",
     "5min": "5/minute",
     "15min": "15/minute",
@@ -94,10 +93,20 @@ def filter_bars_by_time(
 # Token file helpers
 # ---------------------------------------------------------------------------
 
-# Derive token file path from the sandbox working directory.
-# Inside the sandbox, $HOME matches the configured working directory
-# (e.g. /home/workspace for Daytona, /home/sandbox for Docker).
-TOKEN_FILE = Path(os.environ.get("HOME", "/home/workspace")) / "_internal" / ".mcp_tokens.json"
+# Token file path. The host injects GINLIX_TOKEN_FILE with the exact path it
+# uploaded to (_token_file_path = <work_dir>/_internal/.mcp_tokens.json), so the
+# reader never has to guess. $HOME is NOT reliable here: Daytona sandboxes run as
+# root ($HOME=/root) while the working dir is /home/workspace, so keying off $HOME
+# read from the wrong place and the client always reported "not configured".
+TOKEN_FILE = Path(
+    os.environ.get("GINLIX_TOKEN_FILE", "/home/workspace/_internal/.mcp_tokens.json")
+)
+
+# Declared User-Agent for every sandbox→ginlix-data request (data + token
+# refresh). Set explicitly so the traffic is self-identifying at the edge and
+# does not depend on httpx's default UA — a generic client UA can be swept up by
+# upstream bot mitigation, which would silently break the data path.
+_USER_AGENT = "langalpha-sandbox/1.0"
 
 
 def _load_tokens() -> dict:
@@ -143,7 +152,10 @@ class GinlixMCPClient:
         if ginlix_url and access_token:
             self._http = httpx.AsyncClient(
                 base_url=ginlix_url.rstrip("/"),
-                headers={"Authorization": f"Bearer {access_token}"},
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "User-Agent": _USER_AGENT,
+                },
                 timeout=30.0,
             )
             return True
@@ -155,6 +167,23 @@ class GinlixMCPClient:
             self._http = None
 
     # -- HTTP ----------------------------------------------------------------
+
+    @staticmethod
+    def _error_dict(action: str, e: Exception) -> dict:
+        """Sanitized error dict for tool output; never embeds raw exception text.
+
+        HTTP errors surface the status and response detail (parseable by the
+        MCP servers' status→code mapper); anything else only the exception
+        type — stringified httpx errors embed the request URL.
+        """
+        if isinstance(e, httpx.HTTPStatusError):
+            try:
+                detail = e.response.json().get("detail", e.response.text)
+            except Exception:  # noqa: BLE001
+                detail = e.response.text
+            detail = str(detail)[:300]  # length-cap: never relay a full upstream body
+            return {"error": f"ginlix-data error ({e.response.status_code}): {detail}"}
+        return {"error": f"{action} failed ({type(e).__name__})"}
 
     async def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         """Make a ginlix-data request with auto-refresh on 401."""
@@ -178,7 +207,9 @@ class GinlixMCPClient:
         if not all([auth_url, refresh_token, client_id]):
             return None
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(
+                headers={"User-Agent": _USER_AGENT}
+            ) as client:
                 resp = await client.post(
                     f"{auth_url}/oauth/token",
                     data={
@@ -188,16 +219,30 @@ class GinlixMCPClient:
                     },
                     timeout=10,
                 )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    tokens["access_token"] = data["access_token"]
-                    if data.get("refresh_token"):
-                        tokens["refresh_token"] = data["refresh_token"]
-                    _save_tokens(tokens)
-                    return data["access_token"]
+                if resp.status_code != 200:
+                    # A non-200 is not an exception, so without this a misrouted
+                    # or rejected refresh fails completely silently.
+                    logger.warning(
+                        "Token refresh rejected: HTTP %s %s",
+                        resp.status_code,
+                        resp.text[:200],
+                    )
+                    return None
+                data = resp.json()
         except Exception as exc:
             logger.warning("Token refresh failed: %s", exc)
-        return None
+            return None
+
+        tokens["access_token"] = data["access_token"]
+        if data.get("refresh_token"):
+            tokens["refresh_token"] = data["refresh_token"]
+        try:
+            _save_tokens(tokens)
+        except Exception as exc:  # noqa: BLE001
+            # The token is valid regardless; a failed write only costs the next
+            # process one more refresh, so never discard it over this.
+            logger.warning("Token file write failed: %s", exc)
+        return data["access_token"]
 
     # -- shared helpers ------------------------------------------------------
 
@@ -338,7 +383,7 @@ class GinlixMCPClient:
             results = await paginate_cursor(_fetch_page, params, limit=limit)
             return {"results": results}
         except Exception as e:  # noqa: BLE001
-            return {"error": f"Failed to fetch options chain: {e}"}
+            return self._error_dict("Options chain fetch", e)
 
     async def fetch_options_prices(
         self,
@@ -379,14 +424,8 @@ class GinlixMCPClient:
             intraday = interval_lower not in DAILY_INTERVALS
             normalized = normalize_bars(all_bars, options_ticker, intraday=intraday)
             return normalized
-        except httpx.HTTPStatusError as e:
-            try:
-                detail = e.response.json().get("detail", e.response.text)
-            except Exception:
-                detail = e.response.text
-            return {"error": f"ginlix-data error ({e.response.status_code}): {detail}"}
         except Exception as e:  # noqa: BLE001
-            return {"error": f"Failed to fetch options prices: {e}"}
+            return self._error_dict("Options prices fetch", e)
 
     async def fetch_options_snapshot(
         self,
@@ -417,7 +456,7 @@ class GinlixMCPClient:
             ]
             return {"count": len(results), "data": results, "source": "ginlix-data"}
         except Exception as e:  # noqa: BLE001
-            return {"error": f"Failed to fetch options snapshot: {e}"}
+            return self._error_dict("Options snapshot fetch", e)
 
     async def fetch_short_data(
         self,
@@ -450,7 +489,7 @@ class GinlixMCPClient:
                 resp.raise_for_status()
                 result["short_interest"] = resp.json().get("results", [])
             except Exception as e:  # noqa: BLE001
-                result["short_interest_error"] = str(e)
+                result["short_interest_error"] = self._error_dict("Short interest fetch", e)["error"]
 
         if data_type in ("short_volume", "both"):
             params = {
@@ -469,6 +508,6 @@ class GinlixMCPClient:
                 resp.raise_for_status()
                 result["short_volume"] = resp.json().get("results", [])
             except Exception as e:  # noqa: BLE001
-                result["short_volume_error"] = str(e)
+                result["short_volume_error"] = self._error_dict("Short volume fetch", e)["error"]
 
         return result

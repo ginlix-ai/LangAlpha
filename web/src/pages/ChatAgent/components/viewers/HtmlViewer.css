@@ -5,19 +5,26 @@
   overflow: hidden;
 }
 
-/* Toolbar with Preview / Source toggle */
+/* Toolbar: Preview / Source toggle on the left, action bar on the right */
 .html-viewer-toolbar {
   display: flex;
-  gap: 2px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 6px 8px;
   border-bottom: 1px solid var(--color-border-muted);
   flex-shrink: 0;
 }
 
+.html-viewer-tabs {
+  display: flex;
+  gap: 2px;
+}
+
 .html-viewer-tab {
   padding: 4px 10px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-text-tertiary);
   background: transparent;
   border: 1px solid var(--color-border-muted);
@@ -28,6 +35,11 @@
 .html-viewer-tab:hover {
   color: var(--color-text-primary);
   background: var(--color-border-muted);
+}
+
+.html-viewer-tab:focus-visible {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: 1px;
 }
 
 .html-viewer-tab.active {
@@ -42,26 +54,17 @@
   min-height: 0;
   width: 100%;
   border: none;
-  background: #ffffff;
+  /* Shows through transparent-bodied documents (widgets mandate a transparent
+     shell) and before the document paints — must follow the app theme, not
+     hardcode white against a dark surface. */
+  background: var(--color-bg-page);
 }
 
-/* Source view */
+/* Source view — wraps the shared SyntaxHighlighter */
 .html-viewer-source {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  margin: 0;
   padding: 12px;
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--color-text-primary);
-  white-space: pre-wrap;
-  word-break: break-word;
   tab-size: 2;
-}
-
-.html-viewer-source code {
-  font: inherit;
-  color: inherit;
 }

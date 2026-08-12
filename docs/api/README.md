@@ -33,7 +33,6 @@ docs/api/
 ├── 70-market-data/              # Market data (intraday, daily, snapshots, search)
 ├── 72-news/                     # News feed & articles
 ├── 74-calendar/                 # Economic & earnings calendar
-├── 76-infoflow/                 # InfoFlow content feed
 ├── 78-insights/                 # AI market insights
 ├── 79-sec-proxy/                # SEC EDGAR document proxy
 ├── 80-cache/                    # Cache management
@@ -158,7 +157,6 @@ User identification is handled via:
 | Market Data | Intraday, daily, snapshots, search, overview | `/api/v1/market-data` |
 | News | News feed & articles | `/api/v1/news` |
 | Calendar | Economic & earnings calendar | `/api/v1/calendar` |
-| InfoFlow | InfoFlow content feed | `/api/v1/infoflow` |
 | Insights | AI market insights | `/api/v1/insights` |
 | SEC Proxy | SEC EDGAR document proxy | `/api/v1/sec-proxy` |
 | Cache | Cache stats & management | `/api/v1/cache` |
@@ -173,11 +171,14 @@ The streaming endpoints emit Server-Sent Events. Key event types:
 - `message_chunk` / `reasoning_content` / `reasoning_signal` — text + reasoning streaming
 - `tool_calls` / `tool_call_chunks` / `tool_call_result` — tool execution
 - `artifact` — file operations and outputs
+- `provenance` — record of external data the agent accessed (one per source). Flat payload: `record_id`, `source_type`, `identifier`, `title?`, `provider?`, `tool_call_id?`, `args_fingerprint?`, `result_sha256?`, `result_size?`, `result_snippet?`, `timestamp`, plus `agent` (`main`/`task:{id}`, resolved server-side from the LangGraph namespace)
 - `user_message` — echo of user input (including mid-turn steering)
 - `workflow_status` / `thread_created` — lifecycle signals
 - `steering_delivered` / `task_steering_accepted` — steering acknowledgements
+- `model_retry` — a model call hit a transient error and is being retried: `{model, attempt, max_retries, error, status_code?, delay_seconds, agent}` (`attempt` = calls failed so far). Live/reconnect only — not persisted to history
+- `model_fallback` — a model failed (retries exhausted or non-retryable error) and the run switched to a fallback model: `{from_model, to_model, from_is_primary, error, status_code?, attempts_on_from, agent}`. Persisted and replayed
 - `interrupt` — human-in-the-loop pause
-- `error` / `keepalive` — control events
+- `error` / `keepalive` — control events. When every model (configured + fallbacks) failed, `error` additionally carries `model` (the user-configured model whose error text is shown) and `attempted_models: [{model, error, status_code, attempts}]`
 - `finish` — workflow completion
 
 ## Versioning

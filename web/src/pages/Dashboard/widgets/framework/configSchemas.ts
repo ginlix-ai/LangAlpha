@@ -256,7 +256,7 @@ export const MarketsOverviewConfigSchema = z.object({
   indices: z.array(z.string().min(1)).optional().catch([]),
 });
 
-export const NEWS_FEED_SOURCES = ['market', 'portfolio', 'watchlist'] as const;
+export const NEWS_FEED_SOURCES = ['top', 'market', 'portfolio', 'watchlist'] as const;
 export const NewsFeedConfigSchema = z.object({
   source: z.enum(NEWS_FEED_SOURCES).optional().catch('market'),
   limit: intInRange(50, 1, 200).optional().catch(50),

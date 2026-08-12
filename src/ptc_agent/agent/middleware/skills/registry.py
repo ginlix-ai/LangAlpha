@@ -7,9 +7,12 @@ of tools that are pre-registered but hidden until the skill is loaded.
 """
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
+from src.config.features import is_feature_enabled_system
+from src.config.settings import get_workflow_orchestration_config
 from src.tools.automation import AUTOMATION_TOOLS
+from src.tools.chart_annotation import CHART_ANNOTATION_TOOLS
 from src.tools.onboarding import ONBOARDING_TOOLS
 from src.tools.user_profile import USER_PROFILE_TOOLS
 
@@ -25,20 +28,32 @@ class SkillDefinition:
         name: Unique skill identifier
         description: Human-readable description of what the skill does
         tools: List of LangChain tools included in this skill
+        tool_names: Names of externally-registered tools gated by this skill —
+            for per-thread factory tools that can't be instantiated at import
+            time (e.g. RunWorkflow). The tool object is registered by the agent
+            factory; the skill only controls its visibility.
         skill_md_path: Optional path to SKILL.md with detailed instructions
         exposure: Which agent mode(s) can use this skill ("ptc", "flash", or "both")
+        system_gate: Deployment kill switch for skills owned by a config section
+            rather than the feature catalog — False drops the skill everywhere.
     """
 
     name: str
     description: str
     tools: list[Any]
+    tool_names: tuple[str, ...] = ()
     skill_md_path: str | None = None
     exposure: Literal["ptc", "flash", "both", "hidden"] = "ptc"
     command: str | None = None
+    # Feature-flag key (src/config/features.py) owning this skill; the skill
+    # drops out of every accessor while the feature's system default is off.
+    # Per-user resolution happens at agent build (SkillsMiddleware injection).
+    feature: str | None = None
+    system_gate: Callable[[], bool] | None = None
 
     def get_tool_names(self) -> list[str]:
-        """Get list of tool names in this skill."""
-        return [getattr(t, "name", str(t)) for t in self.tools]
+        """Get list of tool names in this skill (including externally-registered ones)."""
+        return [getattr(t, "name", str(t)) for t in self.tools] + list(self.tool_names)
 
     def format_tool_descriptions(self, max_desc_len: int = 200) -> str:
         """Format tool descriptions for display.
@@ -57,6 +72,30 @@ class SkillDefinition:
                 desc = desc[:max_desc_len] + "..."
             lines.append(f"  - **{name}**: {desc}")
         return "\n".join(lines)
+
+
+def _run_workflow_enabled() -> bool:
+    return get_workflow_orchestration_config().enabled
+
+
+def _is_enabled(
+    skill: SkillDefinition, feature_resolver: Callable[[str], bool] | None = None
+) -> bool:
+    """Availability gate: skills whose deployment switch or owning feature is
+    off drop out of every accessor (listings, lookups, sandbox sync).
+
+    ``feature_resolver`` defaults to the system gate — the no-user-context
+    default these accessors run under. The agent build injects a per-user
+    resolver (via ``get_skill_registry``) so a user's opt-in/out is honored
+    when skills are assembled for that build. ``system_gate`` is a deployment
+    kill switch, so no resolver overrides it.
+    """
+    if skill.system_gate is not None and not skill.system_gate():
+        return False
+    if skill.feature is None:
+        return True
+    resolve = feature_resolver or is_feature_enabled_system
+    return resolve(skill.feature)
 
 
 def _matches_mode(skill: SkillDefinition, mode: SkillMode | None) -> bool:
@@ -93,6 +132,49 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         skill_md_path="skills/onboarding/SKILL.md",
         exposure="hidden",
     ),
+    "chart-annotation": SkillDefinition(
+        name="chart-annotation",
+        # Keep this text in sync with the `description:` in
+        # skills/chart-annotation/SKILL.md frontmatter — both are live (this one
+        # drives PTC discovery; the frontmatter drives the sandbox/Flash skill
+        # manifest), so they must not drift.
+        description=(
+            "Draw price lines, trendlines, zones, and event markers directly on a "
+            "stock's price chart — reach for it whenever you'd otherwise describe a "
+            "level, pattern, or event in prose. Renders live on MarketView and as a "
+            "clickable preview card in any other chat."
+        ),
+        tools=CHART_ANNOTATION_TOOLS,
+        skill_md_path="skills/chart-annotation/SKILL.md",
+        # Discoverable in both modes so the agent can self-load it whenever the
+        # user asks to annotate — including from the standalone chat page, where
+        # the result renders as a preview card. MarketView also injects it
+        # proactively (with the active symbol) for turn-1 availability.
+        exposure="both",
+        command="chart-annotation",
+    ),
+    "market-watch": SkillDefinition(
+        name="market-watch",
+        # Keep in sync with the `description:` in skills/market-watch/SKILL.md
+        # frontmatter (this drives PTC discovery; the frontmatter drives the
+        # sandbox skill manifest).
+        description=(
+            "Track live prices for the tickers central to the current task. "
+            "Registers symbols for an ambient real-time price feed, keeps "
+            "analysis current with the newest quotes, and re-checks staleness "
+            "before stating prices."
+        ),
+        tools=[],
+        # Guidance-only skill: the watch_market tool (subsystem c) and the
+        # <market-watch> stamping middleware (subsystem b) are registered
+        # whenever the market_watch feature resolves enabled — this skill
+        # just tells the agent how to use them. Activated by the frontend
+        # Watch toggle via additional_context.
+        skill_md_path="skills/market-watch/SKILL.md",
+        exposure="ptc",
+        command="market-watch",
+        feature="market_watch",
+    ),
     "secretary": SkillDefinition(
         name="secretary",
         description="Manage workspaces, dispatch research, monitor running analyses",
@@ -107,6 +189,23 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         tools=AUTOMATION_TOOLS,
         skill_md_path="skills/automation/SKILL.md",
         exposure="both",
+    ),
+    "run-workflow": SkillDefinition(
+        name="run-workflow",
+        # Keep in sync with the `description:` in skills/run-workflow/SKILL.md
+        # frontmatter (locked by a unit test). RunWorkflow itself is a per-thread
+        # factory tool registered in agent.py, so it's gated by name here.
+        description=(
+            "Orchestrate parallel subagent pipelines from a JavaScript workflow "
+            "script — fan out work across many items (tickers, filings, findings) "
+            "then synthesize, or run a saved workflow by name. "
+            "Unlocks the RunWorkflow tool."
+        ),
+        tools=[],
+        tool_names=("RunWorkflow",),
+        skill_md_path="skills/run-workflow/SKILL.md",
+        exposure="ptc",
+        system_gate=_run_workflow_enabled,
     ),
     "pdf": SkillDefinition(
         name="pdf",
@@ -287,24 +386,45 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         exposure="ptc",
         command="web-scraping",
     ),
+    "html-report": SkillDefinition(
+        name="html-report",
+        description="Self-contained styled HTML reports written to results/: PDF-exportable research documents with inline data, charts, and theme-aware CSS",
+        tools=[],
+        skill_md_path="skills/html-report/SKILL.md",
+        exposure="ptc",
+        command="html-report",
+    ),
+    "ui-design": SkillDefinition(
+        name="ui-design",
+        description="Design-quality reference for financial-research HTML output: typography, color, composition, and avoiding generic AI aesthetics",
+        tools=[],
+        skill_md_path="skills/ui-design/SKILL.md",
+        exposure="ptc",
+    ),
 }
 
 
-def get_skill_registry(mode: SkillMode | None = None) -> dict[str, SkillDefinition]:
+def get_skill_registry(
+    mode: SkillMode | None = None,
+    *,
+    feature_resolver: Callable[[str], bool] | None = None,
+) -> dict[str, SkillDefinition]:
     """Get the skill registry filtered by agent mode.
 
     Args:
-        mode: Optional agent mode filter. None returns all skills.
+        mode: Optional agent mode filter. None applies no mode filter.
+              Feature-gated skills are excluded when disabled regardless.
+        feature_resolver: Optional per-user feature gate. Defaults to the
+              system gate; the agent build passes the build's own
+              ``feature_enabled`` so opt-in/out drops the skill for that user.
 
     Returns:
         Dict of skill name to SkillDefinition for matching skills
     """
-    if mode is None:
-        return dict(SKILL_REGISTRY)
     return {
         name: skill
         for name, skill in SKILL_REGISTRY.items()
-        if _matches_mode(skill, mode)
+        if _is_enabled(skill, feature_resolver) and _matches_mode(skill, mode)
     }
 
 
@@ -320,7 +440,7 @@ def get_sandbox_skill_names() -> set[str]:
     return {
         name
         for name, skill in SKILL_REGISTRY.items()
-        if skill.exposure in ("ptc", "both")
+        if _is_enabled(skill) and skill.exposure in ("ptc", "both")
     }
 
 
@@ -336,7 +456,7 @@ def get_skill(skill_name: str, mode: SkillMode | None = None) -> SkillDefinition
         SkillDefinition if found and mode-compatible, None otherwise
     """
     skill = SKILL_REGISTRY.get(skill_name)
-    if skill is None:
+    if skill is None or not _is_enabled(skill):
         return None
     if mode is not None and not _matches_mode(skill, mode):
         return None
@@ -356,7 +476,7 @@ def get_all_skill_tools(mode: SkillMode | None = None) -> list[Any]:
     """
     all_tools = []
     for skill in SKILL_REGISTRY.values():
-        if _matches_mode(skill, mode):
+        if _is_enabled(skill) and _matches_mode(skill, mode):
             all_tools.extend(skill.tools)
     return all_tools
 
@@ -374,7 +494,7 @@ def get_all_skill_tool_names(mode: SkillMode | None = None) -> set[str]:
     """
     names = set()
     for skill in SKILL_REGISTRY.values():
-        if _matches_mode(skill, mode):
+        if _is_enabled(skill) and _matches_mode(skill, mode):
             names.update(skill.get_tool_names())
     return names
 
@@ -395,7 +515,7 @@ def get_command_to_skill_map(mode: SkillMode | None = None) -> dict[str, str]:
     return {
         skill.command: name
         for name, skill in SKILL_REGISTRY.items()
-        if skill.command and _matches_mode(skill, mode)
+        if skill.command and _is_enabled(skill) and _matches_mode(skill, mode)
     }
 
 
@@ -415,10 +535,10 @@ def list_skills(mode: SkillMode | None = None) -> list[dict[str, Any]]:
         {
             "name": skill.name,
             "description": skill.description,
-            "tool_count": len(skill.tools),
+            "tool_count": len(skill.get_tool_names()),
             "tools": skill.get_tool_names(),
             "command": skill.command,
         }
         for skill in SKILL_REGISTRY.values()
-        if _matches_mode(skill, mode) and skill.exposure != "hidden"
+        if _is_enabled(skill) and _matches_mode(skill, mode) and skill.exposure != "hidden"
     ]

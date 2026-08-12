@@ -2,15 +2,17 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   X, Cpu, MemoryStick, HardDrive, MonitorCog, Play, Square,
   Package, Search, RefreshCw, ChevronDown, ChevronRight,
-  Server, Loader2, BookOpen, Archive, KeyRound,
+  Server, BookOpen, Archive, KeyRound,
   Plus, Trash2, Pencil, Eye, EyeOff, ExternalLink, Sparkles,
 } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import {
   getSandboxStats, installSandboxPackages, refreshWorkspace,
   getVaultSecrets, createVaultSecret, updateVaultSecret, deleteVaultSecret, revealVaultSecret,
   getVaultBlueprints, type VaultBlueprint,
 } from '../utils/api';
 import { api } from '@/api/client';
+import { McpTab } from './mcp/McpTab';
 
 interface SandboxSettingsPanelProps {
   onClose: () => void;
@@ -40,8 +42,13 @@ interface SandboxSkill {
 }
 
 interface SandboxStats {
-  state: string;
-  sandbox_id?: string;
+  /** Display vocabulary, not the backend RuntimeState enum: 'running' is canonical
+   *  across providers; anything outside TERMINAL_STATES is treated as in-progress. */
+  state: string | null;
+  /** Null, not absent, for a workspace that has no sandbox yet. */
+  sandbox_id?: string | null;
+  /** Which provider answered, e.g. 'daytona' | 'docker'. Null, not absent, when unresolved. */
+  provider?: string | null;
   created_at?: string;
   auto_stop_interval?: number;
   resources: {
@@ -100,21 +107,38 @@ export function SandboxSettingsContent({ workspaceId }: { workspaceId: string })
   // Start/stop
   const [actionLoading, setActionLoading] = useState(false);
 
+  // Only the newest stats request may commit. Refresh is deliberately never
+  // disabled, so a slow full-path read (~15s of probes) can still be in flight
+  // when a faster post-action read lands — without this the older response wins
+  // by arriving last and resurrects a stopped sandbox as running.
+  const statsRequestRef = useRef(0);
+
+  // Vault deep-link: an MCP "Set up NAME" affordance switches to the Vault tab
+  // and prefills the add form with that secret name.
+  const [vaultPrefillSecret, setVaultPrefillSecret] = useState<string | null>(null);
+
   useEffect(() => {
     if (!workspaceId) return;
+    // Drop the outgoing workspace's stats before reading the new one. A refresh
+    // now keeps the panel on screen rather than blanking it, so without this a
+    // workspace switch would render the old sandbox under the new id.
+    setStats(null);
     loadStats();
   }, [workspaceId]);
 
   async function loadStats() {
+    const requestId = ++statsRequestRef.current;
     setLoading(true);
     setError(null);
     try {
       const data = await getSandboxStats(workspaceId);
+      if (requestId !== statsRequestRef.current) return;
       setStats(data);
     } catch (err: any) { // TODO: type properly
+      if (requestId !== statsRequestRef.current) return;
       setError(err?.response?.data?.detail || err.message || 'Failed to load sandbox stats');
     } finally {
-      setLoading(false);
+      if (requestId === statsRequestRef.current) setLoading(false);
     }
   }
 
@@ -186,12 +210,20 @@ export function SandboxSettingsContent({ workspaceId }: { workspaceId: string })
   const tabs = [
     { key: 'overview', label: 'Overview' },
     { key: 'vault', label: 'Vault' },
+    { key: 'mcp', label: 'MCP' },
     { key: 'storage', label: 'Storage' },
     { key: 'packages', label: 'Packages' },
     { key: 'tools', label: 'Tools & Skills' },
   ];
 
-  const isRunning = stats?.state === 'started';
+  function openVaultTab(prefillSecretName?: string) {
+    setVaultPrefillSecret(prefillSecretName ?? null);
+    setActiveTab('vault');
+  }
+
+  // Canonical value only. Provider synonyms are the API's job to translate — see
+  // _DISPLAY_STATE_SYNONYMS server-side.
+  const isRunning = stats?.state === 'running';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -215,7 +247,10 @@ export function SandboxSettingsContent({ workspaceId }: { workspaceId: string })
 
       {/* Content */}
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-      {loading ? (
+      {/* Skeleton only before the first load. Refresh reads through the same
+          path, and blanking the panel would discard the status the user is
+          watching — and unmount the button they just pressed. */}
+      {loading && !stats ? (
         <LoadingSkeleton />
       ) : error ? (
         <ErrorState message={error} onRetry={loadStats} />
@@ -226,11 +261,20 @@ export function SandboxSettingsContent({ workspaceId }: { workspaceId: string })
               stats={stats!}
               isRunning={isRunning!}
               actionLoading={actionLoading}
+              refreshing={loading}
               onStartStop={handleStartStop}
+              onRefresh={loadStats}
             />
           )}
           {activeTab === 'vault' && (
-            <SecretsTab workspaceId={workspaceId} />
+            <SecretsTab
+              workspaceId={workspaceId}
+              prefillSecretName={vaultPrefillSecret}
+              onPrefillConsumed={() => setVaultPrefillSecret(null)}
+            />
+          )}
+          {activeTab === 'mcp' && (
+            <McpTab workspaceId={workspaceId} onOpenVaultTab={openVaultTab} />
           )}
           {activeTab === 'storage' && (
             isRunning ? (
@@ -352,7 +396,7 @@ function ErrorState({ message, onRetry }: ErrorStateProps) {
       <button
         onClick={onRetry}
         className="px-4 py-2 text-sm rounded-md transition-colors hover:bg-foreground/10"
-        style={{ color: 'var(--color-accent-primary)', border: '1px solid var(--color-accent-primary)' }}
+        style={{ color: 'var(--color-text-primary)', border: '1px solid var(--color-border-elevated)' }}
       >
         Retry
       </button>
@@ -378,17 +422,68 @@ function OfflineTabPlaceholder({ tabName }: OfflineTabPlaceholderProps) {
 // Overview Tab
 // ---------------------------------------------------------------------------
 
-const TRANSITIONAL_STATES = new Set(['archiving', 'stopping', 'starting']);
+// States where the sandbox has settled. Deliberately an allowlist of *terminal*
+// values rather than of in-progress ones: the provider has ~23 states and keeps
+// adding them, so anything unrecognized must fail safe to "in progress" (spinner,
+// actions disabled) instead of rendering as a settled failure with a live Start.
+// Provider synonyms are deliberately absent: the API canonicalizes them, and
+// compensating here too would let the two vocabularies drift apart silently.
+const TERMINAL_STATES = new Set([
+  'running',
+  'unknown',
+  'stopped',
+  'archived',
+  'error',
+  'paused',
+  'destroyed',
+  'build_failed',
+  'deleted',
+]);
+
+// Wire values are provider identifiers, not user copy. Unmapped values must not
+// reach the screen: daytona's SDK coerces anything it doesn't recognize to
+// 'unknown_default_open_api', and a bare capitalize would render that verbatim.
+const STATE_LABELS: Record<string, string> = {
+  running: 'Running',
+  stopped: 'Stopped',
+  starting: 'Starting',
+  stopping: 'Stopping',
+  archiving: 'Archiving',
+  archived: 'Archived',
+  restoring: 'Restoring',
+  resizing: 'Resizing',
+  creating: 'Creating',
+  destroying: 'Destroying',
+  destroyed: 'Destroyed',
+  pausing: 'Pausing',
+  paused: 'Paused',
+  resuming: 'Resuming',
+  snapshotting: 'Snapshotting',
+  forking: 'Forking',
+  error: 'Error',
+  deleted: 'Deleted',
+  build_failed: 'Build failed',
+  pending_build: 'Pending build',
+  building_snapshot: 'Building snapshot',
+  pulling_snapshot: 'Pulling snapshot',
+  unknown: 'Unknown',
+};
 
 interface OverviewTabProps {
   stats: SandboxStats;
   isRunning: boolean;
   actionLoading: boolean;
+  refreshing: boolean;
   onStartStop: (action: string) => void;
+  onRefresh: () => void;
 }
 
-function OverviewTab({ stats, isRunning, actionLoading, onStartStop }: OverviewTabProps) {
-  const isTransitioning = actionLoading || TRANSITIONAL_STATES.has(stats?.state);
+function OverviewTab({ stats, isRunning, actionLoading, refreshing, onStartStop, onRefresh }: OverviewTabProps) {
+  const isTransitioning =
+    actionLoading || (!!stats.state && !TERMINAL_STATES.has(stats.state));
+  const stateLabel = stats.state
+    ? (STATE_LABELS[stats.state] ?? 'Updating')
+    : 'Unknown';
   const resourceCards = [
     { icon: Cpu, label: 'CPU', value: stats.resources.cpu != null ? `${stats.resources.cpu} vCPU` : '---' },
     { icon: MemoryStick, label: 'Memory', value: stats.resources.memory != null ? `${stats.resources.memory} GiB` : '---' },
@@ -420,11 +515,14 @@ function OverviewTab({ stats, isRunning, actionLoading, onStartStop }: OverviewT
         className="flex items-center justify-between p-3 rounded-lg"
         style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}
       >
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3" role="status" aria-live="polite">
           {isTransitioning ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+            <span aria-hidden="true" className="flex-shrink-0">
+              <Loader size={14} className="text-[color:var(--color-text-tertiary)]" />
+            </span>
           ) : (
             <div
+              aria-hidden="true"
               className="w-2.5 h-2.5 rounded-full flex-shrink-0"
               style={{ backgroundColor: isRunning ? 'var(--color-profit)' : 'var(--color-loss)' }}
             />
@@ -432,8 +530,8 @@ function OverviewTab({ stats, isRunning, actionLoading, onStartStop }: OverviewT
           <div>
             <div className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
               {isTransitioning
-                ? (actionLoading ? 'Updating...' : stats.state.charAt(0).toUpperCase() + stats.state.slice(1) + '...')
-                : isRunning ? 'Running' : stats.state ? stats.state.charAt(0).toUpperCase() + stats.state.slice(1) : 'Unknown'}
+                ? (actionLoading ? 'Updating...' : `${stateLabel}...`)
+                : stateLabel}
             </div>
             {stats.created_at && (
               <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>
@@ -445,9 +543,29 @@ function OverviewTab({ stats, isRunning, actionLoading, onStartStop }: OverviewT
         <div className="flex items-center gap-2">
           {stats.auto_stop_interval != null && (
             <span className="text-xs px-2 py-1 rounded" style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-bg-card)' }}>
-              Auto-stop: {stats.auto_stop_interval}m
+              {/* 0 disables auto-stop entirely, so rendering "0m" states the opposite */}
+              {stats.auto_stop_interval === 0
+                ? 'Always on'
+                : `Auto-stop: ${stats.auto_stop_interval}m`}
             </span>
           )}
+          {/* Never disabled. In a transitional state every other control here is,
+              and nothing polls — without this the panel has no way to advance. */}
+          <button
+            onClick={onRefresh}
+            aria-label="Refresh sandbox status"
+            title="Refresh status"
+            className="flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10"
+            style={{ color: 'var(--color-text-tertiary)', border: '1px solid var(--color-border-muted)' }}
+          >
+            {refreshing
+              ? (
+                <span aria-hidden="true" className="flex-shrink-0">
+                  <Loader size={12} className="text-current" />
+                </span>
+              )
+              : <RefreshCw className="h-3 w-3" aria-hidden="true" />}
+          </button>
           {!isRunning && stats.state === 'stopped' && (
             <button
               onClick={() => onStartStop('archive')}
@@ -520,26 +638,35 @@ function StorageTab({ stats, showDirBreakdown, onToggleBreakdown }: StorageTabPr
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Usage bar */}
-      <div className="flex flex-col gap-2">
-        <div className="flex justify-between text-sm" style={{ color: 'var(--color-text-primary)' }}>
-          <span>{disk.used} used</span>
-          <span>{disk.available} available</span>
+      {/* Usage bar. Docker sets no size quota, so df(1) inside the container reports
+          the host filesystem — showing it as the sandbox's disk would be a wrong number. */}
+      {stats.provider === 'docker' ? (
+        <div className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+          Local sandboxes run without a disk quota, so total usage would describe the
+          host filesystem rather than this sandbox. The per-directory sizes below are
+          sandbox-scoped.
         </div>
-        <div className="h-3 rounded-full overflow-hidden" style={{ backgroundColor: 'var(--color-bg-card)' }}>
-          <div
-            className="h-full rounded-full transition-all"
-            style={{
-              width: `${pct}%`,
-              backgroundColor: pct > 80 ? 'var(--color-loss)' : 'var(--color-accent-primary)',
-            }}
-          />
+      ) : (
+        <div className="flex flex-col gap-2">
+          <div className="flex justify-between text-sm" style={{ color: 'var(--color-text-primary)' }}>
+            <span>{disk.used} used</span>
+            <span>{disk.available} available</span>
+          </div>
+          <div className="h-3 rounded-full overflow-hidden" style={{ backgroundColor: 'var(--color-bg-card)' }}>
+            <div
+              className="h-full rounded-full transition-all"
+              style={{
+                width: `${pct}%`,
+                backgroundColor: pct > 80 ? 'var(--color-loss)' : 'var(--color-accent-primary)',
+              }}
+            />
+          </div>
+          <div className="flex justify-between text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+            <span>{disk.use_percent} used</span>
+            <span>{disk.total} total</span>
+          </div>
         </div>
-        <div className="flex justify-between text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-          <span>{disk.use_percent} used</span>
-          <span>{disk.total} total</span>
-        </div>
-      </div>
+      )}
 
       {/* Directory breakdown toggle */}
       {stats.directory_breakdown && stats.directory_breakdown.length > 0 && (
@@ -604,7 +731,7 @@ function PackagesTab({
           value={pkgSearch}
           onChange={e => onSearchChange(e.target.value)}
           placeholder="Filter packages..."
-          className="w-full pl-9 pr-3 py-2 text-sm rounded-md bg-transparent outline-none"
+          className="w-full pl-9 pr-3 py-2 text-sm rounded-md bg-transparent outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--color-accent-primary)]"
           style={{
             color: 'var(--color-text-primary)',
             border: '1px solid var(--color-border-muted)',
@@ -636,7 +763,7 @@ function PackagesTab({
                   </span>
                   {isDefault && (
                     <span
-                      className="text-[10px] px-1.5 py-0.5 rounded"
+                      className="text-[0.625rem] px-1.5 py-0.5 rounded"
                       style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-bg-card)' }}
                     >
                       default
@@ -664,7 +791,7 @@ function PackagesTab({
             onChange={e => onInstallInputChange(e.target.value)}
             placeholder="Package names (e.g. torch transformers>=4.0)"
             onKeyDown={e => e.key === 'Enter' && !installing && onInstall()}
-            className="flex-1 px-3 py-2 text-sm rounded-md bg-transparent outline-none"
+            className="flex-1 px-3 py-2 text-sm rounded-md bg-transparent outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--color-accent-primary)]"
             style={{
               color: 'var(--color-text-primary)',
               border: '1px solid var(--color-border-muted)',
@@ -675,11 +802,11 @@ function PackagesTab({
             disabled={installing || !installInput.trim()}
             className="flex items-center gap-1.5 px-4 py-2 text-sm rounded-md transition-colors disabled:opacity-50"
             style={{
-              color: 'var(--color-text-on-accent)',
-              backgroundColor: 'var(--color-accent-primary)',
+              color: 'var(--color-btn-primary-text)',
+              backgroundColor: 'var(--color-btn-primary-bg)',
             }}
           >
-            {installing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Package className="h-3.5 w-3.5" />}
+            {installing ? <Loader size={14} className="text-current" /> : <Package className="h-3.5 w-3.5" />}
             Install
           </button>
         </div>
@@ -788,7 +915,7 @@ function ToolsTab({ stats, refreshing, refreshResult, onRefresh }: ToolsTabProps
             backgroundColor: 'var(--color-bg-card)',
           }}
         >
-          {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          {refreshing ? <Loader size={16} className="text-current" /> : <RefreshCw className="h-4 w-4" />}
           Sync Tools & Skills
         </button>
 
@@ -835,7 +962,14 @@ interface VaultSecret {
   updated_at: string;
 }
 
-function SecretsTab({ workspaceId }: { workspaceId: string }) {
+interface SecretsTabProps {
+  workspaceId: string;
+  /** When set (e.g. via an MCP "Set up NAME" deep-link), opens the add form prefilled. */
+  prefillSecretName?: string | null;
+  onPrefillConsumed?: () => void;
+}
+
+function SecretsTab({ workspaceId, prefillSecretName, onPrefillConsumed }: SecretsTabProps) {
   const [secrets, setSecrets] = useState<VaultSecret[]>([]);
   const [blueprints, setBlueprints] = useState<VaultBlueprint[]>([]);
   const [remainingSlots, setRemainingSlots] = useState<number>(MAX_SECRETS);
@@ -909,6 +1043,21 @@ function SecretsTab({ workspaceId }: { workspaceId: string }) {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);
+
+  // A deep-link from the MCP tab ("Set up NAME") opens the add form prefilled
+  // with the requested secret name, so the user lands ready to paste a value.
+  useEffect(() => {
+    if (!prefillSecretName) return;
+    setError(null);
+    setPresetBlueprint(null);
+    setNewName(prefillSecretName);
+    setNewValue('');
+    setNewDesc('');
+    setShowNewValue(false);
+    setShowAdd(true);
+    onPrefillConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillSecretName]);
 
   // Safe regex compile for the active preset blueprint. Invalid patterns from a
   // misconfigured agent_config.yaml must not crash the UI — on failure we just
@@ -1055,8 +1204,8 @@ function SecretsTab({ workspaceId }: { workspaceId: string }) {
             onClick={() => { setShowAdd(!showAdd); setError(null); }}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors"
             style={{
-              color: 'var(--color-text-on-accent)',
-              backgroundColor: 'var(--color-accent-primary)',
+              color: 'var(--color-btn-primary-text)',
+              backgroundColor: 'var(--color-btn-primary-bg)',
             }}
           >
             <Plus className="h-3 w-3" />
@@ -1098,7 +1247,7 @@ function SecretsTab({ workspaceId }: { workspaceId: string }) {
                     <span className="text-sm font-medium truncate" style={{ color: 'var(--color-text-primary)' }}>
                       {bp.label}
                     </span>
-                    <span className="text-xs font-mono px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-bg-default)' }}>
+                    <span className="text-xs font-mono px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-bg-tag)' }}>
                       {bp.name}
                     </span>
                   </div>
@@ -1147,7 +1296,7 @@ function SecretsTab({ workspaceId }: { workspaceId: string }) {
             value={newName}
             onChange={e => setNewName(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '').replace(/^[0-9]+/, ''))}
             placeholder="SECRET_NAME"
-            className="w-full px-3 py-2 text-sm rounded-md bg-transparent outline-none font-mono"
+            className="w-full px-3 py-2 text-sm rounded-md bg-transparent outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--color-accent-primary)] font-mono"
             style={{ color: 'var(--color-text-primary)', border: '1px solid var(--color-border-muted)' }}
             maxLength={64}
           />
@@ -1157,7 +1306,7 @@ function SecretsTab({ workspaceId }: { workspaceId: string }) {
               value={newValue}
               onChange={e => setNewValue(e.target.value)}
               placeholder="Secret value"
-              className="w-full px-3 py-2 pr-9 text-sm rounded-md bg-transparent outline-none"
+              className="w-full px-3 py-2 pr-9 text-sm rounded-md bg-transparent outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--color-accent-primary)]"
               style={{ color: 'var(--color-text-primary)', border: '1px solid var(--color-border-muted)' }}
               maxLength={4096}
             />
@@ -1183,7 +1332,7 @@ function SecretsTab({ workspaceId }: { workspaceId: string }) {
             value={newDesc}
             onChange={e => setNewDesc(e.target.value)}
             placeholder="Description (optional)"
-            className="w-full px-3 py-2 text-sm rounded-md bg-transparent outline-none"
+            className="w-full px-3 py-2 text-sm rounded-md bg-transparent outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--color-accent-primary)]"
             style={{ color: 'var(--color-text-primary)', border: '1px solid var(--color-border-muted)' }}
             maxLength={256}
           />
@@ -1199,9 +1348,9 @@ function SecretsTab({ workspaceId }: { workspaceId: string }) {
               onClick={handleCreate}
               disabled={saving || !newName || !newValue}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors disabled:opacity-50"
-              style={{ color: 'var(--color-text-on-accent)', backgroundColor: 'var(--color-accent-primary)' }}
+              style={{ color: 'var(--color-btn-primary-text)', backgroundColor: 'var(--color-btn-primary-bg)' }}
             >
-              {saving && <Loader2 className="h-3 w-3 animate-spin" />}
+              {saving && <Loader size={12} className="text-current" />}
               Save
             </button>
           </div>
@@ -1221,7 +1370,7 @@ function SecretsTab({ workspaceId }: { workspaceId: string }) {
                 /* Edit form */
                 <div
                   className="flex flex-col gap-2 p-3 rounded-lg"
-                  style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-accent-primary)' }}
+                  style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-elevated)' }}
                 >
                   <div className="text-sm font-mono font-medium" style={{ color: 'var(--color-text-primary)' }}>
                     {secret.name}
@@ -1232,7 +1381,7 @@ function SecretsTab({ workspaceId }: { workspaceId: string }) {
                       value={editValue}
                       onChange={e => setEditValue(e.target.value)}
                       placeholder="New value (leave empty to keep current)"
-                      className="w-full px-3 py-2 pr-9 text-sm rounded-md bg-transparent outline-none"
+                      className="w-full px-3 py-2 pr-9 text-sm rounded-md bg-transparent outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--color-accent-primary)]"
                       style={{ color: 'var(--color-text-primary)', border: '1px solid var(--color-border-muted)' }}
                       maxLength={4096}
                     />
@@ -1251,7 +1400,7 @@ function SecretsTab({ workspaceId }: { workspaceId: string }) {
                     value={editDesc}
                     onChange={e => setEditDesc(e.target.value)}
                     placeholder="Description"
-                    className="w-full px-3 py-2 text-sm rounded-md bg-transparent outline-none"
+                    className="w-full px-3 py-2 text-sm rounded-md bg-transparent outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--color-accent-primary)]"
                     style={{ color: 'var(--color-text-primary)', border: '1px solid var(--color-border-muted)' }}
                     maxLength={256}
                   />
@@ -1267,9 +1416,9 @@ function SecretsTab({ workspaceId }: { workspaceId: string }) {
                       onClick={() => handleUpdate(secret.name)}
                       disabled={editSaving}
                       className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors disabled:opacity-50"
-                      style={{ color: 'var(--color-text-on-accent)', backgroundColor: 'var(--color-accent-primary)' }}
+                      style={{ color: 'var(--color-btn-primary-text)', backgroundColor: 'var(--color-btn-primary-bg)' }}
                     >
-                      {editSaving && <Loader2 className="h-3 w-3 animate-spin" />}
+                      {editSaving && <Loader size={12} className="text-current" />}
                       Update
                     </button>
                   </div>
@@ -1304,7 +1453,7 @@ function SecretsTab({ workspaceId }: { workspaceId: string }) {
                       title={revealedSecrets[secret.name] !== undefined ? 'Hide value' : 'Reveal value'}
                     >
                       {revealingName === secret.name ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        <Loader size={14} className="text-current" />
                       ) : revealedSecrets[secret.name] !== undefined ? (
                         <EyeOff className="h-3.5 w-3.5" />
                       ) : (

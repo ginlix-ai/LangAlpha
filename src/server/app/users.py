@@ -1,5 +1,6 @@
 """User Management API Router — user profile and preferences endpoints."""
 
+import asyncio
 import logging
 import re
 from datetime import datetime
@@ -24,7 +25,7 @@ from src.server.database.user import (
     update_user as db_update_user,
     upsert_user_preferences,
 )
-from src.ptc_agent.agent.graph import invalidate_user_profile_cache
+from ptc_agent.agent.graph import invalidate_user_profile_cache
 from src.server.services.onboarding import maybe_complete_onboarding
 from src.server.models.user import (
     UserBase,
@@ -176,7 +177,7 @@ async def get_current_user(
 
     # Populate platform membership: access tier + plan display name.
     # Both fields share a single Redis cache entry (5 min TTL) so this never
-    # costs more than one ginlix-auth round-trip per user per 5 minutes.
+    # costs more than one platform-service round-trip per user per 5 minutes.
     from src.server.dependencies.usage_limits import (
         _fetch_platform_membership,
         platform_membership_cache_key,
@@ -387,6 +388,22 @@ def _validate_custom_providers(custom_providers: list) -> None:
             raise HTTPException(status_code=400, detail=f"custom_providers[{idx}]: use_response_api must be a boolean")
 
 
+_VALID_OUTPUT_FORMATS = {"markdown", "html"}
+
+
+def _validate_agent_preference(agent_pref: dict) -> None:
+    """Validate agent_preference before persisting. Raises HTTPException 400 on invalid data."""
+    # output_format may be absent or None (delete/default); else must be a
+    # known format. Not a Literal on the model so None survives the JSONB merge
+    # as a key deletion rather than being stripped at parse time.
+    if "output_format" in agent_pref:
+        of = agent_pref["output_format"]
+        if of is not None and (not isinstance(of, str) or of not in _VALID_OUTPUT_FORMATS):
+            raise HTTPException(
+                status_code=400,
+                detail=f"output_format must be one of {sorted(_VALID_OUTPUT_FORMATS)}",
+            )
+
 
 @router.put("/users/me/preferences", response_model=UserPreferencesResponse)
 @handle_api_exceptions("update preferences", logger)
@@ -427,6 +444,48 @@ async def update_preferences(
                 existing = await db_get_user_preferences(user_id)
                 cp_for_validation = (existing or {}).get("other_preference", {}).get("custom_providers") or []
             _validate_custom_models(custom_models, cp_for_validation)
+
+    # Validate search_provider / search_depth if present (None = key deletion,
+    # allowed). Shape validation only — tier gating happens at resolve time.
+    if other_pref and (
+        other_pref.get("search_provider") is not None
+        or other_pref.get("search_depth") is not None
+    ):
+        from src.tools.web.manifest import CAPABILITY_SEARCH, providers_with_capability
+
+        providers = providers_with_capability(CAPABILITY_SEARCH)
+
+        sp = other_pref.get("search_provider")
+        if sp is not None and (not isinstance(sp, str) or sp not in providers):
+            raise HTTPException(
+                status_code=400,
+                detail=f"search_provider must be one of {sorted(providers)}",
+            )
+
+        sd = other_pref.get("search_depth")
+        if sd is not None:
+            # Depth names are provider-scoped: validate against the provider
+            # in this payload, or any provider when none is being set (the
+            # effective provider isn't known at write time).
+            if isinstance(sp, str) and sp in providers:
+                valid_depths = {
+                    lv.name for lv in providers[sp].capability(CAPABILITY_SEARCH).levels
+                }
+            else:
+                valid_depths = {
+                    lv.name
+                    for spec in providers.values()
+                    for lv in spec.capability(CAPABILITY_SEARCH).levels
+                }
+            if not isinstance(sd, str) or sd not in valid_depths:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"search_depth must be one of {sorted(valid_depths)}",
+                )
+
+    # Validate agent_preference (output_format shape). None = key deletion.
+    if agent_pref:
+        _validate_agent_preference(agent_pref)
 
     preferences = await upsert_user_preferences(
         user_id=user_id,
@@ -484,7 +543,9 @@ async def upload_avatar(
     ext = file.filename.split(".")[-1] if file.filename and "." in file.filename else "png"
     key = f"avatars/{user_id}.{ext}"
 
-    success = upload_bytes(key, content, content_type=file.content_type)
+    # upload_bytes is a synchronous boto3 call; offload it so it doesn't block
+    # the event loop during the network round-trip to object storage.
+    success = await asyncio.to_thread(upload_bytes, key, content, content_type=file.content_type)
     if not success:
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail="Failed to upload avatar")

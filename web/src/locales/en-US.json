@@ -1,5 +1,7 @@
 {
   "common": {
+    "copy": "Copy",
+    "submit": "Submit",
     "save": "Save",
     "saving": "Saving...",
     "cancel": "Cancel",
@@ -21,20 +23,79 @@
     "optional": "(Optional)"
   },
   "auth": {
-    "login": "Login",
+    "login": "Sign in",
     "signup": "Sign up",
-    "loggingIn": "Logging in...",
-    "creatingAccount": "Creating account...",
-    "signingIn": "Signing you in...",
-    "enterEmail": "Enter your email",
-    "enterPassword": "Enter your password",
+    "loggingIn": "Signing in…",
+    "creatingAccount": "Creating account…",
+    "signingIn": "Signing you in…",
+    "enterEmail": "you@example.com",
+    "enterPassword": "Your password",
     "choosePassword": "Choose a password",
-    "enterName": "Enter your name",
-    "orContinueWith": "or continue with",
-    "welcome": "Welcome",
-    "signupCheckEmail": "Account created! Please check your email for a confirmation link.",
-    "signupEmailExists": "An account with this email already exists. Please log in instead.",
-    "agreeToPrivacy": "By using LangAlpha, you agree to our <1>Privacy Policy</1>."
+    "name": "Name",
+    "enterName": "Your name",
+    "signupEmailExists": "An account with this email already exists.",
+    "signupEmailExistsHint": "<1>Sign in</1>, <2>email me a sign-in link</2>, or <3>reset your password</3>.",
+    "agreeToTerms": "By continuing, you agree to our <1>Terms of Service</1> and <2>Privacy Policy</2>.",
+    "forgotPassword": "Forgot password?",
+    "magicLinkCta": "Email me a sign-in link",
+    "continueWithEmail": "Continue with email",
+    "continueWithGoogle": "Continue with Google",
+    "continueWithGithub": "Continue with GitHub",
+    "loginTitle": "Sign in with email",
+    "signupTitle": "Create your account",
+    "noAccount": "Don't have an account? <1>Sign up</1>",
+    "haveAccount": "Already have an account? <1>Sign in</1>",
+    "backToOptions": "← Other sign-in options",
+    "visualTitle": "AI-powered financial research\nfor global markets.",
+    "visualSubtitle": "Your dedicated AI research team, available 24/7.",
+    "backToLogin": "← Back to sign in",
+    "useDifferentEmail": "← Use a different email",
+    "forgotTitle": "Reset your password",
+    "forgotSubtitle": "Enter your email and we'll send you a reset link.",
+    "sendResetLink": "Send reset link",
+    "magicTitle": "Sign in with a link",
+    "magicSubtitle": "We'll email you a link to sign in — no password needed.",
+    "sendMagicLink": "Send sign-in link",
+    "sending": "Sending…",
+    "checkInboxTitle": "Check your inbox",
+    "checkInboxSignup": "We sent a confirmation link to <1>{{email}}</1>. Click the link to activate your account.",
+    "checkInboxMagic": "We sent a sign-in link to <1>{{email}}</1>. Click the link to sign in.",
+    "checkInboxReset": "If <1>{{email}}</1> has an account, you'll receive a password reset link.",
+    "resend": "Resend email",
+    "resendIn": "Resend in {{seconds}}s",
+    "resendConfirmationCta": "Resend confirmation email",
+    "invalidCredentialsHint": "You can also <1>sign in with Google or GitHub</1>, <2>email me a sign-in link</2>, or <3>reset your password</3>.",
+    "confirming": "Confirming your email…",
+    "confirmedSigningIn": "Email confirmed — signing you in…",
+    "confirmError": "This link is invalid or has expired.",
+    "requestNewLink": "Request a new link",
+    "confirmPassword": "Confirm password",
+    "strengthTooShort": "Too short",
+    "strengthWeak": "Weak",
+    "strengthFair": "Fair",
+    "strengthStrong": "Strong",
+    "reqLength": "8+ characters",
+    "reqLetter": "One letter",
+    "reqNumber": "One number",
+    "setNewPassword": "Set a new password",
+    "newPassword": "New password",
+    "confirmNewPassword": "Confirm new password",
+    "passwordsDontMatch": "Passwords don't match.",
+    "updatePassword": "Update password",
+    "updatingPassword": "Updating…",
+    "resetExpired": "This reset link is invalid or has expired.",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
+    "errors": {
+      "invalidCredentials": "Incorrect email or password.",
+      "emailNotConfirmed": "Please confirm your email before signing in.",
+      "rateLimited": "Too many attempts. Please wait a minute and try again.",
+      "userAlreadyExists": "An account with this email already exists.",
+      "weakPassword": "Password doesn't meet the requirements yet.",
+      "otpExpired": "This link is invalid or has expired.",
+      "samePassword": "Your new password must be different from your current one.",
+      "generic": "Something went wrong. Please try again."
+    }
   },
   "sidebar": {
     "dashboard": "Dashboard",
@@ -42,19 +103,60 @@
     "marketView": "Market View",
     "automations": "Automations",
     "settings": "Settings",
-    "account": "Usage & Plan"
+    "account": "Usage & Plan",
+    "newChat": "New chat",
+    "workspaces": "Workspaces",
+    "workspaceGallery": "Workspace gallery",
+    "collapse": "Collapse sidebar",
+    "expand": "Expand sidebar",
+    "resize": "Resize sidebar"
   },
   "account": {
     "menuLabel": "Account menu"
   },
+  "nav": {
+    "pin": "Pin panel",
+    "unpin": "Unpin panel",
+    "minimize": "Minimize panel",
+    "displayOptions": "Display options",
+    "newThread": "New thread",
+    "orderBy": "Order by",
+    "workspacesShown": "Workspaces shown",
+    "threadsPerWorkspace": "Threads per workspace",
+    "all": "All",
+    "showMore": "Show more",
+    "loadAll": "Load all",
+    "pinThread": "Pin",
+    "unpinThread": "Unpin",
+    "archiveThread": "Archive",
+    "threadUpdated": "Updated",
+    "threadCreated": "Created",
+    "threadTurns": "Turns",
+    "threadNeedsInput": "Waiting for your input",
+    "threadUnseen": "Finished, not yet viewed",
+    "untitledThread": "Untitled",
+    "noConversations": "No conversations yet",
+    "workspaceFallback": "Workspace",
+    "collapseAgents": "Collapse agents",
+    "expandAgents": "Expand agents",
+    "removeAgent": "Remove agent"
+  },
   "settings": {
     "title": "User Settings",
+    "connected": "Connected",
+    "manageProviders": "Manage providers",
+    "fontSize": "Font size",
     "userInfo": "User Info",
     "preferences": "Preferences",
     "model": "Model",
+    "experiments": "Experiments",
+    "experimentsIntro": "Early-access features still in development. Turn one on to enable it for your account — you can switch it off at any time.",
+    "experimentsEmpty": "No experiments are available right now.",
+    "experimentTradeoff": "Trade-off",
     "theme": "Theme",
     "dark": "Dark",
     "light": "Light",
+    "auto": "Auto",
     "locale": "Language",
     "voiceInput": "Voice Input",
     "voiceInputDesc": "Enable microphone icon in the chat bar for speech-to-text.",
@@ -78,6 +180,11 @@
     "riskTolerance": "Risk Tolerance",
     "investmentStyle": "Investment Style",
     "agentSettings": "Agent Settings",
+    "outputFormat": "Output format",
+    "outputFormatDefault": "Default",
+    "outputFormatHtml": "HTML",
+    "outputFormatDescriptionDefault": "Answers come back as clean, easy-to-read text — the standard format.",
+    "outputFormatDescriptionHtml": "In-depth answers come back as a polished visual report — with charts, tables, and interactive views you can explore — instead of plain text. It's easier to read and more engaging, but takes a little longer to prepare and uses more credits.",
     "resetPreferences": "Reset Preferences",
     "resetConfirmMsg": "This will clear all your preferences (risk tolerance, investment style, agent settings). You can set them up again anytime via the agent. Are you sure?",
     "resetting": "Resetting...",
@@ -174,6 +281,20 @@
     "starredModels": "Quick-access models",
     "starredModelsDesc": "Starred models appear in the chat input for quick switching",
     "addModels": "Add",
+    "searchProvider": "Web Search Provider",
+    "searchProviderDesc": "Search engine the agent uses for web searches.",
+    "searchProviderDefault": "Default",
+    "searchProviderUpgradeHint": "Some search providers are available on higher plans.",
+    "searchDepth": "Search Depth",
+    "searchDepthDesc": "How thoroughly the agent searches the web. Deeper levels use more credits per search.",
+    "searchDepthDefault": "Default",
+    "searchDepthUpgradeHint": "Deeper search levels are available on higher plans.",
+    "searchDepthLevel": {
+      "ultra_fast": "Ultra Fast",
+      "fast": "Fast",
+      "standard": "Standard",
+      "deep": "Deep"
+    },
     "compactionProfile": "Compaction Profile",
     "compactionProfileDesc": "Bundled preset for compaction trigger and retention. Leave on system default unless you have a reason to tune it.",
     "compactionProfileUseDefault": "Use system default",
@@ -430,6 +551,7 @@
         "sharesHidden": "*** shares",
         "shares": "{{n}} shares",
         "nav": "Net Asset Value",
+        "navByCurrency": "Net Asset Value by Currency",
         "showValues": "Show values",
         "hideValues": "Hide values",
         "delete": "Delete",
@@ -671,7 +793,8 @@
       },
       "newsFeed": {
         "title": "News Feed",
-        "description": "Market / Portfolio / Watchlist news with ticker + time filters.",
+        "description": "Top / Market / Portfolio / Watchlist news with ticker, source + time filters.",
+        "tab_top": "Top",
         "tab_market": "Market",
         "tab_portfolio": "Portfolio",
         "tab_watchlist": "Watchlist",
@@ -684,8 +807,11 @@
         "tickerPlaceholder": "Ticker…",
         "clearTicker": "Clear ticker filter",
         "clear": "Clear",
+        "sourceLabel": "Filter by source",
+        "allSources": "All sources",
         "emptyFiltered": "No news matching filters",
         "emptyMarket": "No market news",
+        "emptyTop": "No top news",
         "emptyAddTo": "Add to {{label}} to see news"
       },
       "earningsCalendar": {
@@ -884,6 +1010,7 @@
       "tabWatch": "Watch",
       "tabHoldings": "Holdings",
       "netAssetValue": "Net Asset Value",
+      "netAssetValueByCurrency": "Net Asset Value by Currency",
       "addSymbol": "Add Symbol",
       "addTransaction": "Add Transaction"
     },
@@ -964,9 +1091,6 @@
       "emptyWatchlist": "Add stocks to your watchlist to see relevant news here",
       "emptyDefault": "No news available"
     },
-    "popularCard": {
-      "title": "What's Popular"
-    },
     "topNews": {
       "title": "Top News",
       "sample1": "Retail Sales Slump Takes Toll on Market,...",
@@ -997,6 +1121,44 @@
     "dragToReorder": "Drag to reorder",
     "pinToTop": "Pin to top",
     "unpin": "Unpin",
+    "rename": "Rename",
+    "renameDescription": "Give this workspace a new name.",
+    "renameFailed": "Could not rename workspace",
+    "changeSpec": "Change spec",
+    "changeSpecDesc": "Pick the sandbox resources for this workspace.",
+    "quotaRemaining": "{{remaining}} of {{limit}} left",
+    "quotaUnlimited": "Unlimited",
+    "quotaNotOnPlan": "Not on your plan",
+    "alwaysOnEnable": "Turn on always-on",
+    "alwaysOnDisable": "Turn off always-on",
+    "alwaysOnBadge": "Always-on",
+    "alwaysOnBadgeTitle": "Always-on — sandbox stays running",
+    "alwaysOnFailed": "Could not change always-on",
+    "alwaysOnConfirm": "Keep \"{{name}}\" running 24/7? The sandbox skips idle shutdown and keeps billing until you turn always-on off.",
+    "alwaysOnConfirmStopped": "Start \"{{name}}\" now and keep it running 24/7? The sandbox starts immediately, skips idle shutdown, and keeps billing until you turn always-on off.",
+    "alwaysOnEnableConfirm": "Turn on",
+    "tierBadgeTitle": "{{tier}} sandbox spec",
+    "tier": {
+      "standard": "Standard",
+      "performance": "Performance",
+      "max": "Max"
+    },
+    "tierSpec": {
+      "standard": "1 vCPU · 1 GB RAM · 3 GB disk",
+      "performance": "2 vCPU · 4 GB RAM · 5 GB disk",
+      "max": "4 vCPU · 8 GB RAM · 10 GB disk"
+    },
+    "specUpdated": "Workspace spec updated",
+    "specFailed": "Could not update spec",
+    "duplicate": "Duplicate",
+    "duplicating": "Duplicating…",
+    "duplicateConfirm": "Create a copy of \"{{name}}\"? Files are copied; always-on starts off on the copy.",
+    "duplicated": "Workspace duplicated",
+    "duplicateFailed": "Could not duplicate workspace",
+    "notOnPlan": "Not available on your plan — upgrade to unlock.",
+    "tierLimitReached": "You've reached your {{tier}} workspace limit.",
+    "workspaceLimitReached": "You've reached your workspace limit.",
+    "options": "Options",
     "noWorkspacesFound": "No workspaces found",
     "welcomeTitle": "Welcome to LangAlpha",
     "welcomeDesc": "Get started by setting up your preferences or creating a workspace.",
@@ -1045,7 +1207,12 @@
     "failedDeleteThread": "Failed to delete thread. Please try again.",
     "failedRenameThread": "Failed to rename thread. Please try again.",
     "viewAll": "View all",
-    "shared": "Shared"
+    "shared": "Shared",
+    "archive": "Archive",
+    "unarchive": "Unarchive",
+    "archived": "Archived",
+    "archivedTasks": "Archived tasks",
+    "noArchivedThreads": "No archived threads"
   },
   "share": {
     "shareConversation": "Share conversation",
@@ -1057,6 +1224,20 @@
     "anyoneWithLink": "Anyone with this link can view the conversation."
   },
   "chat": {
+    "backToWorkflow": "Back to workflow",
+    "backToMain": "Back to main",
+    "backToFlash": "Back to Flash",
+    "reconnecting": "Reconnecting…",
+    "jumpToLatest": {
+      "aria": "Scroll to latest message"
+    },
+    "pills": {
+      "plan": "Plan",
+      "planTitle": "Plan mode — agent creates a plan for approval before executing",
+      "watch": "Watch",
+      "watchTitle": "Market watch — live prices for tickers the agent tracks"
+    },
+    "moreTools": "More tools",
     "widgetContext": {
       "inContext_one": "{{count}} in context",
       "inContext_other": "{{count}} in context",
@@ -1068,66 +1249,6 @@
       "overflowAria_other": "{{count}} items in context — open chat",
       "overflowLabel": "in context"
     },
-    "ptcAgent": {
-      "card": {
-        "open": "Open",
-        "researchDispatched": "Research dispatched",
-        "researchDeclined": "Research declined",
-        "startResearch": "Start Research",
-        "reportBack": "Report back with summary",
-        "approve": "Approve",
-        "decline": "Decline"
-      },
-      "progress": {
-        "waitingStart": "Waiting for analysis to start",
-        "startingStream": "Starting analysis stream",
-        "analysisRunning": "Analysis running",
-        "analysisComplete": "Analysis complete",
-        "analysisCancelled": "Analysis cancelled",
-        "analysisStopped": "Analysis stopped",
-        "analysisPaused": "Analysis paused",
-        "analysisFailed": "Analysis failed",
-        "softInterrupted": "Analysis paused while background tasks settle",
-        "waitingForInput": "Waiting for input",
-        "backgroundTasksRunning": "{{count}} background tasks running",
-        "backgroundTasksRunning_one": "{{count}} background task running",
-        "backgroundTasksRunning_other": "{{count}} background tasks running",
-        "reasoningComplete": "Reasoning complete",
-        "reasoning": "Reasoning through next step",
-        "completedToolStep": "Completed tool step",
-        "toolStepError": "Tool step returned an error",
-        "recoveringToolError": "Agent is recovering from a tool error",
-        "toolStepCompleted": "Tool step completed",
-        "toolStepFailed": "Tool step failed",
-        "writingFinal": "Writing final response",
-        "finalReady": "Final response ready",
-        "generatedArtifact": "Generated an artifact",
-        "waitingStream": "Waiting for analysis stream",
-        "connectingProgress": "Connecting to live progress",
-        "streamDisconnected": "Reconnection stream disconnected",
-        "unableToStream": "Unable to stream progress",
-        "livePaused": "Live progress paused",
-        "openThreadFullStream": "Open the analysis thread for the full stream",
-        "steps": "steps"
-      },
-      "toolLabels": {
-        "fallback": "Running tool",
-        "executeCode": "Running Python analysis",
-        "bash": "Running shell command",
-        "read": "Reading workspace file",
-        "write": "Writing workspace file",
-        "edit": "Editing workspace file",
-        "glob": "Scanning files",
-        "grep": "Searching files",
-        "webSearch": "Searching the web",
-        "webFetch": "Fetching web source",
-        "stockPrices": "Loading market prices",
-        "companyData": "Loading company data",
-        "secFiling": "Reading SEC filing",
-        "stockScreener": "Screening stocks",
-        "todoWrite": "Updating plan"
-      }
-    },
     "running": "Running: {{tool}}",
     "completedWithCalls": "Completed ({{count}} tool calls)",
     "completed": "Completed",
@@ -1136,7 +1257,8 @@
     "worker": "Worker",
     "agentNotFound": "Agent not found",
     "planFeedbackHint": "Type your feedback to revise the plan, then send.",
-    "interruptedHint": "Agent interrupted. Feel free to provide new instructions.",
+    "stoppedChip": "Stopped",
+    "stopFailed": "Couldn't stop the run — it may still be running.",
     "errorUpstreamHeadline": "The model provider returned an error",
     "errorUpstreamHeadlineStatus": "The model provider returned an error ({{status}})",
     "errorInternalHeadline": "Something went wrong on our end",
@@ -1144,7 +1266,130 @@
     "errorHintModelAccess": "Confirm your plan or subscription allows access to this model.",
     "errorHintProviderStatus": "Check the provider's status page for ongoing incidents.",
     "errorHintTryAnotherModel": "Try switching to a different model in the model picker.",
+    "errorUpstreamHeadlineModel": "{{model}} returned an error",
+    "errorUpstreamHeadlineModelStatus": "{{model}} returned an error ({{status}})",
+    "errorAttemptedModels": "Also tried:",
+    "modelRetrying": "{{model}} error — retrying ({{attempt}}/{{total}})…",
+    "modelFallingBack": "Falling back to {{model}}…",
+    "modelFallbackNotification": "{{from}} failed — switched to {{to}}",
+    "modelFallbackAttempts_one": "{{count}} attempt",
+    "modelFallbackAttempts_other": "{{count}} attempts",
+    "viewErrorDetail": "View error",
+    "hideErrorDetail": "Hide error",
+    "showRawJson": "Show raw JSON",
+    "hideRawJson": "Hide raw JSON",
+    "resultTruncated": "Partial result — the rest was clipped from the preview",
+    "expandResult": "Show all",
+    "collapseResult": "Show less",
+    "resultMoreItems": "+{{n}} more",
+    "actions": {
+      "copyMessage": "Copy message",
+      "copied": "Copied!",
+      "editMessage": "Edit message",
+      "goodResponse": "Good response",
+      "removeRating": "Remove rating",
+      "reportIssue": "Report issue",
+      "feedbackSubmitted": "Feedback submitted",
+      "regenerate": "Regenerate response",
+      "retry": "Retry"
+    },
+    "modelTroubleSuggestion": "{{from}} is having trouble — this answer came from {{to}}",
+    "switchToModel": "Switch to {{model}}",
+    "modelSwitched": "Default model set to {{model}}",
+    "modelSwitchFailed": "Couldn't update the default model",
     "backgroundTasksRunning": "Background tasks are still running",
+    "reportBackPending": "Waiting for PTC Agent to report back",
+    "taskReportBackPending": "Waiting for subagent results to report back",
+    "taskCard": {
+      "statusRunning": "Running",
+      "statusCompleted": "Completed",
+      "statusStopped": "Stopped",
+      "statusFailed": "Failed",
+      "statusUpdated": "Updated",
+      "statusResumed": "Resumed"
+    },
+    "subagentCard": {
+      "titleFallback": "Subagent Task",
+      "viewDetails": "View task details",
+      "openUpdated": "Click to view updated subagent",
+      "openResumed": "Click to view resumed subagent",
+      "openRunning": "Click to view running subagent",
+      "openDetails": "Click to view subagent details",
+      "toolUnit_one": "tool",
+      "toolUnit_other": "tools",
+      "tokenUnit": "tokens"
+    },
+    "subagentBar": {
+      "completedWithTools_one": "Completed ({{count}} tool call)",
+      "completedWithTools_other": "Completed ({{count}} tool calls)",
+      "runningWithTool": "Running: {{tool}}",
+      "initializing": "Initializing",
+      "instruct": "Instruct",
+      "errorHeading": "This agent stopped with an error",
+      "inputPlaceholder": "Add instruction for this agent...",
+      "avatarAlt": "Agent"
+    },
+    "workflowRun": {
+      "titleFallback": "Workflow run",
+      "openRunning": "Click to view running workflow",
+      "openDetails": "Click to view workflow details",
+      "sharedUnavailable": "Run details aren't available in shared view",
+      "agents_one": "{{count}} agent",
+      "agents_other": "{{count}} agents",
+      "done": "{{count}} done",
+      "tokens": "{{value}} tokens",
+      "earlier": "+{{count}} earlier",
+      "childFallbackLabel": "agent {{n}}",
+      "childRunning": "Running",
+      "childDone": "Done",
+      "childFailed": "Failed",
+      "childTimedOut": "Timed out",
+      "childInvalid": "Invalid result",
+      "childStopped": "Stopped",
+      "stop": "Stop",
+      "stopping": "Stopping…",
+      "statAgents": "Agents",
+      "statPhases": "Phases",
+      "statDuration": "Duration",
+      "statTokens": "Tokens",
+      "toolCalls_one": "{{count}} tool",
+      "toolCalls_other": "{{count}} tools",
+      "tokensShort": "{{value}} tok",
+      "sectionResult": "Result",
+      "sectionLog": "Log",
+      "starting": "Workflow starting…",
+      "noProgress": "No recorded progress for this run."
+    },
+    "ptcCard": {
+      "awaitingApproval": "Awaiting approval",
+      "researchDeclined": "Research declined",
+      "reportBack": "Report back with a summary",
+      "approve": "Approve",
+      "decline": "Decline",
+      "statusWorking": "Working",
+      "statusStarting": "Starting…",
+      "statusNeedsInput": "Needs input",
+      "statusCompleted": "Completed",
+      "statusFailed": "Failed",
+      "statusStopped": "Stopped",
+      "hintProvisioning": "Provisioning sandbox…",
+      "hintWorking": "Running in the background",
+      "hintFailed": "Run stopped before finishing",
+      "hintStopped": "Run was stopped",
+      "ctaOpenThread": "Open thread",
+      "ctaAnswerContinue": "Answer & continue",
+      "ctaViewThread": "View thread"
+    },
+    "marketWatch": {
+      "watching": "Watching {{symbols}}",
+      "chipTitle": "Live prices for the tickers the agent is watching",
+      "chipTitleUpdated": "Live prices for watched tickers — updated {{time}}",
+      "chipAction": "Open live market watch",
+      "panelTitle": "Market watch",
+      "panelUpdated": "Updated {{time}}",
+      "panelWaiting": "Live prices appear here while the agent is working.",
+      "panelEmpty": "No tickers are being watched."
+    },
     "missingWorkspaceOrThread": "Missing workspace or thread information",
     "accessDeniedTitle": "You don't have access to this conversation",
     "accessDeniedDesc": "Ask the owner to share the conversation to view it.",
@@ -1166,11 +1411,20 @@
     "workspaceStateArchivedTitle": "Restoring from cold storage",
     "workspaceStateArchivedBody": "Sandboxes that sit idle for 7 days are archived to free compute. Bringing one back involves downloading the snapshot and rebooting the container, which usually takes 60 to 90 seconds.",
     "workspaceStateArchivedFootnote": "Your files, tools, and conversation state are intact — you'll be able to chat as soon as the sandbox is ready.",
+    "archiveConfirm": {
+      "title": "Archive a running thread?",
+      "body": "This thread has a run in progress. Archiving hides it from your lists while the run keeps going — you'll find it under Archived, with its results waiting.",
+      "confirm": "Archive"
+    },
     "compacting": "Compacting conversation...",
     "offloading": "Offloading context...",
+    "compactionStopped": "Compaction stopped",
+    "queuedSend": "Message queued — sends when compaction finishes",
+    "stop": "Stop",
+    "stopping": "Stopping…",
     "placeholderDefault": "Type / for skills, @ for files",
     "placeholderPendingRejection": "Describe how to revise the plan...",
-    "placeholderInterrupted": "Send new instructions to the agent...",
+    "placeholderStopped": "Stopped — send a message to continue",
     "placeholderLoading": "Type a follow-up to steer the agent...",
     "placeholderSubagentsRunning": "Workers still running. Send a message or click a worker to instruct it.",
     "slashCommand": {
@@ -1195,9 +1449,12 @@
       "sector-overviewDesc": "Industry landscape report: market size, competitive dynamics, company profiles, valuation context",
       "competitive-analysisDesc": "Competitive landscape analysis: positioning, scorecards, moat assessment, market share trends",
       "initiating-coverageDesc": "Full equity research initiation: company research, financial model, valuation, charts, 30-50 page report",
+      "chart-annotationDesc": "Annotate a price chart: price lines, trendlines, zones, and event markers, live on MarketView or as a clickable preview card",
       "report-issueDesc": "Report issues and propose fixes to improve agent capabilities"
     },
     "compactedNotification": "Context compacted · {{from}} messages → summary",
+    "taskErrorNotification": "Subagent run failed",
+    "taskSteeringReturnedNotification": "Steering message returned — the run ended before it was delivered",
     "viewSummary": "View summary",
     "hideSummary": "Hide summary",
     "offloadedArgsNotification": "Tool arguments offloaded · {{count}} tools",
@@ -1205,6 +1462,7 @@
     "offloadedNotification": "Context offloaded · {{args}} tool args, {{reads}} reads",
     "compactionError": "Context compaction failed",
     "compactBusy": "Can only compact when the current turn has finished streaming.",
+    "offloadBusy": "Can only offload when the current turn has finished streaming.",
     "modelSelector": {
       "manageModels": "Manage models",
       "moreModels": "More models",
@@ -1214,7 +1472,6 @@
       "effortMedium": "Medium",
       "effortHigh": "High",
       "effortXhigh": "X-High",
-      "incompatibleSdk": "Cannot switch to this model in the current session (different provider)",
       "fastMode": "Fast",
       "fastModeDesc": "Priority routing for faster responses",
       "fastModeHelpLine1": "Equivalent to /fast in Codex",
@@ -1227,9 +1484,80 @@
       "permissionDenied": "Microphone permission denied",
       "serviceError": "Speech recognition service error"
     },
+    "sources": {
+      "title": "Sources",
+      "pill_one": "Sources ({{count}})",
+      "pill_other": "Sources ({{count}})",
+      "empty": "No sources for this turn",
+      "groups": {
+        "web_search": "Web search",
+        "web_fetch": "Web pages",
+        "file_read": "Files",
+        "memo_read": "Memos",
+        "memory_read": "Memory",
+        "sec_filing": "SEC filings",
+        "market_data": "Market data",
+        "mcp_tool": "Financial data tools"
+      },
+      "fingerprint": {
+        "checksum": "Checksum",
+        "size": "Size",
+        "snippet": "Snippet",
+        "agent": "Agent",
+        "timestamp": "Accessed",
+        "provider": "Provider",
+        "arguments": "Arguments"
+      },
+      "subagent": "Subagent",
+      "unknownSource": "Unknown source",
+      "workspaceRoot": "Workspace root",
+      "viewDetails": "View details",
+      "expand": "Expand",
+      "collapse": "Collapse",
+      "actions": {
+        "openLink": "Open link",
+        "openFile": "Open file"
+      },
+      "emptyThread": "No sources in this thread",
+      "scope": {
+        "turn": "Current turn",
+        "thread": "All sources"
+      },
+      "sourceCount": "{{count}} sources",
+      "resultCount": "{{count}} results",
+      "pageCount": "{{count}} pages",
+      "kind": {
+        "company_overview": "Company overview",
+        "daily_prices": "Daily prices",
+        "options_chain": "Options chain",
+        "market_index": "Market index",
+        "quote": "Quote",
+        "market_overview": "Market overview"
+      }
+    },
     "a11y": {
       "toolCallCompleted": "completed",
       "toolCallFailed": "failed"
+    },
+    "chartAnnotationCard": {
+      "openAnnotatedChart": "Open annotated chart",
+      "openInMarketView": "Open in MarketView",
+      "loadingChart": "Loading chart…",
+      "previewUnavailable": "Preview unavailable",
+      "close": "Close",
+      "cardAria_one": "{{symbol}} {{timeframe}}, {{count}} annotation. Open annotated chart.",
+      "cardAria_other": "{{symbol}} {{timeframe}}, {{count}} annotations. Open annotated chart.",
+      "dialogTitle_one": "{{symbol}} {{timeframe}} — {{count}} annotation",
+      "dialogTitle_other": "{{symbol}} {{timeframe}} — {{count}} annotations",
+      "chipJumpTitle": "Switch the chart to {{symbol}} · {{timeframe}} to show these annotations",
+      "chipShowTitle": "Show these annotations on the chart",
+      "chipShownTitle": "Shown on the chart",
+      "chipViewCount_one": "View {{count}} annotation on chart",
+      "chipViewCount_other": "View {{count}} annotations on chart",
+      "chipShowCount_one": "Show {{count}} annotation on chart",
+      "chipShowCount_other": "Show {{count}} annotations on chart",
+      "chipShownCount_one": "{{count}} annotation on chart",
+      "chipShownCount_other": "{{count}} annotations on chart"
     }
   },
   "context": {
@@ -1239,6 +1567,9 @@
     "addNLinesToContext": "Add {{count}} lines to context",
     "openFile": "Open file",
     "fromAgentResponse": "From agent response",
+    "pastedText": "Pasted text",
+    "pastedLines_one": "Pasted text · {{count}} line",
+    "pastedLines_other": "Pasted text · {{count}} lines",
     "addToMemo": "Add to memo",
     "syncWithMemo": "Sync with memo",
     "memoAdding": "Adding \"{{name}}\" to memo",
@@ -1279,6 +1610,31 @@
     "exportPreview": "Export Preview",
     "exportLoadError": "Could not load full content. Export may be incomplete.",
     "saveAsPdf": "Save as PDF",
+    "pdfOptions": "PDF options",
+    "pdfBranding": "Footer",
+    "pdfPageNumbers": "Page numbers",
+    "pdfScale": "Scale",
+    "openInNewTab": "Open in new tab",
+    "fullscreen": "Fullscreen",
+    "exitFullscreen": "Exit fullscreen",
+    "downloadAsHtml": "Download as HTML",
+    "moreActions": "More actions",
+    "htmlPreview": "Preview",
+    "htmlSource": "Source",
+    "pdfPrintHint": "Press Cmd/Ctrl-P to save the page as a PDF.",
+    "pdfGenerating": "Generating PDF…",
+    "copyShareLink": "Copy link",
+    "shareLinkCopied": "Shareable link copied to clipboard",
+    "shareLinkFailed": "Couldn't copy the link",
+    "directLinkCopied": "Direct link copied to clipboard",
+    "privateLinkWarningTitle": "Private link — don't share",
+    "privateLinkWarning": "This link is for your personal use — please don't share it. To share this report, use Copy link → Shareable link.",
+    "copyLinkTitle": "Copy a link to this report",
+    "copyLinkSubtitle": "Choose the right link for \"{{file}}\".",
+    "shareableLinkOption": "Shareable link",
+    "shareableLinkDesc": "To share with others: turns on public sharing for this conversation and creates a link anyone can open. While sharing is on, the whole conversation and every file in this workspace are viewable — not just this report. Turn it off any time to revoke.",
+    "directLinkOption": "Direct link (full screen)",
+    "directLinkDesc": "Just for you: opens the file full screen in a browser tab. Please don't share this link.",
     "tryAgain": "Try Again",
     "exportAnyway": "Export Anyway",
     "custom": "Custom",
@@ -1338,7 +1694,9 @@
     "tabs": {
       "files": "Files",
       "memory": "Memory",
-      "memo": "Memo"
+      "memo": "Memo",
+      "sources": "Sources",
+      "status": "Status"
     },
     "close": "Close panel"
   },
@@ -1530,6 +1888,7 @@
   },
   "toolArtifact": {
     "open": "Open",
+    "floatPct": "Float %",
     "prevClose": "Prev Close",
     "dayRange": "Day Range",
     "52wRange": "52W Range",
@@ -1540,7 +1899,25 @@
     "high": "H",
     "low": "L",
     "vol": "Vol",
+    "liveQuotes": "Live Quotes",
+    "extendedHours": {
+      "preMarket": {
+        "long": "Pre-Mkt",
+        "short": "Pre"
+      },
+      "afterHours": {
+        "long": "After-Hrs",
+        "short": "AH"
+      }
+    },
+    "marketStatus": {
+      "early_trading": "Pre-Market",
+      "open": "Regular",
+      "late_trading": "After-Hours",
+      "closed": "Closed"
+    },
     "marketIndices": "Market Indices",
+    "marketOverview": "Market Overview",
     "sectorPerformance": "Sector Performance",
     "stockScreener": "Stock Screener",
     "pricePerformance": "Price Performance",
@@ -1648,9 +2025,6 @@
     "noPlanDescription": "No plan description.",
     "subagentTask": "Subagent Task",
     "instructions": "Instructions",
-    "result": "Result",
-    "subagentStillRunning": "Subagent is still running...",
-    "noResultAvailable": "No result available",
     "goToSubagentTab": "Go to subagent tab",
     "noResultContent": "No result content",
     "input": "Input",
@@ -1677,9 +2051,12 @@
     "tool": {
       "stockPrices": "Stock Prices",
       "companyOverview": "Company Overview",
+      "liveQuotes": "Live Quotes",
       "marketIndices": "Market Indices",
+      "marketOverview": "Market Overview",
       "sectorPerformance": "Sector Performance",
       "stockScreener": "Stock Screener",
+      "watchMarket": "Watch Market",
       "secFiling": "SEC Filing",
       "entityNews": "Entity News",
       "tickerSearch": "Ticker Search",
@@ -1706,6 +2083,8 @@
       "automations": "Automations",
       "createAutomation": "Create Automation",
       "manageAutomation": "Manage Automation",
+      "annotateChart": "Annotate Chart",
+      "manageAnnotations": "Manage Annotations",
       "skill": "Skill",
       "memory": "Memory",
       "workspaceMemory": "Workspace Memory",
@@ -1758,11 +2137,16 @@
       "updating_preference": "updating preferences...",
       "fetchingSymbolPrices": "fetching {{symbol}} prices...",
       "fetchingPrices": "fetching prices...",
+      "fetchingSymbolQuotes": "quoting {{symbols}}...",
+      "fetchingQuotes": "fetching quotes...",
       "analyzingSymbol": "analyzing {{symbol}}...",
       "analyzing": "analyzing...",
       "fetchingMarketIndices": "fetching market indices...",
+      "fetchingMarketOverview": "fetching market overview...",
       "fetchingSectorData": "fetching sector data...",
       "screeningStocks": "screening stocks...",
+      "watchingMarket": "starting market watch...",
+      "unwatchingMarket": "stopping market watch...",
       "fetchingSymbolFiling": "fetching {{symbol}} filing...",
       "fetchingFiling": "fetching filing...",
       "searchingPattern": "searching '{{pattern}}'...",
@@ -1786,6 +2170,8 @@
       "creatingAutomation": "creating automation...",
       "actionAutomation": "{{action}} automation...",
       "managingAutomation": "managing automation...",
+      "annotatingChart": "annotating chart...",
+      "updatingAnnotations": "updating annotations...",
       "processing": "processing..."
     },
     "preparing": {
@@ -1832,6 +2218,14 @@
     }
   },
   "setup": {
+    "capabilities": "Capabilities",
+    "importParentModels": "Also add these models",
+    "importParentModelsDesc": "Models from the parent catalog, routed through your endpoint and key. Uncheck any you don't need.",
+    "selectNone": "None",
+    "fetchingModels": "Fetching models...",
+    "selectModelsDesc": "Select models available on your server.",
+    "availableModels": "Available models",
+    "noModelsFound": "No models found. Make sure your server is running and has models loaded.",
     "brandedHeader": "Configure your LLM providers",
     "securityNote": "Your API keys are encrypted and never shared",
     "methodTitle": "How would you like to connect?",
@@ -2040,7 +2434,175 @@
       "ptcDisabledReason": "Create a workspace in /chat to use PTC mode",
       "noWorkspacePrompt": "No workspace selected. Pick one in the chat input.",
       "startConversation": "Start a conversation by typing a message below",
-      "defaultPlaceholder": "What would you like to know?"
+      "defaultPlaceholder": "What would you like to know?",
+      "returnToChat": "Return to Chat",
+      "openInChat": "Open in Chat"
+    },
+    "chart": {
+      "clearAnnotations": "Clear",
+      "clearAnnotationsTitle": "Clear annotations from the chart (kept in chat — click the artifact to restore)",
+      "modeLabel": "Mode",
+      "newsEventAria": "News event: {{title}}"
+    },
+    "selection": {
+      "toolTooltip": "Select a region or price level to ask the agent",
+      "toolRegion": "Region",
+      "toolPriceLevel": "Price level",
+      "commentPlaceholder": "Add a comment…",
+      "commentAdd": "Add",
+      "commentSave": "Save",
+      "cardRegionTitle": "Selected region",
+      "cardPriceTitle": "Selected price level",
+      "cardOpenPreview": "View what the agent sees",
+      "previewSubtitle": "The context the agent received for this selection",
+      "previewKind": "Selection",
+      "previewTimeRange": "Time range",
+      "previewPrice": "Price",
+      "previewNote": "Your note",
+      "colTime": "Time",
+      "colOpen": "Open",
+      "colHigh": "High",
+      "colLow": "Low",
+      "colClose": "Close",
+      "colVolume": "Volume",
+      "previewBars": "OHLCV bars",
+      "previewBarsCount": "{{count}} bar",
+      "previewBarsCount_other": "{{count}} bars",
+      "previewBarsShown": "Showing {{shown}} of {{total}} bars",
+      "previewBarsTruncated": "downsampled to fit",
+      "previewDrawBack": "The agent can analyze this and draw its read back onto the same region of the chart.",
+      "editChip": "Edit note",
+      "chipRegion": "Region · {{symbol}} {{timeframe}}",
+      "chipPriceLevel": "Price ${{price}} · {{symbol}} {{timeframe}}",
+      "removeChip": "Remove selection"
+    }
+  },
+  "onboarding": {
+    "badge": "Quick tour",
+    "back": "Back",
+    "next": "Continue",
+    "done": "Start exploring",
+    "step": "Step {{n}}",
+    "intros": {
+      "chat": {
+        "steps": {
+          "modes": {
+            "title": "Two modes: Flash and PTC",
+            "body": "The agent works in two modes: Flash for everyday coordination and quick questions, and PTC for deep analysis that produces real deliverables. The next steps show what each one is best at."
+          },
+          "workspace": {
+            "title": "Meet workspaces",
+            "body": "Every workspace is a project desk: the conversations about one task live there together, sharing the same files, data, and results — completely separate from other workspaces. The built-in Flash workspace collects all your quick questions; every workspace you create yourself runs PTC."
+          },
+          "flash": {
+            "title": "Flash — your personal assistant",
+            "body": "Flash keeps the whole desk running: just say what you need, and it creates and manages workspaces for you, dispatches heavy tasks to a PTC workspace to run, and manages your automations. It also handles quick questions — a stock price, a news lookup, a fast fact-check — in seconds. Every Flash thread is collected in the first workspace card, so past sessions are always easy to find."
+          },
+          "ptc": {
+            "title": "PTC — where the real work happens",
+            "body": "PTC workspaces host our most capable agent. Every thread inside shares the same files, data, and prior work, so research compounds. It processes large datasets, coordinates teams of subagents — something Flash can't do — and produces any deliverable: Excel models, Word docs, PDFs, dashboards."
+          },
+          "create": {
+            "title": "Give real tasks a PTC workspace",
+            "body": "If it involves data work or ends in a deliverable, don't leave it in Flash. Hit \"New workspace\", name it after the task — the agent boots a dedicated sandbox and brings its full capability to it."
+          }
+        }
+      },
+      "thread": {
+        "steps": {
+          "filePanel": {
+            "title": "Every artifact lands in the file panel",
+            "body": "Word docs, Excel models, PDFs, charts — whatever the agent produces is saved to the workspace. Open the folder icon up top to browse, preview, and download."
+          },
+          "memory": {
+            "title": "The agent remembers how you work",
+            "body": "The agent keeps long-term memory across threads: your preferences, conventions, and conclusions worth reusing. Say \"remember this\" and it persists."
+          },
+          "memo": {
+            "title": "Ground it with your memos",
+            "body": "Upload PDFs, notes, or spreadsheets as memos. The agent reads them on demand — your private research becomes part of its context."
+          }
+        }
+      },
+      "dashboard": {
+        "steps": {
+          "overview": {
+            "title": "Your market homepage",
+            "body": "Watchlist, portfolio, news, and live charts in one place — a real-time overview that's ready before you ask anything."
+          },
+          "customize": {
+            "title": "Make it yours",
+            "body": "Switch to Custom mode to add, remove, resize, and rearrange widgets. Build the exact monitor you want to wake up to."
+          },
+          "attach": {
+            "title": "Clip any widget into chat",
+            "body": "See something worth digging into? Hit the paperclip on a row to attach it to chat as context — the agent picks up exactly what you're looking at."
+          }
+        }
+      }
+    },
+    "gettingStarted": {
+      "title": "Get started",
+      "dismiss": "Hide guide",
+      "tasks": {
+        "dashboard": {
+          "title": "Explore the dashboard",
+          "desc": "Watchlist, portfolio, news, and live widgets in one place."
+        },
+        "market": {
+          "title": "Check live markets",
+          "desc": "Real-time charts with streaming market data."
+        },
+        "stocks": {
+          "title": "Share your watchlist & portfolio",
+          "desc": "A short chat — tell the agent the tickers you watch and hold."
+        },
+        "preferences": {
+          "title": "Share your investing preferences",
+          "desc": "Set your risk tolerance, investing style, and how you want answers framed."
+        },
+        "createWorkspace": {
+          "title": "Create your first workspace",
+          "desc": "Spin up a dedicated PTC workspace — the agent gets a full sandbox for real research."
+        },
+        "firstChat": {
+          "title": "Run your first analysis",
+          "desc": "Open a chat and ask about any ticker, sector, or filing."
+        },
+        "models": {
+          "title": "Visit the model configuration",
+          "desc": "Choose default models and connect providers in Settings."
+        },
+        "integrations": {
+          "title": "Use LangAlpha on other platforms",
+          "desc": "Reach the agent from Slack, email, and more via platform integrations."
+        }
+      },
+      "interview": {
+        "title": "A quick chat to personalize your experience",
+        "body": "We'll open a chat where the agent asks a few questions about your portfolio, watchlist, risk tolerance, and investment preferences — so its answers fit you. You can change any of it later in Settings, or simply ask the agent to update it.",
+        "cancel": "Not now",
+        "confirm": "Start the chat"
+      }
+    },
+    "announce": {
+      "dashCustom": {
+        "modalTitle": "Customizable dashboard",
+        "modalBody": "Switch your dashboard to Custom mode to rearrange, resize, and add widgets — then attach any of them to chat."
+      }
+    },
+    "whatsNew": {
+      "title": "What's new",
+      "subtitle": "A few updates since you were last here.",
+      "gotIt": "Got it"
+    },
+    "settings": {
+      "sectionTitle": "Tips & guides",
+      "description": "Re-show the page tips and the getting-started guide.",
+      "replayGuides": "Show tips again",
+      "replayDone": "Page tips and the getting-started guide will show again.",
+      "reset": "Reset onboarding",
+      "resetDone": "Onboarding reset — tips and the guide start fresh."
     }
   }
 }

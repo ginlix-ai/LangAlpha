@@ -95,7 +95,7 @@ function AddWatchlistItemDialog({
       getStockPrices([selectedStock.symbol])
         .then((prices) => {
           const priceData = prices?.[0];
-          if (priceData) {
+          if (priceData && priceData.quoteAvailable !== false) {
             setCurrentPrice(priceData.price);
           } else {
             setCurrentPrice(null);
@@ -267,7 +267,7 @@ function AddWatchlistItemDialog({
                         </span>
                         {exchange && (
                           <span
-                            className="text-[10px] font-medium px-1.5 py-0.5 rounded"
+                            className="text-[0.625rem] font-medium px-1.5 py-0.5 rounded"
                             style={{ backgroundColor: 'var(--color-bg-surface, var(--color-bg-hover))', color: 'var(--color-text-secondary)' }}
                           >
                             {exchange}
@@ -288,7 +288,7 @@ function AddWatchlistItemDialog({
                       ) : (
                         <div className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t('dashboard.addWatchlistDialog.priceNA')}</div>
                       )}
-                      <div className="text-[10px] mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>{t('dashboard.addWatchlistDialog.currentPrice')}</div>
+                      <div className="text-[0.625rem] mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>{t('dashboard.addWatchlistDialog.currentPrice')}</div>
                     </div>
                   </div>
                 </div>
@@ -314,7 +314,7 @@ function AddWatchlistItemDialog({
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-[11px] mb-1" style={{ color: 'var(--color-text-tertiary)' }}>
+                      <label className="block text-[0.6875rem] mb-1" style={{ color: 'var(--color-text-tertiary)' }}>
                         {t('dashboard.addWatchlistDialog.priceAboveLabel')}
                       </label>
                       <Input
@@ -328,7 +328,7 @@ function AddWatchlistItemDialog({
                       />
                     </div>
                     <div>
-                      <label className="block text-[11px] mb-1" style={{ color: 'var(--color-text-tertiary)' }}>
+                      <label className="block text-[0.6875rem] mb-1" style={{ color: 'var(--color-text-tertiary)' }}>
                         {t('dashboard.addWatchlistDialog.priceBelowLabel')}
                       </label>
                       <Input
@@ -349,7 +349,7 @@ function AddWatchlistItemDialog({
                   type="button"
                   onClick={handleAdd}
                   className="w-full px-4 py-3 rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
-                  style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
+                  style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
                 >
                   {t('dashboard.addWatchlistDialog.addButton')}
                 </button>

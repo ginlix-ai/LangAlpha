@@ -121,9 +121,11 @@ describe('DashboardRouter', () => {
         },
       });
     });
-    // User clicks mode toggle. Without replay-aware fix, the write would
-    // spread the stale render-time `rawOther` and clobber theme=light + the
-    // remote-added widget array.
+    // User clicks mode toggle. The dashboard key is replaced wholesale
+    // server-side, so `next` must be built from the FRESH cache (the
+    // remote-added widget survives) — while siblings like theme stay out of
+    // the payload entirely (the server merge preserves them; replaying the
+    // stale render-time copy is how a write used to revert them).
     act(() => {
       lastDashboardProps.current!.onModeChange('custom');
     });
@@ -134,7 +136,7 @@ describe('DashboardRouter', () => {
         dashboard?: { mode: string; widgets?: unknown[] };
       };
     };
-    expect(payload.other_preference.theme).toBe('light');
+    expect(Object.keys(payload.other_preference)).toEqual(['dashboard']);
     expect(payload.other_preference.dashboard?.mode).toBe('custom');
     // The remote-added widget must survive the mode-toggle write.
     expect(payload.other_preference.dashboard?.widgets?.length).toBe(1);
@@ -175,9 +177,9 @@ describe('DashboardRouter', () => {
   });
 
   it('cold-cache gate: onModeChange is a no-op while preferences are still loading', () => {
-    // Regression: a fast click before the GET resolves would PUT
-    // { other_preference: { dashboard: {...} } } and clobber sibling
-    // server-side keys (theme, locale).
+    // Regression: a fast click before the GET resolves would PUT a dashboard
+    // built from nothing and wipe the user's saved layout (the server
+    // replaces the dashboard key wholesale).
     loadingState.isLoading = true;
     prefsState.current = null;
     const queryClient = new QueryClient({

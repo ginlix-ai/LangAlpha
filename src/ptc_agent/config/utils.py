@@ -113,8 +113,14 @@ def create_daytona_config(data: dict[str, Any]) -> DaytonaConfig:
     from ptc_agent.config.core import DaytonaConfig
 
     validate_section_fields(data, DAYTONA_REQUIRED_FIELDS, "daytona")
+    # Optional operator-tunable fields: only forward when present so the
+    # DaytonaConfig defaults (and their validators) apply otherwise.
+    optional_kwargs = {
+        key: data[key] for key in ("default_tier", "resource_tiers") if key in data
+    }
     return DaytonaConfig(
         api_key=os.getenv("DAYTONA_API_KEY", ""),
+        secret_namespace=os.getenv("DAYTONA_SECRET_NAMESPACE", ""),
         base_url=data["base_url"],
         auto_stop_interval=data["auto_stop_interval"],
         auto_archive_interval=data["auto_archive_interval"],
@@ -123,6 +129,7 @@ def create_daytona_config(data: dict[str, Any]) -> DaytonaConfig:
         snapshot_enabled=data.get("snapshot_enabled", True),
         snapshot_name=data.get("snapshot_name"),
         snapshot_auto_create=data.get("snapshot_auto_create", True),
+        **optional_kwargs,
     )
 
 
@@ -158,12 +165,14 @@ def create_sandbox_config(config_data: dict[str, Any]) -> SandboxConfig:
             if "docker" in sandbox_data
             else DockerConfig()
         )
+        platform_secrets = sandbox_data.get("platform_secrets") or []
     elif "daytona" in config_data:
         # Backward compat: top-level "daytona:" key — implicitly daytona provider
         provider_explicit = True
         provider = "daytona"
         daytona_cfg = create_daytona_config(config_data["daytona"])
         docker_cfg = DockerConfig()
+        platform_secrets = []
     else:
         raise ValueError(
             "Missing required section: either 'sandbox' or 'daytona' must be present "
@@ -182,6 +191,7 @@ def create_sandbox_config(config_data: dict[str, Any]) -> SandboxConfig:
         provider=provider,
         daytona=daytona_cfg,
         docker=docker_cfg,
+        platform_secrets=platform_secrets,
     )
 
     # Docker-specific env var overrides
@@ -213,7 +223,14 @@ def create_mcp_config(data: dict[str, Any]) -> MCPConfig:
     from ptc_agent.config.core import MCPConfig, MCPServerConfig
 
     validate_section_fields(data, MCP_REQUIRED_FIELDS, "mcp")
-    mcp_servers = [MCPServerConfig(**server) for server in data["servers"]]
+    # Built-ins from agent_config.yaml are always source="builtin"; an explicit
+    # ``source`` key in YAML is ignored so a config file can't mark a server as
+    # an (untrusted) workspace server. ``headers`` passes through as a model
+    # field (built-ins may declare http/sse headers too).
+    mcp_servers = [
+        MCPServerConfig(**{k: v for k, v in server.items() if k != "source"})
+        for server in data["servers"]
+    ]
     return MCPConfig(
         servers=mcp_servers,
         tool_discovery_enabled=data["tool_discovery_enabled"],

@@ -17,7 +17,7 @@ class TestGetInputModalities:
         assert "pdf" in result
 
     def test_openai_model_supports_text_image_pdf(self, model_config):
-        result = model_config.get_input_modalities("gpt-5.4-mini")
+        result = model_config.get_input_modalities("gpt-5.6-luna")
         assert "text" in result
         assert "image" in result
         assert "pdf" in result
@@ -58,7 +58,7 @@ class TestGetInputModalities:
         assert "pdf" in result
 
     def test_codex_oauth_variant(self, model_config):
-        result = model_config.get_input_modalities("gpt-5.4-oauth")
+        result = model_config.get_input_modalities("gpt-5.6-sol-oauth")
         assert "image" in result
         assert "pdf" in result
 

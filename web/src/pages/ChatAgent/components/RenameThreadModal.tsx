@@ -114,10 +114,8 @@ function RenameThreadModal({ isOpen, currentTitle, onConfirm, onCancel, isRenami
               disabled={isRenaming || !newTitle.trim() || newTitle.trim() === currentTitle}
               className="px-4 py-2 rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               style={{
-                backgroundColor: (isRenaming || !newTitle.trim() || newTitle.trim() === currentTitle)
-                  ? 'var(--color-accent-overlay)'
-                  : 'var(--color-accent-primary)',
-                color: 'var(--color-text-on-accent)',
+                backgroundColor: 'var(--color-btn-primary-bg)',
+                color: 'var(--color-btn-primary-text)',
               }}
             >
               {isRenaming ? 'Renaming...' : 'Rename'}

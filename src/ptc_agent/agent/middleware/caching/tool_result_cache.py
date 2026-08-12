@@ -1,11 +1,10 @@
 """
 Generic Tool Result Cache Middleware
 
-Automatically caches specified tool results to configured cache files with SSE event emission.
+Automatically caches specified tool results to configured cache files.
 Replaces manual cache file creation and provides flexible, reusable caching for any tool set.
 """
 
-from langgraph.config import get_stream_writer
 from datetime import datetime, timezone
 from langchain.agents.middleware import AgentMiddleware, AgentState
 from typing_extensions import NotRequired
@@ -25,20 +24,19 @@ class ToolResultCacheMiddleware(AgentMiddleware):
     Generic middleware for automatically caching tool results to filesystem.
 
     This middleware intercepts specified tool calls and appends their results
-    to a configured cache file. SSE events are emitted to match actual agent behavior
-    (write_file for first creation, edit_file for subsequent appends).
+    to a configured cache file (write for first creation, append for subsequent
+    tool calls).
 
     Features:
     - Configurable tool monitoring
     - Configurable cache file path
     - Optional agent type filtering
-    - Automatic SSE event emission
     - Non-fatal error handling
 
     Example Usage:
         # Cache data retrieval tools
         data_cache = ToolResultCacheMiddleware(
-            monitored_tools={"get_stock_daily_prices", "get_company_overview"},
+            monitored_tools={"get_daily_prices", "get_company_overview"},
             cache_file_path="/data/raw.md",
             agent_types={"deep_research/data_agent"},
             cache_header="# Data Agent Tool Call Cache"
@@ -119,15 +117,6 @@ class ToolResultCacheMiddleware(AgentMiddleware):
 
         # Extract context from state
         state = request.state
-        agent_name = self._extract_agent_name(request)
-        tool_call_id = tool_call.get("id", "unknown")
-
-        # Get stream writer for SSE events
-        try:
-            writer = get_stream_writer()
-        except Exception as e:
-            logger.error(f"{self.log_prefix} Failed to get stream writer: {e}")
-            writer = None
 
         try:
             # Read existing cache file from state first (authoritative for cross-step updates)
@@ -143,23 +132,17 @@ class ToolResultCacheMiddleware(AgentMiddleware):
 
             # Determine operation type and build content
             if existing_cache:
-                # File exists - append new entry (emit edit_file event)
+                # File exists - append new entry
                 old_content_lines = existing_cache["content"]
                 new_content_lines = old_content_lines + cache_entry_lines
 
-                operation = "edit_file"
-                old_string = "".join(old_content_lines)
-                new_string = "".join(new_content_lines)
                 created_at = existing_cache.get("created_at")
                 modified_at = datetime.now(timezone.utc).isoformat()
             else:
-                # File doesn't exist - create new (emit write_file event)
+                # File doesn't exist - create new
                 header = [f"{self.cache_header}\n", "\n"]
                 new_content_lines = header + cache_entry_lines
 
-                operation = "write_file"
-                old_string = None
-                new_string = "".join(new_content_lines)
                 created_at = modified_at = datetime.now(timezone.utc).isoformat()
 
             # Create FileData structure
@@ -173,57 +156,19 @@ class ToolResultCacheMiddleware(AgentMiddleware):
             # Update local cache for subsequent tool calls in the same agent step
             self._local_cache = updated_file_data
 
-            # Emit file_operation SSE event (matching actual agent behavior)
-            if writer:
-                file_event = {
-                    "agent": agent_name,
-                    "operation": operation,  # "write_file" or "edit_file"
-                    "file_path": self.cache_file_path,
-                    "tool_call_id": tool_call_id,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "status": "completed",
-                    "line_count": len(cache_entry_lines),
-                }
-
-                # Add operation-specific fields
-                if operation == "write_file":
-                    file_event["content"] = new_string
-                elif operation == "edit_file":
-                    file_event["old_string"] = old_string
-                    file_event["new_string"] = new_string
-
-                writer(file_event)
-
             logger.debug(
                 f"{self.log_prefix} Cached {tool_name} result ({len(cache_entry_lines)} lines)"
             )
 
-            # Return Command with file update
-            # Note: file_operations_log is for DB persistence
-            # SSE emission is already handled by writer() above, so pending_file_events is not needed
             return Command(
                 update={
                     "messages": [result],
                     "files": {self.cache_file_path: updated_file_data},
-                    "file_operations_log": [file_event],  # For database persistence
                 }
             )
 
         except Exception as e:
             logger.error(f"{self.log_prefix} Failed to cache tool result: {e}", exc_info=True)
-
-            # Emit failed event
-            if writer:
-                error_event = {
-                    "agent": agent_name,
-                    "operation": "edit_file",  # Use edit_file for consistency
-                    "file_path": self.cache_file_path,
-                    "tool_call_id": tool_call_id,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "status": "failed",
-                    "error": str(e),
-                }
-                writer(error_event)
 
             # Return original result (non-fatal - don't break workflow)
             return result
@@ -249,26 +194,3 @@ class ToolResultCacheMiddleware(AgentMiddleware):
         ]
 
         return lines
-
-    def _extract_agent_name(self, request) -> str:
-        """
-        Extract current agent name from request state.
-
-        Args:
-            request: Tool call request with state attribute
-
-        Returns:
-            Agent name string, defaults to "unknown" if not found
-        """
-        try:
-            if hasattr(request, 'state') and isinstance(request.state, dict):
-                current_agent = request.state.get('current_agent', '')
-                if current_agent:
-                    # Normalize to short name for SSE consistency
-                    # "deep_research/coder" → "coder"
-                    short_name = current_agent.split("/")[-1] if "/" in current_agent else current_agent
-                    return short_name
-        except Exception as e:
-            logger.debug(f"{self.log_prefix} Agent extraction failed: {e}")
-
-        return "unknown"

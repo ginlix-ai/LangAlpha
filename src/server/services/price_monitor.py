@@ -1,5 +1,5 @@
 """
-PriceMonitorService — Monitors prices via SharedWSConnectionManager
+PriceMonitorService — Monitors prices via MarketDataFeed
 and triggers price-based automations when conditions are met.
 
 Supports stock and index markets. Uses Redis SET NX locks for
@@ -14,14 +14,14 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional
 
-from src.data_client.ginlix_data.data_source import _INDEX_SYMBOL_MAP
+from src.market_protocol.symbology import index_legacy_to_polygon
 from src.server.models.automation import (
     MarketType,
     PriceConditionType,
     PriceTriggerConfig,
     RetriggerMode,
 )
-from src.server.services.shared_ws_manager import SharedWSConnectionManager
+from src.server.services.market_data_feed import MarketDataFeed
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,10 @@ _MARKET_OPEN_MINUTE = 30
 
 
 # ─── Symbol normalization ───────────────────────────────────────────
+
+# Bare legacy index symbol → Polygon wire spelling, from the protocol
+# symbology (single source of truth — was a private ginlix-data import).
+_INDEX_SYMBOL_MAP: Dict[str, str] = index_legacy_to_polygon()
 
 # Display symbol → bare symbol (for REST snapshot response → automation lookup)
 # _normalize_snapshot maps e.g. I:SPX → GSPC, I:COMP → IXIC; we map those back to bare.
@@ -216,8 +220,8 @@ class PriceMonitorService:
 
     def __init__(self):
         # WS instances and consumer handles per market
-        self._stock_ws: Optional[SharedWSConnectionManager] = None
-        self._index_ws: Optional[SharedWSConnectionManager] = None
+        self._stock_ws: Optional[MarketDataFeed] = None
+        self._index_ws: Optional[MarketDataFeed] = None
         self._stock_handle = None
         self._index_handle = None
 
@@ -249,8 +253,8 @@ class PriceMonitorService:
 
     async def start(self) -> None:
         """Start the price monitor."""
-        self._stock_ws = SharedWSConnectionManager.get_instance("stock", "second", "realtime")
-        self._index_ws = SharedWSConnectionManager.get_instance("index", "second", "delayed")
+        self._stock_ws = MarketDataFeed.get_instance("stock", "second", "realtime")
+        self._index_ws = MarketDataFeed.get_instance("index", "second", "delayed")
         self._shutdown_event.clear()
 
         # Initial load of price automations
@@ -312,7 +316,7 @@ class PriceMonitorService:
     # ─── Message Handling ────────────────────────────────────────────
 
     async def _on_message(self, raw_msg: str, bar: Optional[dict]) -> None:
-        """Callback from SharedWSConnectionManager on each price tick."""
+        """Callback from MarketDataFeed on each price tick."""
         if not bar:
             return
 

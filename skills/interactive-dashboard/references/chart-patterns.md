@@ -2,25 +2,31 @@
 
 Ready-to-use code snippets for financial dashboard charts. Copy, paste, and replace the `DATA` placeholder with real data from MCP tools.
 
-All snippets use the Ginlix dark theme:
+## Theming
 
-| Token | Value |
-|-------|-------|
-| `BG` | `#0f1117` |
-| `CARD` | `#1a1d27` |
-| `TEXT` | `#e5e7eb` |
-| `TEXT_SEC` | `#9ca3af` |
-| `GREEN` | `#10b981` |
-| `RED` | `#ef4444` |
-| `BLUE` | `#3b82f6` |
-| `BORDER` | `#2d3748` |
-| `HOVER` | `#252a36` |
+All snippets pull their colors from the bridge variables — `--bg-page`, `--bg-card`,
+`--bg-subtle`, `--bg-hover`, `--text-primary`, `--text-secondary`, `--border`, `--accent`,
+`--positive`, `--negative`. Paste the Theme Foundation block
+([ui-components.md §1](ui-components.md)) into the page's `<style>`; it wires those names to
+the app's injected theme tokens, and to an OS-adaptive fallback when the page is opened
+standalone. Never hardcode a palette hex.
+
+Canvas and SVG chart code can't read `var()`, so read the resolved values once per page:
+
+```js
+var cs = getComputedStyle(document.documentElement);
+function pick(name, fallback) { return cs.getPropertyValue(name).trim() || fallback; }
+```
+
+Every snippet below includes this helper. The literal in each `pick()` call is the
+no-CSS fallback — a chart rendered without the foundation block stays dark.
 
 ---
 
 ## Simple Tier (Self-Contained HTML + CDN)
 
-Each snippet is a complete, working HTML block. Embed data via a `DATA` variable, then render.
+Each snippet is a working HTML block — add the Theme Foundation block to its `<style>`.
+Embed data via a `DATA` variable, then render.
 
 ---
 
@@ -36,9 +42,10 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #0f1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-    .chart-container { background: #1a1d27; border: 1px solid #2d3748; border-radius: 8px; padding: 20px; margin: 20px; }
-    h2 { color: #e5e7eb; font-size: 1.125rem; margin-bottom: 16px; }
+    /* + Theme Foundation :root block — see ui-components.md §1 */
+    body { background: var(--bg-page); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .chart-container { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin: 20px; }
+    h2 { color: var(--text-primary); font-size: 1.125rem; margin-bottom: 16px; }
   </style>
 </head>
 <body>
@@ -54,10 +61,15 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
       prices: []
     };
 
+    // Canvas can't read var() — resolve theme colors once, dark literal as fallback
+    var cs = getComputedStyle(document.documentElement);
+    function pick(name, fallback) { return cs.getPropertyValue(name).trim() || fallback; }
+
     document.addEventListener('DOMContentLoaded', () => {
       const ctx = document.getElementById('priceChart').getContext('2d');
 
-      // Gradient fill under the line
+      // Gradient fill under the line (translucent accent — kept literal so the
+      // canvas gradient stays valid whatever color format the token resolves to)
       const gradient = ctx.createLinearGradient(0, 0, 0, ctx.canvas.clientHeight);
       gradient.addColorStop(0, 'rgba(59, 130, 246, 0.3)');
       gradient.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
@@ -69,7 +81,7 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
           datasets: [{
             label: 'Close Price',
             data: DATA.prices,
-            borderColor: '#3b82f6',
+            borderColor: pick('--accent', '#3b82f6'),
             backgroundColor: gradient,
             borderWidth: 2,
             pointRadius: 0,           // Hide individual points for cleaner look
@@ -85,10 +97,10 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
           plugins: {
             legend: { display: false },
             tooltip: {
-              backgroundColor: '#1a1d27',
-              titleColor: '#9ca3af',
-              bodyColor: '#e5e7eb',
-              borderColor: '#2d3748',
+              backgroundColor: pick('--bg-card', '#1a1d27'),
+              titleColor: pick('--text-secondary', '#9ca3af'),
+              bodyColor: pick('--text-primary', '#e5e7eb'),
+              borderColor: pick('--border', '#2d3748'),
               borderWidth: 1,
               padding: 12,
               displayColors: false,
@@ -100,16 +112,16 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
           },
           scales: {
             x: {
-              ticks: { color: '#9ca3af', maxTicksLimit: 8, font: { size: 11 } },
-              grid: { color: 'rgba(45, 55, 72, 0.5)' }
+              ticks: { color: pick('--text-secondary', '#9ca3af'), maxTicksLimit: 8, font: { size: 11 } },
+              grid: { color: pick('--border', '#2d3748') }
             },
             y: {
               ticks: {
-                color: '#9ca3af',
+                color: pick('--text-secondary', '#9ca3af'),
                 font: { size: 11 },
                 callback: (v) => '$' + v.toFixed(0)
               },
-              grid: { color: 'rgba(45, 55, 72, 0.5)' }
+              grid: { color: pick('--border', '#2d3748') }
             }
           }
         }
@@ -134,9 +146,10 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #0f1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-    .chart-container { background: #1a1d27; border: 1px solid #2d3748; border-radius: 8px; padding: 20px; margin: 20px; }
-    h2 { color: #e5e7eb; font-size: 1.125rem; margin-bottom: 16px; }
+    /* + Theme Foundation :root block — see ui-components.md §1 */
+    body { background: var(--bg-page); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .chart-container { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin: 20px; }
+    h2 { color: var(--text-primary); font-size: 1.125rem; margin-bottom: 16px; }
   </style>
 </head>
 <body>
@@ -157,8 +170,15 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
       ]
     };
 
-    // Palette for up to 8 tickers
-    const COLORS = ['#3b82f6', '#10b981', '#ef4444', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+    // Canvas can't read var() — resolve theme colors once, dark literal as fallback
+    var cs = getComputedStyle(document.documentElement);
+    function pick(name, fallback) { return cs.getPropertyValue(name).trim() || fallback; }
+
+    // Palette for up to 8 tickers — first three follow the theme, rest are categorical
+    const COLORS = [
+      pick('--accent', '#3b82f6'), pick('--positive', '#10b981'), pick('--negative', '#ef4444'),
+      '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'
+    ];
 
     document.addEventListener('DOMContentLoaded', () => {
       const ctx = document.getElementById('compChart').getContext('2d');
@@ -187,13 +207,13 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
           interaction: { intersect: false, mode: 'index' },
           plugins: {
             legend: {
-              labels: { color: '#e5e7eb', font: { size: 12 }, usePointStyle: true, pointStyle: 'line' }
+              labels: { color: pick('--text-primary', '#e5e7eb'), font: { size: 12 }, usePointStyle: true, pointStyle: 'line' }
             },
             tooltip: {
-              backgroundColor: '#1a1d27',
-              titleColor: '#9ca3af',
-              bodyColor: '#e5e7eb',
-              borderColor: '#2d3748',
+              backgroundColor: pick('--bg-card', '#1a1d27'),
+              titleColor: pick('--text-secondary', '#9ca3af'),
+              bodyColor: pick('--text-primary', '#e5e7eb'),
+              borderColor: pick('--border', '#2d3748'),
               borderWidth: 1,
               padding: 12,
               callbacks: {
@@ -203,16 +223,16 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
           },
           scales: {
             x: {
-              ticks: { color: '#9ca3af', maxTicksLimit: 8, font: { size: 11 } },
-              grid: { color: 'rgba(45, 55, 72, 0.5)' }
+              ticks: { color: pick('--text-secondary', '#9ca3af'), maxTicksLimit: 8, font: { size: 11 } },
+              grid: { color: pick('--border', '#2d3748') }
             },
             y: {
               ticks: {
-                color: '#9ca3af',
+                color: pick('--text-secondary', '#9ca3af'),
                 font: { size: 11 },
                 callback: (v) => v.toFixed(0)
               },
-              grid: { color: 'rgba(45, 55, 72, 0.5)' }
+              grid: { color: pick('--border', '#2d3748') }
             }
           }
         }
@@ -237,9 +257,10 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #0f1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-    .chart-container { background: #1a1d27; border: 1px solid #2d3748; border-radius: 8px; padding: 20px; margin: 20px; }
-    h2 { color: #e5e7eb; font-size: 1.125rem; margin-bottom: 16px; }
+    /* + Theme Foundation :root block — see ui-components.md §1 */
+    body { background: var(--bg-page); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .chart-container { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin: 20px; }
+    h2 { color: var(--text-primary); font-size: 1.125rem; margin-bottom: 16px; }
   </style>
 </head>
 <body>
@@ -264,6 +285,10 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
       return '$' + value.toFixed(1) + 'M';
     }
 
+    // Canvas can't read var() — resolve theme colors once, dark literal as fallback
+    var cs = getComputedStyle(document.documentElement);
+    function pick(name, fallback) { return cs.getPropertyValue(name).trim() || fallback; }
+
     document.addEventListener('DOMContentLoaded', () => {
       const ctx = document.getElementById('barChart').getContext('2d');
 
@@ -275,7 +300,7 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
             {
               label: 'Revenue',
               data: DATA.revenue,
-              backgroundColor: '#3b82f6',
+              backgroundColor: pick('--accent', '#3b82f6'),
               borderRadius: 4,
               barPercentage: 0.7,
               categoryPercentage: 0.8
@@ -283,7 +308,7 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
             {
               label: 'Net Income',
               data: DATA.earnings,
-              backgroundColor: '#10b981',
+              backgroundColor: pick('--positive', '#10b981'),
               borderRadius: 4,
               barPercentage: 0.7,
               categoryPercentage: 0.8
@@ -295,13 +320,13 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
           maintainAspectRatio: true,
           plugins: {
             legend: {
-              labels: { color: '#e5e7eb', font: { size: 12 }, usePointStyle: true, pointStyle: 'rect' }
+              labels: { color: pick('--text-primary', '#e5e7eb'), font: { size: 12 }, usePointStyle: true, pointStyle: 'rect' }
             },
             tooltip: {
-              backgroundColor: '#1a1d27',
-              titleColor: '#9ca3af',
-              bodyColor: '#e5e7eb',
-              borderColor: '#2d3748',
+              backgroundColor: pick('--bg-card', '#1a1d27'),
+              titleColor: pick('--text-secondary', '#9ca3af'),
+              bodyColor: pick('--text-primary', '#e5e7eb'),
+              borderColor: pick('--border', '#2d3748'),
               borderWidth: 1,
               padding: 12,
               callbacks: {
@@ -311,16 +336,16 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
           },
           scales: {
             x: {
-              ticks: { color: '#9ca3af', font: { size: 11 } },
+              ticks: { color: pick('--text-secondary', '#9ca3af'), font: { size: 11 } },
               grid: { display: false }
             },
             y: {
               ticks: {
-                color: '#9ca3af',
+                color: pick('--text-secondary', '#9ca3af'),
                 font: { size: 11 },
                 callback: (v) => formatCurrency(v)
               },
-              grid: { color: 'rgba(45, 55, 72, 0.5)' }
+              grid: { color: pick('--border', '#2d3748') }
             }
           }
         }
@@ -345,9 +370,10 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #0f1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-    .chart-container { background: #1a1d27; border: 1px solid #2d3748; border-radius: 8px; padding: 20px; margin: 20px; }
-    h2 { color: #e5e7eb; font-size: 1.125rem; margin-bottom: 16px; }
+    /* + Theme Foundation :root block — see ui-components.md §1 */
+    body { background: var(--bg-page); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .chart-container { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin: 20px; }
+    h2 { color: var(--text-primary); font-size: 1.125rem; margin-bottom: 16px; }
     #candlestickChart { width: 100%; height: 500px; }
   </style>
 </head>
@@ -368,8 +394,12 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
       volume: []    // [45000000, ...]
     };
 
+    // SVG can't read var() — resolve theme colors once, dark literal as fallback
+    var cs = getComputedStyle(document.documentElement);
+    function pick(name, fallback) { return cs.getPropertyValue(name).trim() || fallback; }
+
     document.addEventListener('DOMContentLoaded', () => {
-      // Color volume bars by price direction
+      // Color volume bars by price direction (translucent, so kept as literals)
       const volumeColors = DATA.close.map((c, i) =>
         c >= DATA.open[i] ? 'rgba(16, 185, 129, 0.5)' : 'rgba(239, 68, 68, 0.5)'
       );
@@ -383,8 +413,8 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
         type: 'candlestick',
         xaxis: 'x',
         yaxis: 'y',
-        increasing: { line: { color: '#10b981' }, fillcolor: '#10b981' },
-        decreasing: { line: { color: '#ef4444' }, fillcolor: '#ef4444' },
+        increasing: { line: { color: pick('--positive', '#10b981') }, fillcolor: pick('--positive', '#10b981') },
+        decreasing: { line: { color: pick('--negative', '#ef4444') }, fillcolor: pick('--negative', '#ef4444') },
         name: 'Price'
       };
 
@@ -400,15 +430,15 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
       };
 
       const layout = {
-        paper_bgcolor: '#1a1d27',
-        plot_bgcolor: '#1a1d27',
-        font: { color: '#e5e7eb', family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" },
+        paper_bgcolor: pick('--bg-card', '#1a1d27'),
+        plot_bgcolor: pick('--bg-card', '#1a1d27'),
+        font: { color: pick('--text-primary', '#e5e7eb'), family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" },
         margin: { l: 60, r: 20, t: 10, b: 40 },
         showlegend: false,
         // Two vertically stacked subplots: candlestick (top 70%) and volume (bottom 30%)
         grid: { rows: 2, columns: 1, subplots: [['xy'], ['xy2']], roworder: 'top to bottom' },
         xaxis: {
-          gridcolor: 'rgba(45, 55, 72, 0.5)',
+          gridcolor: pick('--border', '#2d3748'),
           rangeslider: { visible: false },
           // Range selector buttons for common time windows
           rangeselector: {
@@ -419,19 +449,19 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
               { step: 'ytd', label: 'YTD' },
               { count: 1, label: '1Y', step: 'year', stepmode: 'backward' }
             ],
-            font: { color: '#e5e7eb' },
-            bgcolor: '#2d3748',
-            activecolor: '#3b82f6'
+            font: { color: pick('--text-primary', '#e5e7eb') },
+            bgcolor: pick('--bg-hover', '#2d3748'),
+            activecolor: pick('--accent', '#3b82f6')
           }
         },
         yaxis: {
           domain: [0.3, 1],       // Top 70% of chart area
-          gridcolor: 'rgba(45, 55, 72, 0.5)',
+          gridcolor: pick('--border', '#2d3748'),
           tickformat: '$.0f'
         },
         yaxis2: {
           domain: [0, 0.25],      // Bottom 25% of chart area
-          gridcolor: 'rgba(45, 55, 72, 0.5)',
+          gridcolor: pick('--border', '#2d3748'),
           tickformat: '.2s'       // SI abbreviation (45M, 120M)
         }
       };
@@ -460,9 +490,10 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
   <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #0f1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-    .chart-container { background: #1a1d27; border: 1px solid #2d3748; border-radius: 8px; padding: 20px; margin: 20px; }
-    h2 { color: #e5e7eb; font-size: 1.125rem; margin-bottom: 16px; }
+    /* + Theme Foundation :root block — see ui-components.md §1 */
+    body { background: var(--bg-page); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .chart-container { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin: 20px; }
+    h2 { color: var(--text-primary); font-size: 1.125rem; margin-bottom: 16px; }
     #tvChart { width: 100%; height: 450px; }
   </style>
 </head>
@@ -483,34 +514,39 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
       ]
     };
 
+    // Canvas can't read var() — resolve theme colors once, dark literal as fallback
+    var cs = getComputedStyle(document.documentElement);
+    function pick(name, fallback) { return cs.getPropertyValue(name).trim() || fallback; }
+
     document.addEventListener('DOMContentLoaded', () => {
       const container = document.getElementById('tvChart');
 
       const chart = LightweightCharts.createChart(container, {
         layout: {
-          background: { type: 'solid', color: '#1a1d27' },
-          textColor: '#9ca3af'
+          background: { type: 'solid', color: pick('--bg-card', '#1a1d27') },
+          textColor: pick('--text-secondary', '#9ca3af')
         },
         grid: {
-          vertLines: { color: 'rgba(45, 55, 72, 0.5)' },
-          horzLines: { color: 'rgba(45, 55, 72, 0.5)' }
+          vertLines: { color: pick('--border', '#2d3748') },
+          horzLines: { color: pick('--border', '#2d3748') }
         },
         crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-        rightPriceScale: { borderColor: '#2d3748' },
+        rightPriceScale: { borderColor: pick('--border', '#2d3748') },
         timeScale: {
-          borderColor: '#2d3748',
+          borderColor: pick('--border', '#2d3748'),
           timeVisible: false         // Show only dates, not intraday times
         }
       });
 
       // Candlestick series
+      const up = pick('--positive', '#10b981'), down = pick('--negative', '#ef4444');
       const candleSeries = chart.addCandlestickSeries({
-        upColor: '#10b981',
-        downColor: '#ef4444',
-        borderUpColor: '#10b981',
-        borderDownColor: '#ef4444',
-        wickUpColor: '#10b981',
-        wickDownColor: '#ef4444'
+        upColor: up,
+        downColor: down,
+        borderUpColor: up,
+        borderDownColor: down,
+        wickUpColor: up,
+        wickDownColor: down
       });
       candleSeries.setData(DATA.candles);
 
@@ -560,9 +596,10 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #0f1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-    .chart-container { background: #1a1d27; border: 1px solid #2d3748; border-radius: 8px; padding: 20px; margin: 20px; }
-    h2 { color: #e5e7eb; font-size: 1.125rem; margin-bottom: 16px; }
+    /* + Theme Foundation :root block — see ui-components.md §1 */
+    body { background: var(--bg-page); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .chart-container { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin: 20px; }
+    h2 { color: var(--text-primary); font-size: 1.125rem; margin-bottom: 16px; }
     #treemap { width: 100%; height: 500px; }
   </style>
 </head>
@@ -579,6 +616,10 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
         // { sector: "Technology", name: "Apple Inc.", ticker: "AAPL", market_cap: 2870, performance: 1.25 }
       ]
     };
+
+    // SVG can't read var() — resolve theme colors once, dark literal as fallback
+    var cs = getComputedStyle(document.documentElement);
+    function pick(name, fallback) { return cs.getPropertyValue(name).trim() || fallback; }
 
     document.addEventListener('DOMContentLoaded', () => {
       // Build the hierarchical treemap structure: root -> sectors -> stocks
@@ -619,20 +660,20 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
         marker: {
           colors: colors,
           colorscale: [
-            [0,   '#ef4444'],     // Most negative = red
-            [0.5, '#1a1d27'],     // Neutral = card background
-            [1,   '#10b981']      // Most positive = green
+            [0,   pick('--negative', '#ef4444')],   // Most negative = loss
+            [0.5, pick('--bg-card', '#1a1d27')],    // Neutral = card background
+            [1,   pick('--positive', '#10b981')]    // Most positive = profit
           ],
           cmid: 0,                // Center color scale at zero
-          line: { width: 1, color: '#0f1117' }
+          line: { width: 1, color: pick('--bg-page', '#0f1117') }
         },
         branchvalues: 'total',
         pathbar: { visible: false }
       };
 
       const layout = {
-        paper_bgcolor: '#1a1d27',
-        font: { color: '#e5e7eb', family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", size: 11 },
+        paper_bgcolor: pick('--bg-card', '#1a1d27'),
+        font: { color: pick('--text-primary', '#e5e7eb'), family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", size: 11 },
         margin: { l: 5, r: 5, t: 5, b: 5 }
       };
 
@@ -660,9 +701,10 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #0f1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-    .chart-container { background: #1a1d27; border: 1px solid #2d3748; border-radius: 8px; padding: 20px; margin: 20px; }
-    h2 { color: #e5e7eb; font-size: 1.125rem; margin-bottom: 16px; }
+    /* + Theme Foundation :root block — see ui-components.md §1 */
+    body { background: var(--bg-page); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .chart-container { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin: 20px; }
+    h2 { color: var(--text-primary); font-size: 1.125rem; margin-bottom: 16px; }
     .chart-wrapper { position: relative; max-width: 400px; margin: 0 auto; }
     /* Center label rendered over the doughnut hole */
     .center-label {
@@ -670,8 +712,8 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
       transform: translate(-50%, -50%);
       text-align: center; pointer-events: none;
     }
-    .center-label .amount { color: #e5e7eb; font-size: 1.5rem; font-weight: 700; }
-    .center-label .sub { color: #9ca3af; font-size: 0.75rem; }
+    .center-label .amount { color: var(--text-primary); font-size: 1.5rem; font-weight: 700; }
+    .center-label .sub { color: var(--text-secondary); font-size: 0.75rem; }
   </style>
 </head>
 <body>
@@ -694,7 +736,14 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
       ]
     };
 
-    const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+    // Canvas can't read var() — resolve theme colors once, dark literal as fallback
+    var cs = getComputedStyle(document.documentElement);
+    function pick(name, fallback) { return cs.getPropertyValue(name).trim() || fallback; }
+
+    const COLORS = [
+      pick('--accent', '#3b82f6'), pick('--positive', '#10b981'), '#f59e0b',
+      pick('--negative', '#ef4444'), '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'
+    ];
 
     function formatUSD(n) {
       if (n >= 1e9) return '$' + (n / 1e9).toFixed(2) + 'B';
@@ -715,7 +764,7 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
           datasets: [{
             data: DATA.holdings.map(h => h.value),
             backgroundColor: COLORS.slice(0, DATA.holdings.length),
-            borderColor: '#1a1d27',  // Matches card bg for clean segment gaps
+            borderColor: pick('--bg-card', '#1a1d27'),  // Matches card bg for clean segment gaps
             borderWidth: 2
           }]
         },
@@ -726,7 +775,7 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
             legend: {
               position: 'bottom',
               labels: {
-                color: '#e5e7eb',
+                color: pick('--text-primary', '#e5e7eb'),
                 font: { size: 12 },
                 usePointStyle: true,
                 pointStyle: 'circle',
@@ -734,10 +783,10 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
               }
             },
             tooltip: {
-              backgroundColor: '#1a1d27',
-              titleColor: '#9ca3af',
-              bodyColor: '#e5e7eb',
-              borderColor: '#2d3748',
+              backgroundColor: pick('--bg-card', '#1a1d27'),
+              titleColor: pick('--text-secondary', '#9ca3af'),
+              bodyColor: pick('--text-primary', '#e5e7eb'),
+              borderColor: pick('--border', '#2d3748'),
               borderWidth: 1,
               padding: 12,
               callbacks: {
@@ -769,7 +818,8 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
   <title>KPI Cards</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #0f1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    /* + Theme Foundation :root block — see ui-components.md §1 */
+    body { background: var(--bg-page); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
 
     .kpi-row {
       display: grid;
@@ -780,15 +830,15 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
     }
 
     .kpi-card {
-      background: #1a1d27;
-      border: 1px solid #2d3748;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
       border-radius: 8px;
       padding: 16px;
     }
 
     .kpi-label {
       font-size: 0.75rem;
-      color: #9ca3af;
+      color: var(--text-secondary);
       text-transform: uppercase;
       letter-spacing: 0.05em;
       margin-bottom: 6px;
@@ -797,7 +847,7 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
     .kpi-value {
       font-size: 1.75rem;
       font-weight: 700;
-      color: #e5e7eb;
+      color: var(--text-primary);
       line-height: 1.2;
     }
 
@@ -807,9 +857,9 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
       margin-top: 4px;
     }
 
-    .kpi-change.positive { color: #10b981; }
-    .kpi-change.negative { color: #ef4444; }
-    .kpi-change.neutral  { color: #9ca3af; }
+    .kpi-change.positive { color: var(--positive); }
+    .kpi-change.negative { color: var(--negative); }
+    .kpi-change.neutral  { color: var(--text-secondary); }
   </style>
 </head>
 <body>
@@ -860,9 +910,10 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
   <title>Financial Table</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #0f1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-    .table-container { background: #1a1d27; border: 1px solid #2d3748; border-radius: 8px; padding: 20px; margin: 20px; overflow-x: auto; }
-    h2 { color: #e5e7eb; font-size: 1.125rem; margin-bottom: 16px; }
+    /* + Theme Foundation :root block — see ui-components.md §1 */
+    body { background: var(--bg-page); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .table-container { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin: 20px; overflow-x: auto; }
+    h2 { color: var(--text-primary); font-size: 1.125rem; margin-bottom: 16px; }
 
     table { width: 100%; border-collapse: collapse; }
 
@@ -870,10 +921,10 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
       text-align: left;
       padding: 10px 12px;
       font-size: 0.75rem;
-      color: #9ca3af;
+      color: var(--text-secondary);
       text-transform: uppercase;
       letter-spacing: 0.05em;
-      border-bottom: 1px solid #2d3748;
+      border-bottom: 1px solid var(--border);
       cursor: pointer;
       user-select: none;
       white-space: nowrap;
@@ -890,16 +941,16 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
     td {
       padding: 10px 12px;
       font-size: 0.875rem;
-      color: #e5e7eb;
-      border-bottom: 1px solid rgba(45, 55, 72, 0.4);
+      color: var(--text-primary);
+      border-bottom: 1px solid var(--border);
     }
 
     /* Alternating row backgrounds */
-    tbody tr:nth-child(even) { background: rgba(37, 42, 54, 0.4); }
-    tbody tr:hover { background: #252a36; }
+    tbody tr:nth-child(even) { background: var(--bg-subtle); }
+    tbody tr:hover { background: var(--bg-hover); }
 
-    .positive { color: #10b981; }
-    .negative { color: #ef4444; }
+    .positive { color: var(--positive); }
+    .negative { color: var(--negative); }
   </style>
 </head>
 <body>
@@ -1012,7 +1063,7 @@ Each snippet is a complete, working HTML block. Embed data via a `DATA` variable
 
 ## Complex Tier (React Components)
 
-Each snippet is a standalone React component (JSX). Place in `frontend/src/components/` and import into `App.jsx`. All assume Vite + React project scaffolded per SKILL.md.
+Each snippet is a standalone React component (JSX). Place in `frontend/src/components/` and import into `App.jsx`. All assume Vite + React project scaffolded per SKILL.md, with the Theme Foundation block in `src/index.css` — DOM styles then use `var(--…)` directly, while SVG/canvas chart props go through `pick()`.
 
 Install chart dependencies in `package.json`:
 
@@ -1041,12 +1092,20 @@ import {
   CartesianGrid, Tooltip
 } from 'recharts';
 
+// SVG props can't take var() — resolve theme colors once, dark literal as fallback
+const cs = getComputedStyle(document.documentElement);
+const pick = (name, fallback) => cs.getPropertyValue(name).trim() || fallback;
+
 const COLORS = {
-  bg: '#1a1d27', text: '#e5e7eb', textSec: '#9ca3af',
-  blue: '#3b82f6', grid: 'rgba(45, 55, 72, 0.5)', border: '#2d3748'
+  bg: pick('--bg-card', '#1a1d27'),
+  text: pick('--text-primary', '#e5e7eb'),
+  textSec: pick('--text-secondary', '#9ca3af'),
+  blue: pick('--accent', '#3b82f6'),
+  grid: pick('--border', '#2d3748'),
+  border: pick('--border', '#2d3748')
 };
 
-// Custom tooltip with dark theme styling
+// Custom tooltip themed from the same tokens
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
   return (
@@ -1128,10 +1187,17 @@ export default function StockChart({ data, color = COLORS.blue, height = 300 }) 
 import { useEffect, useRef } from 'react';
 import { createChart, CrosshairMode } from 'lightweight-charts';
 
+// Canvas can't read var() — resolve theme colors once, dark literal as fallback
+const cs = getComputedStyle(document.documentElement);
+const pick = (name, fallback) => cs.getPropertyValue(name).trim() || fallback;
+
 const THEME = {
-  bg: '#1a1d27', text: '#9ca3af', border: '#2d3748',
-  grid: 'rgba(45, 55, 72, 0.5)',
-  up: '#10b981', down: '#ef4444'
+  bg: pick('--bg-card', '#1a1d27'),
+  text: pick('--text-secondary', '#9ca3af'),
+  border: pick('--border', '#2d3748'),
+  grid: pick('--border', '#2d3748'),
+  up: pick('--positive', '#10b981'),
+  down: pick('--negative', '#ef4444')
 };
 
 /**
@@ -1209,7 +1275,7 @@ export default function CandlestickChart({ candles, volumes, height = 400 }) {
   }, [candles, volumes, height]);
 
   if (!candles?.length) {
-    return <div style={{ color: '#9ca3af', padding: 20 }}>No candlestick data available</div>;
+    return <div style={{ color: 'var(--text-secondary)', padding: 20 }}>No candlestick data available</div>;
   }
 
   return <div ref={containerRef} style={{ width: '100%', height }} />;
@@ -1224,6 +1290,10 @@ export default function CandlestickChart({ candles, volumes, height = 400 }) {
 // components/SectorHeatmap.jsx
 import { useMemo } from 'react';
 import Plot from 'react-plotly.js';
+
+// SVG can't read var() — resolve theme colors once, dark literal as fallback
+const cs = getComputedStyle(document.documentElement);
+const pick = (name, fallback) => cs.getPropertyValue(name).trim() || fallback;
 
 /**
  * SectorHeatmap - Treemap colored by performance, sized by market cap.
@@ -1269,17 +1339,21 @@ export default function SectorHeatmap({ stocks, height = 500 }) {
         hovertemplate: '%{text}<extra></extra>',
         marker: {
           colors,
-          colorscale: [[0, '#ef4444'], [0.5, '#1a1d27'], [1, '#10b981']],
+          colorscale: [
+            [0, pick('--negative', '#ef4444')],
+            [0.5, pick('--bg-card', '#1a1d27')],
+            [1, pick('--positive', '#10b981')]
+          ],
           cmid: 0,
-          line: { width: 1, color: '#0f1117' }
+          line: { width: 1, color: pick('--bg-page', '#0f1117') }
         },
         branchvalues: 'total',
         pathbar: { visible: false }
       }],
       layout: {
-        paper_bgcolor: '#1a1d27',
+        paper_bgcolor: pick('--bg-card', '#1a1d27'),
         font: {
-          color: '#e5e7eb',
+          color: pick('--text-primary', '#e5e7eb'),
           family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
           size: 11
         },
@@ -1290,7 +1364,7 @@ export default function SectorHeatmap({ stocks, height = 500 }) {
   }, [stocks, height]);
 
   if (!stocks?.length) {
-    return <div style={{ color: '#9ca3af', padding: 20 }}>No sector data available</div>;
+    return <div style={{ color: 'var(--text-secondary)', padding: 20 }}>No sector data available</div>;
   }
 
   return (
@@ -1314,20 +1388,20 @@ import { useState, useMemo } from 'react';
 
 const STYLES = {
   container: {
-    background: '#1a1d27', border: '1px solid #2d3748', borderRadius: 8,
+    background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8,
     padding: 20, overflowX: 'auto'
   },
   table: { width: '100%', borderCollapse: 'collapse' },
   th: {
-    textAlign: 'left', padding: '10px 12px', fontSize: '0.75rem', color: '#9ca3af',
-    textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid #2d3748',
+    textAlign: 'left', padding: '10px 12px', fontSize: '0.75rem', color: 'var(--text-secondary)',
+    textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--border)',
     cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap'
   },
   td: {
-    padding: '10px 12px', fontSize: '0.875rem', color: '#e5e7eb',
-    borderBottom: '1px solid rgba(45, 55, 72, 0.4)'
+    padding: '10px 12px', fontSize: '0.875rem', color: 'var(--text-primary)',
+    borderBottom: '1px solid var(--border)'
   },
-  evenRow: { background: 'rgba(37, 42, 54, 0.4)' }
+  evenRow: { background: 'var(--bg-subtle)' }
 };
 
 /**
@@ -1391,7 +1465,7 @@ export default function DataTable({ columns, rows, pageSize = 0 }) {
   }
 
   if (!rows?.length) {
-    return <div style={{ color: '#9ca3af', padding: 20 }}>No data available</div>;
+    return <div style={{ color: 'var(--text-secondary)', padding: 20 }}>No data available</div>;
   }
 
   return (
@@ -1421,8 +1495,8 @@ export default function DataTable({ columns, rows, pageSize = 0 }) {
                 const isNum = col.type !== 'string';
                 const val = formatCell(row[col.key], col.type);
                 const color = col.type === 'percent' && row[col.key] != null
-                  ? (row[col.key] >= 0 ? '#10b981' : '#ef4444')
-                  : '#e5e7eb';
+                  ? (row[col.key] >= 0 ? 'var(--positive)' : 'var(--negative)')
+                  : 'var(--text-primary)';
                 return (
                   <td key={col.key} style={{ ...STYLES.td, textAlign: isNum ? 'right' : 'left', color }}>
                     {val}
@@ -1436,20 +1510,20 @@ export default function DataTable({ columns, rows, pageSize = 0 }) {
 
       {/* Pagination controls (only shown when pageSize > 0) */}
       {pageSize > 0 && totalPages > 1 && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, fontSize: '0.8rem', color: '#9ca3af' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
           <span>Page {page + 1} of {totalPages}</span>
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               onClick={() => setPage(p => Math.max(0, p - 1))}
               disabled={page === 0}
-              style={{ background: '#2d3748', color: '#e5e7eb', border: 'none', borderRadius: 4, padding: '4px 12px', cursor: page === 0 ? 'not-allowed' : 'pointer', opacity: page === 0 ? 0.5 : 1 }}
+              style={{ background: 'var(--bg-hover)', color: 'var(--text-primary)', border: 'none', borderRadius: 4, padding: '4px 12px', cursor: page === 0 ? 'not-allowed' : 'pointer', opacity: page === 0 ? 0.5 : 1 }}
             >
               Prev
             </button>
             <button
               onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
               disabled={page >= totalPages - 1}
-              style={{ background: '#2d3748', color: '#e5e7eb', border: 'none', borderRadius: 4, padding: '4px 12px', cursor: page >= totalPages - 1 ? 'not-allowed' : 'pointer', opacity: page >= totalPages - 1 ? 0.5 : 1 }}
+              style={{ background: 'var(--bg-hover)', color: 'var(--text-primary)', border: 'none', borderRadius: 4, padding: '4px 12px', cursor: page >= totalPages - 1 ? 'not-allowed' : 'pointer', opacity: page >= totalPages - 1 ? 0.5 : 1 }}
             >
               Next
             </button>
@@ -1477,22 +1551,22 @@ export default function DataTable({ columns, rows, pageSize = 0 }) {
  * @param {string} [prefix] - Optional prefix for the value (e.g., "$")
  */
 export default function KPICard({ label, value, change = null, prefix = '' }) {
-  const changeColor = change == null ? '#9ca3af'
-    : change >= 0 ? '#10b981' : '#ef4444';
+  const changeColor = change == null ? 'var(--text-secondary)'
+    : change >= 0 ? 'var(--positive)' : 'var(--negative)';
   const changeText = change != null
     ? `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`
     : null;
 
   return (
     <div style={{
-      background: '#1a1d27',
-      border: '1px solid #2d3748',
+      background: 'var(--bg-card)',
+      border: '1px solid var(--border)',
       borderRadius: 8,
       padding: 16,
       minWidth: 140
     }}>
       <div style={{
-        fontSize: '0.75rem', color: '#9ca3af',
+        fontSize: '0.75rem', color: 'var(--text-secondary)',
         textTransform: 'uppercase', letterSpacing: '0.05em',
         marginBottom: 6
       }}>
@@ -1500,7 +1574,7 @@ export default function KPICard({ label, value, change = null, prefix = '' }) {
       </div>
       <div style={{
         fontSize: '1.75rem', fontWeight: 700,
-        color: '#e5e7eb', lineHeight: 1.2
+        color: 'var(--text-primary)', lineHeight: 1.2
       }}>
         {prefix}{value}
       </div>
@@ -1598,8 +1672,8 @@ import KPICard from '../components/KPICard';
 export default function StockPage({ ticker }) {
   const { data, loading, error } = useStockData(ticker, '1y');
 
-  if (loading) return <div style={{ color: '#9ca3af', padding: 40 }}>Loading...</div>;
-  if (error)   return <div style={{ color: '#ef4444', padding: 40 }}>Error: {error}</div>;
+  if (loading) return <div style={{ color: 'var(--text-secondary)', padding: 40 }}>Loading...</div>;
+  if (error)   return <div style={{ color: 'var(--negative)', padding: 40 }}>Error: {error}</div>;
 
   const prices = data.history.map(d => ({ date: d.date, close: d.close }));
   const latest = data.history[data.history.length - 1];
@@ -1612,7 +1686,7 @@ export default function StockPage({ ticker }) {
         <KPICard label="Price" value={latest.close.toFixed(2)} prefix="$" change={changePct} />
         <KPICard label="Volume" value={(latest.volume / 1e6).toFixed(1) + 'M'} />
       </div>
-      <div style={{ background: '#1a1d27', border: '1px solid #2d3748', borderRadius: 8, padding: 20 }}>
+      <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, padding: 20 }}>
         <StockChart data={prices} />
       </div>
     </div>

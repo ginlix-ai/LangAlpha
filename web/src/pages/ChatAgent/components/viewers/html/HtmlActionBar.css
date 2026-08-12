@@ -1,0 +1,44 @@
+.html-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.html-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border-radius: 6px;
+  color: var(--color-text-tertiary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.html-action-btn:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.html-action-btn:focus-visible {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: 1px;
+}
+
+/* Overlay variant: hover-revealed bar floated over the inline-widget iframe. */
+.html-action-bar-overlay {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--color-bg-card);
+  border: 0.5px solid var(--color-border-muted);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}

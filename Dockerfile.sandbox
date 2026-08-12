@@ -11,6 +11,8 @@
 
 FROM ubuntu:24.04
 
+# Keep NODE_VERSION in sync with SANDBOX_NODE_VERSION in
+# src/ptc_agent/core/sandbox/_defaults.py (the Daytona snapshot uses that).
 ARG NODE_VERSION=24.14.1
 
 # ---------- System packages ----------
@@ -28,9 +30,10 @@ RUN apt-get update \
         curl ripgrep jq git unzip \
         libreoffice gcc poppler-utils pandoc qpdf \
         fonts-noto-cjk \
-    # -- uv (Python package manager) --
+    # -- uv (Python package manager) — relocate BOTH uv and uvx; the MCP
+    #    command allowlist permits `uvx`, so it must be on PATH too. --
     && curl -LsSf https://astral.sh/uv/install.sh | sh \
-    && mv /root/.local/bin/uv /usr/local/bin/uv \
+    && mv /root/.local/bin/uv /root/.local/bin/uvx /usr/local/bin/ \
     # -- Node.js (direct binary — avoids apt mirror flakiness) --
     && NODE_ARCH=$([ "$(dpkg --print-architecture)" = "arm64" ] && echo "arm64" || echo "x64") \
     && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
@@ -48,6 +51,13 @@ RUN apt-get update \
     && tar -xzf /tmp/gh.tar.gz -C /tmp \
     && mv "/tmp/gh_2.87.3_linux_${GH_ARCH}/bin/gh" /usr/local/bin/gh \
     && rm -rf /tmp/gh.tar.gz "/tmp/gh_2.87.3_linux_${GH_ARCH}" \
+    # -- Polymarket CLI (prediction-market data; multi-arch x86_64 / aarch64) --
+    && POLY_ARCH=$(uname -m) \
+    && curl -fsSL "https://github.com/Polymarket/polymarket-cli/releases/download/v0.1.4/polymarket-v0.1.4-${POLY_ARCH}-unknown-linux-gnu.tar.gz" \
+        -o /tmp/polymarket.tar.gz \
+    && tar -xzf /tmp/polymarket.tar.gz -C /tmp \
+    && mv /tmp/polymarket /usr/local/bin/polymarket \
+    && rm -rf /tmp/polymarket.tar.gz \
     # -- Docker Engine (for interactive-dashboard complex tier) --
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
@@ -75,12 +85,14 @@ RUN apt-get update \
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright
 
 # ---------- Python packages ----------
+# Mirrors DEFAULT_DEPENDENCIES in src/ptc_agent/core/sandbox/_defaults.py
+# (the list the Daytona snapshot installs). Keep both in sync.
 # Override curl_cffi cap: yfinance pins <0.14 but works fine with 0.14+
 # (tested). scrapling[all] requires >=0.14. Override resolves the conflict.
 RUN echo 'curl_cffi>=0.14' > /tmp/overrides.txt \
     && uv pip install --system \
     --override /tmp/overrides.txt \
-    mcp fastmcp \
+    mcp==1.29.0 fastmcp fastapi \
     pandas requests aiohttp "httpx[http2]" \
     numpy scipy scikit-learn statsmodels \
     yfinance \
@@ -89,7 +101,7 @@ RUN echo 'curl_cffi>=0.14' > /tmp/overrides.txt \
     openpyxl xlrd python-docx pypdf \
     beautifulsoup4 lxml pyyaml \
     defusedxml pdfplumber reportlab "markitdown[pptx]" \
-    "scrapling[all]" html2text \
+    "scrapling[all]" html-to-markdown trafilatura youtube-transcript-api \
     playwright \
     tqdm tabulate \
     && rm /tmp/overrides.txt

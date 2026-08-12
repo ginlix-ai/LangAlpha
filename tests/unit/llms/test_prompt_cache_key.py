@@ -40,6 +40,7 @@ def _make_llm(
     llm.sdk = sdk
     llm.provider = f"test-{sdk}"
     llm.provider_info = {"access_type": "platform"}
+    llm.base_url = None
     llm.api_key_override = None
     llm.prompt_cache_key_enabled = prompt_cache_key_flag
 

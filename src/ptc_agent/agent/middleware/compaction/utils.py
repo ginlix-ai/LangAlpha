@@ -19,6 +19,7 @@ from langchain_core.messages import (
 from langchain_core.messages.human import HumanMessage
 from langchain_core.messages.utils import convert_to_messages
 
+from ptc_agent.agent.middleware._message_utils import message_id
 from ptc_agent.agent.middleware.compaction.types import (
     CONTEXT_SUMMARY_PREFIX,
     NON_CRITICAL_READ_PREFIXES,
@@ -499,6 +500,87 @@ def truncate_read_results(
 # =============================================================================
 
 
+def _is_tool_message(message: Any) -> bool:
+    """True for a tool result in either typed (``ToolMessage``) or dict shape.
+
+    The checkpoint reducer coerces every write via ``convert_to_messages`` (see
+    ``messages_delta_reducer``), so only typed messages should reach
+    reconstruction. But this predicate backs the orphaned-``tool_result`` crash
+    backstop, so it stays agnostic to message shape rather than trusting that
+    invariant — a dict-shaped tool result slipping in must still be caught.
+    """
+    if isinstance(message, ToolMessage):
+        return True
+    if isinstance(message, dict):
+        return message.get("role") == "tool" or message.get("type") == "tool"
+    return False
+
+
+def _strip_leading_orphan_tool_messages(
+    tail: list[AnyMessage],
+) -> list[AnyMessage]:
+    """Drop leading tool-result messages from a reconstructed tail.
+
+    A summary message followed by a tool result reconstructs into an Anthropic
+    ``user`` turn whose first content block is an orphaned ``tool_result`` (no
+    preceding ``tool_use``) -> 400. Stripping any leading tool results makes that
+    structurally impossible. This is the crash backstop, so it matches both typed
+    ``ToolMessage`` objects and dict-shaped tool results via ``_is_tool_message``.
+    """
+    i = 0
+    while i < len(tail) and _is_tool_message(tail[i]):
+        i += 1
+    return tail[i:] if i else tail
+
+
+def _resolve_anchor_index(
+    messages: list[AnyMessage], anchor_id: str | None
+) -> int | None:
+    """Index of the message whose id equals ``anchor_id``, or ``None``.
+
+    Returns ``None`` immediately when ``anchor_id`` is ``None`` (legacy event)
+    so it can never match an id-less message.
+    """
+    if anchor_id is None:
+        return None
+    for i, msg in enumerate(messages):
+        if message_id(msg) == anchor_id:
+            return i
+    return None
+
+
+def build_compaction_event(
+    raw_messages: list[AnyMessage],
+    preserved_messages: list[AnyMessage],
+    summary_message: HumanMessage,
+    file_path: str | None,
+    effective_cutoff: int,
+    previous_event: CompactionEvent | None,
+) -> CompactionEvent:
+    """Construct a ``CompactionEvent`` carrying both a positional cutoff and an id anchor.
+
+    The positional ``cutoff_index`` is grounded in ``raw_messages`` by locating
+    the first preserved message's id, falling back to the arithmetic
+    ``compute_absolute_cutoff`` when the anchor is absent (empty preserved tail).
+    ``anchor_message_id`` lets reconstruction re-find the boundary by id if the
+    raw list later drifts.
+    """
+    anchor_message_id = (
+        message_id(preserved_messages[0]) if preserved_messages else None
+    )
+
+    cutoff_index: int | None = _resolve_anchor_index(raw_messages, anchor_message_id)
+    if cutoff_index is None:
+        cutoff_index = compute_absolute_cutoff(effective_cutoff, previous_event)
+
+    return CompactionEvent(
+        cutoff_index=cutoff_index,
+        summary_message=summary_message,
+        file_path=file_path,
+        anchor_message_id=anchor_message_id,
+    )
+
+
 def get_effective_messages(
     messages: list[AnyMessage],
     event: CompactionEvent | None,
@@ -507,7 +589,14 @@ def get_effective_messages(
 
     After compaction, the checkpoint still contains ALL messages. This function
     reconstructs what the model should see: the summary message plus messages
-    after the cutoff index.
+    after the cutoff boundary.
+
+    The boundary is tracked by ``anchor_message_id`` (the first preserved
+    message's id) and re-resolved against the current list only when the stored
+    positional ``cutoff_index`` no longer points at that anchor — so list
+    perturbation (DeltaChannel reconstruction, injected messages) can't silently
+    drift the boundary. Any leading orphaned ``ToolMessage`` in the tail is
+    stripped unconditionally as a crash backstop.
 
     Args:
         messages: Full message list from state.
@@ -519,9 +608,19 @@ def get_effective_messages(
     if event is None:
         return messages
 
-    result: list[AnyMessage] = [event["summary_message"]]
-    result.extend(messages[event["cutoff_index"]:])
-    return result
+    cutoff = event["cutoff_index"]
+    anchor_id = event.get("anchor_message_id")
+    # O(1) happy path: only re-scan when the positional cutoff has drifted off
+    # the anchor. Legacy events (no anchor) keep the positional index as-is.
+    if anchor_id is not None and not (
+        0 <= cutoff < len(messages) and message_id(messages[cutoff]) == anchor_id
+    ):
+        resolved = _resolve_anchor_index(messages, anchor_id)
+        if resolved is not None:
+            cutoff = resolved
+
+    tail = _strip_leading_orphan_tool_messages(messages[cutoff:])
+    return [event["summary_message"], *tail]
 
 
 def compute_absolute_cutoff(
@@ -545,33 +644,53 @@ def compute_absolute_cutoff(
     return effective_cutoff
 
 
+# File-note suffix appended to the summary message content; the parser splits
+# on its stable prefix, so builder and parser can't drift apart.
+_SUMMARY_FILE_NOTE = "\n\nFull conversation history saved to `{file_path}`."
+
+
 def build_summary_message(
-    summary: str, file_path: str | None = None
+    summary: str,
+    file_path: str | None = None,
+    original_message_count: int = 0,
 ) -> HumanMessage:
     """Build the summary HumanMessage with optional file path reference.
 
-    Tags with lc_source='summarization' for chain filtering.
-
-    Args:
-        summary: The generated summary text.
-        file_path: Path where conversation history was stored, or None.
-
-    Returns:
-        HumanMessage containing the summary.
+    Tags with lc_source='summarization' for chain filtering, and stamps the
+    emit-time ``context_window`` summarize fields into ``additional_kwargs``
+    so checkpoint-sourced replay re-emits the event without the stored SSE
+    stream.
     """
+    content = f"{CONTEXT_SUMMARY_PREFIX}{summary}"
     if file_path is not None:
-        content = (
-            f"{CONTEXT_SUMMARY_PREFIX}{summary}\n\n"
-            f"Full conversation history saved to `{file_path}`."
-        )
-    else:
-        content = f"{CONTEXT_SUMMARY_PREFIX}{summary}"
+        content += _SUMMARY_FILE_NOTE.format(file_path=file_path)
 
     return HumanMessage(
         content=content,
         id=str(uuid.uuid4()),
-        additional_kwargs={"lc_source": "summarization"},
+        additional_kwargs={
+            "lc_source": "summarization",
+            "summarize_complete": {
+                "summary_length": len(summary),
+                "original_message_count": original_message_count,
+            },
+        },
     )
+
+
+def parse_summary_message(message: HumanMessage) -> str:
+    """Recover the raw summary text from a ``build_summary_message`` message."""
+    content = message.content if isinstance(message.content, str) else ""
+    text = content.removeprefix(CONTEXT_SUMMARY_PREFIX)
+    # The exact length is stamped at build time — slice by it rather than
+    # string-splitting on the file note, which would mis-truncate a summary
+    # that itself contains the note text (reachable when file_path is None).
+    stamped = message.additional_kwargs.get("summarize_complete") or {}
+    length = stamped.get("summary_length")
+    if isinstance(length, int) and 0 <= length <= len(text):
+        return text[:length]
+    # Legacy checkpoints without the stamp: fall back to note-prefix splitting.
+    return text.rsplit(_SUMMARY_FILE_NOTE.split("{", 1)[0], 1)[0]
 
 
 # =============================================================================

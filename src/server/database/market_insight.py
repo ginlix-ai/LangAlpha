@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
-from src.server.database.conversation import get_db_connection
+from src.server.database.pool import get_db_connection
 
 logger = logging.getLogger(__name__)
 

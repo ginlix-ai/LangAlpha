@@ -156,13 +156,13 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
         >
           <div>
             <div
-              className="text-[11px] font-semibold uppercase tracking-[0.14em]"
+              className="text-[0.6875rem] font-semibold uppercase tracking-[0.14em]"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               {t('dashboard.widgets.addDialog.eyebrow')}
             </div>
             <DialogTitle
-              className="title-font mt-1.5 text-[26px] leading-tight tracking-tight"
+              className="title-font mt-1.5 text-[1.625rem] leading-tight tracking-tight"
               style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}
             >
               {t('dashboard.widgets.addDialog.title')}
@@ -245,7 +245,7 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
             }}
           >
             <span
-              className="inline-block text-[10px] font-semibold lowercase px-2 py-0.5 rounded-full mb-2"
+              className="inline-block text-[0.625rem] font-semibold lowercase px-2 py-0.5 rounded-full mb-2"
               style={{
                 backgroundColor: 'var(--color-profit-soft)',
                 color: 'var(--color-profit)',
@@ -267,7 +267,7 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
               {searchActive ? (
                 <>
                   <div
-                    className="title-font text-[26px] leading-tight tracking-tight"
+                    className="title-font text-[1.625rem] leading-tight tracking-tight"
                     style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}
                   >
                     {t('dashboard.widgets.addDialog.results')}
@@ -286,7 +286,7 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
                 <>
                   <div className="flex items-baseline gap-3">
                     <div
-                      className="title-font text-[26px] leading-tight tracking-tight"
+                      className="title-font text-[1.625rem] leading-tight tracking-tight"
                       style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}
                     >
                       {CATEGORY_META[activeCat]?.labelKey
@@ -307,7 +307,7 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
               <span
-                className="text-[11px] px-2.5 py-1 rounded-full whitespace-nowrap"
+                className="text-[0.6875rem] px-2.5 py-1 rounded-full whitespace-nowrap"
                 style={{
                   backgroundColor: 'var(--color-bg-subtle)',
                   color: 'var(--color-text-tertiary)',
@@ -372,7 +372,7 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
                           style={{ backgroundColor: 'var(--color-border-muted)' }}
                         />
                         <div
-                          className="text-[11px] font-semibold uppercase tracking-[0.14em]"
+                          className="text-[0.6875rem] font-semibold uppercase tracking-[0.14em]"
                           style={{ color: 'var(--color-text-tertiary)' }}
                         >
                           {CATEGORY_META[cat]?.labelKey ? t(CATEGORY_META[cat].labelKey) : cat}
@@ -411,7 +411,7 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
                 components={{
                   enter: (
                     <span
-                      className="inline-flex items-center justify-center px-1.5 min-w-[18px] h-[18px] rounded border text-[10px] align-middle"
+                      className="inline-flex items-center justify-center px-1.5 min-w-[18px] h-[18px] rounded border text-[0.625rem] align-middle"
                       style={{
                         borderColor: 'var(--color-border-muted)',
                         backgroundColor: 'var(--color-bg-subtle)',
@@ -515,7 +515,7 @@ function WidgetCard({ def, disabled, selected, onSelect, onAdd }: WidgetCardProp
               {t(def.titleKey)}
             </span>
             <span
-              className="text-[10px] px-2 py-0.5 rounded-full lowercase"
+              className="text-[0.625rem] px-2 py-0.5 rounded-full lowercase"
               style={{
                 backgroundColor: isSingleton ? 'var(--color-profit-soft)' : 'var(--color-bg-subtle)',
                 color: isSingleton ? 'var(--color-profit)' : 'var(--color-text-tertiary)',
@@ -526,7 +526,7 @@ function WidgetCard({ def, disabled, selected, onSelect, onAdd }: WidgetCardProp
             </span>
             {def.source === 'tradingview' && (
               <span
-                className="text-[9px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold"
+                className="text-[0.5625rem] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold"
                 style={{
                   backgroundColor: 'var(--color-accent-soft)',
                   color: 'var(--color-accent-primary)',
@@ -539,14 +539,14 @@ function WidgetCard({ def, disabled, selected, onSelect, onAdd }: WidgetCardProp
           </div>
           {def.descriptionKey && (
             <div
-              className="text-[12px] leading-snug mb-2"
+              className="text-[0.75rem] leading-snug mb-2"
               style={{ color: 'var(--color-text-secondary)' }}
             >
               {t(def.descriptionKey)}
             </div>
           )}
           <div
-            className="text-[11px] dashboard-mono"
+            className="text-[0.6875rem] dashboard-mono"
             style={{ color: 'var(--color-text-tertiary)' }}
           >
             {w}w × {h}h · {def.settingsComponent

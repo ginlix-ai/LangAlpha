@@ -17,6 +17,27 @@ export const defaultResponses = {
     theme: 'dark',
     locale: 'en-US',
     timezone: 'America/New_York',
+    // Onboarding state of a fully-caught-up returning user, so the welcome
+    // guides added in #264 (page-intro modals + getting-started card) never
+    // pop over the UI under test and intercept clicks. Without this, every
+    // page intro is eligible (empty pageIntrosSeen) and its [role="dialog"]
+    // overlay blocks Playwright clicks -> 30s timeouts. Page-intro ids come
+    // from src/pages/Onboarding/registry/pageIntros.ts -- add new ids here
+    // when intros are added. lastSeenReleaseVersion stays null because
+    // unseenReleases() returns [] for null (no What's-New backlog); firstRunAt
+    // is stamped so the provider treats this as an established user.
+    // Tests that exercise onboarding (e.g. the personalization banner) override
+    // the relevant fields locally.
+    other_preference: {
+      onboarding: {
+        version: 1,
+        pageIntrosSeen: { chat: 1, thread: 1, dashboard: 1 },
+        gettingStartedDoneAt: {},
+        gettingStartedDismissedAt: 1,
+        lastSeenReleaseVersion: null,
+        firstRunAt: 1,
+      },
+    },
   },
   'GET /workspaces': { workspaces: [], total: 0, limit: 20, offset: 0 },
   'POST /workspaces/flash': {
@@ -51,7 +72,7 @@ export const defaultResponses = {
 // ── Sample data factories ──
 
 export const sampleWorkspace = (overrides = {}) => ({
-  workspace_id: 'ws-1',
+  workspace_id: 'a0000001-0000-4000-8000-000000000001',
   name: 'Research',
   description: 'Main workspace',
   status: 'ready',
@@ -62,8 +83,8 @@ export const sampleWorkspace = (overrides = {}) => ({
 });
 
 export const sampleThread = (overrides = {}) => ({
-  thread_id: 'th-1',
-  workspace_id: 'ws-1',
+  thread_id: 'b0000001-0000-4000-8000-000000000001',
+  workspace_id: 'a0000001-0000-4000-8000-000000000001',
   title: 'Test conversation',
   created_at: '2025-01-01T00:00:00Z',
   ...overrides,
@@ -116,18 +137,18 @@ export const sseEvents = {
   userMessage: (content, turnIndex = 0) => ({
     event: 'user_message',
     data: {
-      thread_id: 'th-1',
+      thread_id: 'b0000001-0000-4000-8000-000000000001',
       turn_index: turnIndex,
       content,
       timestamp: new Date().toISOString(),
-      metadata: { msg_type: 'ptc', workspace_id: 'ws-1' },
+      metadata: { msg_type: 'ptc', workspace_id: 'a0000001-0000-4000-8000-000000000001' },
     },
   }),
 
   messageChunk: (content, contentType = 'text', turnIndex = 0) => ({
     event: 'message_chunk',
     data: {
-      thread_id: 'th-1',
+      thread_id: 'b0000001-0000-4000-8000-000000000001',
       agent: 'model:test',
       id: 'lc_run--test',
       role: 'assistant',
@@ -140,7 +161,7 @@ export const sseEvents = {
   finishStop: (turnIndex = 0) => ({
     event: 'message_chunk',
     data: {
-      thread_id: 'th-1',
+      thread_id: 'b0000001-0000-4000-8000-000000000001',
       agent: 'model:test',
       id: 'lc_run--test',
       role: 'assistant',
@@ -154,7 +175,7 @@ export const sseEvents = {
   finishToolCalls: (turnIndex = 0) => ({
     event: 'message_chunk',
     data: {
-      thread_id: 'th-1',
+      thread_id: 'b0000001-0000-4000-8000-000000000001',
       agent: 'model:test',
       id: 'lc_run--test',
       role: 'assistant',
@@ -168,7 +189,7 @@ export const sseEvents = {
   toolCalls: (calls, turnIndex = 0) => ({
     event: 'tool_calls',
     data: {
-      thread_id: 'th-1',
+      thread_id: 'b0000001-0000-4000-8000-000000000001',
       agent: 'model:test',
       id: 'lc_run--test',
       role: 'assistant',
@@ -186,7 +207,7 @@ export const sseEvents = {
   toolCallResult: (toolCallId, content, artifact = null, turnIndex = 0) => ({
     event: 'tool_call_result',
     data: {
-      thread_id: 'th-1',
+      thread_id: 'b0000001-0000-4000-8000-000000000001',
       agent: 'tools',
       id: `result-${toolCallId}`,
       role: 'assistant',
@@ -201,7 +222,7 @@ export const sseEvents = {
   interrupt: (interruptId, plan = 'Here is my plan:\n1. Step one\n2. Step two') => ({
     event: 'interrupt',
     data: {
-      thread_id: 'th-1',
+      thread_id: 'b0000001-0000-4000-8000-000000000001',
       turn_index: 0,
       interrupts: [
         {
@@ -246,7 +267,7 @@ export const sseEvents = {
     },
   }),
 
-  replayDone: (threadId = 'th-1') => ({
+  replayDone: (threadId = 'b0000001-0000-4000-8000-000000000001') => ({
     event: 'replay_done',
     data: { thread_id: threadId },
   }),
@@ -264,7 +285,7 @@ export const sseEvents = {
   contextWindow: (inputTokens = 1000, outputTokens = 100) => ({
     event: 'context_window',
     data: {
-      thread_id: 'th-1',
+      thread_id: 'b0000001-0000-4000-8000-000000000001',
       agent: 'model:test',
       action: 'token_usage',
       signal: 'complete',
@@ -283,7 +304,7 @@ export const sseEvents = {
   creditUsage: (totalCredits = 1.5) => ({
     event: 'credit_usage',
     data: {
-      thread_id: 'th-1',
+      thread_id: 'b0000001-0000-4000-8000-000000000001',
       tokens: {
         input_tokens: 10000,
         output_tokens: 500,
@@ -297,7 +318,7 @@ export const sseEvents = {
   createWorkspaceInterrupt: (interruptId, name, description) => ({
     event: 'interrupt',
     data: {
-      thread_id: 'th-1',
+      thread_id: 'b0000001-0000-4000-8000-000000000001',
       interrupt_id: interruptId,
       finish_reason: 'interrupt',
       action_requests: [{
@@ -311,7 +332,7 @@ export const sseEvents = {
   startQuestionInterrupt: (interruptId, workspaceId, question) => ({
     event: 'interrupt',
     data: {
-      thread_id: 'th-1',
+      thread_id: 'b0000001-0000-4000-8000-000000000001',
       interrupt_id: interruptId,
       finish_reason: 'interrupt',
       action_requests: [{
@@ -325,7 +346,7 @@ export const sseEvents = {
   navigateToWorkspaceResult: (toolCallId, workspaceId, question) => ({
     event: 'tool_call_result',
     data: {
-      thread_id: 'th-1',
+      thread_id: 'b0000001-0000-4000-8000-000000000001',
       agent: 'tools',
       id: `result-${toolCallId}`,
       role: 'assistant',
@@ -338,7 +359,7 @@ export const sseEvents = {
   createWorkspaceResult: (toolCallId, workspaceId, workspaceName) => ({
     event: 'tool_call_result',
     data: {
-      thread_id: 'th-1',
+      thread_id: 'b0000001-0000-4000-8000-000000000001',
       agent: 'tools',
       id: `result-${toolCallId}`,
       role: 'assistant',
@@ -351,7 +372,7 @@ export const sseEvents = {
   askUserInterrupt: (interruptId, questionId, question, options = null) => ({
     event: 'interrupt',
     data: {
-      thread_id: 'th-1',
+      thread_id: 'b0000001-0000-4000-8000-000000000001',
       interrupt_id: interruptId,
       finish_reason: 'interrupt',
       action_requests: [{

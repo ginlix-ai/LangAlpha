@@ -1,9 +1,10 @@
 import React from 'react';
+import { relativeTime } from '@/lib/format';
 import { Clock, Timer, TrendingUp, CheckCircle2 } from 'lucide-react';
 import { cronToHuman } from '../../../Automations/utils/cron';
 import { formatPriceTrigger } from '../../../Automations/utils/price';
-import { formatRelativeTime } from '../../../Automations/utils/time';
 import { useTranslation } from 'react-i18next';
+import { CARD_BG, CARD_BORDER } from './inlineCardsShared';
 
 // ─── Constants (matching InlineArtifactCards) ─────────────────────────
 
@@ -12,8 +13,6 @@ const YELLOW = 'var(--color-warning)';
 const RED = 'var(--color-loss)';
 const BLUE = 'var(--color-info)';
 const TEXT_COLOR = 'var(--color-text-tertiary)';
-const CARD_BG = 'var(--color-bg-tool-card)';
-const CARD_BORDER = 'var(--color-border-muted)';
 
 const cardStyle: React.CSSProperties = {
   background: CARD_BG,
@@ -47,7 +46,7 @@ function scheduleLabel(automation: Record<string, unknown> | null | undefined): 
     return cronToHuman(automation.schedule as string);
   }
   if (automation.next_run_at) {
-    return formatRelativeTime(automation.next_run_at as string);
+    return relativeTime(automation.next_run_at as string);
   }
   return (automation.schedule as string) || '';
 }
@@ -133,10 +132,10 @@ function InlineAutomationListCard({ artifact, onClick }: InlineAutomationListCar
     >
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-        <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: 13 }}>{t('toolArtifact.automations')}</span>
+        <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: '0.8125rem' }}>{t('toolArtifact.automations')}</span>
         <span
           style={{
-            fontSize: 11,
+            fontSize: '0.6875rem',
             color: TEXT_COLOR,
             backgroundColor: 'var(--color-bg-surface)',
             padding: '1px 6px',
@@ -157,14 +156,14 @@ function InlineAutomationListCard({ artifact, onClick }: InlineAutomationListCar
               alignItems: 'center',
               gap: 8,
               padding: '3px 0',
-              fontSize: 12,
+              fontSize: '0.75rem',
             }}
           >
             <StatusDot status={a.status as string} />
             <span style={{ color: 'var(--color-text-primary)', fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {a.name as string}
             </span>
-            <span style={{ color: TEXT_COLOR, flexShrink: 0, fontSize: 11 }}>
+            <span style={{ color: TEXT_COLOR, flexShrink: 0, fontSize: '0.6875rem' }}>
               {scheduleLabel(a)}
             </span>
           </div>
@@ -173,7 +172,7 @@ function InlineAutomationListCard({ artifact, onClick }: InlineAutomationListCar
 
       {/* +N more */}
       {remaining > 0 && (
-        <div style={{ marginTop: 4, fontSize: 11, color: TEXT_COLOR }}>
+        <div style={{ marginTop: 4, fontSize: '0.6875rem', color: TEXT_COLOR }}>
           {t('toolArtifact.nMoreAutomations', { count: remaining })}
         </div>
       )}
@@ -211,20 +210,20 @@ function InlineAutomationDetailCard({ artifact, onClick }: InlineAutomationDetai
       {/* Header: icon + name + status */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <Icon size={14} style={{ color: TEXT_COLOR, flexShrink: 0 }} />
-        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: 14, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: '0.875rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {automation.name as string}
         </span>
-        <span style={{ fontSize: 12, fontWeight: 500, color: statusColor(automation.status as string), flexShrink: 0 }}>
+        <span style={{ fontSize: '0.75rem', fontWeight: 500, color: statusColor(automation.status as string), flexShrink: 0 }}>
           {automation.status as string}
         </span>
       </div>
 
       {/* Key-value rows */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 20px', fontSize: 12, color: TEXT_COLOR }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 20px', fontSize: '0.75rem', color: TEXT_COLOR }}>
         <QuoteRow label={t('toolArtifact.schedule')} value={scheduleLabel(automation)} />
-        <QuoteRow label={t('toolArtifact.nextRun')} value={automation.next_run_at ? formatRelativeTime(automation.next_run_at as string) : '\u2014'} />
+        <QuoteRow label={t('toolArtifact.nextRun')} value={automation.next_run_at ? relativeTime(automation.next_run_at as string) : '\u2014'} />
         {!!automation.last_run_at && (
-          <QuoteRow label={t('toolArtifact.lastRun')} value={formatRelativeTime(automation.last_run_at as string)} />
+          <QuoteRow label={t('toolArtifact.lastRun')} value={relativeTime(automation.last_run_at as string)} />
         )}
         {(total_executions as number) > 0 && (
           <QuoteRow label={t('toolArtifact.executions')} value={t('toolArtifact.nTotal', { count: total_executions as number })} />
@@ -258,19 +257,19 @@ function InlineAutomationCreatedCard({ artifact, onClick }: InlineAutomationCrea
       {/* Header: checkmark + "Automation Created" */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
         <CheckCircle2 size={14} style={{ color: GREEN }} />
-        <span style={{ fontWeight: 600, color: GREEN, fontSize: 13 }}>{t('toolArtifact.automationCreated')}</span>
+        <span style={{ fontWeight: 600, color: GREEN, fontSize: '0.8125rem' }}>{t('toolArtifact.automationCreated')}</span>
       </div>
 
       {/* Name */}
-      <div style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: 14, marginBottom: 8 }}>
+      <div style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: '0.875rem', marginBottom: 8 }}>
         {artifact.name as string}
       </div>
 
       {/* Details */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 20px', fontSize: 12, color: TEXT_COLOR }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 20px', fontSize: '0.75rem', color: TEXT_COLOR }}>
         <QuoteRow label={t('toolArtifact.schedule')} value={scheduleLabel(artifact)} />
         {!!artifact.next_run_at && (
-          <QuoteRow label={t('toolArtifact.nextRun')} value={formatRelativeTime(artifact.next_run_at as string)} />
+          <QuoteRow label={t('toolArtifact.nextRun')} value={relativeTime(artifact.next_run_at as string)} />
         )}
       </div>
     </div>

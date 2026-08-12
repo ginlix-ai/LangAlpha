@@ -10,7 +10,7 @@ None for the caller to 415 on.
 
 from __future__ import annotations
 
-from src.server.app.workspace_files import _decode_file_text
+from src.server.app.workspace_files._shared import _decode_file_text
 
 
 def test_utf8_text_decodes_unchanged():

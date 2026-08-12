@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { setTokenGetter } from '../client';
+import { api, setTokenGetter, setTokenRefresher } from '../client';
 
 interface InterceptorHandler<T = unknown> {
   fulfilled: (value: T) => T | Promise<T>;
@@ -127,5 +127,109 @@ describe('response interceptor behavior (429 handling)', () => {
 
     await expect(errorHandler(error)).rejects.toBe(error);
     expect(error.rateLimitInfo).toBeUndefined();
+  });
+});
+
+describe('response interceptor behavior (401 refresh-and-retry)', () => {
+  // Module singletons persist across tests — reset both.
+  beforeEach(() => {
+    setTokenGetter(null as unknown as () => Promise<string | null>);
+    setTokenRefresher(null as unknown as () => Promise<string | null>);
+  });
+
+  /** Reads the Authorization header off a config robust to AxiosHeaders normalization. */
+  function readAuth(config: { headers?: { get?: (k: string) => unknown; Authorization?: unknown } }) {
+    const headers = config.headers;
+    if (!headers) return undefined;
+    return headers.get ? headers.get('Authorization') : headers.Authorization;
+  }
+
+  it('refreshes once and retries with the fresh Bearer token on 401, then succeeds', async () => {
+    const refresher = vi.fn(() => Promise.resolve('refreshed-token'));
+    setTokenRefresher(refresher);
+
+    const adapter = vi.fn(async (config: unknown) => ({
+      data: { ok: true },
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+    }));
+    const originalAdapter = api.defaults.adapter;
+    api.defaults.adapter = adapter as unknown as typeof api.defaults.adapter;
+
+    try {
+      const resInterceptors = api.interceptors.response as unknown as InterceptorManager<unknown>;
+      const errorHandler = resInterceptors.handlers[0].rejected;
+
+      const error = {
+        response: { status: 401, data: {}, headers: {} },
+        config: { url: '/test', method: 'get', headers: {} },
+      };
+
+      const result = (await errorHandler(error)) as { status: number; data: unknown };
+
+      expect(refresher).toHaveBeenCalledTimes(1);
+      expect(adapter).toHaveBeenCalledTimes(1);
+      const retriedConfig = adapter.mock.calls[0][0] as { headers?: { get?: (k: string) => unknown; Authorization?: unknown } };
+      expect(readAuth(retriedConfig)).toBe('Bearer refreshed-token');
+      expect(result.status).toBe(200);
+      expect(result.data).toEqual({ ok: true });
+    } finally {
+      api.defaults.adapter = originalAdapter;
+    }
+  });
+
+  it('rejects on a second 401 without refreshing again (no loop)', async () => {
+    const refresher = vi.fn(() => Promise.resolve('refreshed-token'));
+    setTokenRefresher(refresher);
+
+    // A custom adapter is responsible for rejecting on bad status (axios only applies
+    // validateStatus inside its built-in adapters). Reject 401 with the merged config so
+    // the retry re-enters the interceptor with config._retry already true → branch skipped.
+    const adapter = vi.fn((config: unknown) =>
+      Promise.reject({ response: { status: 401, data: {}, headers: {} }, config }),
+    );
+    const originalAdapter = api.defaults.adapter;
+    api.defaults.adapter = adapter as unknown as typeof api.defaults.adapter;
+
+    try {
+      const resInterceptors = api.interceptors.response as unknown as InterceptorManager<unknown>;
+      const errorHandler = resInterceptors.handlers[0].rejected;
+
+      const error = {
+        response: { status: 401, data: {}, headers: {} },
+        config: { url: '/test', method: 'get', headers: {} },
+      };
+
+      await expect(errorHandler(error)).rejects.toBeDefined();
+      expect(refresher).toHaveBeenCalledTimes(1);
+      expect(adapter).toHaveBeenCalledTimes(1);
+    } finally {
+      api.defaults.adapter = originalAdapter;
+    }
+  });
+
+  it('rejects a 401 unchanged when no refresher is registered (local-dev parity)', async () => {
+    // No refresher registered (cleared in beforeEach). Adapter must never be reached.
+    const adapter = vi.fn();
+    const originalAdapter = api.defaults.adapter;
+    api.defaults.adapter = adapter as unknown as typeof api.defaults.adapter;
+
+    try {
+      const resInterceptors = api.interceptors.response as unknown as InterceptorManager<unknown>;
+      const errorHandler = resInterceptors.handlers[0].rejected;
+
+      const error: Record<string, unknown> = {
+        response: { status: 401, data: {} },
+        config: { headers: {} },
+      };
+
+      await expect(errorHandler(error)).rejects.toBe(error);
+      expect(adapter).not.toHaveBeenCalled();
+      expect(error.rateLimitInfo).toBeUndefined();
+    } finally {
+      api.defaults.adapter = originalAdapter;
+    }
   });
 });

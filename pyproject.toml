@@ -3,23 +3,36 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ptc-agent"
+name = "langalpha-core"
 version = "0.1.0"
-description = "ptc-agent"
+description = "LangAlpha core"
 readme = "README.md"
-requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+# 3.13, not 3.12: the Redis pools block on an asyncio.Condition, and before
+# 3.13 a waiter cancelled at its own deadline swallowed a notify instead of
+# re-delivering it — so a caller could be told the pool was exhausted while a
+# connection sat free. Nothing in this repo can compensate for that.
+requires-python = ">=3.13"
 dependencies = [
     "httpx[http2]>=0.28.1",
     # LangChain core packages (v1)
     "langchain>=1.0.0",
-    "langchain-core>=1.0.0",
-    "langchain-openai>=1.0.0",
+    "langchain-core>=1.4.7",
+    "langchain-openai>=1.3.5",
     "langchain-anthropic>=1.0.0",
     "langchain_google_genai>=2.0.0",
     "langchain-deepseek>=0.1.4",
-    # LangGraph
-    "langgraph>=0.3.5",
-    "langgraph-checkpoint-postgres>=2.0.0",
+    # LangGraph — floor pinned at the beta DeltaChannel on-disk format (messages
+    # checkpoints are _DeltaSnapshot/sentinel blobs). langgraph<1.2 cannot read
+    # them; downgrading after delta blobs exist strands threads on resume.
+    # >=1.2.2 brings upstream id-stamping for DeltaChannel writes (ensure_message_ids
+    # in pregel/_messages.py), which stamps id-less BaseMessage/dict/list writes
+    # before persistence — the mechanism that keeps reconstruction deterministic
+    # paired with the non-minting reducer in ptc_agent.agent.state.
+    "langgraph>=1.2.2,<2",
+    # ceiling mirrors langgraph<2 — the postgres saver serializes the same delta
+    # blobs and moves in lockstep with core, so it can't cross a major on its own.
+    "langgraph-checkpoint-postgres>=3.1,<4",
     # Other dependencies
     "python-dotenv>=1.0.1",
     # Pinned: we import from scrapling.engines._browsers._controllers /
@@ -28,12 +41,14 @@ dependencies = [
     # so a range pin would let `uv lock --upgrade` silently break browser
     # fetches. Bump deliberately after verifying the private API still exists.
     "scrapling[fetchers]==0.4.7",
-    "html2text>=2024.2.26",
+    "html-to-markdown>=3.5.0",
+    "trafilatura>=2.0.0",
     "pdfplumber>=0.10.0",
     "pypdf>=4.0.0",
     "youtube-transcript-api>=1.0.0",
     "playwright",
     "fastapi>=0.110.0",
+    "anyio>=4.0.0",
     "uvicorn>=0.27.1",
     "websockets>=12.0",
     "pandas>=2.2.3",
@@ -62,22 +77,34 @@ dependencies = [
     "edgartools>=5.7.2",
     "langsmith-fetch>=0.3.1",
     "structlog",
-    "deepagents>=0.5.3",
-    "daytona-sdk>=0.130.0",
+    # Floor at 0.6.11: that release made the messages delta reducer non-minting
+    # (our vendored copy in ptc_agent.agent.state matches it — see the parity test)
+    # and switched PatchToolCallsMiddleware off the id-less `Overwrite` write, so
+    # langgraph's ensure_message_ids covers every id-less messages write and no
+    # app-side id-stamping shim is needed.
+    # Ceiling at <0.8: the four symbols we import (PatchToolCallsMiddleware,
+    # BackendProtocol, backends.utils) all sit outside deepagents' declared
+    # __all__, so a 0.x minor is free to delete them without notice — 0.7.0
+    # dropped WriteResult.files_update exactly that way. Bump deliberately.
+    "deepagents>=0.6.11,<0.8",
+    "daytona>=0.200.1",
     "boto3>=1.42.28",
     "tavily-python>=0.7.18",
     "PyJWT[crypto]>=2.8",
-    "ptc-cli",
+    "langalpha-cli",
     "certifi>=2026.1.4",
     "requests>=2.32.5",
     "croniter>=2.0.0",
     "aiodocker>=0.23.0",
     "charset-normalizer>=3.4.0",
     "opentelemetry-api>=1.41.1",
+    "exchange-calendars>=4.13.2",
+    "quickjs-rs>=0.2.4,<0.3.0",
+    "jsonschema>=4.0",
 ]
 
 [tool.uv.sources]
-ptc-cli = { path = "libs/ptc-cli", editable = true }
+langalpha-cli = { path = "libs/ptc-cli", editable = true }
 
 [project.optional-dependencies]
 dev = [
@@ -89,6 +116,7 @@ test = [
     "pytest>=9.0.1",
     "pytest-cov>=4.1.0",
     "pytest-asyncio>=1.3.0",
+    "pytest-socket>=0.7.0",
 ]
 # OpenTelemetry SDK + OTLP exporter + auto-instrumentations. Install when
 # OTEL_EXPORTER_OTLP_ENDPOINT will be set, otherwise the API ships its own
@@ -103,6 +131,10 @@ observability = [
     "opentelemetry-instrumentation-redis>=0.62b1",
     "opentelemetry-instrumentation-logging>=0.62b1",
 ]
+# Server-side HTML→PDF export via headless Chromium. Install + run
+# `uv run playwright install chromium` to enable the `?format=pdf` routes;
+# without it the endpoints return 501 (lazy import, graceful no-op).
+pdf = ["playwright>=1.49"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ptc_agent"]
@@ -114,11 +146,24 @@ required-version = ">=0.6.15"
 # scrapling[fetchers] requires curl_cffi>=0.14. Override to resolve the conflict.
 override-dependencies = ["curl_cffi>=0.14"]
 
+[tool.ruff]
+extend-exclude = ["src/llms/vendor"]
+
 [tool.ruff.lint]
 ignore = ["E741"]  # allow short names like l, O, I (common in OHLCV code)
+extend-select = ["TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# ptc_agent has ONE module identity: the bare package. A src.-prefixed import
+# creates a second copy of every module (separate singletons, unpatched twins).
+"src.ptc_agent".msg = "import ptc_agent bare — src.ptc_agent creates a duplicate module identity"
 
 [tool.ruff.lint.per-file-ignores]
+# Relative imports inside ptc_agent statically resolve to src.ptc_agent in
+# ruff's view but bind to the package's load identity at runtime — exempt.
+"src/ptc_agent/**" = ["TID251"]
 "src/server/app/setup.py" = ["E402"]  # router imports intentionally placed after app creation
+"src/llms/__init__.py" = ["E402"]  # patch must be applied before importing modules that use langchain_anthropic
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -128,11 +173,13 @@ markers = [
     "slow: long-running tests (stress, concurrency) -- opt-in",
     "provider_docker: tests requiring Docker daemon",
     "provider_daytona: tests requiring Daytona API key",
+    "regression: locks live market-data API behavior against a running server + live providers — opt-in",
 ]
-addopts = "-m 'not integration and not slow'"
+addopts = "-m 'not integration and not slow and not regression'"
 
 [dependency-groups]
 dev = [
     "pytest>=9.0.1",
     "pytest-asyncio>=1.3.0",
+    "pytest-socket>=0.7.0",
 ]

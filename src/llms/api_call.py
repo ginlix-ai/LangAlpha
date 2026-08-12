@@ -34,7 +34,7 @@ def maybe_disable_streaming(model: object) -> None:
     ``ChatCodexOpenAI`` instances must keep their construction-time
     ``streaming=True`` flag. Mutates ``model`` in place — callers that
     share the instance across requests MUST deep-copy first (see
-    ``workflow_handler.py::compact`` and ``fetch.py::_extract_with_llm``
+    ``thread_maintenance.py::compact`` and ``fetch.py::_extract_with_llm``
     for the reference pattern).
 
     The ``RunnableBindingBase`` unwrap is defensive — keeps the Codex guard
@@ -87,9 +87,6 @@ async def make_api_call(
         llm.stream_usage = True
 
     messages = create_messages(system_prompt, user_prompt)
-
-    # Get model name for logging
-    model_name = getattr(llm, 'model_name', 'unknown')
 
     # Use tracing_context to disable LangSmith tracing if requested
     with tracing_context(enabled=not disable_tracing):
@@ -249,6 +246,6 @@ async def parse_structured_output(llm: object, text: str, schema_class: Optional
         try:
             data = json.loads(content)
             return schema_class(**data)
-        except:
+        except Exception:
             raise e
     

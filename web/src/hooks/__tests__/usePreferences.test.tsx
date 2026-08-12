@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { waitFor } from '@testing-library/react';
 import { QueryClient } from '@tanstack/react-query';
 import { renderHookWithProviders } from '@/test/utils';
-import { queryKeys } from '@/lib/queryKeys';
 
 vi.mock('@/pages/Dashboard/utils/api', () => ({
   getPreferences: vi.fn(),

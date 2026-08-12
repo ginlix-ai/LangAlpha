@@ -133,9 +133,11 @@ class TestSandboxPackages:
         assert r.returncode == 0, f"scrapling fetchers import failed: {r.stderr}"
         assert "OK" in r.stdout
 
-    def test_html2text_import(self, docker_image):
-        r = _run_in_container("python -c 'import html2text; print(\"OK\")'")
-        assert r.returncode == 0, f"html2text import failed: {r.stderr}"
+    def test_html_to_markdown_import(self, docker_image):
+        r = _run_in_container(
+            "python -c 'import html_to_markdown, trafilatura; print(\"OK\")'"
+        )
+        assert r.returncode == 0, f"html-to-markdown/trafilatura import failed: {r.stderr}"
         assert "OK" in r.stdout
 
     def test_curl_cffi_version(self, docker_image):
@@ -233,16 +235,14 @@ class TestSandboxScraplingFetch:
         body_len = int(r.stdout.split("len=")[1].strip())
         assert body_len > 100, f"Body too short: {body_len} bytes"
 
-    def test_html2text_conversion(self, docker_image):
+    def test_html_to_markdown_conversion(self, docker_image):
         """Test HTML to markdown conversion inside container."""
         r = _run_in_container(
             "python -c \""
-            "import html2text; "
-            "h = html2text.HTML2Text(); "
-            "h.body_width = 0; "
-            "md = h.handle('<h1>Hello</h1><p>World</p>'); "
-            "print(md)\""
+            "import html_to_markdown; "
+            "md = html_to_markdown.convert('<h1>Hello</h1><p>World</p>'); "
+            "print(md.content)\""
         )
-        assert r.returncode == 0, f"html2text failed: {r.stderr}"
+        assert r.returncode == 0, f"html-to-markdown failed: {r.stderr}"
         assert "hello" in r.stdout.lower()
         assert "world" in r.stdout.lower()

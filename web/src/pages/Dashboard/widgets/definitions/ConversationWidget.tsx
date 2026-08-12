@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import i18n from '@/i18n';
+import { relativeTime } from '@/lib/format';
 import { MessageSquareText, MessagesSquare } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -42,28 +43,6 @@ function formatDateStrip(): string {
     minute: '2-digit',
   });
   return `${date} · ${time}`;
-}
-
-function formatRelative(ts?: string): string {
-  if (!ts) return '';
-  const diffMs = Date.now() - new Date(ts).getTime();
-  const m = Math.floor(diffMs / 60000);
-  if (m < 1) return i18n.t('dashboard.widgets.common.relativeNow');
-  let when: string;
-  if (m < 60) when = `${m}m`;
-  else {
-    const h = Math.floor(m / 60);
-    if (h < 24) when = `${h}h`;
-    else {
-      const d = Math.floor(h / 24);
-      if (d < 7) when = `${d}d`;
-      else return new Date(ts).toLocaleDateString(i18n.language, {
-        month: 'short',
-        day: 'numeric',
-      });
-    }
-  }
-  return i18n.t('dashboard.widgets.common.relativePast', { when });
 }
 
 function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>) {
@@ -156,7 +135,6 @@ function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>)
       <div className="conversation-widget__watermark" aria-hidden="true">
         <MessageSquareText size={280} strokeWidth={0.9} />
       </div>
-      <div className="conversation-widget__wash" aria-hidden="true" />
       <div className="conversation-widget__grid" aria-hidden="true" />
 
       <motion.div
@@ -215,7 +193,7 @@ function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>)
                     {thread.title || t('dashboard.widgets.conversation.untitledThread')}
                   </span>
                   <span className="conversation-widget__chip-age">
-                    {formatRelative(thread.updated_at)}
+                    {relativeTime(thread.updated_at)}
                   </span>
                 </button>
               ))}

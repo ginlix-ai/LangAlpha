@@ -1,17 +1,39 @@
 import React, { Suspense } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import PageLoading from '@/components/PageLoading/PageLoading';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useSyncUserLocale } from '@/hooks/useSyncUserLocale';
 import { ContextOverflowPill } from '@/components/ui/ContextOverflowPill';
 
-const Dashboard = React.lazy(() => import('../../pages/Dashboard/DashboardRouter'));
-const ChatAgent = React.lazy(() => import('../../pages/ChatAgent/ChatAgent'));
-const MarketView = React.lazy(() => import('../../pages/MarketView/MarketView'));
-const DetailPage = React.lazy(() => import('../../pages/Detail/DetailPage'));
-const NewsDetailPage = React.lazy(() => import('../../pages/Detail/NewsDetailPage'));
-const Automations = React.lazy(() => import('../../pages/Automations/Automations'));
-const Settings = React.lazy(() => import('../../pages/Settings/Settings'));
+// Chunk thunks shared by the lazy components and preloadRouteChunk — import()
+// is deduped by the module system, so a preload and the lazy mount share one
+// network fetch.
+const routeChunks = {
+  dashboard: () => import('../../pages/Dashboard/DashboardRouter'),
+  chat: () => import('../../pages/ChatAgent/ChatAgent'),
+  market: () => import('../../pages/MarketView/MarketView'),
+  news: () => import('../../pages/Detail/NewsDetailPage'),
+  automations: () => import('../../pages/Automations/Automations'),
+  settings: () => import('../../pages/Settings/Settings'),
+};
+
+const Dashboard = React.lazy(routeChunks.dashboard);
+const ChatAgent = React.lazy(routeChunks.chat);
+const MarketView = React.lazy(routeChunks.market);
+const NewsDetailPage = React.lazy(routeChunks.news);
+const Automations = React.lazy(routeChunks.automations);
+const Settings = React.lazy(routeChunks.settings);
+
+/** Start downloading the chunk for `pathname` without rendering it, so the
+ * shell can warm the target route while the /users/me gate is still
+ * resolving instead of serializing the two network legs. Unknown segments
+ * warm the dashboard chunk (the catch-all redirect's target). */
+export function preloadRouteChunk(pathname: string): void {
+  const chunkFor: Record<string, () => Promise<unknown>> = routeChunks;
+  const segment = pathname.split('/')[1] || 'dashboard';
+  void (chunkFor[segment] ?? routeChunks.dashboard)();
+}
 
 function Main() {
   const location = useLocation();
@@ -21,7 +43,7 @@ function Main() {
   const pageKey = location.pathname.split('/')[1] || 'dashboard';
 
   const routes = (
-    <Suspense fallback={null}>
+    <Suspense fallback={<PageLoading variant="pane" />}>
       <Routes location={location}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/chat" element={<ChatAgent />} />
@@ -32,7 +54,6 @@ function Main() {
         <Route path="/automations" element={<Automations />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/news/:id" element={<NewsDetailPage />} />
-        <Route path="/detail/:indexNumber" element={<DetailPage />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </Suspense>

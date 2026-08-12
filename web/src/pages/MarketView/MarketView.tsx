@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useToast } from '@/components/ui/use-toast';
 import './MarketView.css';
@@ -9,12 +9,11 @@ import type { MarketChartHandle } from './components/MarketChart';
 import ChatInput from '../../components/ui/chat-input';
 import MarketChatPanel from './components/MarketChatPanel';
 import MarketSidebarPanel from './components/MarketSidebarPanel';
-import { supports1sInterval } from './utils/chartConstants';
+import { INTERVALS } from './utils/chartConstants';
 import { useMarketChat } from './hooks/useMarketChat';
 import { getWorkspaces } from '../ChatAgent/utils/api';
 import { attachmentsToContexts } from '../ChatAgent/utils/fileUpload';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft } from 'lucide-react';
 import CompanyOverviewPanel from './components/CompanyOverviewPanel';
 import { MobileBottomSheet } from '../../components/ui/mobile-bottom-sheet';
 import { MobileFabChat } from '../../components/ui/mobile-fab-chat';
@@ -24,6 +23,12 @@ import { loadPref, savePref } from './utils/prefs';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
 import { useStockData } from './hooks/useStockData';
+import { useChartAnnotationSync } from './hooks/useChartAnnotationSync';
+import { getOrFetchFlashWorkspaceId } from './utils/flashWorkspace';
+import { marketViewAnnotationContext } from './constants/annotationPrompt';
+import { normalizeTimeframe, subscribeLiveAnnotationAdd } from './stores/chartAnnotationStore';
+import { chartSelectionStore, isConfirmedFor, useChartSelections } from './stores/chartSelectionStore';
+import { buildChartSelectionSend } from './utils/selectionSend';
 
 interface SearchResult {
   name?: string;
@@ -112,7 +117,6 @@ function MarketViewInner() {
     overviewLoading,
     overlayData,
     marketStatus,
-    handleLatestBar
   } = useStockData({
     selectedStock,
     wsStatus,
@@ -121,7 +125,15 @@ function MarketViewInner() {
   });
 
   const [chartMeta, setChartMeta] = useState<Record<string, unknown> | null>(null);
-  const [selectedInterval, setSelectedInterval] = useState<string>(() => loadPref('interval', '1day'));
+  // Venue market phase reported by the chart's bars responses (calendar-derived
+  // server-side); drives the header's Closed badge. Null until the first load.
+  const [marketPhase, setMarketPhase] = useState<string | null>(null);
+  const [selectedInterval, setSelectedInterval] = useState<string>(() => {
+    // Sanitize the stored pref: a since-removed interval (e.g. '1s') falls
+    // back to the default instead of leaving the chart on an unknown key.
+    const stored = loadPref('interval', '1day');
+    return INTERVALS.some(({ key }) => key === stored) ? stored : '1day';
+  });
   const chartRef = useRef<MarketChartHandle>(null);
   const [chartImage, setChartImage] = useState<string | null>(null);       // base64 data URL
   const [chartImageDesc, setChartImageDesc] = useState<string | null>(null); // text description for LLM
@@ -159,13 +171,6 @@ function MarketViewInner() {
   useEffect(() => { savePref('symbol', selectedStock); }, [selectedStock]);
   useEffect(() => { savePref('interval', selectedInterval); }, [selectedInterval]);
 
-  // Auto-downgrade 1s → 1m when the current symbol doesn't support 1s
-  useEffect(() => {
-    if (selectedInterval === '1s' && !supports1sInterval(selectedStock)) {
-      setSelectedInterval('1min');
-    }
-  }, [selectedStock, selectedInterval]);
-
   useEffect(() => {
     setQuickQueries(pickRandomQueries(selectedStock));
   }, [selectedStock, pickRandomQueries]);
@@ -186,14 +191,85 @@ function MarketViewInner() {
   // chat lives in MarketChatPanel which drives its own useChatMessages.
   const { isLoading, handleSendMessage: handleFastModeSend } = useMarketChat();
 
+  // Resolve the user's flash workspace id once so we can scope chart
+  // annotations to the workspace the chat is actually running in.
+  const [flashWorkspaceId, setFlashWorkspaceId] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // A transient null (e.g. a failed first fetch) would otherwise leave
+    // Fast-mode annotations unscoped for the whole session, so retry a few
+    // times. getOrFetchFlashWorkspaceId clears its cache on failure, so each
+    // call re-attempts the request.
+    const attempt = (remaining: number) => {
+      getOrFetchFlashWorkspaceId().then((id) => {
+        if (cancelled) return;
+        if (id) {
+          setFlashWorkspaceId(id);
+          return;
+        }
+        if (remaining > 0) {
+          timer = setTimeout(() => attempt(remaining - 1), 1500);
+        }
+      });
+    };
+    attempt(3);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  // The chart shows the agent-drawn instance for whichever workspace the chat
+  // panel is using — flash workspace in Fast mode, the selected one in PTC.
+  // Annotations are keyed by (workspace_id, chart_id), so this single id scopes
+  // both the persistence sync and the live chart selection.
+  const activeWorkspaceId = mode === 'fast' ? flashWorkspaceId : selectedWorkspaceId;
+  useChartAnnotationSync(activeWorkspaceId, selectedStock);
+
+  // Switch the chart to a given instance — used by the live-add auto-focus
+  // below and by an annotation chip that jumps to a different ticker.
+  const handleJumpToChart = useCallback((symbol: string, timeframe?: string | null) => {
+    const sym = (symbol || '').trim().toUpperCase();
+    if (!sym) return;
+    if (sym !== selectedStock) {
+      setSelectedStock(sym);
+      setSelectedStockDisplay(null);
+      setChartMeta(null);
+      setShowOverview(false);
+    }
+    if (timeframe) {
+      const tf = normalizeTimeframe(timeframe);
+      setSelectedInterval((cur) => (cur === tf ? cur : tf));
+    }
+  }, [selectedStock]);
+
+  // Auto-apply: when the agent draws an annotation from the chat panel on a
+  // different instance than what's on screen (e.g. the user asks to mark GOOGL
+  // while viewing AAPL), bring the chart to that symbol+timeframe so the new
+  // drawing is actually visible instead of silently landing off-screen. Scoped
+  // to the active workspace's live draws (the store's live-add channel only
+  // fires for fresh SSE adds, not server re-sync).
+  useEffect(() => {
+    return subscribeLiveAnnotationAdd((add) => {
+      if (!activeWorkspaceId || add.workspaceId !== activeWorkspaceId) return;
+      handleJumpToChart(add.symbol, add.timeframe);
+    });
+  }, [activeWorkspaceId, handleJumpToChart]);
+
   // Chat return path — captured from URL when navigating from chat DetailPanel
   const [chatReturnPath, setChatReturnPath] = useState<string | null>(null);
 
-  // Handle URL parameters (symbol + returnTo from chat context). Preserve `?thread`
-  // so MarketChatPanel can pick it up to resume the right conversation.
+  // Handle URL parameters (symbol + returnTo from chat context, and ws + mode
+  // when expanding a chart-annotation preview from ChatAgent). Preserve
+  // `?thread` so MarketChatPanel can pick it up to resume the right
+  // conversation in the same workspace.
   useEffect(() => {
     const symbolParam = searchParams.get('symbol');
     const returnToParam = searchParams.get('returnTo');
+    const wsParam = searchParams.get('ws');
+    const modeParam = searchParams.get('mode');
+    const tfParam = searchParams.get('tf');
     if (symbolParam) {
       const symbol = symbolParam.trim().toUpperCase();
       if (symbol && symbol !== selectedStock) {
@@ -202,14 +278,32 @@ function MarketViewInner() {
         setChartMeta(null);
       }
     }
+    // Land on the timeframe the expanded card was drawn for, so its annotations
+    // (keyed by symbol:timeframe) show immediately. Validate against the chart's
+    // own interval allowlist so a stale/hand-crafted ?tf= can't strand the chart
+    // on an unknown interval (empty data + annotations keyed to a dead chart_id).
+    if (tfParam && INTERVALS.some((i) => i.key === tfParam)) {
+      setSelectedInterval(tfParam);
+    }
+    // Apply workspace before mode so MarketChatPanel resolves the right
+    // (ptc) workspace when it mounts the forwarded thread.
+    if (wsParam) {
+      setSelectedWorkspaceId(wsParam);
+    }
+    if (modeParam === 'ptc' || modeParam === 'fast') {
+      setMode(modeParam);
+    }
     if (returnToParam) {
       setChatReturnPath(returnToParam);
     }
-    if (symbolParam || returnToParam) {
+    if (symbolParam || returnToParam || wsParam || modeParam || tfParam) {
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
         next.delete('symbol');
         next.delete('returnTo');
+        next.delete('ws');
+        next.delete('mode');
+        next.delete('tf');
         return next;
       }, { replace: true });
     }
@@ -240,6 +334,15 @@ function MarketViewInner() {
   // belongs to the current symbol (prevents stale data flash when switching tickers).
   const realTimePriceMatch = realTimePrice?.symbol === selectedStock ? realTimePrice : null;
   const displayPrice = wsPrices.get(selectedStock) || realTimePriceMatch;
+
+  // A confirmed chart selection for the live chart rides on send (even with an
+  // empty box), so let the mobile input treat it as sendable content.
+  const { selections: chartSelections } = useChartSelections();
+  const hasChartSelectionForChart = useMemo(() => {
+    const sym = (selectedStock || '').toUpperCase();
+    const tf = normalizeTimeframe(selectedInterval);
+    return chartSelections.some((s) => isConfirmedFor(s, sym, tf));
+  }, [chartSelections, selectedStock, selectedInterval]);
 
   // Fetch workspaces for the workspace selector (PTC mode)
   useEffect(() => {
@@ -326,14 +429,38 @@ function MarketViewInner() {
   }, [selectedStock, selectedInterval, stockInfo, selectedStockDisplay, overviewData, displayPrice]);
 
   const handleSendMessage = useCallback(async (message: string, planMode: boolean, attachments: AttachmentItem[] = [], _slashCommands: string[] = [], { model, reasoningEffort }: { model?: string; reasoningEffort?: string } = {}) => {
-    // Build additional_context from chart image + file attachments
-    const contexts = [];
+    // Build additional_context from chart image + file attachments.
+    // Always preload the chart-annotation skill so the drawing tools are
+    // available from turn 1 (the agent can also self-load it elsewhere, but
+    // injecting here guarantees turn-1 availability on the chart surface).
+    // Tell it which ticker + timeframe "the chart" is so it edits the instance
+    // the user is actually viewing (chart_id = SYMBOL:timeframe).
+    const sym = (selectedStock || '').toUpperCase();
+    const tf = normalizeTimeframe(selectedInterval);
+    const contexts: unknown[] = [
+      {
+        type: 'skills',
+        name: 'chart-annotation',
+        instruction: sym ? marketViewAnnotationContext(sym, tf) : undefined,
+      },
+    ];
     if (chartImage) {
       contexts.push({ type: 'image', data: chartImage, description: chartImageDesc || undefined });
     }
     if (attachments && attachments.length > 0) {
       contexts.push(...attachmentsToContexts(attachments as any));
     }
+    // Append every confirmed chart selection (region/price level + note) for
+    // the live (sym, tf); a stale one is dropped. The same set is snapshotted
+    // for the sent message's cards, and a lone note becomes the message text
+    // when the user typed nothing (so the bubble isn't empty).
+    const {
+      contexts: selectionContexts,
+      snapshots: selectionSnapshots,
+      attachments: selectionAttachments,
+      outgoingMessage,
+    } = buildChartSelectionSend(sym, tf, message);
+    contexts.push(...selectionContexts);
     const imageContext = contexts.length > 0 ? contexts : null;
 
     // Build attachment metadata for display in user message bubble
@@ -358,10 +485,12 @@ function MarketViewInner() {
         });
       });
     }
+    metaItems.push(...selectionAttachments);
     const attachmentMeta = metaItems.length > 0 ? metaItems : null;
 
     if (mode === 'fast') {
-      handleFastModeSend(message, imageContext, attachmentMeta, model);
+      handleFastModeSend(outgoingMessage, imageContext, attachmentMeta, model);
+      chartSelectionStore.clearAll();
     } else {
       // PTC mode: use selected workspace or fall back to default
       try {
@@ -378,14 +507,19 @@ function MarketViewInner() {
         navigate(`/chat/t/__default__`, {
           state: {
             workspaceId,
-            initialMessage: message,
+            initialMessage: outgoingMessage,
             planMode: planMode || false,
             additionalContext: imageContext,
+            // PTC side needs the same skill activated so the chart tools
+            // are available without the LLM having to call LoadSkill.
+            skills: ['chart-annotation'],
+            ...(selectionSnapshots.length > 0 ? { chartSelections: selectionSnapshots } : {}),
             ...(attachmentMeta ? { attachmentMeta } : {}),
             ...(model ? { model } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
           },
         });
+        chartSelectionStore.clearAll();
       } catch (error) {
         console.error('Error setting up PTC mode:', error);
         toast({
@@ -397,7 +531,7 @@ function MarketViewInner() {
     }
     setChartImage(null);
     setChartImageDesc(null);
-  }, [handleFastModeSend, navigate, toast, chartImage, chartImageDesc, mode, selectedWorkspaceId]);
+  }, [handleFastModeSend, navigate, toast, chartImage, chartImageDesc, mode, selectedWorkspaceId, selectedStock, selectedInterval]);
 
   const handleSidebarSymbolClick = useCallback((symbol: string) => {
     setSelectedStock(symbol);
@@ -470,6 +604,7 @@ function MarketViewInner() {
             quoteData={(overviewData as OverviewData | null)?.quote || null}
             marketStatus={marketStatus}
             snapshot={snapshotData}
+            marketPhase={marketPhase}
           />
 
           {/* Chart fills remaining space */}
@@ -478,10 +613,11 @@ function MarketViewInner() {
               ref={chartRef}
               symbol={selectedStock}
               interval={selectedInterval}
+              workspaceId={activeWorkspaceId}
               onIntervalChange={handleIntervalChange}
               onCapture={handleCaptureChart}
               onStockMeta={handleStockMeta as any}
-              onLatestBar={handleLatestBar}
+              onMarketPhase={setMarketPhase}
               quoteData={(overviewData as OverviewData | null)?.quote || null}
               earningsData={(overviewData as OverviewData | null)?.earningsSurprises || null}
               overlayData={overlayData as Record<string, unknown> | null}
@@ -489,7 +625,6 @@ function MarketViewInner() {
               snapshot={snapshotData}
               liveTick={wsPrices.get(selectedStock)?.barData || null}
               wsStatus={wsStatus}
-              ginlixDataEnabled={ginlixDataEnabled}
               marketStatus={marketStatus}
             />
           </div>
@@ -514,6 +649,7 @@ function MarketViewInner() {
               onRemoveChartImage={() => { setChartImage(null); setChartImageDesc(null); }}
               prefillMessage={prefillMessage}
               onClearPrefill={() => setPrefillMessage('')}
+              hasExternalContext={hasChartSelectionForChart}
               placeholder="Ask about this stock..."
             />
           </MobileFabChat>
@@ -591,6 +727,7 @@ function MarketViewInner() {
                 quoteData={(overviewData as OverviewData | null)?.quote || null}
                 marketStatus={marketStatus}
                 snapshot={snapshotData}
+                marketPhase={marketPhase}
               />
               <div className="market-chart-area">
                 {showOverview && (
@@ -606,10 +743,11 @@ function MarketViewInner() {
                   ref={chartRef}
                   symbol={selectedStock}
                   interval={selectedInterval}
+                  workspaceId={activeWorkspaceId}
                   onIntervalChange={handleIntervalChange}
                   onCapture={handleCaptureChart}
                   onStockMeta={handleStockMeta as any}
-                  onLatestBar={handleLatestBar}
+                  onMarketPhase={setMarketPhase}
                   quoteData={(overviewData as OverviewData | null)?.quote || null}
                   earningsData={(overviewData as OverviewData | null)?.earningsSurprises || null}
                   overlayData={overlayData as Record<string, unknown> | null}
@@ -617,7 +755,6 @@ function MarketViewInner() {
                   snapshot={snapshotData}
                   liveTick={wsPrices.get(selectedStock)?.barData || null}
                   wsStatus={wsStatus}
-                  ginlixDataEnabled={ginlixDataEnabled}
                   marketStatus={marketStatus}
                 />
               </div>
@@ -632,6 +769,7 @@ function MarketViewInner() {
               <div className="market-right-panel-inner">
                 <MarketChatPanel
                   symbol={selectedStock}
+                  interval={selectedInterval}
                   mode={mode}
                   onModeChange={setMode}
                   workspaces={workspaces}
@@ -648,47 +786,12 @@ function MarketViewInner() {
                   onShuffleQueries={handleShuffleQueries}
                   onNavigateSubagent={(tid, taskId) => navigate(`/chat/t/${tid}/${taskId}`)}
                   placeholder="What would you like to know?"
+                  onReturnToChat={chatReturnPath ? () => navigate(chatReturnPath) : undefined}
+                  onJumpToChart={handleJumpToChart}
                 />
               </div>
             </div>
           </div>
-          {/* Floating "Return to Chat" card — shown when navigated from chat context */}
-          {chatReturnPath && (
-            <button
-              onClick={() => navigate(chatReturnPath)}
-              style={{
-                position: 'fixed',
-                bottom: 24,
-                right: 416,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '10px 16px',
-                background: 'var(--color-accent-soft)',
-                border: '1px solid var(--color-accent-overlay)',
-                borderRadius: 10,
-                color: 'var(--color-accent-light)',
-                fontSize: 13,
-                fontWeight: 500,
-                cursor: 'pointer',
-                backdropFilter: 'blur(12px)',
-                boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
-                transition: 'background 0.15s, border-color 0.15s',
-                zIndex: 50,
-              }}
-              onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => {
-                e.currentTarget.style.background = 'var(--color-accent-overlay)';
-                e.currentTarget.style.borderColor = 'var(--color-accent-primary)';
-              }}
-              onMouseLeave={(e: React.MouseEvent<HTMLButtonElement>) => {
-                e.currentTarget.style.background = 'var(--color-accent-soft)';
-                e.currentTarget.style.borderColor = 'var(--color-accent-overlay)';
-              }}
-            >
-              <ArrowLeft style={{ width: 14, height: 14 }} />
-              Return to Chat
-            </button>
-          )}
         </>
       )}
     </div>

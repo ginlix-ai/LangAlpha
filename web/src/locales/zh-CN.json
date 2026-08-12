@@ -1,5 +1,7 @@
 {
   "common": {
+    "copy": "复制",
+    "submit": "提交",
     "save": "保存",
     "saving": "保存中...",
     "cancel": "取消",
@@ -23,18 +25,77 @@
   "auth": {
     "login": "登录",
     "signup": "注册",
-    "loggingIn": "登录中...",
-    "creatingAccount": "创建账号中...",
-    "signingIn": "正在登录...",
-    "enterEmail": "请输入邮箱",
-    "enterPassword": "请输入密码",
+    "loggingIn": "登录中…",
+    "creatingAccount": "创建账户中…",
+    "signingIn": "正在登录…",
+    "enterEmail": "you@example.com",
+    "enterPassword": "你的密码",
     "choosePassword": "设置密码",
-    "enterName": "请输入姓名",
-    "orContinueWith": "或使用以下方式继续",
-    "welcome": "欢迎",
-    "signupCheckEmail": "账号已创建！请查看您的邮箱并点击确认链接。",
-    "signupEmailExists": "该邮箱已注册，请直接登录。",
-    "agreeToPrivacy": "使用 LangAlpha 即表示您同意我们的<1>隐私政策</1>。"
+    "name": "姓名",
+    "enterName": "你的姓名",
+    "signupEmailExists": "该邮箱已注册。",
+    "signupEmailExistsHint": "<1>直接登录</1>、<2>使用邮箱链接登录</2>，或<3>重置密码</3>。",
+    "agreeToTerms": "继续即表示你同意我们的<1>服务条款</1>和<2>隐私政策</2>。",
+    "forgotPassword": "忘记密码？",
+    "magicLinkCta": "使用邮箱链接登录",
+    "continueWithEmail": "使用邮箱继续",
+    "continueWithGoogle": "使用 Google 继续",
+    "continueWithGithub": "使用 GitHub 继续",
+    "loginTitle": "使用邮箱登录",
+    "signupTitle": "创建账户",
+    "noAccount": "还没有账户？<1>注册</1>",
+    "haveAccount": "已有账户？<1>登录</1>",
+    "backToOptions": "← 其他登录方式",
+    "visualTitle": "面向金融市场的 AI 研究平台。",
+    "visualSubtitle": "你的专属 AI 研究团队，7×24 小时在线。",
+    "backToLogin": "← 返回登录",
+    "useDifferentEmail": "← 换一个邮箱",
+    "forgotTitle": "重置密码",
+    "forgotSubtitle": "输入邮箱，我们会发送重置链接。",
+    "sendResetLink": "发送重置链接",
+    "magicTitle": "邮箱链接登录",
+    "magicSubtitle": "无需密码，登录链接会发送到你的邮箱。",
+    "sendMagicLink": "发送登录链接",
+    "sending": "发送中…",
+    "checkInboxTitle": "查收邮件",
+    "checkInboxSignup": "确认链接已发送到 <1>{{email}}</1>，点击链接即可激活账户。",
+    "checkInboxMagic": "登录链接已发送到 <1>{{email}}</1>，点击链接即可登录。",
+    "checkInboxReset": "如果 <1>{{email}}</1> 已注册，你会收到密码重置链接。",
+    "resend": "重新发送",
+    "resendIn": "{{seconds}} 秒后可重新发送",
+    "resendConfirmationCta": "重新发送确认邮件",
+    "invalidCredentialsHint": "也可以<1>用 Google 或 GitHub 登录</1>、<2>使用邮箱链接登录</2>，或<3>重置密码</3>。",
+    "confirming": "正在确认邮箱…",
+    "confirmedSigningIn": "邮箱已确认，正在登录…",
+    "confirmError": "链接无效或已过期。",
+    "requestNewLink": "重新获取链接",
+    "confirmPassword": "确认密码",
+    "strengthTooShort": "长度不足",
+    "strengthWeak": "弱",
+    "strengthFair": "中等",
+    "strengthStrong": "强",
+    "reqLength": "至少 8 个字符",
+    "reqLetter": "包含字母",
+    "reqNumber": "包含数字",
+    "setNewPassword": "设置新密码",
+    "newPassword": "新密码",
+    "confirmNewPassword": "确认新密码",
+    "passwordsDontMatch": "两次输入的密码不一致。",
+    "updatePassword": "更新密码",
+    "updatingPassword": "更新中…",
+    "resetExpired": "重置链接无效或已过期。",
+    "showPassword": "显示密码",
+    "hidePassword": "隐藏密码",
+    "errors": {
+      "invalidCredentials": "邮箱或密码错误。",
+      "emailNotConfirmed": "请先确认邮箱后再登录。",
+      "rateLimited": "操作过于频繁，请稍后再试。",
+      "userAlreadyExists": "该邮箱已注册。",
+      "weakPassword": "密码还不符合要求。",
+      "otpExpired": "链接无效或已过期。",
+      "samePassword": "新密码不能与当前密码相同。",
+      "generic": "出错了，请重试。"
+    }
   },
   "sidebar": {
     "dashboard": "仪表盘",
@@ -42,19 +103,60 @@
     "marketView": "行情中心",
     "automations": "自动化",
     "settings": "设置",
-    "account": "用量与套餐"
+    "account": "用量与套餐",
+    "newChat": "新对话",
+    "workspaces": "工作区",
+    "workspaceGallery": "工作区总览",
+    "collapse": "收起侧边栏",
+    "expand": "展开侧边栏",
+    "resize": "调整侧边栏宽度"
   },
   "account": {
     "menuLabel": "账号菜单"
   },
+  "nav": {
+    "pin": "固定面板",
+    "unpin": "取消固定",
+    "minimize": "最小化面板",
+    "displayOptions": "显示选项",
+    "newThread": "新建对话",
+    "orderBy": "排序方式",
+    "workspacesShown": "显示的工作区数量",
+    "threadsPerWorkspace": "每个工作区显示的对话数",
+    "all": "全部",
+    "showMore": "显示更多",
+    "loadAll": "加载全部",
+    "pinThread": "置顶",
+    "unpinThread": "取消置顶",
+    "archiveThread": "归档",
+    "threadUpdated": "更新于",
+    "threadCreated": "创建于",
+    "threadTurns": "轮次",
+    "threadNeedsInput": "等待您的输入",
+    "threadUnseen": "已完成，尚未查看",
+    "untitledThread": "未命名",
+    "noConversations": "暂无会话",
+    "workspaceFallback": "工作区",
+    "collapseAgents": "收起智能体",
+    "expandAgents": "展开智能体",
+    "removeAgent": "移除智能体"
+  },
   "settings": {
     "title": "用户设置",
+    "connected": "已连接",
+    "manageProviders": "管理提供商",
+    "fontSize": "字体大小",
     "userInfo": "用户信息",
     "preferences": "偏好设置",
     "model": "模型",
+    "experiments": "实验功能",
+    "experimentsIntro": "仍在开发中的抢先体验功能。开启后即可为你的账户启用，随时都能关闭。",
+    "experimentsEmpty": "暂无可用的实验功能。",
+    "experimentTradeoff": "代价",
     "theme": "主题",
     "dark": "深色",
     "light": "浅色",
+    "auto": "自动",
     "locale": "语言",
     "voiceInput": "语音输入",
     "voiceInputDesc": "在聊天栏中启用麦克风图标以进行语音转文字。",
@@ -73,15 +175,20 @@
     "timezone": "时区",
     "selectTimezone": "选择时区...",
     "selectLocale": "选择语言...",
-    "preferencesDesc": "偏好设置通过与智能体对话来管理。点击下方按钮进行更新。",
+    "preferencesDesc": "偏好设置通过与 Agent 对话来管理。点击下方按钮进行更新。",
     "noPreferencesYet": "暂无偏好设置。点击下方按钮进行设置。",
     "riskTolerance": "风险偏好",
     "investmentStyle": "投资风格",
-    "agentSettings": "智能体设置",
+    "agentSettings": "Agent 设置",
+    "outputFormat": "输出格式",
+    "outputFormatDefault": "默认",
+    "outputFormatHtml": "HTML",
+    "outputFormatDescriptionDefault": "回答以简洁易读的纯文本呈现，即最常见的标准格式。",
+    "outputFormatDescriptionHtml": "较为深入的回答会以图文报告的形式呈现，包含图表、表格以及可交互浏览的内容，而非纯文本。阅读体验更直观，但生成时间稍长，消耗的积分也更多。",
     "resetPreferences": "重置偏好",
-    "resetConfirmMsg": "这将清除您所有的偏好设置（风险偏好、投资风格、智能体设置）。您可以随时通过智能体重新设置。确定吗？",
+    "resetConfirmMsg": "这将清除您所有的偏好设置（风险偏好、投资风格、Agent 设置）。您可以随时通过 Agent 重新设置。确定吗？",
     "resetting": "重置中...",
-    "modifyWithAgent": "通过智能体修改",
+    "modifyWithAgent": "通过 Agent 修改",
     "completeProfile": "完善个人资料",
     "completeProfileDesc": "通过简短对话设置您的股票、风险偏好和其他偏好。",
     "startOnboarding": "开始设置",
@@ -174,6 +281,20 @@
     "starredModels": "快速切换模型",
     "starredModelsDesc": "标星的模型会显示在聊天输入框中方便快速切换",
     "addModels": "添加",
+    "searchProvider": "网络搜索引擎",
+    "searchProviderDesc": "Agent 进行网络搜索时使用的搜索引擎。",
+    "searchProviderDefault": "默认",
+    "searchProviderUpgradeHint": "部分搜索引擎需要更高级的套餐。",
+    "searchDepth": "搜索深度",
+    "searchDepthDesc": "Agent 搜索网络的深入程度。更深的级别每次搜索消耗更多积分。",
+    "searchDepthDefault": "默认",
+    "searchDepthUpgradeHint": "更深的搜索级别需要更高级的套餐。",
+    "searchDepthLevel": {
+      "ultra_fast": "极速",
+      "fast": "快速",
+      "standard": "标准",
+      "deep": "深度"
+    },
     "compactionProfile": "压缩预设",
     "compactionProfileDesc": "用于控制压缩触发与保留的预设组合。除非有特殊需求，否则建议保持系统默认。",
     "compactionProfileUseDefault": "使用系统默认",
@@ -270,7 +391,7 @@
         "contextUnavailableHint": "该小组件尚未注册上下文导出器。",
         "addRowToContext": "把这一行加入上下文",
         "addRowToContextTitle": "把此条目加入聊天上下文",
-        "contextUnsupportedTradingView": "无法添加：该内容由 TradingView 提供，智能体无法访问。"
+        "contextUnsupportedTradingView": "无法添加：该内容由 TradingView 提供，Agent 无法访问。"
       },
       "addDialog": {
         "eyebrow": "小组件库",
@@ -303,7 +424,7 @@
           "intelligenceBlurb": "AI 生成的简报与精选新闻流。",
           "personalLabel": "个人持仓",
           "personalBlurb": "您的投资组合、自选股与持仓。",
-          "agentLabel": "智能体",
+          "agentLabel": "Agent",
           "agentBlurb": "从仪表板启动一次研究会话。",
           "workspaceLabel": "工作区",
           "workspaceBlurb": "进入往期对话或工作区。"
@@ -355,10 +476,10 @@
           }
         },
         "agentDesk": {
-          "name": "智能体工作台",
-          "tag": "智能体主导",
-          "description": "智能体的工作面板。全宽提问控制台坐镇顶部——先把问题摆上桌，再往下读今日 AI 简报。工作区、近期对话、自动化与您的持仓一并陈列。",
-          "bestFor": "与智能体并肩工作——阅读、提问、运行自动化、跨工作区切换。",
+          "name": "Agent 工作台",
+          "tag": "Agent 主导",
+          "description": "Agent 的工作面板。全宽提问控制台坐镇顶部——先把问题摆上桌，再往下读今日 AI 简报。工作区、近期对话、自动化与您的持仓一并陈列。",
+          "bestFor": "与 Agent 并肩工作——阅读、提问、运行自动化、跨工作区切换。",
           "pills": {
             "aiBrief": "AI 简报",
             "askConsole": "提问控制台",
@@ -430,6 +551,7 @@
         "sharesHidden": "*** 股",
         "shares": "{{n}}股",
         "nav": "净资产价值",
+        "navByCurrency": "按币种净资产价值",
         "showValues": "显示数值",
         "hideValues": "隐藏数值",
         "delete": "删除",
@@ -671,7 +793,8 @@
       },
       "newsFeed": {
         "title": "新闻动态",
-        "description": "市场 / 持仓 / 自选新闻，支持标的与时间筛选。",
+        "description": "热门 / 市场 / 持仓 / 自选新闻，支持标的、来源与时间筛选。",
+        "tab_top": "热门",
         "tab_market": "市场",
         "tab_portfolio": "持仓",
         "tab_watchlist": "自选",
@@ -684,8 +807,11 @@
         "tickerPlaceholder": "标的…",
         "clearTicker": "清除标的筛选",
         "clear": "清除",
+        "sourceLabel": "按来源筛选",
+        "allSources": "全部来源",
         "emptyFiltered": "无符合筛选条件的新闻",
         "emptyMarket": "暂无市场新闻",
+        "emptyTop": "暂无热门新闻",
         "emptyAddTo": "添加到{{label}}以查看新闻"
       },
       "earningsCalendar": {
@@ -884,6 +1010,7 @@
       "tabWatch": "自选",
       "tabHoldings": "持仓",
       "netAssetValue": "净资产",
+      "netAssetValueByCurrency": "按币种净资产价值",
       "addSymbol": "添加标的",
       "addTransaction": "添加交易"
     },
@@ -964,9 +1091,6 @@
       "emptyWatchlist": "添加股票到自选以查看相关新闻",
       "emptyDefault": "暂无新闻"
     },
-    "popularCard": {
-      "title": "热门内容"
-    },
     "topNews": {
       "title": "头条新闻",
       "sample1": "零售销售下滑拖累市场……",
@@ -997,6 +1121,44 @@
     "dragToReorder": "拖拽排序",
     "pinToTop": "置顶",
     "unpin": "取消置顶",
+    "rename": "重命名",
+    "renameDescription": "为该工作区设置新名称。",
+    "renameFailed": "无法重命名工作区",
+    "changeSpec": "更改规格",
+    "changeSpecDesc": "为该工作区选择沙箱资源。",
+    "quotaRemaining": "剩余 {{remaining}}/{{limit}}",
+    "quotaUnlimited": "无限制",
+    "quotaNotOnPlan": "当前套餐不可用",
+    "alwaysOnEnable": "开启常驻",
+    "alwaysOnDisable": "关闭常驻",
+    "alwaysOnBadge": "常驻",
+    "alwaysOnBadgeTitle": "常驻：沙箱保持运行",
+    "alwaysOnFailed": "无法更改常驻设置",
+    "alwaysOnConfirm": "让“{{name}}”全天候运行？沙箱将不再自动闲置关闭，并持续计费，直到您关闭常驻。",
+    "alwaysOnConfirmStopped": "立即启动“{{name}}”并全天候运行？沙箱将立即启动，不再自动闲置关闭，并持续计费，直到您关闭常驻。",
+    "alwaysOnEnableConfirm": "开启",
+    "tierBadgeTitle": "{{tier}} 沙箱规格",
+    "tier": {
+      "standard": "标准",
+      "performance": "高性能",
+      "max": "旗舰"
+    },
+    "tierSpec": {
+      "standard": "1 vCPU · 1 GB 内存 · 3 GB 磁盘",
+      "performance": "2 vCPU · 4 GB 内存 · 5 GB 磁盘",
+      "max": "4 vCPU · 8 GB 内存 · 10 GB 磁盘"
+    },
+    "specUpdated": "工作区规格已更新",
+    "specFailed": "无法更新规格",
+    "duplicate": "复制",
+    "duplicating": "正在复制…",
+    "duplicateConfirm": "创建“{{name}}”的副本？文件将一并复制；副本默认关闭常驻。",
+    "duplicated": "工作区已复制",
+    "duplicateFailed": "无法复制工作区",
+    "notOnPlan": "您的套餐不支持此功能，请升级后使用。",
+    "tierLimitReached": "您的 {{tier}} 工作区数量已达上限。",
+    "workspaceLimitReached": "您的工作区数量已达上限。",
+    "options": "选项",
     "noWorkspacesFound": "未找到工作区",
     "welcomeTitle": "欢迎使用 LangAlpha",
     "welcomeDesc": "开始设置您的偏好或创建工作区。",
@@ -1045,7 +1207,12 @@
     "failedDeleteThread": "删除对话失败，请重试。",
     "failedRenameThread": "重命名对话失败，请重试。",
     "viewAll": "查看全部",
-    "shared": "已分享"
+    "shared": "已分享",
+    "archive": "归档",
+    "unarchive": "取消归档",
+    "archived": "已归档",
+    "archivedTasks": "已归档任务",
+    "noArchivedThreads": "暂无已归档的对话"
   },
   "share": {
     "shareConversation": "分享对话",
@@ -1057,6 +1224,20 @@
     "anyoneWithLink": "任何拥有此链接的人都可以查看对话。"
   },
   "chat": {
+    "backToWorkflow": "返回工作流",
+    "backToMain": "返回主对话",
+    "backToFlash": "返回 Flash",
+    "reconnecting": "重新连接中…",
+    "jumpToLatest": {
+      "aria": "滚动到最新消息"
+    },
+    "pills": {
+      "plan": "计划",
+      "planTitle": "计划模式 — 智能体先生成计划，经确认后再执行",
+      "watch": "盯盘",
+      "watchTitle": "盯盘模式 — 实时跟踪智能体关注的股票价格"
+    },
+    "moreTools": "更多工具",
     "widgetContext": {
       "inContext_one": "{{count}} 项上下文",
       "inContext_other": "{{count}} 项上下文",
@@ -1068,75 +1249,16 @@
       "overflowAria_other": "{{count}} 项已加入上下文 — 打开聊天",
       "overflowLabel": "上下文"
     },
-    "ptcAgent": {
-      "card": {
-        "open": "打开",
-        "researchDispatched": "研究已启动",
-        "researchDeclined": "研究已取消",
-        "startResearch": "启动研究",
-        "reportBack": "完成后回传摘要",
-        "approve": "批准",
-        "decline": "拒绝"
-      },
-      "progress": {
-        "waitingStart": "等待分析开始",
-        "startingStream": "正在启动分析流",
-        "analysisRunning": "分析进行中",
-        "analysisComplete": "分析已完成",
-        "analysisCancelled": "分析已取消",
-        "analysisStopped": "分析已停止",
-        "analysisPaused": "分析已暂停",
-        "analysisFailed": "分析失败",
-        "softInterrupted": "分析已暂停，后台任务仍在收尾",
-        "waitingForInput": "等待输入",
-        "backgroundTasksRunning": "{{count}} 个后台任务运行中",
-        "backgroundTasksRunning_one": "{{count}} 个后台任务运行中",
-        "backgroundTasksRunning_other": "{{count}} 个后台任务运行中",
-        "reasoningComplete": "推理已完成",
-        "reasoning": "正在推理下一步",
-        "completedToolStep": "工具步骤已完成",
-        "toolStepError": "工具步骤返回错误",
-        "recoveringToolError": "智能体正在从工具错误中恢复",
-        "toolStepCompleted": "工具步骤已完成",
-        "toolStepFailed": "工具步骤失败",
-        "writingFinal": "正在撰写最终回复",
-        "finalReady": "最终回复已就绪",
-        "generatedArtifact": "已生成产物",
-        "waitingStream": "等待分析流",
-        "connectingProgress": "正在连接实时进度",
-        "streamDisconnected": "重连流已断开",
-        "unableToStream": "无法获取实时进度",
-        "livePaused": "实时进度已暂停",
-        "openThreadFullStream": "打开分析会话查看完整进度",
-        "steps": "步骤"
-      },
-      "toolLabels": {
-        "fallback": "正在运行工具",
-        "executeCode": "正在运行 Python 分析",
-        "bash": "正在运行 Shell 命令",
-        "read": "正在读取工作区文件",
-        "write": "正在写入工作区文件",
-        "edit": "正在编辑工作区文件",
-        "glob": "正在扫描文件",
-        "grep": "正在搜索文件",
-        "webSearch": "正在搜索网页",
-        "webFetch": "正在获取网页来源",
-        "stockPrices": "正在加载行情价格",
-        "companyData": "正在加载公司数据",
-        "secFiling": "正在读取 SEC 文件",
-        "stockScreener": "正在筛选股票",
-        "todoWrite": "正在更新计划"
-      }
-    },
     "running": "运行中: {{tool}}",
     "completedWithCalls": "已完成 ({{count}} 次工具调用)",
     "completed": "已完成",
     "runningStatus": "运行中",
     "initializing": "初始化中",
     "worker": "工作者",
-    "agentNotFound": "未找到智能体",
+    "agentNotFound": "未找到 Agent",
     "planFeedbackHint": "输入您的反馈意见来修改计划，然后发送。",
-    "interruptedHint": "智能体已中断。请随时提供新的指令。",
+    "stoppedChip": "已停止",
+    "stopFailed": "无法停止本次运行，它可能仍在运行。",
     "errorUpstreamHeadline": "模型提供商返回错误",
     "errorUpstreamHeadlineStatus": "模型提供商返回错误 ({{status}})",
     "errorInternalHeadline": "服务内部出错",
@@ -1144,7 +1266,129 @@
     "errorHintModelAccess": "请确认您的套餐或订阅允许访问此模型。",
     "errorHintProviderStatus": "请查看提供商状态页，了解是否存在服务中断。",
     "errorHintTryAnotherModel": "请尝试在模型选择器中切换到其他模型。",
+    "errorUpstreamHeadlineModel": "{{model}} 返回错误",
+    "errorUpstreamHeadlineModelStatus": "{{model}} 返回错误 ({{status}})",
+    "errorAttemptedModels": "还尝试了：",
+    "modelRetrying": "{{model}} 出错 — 正在重试（{{attempt}}/{{total}}）…",
+    "modelFallingBack": "正在回退到 {{model}}…",
+    "modelFallbackNotification": "{{from}} 失败 — 已切换到 {{to}}",
+    "modelFallbackAttempts_other": "尝试 {{count}} 次",
+    "viewErrorDetail": "查看错误",
+    "hideErrorDetail": "隐藏错误",
+    "showRawJson": "显示原始 JSON",
+    "hideRawJson": "隐藏原始 JSON",
+    "resultTruncated": "部分结果 — 其余内容已从预览中截断",
+    "expandResult": "显示全部",
+    "collapseResult": "收起",
+    "resultMoreItems": "另有 {{n}} 项",
+    "actions": {
+      "copyMessage": "复制消息",
+      "copied": "已复制！",
+      "editMessage": "编辑消息",
+      "goodResponse": "点赞回复",
+      "removeRating": "取消评价",
+      "reportIssue": "反馈问题",
+      "feedbackSubmitted": "已提交反馈",
+      "regenerate": "重新生成回复",
+      "retry": "重试"
+    },
+    "modelTroubleSuggestion": "{{from}} 出现问题 — 本次回答由 {{to}} 完成",
+    "switchToModel": "切换到 {{model}}",
+    "modelSwitched": "默认模型已设为 {{model}}",
+    "modelSwitchFailed": "默认模型更新失败",
     "backgroundTasksRunning": "后台任务仍在运行",
+    "reportBackPending": "等待 PTC Agent 汇报结果",
+    "taskReportBackPending": "等待子代理结果汇报",
+    "taskCard": {
+      "statusRunning": "运行中",
+      "statusCompleted": "已完成",
+      "statusStopped": "已停止",
+      "statusFailed": "失败",
+      "statusUpdated": "已更新",
+      "statusResumed": "已恢复"
+    },
+    "subagentCard": {
+      "titleFallback": "子智能体任务",
+      "viewDetails": "查看任务详情",
+      "openUpdated": "点击查看已更新的子智能体",
+      "openResumed": "点击查看已恢复的子智能体",
+      "openRunning": "点击查看运行中的子智能体",
+      "openDetails": "点击查看子智能体详情",
+      "toolUnit_one": "次工具调用",
+      "toolUnit_other": "次工具调用",
+      "tokenUnit": "tokens"
+    },
+    "subagentBar": {
+      "completedWithTools_one": "已完成（{{count}} 次工具调用）",
+      "completedWithTools_other": "已完成（{{count}} 次工具调用）",
+      "runningWithTool": "运行中：{{tool}}",
+      "initializing": "初始化中",
+      "instruct": "指示",
+      "errorHeading": "该智能体因错误而停止",
+      "inputPlaceholder": "为该智能体添加指令…",
+      "avatarAlt": "智能体"
+    },
+    "workflowRun": {
+      "titleFallback": "工作流运行",
+      "openRunning": "点击查看运行中的工作流",
+      "openDetails": "点击查看工作流详情",
+      "sharedUnavailable": "分享视图中不提供运行详情",
+      "agents_one": "{{count}} 个智能体",
+      "agents_other": "{{count}} 个智能体",
+      "done": "已完成 {{count}} 个",
+      "tokens": "{{value}} tokens",
+      "earlier": "更早的 {{count}} 个",
+      "childFallbackLabel": "智能体 {{n}}",
+      "childRunning": "运行中",
+      "childDone": "已完成",
+      "childFailed": "失败",
+      "childTimedOut": "已超时",
+      "childInvalid": "结果无效",
+      "childStopped": "已停止",
+      "stop": "停止",
+      "stopping": "正在停止…",
+      "statAgents": "智能体",
+      "statPhases": "阶段",
+      "statDuration": "耗时",
+      "statTokens": "Tokens",
+      "toolCalls_one": "{{count}} 次工具调用",
+      "toolCalls_other": "{{count}} 次工具调用",
+      "tokensShort": "{{value}} tok",
+      "sectionResult": "结果",
+      "sectionLog": "日志",
+      "starting": "工作流启动中…",
+      "noProgress": "本次运行没有记录到进度。"
+    },
+    "ptcCard": {
+      "awaitingApproval": "等待批准",
+      "researchDeclined": "已拒绝研究",
+      "reportBack": "完成后汇报摘要",
+      "approve": "批准",
+      "decline": "拒绝",
+      "statusWorking": "工作中",
+      "statusStarting": "正在启动…",
+      "statusNeedsInput": "需要输入",
+      "statusCompleted": "已完成",
+      "statusFailed": "已失败",
+      "statusStopped": "已停止",
+      "hintProvisioning": "正在配置沙盒…",
+      "hintWorking": "正在后台运行",
+      "hintFailed": "运行未完成便已停止",
+      "hintStopped": "运行已停止",
+      "ctaOpenThread": "打开对话",
+      "ctaAnswerContinue": "回答并继续",
+      "ctaViewThread": "查看对话"
+    },
+    "marketWatch": {
+      "watching": "正在监控 {{symbols}}",
+      "chipTitle": "正在为智能体监控的股票推送实时价格",
+      "chipTitleUpdated": "监控股票的实时价格 — 更新于 {{time}}",
+      "chipAction": "打开实时市场监控",
+      "panelTitle": "市场监控",
+      "panelUpdated": "更新于 {{time}}",
+      "panelWaiting": "智能体工作时，实时价格将显示在这里。",
+      "panelEmpty": "当前没有正在监控的股票。"
+    },
     "missingWorkspaceOrThread": "缺少工作区或对话信息",
     "accessDeniedTitle": "你没有权限查看此对话",
     "accessDeniedDesc": "请联系对话所有者分享此对话。",
@@ -1152,7 +1396,7 @@
     "loadingHistory": "加载历史记录...",
     "workspaceFiles": "工作区文件",
     "workspaceSettings": "工作区设置",
-    "agents": "智能体",
+    "agents": "Agent",
     "questionStarted": "问题已开始",
     "questionDeclined": "问题已跳过",
     "startQuestion": "开始提问",
@@ -1166,16 +1410,25 @@
     "workspaceStateArchivedTitle": "正在从冷存储中恢复",
     "workspaceStateArchivedBody": "闲置超过 7 天的沙盒会被归档以释放算力。唤回时需要下载快照并重启容器，通常需要 60 至 90 秒。",
     "workspaceStateArchivedFootnote": "您的文件、工具和对话状态都完好无损——沙盒就绪后即可继续对话。",
+    "archiveConfirm": {
+      "title": "该对话仍在运行，确定归档？",
+      "body": "此对话还有任务正在运行。归档只是把它从列表中隐藏，任务会继续跑完——之后可在“已归档”中找到它和运行结果。",
+      "confirm": "归档"
+    },
     "compacting": "正在压缩对话...",
     "offloading": "正在转存上下文...",
+    "compactionStopped": "压缩已停止",
+    "queuedSend": "消息已排队 — 压缩完成后将自动发送",
+    "stop": "停止",
+    "stopping": "正在停止…",
     "placeholderDefault": "输入 / 调用技能，@ 引用文件",
     "placeholderPendingRejection": "说说希望怎么调整...",
-    "placeholderInterrupted": "输入新指令继续引导智能体...",
+    "placeholderStopped": "已停止，发送消息即可继续",
     "placeholderLoading": "可以继续输入，消息会排队发送...",
     "placeholderSubagentsRunning": "工作者仍在运行，可输入消息或点击工作者单独指令",
     "slashCommand": {
       "subagentName": "subagent",
-      "subagentDesc": "使用子代理完成此任务",
+      "subagentDesc": "使用子 Agent 完成此任务",
       "compactName": "compact",
       "compactDesc": "压缩对话上下文以释放 token 空间",
       "offloadDesc": "将大型工具参数转存至沙箱文件系统",
@@ -1195,9 +1448,12 @@
       "sector-overviewDesc": "行业全景报告：市场规模、竞争格局、公司概览、估值背景",
       "competitive-analysisDesc": "竞争格局分析：市场定位、评分卡、护城河评估、份额趋势",
       "initiating-coverageDesc": "全面研究启动：公司研究、财务模型、估值、图表、30-50 页报告",
-      "report-issueDesc": "报告问题并提出改进建议以提升代理能力"
+      "chart-annotationDesc": "标注价格图表：价格线、趋势线、区间和事件标记，实时显示在 MarketView 或作为可点击的预览卡片",
+      "report-issueDesc": "报告问题并提出改进建议以提升 Agent 能力"
     },
     "compactedNotification": "上下文已压缩 · {{from}} 条消息 → 摘要",
+    "taskErrorNotification": "子任务运行失败",
+    "taskSteeringReturnedNotification": "引导消息已退回 · 运行在送达前已结束",
     "viewSummary": "查看摘要",
     "hideSummary": "隐藏摘要",
     "offloadedArgsNotification": "工具参数已转存 · {{count}} 个工具",
@@ -1205,6 +1461,7 @@
     "offloadedNotification": "上下文已转存 · {{args}} 个工具参数, {{reads}} 个读取",
     "compactionError": "上下文压缩失败",
     "compactBusy": "当前轮次还在流式输出中，请等结束后再压缩。",
+    "offloadBusy": "当前轮次还在流式输出中，请等结束后再转存。",
     "modelSelector": {
       "manageModels": "管理模型",
       "moreModels": "更多模型",
@@ -1214,7 +1471,6 @@
       "effortMedium": "中",
       "effortHigh": "高",
       "effortXhigh": "极高",
-      "incompatibleSdk": "当前会话无法切换到此模型（提供商不同）",
       "fastMode": "快速",
       "fastModeDesc": "优先路由以获得更快响应",
       "fastModeHelpLine1": "等同于 Codex 中的 /fast",
@@ -1227,9 +1483,80 @@
       "permissionDenied": "麦克风权限被拒绝",
       "serviceError": "语音识别服务错误"
     },
+    "sources": {
+      "title": "数据来源",
+      "pill_one": "数据来源 ({{count}})",
+      "pill_other": "数据来源 ({{count}})",
+      "empty": "本轮没有数据来源",
+      "groups": {
+        "web_search": "网页搜索",
+        "web_fetch": "网页",
+        "file_read": "文件",
+        "memo_read": "备忘录",
+        "memory_read": "记忆",
+        "sec_filing": "SEC 文件",
+        "market_data": "市场数据",
+        "mcp_tool": "金融数据工具"
+      },
+      "fingerprint": {
+        "checksum": "校验值",
+        "size": "大小",
+        "snippet": "片段",
+        "agent": "Agent",
+        "timestamp": "访问时间",
+        "provider": "提供方",
+        "arguments": "参数"
+      },
+      "subagent": "子 Agent",
+      "unknownSource": "未知来源",
+      "workspaceRoot": "工作区根目录",
+      "viewDetails": "查看详情",
+      "expand": "展开",
+      "collapse": "折叠",
+      "actions": {
+        "openLink": "打开链接",
+        "openFile": "打开文件"
+      },
+      "emptyThread": "本会话没有数据来源",
+      "scope": {
+        "turn": "当前轮次",
+        "thread": "全部"
+      },
+      "sourceCount": "{{count}} 个来源",
+      "resultCount": "{{count}} 条结果",
+      "pageCount": "{{count}} 个页面",
+      "kind": {
+        "company_overview": "公司概况",
+        "daily_prices": "每日价格",
+        "options_chain": "期权链",
+        "market_index": "市场指数",
+        "quote": "实时报价",
+        "market_overview": "市场概览"
+      }
+    },
     "a11y": {
       "toolCallCompleted": "已完成",
       "toolCallFailed": "已失败"
+    },
+    "chartAnnotationCard": {
+      "openAnnotatedChart": "打开标注图表",
+      "openInMarketView": "在行情中心打开",
+      "loadingChart": "正在加载图表…",
+      "previewUnavailable": "预览不可用",
+      "close": "关闭",
+      "cardAria_one": "{{symbol}} {{timeframe}}，{{count}} 个标注。打开标注图表。",
+      "cardAria_other": "{{symbol}} {{timeframe}}，{{count}} 个标注。打开标注图表。",
+      "dialogTitle_one": "{{symbol}} {{timeframe}} · {{count}} 个标注",
+      "dialogTitle_other": "{{symbol}} {{timeframe}} · {{count}} 个标注",
+      "chipJumpTitle": "将图表切换到 {{symbol}} · {{timeframe}} 以显示这些标注",
+      "chipShowTitle": "在图表上显示这些标注",
+      "chipShownTitle": "已显示在图表上",
+      "chipViewCount_one": "在图表上查看 {{count}} 个标注",
+      "chipViewCount_other": "在图表上查看 {{count}} 个标注",
+      "chipShowCount_one": "在图表上显示 {{count}} 个标注",
+      "chipShowCount_other": "在图表上显示 {{count}} 个标注",
+      "chipShownCount_one": "图表上有 {{count}} 个标注",
+      "chipShownCount_other": "图表上有 {{count}} 个标注"
     }
   },
   "context": {
@@ -1238,7 +1565,10 @@
     "addLineToContext": "添加 L{{line}} 到上下文",
     "addNLinesToContext": "添加 {{count}} 行到上下文",
     "openFile": "打开文件",
-    "fromAgentResponse": "来自智能体回复",
+    "fromAgentResponse": "来自 Agent 回复",
+    "pastedText": "粘贴的文本",
+    "pastedLines_one": "粘贴的文本 · {{count}} 行",
+    "pastedLines_other": "粘贴的文本 · {{count}} 行",
     "addToMemo": "添加到备忘录",
     "syncWithMemo": "同步到备忘录",
     "memoAdding": "正在将 \"{{name}}\" 添加到备忘录",
@@ -1279,6 +1609,31 @@
     "exportPreview": "导出预览",
     "exportLoadError": "无法加载完整内容，导出可能不完整。",
     "saveAsPdf": "导出为 PDF",
+    "pdfOptions": "PDF 选项",
+    "pdfBranding": "页脚",
+    "pdfPageNumbers": "页码",
+    "pdfScale": "缩放",
+    "openInNewTab": "在新标签页打开",
+    "fullscreen": "全屏",
+    "exitFullscreen": "退出全屏",
+    "downloadAsHtml": "下载为 HTML",
+    "moreActions": "更多操作",
+    "htmlPreview": "预览",
+    "htmlSource": "源代码",
+    "pdfPrintHint": "按 Cmd/Ctrl-P 将页面保存为 PDF。",
+    "pdfGenerating": "正在生成 PDF…",
+    "copyShareLink": "复制链接",
+    "shareLinkCopied": "分享链接已复制到剪贴板",
+    "shareLinkFailed": "无法复制链接",
+    "directLinkCopied": "直接链接已复制到剪贴板",
+    "privateLinkWarningTitle": "私有链接，请勿分享",
+    "privateLinkWarning": "此链接仅供个人使用，请勿分享。如需分享此报告，请使用“复制链接 → 分享链接”。",
+    "copyLinkTitle": "复制此报告的链接",
+    "copyLinkSubtitle": "为“{{file}}”选择合适的链接。",
+    "shareableLinkOption": "分享链接",
+    "shareableLinkDesc": "用于分享给他人：会为此对话开启公开分享，并生成任何人都可打开的链接。开启分享期间，整个对话记录及此工作区内的所有文件都可被查看，而不仅是此报告。可随时关闭以撤销。",
+    "directLinkOption": "直接链接（全屏）",
+    "directLinkDesc": "供自己查看：在浏览器标签页中全屏打开文件，请勿分享。",
     "tryAgain": "重试",
     "exportAnyway": "仍然导出",
     "custom": "自定义",
@@ -1337,7 +1692,9 @@
     "tabs": {
       "files": "文件",
       "memory": "记忆",
-      "memo": "备忘录"
+      "memo": "备忘录",
+      "sources": "数据来源",
+      "status": "状态"
     },
     "close": "关闭面板"
   },
@@ -1350,7 +1707,7 @@
     "loadingList": "正在加载记忆…",
     "emptyUser": "暂无用户记忆。",
     "emptyWorkspace": "暂无工作区记忆。",
-    "emptyHint": "当有值得记住的内容时，智能体会创建 memory.md。",
+    "emptyHint": "当有值得记住的内容时，Agent 会创建 memory.md。",
     "loadError": "记忆加载失败",
     "readError": "记忆文件读取失败",
     "notFound": "记忆 “{{key}}” 已不存在，已显示全部条目。",
@@ -1358,7 +1715,7 @@
   },
   "memoPanel": {
     "title": "备忘文档",
-    "description": "上传研究备忘、原始资料或参考文件。按用户归档，在任一工作区智能体都可读取。",
+    "description": "上传研究备忘、原始资料或参考文件。按用户归档，在任一工作区 Agent 都可读取。",
     "uploadButton": "上传",
     "uploadHint": "支持 Markdown、TXT、CSV、JSON、PDF · 单文件不超过 5 MB",
     "dragOverlayText": "松开鼠标以上传文件",
@@ -1445,13 +1802,13 @@
     "cronExpression": "Cron 表达式",
     "cronHelp": "5字段 cron: 分钟 小时 日 月 星期",
     "runAt": "运行时间",
-    "agentMode": "智能体模式",
+    "agentMode": "Agent 模式",
     "flash": "快速",
     "ptcSandbox": "PTC（沙箱）",
     "selectWorkspace": "选择工作区...",
     "workspaceRequired": "PTC 模式需要选择工作区。",
     "instruction": "指令",
-    "instructionPlaceholder": "智能体应该做什么？",
+    "instructionPlaceholder": "Agent 应该做什么？",
     "threadStrategy": "对话策略",
     "newThreadEachRun": "每次新建对话",
     "continueExisting": "继续现有对话",
@@ -1528,6 +1885,7 @@
   },
   "toolArtifact": {
     "open": "开盘",
+    "floatPct": "流通比例",
     "prevClose": "前收",
     "dayRange": "日内区间",
     "52wRange": "52周区间",
@@ -1538,7 +1896,25 @@
     "high": "高",
     "low": "低",
     "vol": "量",
+    "liveQuotes": "实时报价",
+    "extendedHours": {
+      "preMarket": {
+        "long": "盘前",
+        "short": "盘前"
+      },
+      "afterHours": {
+        "long": "盘后",
+        "short": "盘后"
+      }
+    },
+    "marketStatus": {
+      "early_trading": "盘前",
+      "open": "盘中",
+      "late_trading": "盘后",
+      "closed": "休市"
+    },
     "marketIndices": "市场指数",
+    "marketOverview": "市场概览",
     "sectorPerformance": "板块表现",
     "stockScreener": "股票筛选",
     "pricePerformance": "价格表现",
@@ -1623,7 +1999,7 @@
     "next": "下次：{{time}}",
     "instruction": "指令",
     "configuration": "配置",
-    "agentMode": "智能体模式",
+    "agentMode": "Agent 模式",
     "triggerType": "触发类型",
     "trigger": "触发条件",
     "retrigger": "重复触发",
@@ -1638,12 +2014,9 @@
     "status": "状态",
     "planDetails": "计划详情",
     "noPlanDescription": "暂无计划描述。",
-    "subagentTask": "子代理任务",
+    "subagentTask": "子 Agent 任务",
     "instructions": "指令",
-    "result": "结果",
-    "subagentStillRunning": "子代理运行中...",
-    "noResultAvailable": "暂无结果",
-    "goToSubagentTab": "前往子代理标签",
+    "goToSubagentTab": "前往子 Agent 标签",
     "noResultContent": "无结果内容",
     "input": "输入",
     "output": "输出",
@@ -1666,9 +2039,12 @@
     "tool": {
       "stockPrices": "股票价格",
       "companyOverview": "公司概况",
+      "liveQuotes": "实时报价",
       "marketIndices": "市场指数",
+      "marketOverview": "市场概览",
       "sectorPerformance": "板块表现",
       "stockScreener": "股票筛选",
+      "watchMarket": "行情监控",
       "secFiling": "SEC 报告",
       "entityNews": "实体新闻",
       "tickerSearch": "股票搜索",
@@ -1695,6 +2071,8 @@
       "automations": "自动化",
       "createAutomation": "创建自动化",
       "manageAutomation": "管理自动化",
+      "annotateChart": "标注图表",
+      "manageAnnotations": "管理标注",
       "skill": "技能",
       "memory": "记忆",
       "workspaceMemory": "工作区记忆",
@@ -1747,11 +2125,16 @@
       "updating_preference": "更新偏好...",
       "fetchingSymbolPrices": "获取 {{symbol}} 价格...",
       "fetchingPrices": "获取价格...",
+      "fetchingSymbolQuotes": "获取 {{symbols}} 报价...",
+      "fetchingQuotes": "获取报价...",
       "analyzingSymbol": "分析 {{symbol}}...",
       "analyzing": "分析中...",
       "fetchingMarketIndices": "获取市场指数...",
+      "fetchingMarketOverview": "获取市场概览...",
       "fetchingSectorData": "获取板块数据...",
       "screeningStocks": "筛选股票...",
+      "watchingMarket": "开始行情监控...",
+      "unwatchingMarket": "停止行情监控...",
       "fetchingSymbolFiling": "获取 {{symbol}} 报告...",
       "fetchingFiling": "获取报告...",
       "searchingPattern": "搜索 '{{pattern}}'...",
@@ -1768,13 +2151,15 @@
       "editing": "编辑中...",
       "runningCommand": "执行命令...",
       "executing": "执行中...",
-      "waitingForSubagent": "等待子代理...",
+      "waitingForSubagent": "等待子 Agent...",
       "fetchingTaskOutput": "获取任务输出...",
       "checkingAutomations": "检查自动化...",
       "creatingName": "创建 {{name}}...",
       "creatingAutomation": "创建自动化...",
       "actionAutomation": "{{action}} 自动化...",
       "managingAutomation": "管理自动化...",
+      "annotatingChart": "正在标注图表...",
+      "updatingAnnotations": "正在更新标注...",
       "processing": "处理中..."
     },
     "preparing": {
@@ -1812,6 +2197,14 @@
     }
   },
   "setup": {
+    "capabilities": "能力",
+    "importParentModels": "同时添加这些模型",
+    "importParentModelsDesc": "来自父级目录的模型，通过您的端点和密钥路由。取消勾选不需要的模型。",
+    "selectNone": "全不选",
+    "fetchingModels": "正在获取模型…",
+    "selectModelsDesc": "选择您服务器上可用的模型。",
+    "availableModels": "可用模型",
+    "noModelsFound": "未找到模型。请确认您的服务器正在运行且已加载模型。",
     "brandedHeader": "配置您的 LLM 提供商",
     "securityNote": "您的 API 密钥已加密且不会被共享",
     "methodTitle": "您想如何连接？",
@@ -1837,9 +2230,9 @@
     "primaryDescription": "用于深度研究",
     "flashModel": "快速模型",
     "flashDescription": "用于快速问答",
-    "explainerTitle": "两种代理模式",
-    "explainerDeep": "PTC 模式（主要）：完整代理，带有沙盒环境，支持代码执行、图表和数据分析。由您的主模型驱动。",
-    "explainerFlash": "Flash 模式：轻量代理，无需沙盒即可快速回答。由您的快速模型驱动。",
+    "explainerTitle": "两种 Agent 模式",
+    "explainerDeep": "PTC 模式（主要）：完整 Agent，带有沙盒环境，支持代码执行、图表和数据分析。由您的主模型驱动。",
+    "explainerFlash": "Flash 模式：轻量 Agent，无需沙盒即可快速回答。由您的快速模型驱动。",
     "doneTitle": "准备就绪！",
     "doneSummary": "您的 AI 研究助手已配置完成，随时可用。",
     "goToDashboard": "前往控制台",
@@ -2020,7 +2413,175 @@
       "ptcDisabledReason": "在 /chat 中创建工作区以使用 PTC 模式",
       "noWorkspacePrompt": "未选择工作区。请在输入框中选择一个。",
       "startConversation": "在下方输入消息开始对话",
-      "defaultPlaceholder": "你想了解什么？"
+      "defaultPlaceholder": "你想了解什么？",
+      "returnToChat": "返回对话",
+      "openInChat": "在对话中打开"
+    },
+    "chart": {
+      "clearAnnotations": "清除",
+      "clearAnnotationsTitle": "从图表中清除标注（已保留在对话中，点击该结果可恢复）",
+      "modeLabel": "模式",
+      "newsEventAria": "新闻事件：{{title}}"
+    },
+    "selection": {
+      "toolTooltip": "选择一个区域或价格水平，向智能体提问",
+      "toolRegion": "区域",
+      "toolPriceLevel": "价格水平",
+      "commentPlaceholder": "添加评论…",
+      "commentAdd": "添加",
+      "commentSave": "保存",
+      "cardRegionTitle": "选定区域",
+      "cardPriceTitle": "选定价格水平",
+      "cardOpenPreview": "查看智能体看到的内容",
+      "previewSubtitle": "智能体收到的该选择的上下文",
+      "previewKind": "选择",
+      "previewTimeRange": "时间范围",
+      "previewPrice": "价格",
+      "previewNote": "你的备注",
+      "colTime": "时间",
+      "colOpen": "开盘",
+      "colHigh": "最高",
+      "colLow": "最低",
+      "colClose": "收盘",
+      "colVolume": "成交量",
+      "previewBars": "OHLCV 数据",
+      "previewBarsCount": "{{count}} 根",
+      "previewBarsCount_other": "{{count}} 根",
+      "previewBarsShown": "显示 {{total}} 根中的 {{shown}} 根",
+      "previewBarsTruncated": "已降采样以适应",
+      "previewDrawBack": "智能体可以据此分析，并将其判读绘制回图表的同一区域。",
+      "editChip": "编辑备注",
+      "chipRegion": "区域 · {{symbol}} {{timeframe}}",
+      "chipPriceLevel": "价格 ${{price}} · {{symbol}} {{timeframe}}",
+      "removeChip": "移除选择"
+    }
+  },
+  "onboarding": {
+    "badge": "页面导览",
+    "back": "上一步",
+    "next": "继续",
+    "done": "开始探索",
+    "step": "第 {{n}} 步",
+    "intros": {
+      "chat": {
+        "steps": {
+          "modes": {
+            "title": "两种模式：Flash 与 PTC",
+            "body": "Agent 以两种模式工作：Flash 负责日常协调与快速问答；PTC 负责深度分析，产出真正的交付物。接下来分别介绍两者的分工。"
+          },
+          "workspace": {
+            "title": "认识工作区",
+            "body": "每一个工作区都是一个项目空间：围绕同一任务的对话都集中在这里，共享文件、数据和成果；不同工作区之间完全独立，互不干扰。其中 Flash 工作区由平台统一管理，汇集所有快速问答；你自己创建的每个工作区都运行 PTC。"
+          },
+          "flash": {
+            "title": "Flash：你的个人助理",
+            "body": "Flash 负责统筹日常：你只管提出需求，它会替你创建和管理工作区、将复杂任务分派到 PTC 工作区执行、管理自动化。快速问答也交给它——查股价、看新闻、快速核实信息，几秒内给出答案。所有 Flash 对话统一归入第一张工作区卡片，方便查找历史会话。"
+          },
+          "ptc": {
+            "title": "PTC：完整的分析工作区",
+            "body": "PTC 工作区运行能力最强的 Agent。同一工作区内的所有对话共享文件、数据与已有成果，分析可以持续积累。它能处理大规模数据，并行调度多个子 Agent 完成 Flash 无法胜任的复杂任务，还能生成各类交付物：Excel 模型、Word 文档、PDF、仪表盘。"
+          },
+          "create": {
+            "title": "为正式任务创建 PTC 工作区",
+            "body": "涉及数据处理或需要产出交付物的任务，建议交给 PTC 工作区完成，而不是全部留在 Flash。点击“新建工作区”并按任务命名，Agent 会启动专属沙盒，以完整能力执行。"
+          }
+        }
+      },
+      "thread": {
+        "steps": {
+          "filePanel": {
+            "title": "文件统一保存在文件面板",
+            "body": "Word 文档、Excel 模型、PDF、图表等 Agent 生成的文件都会保存在工作区中。点击顶部的文件夹图标，即可浏览、预览和下载。"
+          },
+          "memory": {
+            "title": "Agent 会记住你的偏好",
+            "body": "Agent 具备跨对话的长期记忆，可以保存你的偏好、惯例和值得复用的结论。对它说“记住这个”，相关内容便会长期保留。"
+          },
+          "memo": {
+            "title": "上传备忘录，补充分析资料",
+            "body": "可以将 PDF、笔记或表格上传为备忘录。Agent 会在需要时读取，把你的私有资料纳入分析上下文。"
+          }
+        }
+      },
+      "dashboard": {
+        "steps": {
+          "overview": {
+            "title": "行情总览",
+            "body": "自选股、投资组合、新闻与实时图表集中呈现，打开页面即可掌握市场概况。"
+          },
+          "customize": {
+            "title": "自定义布局",
+            "body": "切换到自定义模式后，可以添加、删除、调整和排列小组件，搭建符合自己需求的监控面板。"
+          },
+          "attach": {
+            "title": "将组件内容附加到对话",
+            "body": "看到值得深入分析的内容时，点击该行的回形针图标，即可将其作为上下文附加到对话，Agent 会基于这一内容继续分析。"
+          }
+        }
+      }
+    },
+    "gettingStarted": {
+      "title": "快速上手",
+      "dismiss": "隐藏引导",
+      "tasks": {
+        "dashboard": {
+          "title": "探索仪表盘",
+          "desc": "自选股、组合、新闻与实时组件一站集齐。"
+        },
+        "market": {
+          "title": "查看实时行情",
+          "desc": "实时数据流驱动的行情图表。"
+        },
+        "stocks": {
+          "title": "告诉 Agent 你的自选股与持仓",
+          "desc": "与 Agent 简单聊聊你关注和持有的股票。"
+        },
+        "preferences": {
+          "title": "设置投资偏好",
+          "desc": "设定风险承受度、投资风格与回答方式。"
+        },
+        "createWorkspace": {
+          "title": "创建第一个工作区",
+          "desc": "新建一个专属 PTC 工作区，Agent 将在完整沙盒中执行正式分析任务。"
+        },
+        "firstChat": {
+          "title": "开始第一次分析",
+          "desc": "打开对话，询问任意股票、行业或财报。"
+        },
+        "models": {
+          "title": "查看模型配置",
+          "desc": "在设置的模型页选择默认模型并连接服务商。"
+        },
+        "integrations": {
+          "title": "在其他平台使用 LangAlpha",
+          "desc": "通过平台集成，在 Slack、邮件等平台使用 LangAlpha。"
+        }
+      },
+      "interview": {
+        "title": "聊几句，让 Agent 更懂你",
+        "body": "即将打开一段对话，Agent 会简单了解你的持仓、自选股、风险承受度与投资偏好，让之后的回答更贴合你的情况。这些信息可在设置中修改，也可以直接让它更新。",
+        "cancel": "暂不",
+        "confirm": "开始对话"
+      }
+    },
+    "announce": {
+      "dashCustom": {
+        "modalTitle": "可自定义的仪表盘",
+        "modalBody": "将仪表盘切换到自定义模式，即可重新排列、调整大小并添加小组件，还能将它们附加到对话中。"
+      }
+    },
+    "whatsNew": {
+      "title": "新功能",
+      "subtitle": "你上次访问以来的一些更新。",
+      "gotIt": "知道了"
+    },
+    "settings": {
+      "sectionTitle": "提示与引导",
+      "description": "重新显示页面提示和快速上手指南。",
+      "replayGuides": "再次显示提示",
+      "replayDone": "页面提示与快速上手指南将重新显示。",
+      "reset": "重置新手引导",
+      "resetDone": "新手引导已重置，提示与指南将重新开始。"
     }
   }
 }

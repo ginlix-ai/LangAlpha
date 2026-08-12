@@ -1,0 +1,19 @@
+/**
+ * Keeps TradingView embeds compositing transparently over our dark surfaces.
+ *
+ * A browser drops transparent compositing when an embedded document's used
+ * color-scheme differs from its embedder's, painting the iframe canvas opaque
+ * white — which silently overrides the `isTransparent: true` we send TV. Our
+ * <html> declares `color-scheme: dark` (index.html) and TV's embed documents
+ * declare none, so every embed mismatches. TV is cross-origin, so the only
+ * reachable end of the mismatch is ours: clear it on the container the iframe
+ * grows inside and let inheritance carry it down. `light`, not `normal` —
+ * `normal` resolves from a page-level <meta name="color-scheme">, so adding
+ * one to index.html would silently revert this while computed styles still
+ * read `normal` (verified opaque in Chromium, Firefox and WebKit). Keyed on
+ * the container classes so a new embed host inherits the fix by reusing them.
+ */
+.tv-embed-container,
+.tv-wc-container {
+  color-scheme: light;
+}

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, ExternalLink, Loader2 } from 'lucide-react';
+import { ArrowLeft, ExternalLink } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import { getNewsArticle } from '../Dashboard/utils/api';
 
 interface ArticleSentiment {
@@ -50,7 +51,9 @@ function NewsDetailPage() {
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 p-8" style={{ color: 'var(--color-text-secondary)' }}>
-        <Loader2 className="w-6 h-6 animate-spin" />
+        <span aria-hidden="true" className="flex-shrink-0">
+          <Loader size={24} className="text-current" />
+        </span>
         <p>Loading article...</p>
       </div>
     );
@@ -173,7 +176,7 @@ function NewsDetailPage() {
                   <span
                     className="flex-shrink-0 font-medium px-1.5 py-0.5 rounded"
                     style={{
-                      color: s.sentiment === 'positive' ? 'var(--color-positive)' : s.sentiment === 'negative' ? 'var(--color-negative)' : 'var(--color-text-secondary)',
+                      color: s.sentiment === 'positive' ? 'var(--color-profit)' : s.sentiment === 'negative' ? 'var(--color-loss)' : 'var(--color-text-secondary)',
                       backgroundColor: 'var(--color-bg-tag)',
                     }}
                   >
@@ -196,8 +199,8 @@ function NewsDetailPage() {
             href={article.article_url}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors hover:opacity-90"
-            style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-opacity hover:opacity-90"
+            style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
           >
             Read Full Article
             <ExternalLink className="w-4 h-4" />

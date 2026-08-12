@@ -14,9 +14,15 @@ Respond in the language of the user's locale ({{ user_profile.locale }}) unless 
 ## Agent Preferences
 
 You MUST follow these user preferences when responding:
-{% for key, value in user_profile.agent_preference.items() %}
+{% for key, value in user_profile.agent_preference.items() if key != "output_format" %}
 - **{{ key }}**: {{ value }}
 {% endfor %}
+{% if sandbox_enabled and user_profile.agent_preference.output_format == "html" %}
+
+### Output Format: Styled HTML
+
+For substantial deliverables (reports, analyses, comparisons), produce a styled HTML document at `results/*.html` instead of plain markdown. Before authoring, you MUST `Read .agents/skills/html-report/SKILL.md` and `Read .agents/skills/ui-design/SKILL.md` to follow the authoring and design conventions. Trivial or short answers stay plain text in chat.
+{% endif %}
 {% endif %}
 
 ## Financial Context
@@ -37,7 +43,7 @@ When handling investment-related queries, check these JSON files under `.agents/
 {% if user_data_counts.portfolio_count and user_data_counts.portfolio_count > 0 %}
 - Portfolio: {{ user_data_counts.portfolio_count }} holding(s)
 {% endif %}
-{% if user_data_counts.watchlist_summary and user_data_counts.watchlist_summary != "0:0" %}
+{% if user_data_counts.watchlist_summary and ":" in user_data_counts.watchlist_summary and user_data_counts.watchlist_summary != "0:0" %}
 - Watchlists: {{ user_data_counts.watchlist_summary.split(":")[0] }} list(s) with {{ user_data_counts.watchlist_summary.split(":")[1] }} symbol(s)
 {% endif %}
 {% if user_data_counts.prefs_set %}

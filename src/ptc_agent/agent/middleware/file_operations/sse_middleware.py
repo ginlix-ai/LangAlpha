@@ -25,12 +25,11 @@ Event Structure (ordered fields):
 
 import logging
 from datetime import datetime, timezone
-from typing import Annotated, Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from langchain.agents.middleware import AgentMiddleware, AgentState
 from typing_extensions import NotRequired
 from langgraph.config import get_stream_writer
-from ptc_agent.utils.file_operations import _file_operations_log_reducer
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +41,6 @@ class FileOperationState(AgentState):
     during tool execution, enabling agent name extraction in middleware.
     """
     current_agent: NotRequired[str] = "unknown"
-    file_operations_log: Annotated[NotRequired[list[dict[str, Any]]], _file_operations_log_reducer]
-    """Persistent audit trail of all file operations during workflow execution."""
 
 
 class FileOperationMiddleware(AgentMiddleware):
@@ -51,7 +48,7 @@ class FileOperationMiddleware(AgentMiddleware):
     Middleware that emits file_operation SSE events after tool execution.
 
     Hooks into tool execution to emit custom events with full file content
-    for write_file and edit_file operations, enabling frontend to display
+    for Write and Edit operations, enabling frontend to display
     file changes without polluting agent context.
     """
 
@@ -139,7 +136,7 @@ class FileOperationMiddleware(AgentMiddleware):
                 except Exception:
                     logger.debug("[FILE_OP_MIDDLEWARE] Failed to invalidate agent.md cache")
 
-            # Build completed event with structure expected by streaming_handler
+            # Build completed event with structure expected by the server sse_producer
             # Must include artifact_type for handler to recognize and emit as SSE artifact event
             timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -161,9 +158,9 @@ class FileOperationMiddleware(AgentMiddleware):
                 payload["old_string"] = old_string
                 payload["new_string"] = new_string
 
-            # Structure matches streaming_handler expectations (artifact_type triggers artifact SSE event)
+            # Structure matches sse_producer expectations (artifact_type triggers artifact SSE event)
             completed_event = {
-                "artifact_type": "file_operation",  # Required for streaming_handler recognition
+                "artifact_type": "file_operation",  # Required for sse_producer recognition
                 "artifact_id": tool_call_id,
                 "agent": agent_name,
                 "timestamp": timestamp,
@@ -188,7 +185,7 @@ class FileOperationMiddleware(AgentMiddleware):
 
             failed_timestamp = datetime.now(timezone.utc).isoformat()
             failed_event = {
-                "artifact_type": "file_operation",  # Required for streaming_handler recognition
+                "artifact_type": "file_operation",  # Required for sse_producer recognition
                 "artifact_id": tool_call_id,
                 "agent": agent_name,
                 "timestamp": failed_timestamp,

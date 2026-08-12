@@ -47,6 +47,12 @@ class NewsArticleCompact(BaseModel):
     source: NewsPublisher
     tickers: list[str] = []
     has_sentiment: bool = False
+    # Inlined so the detail modal renders straight from the list row without a
+    # second by-id round-trip (the body fields are already fetched and cached).
+    author: str | None = None
+    description: str | None = None
+    keywords: list[str] = []
+    sentiments: list[NewsSentiment] | None = None
 
 
 class NewsCompactResponse(BaseModel):

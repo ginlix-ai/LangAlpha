@@ -45,8 +45,8 @@ Row 3: As of [Period] | All figures in [USD Millions/Billions] except per-share 
 
 ### Visual Convention Standards
 
-> For all Excel formatting, number formats, and color standards, follow the guidelines in `skills/xlsx/SKILL.md`.
-> After generating Excel, run recalculation: `python skills/xlsx/scripts/recalc.py model.xlsx 30`
+> For all Excel formatting, number formats, and color standards, follow the guidelines in `.agents/skills/xlsx/SKILL.md`.
+> After generating Excel, run recalculation: `python .agents/skills/xlsx/scripts/recalc.py model.xlsx 30`
 
 User-provided templates and explicit formatting preferences always override defaults.
 
@@ -369,8 +369,8 @@ This helps answer: "Is our target company trading rich or cheap vs. peers?"
 
 ### Excel Formatting Checklist
 
-> For all Excel formatting, number formats, and color standards, follow the guidelines in `skills/xlsx/SKILL.md`.
-> After generating Excel, run recalculation: `python skills/xlsx/scripts/recalc.py model.xlsx 30`
+> For all Excel formatting, number formats, and color standards, follow the guidelines in `.agents/skills/xlsx/SKILL.md`.
+> After generating Excel, run recalculation: `python .agents/skills/xlsx/scripts/recalc.py model.xlsx 30`
 
 - [ ] **One blank row for separation between company data and statistics rows**
 - [ ] **No separate "SECTOR STATISTICS" or "VALUATION STATISTICS" header rows**

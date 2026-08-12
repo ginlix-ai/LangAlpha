@@ -87,7 +87,6 @@ describe('formatPriceTrigger', () => {
   });
 
   it('returns fallback for a malformed object', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(formatPriceTrigger({ foo: 'bar' } as any)).toBe('Price alert');
   });
 
@@ -161,7 +160,6 @@ describe('formatRetriggerMode', () => {
   });
 
   it('returns One-shot for a malformed object', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(formatRetriggerMode({ bad: true } as any)).toBe('One-shot');
   });
 
@@ -199,7 +197,6 @@ describe('formatRetriggerMode', () => {
   it('returns One-shot when retrigger is missing entirely', () => {
     // Simulate an object that passes the guard but has no retrigger
     // (retrigger is required in the type but might be absent at runtime)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cfg = { symbol: 'AAPL', conditions: [] } as any;
     expect(formatRetriggerMode(cfg)).toBe('One-shot');
   });

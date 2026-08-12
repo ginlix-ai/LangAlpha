@@ -36,7 +36,6 @@ bucket double-prefixes object keys under virtual addressing.
 
 import base64
 import logging
-import mimetypes
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,29 +45,9 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+from src.utils.mime import resolve_content_type
+
 logger = logging.getLogger(__name__)
-
-IMAGE_MIME_TYPES = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".svg": "image/svg+xml",
-    ".ico": "image/x-icon",
-    ".bmp": "image/bmp",
-    ".tiff": "image/tiff",
-    ".tif": "image/tiff",
-}
-
-
-def _get_content_type(key: str) -> str | None:
-    """Get MIME content type for a file based on its extension."""
-    ext = Path(key).suffix.lower()
-    if ext in IMAGE_MIME_TYPES:
-        return IMAGE_MIME_TYPES[ext]
-    mime_type, _ = mimetypes.guess_type(key)
-    return mime_type
 
 
 _VALID_ADDRESSING_STYLES = {"virtual", "path", "auto"}
@@ -176,14 +155,16 @@ def upload_file(key: str, file_path: str, content_type: str | None = None) -> bo
         logger.error(f"File too large: {file_size} bytes > {StorageConfig.MAX_UPLOAD_SIZE} bytes")
         return False
 
-    if content_type is None:
-        content_type = _get_content_type(key) or _get_content_type(file_path)
+    if not content_type:
+        content_type = resolve_content_type(key, default=resolve_content_type(file_path))
 
     try:
         client = _get_client()
-        put_args: dict[str, Any] = {"Bucket": StorageConfig.BUCKET_NAME, "Key": key}
-        if content_type:
-            put_args["ContentType"] = content_type
+        put_args: dict[str, Any] = {
+            "Bucket": StorageConfig.BUCKET_NAME,
+            "Key": key,
+            "ContentType": content_type,
+        }
         with path_obj.open("rb") as f:
             put_args["Body"] = f
             client.put_object(**put_args)
@@ -219,14 +200,17 @@ def upload_bytes(key: str, data: bytes, content_type: str | None = None) -> bool
         logger.error(f"Data too large: {len(data)} bytes > {StorageConfig.MAX_UPLOAD_SIZE} bytes")
         return False
 
-    if content_type is None:
-        content_type = _get_content_type(key)
+    if not content_type:
+        content_type = resolve_content_type(key)
 
     try:
         client = _get_client()
-        put_args: dict[str, Any] = {"Bucket": StorageConfig.BUCKET_NAME, "Key": key, "Body": data}
-        if content_type:
-            put_args["ContentType"] = content_type
+        put_args: dict[str, Any] = {
+            "Bucket": StorageConfig.BUCKET_NAME,
+            "Key": key,
+            "Body": data,
+            "ContentType": content_type,
+        }
         client.put_object(**put_args)
         logger.debug(f"Uploaded bytes as {key}")
         return True

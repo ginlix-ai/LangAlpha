@@ -5,7 +5,7 @@ description: "Inline HTML widgets: charts, dashboards, data tables rendered dire
 
 # Inline Widget
 
-Render interactive HTML/SVG widgets directly inside the chat conversation using `ShowWidget`. Widgets appear inline between text — no sandbox, no preview URL, no side panel.
+Render interactive HTML/SVG widgets directly inside the chat conversation using `ShowWidget`. Widgets appear inline between text — no sandbox, no preview URL, no side panel. They run JavaScript, so lean into making them **interactive and explorable** where it helps — something the user can sort, filter, toggle, and hover over, not just a static picture.
 
 ## When to Use
 
@@ -15,6 +15,8 @@ Render interactive HTML/SVG widgets directly inside the chat conversation using 
 - The output is a **single view** — not a multi-page app or dashboard that needs routing
 
 **Use `interactive-dashboard` instead if:** User needs a multi-page web app, server-side data, live data refresh, or complex interactivity requiring React/FastAPI.
+
+Read `.agents/skills/ui-design/SKILL.md` for design quality — its color discipline, chart restraint, and anti-slop principles apply here too. Its font pairings and type scale, though, are for full documents; a widget sits on the chat surface, so use the host-font typography rules below instead.
 
 ## ShowWidget API
 
@@ -49,7 +51,7 @@ The **outermost HTML element** must have:
 ```html
 <!-- CORRECT: transparent outer shell -->
 <div>
-  <div style="background: var(--color-bg-card); border-radius: 8px; padding: 16px; ...">
+  <div style="background: var(--color-bg-card, #ffffff); border-radius: 8px; padding: 16px; ...">
     ...inner card content...
   </div>
 </div>
@@ -62,20 +64,22 @@ The **outermost HTML element** must have:
 
 ### Inner Elements — Use Theme Variables
 
-Inner cards, sections, and components should use CSS variables for styling:
+Inner cards, sections, and components should use CSS variables for styling, always in the fallback form:
 
 ```css
 /* Card */
-background: var(--color-bg-card);
-border: 0.5px solid var(--color-border-muted);
+background: var(--color-bg-card, #ffffff);
+border: 0.5px solid var(--color-border-muted, #e4e1dc);
 border-radius: 8px;
 padding: 16px;
 
 /* Metric card */
-background: var(--color-bg-subtle);
-border: 0.5px solid var(--color-border-muted);
+background: var(--color-bg-subtle, #f4f2ee);
+border: 0.5px solid var(--color-border-muted, #e4e1dc);
 border-radius: 8px;
 ```
+
+In chat the variables are always injected, so the fallback never shows there — it is what renders when the widget is saved as a workspace `.html` file and previewed before theme injection or opened standalone. Use the light literals from the html-report skill's table.
 
 ### Positioning
 
@@ -105,7 +109,7 @@ These CSS variables are automatically injected and resolve correctly in both lig
 | `--color-info` | Info (blue) |
 | `--color-success` | Success (green) |
 
-**Never hardcode colors** like `#333` or `rgb(...)` for text, backgrounds, or borders — they break in dark mode. Use CSS variables for everything except chart canvas colors (Chart.js canvas cannot read CSS variables — use computed hex values via `getComputedStyle`).
+**Never hardcode colors** like `#333` or `rgb(...)` for text, backgrounds, or borders — they break in dark mode. Author every color as `var(--color-x, #lightLiteral)`: the injected variable always wins in chat, and the fallback keeps the widget legible on its secondary surfaces. The only exception is chart canvas colors — Chart.js canvas cannot read CSS variables; resolve them via `getComputedStyle` with a literal fallback.
 
 ## Charts (Chart.js)
 
@@ -119,10 +123,12 @@ Load Chart.js from CDN and follow these rules:
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
-  // Read CSS variables for chart colors (canvas can't use var())
+  // Read CSS variables for chart colors (canvas can't use var());
+  // the literal fallback covers the widget opened outside the chat surface.
   var cs = getComputedStyle(document.documentElement);
-  var accent = cs.getPropertyValue('--color-accent-primary').trim();
-  var border = cs.getPropertyValue('--color-border-muted').trim();
+  function pick(name, fallback) { return cs.getPropertyValue(name).trim() || fallback; }
+  var accent = pick('--color-accent-primary', '#1f5fb4');
+  var border = pick('--color-border-muted', '#e4e1dc');
 
   new Chart(document.getElementById('myChart'), {
     type: 'line',
@@ -138,7 +144,7 @@ Load Chart.js from CDN and follow these rules:
     },
     options: {
       responsive: true,
-      maintainAspectRatio: false,  // REQUIRED
+      maintainAspectRatio: false,
       plugins: { legend: { display: true } },
       scales: {
         y: { grid: { color: border } },
@@ -153,17 +159,29 @@ Load Chart.js from CDN and follow these rules:
 - Set height on the **wrapper div**, never on the canvas
 - Always use `responsive: true, maintainAspectRatio: false`
 - Use UMD build from CDN (sets `window.Chart` global)
-- Read CSS variables via `getComputedStyle` for chart colors
+- Read CSS variables via `getComputedStyle` with a literal fallback (`pick()`) for chart colors
 
 ## Typography
 
 - Font: inherited from host (`-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`)
-- Weight: **400** (regular) and **500** (medium) only — never 600 or 700
+- Weight: favor **400** (regular) and **500** (medium); use 600 sparingly for a key figure or heading. Avoid 700 — it reads heavy on the chat surface
 - Heading sizes: h1 = 22px, h2 = 18px, h3 = 16px (all weight 500)
 - Body: 14-16px, weight 400
 - Use **sentence case** — no Title Case or ALL CAPS (except short metric labels)
 
 ## Interactivity
+
+### Make it explorable
+
+A widget runs JavaScript, so prefer something the user can **poke at**, not just read. When the data supports it, reach for:
+
+- **Sortable / filterable tables** — click a header to sort by P&L or weight; filter to a sector or watchlist.
+- **Series & metric toggles** — show/hide chart series, switch price ↔ % change, flip timeframe (1M / 6M / 1Y).
+- **Hover detail** — tooltips on chart points and table rows that surface the underlying numbers.
+- **What-if inputs** — a slider or field that recomputes a figure live (drag a growth rate, watch the projection update).
+- **Tabs / segmented views** — split a dense widget (Overview / Holdings / Performance) so the reader drills in.
+
+It all runs **client-side over the embedded data** — never `fetch()` a non-CDN origin (CSP blocks it; use `data_files` for anything large). Keep a meaningful default state so the widget reads correctly before any interaction. Use `sendPrompt()` only when the next step genuinely belongs back in the chat (a new query, a deeper analysis) — handle exploration the widget can do itself in-place.
 
 ### sendPrompt()
 

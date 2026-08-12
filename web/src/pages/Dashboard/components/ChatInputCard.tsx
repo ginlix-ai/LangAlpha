@@ -70,7 +70,10 @@ function ChatInputCard() {
   }
 
   return (
-    <div className="dashboard-floating-chat-wrapper fixed bottom-8 left-0 right-0 z-40 flex justify-center pointer-events-none">
+    // Insets to the content column, not the viewport: fixed positioning ignores
+    // <main>'s sidebar padding, so centering across the full width would park
+    // the composer half a sidebar left of the grid it floats over.
+    <div className="dashboard-floating-chat-wrapper sidebar-tracking fixed bottom-8 left-[var(--sidebar-width)] right-0 z-40 flex justify-center pointer-events-none">
       <div className="pointer-events-auto w-full max-w-2xl px-4">
         {/* Suggestion bubbles — above the input, outside focus container.
             Only mount when focused so they stay out of the DOM, a11y tree,

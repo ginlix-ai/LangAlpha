@@ -328,14 +328,14 @@ async def aoffload_base64_content(
                     new_blocks.append(
                         {
                             "type": "text",
-                            "text": f"[PDF saved to {path} — use read_file to view]",
+                            "text": f"[PDF saved to {path} — use Read to view]",
                         }
                     )
                 else:
                     new_blocks.append(
                         {
                             "type": "text",
-                            "text": f"[Image saved to {path} — use read_file to view]",
+                            "text": f"[Image saved to {path} — use Read to view]",
                         }
                     )
                 msg_changed = True

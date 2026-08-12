@@ -19,16 +19,8 @@ import { useAnimatedText } from '@/components/ui/animated-text';
 import Markdown from './Markdown';
 import {
   INLINE_ARTIFACT_TOOLS,
-  InlineStockPriceCard,
-  InlineCompanyOverviewCard,
-  InlineMarketIndicesCard,
-  InlineSectorPerformanceCard,
-  InlineSecFilingCard,
-  InlineStockScreenerCard,
-  InlineWebSearchCard,
+  INLINE_ARTIFACT_MAP,
 } from './charts/InlineArtifactCards';
-import { InlineAutomationCard } from './charts/InlineAutomationCards';
-import { InlinePreviewCard } from './charts/InlinePreviewCard';
 import { useTranslation } from 'react-i18next';
 import './ActivityBlock.css';
 
@@ -55,22 +47,13 @@ function shouldHideTimelineItem(item: ActivityItem): boolean {
   return fp ? isUserProfileReadmePath(fp) : false;
 }
 
-/** Map artifact type to inline chart component */
-const INLINE_ARTIFACT_MAP: Record<string, React.ComponentType<{ artifact: Record<string, unknown>; onClick?: () => void }>> = {
-  stock_prices: InlineStockPriceCard,
-  company_overview: InlineCompanyOverviewCard,
-  market_indices: InlineMarketIndicesCard,
-  sector_performance: InlineSectorPerformanceCard,
-  sec_filing: InlineSecFilingCard,
-  stock_screener: InlineStockScreenerCard,
-  automations: InlineAutomationCard,
-  preview_url: InlinePreviewCard,
-  web_search: InlineWebSearchCard,
-};
-
 /** Spring config matching radix-accordion feel */
 const SPRING = { type: 'spring' as const, stiffness: 150, damping: 17 };
 const SPRING_SNAPPY = { type: 'spring' as const, stiffness: 200, damping: 22 };
+/** Higher damping for height settles (accordion fold) — no overshoot on multi-row batches. */
+const SPRING_FOLD = { type: 'spring' as const, stiffness: 260, damping: 30 };
+/** Quick tween for live rows clearing out — exits shouldn't draw the eye. */
+const EXIT_TWEEN = { duration: 0.18, ease: 'easeIn' as const };
 
 type LiveState = 'active' | 'completing' | 'completed' | 'failed';
 
@@ -98,6 +81,9 @@ interface ActivityItem {
   isFailed?: boolean;
   _recentlyCompleted?: boolean;
   _liveState?: LiveState;
+  /** Intermediate chart-annotation draw — render as an ordinary row, never a
+   *  card (the latest draw per chart owns the card; set in MessageList). */
+  _annotationStep?: boolean;
   content?: string;
   reasoningTitle?: string;
   [key: string]: unknown;
@@ -150,7 +136,8 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
         if (
           item.type === 'tool_call' &&
           INLINE_ARTIFACT_TOOLS.has(item.toolName || '') &&
-          item.toolCallResult?.artifact
+          item.toolCallResult?.artifact &&
+          !item._annotationStep
         ) {
           inlineCharts.push(item);
         } else {
@@ -324,7 +311,7 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
             className="-mt-2"
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
-            transition={SPRING_SNAPPY}
+            transition={SPRING_FOLD}
             style={{ overflow: 'hidden' }}
           >
             <button
@@ -337,7 +324,7 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
               style={{
                 paddingTop: '5px',
                 paddingBottom: '5px',
-                fontSize: '13px',
+                fontSize: '0.8125rem',
                 color: 'var(--Labels-Tertiary)',
               }}
             >
@@ -382,7 +369,7 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
                             key={itemKey}
                             initial={{ opacity: 0, height: 0 }}
                             animate={{ opacity: 1, height: 'auto' }}
-                            transition={SPRING_SNAPPY}
+                            transition={SPRING_FOLD}
                             style={{ overflow: 'hidden', listStyle: 'none' }}
                           >
                             {content}
@@ -424,21 +411,21 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
                     <motion.div
                       key={`live-r-${item.id}`}
                       initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: item._liveState === 'completing' ? 0.6 : 1, height: 'auto' }}
-                      exit={{ opacity: 0, height: 0, paddingTop: 0, paddingBottom: 0 }}
+                      animate={{ opacity: item._liveState === 'completing' ? 0.7 : 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0, paddingTop: 0, paddingBottom: 0, transition: EXIT_TWEEN }}
                       transition={SPRING_SNAPPY}
                       style={{ overflow: 'hidden', paddingTop: '8px', paddingBottom: '8px' }}
                       className="px-3"
                     >
                       <div
                         className="flex items-center gap-2 mb-1"
-                        style={{ fontSize: '13px', color: 'var(--Labels-Secondary)' }}
+                        style={{ fontSize: '0.8125rem', color: 'var(--Labels-Secondary)' }}
                       >
                         <Brain className="h-4 w-4 flex-shrink-0" />
                         {item._liveState === 'active' ? (
                           <TextShimmer
                             as="span"
-                            className="font-medium truncate text-[13px] [--base-color:var(--Labels-Secondary)] [--base-gradient-color:var(--color-text-primary)]"
+                            className="font-medium truncate text-[0.8125rem] [--base-color:var(--Labels-Secondary)] [--base-gradient-color:var(--color-text-primary)]"
                             duration={1.5}
                           >
                             {effectiveTitle || t('toolArtifact.reasoningPending')}
@@ -463,7 +450,7 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
                       key={`live-t-${item.id || item.toolCallId}`}
                       initial={{ opacity: 0, height: 0 }}
                       animate={{ opacity: 1, height: 'auto' }}
-                      exit={{ opacity: 0, height: 0 }}
+                      exit={{ opacity: 0, height: 0, transition: EXIT_TWEEN }}
                       transition={SPRING_SNAPPY}
                       style={{ overflow: 'hidden' }}
                     >
@@ -589,14 +576,14 @@ const ToolCallLiveRow = memo(function ToolCallLiveRow({ tc, liveState }: ToolCal
   return (
     <motion.div
       className={`nrow ${stateClass} flex items-center gap-2 pl-3 pr-3 py-1.5`}
-      animate={{ opacity: isInProgress ? 1 : 0.7 }}
-      transition={{ duration: 0.3, ease: 'easeOut' }}
-      style={{ fontSize: '13px', color: 'var(--Labels-Secondary)' }}
+      animate={{ opacity: isInProgress ? 1 : 0.7, y: isInProgress ? 0 : 1 }}
+      transition={{ duration: 0.25, ease: 'easeOut' }}
+      style={{ fontSize: '0.8125rem', color: 'var(--Labels-Secondary)' }}
     >
       <div className="relative flex-shrink-0 flex items-center justify-center h-5 w-5">
         <motion.span
-          animate={isInProgress ? { opacity: [0.7, 1, 0.7] } : { opacity: 1 }}
-          transition={isInProgress ? { duration: 1.4, repeat: Infinity, ease: 'easeInOut' } : { duration: 0.2 }}
+          animate={isInProgress ? { opacity: [0.85, 1, 0.85] } : { opacity: 1 }}
+          transition={isInProgress ? { duration: 1.5, repeat: Infinity, ease: 'easeInOut' } : { duration: 0.2 }}
           style={{ display: 'inline-flex' }}
         >
           <IconComponent className="h-4 w-4" />
@@ -619,7 +606,7 @@ const ToolCallLiveRow = memo(function ToolCallLiveRow({ tc, liveState }: ToolCal
       {isInProgress ? (
         <TextShimmer
           as="span"
-          className="font-medium text-[13px] [--base-color:var(--Labels-Secondary)] [--base-gradient-color:var(--color-text-primary)] truncate"
+          className="font-medium text-[0.8125rem] [--base-color:var(--Labels-Secondary)] [--base-gradient-color:var(--color-text-primary)] truncate"
           duration={1.5}
         >
           {activeLabel || ''}
@@ -654,7 +641,7 @@ function PreparingToolCallRow({ tc }: PreparingToolCallRowProps): React.ReactEle
     <div
       className="nrow flex items-center gap-2 pl-3 pr-3"
       style={{
-        fontSize: '13px',
+        fontSize: '0.8125rem',
         color: 'var(--Labels-Secondary)',
         padding: '6px 12px',
         opacity: 0.85,
@@ -949,7 +936,7 @@ const EditToolRow = memo(function EditToolRow({ item, onOpenFile }: EditToolRowP
               transition={SPRING}
               style={{ overflow: 'hidden' }}
             >
-              <div className="mt-2 rounded overflow-hidden" style={{ fontSize: '12px', border: '1px solid var(--color-border-muted)' }}>
+              <div className="mt-2 rounded overflow-hidden" style={{ fontSize: '0.75rem', border: '1px solid var(--color-border-muted)' }}>
                 {oldStr && (
                   <div style={{ backgroundColor: 'var(--color-loss-soft)' }}>
                     {oldStr.split('\n').map((line, i) => (

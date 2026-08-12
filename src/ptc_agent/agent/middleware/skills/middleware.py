@@ -29,7 +29,6 @@ Usage:
 """
 
 import asyncio
-import operator
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 
@@ -40,18 +39,26 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     PrivateStateAttr,
 )
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import BaseMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.types import Command
 from typing_extensions import NotRequired
 
 from ptc_agent.agent.middleware._utils import append_to_system_message
-from ptc_agent.agent.middleware.skills.content import load_skill_content
+from ptc_agent.agent.middleware.skills.content import (
+    SkillRequest,
+    _message_id,
+    build_skill_content,
+    compute_already_loaded,
+    load_skill_content,
+)
 from ptc_agent.agent.middleware.skills.discovery import (
     SkillMetadata,
     adiscover_skills,
 )
 from ptc_agent.agent.middleware.skills.registry import (
+    SKILL_REGISTRY,
     SkillDefinition,
     SkillMode,
     get_skill,
@@ -65,10 +72,79 @@ logger = structlog.get_logger(__name__)
 LOADED_SKILLS_KEY = "loaded_skills"
 
 
+def _union_loaded_skills(left: list[str], right: list[str]) -> list[str]:
+    """Reducer for ``loaded_skills``: order-preserving set union.
+
+    ``loaded_skills`` is semantically a set — every consumer reads it via
+    ``set(...)``. Plain ``operator.add`` lets the same name accumulate (a turn
+    re-seeding an already-loaded skill, or the agent re-reading a skill file),
+    bloating the persisted state on long threads. Normalizing both operands keeps
+    the channel bounded and also re-bounds threads that already carried duplicate
+    names from the old ``operator.add`` reducer (which would otherwise persist).
+    """
+    merged: list[str] = []
+    seen: set[str] = set()
+    for name in (*(left or []), *(right or [])):
+        if name not in seen:
+            merged.append(name)
+            seen.add(name)
+    return merged
+
+
+def _is_human_message(message: Any) -> bool:
+    """True if ``message`` is a user/human turn (LangChain object or raw dict)."""
+    if isinstance(message, dict):
+        return message.get("role") == "user" or message.get("type") == "human"
+    return getattr(message, "type", None) == "human"
+
+
+def _join_body(base: str, text: str) -> str:
+    """Join an appended skill body onto string message content with a blank-line
+    separator — the wire format the server's old inline injection used. List
+    content separates via its own appended block, so this is the string path only.
+    """
+    return f"{base}\n\n{text}" if base else text
+
+
+def _append_body_to_last_human(messages: list, text: str) -> BaseMessage | dict | None:
+    """Return a copy of the last user message with ``text`` appended to its content.
+
+    Preserves the message ``id`` so ``add_messages`` replaces it in place rather
+    than appending a new turn. String content is joined with a blank-line separator
+    (``_join_body``); list content gets ``text`` as a fresh block, which is already
+    separated. Returns None when the last message isn't a user turn — skill_contexts
+    is only set on normal turns where it is, so that path is just defense (tools still
+    load via ``loaded_skills``; only the body is skipped).
+    """
+    if not messages:
+        return None
+    last = messages[-1]
+    if not _is_human_message(last):
+        return None
+
+    if isinstance(last, dict):
+        content = last.get("content")
+        new = dict(last)
+        if isinstance(content, list):
+            new["content"] = content + [{"type": "text", "text": text}]
+        else:
+            new["content"] = _join_body(content if isinstance(content, str) else "", text)
+        return new
+
+    content = getattr(last, "content", "")
+    if isinstance(content, list):
+        new_content = content + [{"type": "text", "text": text}]
+    elif isinstance(content, str):
+        new_content = _join_body(content, text)
+    else:
+        new_content = _join_body(str(content) if content else "", text)
+    return last.model_copy(update={"content": new_content})
+
+
 class LoadedSkillsState(AgentState):
     """State schema for tracking loaded skills."""
 
-    loaded_skills: NotRequired[Annotated[list[str], operator.add]]
+    loaded_skills: NotRequired[Annotated[list[str], _union_loaded_skills]]
     discovered_skills: NotRequired[Annotated[list[SkillMetadata], PrivateStateAttr]]
 
 
@@ -125,11 +201,13 @@ class SkillsMiddleware(AgentMiddleware):
         self._known_skills = known_skills or {}
         self.skill_registry = skill_registry or get_skill_registry(mode)
 
-        # Build mapping of tool names → skill names (a tool can belong to multiple skills)
+        # Build mapping of tool names → skill names (a tool can belong to multiple
+        # skills). get_tool_names() covers both registry tool objects and
+        # externally-registered tool names (per-thread factory tools like
+        # RunWorkflow that the skill gates but does not instantiate).
         self._tool_to_skills: dict[str, set[str]] = {}
         for skill_name, skill_def in self.skill_registry.items():
-            for t in skill_def.tools:
-                tool_name = getattr(t, "name", str(t))
+            for tool_name in skill_def.get_tool_names():
                 self._tool_to_skills.setdefault(tool_name, set()).add(skill_name)
 
         # Build mapping of SKILL.md paths → skill names (for PTC auto-load)
@@ -183,32 +261,123 @@ class SkillsMiddleware(AgentMiddleware):
 
         return load_skill
 
-    async def abefore_agent(self, state: Any, runtime: Any) -> dict | None:
-        """Scan filesystem for user-installed skills (async, PTC mode only).
+    async def abefore_agent(
+        self, state: Any, runtime: Any, *, config: RunnableConfig | None = None
+    ) -> dict | None:
+        """Turn-entry hook: discover filesystem skills AND inject requested bodies.
 
-        Uses optimized discovery: skills already present in ``_known_skills``
-        (from the upload manifest) are returned without re-downloading.
-        Only truly new skills trigger a download.
+        Two responsibilities, both run once per turn before the first model call:
 
-        Runs on every user message so newly deployed skills are picked up
-        mid-thread. The known_skills cache keeps re-scans cheap (~100ms
-        with 0 downloads when all skills are already known).
+        1. **Discover** user-installed skills from the sandbox filesystem (PTC mode,
+           when ``backend``/``sources`` are configured). Skills already in
+           ``_known_skills`` (upload manifest) are returned without re-downloading,
+           so re-scans stay cheap (~100ms, 0 downloads when all are known).
+        2. **Inject** SKILL.md bodies for skills the client requested this turn
+           (``config["configurable"]["skill_contexts"]``). A skill whose body is
+           still live in the thread is skipped — only its per-turn instruction is
+           refreshed — so a re-sent skill (e.g. MarketView's chart-annotation)
+           isn't pasted into history every turn. The returned ``loaded_skills``
+           persists via reducer, exposing the skill's tools the same turn.
         """
-        if not self._backend or not self._sources:
-            return {"discovered_skills": []}
+        update: dict[str, Any] = {"discovered_skills": []}
 
-        all_skills: dict[str, SkillMetadata] = {}
-        for source_path in self._sources:
-            for skill in await adiscover_skills(
-                self._backend, source_path, self._known_skills
-            ):
-                all_skills[skill["name"]] = skill
+        if self._backend and self._sources:
+            all_skills: dict[str, SkillMetadata] = {}
+            for source_path in self._sources:
+                for skill in await adiscover_skills(
+                    self._backend, source_path, self._known_skills
+                ):
+                    all_skills[skill["name"]] = skill
 
-        # Filter out registry skills — registry is source of truth for those
-        unregistered = [
-            s for name, s in all_skills.items() if name not in self.skill_registry
+            # Filter out registry skills — registry is source of truth for those.
+            # The catalog, not this build's copy: a skill gated off for this build
+            # must not return through the filesystem door as a user-installed one.
+            registry_owned = set(self.skill_registry) | set(SKILL_REGISTRY)
+            update["discovered_skills"] = [
+                s for name, s in all_skills.items() if name not in registry_owned
+            ]
+
+        skill_update = await self._inject_requested_skills(state, config)
+        if skill_update:
+            update.update(skill_update)
+
+        return update
+
+    async def _inject_requested_skills(
+        self, state: Any, config: RunnableConfig | None
+    ) -> dict | None:
+        """Inject SKILL.md bodies for skills requested via config this turn.
+
+        Reads ``skill_contexts`` (+ optional ``skill_dirs``) from
+        ``config["configurable"]``, dedups against bodies already live in the
+        thread, appends fresh bodies to the last user message, and returns the
+        ``messages``/``loaded_skills`` state update (or None when there's nothing
+        to inject — e.g. HITL/replay turns where the server omits skill_contexts).
+
+        The SKILL.md disk reads run in a worker thread so this turn-entry hook
+        doesn't block the event loop before the first model call.
+        """
+        if not config:
+            return None
+        configurable = config.get("configurable") or {}
+        raw_contexts = configurable.get("skill_contexts")
+        if not raw_contexts:
+            return None
+
+        skills = [
+            SkillRequest(
+                name=(c.get("name") if isinstance(c, dict) else getattr(c, "name", ""))
+                or "",
+                instruction=(
+                    c.get("instruction")
+                    if isinstance(c, dict)
+                    else getattr(c, "instruction", None)
+                ),
+            )
+            for c in raw_contexts
         ]
-        return {"discovered_skills": unregistered}
+        skills = [s for s in skills if s.name]
+        if not skills:
+            return None
+
+        messages = state.get("messages") if hasattr(state, "get") else None
+        messages = messages or []
+        loaded = state.get("loaded_skills") if hasattr(state, "get") else None
+        event = state.get("_summarization_event") if hasattr(state, "get") else None
+        already_loaded = compute_already_loaded(loaded, messages, event)
+
+        # Bind the injected marker to the message the body lands on (the last user
+        # turn) so the dedup scanner can later verify it, not just pattern-match text.
+        last = messages[-1] if messages else None
+        target_id = (
+            _message_id(last) if last is not None and _is_human_message(last) else None
+        )
+
+        result = await asyncio.to_thread(
+            build_skill_content,
+            skills,
+            skill_dirs=configurable.get("skill_dirs"),
+            mode=self._mode,
+            already_loaded=already_loaded,
+            message_id=target_id,
+        )
+        if not result:
+            return None
+
+        update: dict[str, Any] = {}
+        updated_msg = _append_body_to_last_human(messages, result.content)
+        if updated_msg is not None:
+            update["messages"] = [updated_msg]
+        if result.loaded_skill_names:
+            update["loaded_skills"] = result.loaded_skill_names
+
+        if update:
+            logger.info(
+                "Skill bodies injected via middleware",
+                mode=self._mode,
+                fresh=result.loaded_skill_names,
+            )
+        return update or None
 
     def _build_combined_manifest(self, state: Any) -> str | None:
         """Build a combined skill manifest for the system message.

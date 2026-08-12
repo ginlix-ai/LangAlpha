@@ -26,8 +26,14 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
   // Support __wsref__/{workspaceId}/path for cross-workspace file references
   const wsRef = src ? parseWsPath(src) : null;
   const workspaceId = wsRef?.workspaceId || contextWorkspaceId;
-  // For __wsref__ paths, don't use the context downloadFileFn (it's bound to the wrong workspace)
-  const effectiveDownloadFn = wsRef ? null : downloadFileFn;
+  // For __wsref__ paths the context downloadFileFn is normally skipped (it's
+  // bound to the active workspace, not the referenced one). But the public
+  // shared view has no authed per-workspace route — its downloadFileFn IS the
+  // share-token-scoped blob fetcher and the only way to read bytes. So only
+  // bypass it when a real workspace context exists to fall back on; otherwise a
+  // logged-out share viewer would hit the authed /workspaces/{id}/files/download
+  // endpoint and get a 401.
+  const effectiveDownloadFn = wsRef && contextWorkspaceId ? null : downloadFileFn;
 
   const canFetch = !!(src && !isExternalUrl(src) && (workspaceId || effectiveDownloadFn));
   const rawPath = canFetch ? (wsRef ? wsRef.path : src!) : '';

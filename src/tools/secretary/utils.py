@@ -9,6 +9,17 @@ logger = logging.getLogger(__name__)
 
 MAX_OUTPUT_CHARS = 8000
 
+# Ceiling on how many turns a single read pulls from the DB (output is
+# truncated to MAX_OUTPUT_CHARS regardless).
+_MAX_HISTORY_TURNS = 50
+
+# When the default single-turn read lands on a text-less newest turn (tool-only
+# / chart-only), look back this many turns for the most-recent turn with text.
+_EMPTY_LATEST_FALLBACK_TURNS = 5
+
+# Inserted between turns when more than one turn is returned.
+_TURN_SEPARATOR = "\n\n---\n\n"
+
 # File extensions recognized as workspace file references (mirrors frontend KNOWN_EXTS)
 _FILE_EXTS = (
     r"md|txt|pdf|doc|docx|rtf|"
@@ -102,7 +113,55 @@ def _parse_sse_string(raw: str) -> tuple[str, dict] | None:
         return None
 
 
-async def extract_text_from_thread(thread_id: str) -> dict[str, Any]:
+def _truncate_single(text: str) -> str:
+    """Head-truncate one turn's text to ``MAX_OUTPUT_CHARS`` (keeps the start)."""
+    if len(text) <= MAX_OUTPUT_CHARS:
+        return text
+    return text[:MAX_OUTPUT_CHARS] + (
+        "\n\n[truncated — full output available in workspace]"
+    )
+
+
+def _join_recent_turns(turn_texts: list[str]) -> str:
+    """Join turn texts oldest -> newest, capped at ``MAX_OUTPUT_CHARS``.
+
+    Turn boundaries are known from the list (not rediscovered by scanning the
+    joined text), so a turn whose own markdown contains ``---`` is never
+    mistaken for a separator. When the cap is exceeded, whole older turns are
+    dropped from the front so the most-recent turns survive; the newest turn is
+    head-truncated if it alone overflows. A banner notes any dropped turns.
+    """
+    turn_texts = [t for t in turn_texts if t]
+    if not turn_texts:
+        return ""
+
+    joined = _TURN_SEPARATOR.join(turn_texts)
+    if len(joined) <= MAX_OUTPUT_CHARS:
+        return joined
+
+    # Keep the newest turns that fit, always retaining at least the newest one.
+    kept: list[str] = []
+    total = 0
+    for text in reversed(turn_texts):
+        extra = len(text) + (len(_TURN_SEPARATOR) if kept else 0)
+        if kept and total + extra > MAX_OUTPUT_CHARS:
+            break
+        kept.append(text)
+        total += extra
+    kept.reverse()
+
+    body = _truncate_single(_TURN_SEPARATOR.join(kept))
+    if len(kept) < len(turn_texts):
+        body = (
+            "[earlier turns truncated — full output available in workspace]\n\n"
+            + body
+        )
+    return body
+
+
+async def extract_text_from_thread(
+    thread_id: str, turns: int = 1
+) -> dict[str, Any]:
     """Extract text content from a thread's SSE events.
 
     Reads from Redis if the thread is actively running, otherwise reads
@@ -110,14 +169,17 @@ async def extract_text_from_thread(thread_id: str) -> dict[str, Any]:
 
     Args:
         thread_id: The conversation thread ID
+        turns: How many of the most-recent turns to include. 1 (default) =
+            only the latest turn; N > 1 = the last N turns; <= 0 = the full
+            thread history. The window applies to the persisted record; while
+            a turn is actively streaming, only that live turn is returned.
 
     Returns:
         Dict with keys: text, status, thread_id, workspace_id
     """
-    from src.server.database.conversation import (
+    from src.server.database.conversation.threads_read import (
         get_thread_by_id,
     )
-    from src.server.services.workflow_tracker import WorkflowTracker
 
     # Look up thread
     thread = await get_thread_by_id(thread_id)
@@ -131,31 +193,32 @@ async def extract_text_from_thread(thread_id: str) -> dict[str, Any]:
 
     workspace_id = str(thread.get("workspace_id", ""))
 
-    # Check workflow status
-    tracker = WorkflowTracker.get_instance()
-    status_info = await tracker.get_status(thread_id)
+    # The ledger routes live-vs-settled (v4 2.4): an in_progress row means
+    # the turn is still streaming into Redis on SOME worker; anything else
+    # reads the finalized turns from the DB.
+    from src.server.database.runs import lifecycle as tl_db
 
-    if status_info:
-        status = status_info.get("status", "unknown")
+    active_run = await tl_db.get_active_run(thread_id)
+    if active_run is not None:
+        status = "running"
     else:
         status = thread.get("current_status", "unknown")
 
-    # Determine if running (read from Redis) or completed (read from DB)
-    active_statuses = {"running", "active", "streaming", "pending"}
-    if status in active_statuses:
-        text = await _extract_from_redis(thread_id)
-    else:
-        text = await _extract_from_db(thread_id)
-
-    # Qualify relative file paths with workspace context so the flash
-    # agent (and its frontend) can resolve them across workspaces.
-    text = _qualify_file_paths(text, workspace_id)
-
-    # Truncate if needed
-    if len(text) > MAX_OUTPUT_CHARS:
-        text = text[:MAX_OUTPUT_CHARS] + (
-            "\n\n[truncated — full output available in workspace]"
+    # Qualify relative file paths with workspace context so the flash agent
+    # (and its frontend) can resolve them across workspaces, then cap length.
+    if active_run is not None:
+        # The active stream is always a single live turn — read the ledger
+        # row's run stream directly. Resolving through local BTM state can
+        # pick a retained terminal LocalRunExecution from a prior run on this worker
+        # while the live run executes elsewhere (v4 2.4c review F6).
+        text = await _extract_from_redis(
+            thread_id, str(active_run["conversation_response_id"])
         )
+        text = _truncate_single(_qualify_file_paths(text, workspace_id))
+    else:
+        turn_texts = await _extract_from_db(thread_id, turns)
+        turn_texts = [_qualify_file_paths(t, workspace_id) for t in turn_texts]
+        text = _join_recent_turns(turn_texts)
 
     return {
         "text": text,
@@ -165,60 +228,21 @@ async def extract_text_from_thread(thread_id: str) -> dict[str, Any]:
     }
 
 
-async def _extract_from_redis(thread_id: str) -> str:
+async def _extract_from_redis(thread_id: str, run_id: str) -> str:
     """Extract text content from Redis SSE event buffer.
 
     Reads the tail of the per-run Redis Stream
-    (``workflow:stream:{tid}:{run_id}``) and decodes the pre-rendered SSE
-    wire string from each entry's ``b"event"`` field. The run_id is
-    resolved from the in-process ``BackgroundTaskManager`` for the most
-    recent turn on the thread. When no in-process TaskInfo exists (process
-    restart, all entries TTL'd out), falls back to the legacy
-    ``workflow:stream:{tid}`` key for backward compat during the deploy
-    window. XREVRANGE with COUNT yields the most-recent 500 entries
-    cheaply, then we reverse to chronological order to mirror the old
-    RPUSH semantics.
+    (``workflow:stream:{tid}:{run_id}``) for the caller-resolved *run_id*
+    (the ledger-active row — authoritative on every worker). XREVRANGE
+    with COUNT yields the most-recent 500 entries cheaply, then we
+    reverse to chronological order to mirror the old RPUSH semantics.
     """
-    # Local imports to avoid load-order coupling with the server package
+    # Local import to avoid load-order coupling with the server package
     # at agent import time.
-    from src.server.services.background_task_manager import (
-        BackgroundTaskManager,
-        stream_key,
-    )
+    from src.server.services.runs.stream_writer import stream_key
     from src.utils.cache.redis_cache import get_cache_client
 
-    # Resolve the per-run stream key: prefer in-process BTM, then the
-    # cross-process WorkflowTracker blob, then fall back to the legacy
-    # thread-only key. The tracker path covers post-restart reconnects
-    # where BTM is empty but the active run's run_id is still in Redis.
-    key = f"workflow:stream:{thread_id}"
-    resolved_run_id: str | None = None
-    try:
-        manager = BackgroundTaskManager.get_instance()
-        async with manager.task_lock:
-            info = manager._find_latest_for_thread(thread_id)
-        if info is not None and getattr(info, "run_id", None):
-            resolved_run_id = info.run_id
-    except Exception as e:
-        logger.warning(
-            f"Failed to resolve run_id from BTM for thread {thread_id}: {e}"
-        )
-
-    if resolved_run_id is None:
-        try:
-            from src.server.services.workflow_tracker import WorkflowTracker
-
-            tracker = WorkflowTracker.get_instance()
-            status_obj = await tracker.get_status(thread_id)
-            if status_obj is not None:
-                resolved_run_id = status_obj.get("run_id")
-        except Exception as e:
-            logger.warning(
-                f"Failed to resolve run_id from tracker for thread {thread_id}: {e}"
-            )
-
-    if resolved_run_id is not None:
-        key = stream_key(thread_id, resolved_run_id)
+    key = stream_key(thread_id, run_id)
 
     try:
         cache = get_cache_client()
@@ -255,39 +279,65 @@ async def _extract_from_redis(thread_id: str) -> str:
     return "".join(chunks)
 
 
-async def _extract_from_db(thread_id: str) -> str:
-    """Extract text content from DB-persisted SSE events.
-
-    Args:
-        thread_id: The conversation thread ID
-
-    Returns:
-        Concatenated text content from message_chunk events
-    """
-    from src.server.database.conversation import get_responses_for_thread
-
-    try:
-        responses, _ = await get_responses_for_thread(thread_id, limit=10)
-    except Exception as e:
-        logger.error(f"Failed to read DB responses for thread {thread_id}: {e}")
-        return ""
-
+def _text_from_response(response: dict[str, Any]) -> str:
+    """Concatenate the text of one turn's ``message_chunk`` SSE events."""
     chunks: list[str] = []
-    for response in responses:
-        sse_events = response.get("sse_events")
-        if not sse_events:
+    for event in response.get("sse_events") or []:
+        if not isinstance(event, dict):
             continue
-        for event in sse_events:
-            if not isinstance(event, dict):
-                continue
-            if event.get("event") != "message_chunk":
-                continue
-            data = event.get("data", {})
-            if not isinstance(data, dict):
-                continue
-            if data.get("content_type") == "text":
-                content = data.get("content", "")
-                if content:
-                    chunks.append(content)
-
+        if event.get("event") != "message_chunk":
+            continue
+        data = event.get("data", {})
+        if not isinstance(data, dict):
+            continue
+        if data.get("content_type") == "text":
+            content = data.get("content", "")
+            if content:
+                chunks.append(content)
     return "".join(chunks)
+
+
+async def _latest_turn_text(thread_id: str) -> list[str]:
+    """Newest turn's text, as ``[]`` or ``[text]``.
+
+    Hot path is ``limit=1``; a text-less newest turn (tool-only / chart-only)
+    pays one wider ``_EMPTY_LATEST_FALLBACK_TURNS`` read so an empty result
+    isn't mistaken for "the agent produced nothing".
+    """
+    from src.server.database.conversation.responses import get_recent_responses_for_thread
+
+    responses = await get_recent_responses_for_thread(thread_id, limit=1)
+    if responses and (text := _text_from_response(responses[0])):
+        return [text]
+
+    # No turns at all: nothing to widen to.
+    if not responses:
+        return []
+
+    # Newest turn is text-less: re-read the fallback window once and surface the
+    # most-recent turn that carries text.
+    responses = await get_recent_responses_for_thread(
+        thread_id, limit=_EMPTY_LATEST_FALLBACK_TURNS
+    )
+    for text in map(_text_from_response, reversed(responses)):
+        if text:
+            return [text]
+    return []
+
+
+async def _extract_from_db(thread_id: str, turns: int = 1) -> list[str]:
+    """Return per-turn text (oldest -> newest) for the most-recent ``turns`` turns.
+
+    ``turns == 1`` delegates to ``_latest_turn_text``; otherwise reads the last
+    ``turns`` turns (``<= 0`` = recent history), clamped to ``_MAX_HISTORY_TURNS``.
+    Read failures propagate so the caller surfaces an error instead of an empty,
+    success-looking result.
+    """
+    if turns == 1:
+        return await _latest_turn_text(thread_id)
+
+    from src.server.database.conversation.responses import get_recent_responses_for_thread
+
+    limit = _MAX_HISTORY_TURNS if turns <= 0 else min(turns, _MAX_HISTORY_TURNS)
+    responses = await get_recent_responses_for_thread(thread_id, limit=limit)
+    return [text for text in map(_text_from_response, responses) if text]

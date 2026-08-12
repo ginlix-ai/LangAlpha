@@ -105,7 +105,7 @@ describe('SubagentTaskMessageContent — telemetry row', () => {
 });
 
 describe('SubagentTaskMessageContent — status discriminator', () => {
-  it('renders Running label with spin animation for action=init + status=running', () => {
+  it('renders Running label with the ascii liveness glyph for action=init + status=running', () => {
     render(
       <SubagentTaskMessageContent
         subagentId="tc-r"
@@ -115,7 +115,10 @@ describe('SubagentTaskMessageContent — status discriminator', () => {
         action="init"
       />,
     );
-    expect(screen.getByText('Running')).toBeInTheDocument();
+    // Two "Running" nodes by design: the visible label + the ascii Loader's
+    // aria-label (role="status") — assert both halves explicitly.
+    expect(screen.getAllByText('Running').length).toBeGreaterThan(0);
+    expect(screen.getByRole('status', { name: 'Running' })).toBeInTheDocument();
   });
 
   it('renders Completed label for action=init + status=completed', () => {
@@ -216,23 +219,56 @@ describe('SubagentTaskMessageContent — telemetry context fallback', () => {
 });
 
 describe('SubagentTaskMessageContent — accessibility', () => {
-  it('exposes the card as a keyboard-focusable button', () => {
+  it('exposes the card as a keyboard-focusable button when it can open', () => {
     render(
       <SubagentTaskMessageContent
         subagentId="tc-a11y"
         description="Click me"
         type="research"
         status="completed"
+        onOpen={() => {}}
       />,
     );
-    // Without a hasResult body, the card root is the only role=button.
+    // With no toolCallProcess there is no affordance, so the card root is
+    // the only role=button.
     // Without aria-label/title-as-accessible-name we just look up by role.
     const card = screen.getByRole('button');
     expect(card).toHaveAttribute('tabIndex', '0');
     expect(card).toHaveAttribute('title');
   });
 
-  it('opens the secondary view-output action via an accessible button', () => {
+  it('renders inert on read-only surfaces — no button role, focus stop, or tooltip', () => {
+    // Shared links strip onOpen (MessageContentSegments passes undefined on
+    // readOnly). The card must not keep the click costume without the click.
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-inert"
+        description="Click me"
+        type="research"
+        status="completed"
+      />,
+    );
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(document.querySelector('[tabindex]')).toBeNull();
+    expect(document.querySelector('[title]')).toBeNull();
+  });
+
+  it('omits the view-details affordance when onDetailOpen is absent', () => {
+    // A result with no handler (read-only surface) must not render the arrow
+    // button — it would swallow clicks and open nothing.
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-dead-affordance"
+        description="Done"
+        type="research"
+        status="completed"
+        toolCallProcess={{ toolCallResult: { content: 'output text' } }}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'View task details' })).toBeNull();
+  });
+
+  it('opens the secondary view-details action via an accessible button', () => {
     let captured: unknown = null;
     render(
       <SubagentTaskMessageContent
@@ -244,15 +280,15 @@ describe('SubagentTaskMessageContent — accessibility', () => {
         onDetailOpen={(p) => { captured = p; }}
       />,
     );
-    const viewButton = screen.getByRole('button', { name: 'View subagent output' });
+    const viewButton = screen.getByRole('button', { name: 'View task details' });
     expect(viewButton).toBeInTheDocument();
     viewButton.click();
     expect(captured).toEqual({ toolCallResult: { content: 'output text' } });
   });
 
-  it('mouse click on view-output button does not also fire the card click', () => {
+  it('mouse click on view-details button does not also fire the card click', () => {
     // Regression: outer card div has onClick=handleCardClick, inner button
-    // has onClick=handleViewOutput. handleViewOutput already calls
+    // has onClick=handleViewDetails. handleViewDetails already calls
     // stopPropagation, so the click should fire onDetailOpen exactly once
     // and never fire onOpen. Pinning this to catch any future change that
     // drops the stopPropagation.
@@ -269,13 +305,13 @@ describe('SubagentTaskMessageContent — accessibility', () => {
         onDetailOpen={onDetailOpen}
       />,
     );
-    const viewButton = screen.getByRole('button', { name: 'View subagent output' });
+    const viewButton = screen.getByRole('button', { name: 'View task details' });
     viewButton.click();
     expect(onDetailOpen).toHaveBeenCalledTimes(1);
     expect(onOpen).not.toHaveBeenCalled();
   });
 
-  it('keyboard activation of view-output button does not also fire the card click', () => {
+  it('keyboard activation of view-details button does not also fire the card click', () => {
     // Regression: outer `<div role="button" onKeyDown=...>` and inner
     // `<button>` are nested. A keydown on the inner button bubbles, so
     // without a target/currentTarget guard the outer keydown handler used
@@ -294,7 +330,7 @@ describe('SubagentTaskMessageContent — accessibility', () => {
         onDetailOpen={onDetailOpen}
       />,
     );
-    const viewButton = screen.getByRole('button', { name: 'View subagent output' });
+    const viewButton = screen.getByRole('button', { name: 'View task details' });
     // Simulate keyboard activation: keydown on the inner button bubbles to
     // the outer card, but the guard should prevent handleCardClick from running.
     fireEvent.keyDown(viewButton, { key: 'Enter' });
@@ -312,7 +348,7 @@ describe('SubagentTaskMessageContent — accessibility', () => {
         onOpen={onOpen}
       />,
     );
-    // Without a hasResult body there's only one role=button — the card root.
+    // With no toolCallProcess there's only one role=button — the card root.
     const card = screen.getByRole('button');
     fireEvent.keyDown(card, { key: 'Enter' });
     expect(onOpen).toHaveBeenCalledTimes(1);

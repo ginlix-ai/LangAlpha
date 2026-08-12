@@ -5,23 +5,30 @@ import enUS from '../en-US.json';
 import zhCN from '../zh-CN.json';
 
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');
-// Sweep the entire Dashboard surface, not just `widgets/`. The custom-mode
-// shell (`DashboardCustom.tsx`) and components/ live one level up but still
-// reference `dashboard.widgets.*` keys (action bar, edit-holding dialog,
-// reset confirmation). Catching those requires walking the parent dir.
-const WIDGETS_DIR = resolve(REPO_ROOT, 'src/pages/Dashboard');
+// Sweep the whole source tree: any statically-written locale key anywhere in
+// the app must resolve in both catalogs. (This started Dashboard-only; the
+// chat surface grew its own keys and drifted silently.)
+const SRC_DIR = resolve(REPO_ROOT, 'src');
+
+// A captured string counts as a locale key only when its first segment is a
+// real top-level catalog namespace — that keeps dotted non-keys the regexes
+// can also match ('settings.json', module paths) out of the report.
+const NAMESPACES = new Set(Object.keys(enUS as Record<string, unknown>));
+function isLocaleKey(candidate: string): boolean {
+  const dot = candidate.indexOf('.');
+  return dot > 0 && NAMESPACES.has(candidate.slice(0, dot));
+}
 
 // Match `t('foo.bar.baz')` and `t("foo.bar.baz")` — the second arg form for
 // interpolation is fine because we only capture the first quoted argument.
 const T_CALL = /\bt\(\s*['"]([a-zA-Z0-9_.]+)['"]/g;
 // Match `titleKey: 'foo.bar'` / `descriptionKey: 'foo.bar'` / etc. — keys
-// stored in widget definitions and PresetMeta. Catches our static metadata
-// references that aren't wrapped in t().
+// stored in widget definitions, STATUS_UI tables, and PresetMeta. Catches our
+// static metadata references that aren't wrapped in t().
 const KEY_PROP = /\b(?:titleKey|descriptionKey|nameKey|tagKey|bestForKey|labelKey|blurbKey)\s*[:=]\s*['"]([a-zA-Z0-9_.]+)['"]/g;
-// Same shape but for our SOURCE_KEY / BUCKET_KEY const maps. Matches any
-// `dashboard.*` key — both the widgets subtree and the page-level chrome
-// namespaces (layoutToggle, etc.) so missing-key regressions in either
-// surface get caught.
+// Bare quoted keys in SOURCE_KEY / BUCKET_KEY const maps. Deliberately still
+// scoped to `dashboard.` — that idiom lives only there, and matching every
+// namespaced-looking string tree-wide would flag dotted non-keys.
 const KEY_VALUE = /['"](dashboard\.[a-zA-Z0-9_.]+)['"]/g;
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -60,7 +67,7 @@ function resolveAnyVariant(obj: unknown, key: string): boolean {
 }
 
 function collectKeys(): { keys: Set<string>; perFile: Map<string, string[]> } {
-  const files = walk(WIDGETS_DIR);
+  const files = walk(SRC_DIR);
   const keys = new Set<string>();
   const perFile = new Map<string, string[]>();
   for (const file of files) {
@@ -70,7 +77,7 @@ function collectKeys(): { keys: Set<string>; perFile: Map<string, string[]> } {
       re.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = re.exec(src)) !== null) {
-        if (m[1].startsWith('dashboard.')) {
+        if (isLocaleKey(m[1])) {
           keys.add(m[1]);
           found.push(m[1]);
         }
@@ -81,11 +88,11 @@ function collectKeys(): { keys: Set<string>; perFile: Map<string, string[]> } {
   return { keys, perFile };
 }
 
-describe('dashboard widget i18n keys', () => {
+describe('locale key parity (src-wide)', () => {
   const { keys, perFile } = collectKeys();
 
   it('discovers a non-trivial number of keys (sanity check)', () => {
-    expect(keys.size).toBeGreaterThan(50);
+    expect(keys.size).toBeGreaterThan(200);
   });
 
   it('every referenced key resolves in en-US.json', () => {

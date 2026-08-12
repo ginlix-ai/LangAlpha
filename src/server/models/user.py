@@ -76,6 +76,10 @@ class AgentPreference(BaseModel):
     output_style: Optional[str] = Field(
         None, description="Preferred output style"
     )
+    output_format: Optional[str] = Field(
+        None,
+        description="Preferred output format: 'markdown' or 'html' (absent = default). Not a Literal so the endpoint validates and None-means-delete JSONB-merge semantics are preserved.",
+    )
 
 
 class OtherPreference(BaseModel):

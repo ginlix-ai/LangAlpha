@@ -34,6 +34,7 @@ def _connect():
         dbname=os.environ.get("DB_NAME", "postgres"),
         user=os.environ.get("DB_USER", "postgres"),
         password=os.environ.get("DB_PASSWORD") or None,
+        sslmode=os.environ.get("DB_SSLMODE", "prefer"),
         autocommit=True,
     )
 

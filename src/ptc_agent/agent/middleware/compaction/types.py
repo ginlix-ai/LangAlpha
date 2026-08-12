@@ -28,11 +28,17 @@ class CompactionEvent(TypedDict):
 
     Stored in private state so the middleware can reconstruct the effective
     message list on subsequent model calls without modifying the checkpoint.
+
+    ``cutoff_index`` is the positional boundary; ``anchor_message_id`` is the id
+    of the first preserved message, used to re-find the boundary by id when the
+    underlying list drifts (e.g. DeltaChannel reconstruction). Legacy persisted
+    events omit ``anchor_message_id`` and fall back to the positional index.
     """
 
     cutoff_index: int
     summary_message: HumanMessage
     file_path: str | None
+    anchor_message_id: NotRequired[str | None]
 
 
 class TruncateArgsSettings(TypedDict, total=False):

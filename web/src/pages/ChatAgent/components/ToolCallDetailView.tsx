@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { ArrowRight, ChevronRight, ExternalLink, FileText, Loader2 } from 'lucide-react';
+import { ArrowRight, ChevronRight, ExternalLink, FileText } from 'lucide-react';
 import { stripLineNumbers, parseTruncatedResult } from './toolDisplayConfig';
 import {
   StockPriceChart,
@@ -13,8 +13,10 @@ import {
 } from './charts/MarketDataCharts';
 import SecFilingViewer from './charts/SecFilingViewer';
 import { FaviconImg, googleFaviconUrl } from './charts/InlineArtifactCards';
+import { unwrapMarketOverview } from './charts/inlineCardsShared';
 import AutomationDetailPanel from './charts/AutomationDetailPanel';
 import Markdown, { CodeBlock } from './Markdown';
+import { TaskStatusChip, taskCardStatusKind } from './taskStatusUi';
 import iconRobo from '../../../assets/img/icon-robo.png';
 import iconRoboSing from '../../../assets/img/icon-robo-sing.png';
 import { parseDisplayableResults, buildRichResultMap, resolveSnippet } from './webSearchUtils';
@@ -43,7 +45,6 @@ export interface ToolCallProcessRecord {
   isInProgress?: boolean;
   isComplete?: boolean;
   isFailed?: boolean;
-  _subagentResult?: string | null;
   _subagentStatus?: string | null;
   [key: string]: unknown;
 }
@@ -111,7 +112,6 @@ export default function ToolCallDetailView({
             description={subagentDescription}
             type={subagentType}
             subagentId={subagentId}
-            subagentResult={toolCallProcess._subagentResult || null}
             subagentStatus={toolCallProcess._subagentStatus || null}
             onOpenSubagentTask={onOpenSubagentTask}
           />
@@ -136,12 +136,21 @@ interface TaskToolContentProps {
   description: string;
   type: string;
   subagentId: string | null;
-  subagentResult: string | null;
   subagentStatus: string | null;
   onOpenSubagentTask?: (info: SubagentInfo) => void;
 }
 
-function TaskToolContent({ description, type, subagentId, subagentResult, subagentStatus, onOpenSubagentTask }: TaskToolContentProps): React.ReactElement {
+/**
+ * A spawned task's detail panel: what it was asked to do, how it is going, and
+ * the way through to what it actually produced.
+ *
+ * It deliberately shows no result of its own. The `Task` tool returns the
+ * moment the subagent is dispatched, and nothing ever overwrites that reply —
+ * so the only "result" this panel could reach is the dispatch boilerplate,
+ * which used to render here under a heading reading "Result", telling the
+ * reader to call `TaskOutput(...)`. The output lives in the subagent's tab.
+ */
+function TaskToolContent({ description, type, subagentId, subagentStatus, onOpenSubagentTask }: TaskToolContentProps): React.ReactElement {
   const { t } = useTranslation();
 
   const handleGoToSubagent = () => {
@@ -155,10 +164,18 @@ function TaskToolContent({ description, type, subagentId, subagentResult, subage
     }
   };
 
-  const isRunning = subagentStatus && subagentStatus !== 'completed';
+  // The same mapping the chip above renders, so the panel cannot say "Failed"
+  // in one line and show the still-working glyph in the next.
+  const isRunning = taskCardStatusKind(subagentStatus) === 'running';
 
   return (
     <div className="space-y-4">
+      <TaskStatusChip
+        kind={taskCardStatusKind(subagentStatus)}
+        rawStatus={subagentStatus ?? undefined}
+        style={{ paddingLeft: 4 }}
+      />
+
       {description && (
         <div>
           <div
@@ -176,47 +193,13 @@ function TaskToolContent({ description, type, subagentId, subagentResult, subage
         </div>
       )}
 
-      <div>
-        <div
-          className="text-xs font-medium uppercase tracking-wider mb-2 px-1"
-          style={{ color: 'var(--color-text-tertiary)' }}
-        >
-          {t('toolArtifact.result')}
-        </div>
-        {subagentResult ? (
-          <div
-            className="rounded-lg px-3 py-3"
-            style={{ backgroundColor: 'var(--color-bg-surface)', border: '1px solid var(--color-border-muted)' }}
-          >
-            <Markdown variant="panel" content={subagentResult} className="text-sm" />
-          </div>
-        ) : isRunning ? (
-          <div
-            className="flex items-center gap-2 px-3 py-3 rounded-lg"
-            style={{ backgroundColor: 'var(--color-bg-surface)', border: '1px solid var(--color-border-muted)' }}
-          >
-            <Loader2 className="h-4 w-4 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
-            <span className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
-              {t('toolArtifact.subagentStillRunning')}
-            </span>
-          </div>
-        ) : (
-          <div
-            className="px-3 py-3 rounded-lg text-sm"
-            style={{ backgroundColor: 'var(--color-bg-surface)', border: '1px solid var(--color-border-muted)', color: 'var(--color-text-tertiary)' }}
-          >
-            {t('toolArtifact.noResultAvailable')}
-          </div>
-        )}
-      </div>
-
       {onOpenSubagentTask && subagentId && (
         <button
           onClick={handleGoToSubagent}
           className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg transition-colors hover:brightness-110"
           style={{
-            backgroundColor: 'var(--color-accent-soft)',
-            border: '1px solid var(--color-accent-soft)',
+            backgroundColor: 'var(--color-bg-elevated)',
+            border: '1px solid var(--color-border-elevated)',
           }}
         >
           <img src={isRunning ? iconRoboSing : iconRobo} alt="Subagent" className="w-5 h-5 flex-shrink-0" />
@@ -356,6 +339,22 @@ function ArtifactOrMarkdown({ artifact, content, toolName, toolCallProcess, onOp
         return <MarketIndicesChart data={artifact} />;
       case 'sector_performance':
         return <SectorPerformanceChart data={artifact} />;
+      case 'market_overview': {
+        // Composite artifact: legacy market_indices / sector_performance
+        // artifacts nested verbatim under `indices` / `sectors`.
+        const { indicesArtifact, sectorsArtifact, hasIndices, hasSectors } = unwrapMarketOverview(artifact);
+        if (hasIndices || hasSectors) {
+          return (
+            <div className="flex flex-col gap-4">
+              {hasIndices && <MarketIndicesChart data={indicesArtifact!} />}
+              {hasSectors && <SectorPerformanceChart data={sectorsArtifact!} />}
+            </div>
+          );
+        }
+        // Error-path artifact ({type, region} only) — fall through to the
+        // raw content/markdown rendering below.
+        break;
+      }
       case 'stock_screener':
         return <StockScreenerTable data={artifact} />;
       case 'sec_filing':
@@ -465,8 +464,8 @@ function WebSearchCards({ data }: WebSearchCardsProps): React.ReactElement {
         <div
           className="rounded-lg px-4 py-3"
           style={{
-            backgroundColor: 'var(--color-accent-soft)',
-            border: '1px solid var(--color-accent-soft)',
+            backgroundColor: 'var(--color-bg-elevated)',
+            border: '1px solid var(--color-border-default)',
           }}
         >
           <p className="text-sm" style={{ color: 'var(--color-text-primary)', lineHeight: 1.6 }}>
@@ -498,7 +497,7 @@ function WebSearchCards({ data }: WebSearchCardsProps): React.ReactElement {
             transition: 'border-color 0.15s, background-color 0.15s',
           }}
           onMouseEnter={(e: React.MouseEvent<HTMLAnchorElement>) => {
-            e.currentTarget.style.borderColor = 'var(--color-accent-overlay)';
+            e.currentTarget.style.borderColor = 'var(--color-border-elevated)';
             e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)';
           }}
           onMouseLeave={(e: React.MouseEvent<HTMLAnchorElement>) => {
@@ -569,8 +568,8 @@ function TruncatedResultMessage({ filePath, preview, onOpenFile }: TruncatedResu
       <div
         className="rounded-lg px-4 py-3"
         style={{
-          backgroundColor: 'var(--color-accent-soft)',
-          border: '1px solid var(--color-accent-overlay)',
+          backgroundColor: 'var(--color-bg-elevated)',
+          border: '1px solid var(--color-border-default)',
         }}
       >
         <div className="flex items-start gap-3">
@@ -587,8 +586,8 @@ function TruncatedResultMessage({ filePath, preview, onOpenFile }: TruncatedResu
                 onClick={() => onOpenFile(filePath)}
                 className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors hover:bg-foreground/10"
                 style={{
-                  color: 'var(--color-accent-primary)',
-                  border: '1px solid var(--color-accent-overlay)',
+                  color: 'var(--color-text-primary)',
+                  border: '1px solid var(--color-border-elevated)',
                 }}
               >
                 <FileText className="h-3.5 w-3.5" />

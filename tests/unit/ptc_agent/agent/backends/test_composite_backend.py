@@ -370,3 +370,119 @@ class TestThreeRouteBoundary:
         )
         assert await store.aget(("user_abc", "memory"), "nested.md") is not None
         assert await store.aget(("user_abc", "memos"), "nested.md") is None
+
+
+WORKFLOW_PREFIX = "/home/workspace/.agents/workflows/"
+
+
+class TestMountTraversalGuard:
+    """`..` must not walk a mounted path back out into the sandbox FS.
+
+    The guard used to name the memory tiers literally, so every later mount
+    (memo, workflows, profile) escaped silently.
+    """
+
+    @pytest.fixture
+    def workflow_composite(self, sandbox, store):
+        return CompositeFilesystemBackend(
+            sandbox=sandbox,
+            routes=[
+                StoreBackend(
+                    store=store,
+                    namespace_factory=lambda: ("user_abc", "workflows"),
+                    root_prefix=WORKFLOW_PREFIX,
+                    sandbox_backend=sandbox,
+                )
+            ],
+        )
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            WORKFLOW_PREFIX + "../escaped.js",
+            ".agents/workflows/../escaped.js",
+            ".agents/workflows/nested/../../escaped.js",
+        ],
+    )
+    def test_traversal_off_a_non_memory_mount_is_rejected(
+        self, workflow_composite, path
+    ):
+        with pytest.raises(ValueError, match="Path traversal"):
+            workflow_composite.normalize_path(path)
+
+    def test_traversal_off_a_memory_mount_is_still_rejected(self, composite):
+        with pytest.raises(ValueError, match="Path traversal"):
+            composite.normalize_path(".agents/user/memory/../escaped.md")
+
+    def test_traversal_outside_every_mount_is_allowed(self, workflow_composite):
+        assert workflow_composite.normalize_path("work/sub/../out.md")
+        assert workflow_composite.normalize_path("../out.md")
+
+    # The mirror image of the cases above: these do not *leave* a mount, they
+    # walk back *into* one. Nothing before the `..` is mounted, so a head-only
+    # walk passes them through, and the sandbox normalizer keeps the `..` — so
+    # routing saw a plain sandbox path and the store was bypassed.
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "work/../.agents/workflows/w.js",
+            "results/../.agents/workflows/w.js",
+            "work/./../.agents/workflows/w.js",
+            "work/../work/../.agents/workflows/w.js",
+            ".agents/../.agents/workflows/w.js",
+            "./work/sub/../../.agents/workflows/w.js",
+            "work/sub/../../.agents/workflows/w.js",
+            WORKING_DIR + "/work/../.agents/workflows/w.js",
+        ],
+    )
+    def test_traversal_into_a_mount_is_rejected(self, workflow_composite, path):
+        with pytest.raises(ValueError, match="Path traversal"):
+            workflow_composite.normalize_path(path)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "work/../.agents/user/memory/x.md",
+            "work/../.agents/workspace/memory/x.md",
+            WORKING_DIR + "/work/../.agents/user/memory/x.md",
+        ],
+    )
+    def test_traversal_into_a_memory_mount_is_rejected(self, composite, path):
+        with pytest.raises(ValueError, match="Path traversal"):
+            composite.normalize_path(path)
+
+    @pytest.mark.asyncio
+    async def test_traversal_write_is_not_silently_shadowed(
+        self, three_route_composite, sandbox, store
+    ):
+        """What the hole actually cost: the write reported success, landed on
+        an ephemeral sandbox path, and no later read could ever see it."""
+        with pytest.raises(ValueError, match="Path traversal"):
+            await three_route_composite.awrite_text(
+                "work/../.agents/user/memory/note.md", "remembered"
+            )
+        sandbox.awrite_text.assert_not_awaited()
+        assert await store.aget(("user_abc", "memory"), "note.md") is None
+
+    @pytest.mark.asyncio
+    async def test_traversal_write_to_memo_keeps_its_read_only_refusal(
+        self, three_route_composite, sandbox
+    ):
+        """The read-only tier must not be talked out of its refusal by a `..`
+        — that turned a raised error into a plain `True`."""
+        with pytest.raises(ValueError, match="Path traversal"):
+            await three_route_composite.awrite_text(
+                "work/../.agents/user/memo/doc.md", "agent tried"
+            )
+        sandbox.awrite_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_traversal_read_does_not_fall_through_to_the_sandbox(
+        self, three_route_composite, sandbox
+    ):
+        """Reads route through the same normalizer, so they had the same hole."""
+        with pytest.raises(ValueError, match="Path traversal"):
+            await three_route_composite.aread_text(
+                "work/../.agents/user/memory/note.md"
+            )
+        sandbox.aread_text.assert_not_awaited()

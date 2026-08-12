@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AnimatePresence } from 'framer-motion';
 import AutomationRow from './AutomationRow';
 import AutomationDetailOverlay from './AutomationDetailOverlay';
+import { useScrollMemory } from '@/lib/scrollMemory';
 import type { Automation } from '@/types/automation';
 
 interface AutomationsTableProps {
@@ -33,9 +34,11 @@ export default function AutomationsTable({
   mutationsLoading,
 }: AutomationsTableProps) {
   const { t } = useTranslation();
+  const listRef = useRef<HTMLDivElement>(null);
+  useScrollMemory(listRef, 'page:automations');
 
   return (
-    <div className="relative flex-1 min-h-0 overflow-y-auto">
+    <div ref={listRef} className="relative flex-1 min-h-0 overflow-y-auto">
       {/* Column Headers */}
       <div
         className="hidden sm:grid grid-cols-[1fr_1fr_0.6fr_0.8fr_0.5fr] gap-4 px-4 py-2 text-xs uppercase tracking-wider mb-2"

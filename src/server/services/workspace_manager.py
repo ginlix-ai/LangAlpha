@@ -9,13 +9,17 @@ import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import httpx
 
 from ptc_agent.config import AgentConfig
+from ptc_agent.core.mcp_sanitize import is_user_server
 from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 from ptc_agent.core.session import Session, SessionManager
+
+if TYPE_CHECKING:
+    from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
 from src.observability import (
     safe_add,
@@ -29,7 +33,7 @@ from src.observability import (
 from src.observability.tracing import hash_id as _obs_hash_id
 from src.observability.tracing import safe_aspan
 
-from src.server.services.background_task_manager import BackgroundTaskManager
+from src.server.services.runs.executor import LocalRunExecutor
 
 from src.server.database.workspace import (
     create_workspace as db_create_workspace,
@@ -41,6 +45,7 @@ from src.server.database.workspace import (
     update_workspace_status,
 )
 from src.server.services.persistence.file import FilePersistenceService
+from src.server.services.workspace_entitlements import WorkspaceEntitlementsMixin
 from src.server.services.workspace_status_pubsub import (
     publish_status_change,
     subscribe_to_status,
@@ -49,7 +54,7 @@ from src.server.services.workspace_status_pubsub import (
 logger = logging.getLogger(__name__)
 
 
-class WorkspaceManager:
+class WorkspaceManager(WorkspaceEntitlementsMixin):
     """Singleton that owns in-process session cache and workspace lifecycle (DB + sandbox)."""
 
     _instance: Optional["WorkspaceManager"] = None
@@ -82,9 +87,7 @@ class WorkspaceManager:
         # duplicate restart. 2x gives headroom past the 60-300s worst case;
         # only a genuinely-wedged start exceeds it.
         self.reap_stuck_after = (
-            reap_stuck_after
-            if reap_stuck_after is not None
-            else start_wait_timeout * 2
+            reap_stuck_after if reap_stuck_after is not None else start_wait_timeout * 2
         )
 
         # In-memory session cache (workspace_id -> Session)
@@ -93,6 +96,12 @@ class WorkspaceManager:
         # Track workspaces that used lazy init and still need skills/assets synced
         # Once sandbox is ready and sync completes, workspace is removed from this set
         self._pending_lazy_sync: set[str] = set()
+
+        # Elevated-tier workspaces restarted this request, owed an entitlement
+        # re-check in Phase 2 (lazy spec reclaim). Marked in _restart_workspace
+        # where the row is already in hand, so standard-tier restarts skip the
+        # check without any extra read.
+        self._pending_tier_recheck: set[str] = set()
 
         # Per-workspace locks (replaces global _lock to avoid cross-workspace blocking)
         self._lock_registry_mu = asyncio.Lock()  # protects _workspace_locks dict only
@@ -116,6 +125,16 @@ class WorkspaceManager:
 
         # Track last sync time per workspace for cooldown
         self._last_sync_at: Dict[str, float] = {}
+
+        # Strong refs to fire-and-forget background MCP discovery+re-sync tasks
+        # (asyncio holds only weak refs to tasks). Discarded in each task's done
+        # callback. These run OUTSIDE the per-workspace lock — discovery's stdio
+        # cold-start (up to 30s) must never sit on the response path or the lock.
+        # Tracked per-workspace so stop/delete can cancel a workspace's in-flight
+        # discovery (else it runs against a torn-down sandbox and writes orphaned
+        # schema rows); shutdown() drains all of them.
+        self._mcp_discovery_tasks: set[asyncio.Task] = set()
+        self._mcp_discovery_tasks_by_ws: Dict[str, set[asyncio.Task]] = {}
 
         # Cleanup task
         self._cleanup_task: Optional[asyncio.Task] = None
@@ -210,6 +229,10 @@ class WorkspaceManager:
 
         Safe to call when the workspace is not present — idempotent.
         """
+        # Cancel in-flight discovery before tearing down the session, mirroring
+        # stop_workspace/delete_workspace — it must not run against the torn-down
+        # sandbox or write orphaned schema rows for an evicted session.
+        self._cancel_mcp_discovery(workspace_id)
         try:
             await SessionManager.cleanup_session(workspace_id)
         except Exception as e:
@@ -220,9 +243,70 @@ class WorkspaceManager:
         if evict_session is None or self._sessions.get(workspace_id) is evict_session:
             self._sessions.pop(workspace_id, None)
         self._pending_lazy_sync.discard(workspace_id)
+        self._pending_tier_recheck.discard(workspace_id)
+
+    async def evict_session_if_present(self, workspace_id: str) -> bool:
+        """Evict this worker's cached session so the next acquisition re-inits.
+
+        The public entry point for out-of-band invalidation (e.g. the
+        platform-secret sweeper after a scrub-restart kills the session's exec
+        processes). Returns False without locking when nothing is cached.
+        """
+        if workspace_id not in self._sessions:
+            return False
+        async with self._acquire_workspace_lock(workspace_id):
+            if workspace_id not in self._sessions:
+                return False
+            await self._clear_session(workspace_id)
+        return True
+
+    async def _apply_session_platform_secret(
+        self,
+        workspace_id: str,
+        session: "Session",
+        *,
+        ws_version: int | None,
+    ) -> None:
+        """Hot-resync the sandbox onto the active platform-secret rollout.
+
+        The platform-secret analog of ``_apply_session_mcp``: a session-stamp
+        short-circuit, a piggybacked row version (``ws_version``), and only
+        non-destructive work — the scrub-restart for never-certified sandboxes
+        is owned by the background ``PlatformSecretSweeper``, so no busy-guard
+        or session eviction is needed here. Failures propagate; the warm path
+        re-checks on every slow-path acquisition, so retry is structural.
+        """
+        from ptc_agent.core.sandbox.platform_secrets import (
+            platform_secrets_active,
+        )
+
+        core_config = self.config.to_core_config()
+        if not platform_secrets_active(core_config):
+            return
+        sandbox = session.sandbox
+        runtime = getattr(sandbox, "runtime", None) if sandbox else None
+        if runtime is None:
+            return
+
+        from src.server.services.platform_secret_rollout import (
+            resync_workspace_platform_secret,
+        )
+
+        applied = await resync_workspace_platform_secret(
+            core_config,
+            runtime,
+            workspace_id=workspace_id,
+            sandbox_id=getattr(sandbox, "sandbox_id", None),
+            db_version=ws_version or 0,
+            applied_generation=session.platform_secret_version,
+        )
+        if applied is not None:
+            session.platform_secret_version = applied
 
     async def push_vault_secrets(
-        self, workspace_id: str, sandbox: "PTCSandbox | None" = None,
+        self,
+        workspace_id: str,
+        sandbox: "PTCSandbox | None" = None,
     ) -> None:
         """Push vault secrets to the running sandbox.
 
@@ -283,6 +367,251 @@ class WorkspaceManager:
             )
             return {}
 
+    # ── Per-workspace MCP resolution + composite caching ────────────────
+    #
+    # Resolved once per session (under the slow path, never in the cooldown
+    # window), cached on the Session, and re-used per turn so create_agent never
+    # re-resolves or queries the DB. The version check piggybacks the existing
+    # post-cooldown ``db_get_workspace`` read: when the workspace's
+    # ``mcp_config_version`` differs from the session's applied version we
+    # re-resolve + rebuild the composite, then re-run the existing sync path so
+    # wrappers update. Discovery for new/stale user servers is BACKGROUNDED — it
+    # never runs inline on the turn and never under the per-workspace lock.
+
+    async def _apply_session_mcp(
+        self,
+        workspace_id: str,
+        user_id: str | None,
+        session: Session,
+        *,
+        ws_version: int | None,
+    ) -> Any | None:
+        """Resolve the effective MCP set and stash composite+summary on ``session``.
+
+        ``ws_version`` is the ``mcp_config_version`` already read from the
+        workspaces row (piggyback — no extra read). Returns the ``ResolvedMCP``
+        when the composite was (re)built, ``None`` when the session was already
+        current (callers then skip the discovery kick). Cheap work only —
+        resolve (DB reads) + in-memory composite build; discovery is separate.
+        """
+        sandbox = session.sandbox
+        if sandbox is None:
+            return None
+
+        # Already current: same version AND a composite is installed. Skip the
+        # resolve entirely so an unchanged-config slow-path sync adds ZERO reads.
+        if (
+            session.mcp_config_version is not None
+            and ws_version is not None
+            and session.mcp_config_version == ws_version
+            and session.mcp_tool_summary is not None
+        ):
+            return None
+
+        from src.server.services.mcp_config import resolve_mcp_config
+
+        try:
+            resolved = await resolve_mcp_config(
+                self.config, user_id or "", workspace_id
+            )
+        except Exception as e:
+            logger.warning(
+                "[ASSET_SYNC] MCP resolve failed for %s: %s — keeping prior set",
+                workspace_id,
+                e,
+            )
+            return None
+
+        await self._install_session_composite(session, resolved)
+        return resolved
+
+    async def _install_session_composite(self, session: Session, resolved: Any) -> None:
+        """Build the composite registry + tool summary from ``resolved`` and stash.
+
+        The session's CoreConfig is already a per-workspace deep copy, so we make
+        its ``config.mcp.servers`` the EFFECTIVE set (built-ins + user servers)
+        — this is what the sandbox reads at every per-site audited point. The
+        composite registry (built-ins verbatim + ok-status user schemas) is set
+        on both ``session.mcp_registry`` and ``session.sandbox.mcp_registry`` so
+        codegen + the per-turn prompt read the same object. Zero user servers ⇒
+        the composite IS the built-in registry (identity), byte-identical.
+        """
+        from ptc_agent.core.mcp_registry import build_composite_registry
+        from ptc_agent.agent.prompts.formatter import (
+            build_tool_summary_from_registry,
+        )
+
+        sandbox = session.sandbox
+
+        # Effective server list onto the per-workspace CoreConfig copy.
+        if sandbox is not None and getattr(sandbox, "config", None) is not None:
+            sandbox.config.mcp.servers = list(resolved.servers)
+        session.config.mcp.servers = list(resolved.servers)
+
+        # User servers (source='workspace') + their ok-status cached schemas.
+        user_servers = [s for s in resolved.servers if is_user_server(s)]
+        tool_schemas: dict[str, list[dict]] = {}
+        if user_servers:
+            from src.server.database.mcp_servers import get_tool_schemas
+            from src.server.services.mcp_discovery import mcp_discovery_fingerprint
+
+            # Load a cached snapshot only when it's for the server's CURRENT
+            # config (hash match). A toggled/unrelated mutation leaves a server's
+            # fingerprint unchanged, so its tools load from cache — no re-verify;
+            # a server whose own config changed misses the cache and is picked up
+            # by background discovery.
+            fp_by_name = {s.name: mcp_discovery_fingerprint(s) for s in user_servers}
+            rows = await get_tool_schemas(session.conversation_id)
+            for row in rows:
+                name = row["server_name"]
+                if row.get("status") == "ok" and row.get(
+                    "config_hash"
+                ) == fp_by_name.get(name):
+                    tool_schemas[name] = row.get("tools") or []
+
+        # Always build from the BUILTIN registry, never a prior composite —
+        # session.mcp_registry may already be a composite from an earlier resolve.
+        builtin_registry = session._builtin_mcp_registry or session.mcp_registry
+        composite = build_composite_registry(
+            builtin_registry,
+            user_servers,
+            tool_schemas,
+            getattr(resolved, "disabled_builtin_names", frozenset()),
+        )
+
+        session.mcp_registry = composite
+        if sandbox is not None:
+            sandbox.mcp_registry = composite
+
+        try:
+            tool_exposure = self.config.mcp.tool_exposure_mode
+        except Exception:
+            tool_exposure = "summary"
+        session.mcp_tool_summary = build_tool_summary_from_registry(
+            composite, mode=tool_exposure
+        )
+        session.mcp_config_version = resolved.version
+
+    def _servers_needing_discovery(self, session: Session, resolved: Any) -> list[Any]:
+        """User servers in ``resolved`` lacking an ok-status schema in the composite.
+
+        Used to decide whether to kick background discovery. A server with cached
+        tools already appears in the composite; one without (pending/error/new)
+        contributes config but zero tools until discovery completes.
+        """
+        registry = session.mcp_registry
+        get_all = getattr(registry, "get_all_tools", None)
+        present_with_tools: set[str] = set()
+        if callable(get_all):
+            for name, tools in get_all().items():
+                if tools:
+                    present_with_tools.add(name)
+        return [
+            s
+            for s in resolved.servers
+            if is_user_server(s) and s.name not in present_with_tools
+        ]
+
+    def _kick_mcp_discovery(
+        self,
+        workspace_id: str,
+        user_id: str | None,
+        session: Session,
+        servers: list[Any],
+        version: int,
+    ) -> None:
+        """Fire-and-forget discovery + composite rebuild for ``servers`` (background).
+
+        Never awaited on the turn and never under the per-workspace lock: stdio
+        cold-start is up to 30s. On completion the session's composite+summary
+        are rebuilt in this same task (a mid-turn swap is safe — create_agent
+        reads the registry+summary at turn start, so the worst case is the new
+        tools appear one turn later).
+        """
+        if not servers:
+            return
+
+        def _session_live() -> bool:
+            # Bail if the workspace was stopped/deleted (or replaced) while
+            # discovery ran: don't touch a torn-down sandbox or write orphaned
+            # schema rows for a session that's no longer the live one.
+            if self._sessions.get(workspace_id) is not session:
+                return False
+            sandbox = session.sandbox
+            if sandbox is None:
+                return False
+            is_ready = getattr(sandbox, "is_ready", None)
+            return is_ready() if callable(is_ready) else True
+
+        async def _run() -> None:
+            try:
+                if not _session_live():
+                    return
+                from src.server.services.mcp_discovery import discover_and_cache
+
+                _t_disc = time.time()
+                await discover_and_cache(workspace_id, session.sandbox, servers)
+                logger.info(
+                    "[ASSET_SYNC] workspace_id=%s mcp_discovery=%.0fms servers=%d",
+                    workspace_id,
+                    (time.time() - _t_disc) * 1000,
+                    len(servers),
+                )
+                # Rebuild from the freshly-cached ok rows so this session sees the
+                # new tools without waiting for the next post-cooldown acquire.
+                # Only swap if the session's config version is still ``version``
+                # (no newer mutation landed) AND this is still the live session.
+                if session.mcp_config_version == version and _session_live():
+                    from src.server.services.mcp_config import (
+                        resolve_mcp_config,
+                    )
+
+                    resolved = await resolve_mcp_config(
+                        self.config, user_id or "", workspace_id
+                    )
+                    if resolved.version == version and _session_live():
+                        await self._install_session_composite(session, resolved)
+                        # Re-run sync so the new wrappers land in the sandbox.
+                        await self._sync_sandbox_assets(
+                            workspace_id,
+                            user_id,
+                            session.sandbox,
+                            reusing_sandbox=True,
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(
+                    "[ASSET_SYNC] background MCP discovery failed for %s: %s",
+                    workspace_id,
+                    e,
+                )
+
+        task = asyncio.create_task(_run())
+        self._mcp_discovery_tasks.add(task)
+        self._mcp_discovery_tasks_by_ws.setdefault(workspace_id, set()).add(task)
+
+        def _on_done(t: asyncio.Task) -> None:
+            self._mcp_discovery_tasks.discard(t)
+            ws_tasks = self._mcp_discovery_tasks_by_ws.get(workspace_id)
+            if ws_tasks is not None:
+                ws_tasks.discard(t)
+                if not ws_tasks:
+                    self._mcp_discovery_tasks_by_ws.pop(workspace_id, None)
+
+        task.add_done_callback(_on_done)
+
+    def _cancel_mcp_discovery(self, workspace_id: str) -> None:
+        """Cancel a workspace's in-flight background discovery tasks.
+
+        Called on stop/delete so discovery can't run against a torn-down sandbox
+        or write orphaned schema rows. The done callbacks prune both the global
+        set and the per-workspace map.
+        """
+        for task in list(self._mcp_discovery_tasks_by_ws.get(workspace_id, ())):
+            task.cancel()
+        self._mcp_discovery_tasks_by_ws.pop(workspace_id, None)
+
     async def _sync_sandbox_assets(
         self,
         workspace_id: str,
@@ -336,7 +665,9 @@ class WorkspaceManager:
         # Vault secrets — piggyback on existing parallel gather so
         # secrets are available after stop/start and sandbox recovery.
         # Pass sandbox directly: session may not be in self._sessions yet.
-        tasks.append(_timed("vault", self.push_vault_secrets(workspace_id, sandbox=sandbox)))
+        tasks.append(
+            _timed("vault", self.push_vault_secrets(workspace_id, sandbox=sandbox))
+        )
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
@@ -402,6 +733,114 @@ class WorkspaceManager:
         except Exception as e:
             logger.warning(f"Failed to seed agent.md: {e}")
 
+    async def _provision_sandbox_session(
+        self,
+        workspace_id: str,
+        user_id: str | None,
+        *,
+        tier: str | None = None,
+        auto_stop_minutes: int | None = None,
+        ws_version: int | None,
+        kick_discovery: bool,
+        post_init: "Callable[[Session], Any]",
+        core_config: Any = None,
+        expected_previous_sandbox_id: str | None = None,
+    ) -> tuple[Session, Any]:
+        """Mint tokens, create + hydrate a fresh sandbox session, and mark it running.
+
+        The provisioning spine shared by ``create_workspace``, ``_recover_sandbox``
+        and ``duplicate_workspace``: mint tokens -> ``SessionManager.get_session``
+        -> ``session.initialize`` (sized to ``tier`` / ``auto_stop_minutes``) ->
+        install the MCP composite -> sync assets -> cache -> optionally kick
+        background discovery -> run ``post_init(session)`` (seed agent.md for
+        create, restore files for recover/duplicate) -> flip the row to running
+        -> record the sync. Returns ``(session, workspace_record)`` where the
+        record is the row returned by ``update_workspace_status``.
+
+        The session is cached BEFORE the discovery kick so the background task's
+        liveness gate (``self._sessions.get(workspace_id) is session``) passes;
+        ``ws_version=None`` forces a fresh MCP resolve. On any failure the
+        half-built session is torn down via ``_clear_session`` (identity-guarded
+        pop + Daytona delete) so a partial provision never orphans a billed
+        sandbox, and the exception re-raises for the caller to mark the row.
+        """
+        if core_config is None:
+            core_config = self.config.to_core_config()
+
+        sandbox_tokens = await self._mint_sandbox_tokens(user_id or "", workspace_id)
+        session = SessionManager.get_session(workspace_id, core_config)
+        try:
+            await session.initialize(
+                sandbox_tokens=sandbox_tokens,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                tier=tier,
+                auto_stop_minutes=auto_stop_minutes,
+            )
+
+            # Install the per-workspace composite before asset sync so user-server
+            # wrappers are regenerated for the fresh sandbox.
+            resolved_mcp = await self._apply_session_mcp(
+                workspace_id, user_id, session, ws_version=ws_version
+            )
+
+            await self._sync_sandbox_assets(
+                workspace_id, user_id, session.sandbox, reusing_sandbox=False
+            )
+
+            # Cache the session BEFORE kicking discovery: the background task's
+            # liveness gate (``self._sessions.get(workspace_id) is session``)
+            # would otherwise see no cached session and exit permanently.
+            self._sessions[workspace_id] = session
+
+            if kick_discovery and resolved_mcp is not None:
+                self._kick_mcp_discovery(
+                    workspace_id,
+                    user_id,
+                    session,
+                    self._servers_needing_discovery(session, resolved_mcp),
+                    session.mcp_config_version or 0,
+                )
+
+            await post_init(session)
+
+            sandbox_id = (
+                getattr(session.sandbox, "sandbox_id", None)
+                if session.sandbox
+                else None
+            )
+            if not sandbox_id or not session.sandbox or not session.sandbox.runtime:
+                raise RuntimeError("Fresh sandbox is missing its runtime identity")
+
+            from src.server.services.platform_secret_rollout import (
+                certify_new_workspace_sandbox,
+            )
+
+            workspace = await certify_new_workspace_sandbox(
+                core_config,
+                workspace_id=workspace_id,
+                expected_previous_sandbox_id=expected_previous_sandbox_id,
+                sandbox_id=sandbox_id,
+                runtime=session.sandbox.runtime,
+            )
+            if workspace is None:
+                workspace = await update_workspace_status(
+                    workspace_id=workspace_id,
+                    status="running",
+                    sandbox_id=sandbox_id,
+                )
+
+            self._record_sync(workspace_id)
+            return session, workspace
+        except Exception:
+            # Unwind a half-built provision: cancel discovery, drop the broken
+            # cached session (identity-guarded), and destroy the Daytona sandbox
+            # created before the failure so a partial provision never leaves an
+            # orphaned, still-billed sandbox. Re-raise for the caller to mark the
+            # row (error) and/or revert side effects.
+            await self._clear_session(workspace_id, evict_session=session)
+            raise
+
     async def _recover_sandbox(
         self,
         workspace_id: str,
@@ -410,38 +849,55 @@ class WorkspaceManager:
     ) -> Session:
         """Create a fresh sandbox after the old one was deleted, restore files from DB.
 
+        Sizes the new sandbox to the workspace's persisted ``resource_tier`` —
+        re-checked against the owner's live entitlement (lazy spec reclaim) — and
+        re-applies always-on (auto-stop disabled), also re-checked against the
+        live entitlement (lazy always-on reclaim), at create time, so every
+        recovery/recreate self-heals to the entitled spec and always-on state —
+        hosted Daytona can't resize a snapshot sandbox, so sizing must happen at
+        creation.
+
         Returns the new session (already cached and DB-updated).
         """
-        sandbox_tokens = await self._mint_sandbox_tokens(user_id or "", workspace_id)
-        session = SessionManager.get_session(workspace_id, core_config)
-        await session.initialize(
-            sandbox_tokens=sandbox_tokens,
-            user_id=user_id,
-            workspace_id=workspace_id,
-        )
-        new_sandbox_id = getattr(session.sandbox, "sandbox_id", None)
+        workspace = await db_get_workspace(workspace_id)
+        tier = await self._entitled_tier(workspace or {}, user_id)
+        always_on = await self._entitled_always_on(workspace or {}, user_id)
+        auto_stop_minutes = 0 if always_on else None
 
-        await self._sync_sandbox_assets(
-            workspace_id, user_id, session.sandbox, reusing_sandbox=False
-        )
+        async def _post_init(session: Session) -> None:
+            if session.sandbox:
+                await self._restore_files(workspace_id, session.sandbox)
 
-        if session.sandbox:
-            await self._restore_files(workspace_id, session.sandbox)
-
-        await update_workspace_status(
-            workspace_id=workspace_id,
-            status="running",
-            sandbox_id=new_sandbox_id,
+        # ws_version=None forces a resolve (the session is brand new); discovery
+        # is kicked in the background so recovered user servers re-hydrate.
+        session, _ = await self._provision_sandbox_session(
+            workspace_id,
+            user_id,
+            tier=tier,
+            auto_stop_minutes=auto_stop_minutes,
+            ws_version=None,
+            kick_discovery=True,
+            post_init=_post_init,
+            core_config=core_config,
+            expected_previous_sandbox_id=(workspace or {}).get("sandbox_id"),
         )
-        self._sessions[workspace_id] = session
-        self._record_sync(workspace_id)
         await update_workspace_activity(workspace_id)
         return session
 
-    async def _backup_files_to_db(self, workspace_id: str) -> None:
-        """Backup workspace files from sandbox to DB. Non-blocking on failure."""
+    async def _backup_files_to_db(
+        self, workspace_id: str, *, strict: bool = False
+    ) -> None:
+        """Backup workspace files from sandbox to DB. Non-blocking on failure.
+
+        ``strict=True`` raises instead of warning — for callers about to destroy
+        the sandbox, where a missed backup is data loss rather than degraded sync.
+        """
         session = self._sessions.get(workspace_id)
         if not session or not getattr(session, "sandbox", None):
+            if strict:
+                raise RuntimeError(
+                    f"No attached session to back up workspace {workspace_id} from"
+                )
             return
         try:
             result = await FilePersistenceService.sync_to_db(
@@ -449,6 +905,11 @@ class WorkspaceManager:
             )
             logger.debug(f"File backup completed for {workspace_id}: {result}")
         except Exception as e:
+            if strict:
+                raise RuntimeError(
+                    f"File backup failed for {workspace_id}; aborting before "
+                    f"sandbox teardown: {e}"
+                ) from e
             logger.warning(f"File backup failed for {workspace_id}: {e}")
 
     async def _restore_files(self, workspace_id: str, sandbox: Any) -> None:
@@ -457,9 +918,21 @@ class WorkspaceManager:
             result = await FilePersistenceService.restore_to_sandbox(
                 workspace_id, sandbox
             )
-            logger.info(
-                f"Restored {result['restored']} files to sandbox for {workspace_id}"
-            )
+            errors = result.get("errors", 0) if isinstance(result, dict) else 0
+            if errors:
+                # Restore is per-file best-effort and never raises, so files that
+                # don't land (e.g. they overflow a downgraded disk) would vanish
+                # silently. Surface the count so a tier downgrade that loses data
+                # is at least visible in the logs.
+                logger.warning(
+                    f"Restored {result['restored']} files to sandbox for "
+                    f"{workspace_id}, but {errors} failed to restore "
+                    f"(possible data loss after a disk downgrade)"
+                )
+            else:
+                logger.info(
+                    f"Restored {result['restored']} files to sandbox for {workspace_id}"
+                )
         except Exception as e:
             logger.warning(f"File restore failed for {workspace_id}: {e}")
 
@@ -483,9 +956,7 @@ class WorkspaceManager:
             "provider": config.sandbox.provider,
             "working_dir": config.filesystem.working_directory,
         }
-        return hashlib.sha256(
-            json.dumps(data, sort_keys=True).encode()
-        ).hexdigest()[:8]
+        return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:8]
 
     def _sandbox_config_stamp(self) -> Dict[str, Any]:
         """Build the sandbox config fields to persist in workspace config JSONB.
@@ -512,7 +983,7 @@ class WorkspaceManager:
         """
         from psycopg.types.json import Json
 
-        from src.server.database.conversation import get_db_connection
+        from src.server.database.pool import get_db_connection
 
         try:
             async with get_db_connection() as conn:
@@ -527,9 +998,7 @@ class WorkspaceManager:
                         (Json(fields), workspace_id),
                     )
         except Exception as e:
-            logger.warning(
-                f"Failed to update config for workspace {workspace_id}: {e}"
-            )
+            logger.warning(f"Failed to update config for workspace {workspace_id}: {e}")
             if raise_on_error:
                 raise
 
@@ -574,8 +1043,7 @@ class WorkspaceManager:
 
         # --- Full migration needed ---
         logger.info(
-            f"Migrating workspace {workspace_id} sandbox: "
-            f"{actual_wd} -> {expected_wd}"
+            f"Migrating workspace {workspace_id} sandbox: {actual_wd} -> {expected_wd}"
         )
 
         # 1. Backup files to DB (must succeed or we abort — data loss prevention)
@@ -604,9 +1072,7 @@ class WorkspaceManager:
 
         # 3. Create fresh sandbox + restore files from DB
         core_config = self.config.to_core_config()
-        new_session = await self._recover_sandbox(
-            workspace_id, user_id, core_config
-        )
+        new_session = await self._recover_sandbox(workspace_id, user_id, core_config)
 
         # 4. Stamp DB so future reconnects skip migration.
         # Retry once on failure — an unstamped workspace would re-migrate every
@@ -620,9 +1086,7 @@ class WorkspaceManager:
                 break
             except Exception:
                 if attempt == 0:
-                    logger.warning(
-                        f"Retrying config stamp for {workspace_id}"
-                    )
+                    logger.warning(f"Retrying config stamp for {workspace_id}")
                 else:
                     logger.error(
                         f"Failed to stamp sandbox config for {workspace_id} "
@@ -667,42 +1131,19 @@ class WorkspaceManager:
             workspace_id, "workspace.create", user_id=_obs_hash_id(user_id)
         ):
             try:
-                # 2. Mint scoped tokens for sandbox ginlix-data access
-                sandbox_tokens = await self._mint_sandbox_tokens(user_id, workspace_id)
+                # A brand-new workspace has zero MCP rows → builtins-only identity
+                # (ws_version=0, no discovery to kick). Seed a default agent.md as
+                # the provisioning post-init step.
+                async def _post_init(session: Session) -> None:
+                    await self._seed_agent_md(session.sandbox, name, description)
 
-                # 3. Initialize sandbox via ptc-agent Session
-                core_config = self.config.to_core_config()
-                session = SessionManager.get_session(workspace_id, core_config)
-                await session.initialize(
-                    sandbox_tokens=sandbox_tokens,
-                    user_id=user_id,
-                    workspace_id=workspace_id,
+                _session, workspace = await self._provision_sandbox_session(
+                    workspace_id,
+                    user_id,
+                    ws_version=0,
+                    kick_discovery=False,
+                    post_init=_post_init,
                 )
-
-                # Sync skills and user data to sandbox in parallel
-                await self._sync_sandbox_assets(
-                    workspace_id, user_id, session.sandbox, reusing_sandbox=False
-                )
-
-                # Seed default agent.md with workspace metadata
-                await self._seed_agent_md(session.sandbox, name, description)
-
-                # Store session in cache
-                self._sessions[workspace_id] = session
-
-                # Get sandbox ID
-                sandbox_id = None
-                if session.sandbox:
-                    sandbox_id = getattr(session.sandbox, "sandbox_id", None)
-
-                # 3. Update DB with sandbox_id (status='running')
-                workspace = await update_workspace_status(
-                    workspace_id=workspace_id,
-                    status="running",
-                    sandbox_id=sandbox_id,
-                )
-
-                self._record_sync(workspace_id)
 
                 # Stamp sandbox config (provider, working dir, hash) for migration detection
                 await self._update_workspace_config_fields(
@@ -710,13 +1151,15 @@ class WorkspaceManager:
                 )
 
                 logger.info(
-                    f"Workspace {workspace_id} created with sandbox {sandbox_id}"
+                    f"Workspace {workspace_id} created with sandbox "
+                    f"{workspace.get('sandbox_id') if workspace else None}"
                 )
                 safe_add(workspace_created, 1)
                 return workspace
 
             except Exception as e:
-                # Mark as error if sandbox creation fails
+                # The provisioning spine already tore down any half-built sandbox;
+                # mark the row error so it stops claiming 'creating'/'running'.
                 logger.error(
                     f"Failed to create sandbox for workspace {workspace_id}: {e}"
                 )
@@ -737,6 +1180,89 @@ class WorkspaceManager:
             return False
         return session.sandbox.is_ready()
 
+    def get_session_if_ready(self, workspace_id: str) -> "Session | None":
+        """Return the cached session iff it's ready, else None (no I/O, no wake).
+
+        One-shot replacement for the ``has_ready_session()`` + ``_sessions.get()``
+        pair so callers (e.g. the unauthenticated public serve routes) avoid the
+        TOCTOU window between the two and don't reach into the private map.
+        """
+        session = self._sessions.get(workspace_id)
+        if session is None or not session._initialized or not session.sandbox:
+            return None
+        if not session.sandbox.is_ready():
+            return None
+        return session
+
+    def get_applied_mcp_config_version(self, workspace_id: str) -> int | None:
+        """The MCP config version the warm session has applied (no I/O, no lock).
+
+        Returns None when no ready session exists — the config isn't loaded
+        anywhere live yet. The effective-list endpoint surfaces this so the UI
+        shows a version-accurate "applied / still applying" state instead of a
+        best-effort timer.
+        """
+        if not self.has_ready_session(workspace_id):
+            return None
+        session = self._sessions.get(workspace_id)
+        return session.mcp_config_version if session is not None else None
+
+    async def proactively_apply_mcp_config(
+        self, workspace_id: str, user_id: str | None = None
+    ) -> None:
+        """Front-load verifying + applying a just-mutated MCP config — warming
+        the sandbox if it isn't running yet.
+
+        Mutations only bump ``mcp_config_version`` in the DB; the live agent
+        normally picks the change up on its next acquire (the next message).
+        This runs that acquire/re-sync NOW, in the background, so a server is
+        discovered and loaded before the user's next turn — no surprise.
+
+        We always drive ``get_session_for_workspace``: when a session is warm we
+        first clear the 30s sync cooldown so the acquire actually re-resolves +
+        re-syncs instead of short-circuiting; when none is warm we still acquire,
+        which warms (or cold-starts) the sandbox. A user who just configured an
+        MCP server in the workspace panel expects it to come up and verify
+        regardless of whether the sandbox happened to be running — entering the
+        workspace warms it anyway, so a config change does the same.
+
+        Strictly additive and best-effort: any failure (cold-start error,
+        workspace mid-create / in error) is swallowed here and the change falls
+        back to today's next-message apply.
+        """
+        self._last_sync_at.pop(workspace_id, None)
+        try:
+            await self.get_session_for_workspace(workspace_id, user_id=user_id)
+        except Exception as e:
+            logger.warning(
+                "[ASSET_SYNC] proactive MCP apply failed for %s: %s — "
+                "falling back to next-message apply",
+                workspace_id,
+                e,
+            )
+
+    async def refresh_session_mcp(
+        self, workspace_id: str, user_id: str | None = None
+    ) -> None:
+        """Rebuild the live session's MCP composite WITHOUT a version bump.
+
+        For out-of-band schema-cache updates (the manual ``/discover`` probe)
+        where ``mcp_config_version`` is unchanged so ``_apply_session_mcp``
+        would short-circuit. Busting the session's cached version forces the
+        next apply to re-resolve, reload the fresh snapshots, and re-sync
+        wrappers — then the standard proactive-apply path does the work.
+        No-op (beyond a warm acquire) when no session is live.
+        """
+        # Deliberately lock-free: racing a concurrent _apply_session_mcp (which
+        # reads this field under the workspace lock) costs at most one redundant
+        # re-resolve — never a missed one, since the proactive apply below
+        # re-enters the locked path. Don't add a lock here; it would put this
+        # background refresh in contention with the hot chat path.
+        session = self._sessions.get(workspace_id)
+        if session is not None:
+            session.mcp_config_version = None
+        await self.proactively_apply_mcp_config(workspace_id, user_id)
+
     async def get_session_for_workspace(
         self,
         workspace_id: str,
@@ -744,8 +1270,13 @@ class WorkspaceManager:
         on_state_observed: Callable[[str], None] | None = None,
         _attempt: int = 0,
     ) -> Session:
-        """
-        Get or restart session for workspace.
+        """Get or restart a session for a workspace.
+
+        Sandbox sizing and always-on are applied at create/restart time — a
+        recreated sandbox is built from the workspace's tier snapshot with
+        auto-stop set in ``_recover_sandbox``, a reconnected always-on sandbox
+        has its auto-stop re-asserted in ``_restart_workspace``, and a plain
+        reconnect keeps its existing spec — so no post-start re-ensure is needed.
 
         Args:
             workspace_id: Workspace UUID
@@ -759,7 +1290,7 @@ class WorkspaceManager:
                 fresh sandbox (no pre-existing state to observe).
 
         Returns:
-            Initialized Session instance
+            Initialized Session instance.
 
         Raises:
             ValueError: If workspace not found
@@ -782,6 +1313,12 @@ class WorkspaceManager:
         needs_deferred_sync = False
         pending_start_wait = False
         workspace_user_id = user_id
+        # mcp_config_version + platform_secret_version from the post-cooldown
+        # workspaces read (piggyback — no extra query). None when we never reach
+        # the slow-path DB read (cooldown warm hit / still-initializing — both
+        # early-return before this point).
+        ws_mcp_version: int | None = None
+        ws_platform_secret_version: int | None = None
 
         async with self._observed_lock(
             workspace_id, "workspace.session.acquire", cached_on_entry=_was_cached
@@ -809,13 +1346,15 @@ class WorkspaceManager:
 
                         if isinstance(init_err, SandboxGoneError):
                             core_config = self.config.to_core_config()
-                            return await self._recover_sandbox(
+                            recovered = await self._recover_sandbox(
                                 workspace_id, workspace_user_id, core_config
                             )
+                            return recovered
                         # Non-sandbox-gone error: fall through to status-based handling
                         session = None
                     else:
-                        # Sandbox still initializing (lazy init in progress)
+                        # Sandbox still initializing (lazy init in progress) — warm
+                        # fast path, no recreation, so no tier re-check needed.
                         logger.info(
                             f"Sandbox still initializing for {workspace_id}, "
                             f"skipping sync"
@@ -829,7 +1368,8 @@ class WorkspaceManager:
                         not self._sync_cooldown_ok(workspace_id) or needs_deferred_sync
                     )
                     if not needs_sync:
-                        # Cooldown active, skip expensive Daytona calls
+                        # Cooldown active, skip expensive Daytona calls — warm fast
+                        # path, no recreation, so no tier re-check needed.
                         safe_add(session_path_counter, 1, {"path": "warm_cooldown"})
                         return session
 
@@ -841,6 +1381,16 @@ class WorkspaceManager:
             status = workspace["status"]
             sandbox_id_from_db = workspace.get("sandbox_id")
             workspace_user_id = workspace.get("user_id") or user_id
+            # Piggyback the MCP config + platform-secret versions off this
+            # existing read.
+            ws_mcp_version = (
+                int(workspace.get("mcp_config_version") or 0)
+                if workspace.get("mcp_config_version") is not None
+                else 0
+            )
+            ws_platform_secret_version = int(
+                workspace.get("platform_secret_version") or 0
+            )
             logger.debug(
                 f"Workspace {workspace_id} from DB: status={status}, sandbox_id={sandbox_id_from_db}, user_id={workspace_user_id}"
             )
@@ -924,7 +1474,9 @@ class WorkspaceManager:
                         sandbox_id = workspace.get("sandbox_id")
                         if sandbox_id:
                             try:
-                                from ptc_agent.core.sandbox.providers import create_provider
+                                from ptc_agent.core.sandbox.providers import (
+                                    create_provider,
+                                )
 
                                 provider = create_provider(self.config.to_core_config())
                                 try:
@@ -983,7 +1535,9 @@ class WorkspaceManager:
                                     # because the per-workspace asyncio.Lock is held
                                     # and is not reentrant)
                                     core_config = self.config.to_core_config()
-                                    session = SessionManager.get_session(workspace_id, core_config)
+                                    session = SessionManager.get_session(
+                                        workspace_id, core_config
+                                    )
                                     if not session._initialized:
                                         await session.initialize(
                                             sandbox_id=sandbox_id,
@@ -1005,9 +1559,10 @@ class WorkspaceManager:
                                 )
                                 core_config = self.config.to_core_config()
                                 await self._clear_session(workspace_id)
-                                return await self._recover_sandbox(
+                                recovered = await self._recover_sandbox(
                                     workspace_id, workspace_user_id, core_config
                                 )
+                                return recovered
                             except Exception as e:
                                 logger.error(
                                     "Failed to check actual sandbox state for %s: %s",
@@ -1051,7 +1606,10 @@ class WorkspaceManager:
         # slow archived cold-start (60-300s) doesn't head-of-line block other
         # ops on this workspace behind the 60s lock-acquire ceiling.
         if pending_start_wait:
-            return await self._await_in_flight_start(
+            # May attach a now-running session or recurse into the public
+            # get_session_for_workspace. Either path applies sizing/always-on at
+            # create/restart time, so no post-attach re-ensure is needed.
+            attached = await self._await_in_flight_start(
                 workspace_id,
                 user_id=user_id,
                 workspace_user_id=workspace_user_id,
@@ -1059,6 +1617,7 @@ class WorkspaceManager:
                 mark=_mark,
                 attempt=_attempt,
             )
+            return attached
 
         # ── Phase 2: expensive sync OUTSIDE the lock (idempotent / self-guarded).
         # Coalesces same-worker callers on the dedupe gate, promotes a lazy start
@@ -1074,6 +1633,8 @@ class WorkspaceManager:
             phase2_owner=phase2_owner,
             phase2_event=phase2_event,
             mark=_mark,
+            ws_mcp_version=ws_mcp_version,
+            ws_platform_secret_version=ws_platform_secret_version,
         )
 
         if _session_phases:
@@ -1100,6 +1661,10 @@ class WorkspaceManager:
                     {"phase": _phase, "session_path": session_path},
                 )
 
+        # Reached only via _complete_phase2_sync — a real cold-start / restart /
+        # recovery (or a periodic warm re-sync). Sizing/always-on are applied at
+        # create/restart time (see _recover_sandbox / _restart_workspace), so the
+        # session is returned ready with no post-start re-ensure.
         return session
 
     async def _await_in_flight_start(
@@ -1161,6 +1726,8 @@ class WorkspaceManager:
         phase2_owner: bool,
         phase2_event: Optional[asyncio.Event],
         mark: Callable[[str], None],
+        ws_mcp_version: int | None = None,
+        ws_platform_secret_version: int | None = None,
     ) -> Session | None:
         """Run the post-lock sync/promote step and return the usable session.
 
@@ -1204,8 +1771,61 @@ class WorkspaceManager:
                 )
 
             try:
+                # Lazy spec reclaim, deliberately OFF the Phase-1 lock: a lazy
+                # restart reconnects at the persisted size, and rebuilding here
+                # instead of in _restart_workspace keeps the per-workspace lock
+                # free during the full reprovision (which would otherwise
+                # head-of-line block every op on this workspace up to the 60s
+                # lock ceiling). The entitlement RTT overlaps the sandbox's
+                # background start, and the caller never sees the outsized
+                # sandbox — Phase 2 gates the return either way.
+                if (
+                    needs_deferred_sync
+                    and workspace_user_id
+                    and workspace_id in self._pending_tier_recheck
+                ):
+                    reclaimed = await self._maybe_reclaim_lazy_tier(
+                        workspace_id, workspace_user_id, session
+                    )
+                    if reclaimed is not None:
+                        mark("tier_reclaim")
+                        return reclaimed
+
                 await session.sandbox.ensure_sandbox_ready()
                 mark("sandbox_ready")
+
+                # Hot-resync the platform-secret bindings on EVERY slow-path
+                # sync (the MCP-shaped warm re-check) — an identity bump thus
+                # reaches warm and always-on sandboxes within one cooldown
+                # window, before MCP/asset work. Non-destructive by design;
+                # the session stamp makes the in-sync case free.
+                await self._apply_session_platform_secret(
+                    workspace_id, session, ws_version=ws_platform_secret_version
+                )
+                mark("platform_secret")
+
+                # Resolve + apply the per-workspace MCP composite BEFORE asset
+                # sync so codegen (which reads session.sandbox.mcp_registry) sees
+                # the effective set. Cheap (resolve + in-memory build); the slow
+                # discovery is kicked in the background below. The version check
+                # rides ws_mcp_version (piggybacked from the post-cooldown read),
+                # so an unchanged config adds zero extra DB reads.
+                _t_resolve = time.time()
+                resolved_mcp = await self._apply_session_mcp(
+                    workspace_id,
+                    workspace_user_id,
+                    session,
+                    ws_version=ws_mcp_version,
+                )
+                mcp_changed = resolved_mcp is not None
+                if mcp_changed:
+                    logger.info(
+                        "[ASSET_SYNC] workspace_id=%s mcp_resolve=%.0fms version=%s",
+                        workspace_id,
+                        (time.time() - _t_resolve) * 1000,
+                        session.mcp_config_version,
+                    )
+                    mark("mcp_resolve")
 
                 if needs_deferred_sync:
                     logger.debug(
@@ -1220,6 +1840,28 @@ class WorkspaceManager:
                     mark("asset_sync")
                     await self._maybe_restore_files(workspace_id, session.sandbox)
                     mark("file_restore")
+                    # Reseed auto-stop from the always-on flag now that the
+                    # sandbox is actually up — the lazy restart deferred this
+                    # (an interval write to a still-archived sandbox races the
+                    # background start). Best-effort: a reseed hiccup must not
+                    # revert an otherwise-healthy start to 'stopped'.
+                    ws_flags = await db_get_workspace(workspace_id)
+                    if ws_flags and ws_flags.get("sandbox_id"):
+                        try:
+                            await self._apply_autostop_for_always_on(
+                                ws_flags["sandbox_id"],
+                                enabled=bool(ws_flags.get("is_always_on")),
+                                runtime=(
+                                    getattr(session.sandbox, "runtime", None)
+                                    if session.sandbox
+                                    else None
+                                ),
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to re-assert auto-stop interval for "
+                                f"{workspace_id} after lazy start: {e}"
+                            )
                     # Promote to 'running' ONLY after the sandbox is ready AND
                     # assets + files are synced — so 'running' (and its pub/sub
                     # notification + SSE close) truthfully means "usable". Any
@@ -1234,6 +1876,32 @@ class WorkspaceManager:
                         )
                         await update_workspace_activity(workspace_id)
                         self._pending_lazy_sync.discard(workspace_id)
+                elif mcp_changed:
+                    # Warm re-sync path normally skips asset sync; a config-version
+                    # delta means wrappers changed, so push them now (off the lock,
+                    # bounded to changed modules by the manifest diff). No file
+                    # restore / promotion — the running session already owns those.
+                    await self._sync_sandbox_assets(
+                        workspace_id,
+                        workspace_user_id,
+                        session.sandbox,
+                        reusing_sandbox=True,
+                    )
+                    mark("mcp_asset_sync")
+
+                # Kick background discovery for user servers still lacking ok
+                # schemas (new/pending/error). Never awaited here and never under
+                # the lock — stdio cold-start is up to 30s. On completion it
+                # rebuilds this session's composite + re-syncs the new wrappers.
+                if resolved_mcp is not None:
+                    needing = self._servers_needing_discovery(session, resolved_mcp)
+                    self._kick_mcp_discovery(
+                        workspace_id,
+                        workspace_user_id,
+                        session,
+                        needing,
+                        session.mcp_config_version or 0,
+                    )
 
                 self._record_sync(workspace_id)
             except SandboxGoneError as e:
@@ -1320,9 +1988,7 @@ class WorkspaceManager:
                     pass
                 raise
             except Exception as e:
-                logger.warning(
-                    f"Phase 2 sync failed for workspace {workspace_id}: {e}"
-                )
+                logger.warning(f"Phase 2 sync failed for workspace {workspace_id}: {e}")
                 # Capture before reverting — the revert clears _pending_lazy_sync.
                 was_unpromoted_lazy = workspace_id in self._pending_lazy_sync
                 await self._revert_unpromoted_lazy_start(workspace_id)
@@ -1428,6 +2094,28 @@ class WorkspaceManager:
                 return recovered, True
             mark("session_initialize")
 
+            # Reattached to a pre-existing running sandbox (e.g. after a server
+            # restart): hot-resync it onto the active platform-secret rollout
+            # before any further in-sandbox work.
+            await self._apply_session_platform_secret(
+                workspace_id,
+                session,
+                ws_version=int(workspace.get("platform_secret_version") or 0),
+            )
+            mark("platform_secret")
+
+            # Resolve + install the per-workspace composite before asset sync so
+            # codegen uploads user-server wrappers. Cheap; discovery kicked in
+            # the background (fire-and-forget — doesn't hold the lock).
+            ws_version = (
+                int(workspace.get("mcp_config_version") or 0)
+                if workspace.get("mcp_config_version") is not None
+                else 0
+            )
+            resolved_mcp = await self._apply_session_mcp(
+                workspace_id, workspace_user_id, session, ws_version=ws_version
+            )
+
             await self._sync_sandbox_assets(
                 workspace_id,
                 workspace_user_id,
@@ -1436,11 +2124,33 @@ class WorkspaceManager:
             )
             mark("cold_asset_sync")
 
-            migrated = await self._maybe_migrate_sandbox(
-                workspace_id, workspace_user_id, session, workspace
-            )
-            if migrated is not None:
-                session = migrated
+            # Cache the session BEFORE kicking discovery: the background task's
+            # liveness gate (``self._sessions.get(workspace_id) is session``)
+            # would otherwise see no cached session and exit permanently. If a
+            # later step raises, don't leave this broken session cached — the
+            # old code only cached after migration succeeded — so unwind.
+            self._sessions[workspace_id] = session
+
+            try:
+                if resolved_mcp is not None:
+                    self._kick_mcp_discovery(
+                        workspace_id,
+                        workspace_user_id,
+                        session,
+                        self._servers_needing_discovery(session, resolved_mcp),
+                        session.mcp_config_version or 0,
+                    )
+
+                migrated = await self._maybe_migrate_sandbox(
+                    workspace_id, workspace_user_id, session, workspace
+                )
+                if migrated is not None:
+                    session = migrated
+            except Exception:
+                self._cancel_mcp_discovery(workspace_id)
+                if self._sessions.get(workspace_id) is session:
+                    self._sessions.pop(workspace_id, None)
+                raise
             did_init = True
 
         self._sessions[workspace_id] = session
@@ -1486,9 +2196,7 @@ class WorkspaceManager:
                 task.add_done_callback(self._status_publish_tasks.discard)
 
         try:
-            logger.info(
-                f"Restarting workspace {workspace_id} (claimed for start)"
-            )
+            logger.info(f"Restarting workspace {workspace_id} (claimed for start)")
             return await self._restart_workspace(
                 claimed,
                 user_id=workspace_user_id,
@@ -1535,7 +2243,9 @@ class WorkspaceManager:
         """
         timeout = self.start_wait_timeout if max_wait_s is None else max_wait_s
         base_interval = (
-            self.start_wait_poll_interval if poll_interval_s is None else poll_interval_s
+            self.start_wait_poll_interval
+            if poll_interval_s is None
+            else poll_interval_s
         )
         max_interval = max(base_interval, 2.0)
         deadline = time.monotonic() + timeout
@@ -1565,7 +2275,13 @@ class WorkspaceManager:
                 if wait_for_notify is not None:
                     # Pub/sub fast path. Cap at 30 s so a dropped publish
                     # still triggers a periodic DB re-read.
-                    await wait_for_notify(min(remaining, 30.0))
+                    kind, _payload = await wait_for_notify(min(remaining, 30.0))
+                    if kind == "error":
+                        # A broken connection returns immediately instead of
+                        # blocking, so keeping this path would busy-spin DB
+                        # reads until the deadline. Abandon pub/sub and let the
+                        # backoff poll below pace the rest of the wait.
+                        wait_for_notify = None
                 else:
                     await asyncio.sleep(min(interval, remaining))
                     interval = min(interval * 2, max_interval)
@@ -1616,6 +2332,12 @@ class WorkspaceManager:
             raise RuntimeError(
                 f"Workspace {workspace_id} has no sandbox_id. Cannot restart."
             )
+
+        # A restart reconnects at the persisted size, so an elevated tier owes
+        # an entitlement re-check — done in Phase 2, off the per-workspace lock
+        # (see _maybe_reclaim_lazy_tier). Marked here where the row is in hand.
+        if (workspace.get("resource_tier") or "standard") != "standard":
+            self._pending_tier_recheck.add(workspace_id)
 
         # Force non-lazy init if sandbox config may have changed (e.g., working
         # directory migration).  Without blocking init we cannot detect the
@@ -1668,9 +2390,53 @@ class WorkspaceManager:
                     f"{workspace_id} ({e}). Creating fresh sandbox."
                 )
 
-            # Sandbox was deleted — recover with fresh one
+            # Sandbox was deleted — recover with fresh one (_recover_sandbox
+            # re-applies always-on at create time, so no extra handling here).
             if sandbox_gone:
                 return await self._recover_sandbox(workspace_id, user_id, core_config)
+
+            # Existing sandbox reconnected: hot-resync it onto the active
+            # platform-secret rollout before any further in-sandbox work. Lazy
+            # path defers to Phase 2, where the sandbox is actually up.
+            if not lazy_init:
+                await self._apply_session_platform_secret(
+                    workspace_id,
+                    session,
+                    ws_version=int(workspace.get("platform_secret_version") or 0),
+                )
+
+            # Reconnected to the existing sandbox. Auto-stop is a persisted
+            # Daytona property that a plain reconnect does NOT re-assert, so the
+            # live interval drifts from the always-on flag whenever the flag was
+            # toggled while the sandbox was stopped: an enable would keep the old
+            # auto-stopping interval (Daytona stops it anyway), and a disable
+            # would keep interval 0 (never stops). Reseed from the current flag
+            # in both directions on every restart so the live interval always
+            # matches the flag; best-effort so an autostop hiccup never blocks
+            # the restart. Lazy path: the sandbox may still be stopped/archived
+            # here (Phase 2 starts it in the background), so an interval write
+            # now races that start and can silently fail — Phase 2 reseeds
+            # after the sandbox is actually up instead.
+            if sandbox_id and not lazy_init:
+                # Reuse the just-connected runtime so the reseed doesn't spin up
+                # a throwaway provider + extra metadata round-trip on the
+                # user-visible cold start.
+                live_runtime = (
+                    getattr(session.sandbox, "runtime", None)
+                    if session.sandbox
+                    else None
+                )
+                try:
+                    await self._apply_autostop_for_always_on(
+                        sandbox_id,
+                        enabled=bool(workspace.get("is_always_on")),
+                        runtime=live_runtime,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to re-assert auto-stop interval for "
+                        f"{workspace_id}: {e}"
+                    )
 
             # Existing sandbox reconnected successfully — sync assets
             if not lazy_init:
@@ -1683,7 +2449,10 @@ class WorkspaceManager:
 
                 # Check if sandbox needs config migration (e.g., working dir change)
                 migrated = await self._maybe_migrate_sandbox(
-                    workspace_id, user_id, session, workspace,
+                    workspace_id,
+                    user_id,
+                    session,
+                    workspace,
                     expected_hash=expected_hash,
                 )
                 if migrated is not None:
@@ -1720,7 +2489,10 @@ class WorkspaceManager:
             # the second-stage init runs in the background. Record both to keep
             # the histogram non-empty on the lazy path — frontend latency is
             # dominated by the non-lazy phase regardless.
-            safe_record(workspace_cold_start_duration_ms, (time.monotonic() - _cold_start_t0) * 1000.0)
+            safe_record(
+                workspace_cold_start_duration_ms,
+                (time.monotonic() - _cold_start_t0) * 1000.0,
+            )
             return session
 
         except Exception as e:
@@ -1760,6 +2532,10 @@ class WorkspaceManager:
                 workspace_id=workspace_id,
                 status="stopping",
             )
+
+            # Cancel in-flight background discovery before tearing down the
+            # sandbox so it can't run against a dead sandbox / write orphan rows.
+            self._cancel_mcp_discovery(workspace_id)
 
             try:
                 # Backup files to DB before stopping sandbox
@@ -1851,6 +2627,10 @@ class WorkspaceManager:
 
             logger.info(f"Deleting workspace {workspace_id}")
 
+            # Cancel in-flight background discovery before tearing down the
+            # sandbox so it can't run against a dead sandbox / write orphan rows.
+            self._cancel_mcp_discovery(workspace_id)
+
             try:
                 # Backup files to DB before deleting (if sandbox is accessible)
                 await self._backup_files_to_db(workspace_id)
@@ -1895,9 +2675,18 @@ class WorkspaceManager:
         # Get running workspaces
         running_workspaces = await get_workspaces_by_status("running", limit=1000)
 
-        task_mgr = BackgroundTaskManager.get_instance()
+        task_mgr = LocalRunExecutor.get_instance()
+
+        # First pass: reconcile always-on entitlements. The returned set stays
+        # exempt from the idle-reaping loop below (still-entitled rows, plus any
+        # whose disable failed) so that loop stays single-purpose.
+        exempt_ids = await self._reconcile_always_on_entitlements(running_workspaces)
 
         for workspace in running_workspaces:
+            workspace_id = str(workspace["workspace_id"])
+            if workspace_id in exempt_ids:
+                continue
+
             last_activity = workspace.get("last_activity_at")
             if not last_activity:
                 # Never used, skip
@@ -1910,8 +2699,6 @@ class WorkspaceManager:
             idle_seconds = (now - last_activity).total_seconds()
 
             if idle_seconds > self.idle_timeout:
-                workspace_id = str(workspace["workspace_id"])
-
                 # Skip workspaces that still have an active agent workflow
                 if await task_mgr.has_active_tasks_for_workspace(workspace_id):
                     logger.info(
@@ -2041,6 +2828,12 @@ class WorkspaceManager:
             except asyncio.CancelledError:
                 pass
             self._cleanup_task = None
+
+        # Cancel any in-flight background MCP discovery tasks.
+        for task in list(self._mcp_discovery_tasks):
+            task.cancel()
+        self._mcp_discovery_tasks.clear()
+        self._mcp_discovery_tasks_by_ws.clear()
 
         # Clear session cache (don't stop workspaces on shutdown)
         self._sessions.clear()

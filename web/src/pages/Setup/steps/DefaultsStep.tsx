@@ -1,7 +1,8 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, Info } from 'lucide-react';
+import { Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Loader } from '@/components/ui/loader';
 import { ModelTierConfig } from '@/components/model/ModelTierConfig';
 import { useAllModels } from '@/hooks/useAllModels';
 import { usePreferences } from '@/hooks/usePreferences';
@@ -99,7 +100,7 @@ export default function DefaultsStep() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-5 w-5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
+        <Loader size={20} className="text-[color:var(--color-text-tertiary)]" />
       </div>
     );
   }
@@ -181,7 +182,9 @@ export default function DefaultsStep() {
         >
           {saving ? (
             <>
-              <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+              <span aria-hidden="true" className="mr-1.5 flex-shrink-0">
+                <Loader size={16} className="text-current" />
+              </span>
               {t('setup.saving')}
             </>
           ) : (

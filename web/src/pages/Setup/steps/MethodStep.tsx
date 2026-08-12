@@ -1,8 +1,9 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Loader2, Ticket, Link2, Code2, Key, Monitor, CheckCircle2, ChevronDown, ChevronUp } from 'lucide-react';
+import { Ticket, Link2, Code2, Key, Monitor, CheckCircle2, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Loader } from '@/components/ui/loader';
 import { Input } from '@/components/ui/input';
 import { api } from '@/api/client';
 import { useQueryClient } from '@tanstack/react-query';
@@ -125,7 +126,7 @@ function ConfiguredBanner({
                   {p.display_name}
                 </span>
                 <span
-                  className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0"
+                  className="inline-flex items-center px-1.5 py-0.5 rounded text-[0.625rem] font-medium shrink-0"
                   style={{
                     background: p.access_type === 'oauth' ? 'var(--color-accent-soft)' : 'var(--color-bg-page)',
                     color: p.access_type === 'oauth' ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
@@ -318,7 +319,7 @@ export default function MethodStep() {
           }}
         >
           <div className="flex items-center gap-2">
-            <CheckCircle2 className="h-4 w-4 shrink-0" style={{ color: 'var(--color-gain)' }} />
+            <CheckCircle2 className="h-4 w-4 shrink-0" style={{ color: 'var(--color-profit)' }} />
             <span className="text-sm" style={{ color: 'var(--color-text-primary)' }}>
               {t('setup.invitationRedeemed')}
             </span>
@@ -445,7 +446,9 @@ export default function MethodStep() {
                 >
                   {redeemingInvitation ? (
                     <>
-                      <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                      <span aria-hidden="true" className="mr-1.5 flex-shrink-0">
+                        <Loader size={16} className="text-current" />
+                      </span>
                       {t('setup.redeeming')}
                     </>
                   ) : (

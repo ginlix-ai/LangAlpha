@@ -44,8 +44,10 @@ function TradingViewWidget({ symbol, interval = '1day' }: TradingViewWidgetProps
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York',
     style: '1',
     isTransparent: false,
-    backgroundColor: isLight ? '#FFFCF9' : '#000000',
-    gridColor: isLight ? '#E8E2DB' : '#1A1A1A',
+    // Literals, not var() — the TV embed is an iframe and can't read our
+    // custom properties. These mirror --color-bg-card / --color-border-default.
+    backgroundColor: isLight ? '#FFFFFF' : '#232426',
+    gridColor: isLight ? '#E8E8E6' : '#2E3033',
     allow_symbol_change: false,
     hide_side_toolbar: false,
     hide_top_toolbar: false,

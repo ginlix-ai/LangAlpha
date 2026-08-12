@@ -46,7 +46,7 @@
 /* ── Inline form label pattern ─────────────────────── */
 
 .automation-inline-form .form-label {
-  font-size: 11px;
+  font-size: 0.6875rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-weight: 500;

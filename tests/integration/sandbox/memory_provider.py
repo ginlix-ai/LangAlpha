@@ -80,7 +80,7 @@ class MemoryRuntime(SandboxRuntime):
             return
         self._state = RuntimeState.RUNNING
 
-    async def stop(self, timeout: int = 60) -> None:
+    async def stop(self, timeout: int = 60, *, force: bool = False) -> None:
         if self._deleted:
             raise RuntimeError("Cannot stop a deleted runtime")
         self._state = RuntimeState.STOPPED
@@ -296,5 +296,4 @@ class MemoryProvider(SandboxProvider):
     def is_transient_error(self, exc: Exception) -> bool:
         msg = str(exc).lower()
         return "transient" in msg or "connection" in msg
-
 

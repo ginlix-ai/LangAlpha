@@ -243,13 +243,13 @@ function ToolCallMessageContent({
             display: 'flex',
             alignItems: 'flex-start',
             gap: '8px',
-            fontSize: '14px',
+            fontSize: '0.875rem',
             lineHeight: '20px',
             color: displayProcess.isFailed ? 'var(--color-loss)' : 'var(--Labels-Secondary)',
             padding: '4px 12px',
             borderRadius: '6px',
             backgroundColor: displayProcess.isInProgress
-              ? 'var(--color-accent-soft)'
+              ? 'var(--color-bg-hover)'
               : 'transparent',
             border: displayProcess.isInProgress
               ? '1px solid var(--color-border-muted)'
@@ -277,7 +277,7 @@ function ToolCallMessageContent({
             ) : displayProcess.isInProgress ? (
               <TextShimmer
                 as="span"
-                className="font-medium text-[13px] [--base-color:var(--Labels-Secondary)] [--base-gradient-color:var(--color-text-primary)]"
+                className="font-medium text-[0.8125rem] [--base-color:var(--Labels-Secondary)] [--base-gradient-color:var(--color-text-primary)]"
                 duration={1.5}
               >
                 {getActiveLabel(rawToolName, displayProcess.toolCall, t)}
@@ -317,13 +317,13 @@ function ToolCallMessageContent({
           display: 'flex',
           alignItems: 'center',
           gap: '8px',
-          fontSize: '14px',
+          fontSize: '0.875rem',
           lineHeight: '20px',
           color: isFailed ? 'var(--color-loss)' : 'var(--Labels-Secondary)',
           padding: '4px 12px',
           borderRadius: '6px',
           backgroundColor: displayProcess.isInProgress
-            ? 'var(--color-accent-soft)'
+            ? 'var(--color-bg-hover)'
             : 'transparent',
           border: displayProcess.isInProgress
             ? '1px solid var(--color-border-muted)'
@@ -344,7 +344,7 @@ function ToolCallMessageContent({
         {displayProcess.isInProgress ? (
           <TextShimmer
             as="span"
-            className="font-medium text-[13px] [--base-color:var(--Labels-Secondary)] [--base-gradient-color:var(--color-text-primary)]"
+            className="font-medium text-[0.8125rem] [--base-color:var(--Labels-Secondary)] [--base-gradient-color:var(--color-text-primary)]"
             duration={1.5}
           >
             {getActiveLabel(rawToolName, displayProcess.toolCall, t)}
@@ -409,7 +409,7 @@ function ToolCallMessageContent({
                   <div
                     className="px-3 py-2 rounded"
                     style={{
-                      backgroundColor: 'var(--color-accent-soft)',
+                      backgroundColor: 'var(--color-bg-elevated)',
                       border: '1px solid var(--color-border-muted)',
                       color: 'var(--color-text-primary)',
                     }}
@@ -425,8 +425,8 @@ function ToolCallMessageContent({
                             onClick={() => onOpenFile(truncated.filePath!)}
                             className="flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors hover:bg-foreground/10"
                             style={{
-                              color: 'var(--color-accent-primary)',
-                              border: '1px solid var(--color-accent-overlay)',
+                              color: 'var(--color-text-primary)',
+                              border: '1px solid var(--color-border-elevated)',
                             }}
                           >
                             <FileText className="h-3 w-3" />
@@ -460,7 +460,7 @@ function ToolCallMessageContent({
                   content={displayContent}
                   className="px-3 py-2 rounded text-xs"
                   style={{
-                    backgroundColor: isError ? 'var(--color-loss-soft)' : 'var(--color-accent-soft)',
+                    backgroundColor: isError ? 'var(--color-loss-soft)' : 'var(--color-bg-elevated)',
                     border: `1px solid ${isError ? 'var(--color-border-loss)' : 'var(--color-border-muted)'}`,
                   }}
                 />

@@ -221,18 +221,19 @@ class AgentConfig(BaseModel):
     # Custom model input modalities override (set by resolve_llm_config for custom models)
     input_modalities: list[str] | None = None
 
-    # Vision tool configuration
-    # If True, enable view_image tool for viewing images (requires vision-capable model)
-    enable_view_image: bool = True
-
     # Subagent configuration
     subagents: SubagentsConfig = Field(default_factory=SubagentsConfig)
 
     # Compaction middleware configuration
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
 
-    # Search API provider (tavily, bocha, serper)
+    # Search API provider (tavily, serper, bocha, exa, parallel)
     search_api: str = "tavily"
+
+    # Search depth level name from the provider's manifest entry
+    # (src/tools/manifest/web_providers.json). Unknown levels fall back to
+    # the provider's default level.
+    search_depth: str = "standard"
 
     # Background task configuration
     # If True, wait for background tasks to complete before returning to CLI
@@ -248,6 +249,16 @@ class AgentConfig(BaseModel):
         """Backward-compat shim: config.daytona -> config.sandbox.daytona."""
         return self.sandbox.daytona
 
+    def feature_enabled(self, key: str) -> bool:
+        """Effective feature flag for this build: the per-user value resolved
+        by ``resolve_llm_config`` when present, else the no-user default
+        (opt_in and platform plan gates resolve False)."""
+        if self.features is not None and key in self.features:
+            return self.features[key]
+        from src.config.features import default_feature_enabled
+
+        return default_feature_enabled(key)
+
     # Runtime data (not from config files)
     llm_definition: LLMDefinition | None = Field(default=None, exclude=True)
     llm_client: Any | None = Field(default=None, exclude=True)  # BaseChatModel instance
@@ -257,9 +268,15 @@ class AgentConfig(BaseModel):
     )
     subsidiary_llm_clients: dict[str, Any] = Field(default_factory=dict, exclude=True)
     fallback_llm_clients: list[Any] | None = Field(default=None, exclude=True)  # Pre-resolved fallback instances
+    # Display names aligned index-for-index with ``fallback_llm_clients``
+    # (skipped fallbacks drop from both lists).
+    fallback_llm_names: list[str] | None = Field(default=None, exclude=True)
     # Forwarded by ``get_llm_client()`` to ``create_llm(cache_key=...)`` for
     # the lazy factory path.
     cache_key: str | None = Field(default=None, exclude=True)
+    # Per-user resolved feature flags, set by ``resolve_llm_config``. None
+    # (entry points that skip resolution) falls back to system defaults.
+    features: dict[str, bool] | None = Field(default=None, exclude=True)
     config_file_dir: Path | None = Field(
         default=None, exclude=True
     )  # For path resolution
@@ -303,7 +320,6 @@ class AgentConfig(BaseModel):
             log_level: Logging level (default: "INFO")
             allowed_directories: Sandbox paths (default: ["/home/workspace", "/tmp"])
             subagents: SubagentsConfig or use subagents_enabled for backward compat
-            enable_view_image: Enable image viewing (default: True)
             background_auto_wait: Wait for background tasks (default: False)
 
         Returns:
@@ -355,6 +371,7 @@ class AgentConfig(BaseModel):
             _daytona_defaults = DaytonaConfig()
             daytona_config = DaytonaConfig(
                 api_key=api_key,
+                secret_namespace=os.getenv("DAYTONA_SECRET_NAMESPACE", ""),
                 base_url=daytona_base_url,
                 auto_stop_interval=kwargs.pop(
                     "auto_stop_interval", _daytona_defaults.auto_stop_interval
@@ -451,7 +468,6 @@ class AgentConfig(BaseModel):
             logging=logging_config,
             filesystem=filesystem_config,
             skills=skills_config,
-            enable_view_image=kwargs.pop("enable_view_image", True),
             subagents=SubagentsConfig(
                 enabled=kwargs.pop("subagents_enabled", ["general-purpose"]),
                 definitions=kwargs.pop("subagents_definitions", {}),
@@ -536,7 +552,11 @@ class AgentConfig(BaseModel):
         core_config = CoreConfig(
             sandbox=self.sandbox,
             security=self.security,
-            mcp=self.mcp,
+            # Deep-copy the MCP config so each CoreConfig (hence each workspace
+            # sandbox) owns its MCPConfig. Sharing it by reference made every
+            # workspace's effective server set the same object — Phase 2 swaps
+            # in per-workspace servers, which must not bleed across workspaces.
+            mcp=self.mcp.model_copy(deep=True),
             logging=self.logging,
             filesystem=self.filesystem,
         )

@@ -228,13 +228,19 @@ class TestCreatePriceAutomation:
         mock_auto_db.create_automation.assert_not_called()
 
     @pytest.mark.asyncio
+    @patch("src.server.handlers.automation_handler.get_workspace")
     @patch("src.server.handlers.automation_handler.auto_db")
-    async def test_create_price_automation_ptc_with_workspace_id(self, mock_auto_db):
+    async def test_create_price_automation_ptc_with_workspace_id(
+        self, mock_auto_db, mock_get_workspace,
+    ):
         """Successfully creates price automation with ptc mode when workspace_id provided."""
         expected = _make_automation_row(
             agent_mode="ptc", workspace_id=WORKSPACE_ID,
         )
         mock_auto_db.create_automation = AsyncMock(return_value=expected)
+        mock_get_workspace.return_value = {
+            "workspace_id": WORKSPACE_ID, "user_id": USER_ID,
+        }
 
         data = _make_create_data(
             agent_mode="ptc",

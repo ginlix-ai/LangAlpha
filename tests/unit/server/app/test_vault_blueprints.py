@@ -15,7 +15,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
-from src.ptc_agent.config.core import MCPServerConfig, VaultBlueprint
+from ptc_agent.config.core import MCPServerConfig, VaultBlueprint
 from tests.conftest import create_test_app
 
 NOW = datetime.now(timezone.utc)

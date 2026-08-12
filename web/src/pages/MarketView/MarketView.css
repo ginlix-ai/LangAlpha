@@ -66,9 +66,11 @@
   bottom: 0;
 }
 
+/* Dragging is an intentional-action moment, so the handle earns the
+   high-alpha accent edge — a hairline, never a fill. */
 .market-resize-handle:hover,
 .market-resize-handle:active {
-  background: hsl(var(--primary) / 0.5);
+  background: var(--color-accent-overlay);
 }
 
 body.col-resizing {
@@ -93,10 +95,8 @@ body.col-resizing * {
   flex: 1;
   min-height: 0;
   border-radius: 8px;
-  background:
-    radial-gradient(ellipse 80% 50% at 50% 20%, var(--color-accent-soft) 0%, transparent 50%),
-    radial-gradient(ellipse 60% 40% at 80% 80%, var(--color-accent-soft) 0%, transparent 50%),
-    var(--color-bg-card);
+  /* Flat — the radial accent washes are retired with the quiet-workspace system. */
+  background: var(--color-bg-card);
   border: 1px solid var(--color-border-muted);
   padding: 16px;
   display: flex;
@@ -107,14 +107,14 @@ body.col-resizing * {
 }
 
 .market-chat-empty-title {
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 600;
   color: var(--color-text-primary);
   margin: 0 0 8px 0;
 }
 
 .market-chat-empty-hint {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-text-secondary);
   line-height: 1.5;
   margin: 0;
@@ -130,12 +130,12 @@ body.col-resizing * {
 }
 
 .market-quick-query-card {
-  background: var(--color-accent-soft);
-  border: 1px solid hsl(var(--primary) / 0.25);
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border-default);
   border-radius: 10px;
   padding: 10px 14px;
   color: var(--color-text-primary);
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.4;
   text-align: left;
   cursor: pointer;
@@ -144,8 +144,8 @@ body.col-resizing * {
 }
 
 .market-quick-query-card:hover {
-  background: hsl(var(--primary) / 0.18);
-  border-color: hsl(var(--primary) / 0.45);
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-elevated);
 }
 
 .market-quick-query-shuffle {
@@ -156,16 +156,16 @@ body.col-resizing * {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  border: 1px solid hsl(var(--primary) / 0.2);
-  background: hsl(var(--primary) / 0.06);
+  border: 1px solid var(--color-border-default);
+  background: transparent;
   color: var(--color-text-secondary);
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
 .market-quick-query-shuffle:hover {
-  background: hsl(var(--primary) / 0.18);
-  border-color: hsl(var(--primary) / 0.4);
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-elevated);
   color: var(--color-text-primary);
 }
 
@@ -208,7 +208,7 @@ body.col-resizing * {
   border: 1px solid var(--color-border-muted);
   background: var(--color-bg-elevated);
   color: var(--color-text-secondary);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);

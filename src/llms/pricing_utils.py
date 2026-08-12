@@ -283,6 +283,47 @@ def find_model_pricing(model_name: str, provider: Optional[str] = None) -> Optio
     return None
 
 
+# Coarse cost tier (1-5) for the model-detail flyout, from blended $/1M tokens
+# (3:1 input:output). Credits are linear in USD (credit_conversion), so this tier
+# reads the same whether the user pays per-token (BYOK) or in credits.
+PRICE_TIER_BANDS = [(8.0, 5), (4.0, 4), (1.5, 3), (0.5, 2), (0.0, 1)]
+
+
+def _representative_rate(pricing: Dict[str, Any], flat_key: str, tier_key: str) -> Optional[float]:
+    """A single $/1M rate for tiering: the flat rate, else the base (first) tier.
+
+    Base tier is deliberate: it's the standard-context rate nearly all requests
+    pay; long-context surcharge tiers are excluded from the headline cost dot.
+    """
+    if pricing.get(flat_key) is not None:
+        return pricing[flat_key]
+    tiers = pricing.get(tier_key)
+    if tiers:
+        return tiers[0].get('rate')
+    return None
+
+
+def get_price_tier(model_name: str, provider: Optional[str] = None) -> Optional[int]:
+    """Map a model's canonical providers.json pricing to a 1-5 cost tier.
+
+    Resolves pricing through :func:`find_model_pricing` (provider→parent fallback,
+    aliases, tiered rates). Returns None when no price is known so the flyout omits
+    the row. Blends input/output 3:1 then buckets via ``PRICE_TIER_BANDS``.
+    """
+    pricing = find_model_pricing(model_name, provider)
+    if not pricing:
+        return None
+    pin = _representative_rate(pricing, 'input', 'input_tiers')
+    pout = _representative_rate(pricing, 'output', 'output_tiers')
+    if pin is None or pout is None:
+        return None
+    blended = pin * 0.75 + pout * 0.25
+    for lo, tier in PRICE_TIER_BANDS:
+        if blended >= lo:
+            return tier
+    return 1
+
+
 def calculate_tiered_cost(tokens: int, tiers: List[Dict[str, Any]]) -> float:
     """
     Calculate cost for tiered pricing based on cumulative token count.
@@ -402,11 +443,21 @@ def find_2d_pricing_rates(
     return None
 
 
+def _select_tier(tiers: List[Dict[str, Any]], selector_tokens: int) -> Dict[str, Any]:
+    """Pick the tier a request falls into by its total prompt size."""
+    for tier in tiers:
+        max_tokens = tier.get('max_tokens')
+        if max_tokens is None or selector_tokens <= max_tokens:
+            return tier
+    return tiers[-1]
+
+
 def get_input_cost(
     tokens: int,
     pricing: Dict[str, Any],
     cached_tokens: int = 0,
-    output_tokens: int = 0
+    output_tokens: int = 0,
+    tier_selector_tokens: Optional[int] = None
 ) -> Tuple[float, float]:
     """
     Calculate input cost with support for flat, tiered, and 2D matrix pricing.
@@ -416,10 +467,14 @@ def get_input_cost(
         pricing: Pricing dictionary (may contain 'input', 'input_tiers', or 'matrix')
         cached_tokens: Number of tokens served from cache
         output_tokens: Total output tokens (for 2D matrix pricing)
+        tier_selector_tokens: Raw prompt total used to pick the tier (defaults
+            to ``tokens``); callers pass the unadjusted input so cache-write
+            subtraction can't demote a long-context request to the short tier
 
     Returns:
         Tuple of (regular_input_cost, cached_input_cost)
     """
+    selector = tier_selector_tokens if tier_selector_tokens is not None else tokens
     regular_tokens = tokens - cached_tokens
     regular_cost = 0.0
     cached_cost = 0.0
@@ -446,8 +501,15 @@ def get_input_cost(
     # Calculate regular (non-cached) input cost
     if regular_tokens > 0:
         if 'input_tiers' in pricing:
-            # Tiered pricing
-            regular_cost = calculate_tiered_cost(regular_tokens, pricing['input_tiers'])
+            if pricing.get('input_pricing_mode') == 'input_dependent':
+                # Threshold pricing: the whole request bills at the tier its
+                # total prompt size falls into (e.g. OpenAI GPT-5.6 charges
+                # 2x input on the full request once the prompt exceeds 272K).
+                rate = _select_tier(pricing['input_tiers'], selector).get('rate', 0)
+                regular_cost = (regular_tokens / 1_000_000) * rate
+            else:
+                # Progressive pricing: each tier range bills at its own rate
+                regular_cost = calculate_tiered_cost(regular_tokens, pricing['input_tiers'])
         elif 'input' in pricing:
             # Flat pricing
             regular_cost = (regular_tokens / 1_000_000) * pricing['input']
@@ -463,15 +525,7 @@ def get_input_cost(
             cached_cost = (cached_tokens / 1_000_000) * pricing['cached_input']
         elif 'input_tiers' in pricing:
             # Check for per-tier cached_input rates (e.g., Qwen models)
-            tiers = pricing['input_tiers']
-            tier_cached_rate = None
-
-            # Find the applicable tier based on total input tokens
-            for tier in tiers:
-                max_tokens = tier.get('max_tokens')
-                if max_tokens is None or tokens <= max_tokens:
-                    tier_cached_rate = tier.get('cached_input')
-                    break
+            tier_cached_rate = _select_tier(pricing['input_tiers'], selector).get('cached_input')
 
             if tier_cached_rate is not None:
                 # Use per-tier cached_input rate
@@ -505,7 +559,8 @@ def get_cache_storage_cost(storage_tokens: int, pricing: Dict[str, Any]) -> floa
 def get_cache_creation_cost(
     cache_5m_tokens: int,
     cache_1h_tokens: int,
-    pricing: Dict[str, Any]
+    pricing: Dict[str, Any],
+    tier_selector_tokens: Optional[int] = None
 ) -> Tuple[float, float]:
     """
     Calculate Anthropic-style cache creation costs.
@@ -514,6 +569,9 @@ def get_cache_creation_cost(
         cache_5m_tokens: Tokens written to 5-minute cache
         cache_1h_tokens: Tokens written to 1-hour cache
         pricing: Pricing dictionary
+        tier_selector_tokens: Raw prompt total; when the selected input tier
+            carries its own cache_5m/cache_1h rate (long-context write rates),
+            it overrides the flat top-level rate
 
     Returns:
         Tuple of (cache_5m_cost, cache_1h_cost)
@@ -521,11 +579,18 @@ def get_cache_creation_cost(
     cache_5m_cost = 0.0
     cache_1h_cost = 0.0
 
-    if cache_5m_tokens > 0 and 'cache_5m' in pricing:
-        cache_5m_cost = (cache_5m_tokens / 1_000_000) * pricing['cache_5m']
+    tiers = pricing.get('input_tiers')
+    tier = _select_tier(tiers, tier_selector_tokens) if tiers and tier_selector_tokens is not None else {}
 
-    if cache_1h_tokens > 0 and 'cache_1h' in pricing:
-        cache_1h_cost = (cache_1h_tokens / 1_000_000) * pricing['cache_1h']
+    if cache_5m_tokens > 0:
+        rate = tier.get('cache_5m', pricing.get('cache_5m'))
+        if rate is not None:
+            cache_5m_cost = (cache_5m_tokens / 1_000_000) * rate
+
+    if cache_1h_tokens > 0:
+        rate = tier.get('cache_1h', pricing.get('cache_1h'))
+        if rate is not None:
+            cache_1h_cost = (cache_1h_tokens / 1_000_000) * rate
 
     return cache_5m_cost, cache_1h_cost
 
@@ -603,29 +668,7 @@ def get_output_cost(tokens: int, pricing: Dict[str, Any], input_tokens: int = 0)
 
     if output_pricing_mode == 'input_dependent' and 'output_tiers' in pricing:
         # Input-dependent pricing: Output rate determined by INPUT token tier
-        # Find which tier the input falls into and use that tier's output rate
-        output_tiers = pricing['output_tiers']
-
-        # Determine the tier index based on input tokens
-        tier_index = 0
-        previous_max = 0
-
-        for idx, tier in enumerate(output_tiers):
-            max_tokens = tier.get('max_tokens')
-
-            if max_tokens is None:
-                # Last tier (infinite)
-                tier_index = idx
-                break
-            elif input_tokens <= max_tokens:
-                # Input falls in this tier
-                tier_index = idx
-                break
-
-            previous_max = max_tokens
-
-        # Use the rate from the determined tier
-        output_rate = output_tiers[tier_index].get('rate', 0)
+        output_rate = _select_tier(pricing['output_tiers'], input_tokens).get('rate', 0)
         return (tokens / 1_000_000) * output_rate
 
     elif 'output_tiers' in pricing:
@@ -679,13 +722,19 @@ def calculate_total_cost(
     # Only subtract them when there's explicit cache creation pricing — otherwise they
     # should remain in input_tokens and be billed at the regular input rate (correct for
     # providers like DeepSeek where cache writes are charged at input rate).
-    subtract_5m = cache_5m_tokens if 'cache_5m' in pricing else 0
-    subtract_1h = cache_1h_tokens if 'cache_1h' in pricing else 0
+    def _has_write_rate(key: str) -> bool:
+        return key in pricing or any(key in t for t in pricing.get('input_tiers', []))
+
+    subtract_5m = cache_5m_tokens if _has_write_rate('cache_5m') else 0
+    subtract_1h = cache_1h_tokens if _has_write_rate('cache_1h') else 0
     adjusted_input = max(0, input_tokens - subtract_5m - subtract_1h)
 
-    # Calculate input costs (pass output_tokens for 2D matrix pricing)
+    # Calculate input costs (pass output_tokens for 2D matrix pricing). Tier
+    # selection uses the raw prompt total so the cache-write subtraction can't
+    # demote a long-context request to the short-context tier.
     regular_input_cost, cached_input_cost = get_input_cost(
-        adjusted_input, pricing, cached_tokens, output_tokens=output_tokens
+        adjusted_input, pricing, cached_tokens, output_tokens=output_tokens,
+        tier_selector_tokens=input_tokens
     )
 
     if regular_input_cost > 0:
@@ -712,7 +761,9 @@ def calculate_total_cost(
         total_cost += cache_storage_cost
 
     # Calculate cache creation costs (anthropic-style)
-    cache_5m_cost, cache_1h_cost = get_cache_creation_cost(cache_5m_tokens, cache_1h_tokens, pricing)
+    cache_5m_cost, cache_1h_cost = get_cache_creation_cost(
+        cache_5m_tokens, cache_1h_tokens, pricing, tier_selector_tokens=input_tokens
+    )
 
     if cache_5m_cost > 0:
         breakdown['cache_5m_creation'] = {

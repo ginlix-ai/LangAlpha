@@ -84,7 +84,7 @@
 
 .widget-frame__title {
   flex: 1;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -149,7 +149,7 @@
   gap: 8px;
   width: 100%;
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
   border-radius: 4px;
   background: transparent;
   border: none;

@@ -1,0 +1,192 @@
+"""Main-run stream reconnection.
+
+``/threads/{id}/messages/stream`` reconnect delegates to ``stream_from_log``
+— a single XREAD BLOCK loop attached by stream key + cursor. (The
+per-subagent route serves ``stream_subagent_from_log`` directly.)
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+
+from fastapi import HTTPException
+
+from src.server.services.runs.executor import LocalRunExecutor
+
+from .steering import drain_steering_return_event
+from .run_stream_reader import stream_from_log
+
+# Same hard-coded logger name request_prep uses — existing log routing keys off it.
+logger = logging.getLogger("src.server.handlers.chat_handler")
+
+
+# ---------------------------------------------------------------------------
+# Reconnect to a running or completed PTC workflow
+# ---------------------------------------------------------------------------
+
+
+async def _probe_stream(thread_id: str, run_id: str | None) -> bool | None:
+    """Tri-state stream presence: True/False = confirmed, None = unknowable.
+
+    None means the transport is CONFIGURED for Redis streams but unreachable
+    right now — absence must not be asserted (I6). False is only returned on
+    a confirmed EXISTS=0, or when the deployment doesn't use Redis streams at
+    all (then absence is permanent truth, not an outage).
+    """
+    from src.server.services.runs.executor import (
+        LocalRunExecutor,
+    )
+    from src.server.services.runs.stream_writer import stream_key
+    from src.utils.cache.redis_cache import get_cache_client
+
+    uses_redis_streams = (
+        LocalRunExecutor.get_instance().event_storage_backend == "redis"
+    )
+    try:
+        cache = get_cache_client()
+        if not (cache.enabled and cache.client):
+            return None if uses_redis_streams else False
+        return bool(await cache.client.exists(stream_key(thread_id, run_id)))
+    except Exception:
+        return None if uses_redis_streams else False
+
+
+def _transport_unavailable(run_id: str | None) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail={
+            "code": "transport_unavailable",
+            "message": (
+                "The event-stream transport is temporarily unreachable; "
+                "retry shortly."
+            ),
+            "run_id": run_id,
+        },
+        headers={"Retry-After": "3"},
+    )
+
+
+async def classify_reconnect(
+    thread_id: str, run_id: str | None = None
+) -> str | None:
+    """Pre-header reconnect classification (1.5d) — ledger-first.
+
+    Must run BEFORE the StreamingResponse is built: a raise inside the SSE
+    generator lands after HTTP 200 + headers are already on the wire.
+    Returns the effective run_id to stream, or raises:
+
+    - 404: run not on this thread / no runs and no local executor at all
+    - 410 ``stream_expired``: terminal run whose retained stream is CONFIRMED
+      gone — the archived replay endpoint is the only remaining source
+    - 503 ``transport_unavailable``: Redis is configured but unreachable, so
+      stream absence cannot be distinguished from a transient outage (I6
+      tri-state: absence ≠ terminal). Retryable, unlike the 410.
+
+    An in_progress row admits the attach with NO local-executor requirement
+    (v4 2.4): the watch is an XREAD on the shared Redis stream, so it works
+    from any worker, and a crashed owner's stream still terminates — the
+    recovery scanner's finalize appends the visible run_end. The old 409
+    ``recovering`` (in_progress + no local task) is gone with it; it would
+    misclassify every healthy foreign-worker run.
+    """
+    from src.server.database.runs import lifecycle as tl_db
+
+    manager = LocalRunExecutor.get_instance()
+
+    run = None
+    if run_id is not None:
+        try:
+            uuid.UUID(run_id)
+        except ValueError:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        run = await tl_db.get_run(run_id)
+        if run is not None and str(run["conversation_thread_id"]) != thread_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Run {run_id} not found on thread {thread_id}",
+            )
+    else:
+        run = await tl_db.get_latest_attempt(thread_id)
+        if run is not None:
+            run_id = str(run["conversation_response_id"])
+
+    if run is None:
+        # No ledger row: only a local task record (the pre-START placeholder
+        # window) may vouch for the attach — the registry is keyed by
+        # (thread, run) already. The tracker-blob corroboration is gone
+        # (v4 2.4): every post-Phase-1 run has a row, so a rowless reconnect
+        # with no local task has nothing durable to attach to.
+        task_info = await manager.get_local_run(thread_id, run_id)
+        if task_info is not None:
+            return run_id or task_info.run_id
+        raise HTTPException(
+            status_code=404, detail=f"Workflow {thread_id} not found"
+        )
+
+    if run["status"] == "in_progress":
+        # Live run: the stream key may legitimately not exist yet (no event
+        # buffered so far — False is fine), but the transport itself must be
+        # reachable or the committed 200 would attach to a stream that can
+        # never be read. Without Redis event storage there is no live
+        # transport at all — never admit a watch that cannot deliver.
+        if manager.event_storage_backend != "redis" or not manager.enable_storage:
+            raise _transport_unavailable(run_id)
+        if await _probe_stream(thread_id, run_id) is None:
+            raise _transport_unavailable(run_id)
+        return run_id
+
+    # Terminal run: replay from the retained stream while it survives.
+    # Tri-state (I6): only a CONFIRMED miss may report permanent expiry.
+    alive = await _probe_stream(thread_id, run_id)
+    if alive is None:
+        raise _transport_unavailable(run_id)
+    if alive:
+        return run_id
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "stream_expired",
+            "message": "Run finished and its event stream expired.",
+            "run_id": run_id,
+            "run_status": run["status"],
+            "replay_url": f"/api/v1/threads/{thread_id}/messages/replay",
+        },
+    )
+
+
+async def reconnect_to_workflow_stream(
+    thread_id: str,
+    run_id: str | None = None,
+    last_event_id: int | None = None,
+):
+    """Stream a reconnect that ``classify_reconnect`` already admitted.
+
+    ``run_id`` should be the classifier's effective run id; this generator
+    makes no admission decisions (the response is already committed by the
+    time it runs).
+    """
+    async for event in stream_from_log(thread_id, run_id, last_event_id):
+        yield event
+
+    # After the workflow ends, return any unconsumed steering messages so the
+    # client can re-render them instead of silently dropping them — but only
+    # when NO run is active on the thread. A stale reconnect to an old
+    # terminal run must not drain a newer live run's stamped payloads out
+    # from under SteeringMiddleware (v4 2.4c review F4).
+    try:
+        from src.server.database.runs import lifecycle as tl_db
+
+        thread_is_idle = await tl_db.get_active_run(thread_id) is None
+    except Exception:
+        thread_is_idle = False  # unknown ledger state: don't consume
+    if thread_is_idle:
+        steering_event = await drain_steering_return_event(thread_id)
+        if steering_event:
+            logger.info(
+                f"[PTC_RECONNECT] Returning unconsumed steering message(s) "
+                f"to client: thread_id={thread_id}"
+            )
+            yield steering_event
+
+

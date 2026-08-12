@@ -26,6 +26,22 @@ export type CompactionProfileName = 'aggressive' | 'moderate' | 'extended' | 're
 
 export type CompactionProfileCatalog = Record<CompactionProfileName, CompactionProfilePreset>;
 
+export interface SearchDepthInfo {
+  name: string;
+  display_name: string;
+  min_tier: number;
+}
+
+export interface SearchProviderInfo {
+  display_name: string;
+  min_tier: number;
+  default_depth: string;
+  /** Ordered fastest → deepest, exactly as the manifest declares. */
+  depths: SearchDepthInfo[];
+}
+
+export type SearchProviderCatalog = Record<string, SearchProviderInfo>;
+
 export interface UseAllModelsResult {
   /** Filtered models the user can access (grouped by provider). */
   models: Record<string, ProviderModelsData>;
@@ -45,6 +61,8 @@ export interface UseAllModelsResult {
   validModelNames: Set<string>;
   /** Compaction profile catalog from the models API (name → preset values). */
   compactionProfiles: CompactionProfileCatalog | null;
+  /** Web-search provider catalog from the models API (name → tiers + depths). */
+  searchProviders: SearchProviderCatalog | null;
   /** Raw models API response (for callers that need the full shape). */
   rawApiResponse: Record<string, unknown> | null;
   /** True while any upstream query is still loading. */
@@ -117,6 +135,13 @@ export function useAllModels(): UseAllModelsResult {
     return (raw.compaction_profiles as CompactionProfileCatalog) ?? null;
   }, [modelsData]);
 
+  /** Web-search provider catalog from the models API */
+  const searchProviders = useMemo<SearchProviderCatalog | null>(() => {
+    if (!modelsData) return null;
+    const raw = modelsData as Record<string, unknown>;
+    return (raw.search_providers as SearchProviderCatalog) ?? null;
+  }, [modelsData]);
+
   /** Run the full pipeline: normalize → merge custom → filter */
   const visible = useMemo<BuildVisibleModelsResult>(() => {
     if (!modelsData) {
@@ -159,6 +184,7 @@ export function useAllModels(): UseAllModelsResult {
     customModels,
     validModelNames: visible.validModelNames,
     compactionProfiles,
+    searchProviders,
     rawApiResponse: modelsData ? (modelsData as Record<string, unknown>) : null,
     isLoading: modelsLoading || prefsLoading || configuredLoading,
   };

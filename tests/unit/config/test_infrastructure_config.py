@@ -8,9 +8,11 @@ Covers:
 - settings.py accessors delegate to InfrastructureConfig (backward compat)
 """
 
+import math
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from src.config.models import (
     BackgroundExecutionConfig,
@@ -18,7 +20,6 @@ from src.config.models import (
     MarketDataConfig,
     MarketDataProviderConfig,
     NewsDataConfig,
-    RedisConfig,
 )
 
 
@@ -61,6 +62,33 @@ class TestBackgroundExecutionSubagentTimeouts:
         cfg = BackgroundExecutionConfig()
         assert cfg.subagent_collector_timeout == 120
         assert cfg.subagent_orphan_collector_timeout == 600
+
+
+class TestCompactionTimeoutValidation:
+    """The compaction/admission timeouts gate ``asyncio.wait_for``; a 0 or
+    negative value would fire the timeout instantly (a hung-summarize false
+    positive on every turn), so they must be strictly positive at config load."""
+
+    @pytest.mark.parametrize("value", [0, -1, -180.0])
+    def test_rejects_non_positive_compaction_timeout(self, value):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            BackgroundExecutionConfig(compaction_timeout=value)
+
+    @pytest.mark.parametrize("value", [0, -1, -180.0])
+    def test_rejects_non_positive_admission_compaction_wait_timeout(self, value):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            BackgroundExecutionConfig(admission_compaction_wait_timeout=value)
+
+    def test_accepts_positive_values(self):
+        cfg = BackgroundExecutionConfig(
+            compaction_timeout=120.0, admission_compaction_wait_timeout=200.0
+        )
+        assert cfg.compaction_timeout == 120.0
+        assert cfg.admission_compaction_wait_timeout == 200.0
 
 
 class TestInfrastructureConfigComplete:
@@ -190,3 +218,37 @@ class TestSettingsBackwardCompat:
         with self._patch_infra_config(background_execution=bg):
             assert get_max_concurrent_workflows() == 25
             assert get_subagent_collector_timeout() == 60
+
+
+def test_workflow_run_timeout_must_outlast_its_own_children() -> None:
+    """At or below one child_timeout the run-level kill always beats the
+    per-child one, so every timeout surfaces as the blunt whole-run failure and
+    no child is ever named. The shipped default clears it with margin.
+    """
+    from src.config.models import WorkflowOrchestrationConfig
+
+    default = WorkflowOrchestrationConfig()
+    waves = math.ceil(default.max_dispatches_per_run / default.max_concurrent_children)
+    # The default still covers a fully serialized worst case; the validator
+    # below no longer demands it.
+    assert default.run_timeout > waves * default.child_timeout
+
+    with pytest.raises(ValidationError, match="must exceed child_timeout"):
+        WorkflowOrchestrationConfig(child_timeout=1800, run_timeout=1800)
+
+
+def test_a_narrow_fan_out_is_a_configuration_not_a_contradiction() -> None:
+    """The floor must not encode how wide a script chooses to fan out.
+
+    Requiring the run to cover every dispatch serialized made settings each
+    field accepts on its own unsatisfiable together: one child at a time needs
+    64 waves of child_timeout, past the maximum run_timeout the field allows,
+    so no value of run_timeout could load the config at all.
+    """
+    from src.config.models import WorkflowOrchestrationConfig
+
+    serial = WorkflowOrchestrationConfig(max_concurrent_children=1)
+    assert serial.max_concurrent_children == 1
+
+    patient = WorkflowOrchestrationConfig(max_concurrent_children=4, child_timeout=7200)
+    assert patient.child_timeout == 7200

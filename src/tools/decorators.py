@@ -87,6 +87,12 @@ def start_tool_tracking() -> ToolUsageTracker:
     return tracker
 
 
+def set_tool_tracker(tracker: Optional[ToolUsageTracker]) -> None:
+    """Install a specific tracker for the current context (e.g. a per-task
+    tracker inside a background subagent's asyncio.Task)."""
+    _tool_usage_context.set(tracker)
+
+
 def get_tool_tracker() -> Optional[ToolUsageTracker]:
     """
     Get the current tool usage tracker from ContextVar.
@@ -143,6 +149,7 @@ def create_logged_tool(
     tool_instance: T,
     name: Optional[str] = None,
     tracking_name: Optional[str] = None,
+    run_metadata: Optional[dict[str, Any]] = None,
 ) -> T:
     """
     Wrap a StructuredTool instance with usage tracking.
@@ -153,6 +160,9 @@ def create_logged_tool(
         tracking_name: Optional separate name for usage tracking (e.g., "SerperSearchTool").
             Defaults to ``name`` when not provided. Use this to map provider-specific
             billing keys while keeping a generic LLM-facing tool name.
+        run_metadata: Fields stamped onto every LangSmith run for this tool. For
+            build-time choices (which search engine, which depth) that the trace
+            would otherwise have no record of.
 
     Returns:
         A new tool instance with usage tracking
@@ -167,16 +177,24 @@ def create_logged_tool(
     tool_name = name or tool_instance.name
     usage_name = tracking_name or tool_name
 
+    def _stamp() -> None:
+        if run_metadata:
+            from src.observability import stamp_run
+
+            stamp_run(**run_metadata)
+
     async def tracked_coroutine(*args: Any, **kwargs: Any) -> Any:
         tracker = get_tool_tracker()
         if tracker:
             tracker.record_usage(usage_name, count=1)
+        _stamp()
         return await original_coroutine(*args, **kwargs)
 
     def tracked_func(*args: Any, **kwargs: Any) -> Any:
         tracker = get_tool_tracker()
         if tracker:
             tracker.record_usage(usage_name, count=1)
+        _stamp()
         return original_func(*args, **kwargs)
 
     tracked_tool = tool_instance.copy()

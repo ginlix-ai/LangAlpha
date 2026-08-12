@@ -120,7 +120,7 @@ class TodoWriteMiddleware(AgentMiddleware):
         try:
             result = await handler(request)
 
-            # Build completed event with structure expected by streaming_handler
+            # Build completed event with structure expected by the server sse_producer
             # Must include artifact_type for handler to recognize and emit as SSE artifact event
             timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -133,9 +133,9 @@ class TodoWriteMiddleware(AgentMiddleware):
                 "pending": status_counts["pending"],
             }
 
-            # Structure matches streaming_handler expectations (artifact_type triggers artifact SSE event)
+            # Structure matches sse_producer expectations (artifact_type triggers artifact SSE event)
             completed_event = {
-                "artifact_type": "todo_update",  # Required for streaming_handler recognition
+                "artifact_type": "todo_update",  # Required for sse_producer recognition
                 "artifact_id": tool_call_id,
                 "agent": agent_name,
                 "timestamp": timestamp,
@@ -162,7 +162,7 @@ class TodoWriteMiddleware(AgentMiddleware):
 
             failed_timestamp = datetime.now(timezone.utc).isoformat()
             failed_event = {
-                "artifact_type": "todo_update",  # Required for streaming_handler recognition
+                "artifact_type": "todo_update",  # Required for sse_producer recognition
                 "artifact_id": tool_call_id,
                 "agent": agent_name,
                 "timestamp": failed_timestamp,

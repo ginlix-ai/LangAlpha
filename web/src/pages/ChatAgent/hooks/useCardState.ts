@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { type SubagentTokenUsage, ZERO_USAGE } from '../utils/tokenUsage';
+import { isTerminalStatus } from '../session/subagents/subagentStatus';
 
 // --- Card-level types ---
 
@@ -27,6 +28,7 @@ interface SubagentMessage {
 
 interface SubagentData {
   agentId?: string;
+  displayId?: string;
   taskId?: string;
   description?: string;
   prompt?: string;
@@ -34,11 +36,18 @@ interface SubagentData {
   tokenUsage?: SubagentTokenUsage;
   currentTool?: string;
   status?: string;
+  /** Ledger failure reason for an errored task (shown in the detail header). */
+  error?: string;
   messages?: SubagentMessage[];
   isActive?: boolean;
   isHistory?: boolean;
   isReconnect?: boolean;
   title?: string;
+  /** Reduced workflow-run progress (workflow run tasks only). */
+  workflowRun?: import('../session/subagents/workflowRunState').WorkflowRunState;
+  /** Owning workflow run's agent id (workflow children only) — such cards
+   *  are hidden from the sidebar and reached via the run's detail view. */
+  ownerTaskId?: string;
   [key: string]: unknown;
 }
 
@@ -55,7 +64,6 @@ export interface UseCardStateResult {
   cards: CardsMap;
   updateTodoListCard: (todoData: TodoData) => void;
   updateSubagentCard: (agentId: string, subagentDataUpdate: SubagentData) => void;
-  inactivateAllSubagents: () => void;
   finalizePendingTodos: () => void;
   clearSubagentCards: () => void;
 }
@@ -90,6 +98,12 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
   const updateSubagentCard = (agentId: string, subagentDataUpdate: SubagentData) => {
     const cardId = `subagent-${agentId}`;
 
+    // An explicit terminal status write (a per-task chan_close) is authoritative:
+    // it must always land, even on a card the guards below would otherwise treat
+    // as inactive or absent — otherwise a closure is silently dropped and the card
+    // is left free to be re-activated by a stale-liveness signal.
+    const isTerminalWrite = isTerminalStatus(subagentDataUpdate.status);
+
     setCards((prev) => {
       if (prev[cardId]) {
         const existingCard = prev[cardId];
@@ -101,13 +115,7 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
         // history data. This prevents clicking a resumed inline card from replacing
         // the live streaming messages with an old pre-resume snapshot.
         if (!isCurrentlyInactive && subagentDataUpdate.isHistory) {
-          if (import.meta.env.DEV) {
-            console.log('[updateSubagentCard] Skipping history overwrite on active card:', {
-              agentId,
-              cardId,
-              reason: 'Card is active (live streaming) — history push rejected',
-            });
-          }
+          // Card is active (live streaming) — reject the stale history push.
           return prev;
         }
 
@@ -118,17 +126,17 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
         // for the subagent's last LLM call are emitted on the MAIN stream which
         // typically finishes draining slightly after the per-task stream marks the
         // card inactive — dropping them here would zero out the displayed total.
+        // A workflow run's progress is content in the same sense: its card holds
+        // no messages at all, and a replayed run is never isActive, so without
+        // this every live progress frame would be dropped.
         const hasContentUpdate =
           subagentDataUpdate.messages !== undefined ||
-          subagentDataUpdate.tokenUsage !== undefined;
-        if (isCurrentlyInactive && !isBeingReactivated && !hasContentUpdate) {
-          if (import.meta.env.DEV) {
-            console.log('[updateSubagentCard] Skipping update to inactive card:', {
-              agentId,
-              cardId,
-              reason: 'Card is inactive and not being reactivated (no content update)',
-            });
-          }
+          subagentDataUpdate.tokenUsage !== undefined ||
+          subagentDataUpdate.workflowRun !== undefined;
+        if (isCurrentlyInactive && !isBeingReactivated && !hasContentUpdate && !isTerminalWrite) {
+          // Card is inactive and not being reactivated — drop the pure status update.
+          // A terminal write is exempt: a closure correcting a stale non-terminal
+          // state (e.g. an errored task left reading 'active') must not be dropped.
           return prev;
         }
         // Compute resolved values before building the card
@@ -148,24 +156,10 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
           const existingStatus = existingSubagentData.status;
 
           if (newStatus !== undefined) {
-            if (import.meta.env.DEV) {
-              console.log('[updateSubagentCard] Status update:', {
-                agentId,
-                newStatus,
-                previousStatus: existingStatus,
-                willUpdate: newStatus !== existingStatus,
-              });
-            }
             return newStatus;
           }
 
           const preservedStatus = existingStatus || 'active';
-          if (import.meta.env.DEV && existingStatus === 'completed') {
-            console.log('[updateSubagentCard] Preserving completed status:', {
-              agentId,
-              preservedStatus,
-            });
-          }
           return preservedStatus;
         })();
 
@@ -177,8 +171,10 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
               ? existingSubagentData.isActive
               : true);
 
-        // Auto-finalize messages whenever the card is in completed state.
-        if (finalStatus === 'completed' && finalMessages.length > 0) {
+        // Auto-finalize messages whenever the card settles — ANY terminal
+        // state (completed/cancelled/error): a stopped or failed task's last
+        // message must not keep its streaming spinner forever.
+        if (isTerminalStatus(finalStatus) && finalMessages.length > 0) {
           finalMessages = finalMessages.map(msg => {
             if (msg.role !== 'assistant') return msg;
             const m: SubagentMessage = { ...msg, isStreaming: false };
@@ -220,16 +216,11 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
         // Don't create new cards for completed/inactive tasks from live streaming
         const isCompletedFromLiveStream = subagentDataUpdate.isActive === false && subagentDataUpdate.isHistory !== true && subagentDataUpdate.isReconnect !== true;
 
-        if (isCompletedFromLiveStream) {
-          if (import.meta.env.DEV) {
-            console.log('[updateSubagentCard] Skipping creation of new card for completed task from live streaming:', {
-              agentId,
-              cardId,
-              reason: 'Completed tasks from live streaming should only update existing cards, not create new ones',
-              isActive: subagentDataUpdate.isActive,
-              isHistory: subagentDataUpdate.isHistory,
-            });
-          }
+        if (isCompletedFromLiveStream && !isTerminalWrite) {
+          // Inactive live update for an absent card is normally dropped (e.g. a
+          // trailing message with no card to attach to). But an explicit terminal
+          // write must land: a chan_close that arrives before any card exists still
+          // creates the card in its settled state, so the outcome is never lost.
           return prev;
         }
 
@@ -245,7 +236,10 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
               type: 'general-purpose',
               tokenUsage: ZERO_USAGE,
               currentTool: '',
-              status: 'active',
+              // Spawned-but-no-signal-yet. deriveSubagentStatus promotes this to
+              // 'active' the moment any content streams; an explicit live status
+              // in the update below (resume/active_tasks) overrides it outright.
+              status: 'initializing',
               messages: [],
               ...subagentDataUpdate,
               isActive: subagentDataUpdate.isHistory ? false : (subagentDataUpdate.isActive !== undefined ? subagentDataUpdate.isActive : true),
@@ -253,69 +247,6 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
           },
         };
       }
-    });
-  };
-
-  const inactivateAllSubagents = () => {
-    setCards((prev) => {
-      const updated = { ...prev };
-      let hasChanges = false;
-
-      Object.keys(updated).forEach((cardId) => {
-        if (cardId.startsWith('subagent-') && updated[cardId]?.subagentData) {
-          const card = updated[cardId];
-          if (card.subagentData!.isActive !== false) {
-            const msgs = card.subagentData!.messages;
-            let finalizedMsgs = msgs;
-            if (msgs && msgs.length > 0) {
-              finalizedMsgs = msgs.map(msg => {
-                if (msg.role !== 'assistant') return msg;
-                const m: SubagentMessage = { ...msg, isStreaming: false };
-                if (m.toolCallProcesses) {
-                  const procs = { ...m.toolCallProcesses };
-                  for (const [id, proc] of Object.entries(procs)) {
-                    if (proc.isInProgress) {
-                      procs[id] = { ...proc, isInProgress: false, isComplete: true };
-                    }
-                  }
-                  m.toolCallProcesses = procs;
-                }
-                if (m.reasoningProcesses) {
-                  const rps = { ...m.reasoningProcesses };
-                  for (const [id, rp] of Object.entries(rps)) {
-                    if (rp.isReasoning) {
-                      rps[id] = { ...rp, isReasoning: false, reasoningComplete: true };
-                    }
-                  }
-                  m.reasoningProcesses = rps;
-                }
-                return m;
-              });
-            }
-
-            updated[cardId] = {
-              ...card,
-              subagentData: {
-                ...card.subagentData,
-                isActive: false,
-                status: 'completed',
-                currentTool: '',
-                messages: finalizedMsgs,
-              },
-            };
-            hasChanges = true;
-            if (import.meta.env.DEV) {
-              console.log('[inactivateAllSubagents] Marking subagent as inactive:', {
-                taskId: card.subagentData!.taskId,
-                cardId,
-                previousStatus: card.subagentData!.status,
-              });
-            }
-          }
-        }
-      });
-
-      return hasChanges ? updated : prev;
     });
   };
 
@@ -366,7 +297,6 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
     cards,
     updateTodoListCard,
     updateSubagentCard,
-    inactivateAllSubagents,
     finalizePendingTodos,
     clearSubagentCards,
   };

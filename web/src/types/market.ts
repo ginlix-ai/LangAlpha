@@ -15,6 +15,9 @@ export interface IndexData {
   changePercent: number;
   isPositive: boolean;
   sparklineData: SparklinePoint[];
+  quoteAvailable?: boolean;
+  /** ET date (YYYY-MM-DD) of the trading session the price/sparkline reflect. */
+  asOfDate?: string;
   previousClose?: number | null;
 }
 
@@ -36,8 +39,14 @@ export interface SnapshotData {
   high?: number;
   low?: number;
   volume?: number;
+  last_minute_close?: number | null;
+  regular_close?: number | null;
+  regular_trading_change?: number | null;
+  early_trading_change?: number | null;
   early_trading_change_percent?: number | null;
+  late_trading_change?: number | null;
   late_trading_change_percent?: number | null;
+  source?: string | null;
   [key: string]: unknown;
 }
 
@@ -56,6 +65,7 @@ export interface StockPrice {
   change: number;
   changePercent: number;
   isPositive: boolean;
+  quoteAvailable?: boolean;
   previousClose?: number | null;
   earlyTradingChangePercent?: number | null;
   lateTradingChangePercent?: number | null;

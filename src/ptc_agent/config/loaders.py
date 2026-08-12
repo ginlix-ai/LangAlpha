@@ -255,11 +255,17 @@ def load_from_dict(
         llm_name = llm_data.get("name", "")
         if not llm_name:
             raise ValueError("llm.name is required in agent_config.yaml when llm is a dict")
+        # Blank compaction/fetch inherit the flash model, so leaving them empty
+        # in agent_config.yaml means "reuse flash for these cheaper roles".
+        # `... or None` folds "" to None when flash is itself unset, so the
+        # downstream fall-back-to-main path (resolve_compaction_client) still
+        # engages instead of resolving an empty model name.
+        flash_model = llm_data.get("flash") or None
         llm_config = LLMConfig(
             name=llm_name,
             flash=llm_data.get("flash"),
-            compaction=llm_data.get("compaction"),
-            fetch=llm_data.get("fetch"),
+            compaction=llm_data.get("compaction") or flash_model,
+            fetch=llm_data.get("fetch") or flash_model,
             fallback=llm_data.get("fallback"),
         )
     elif llm_data is not None:
@@ -281,7 +287,6 @@ def load_from_dict(
     # Load Agent configuration (optional section)
     # Note: YAML sections with only comments parse as None, not {}
     agent_data = config_data.get("agent") or {}
-    enable_view_image = agent_data.get("enable_view_image", True)
     background_auto_wait = agent_data.get("background_auto_wait", False)
 
     # Load Subagent configuration (optional section)
@@ -333,8 +338,9 @@ def load_from_dict(
     compaction_data = config_data.get("compaction") or {}
     compaction_config = CompactionConfig(**compaction_data) if compaction_data else CompactionConfig()
 
-    # Search API provider
+    # Search API provider + default depth level
     search_api = config_data.get("search_api", "tavily")
+    search_depth = config_data.get("search_depth", "standard")
 
     # Create config object
     config = AgentConfig(
@@ -346,10 +352,10 @@ def load_from_dict(
         filesystem=filesystem_config,
         skills=skills_config,
         flash=flash_config,
-        enable_view_image=enable_view_image,
         subagents=subagents_config,
         compaction=compaction_config,
         search_api=search_api,
+        search_depth=search_depth,
         background_auto_wait=background_auto_wait,
     )
 
@@ -431,7 +437,6 @@ filesystem:
 # Agent Settings (optional)
 # -------------------------
 agent:
-  enable_view_image: true
   background_auto_wait: false  # true to wait for background tasks before returning to CLI
 
 # Subagents (optional)

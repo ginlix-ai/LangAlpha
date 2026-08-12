@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { createChart, ColorType, CrosshairMode, PriceScaleMode, LineType, LineStyle } from 'lightweight-charts';
 import type { IChartApi, LogicalRange, MouseEventParams } from 'lightweight-charts';
 import html2canvas from 'html2canvas';
@@ -7,38 +8,55 @@ import { fetchStockData } from '../utils/api';
 import {
   centerLatestBarView,
   computeInitialLoadRange,
-  consumePrefetchBuffer,
   dedupeMergeByTime,
-  etDateStr,
   rangeBeforeOldest,
 } from '../utils/chartDataLoaders';
+import { applyQuoteToDailyBar, deriveMarketSession, foldMinuteBar, formatPrice, useCurrencyDisplay, useLiveBars } from '@/lib/bars';
+import { timezoneForSymbol } from '@/lib/bars/exchanges';
+import { RANGE_PRESETS, rangeStartChartSec } from '@/lib/bars/rangePresets';
+import type { RangePreset } from '@/lib/bars/rangePresets';
+import { chartSecToDateStr, dateStrInTz } from '@/lib/utils';
+import VenueClock from './VenueClock';
+import { useQuote } from '@/lib/quotes';
 import { calculateMA, calculateRSI, updateRSIIncremental } from '../utils/chartHelpers';
 import type { RSIState, OHLCDataPoint } from '../utils/chartHelpers';
 import {
   getChartTheme,
   INTERVALS, PRIMARY_INTERVAL_KEYS, SCROLL_CHUNK_DAYS,
   SCROLL_LOAD_THRESHOLD, RANGE_CHANGE_DEBOUNCE_MS,
-  STAGE2_BACKFILL_DAYS, PREFETCH_ENABLED_INTERVALS, PREFETCH_THRESHOLD,
+  STAGE2_BACKFILL_DAYS,
   MA_CONFIGS, DEFAULT_ENABLED_MA, RSI_PERIODS, BARS_PER_DAY, TARGET_BAR_SPACING,
+  INTERVAL_SECONDS, WS_FOLD_INTERVALS,
   OVERLAY_COLORS, OVERLAY_LABELS,
   EXTENDED_HOURS_INTERVALS, getExtendedHoursType, computeExtendedHoursRegions,
-  EXT_COLOR_PRE, EXT_COLOR_POST,
-  isUSEquity, supports1sInterval,
+  EXT_COLOR_PRE, EXT_COLOR_POST, CLOSE_LINE_COLOR,
+  isUSEquity,
 } from '../utils/chartConstants';
 import type { ChartDataPoint as ChartConstDataPoint } from '../utils/chartConstants';
 import { ExtendedHoursBgPrimitive } from '../utils/extendedHoursBg';
 import { useTheme } from '@/contexts/ThemeContext';
-import CrosshairTooltip from './CrosshairTooltip';
+import { Loader } from '@/components/ui/loader';
+import { CrosshairTooltipLayer, type CrosshairTooltipState } from './CrosshairTooltip';
+import { createValueStore, type ValueStore } from '@/lib/valueStore';
 import TradingViewWidget from './TradingViewWidget';
 import { TradingViewAttribution } from '@/pages/Dashboard/widgets/framework/TradingViewAttribution';
 import { useChartAnnotations } from '../hooks/useChartAnnotations';
 import { useChartOverlays } from '../hooks/useChartOverlays';
-import { SlidersHorizontal, Settings2, Maximize2, Minimize2, ChevronDown, Plus, Minus, RotateCcw, Menu } from 'lucide-react';
+import { useAgentAnnotations } from '../hooks/useAgentAnnotations';
+import { AgentEventOverlay } from './AgentEventOverlay';
+import { chartAnnotationStore, makeChartId, normalizeTimeframe, useAnnotationsForView, useDisplayCleared } from '../stores/chartAnnotationStore';
+import { chartSelectionStore, useChartSelections } from '../stores/chartSelectionStore';
+import { SelectionPrimitive, type CommittedSelection } from '../utils/selectionPrimitive';
+import { SelectionCommentOverlay } from './SelectionCommentOverlay';
+import { snapToNearestBar, toUnixSeconds } from '../utils/annotationGeometry';
+import { downsampleBars } from '../utils/downsampleBars';
+import { SlidersHorizontal, Settings2, Maximize2, Minimize2, ChevronDown, Plus, Minus, RotateCcw, Menu, X, SquareDashedMousePointer, Ruler } from 'lucide-react';
 
 import { loadPref, savePref } from '../utils/prefs';
 import type { SnapshotData } from '@/types/market';
 import type { BarData } from '../hooks/useMarketDataWS';
 import { useOnClickOutside } from '@/hooks/useOnClickOutside';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 interface ChartDataBar {
   time: number;
@@ -47,22 +65,6 @@ interface ChartDataBar {
   low: number;
   close: number;
   volume: number;
-}
-
-interface TooltipState {
-  visible: boolean;
-  x: number;
-  y: number;
-  data: {
-    time: number;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    volume?: number;
-    maValues: Record<number, number>;
-    rsiValue: number | null;
-  } | null;
 }
 
 interface OverlayVisibility {
@@ -75,17 +77,19 @@ interface OverlayVisibility {
 interface MarketChartProps {
   symbol: string;
   interval?: string;
+  /** Active workspace — scopes which agent-drawn chart instance is shown. */
+  workspaceId?: string | null;
   onIntervalChange?: (interval: string) => void;
   onCapture?: () => void;
   onStockMeta?: (meta: unknown) => void;
-  onLatestBar?: (bar: ChartDataBar) => void;
+  /** Venue market phase (`pre|open|post|closed`) from the bars responses; null until known. */
+  onMarketPhase?: (phase: string | null) => void;
   quoteData: Record<string, unknown> | null;
   earningsData: unknown;
   overlayData: Record<string, unknown> | null;
   stockMeta: Record<string, unknown> | null;
   liveTick: BarData | null;
   wsStatus: string;
-  ginlixDataEnabled?: boolean;
   marketStatus?: Record<string, unknown> | null;
   snapshot: SnapshotData | null;
 }
@@ -96,24 +100,49 @@ export interface MarketChartHandle {
   getChartMetadata: () => Record<string, unknown> | null;
 }
 
+/** Max OHLCV bars sent with a region selection (downsampled past this). */
+// Keep this <= the server cap (_MAX_SELECTION_BARS in additional_context.py,
+// currently 500). Raising it past the server cap makes the server silently
+// slice the payload and flag it truncated even when the client thought it wasn't.
+const MAX_SELECTION_BARS = 300;
+
+/** A drag smaller than this (px, either axis) is treated as a click, not a region. */
+const MIN_DRAG_PX = 4;
+
+/**
+ * Restore the series' default last-value styling. lightweight-charts'
+ * applyOptions merge SKIPS undefined values, so the reset must pass '' —
+ * priceLineColor's true default, which falls back to the last-bar color.
+ * Passing undefined leaves the previous color stuck (a grey "Close" pill
+ * surviving a symbol switch).
+ */
+const PRICE_LINE_RESET = { priceLineColor: '', title: '' } as const;
+
+/**
+ * Container widths (px, descending) at which the toolbar sheds actions into the
+ * overflow menu. `toolbarLevel` is the count of breakpoints the width is below:
+ * 0 = widest (all inline) … 4 = narrowest. Driven by a ResizeObserver.
+ */
+const TOOLBAR_WIDTH_BREAKPOINTS = [1180, 880, 710, 560] as const;
 
 const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>(({
   symbol,
   interval = '1day',
+  workspaceId,
   onIntervalChange,
   onCapture: _onCapture,
   onStockMeta,
-  onLatestBar,
+  onMarketPhase,
   quoteData,
   earningsData,
   overlayData,
   stockMeta,
   liveTick,
   wsStatus: _wsStatus,
-  ginlixDataEnabled = true,
   marketStatus,
   snapshot,
 }, ref) => {
+  const { t } = useTranslation();
   const { theme } = useTheme();
   const ct = getChartTheme(theme as 'dark' | 'light');
   const providers = Array.isArray(marketStatus?.providers) ? marketStatus.providers as string[] : [];
@@ -131,8 +160,14 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   const maSeriesRefs = useRef<Record<number, any>>({});
   const baselineSeriesRef = useRef<any>(null);
   const extHoursBgRef = useRef<ExtendedHoursBgPrimitive | null>(null);
+  const selectionPrimitiveRef = useRef<SelectionPrimitive | null>(null);
   const extCloseLineRef = useRef<any>(null);
-  const currentExtTypeRef = useRef<string | null>(null);
+  // Signature of the last-applied session presentation (priceMark + close-line
+  // price) — makes applySessionPresentation idempotent across its call sites.
+  const appliedSessionRef = useRef<string | null>(null);
+  // Server market phase mirrored into a ref so the imperative data paths
+  // (WS ticks, updateSeriesData) read the freshest phase between renders.
+  const marketPhaseRef = useRef<string | null>(null);
   const quoteDataRef = useRef(quoteData);
   const snapshotRef = useRef(snapshot);
 
@@ -142,6 +177,18 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   const [_lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null);
   const [rsiValue, setRsiValue] = useState<string | null>(null);
 
+  // Bottom-bar viewing-window preset (1D 5D … All). `activeRange` is the
+  // highlighted button; `pendingRangeRef` carries a clicked preset across the
+  // interval switch it triggers, so the load that follows applies the preset's
+  // window instead of the default view.
+  const [activeRange, setActiveRange] = useState<string | null>(null);
+  const pendingRangeRef = useRef<string | null>(null);
+  useEffect(() => {
+    // A preset describes a view of the symbol it was clicked on.
+    setActiveRange(null);
+    pendingRangeRef.current = null;
+  }, [symbol]);
+
   // MA / RSI config state (persisted)
   const [enabledMaPeriods, setEnabledMaPeriods] = useState<number[]>(() => loadPref('maPeriods', DEFAULT_ENABLED_MA));
   const [rsiPeriod, setRsiPeriod] = useState<number>(() => loadPref('rsiPeriod', 14));
@@ -149,27 +196,48 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
 
   // Chart mode: 'custom' (our lightweight-charts) or 'tradingview' (full TV widget) (persisted)
   const [chartMode, setChartMode] = useState<string>(() => loadPref('chartMode', 'custom'));
+  // Mobile only ever shows the Light chart — the Advanced (TradingView) embed is
+  // dropped on phones. `effectiveChartMode` is what every behavioural consumer
+  // reads so the light chart stays fully live on mobile, while the raw
+  // `chartMode` (and its toggle/pref) is preserved for the desktop switcher.
+  const isMobile = useIsMobile();
+  const effectiveChartMode = isMobile ? 'custom' : chartMode;
 
   // Chart feature toggles (persisted)
   const [priceScaleMode, setPriceScaleMode] = useState<number>(() => loadPref('priceScaleMode', PriceScaleMode.Normal));
   const [magnetMode, setMagnetMode] = useState<boolean>(() => loadPref('magnetMode', false));
   const [showBaseline, setShowBaseline] = useState<boolean>(false);
   const [annotationsVisible, setAnnotationsVisible] = useState<boolean>(() => loadPref('annotationsVisible', false));
+  // User chart-selection tool: drag a region or click a price level to ask the agent.
+  const [selectMode, setSelectMode] = useState<'off' | 'region' | 'price_level'>('off');
+  const selectModeRef = useRef<'off' | 'region' | 'price_level'>('off');
+  const selectDragRef = useRef<{ startX: number; startY: number } | null>(null);
+  useEffect(() => { selectModeRef.current = selectMode; }, [selectMode]);
   const [overlayVisibility, setOverlayVisibility] = useState<OverlayVisibility>(
     () => loadPref('overlayVisibility', { earnings: false, grades: false, priceTargets: false }),
   );
 
   // Responsive compact mode — based on actual chart container width, not viewport
-  const [isCompact, setIsCompact] = useState<boolean>(false);
+  // Toolbar collapse tier by container width. As space shrinks the toolbar
+  // sacrifices items in priority order (least → most important): indicator
+  // values (1) → scale/view tools (2) → indicators + tools dropdowns (3) →
+  // mode switch into the menu + Clear icon-only (4, phone widths). The interval
+  // selector, Clear and the selection tools always stay inline. Hidden
+  // actionable items move into the overflow menu.
+  const [toolbarLevel, setToolbarLevel] = useState<0 | 1 | 2 | 3 | 4>(0);
   useEffect(() => {
     const el = rootRef.current;
     if (!el) return;
     const ro = new ResizeObserver(([entry]) => {
-      setIsCompact(entry.contentRect.width < 925);
+      const w = entry.contentRect.width;
+      const below = TOOLBAR_WIDTH_BREAKPOINTS.findIndex((min) => w >= min);
+      setToolbarLevel((below === -1 ? TOOLBAR_WIDTH_BREAKPOINTS.length : below) as 0 | 1 | 2 | 3 | 4);
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  // Close the overflow menu if the chart widens enough to unmount it.
+  useEffect(() => { if (toolbarLevel < 2) setViewOpen(false); }, [toolbarLevel]);
 
   // Toolbar dropdown state
   const [indicatorsOpen, setIndicatorsOpen] = useState<boolean>(false);
@@ -187,8 +255,12 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   useOnClickOutside(intervalsDropdownRef, () => setIntervalsOpen(false), intervalsOpen);
   useOnClickOutside(viewDropdownRef, () => setViewOpen(false), viewOpen);
 
-  // Crosshair tooltip state
-  const [tooltipState, setTooltipState] = useState<TooltipState>({ visible: false, x: 0, y: 0, data: null });
+  // Crosshair tooltip state — external store, not useState: the crosshair
+  // fires per raw mousemove, and a setState here re-renders this entire
+  // component per pixel. Only CrosshairTooltipLayer subscribes.
+  const tooltipStoreRef = useRef<ValueStore<CrosshairTooltipState> | null>(null);
+  tooltipStoreRef.current ??= createValueStore<CrosshairTooltipState>({ visible: false, x: 0, y: 0, data: null });
+  const tooltipStore = tooltipStoreRef.current;
 
   // Refs for stable callbacks (avoid stale closures)
   const enabledMaPeriodsRef = useRef(DEFAULT_ENABLED_MA);
@@ -230,8 +302,14 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   const gapFillDoneRef = useRef<boolean>(false);  // gap fill between REST data and first WS tick
   const gapFillRetryRef = useRef<number>(0);    // retry count for gap fill attempts
   const gapFillInProgressRef = useRef<boolean>(false);  // prevent concurrent gap fill fetches
-  // Aggregation buffer for building 1m candles from 1s WS ticks
+  // Aggregation buffer for building 1m candles from second-level WS ticks
   const minuteAggRef = useRef<ChartDataBar>({ time: 0, open: 0, high: 0, low: 0, close: 0, volume: 0 });
+
+  // Currency-aware price labels — the hook owns the {state + mirrored ref} pair,
+  // the symbol-reset, and the protocol-meta upgrade. `priceFormatRef` feeds the
+  // chart's (creation-time) price formatter so the axis follows the currency
+  // without re-creating the series.
+  const { displayCurrency, priceFormatRef, onCurrencyMeta } = useCurrencyDisplay(symbol);
 
   // Refs for scroll-based loading
   const allDataRef = useRef<ChartDataBar[]>([]);
@@ -240,11 +318,8 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   const rangeChangeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rangeUnsubRef = useRef<(() => void) | null>(null);
 
-  // Refs for staged loading and background prefetch
+  // Ref for the staged (stage 2) background backfill
   const stage2AbortRef = useRef<AbortController | null>(null);
-  const prefetchAbortRef = useRef<AbortController | null>(null);
-  const prefetchedDataRef = useRef<{ data: ChartDataBar[]; anchorOldest: number } | null>(null);
-  const prefetchingRef = useRef<boolean>(false);
 
   // Chart data state for hooks
   const [chartDataForHooks, setChartDataForHooks] = useState<ChartDataBar[]>([]);
@@ -253,14 +328,343 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   const priceTargetsForAnnotations = overlayVisibility.priceTargets ? (overlayData?.priceTargets as any) : null;
   useChartAnnotations(candlestickSeriesRef, stockMeta, quoteData, priceTargetsForAnnotations, annotationsVisible, symbol);
 
-  // --- Series markers via hook ---
-  useChartOverlays(candlestickSeriesRef, chartDataForHooks as any, earningsData as any, overlayData as any, overlayVisibility as any, symbol);
+  // --- Agent-sourced annotations: price_line, trendline, marker (derived) ---
+  // Subscribe to the store directly too: `hasAgentAnnotations` drives the
+  // first-class Clear button, and `agentAnnotationsCleared` suppresses the
+  // drawing (data stays in the store) until the user re-opens the artifact.
+  //
+  // The agent can only draw on VALID_TIMEFRAMES, so it stores under the
+  // normalized timeframe (unknown intervals -> '1day'). Look annotations up
+  // under the same normalized key, or they are invisible on non-agent-writable
+  // intervals.
+  const annotationInterval = normalizeTimeframe(interval);
+  const selectionSymbol = symbol ? symbol.toUpperCase() : '';
+  const { selections: userSelections, activeId: editorOpenId } = useChartSelections();
+  const agentAnnotations = useAnnotationsForView(workspaceId ?? null, symbol, annotationInterval);
+  const hasAgentAnnotations = agentAnnotations.length > 0;
+  const agentAnnotationsCleared = useDisplayCleared(workspaceId ?? null, symbol, annotationInterval);
+  const agentMarkers = useAgentAnnotations(
+    chartRef,
+    candlestickSeriesRef,
+    symbol,
+    effectiveChartMode,
+    chartDataForHooks as any,
+    workspaceId ?? null,
+    annotationInterval,
+    !agentAnnotationsCleared,
+    theme,
+  );
 
-  // --- Live tick updates from WS (1s and 1min intervals, custom/Light mode only) ---
+  // --- Series markers via hook (earnings + grades + agent markers) ---
+  useChartOverlays(candlestickSeriesRef, chartDataForHooks as any, earningsData as any, overlayData as any, overlayVisibility as any, symbol, agentMarkers, theme as 'dark' | 'light');
+
+  // --- User chart selection (region / price level → agent) ---
+  // Keep the selection primitive's theme in sync.
+  useEffect(() => {
+    selectionPrimitiveRef.current?.setTheme(theme === 'dark' ? 'dark' : 'light');
+  }, [theme]);
+
+  // Render every selection drawn on the current instance (pending + confirmed),
+  // emphasizing the one whose editor is open.
+  useEffect(() => {
+    const prim = selectionPrimitiveRef.current;
+    if (!prim) return;
+    const items: CommittedSelection[] = [];
+    for (const sel of userSelections) {
+      if (sel.symbol !== selectionSymbol || sel.timeframe !== annotationInterval) continue;
+      const active = sel.id === editorOpenId;
+      if (sel.selectionType === 'price_level') {
+        items.push({ type: 'price_level', priceLow: sel.priceLow, priceHigh: sel.priceLow, active });
+        continue;
+      }
+      const t1 = sel.timeStart ? toUnixSeconds(sel.timeStart) : null;
+      const t2 = sel.timeEnd ? toUnixSeconds(sel.timeEnd) : null;
+      if (t1 == null || t2 == null) continue;
+      items.push({ type: 'region', time1: t1, time2: t2, priceLow: sel.priceLow, priceHigh: sel.priceHigh, active });
+    }
+    prim.setCommitted(items);
+  }, [userSelections, editorOpenId, selectionSymbol, annotationInterval]);
+
+  // Disable drag-pan while a select tool is armed so the drag draws a box.
+  useEffect(() => {
+    try {
+      chartRef.current?.applyOptions({ handleScroll: { pressedMouseMove: selectMode === 'off' } } as any);
+    } catch { /* chart disposed */ }
+    return () => {
+      try {
+        chartRef.current?.applyOptions({ handleScroll: { pressedMouseMove: true } } as any);
+      } catch { /* chart disposed */ }
+    };
+  }, [selectMode]);
+
+  // Switching the viewed instance drops selections drawn on the old one.
+  useEffect(() => {
+    const stale = chartSelectionStore
+      .getAll()
+      .some((s) => s.symbol !== selectionSymbol || s.timeframe !== annotationInterval);
+    if (stale) chartSelectionStore.clearAll();
+    setSelectMode('off');
+  }, [selectionSymbol, annotationInterval]);
+
+  // While a select tool is armed, Esc disarms it (unless the note editor has
+  // focus — it handles Esc itself and stops propagation).
+  useEffect(() => {
+    if (selectMode === 'off') return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && chartSelectionStore.getActiveId() == null) setSelectMode('off');
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectMode]);
+
+  // Capture a cropped JPEG of the selection's pixel sub-rect from the chart's
+  // native screenshot. lightweight-charts renders to a device-pixel canvas, so
+  // the CSS-pixel rect is scaled by the screenshot/container ratio. Best-effort:
+  // returns null on any failure (disposed chart, tainted canvas) — the
+  // structured bars still ride, the image is a vision-model bonus.
+  const captureSelectionCrop = useCallback(
+    (leftX: number, topY: number, rightX: number, bottomY: number): string | null => {
+      try {
+        const chart = chartRef.current;
+        const container = chartContainerRef.current;
+        if (!chart || !container) return null;
+        const shot = chart.takeScreenshot();
+        if (!shot) return null;
+        const scaleX = shot.width / container.clientWidth;
+        const scaleY = shot.height / container.clientHeight;
+        if (!(scaleX > 0) || !(scaleY > 0)) return null;
+        const pad = 6;
+        const sx = Math.max(0, Math.round((leftX - pad) * scaleX));
+        const sy = Math.max(0, Math.round((topY - pad) * scaleY));
+        const sw = Math.min(shot.width - sx, Math.round((rightX - leftX + pad * 2) * scaleX));
+        const sh = Math.min(shot.height - sy, Math.round((bottomY - topY + pad * 2) * scaleY));
+        if (sw <= 0 || sh <= 0) return null;
+        const out = document.createElement('canvas');
+        out.width = sw;
+        out.height = sh;
+        const cctx = out.getContext('2d');
+        if (!cctx) return null;
+        cctx.drawImage(shot, sx, sy, sw, sh, 0, 0, sw, sh);
+        return out.toDataURL('image/jpeg', 0.85);
+      } catch (err) {
+        console.warn('Chart selection crop failed:', err);
+        return null;
+      }
+    },
+    [],
+  );
+
+  const commitRegionSelection = useCallback((x1: number, y1: number, x2: number, y2: number) => {
+    const chart = chartRef.current;
+    const series = candlestickSeriesRef.current;
+    const container = chartContainerRef.current;
+    if (!chart || !series || !container) return;
+    const leftX = Math.min(x1, x2);
+    const rightX = Math.max(x1, x2);
+    const topY = Math.min(y1, y2);
+    const bottomY = Math.max(y1, y2);
+    if (rightX - leftX < MIN_DRAG_PX || bottomY - topY < MIN_DRAG_PX) return; // ignore a click / micro-drag
+
+    const priceHigh = series.coordinateToPrice(topY);
+    const priceLow = series.coordinateToPrice(bottomY);
+    if (priceHigh == null || priceLow == null || !Number.isFinite(priceHigh) || !Number.isFinite(priceLow)) return;
+
+    const allBars = allDataRef.current;
+    const ts = chart.timeScale();
+    const rawL = ts.coordinateToTime(leftX);
+    const rawR = ts.coordinateToTime(rightX);
+    const secL = typeof rawL === 'number' ? rawL : null;
+    const secR = typeof rawR === 'number' ? rawR : null;
+    const t1 = secL != null ? (snapToNearestBar(allBars as any, secL) ?? secL) : (allBars[0]?.time ?? null);
+    const t2 = secR != null ? (snapToNearestBar(allBars as any, secR) ?? secR) : (allBars[allBars.length - 1]?.time ?? null);
+    if (t1 == null || t2 == null) return;
+    const startSec = Math.min(t1, t2);
+    const endSec = Math.max(t1, t2);
+
+    const inRange = allBars.filter((b) => b.time >= startSec && b.time <= endSec);
+    const { bars: chosen, truncated } = downsampleBars(inRange, MAX_SELECTION_BARS);
+    const selBars = chosen.map((b) => ({
+      time: new Date(b.time * 1000).toISOString(),
+      open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume,
+    }));
+
+    // Crop the region from the chart now — the draft box is cleared right after
+    // commit and a pan/zoom would invalidate the pixel rect.
+    const croppedImage = captureSelectionCrop(leftX, topY, rightX, bottomY) ?? undefined;
+
+    chartSelectionStore.beginDraft({
+      symbol: selectionSymbol,
+      timeframe: annotationInterval,
+      selectionType: 'region',
+      timeStart: new Date(startSec * 1000).toISOString(),
+      timeEnd: new Date(endSec * 1000).toISOString(),
+      priceLow: Math.min(priceLow, priceHigh),
+      priceHigh: Math.max(priceLow, priceHigh),
+      bars: selBars,
+      barsTruncated: truncated,
+      croppedImage,
+    });
+  }, [selectionSymbol, annotationInterval, captureSelectionCrop]);
+
+  const handleSelectPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const mode = selectModeRef.current;
+    if (mode === 'off') return;
+    const container = chartContainerRef.current;
+    const prim = selectionPrimitiveRef.current;
+    if (!container || !prim) return;
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* unsupported */ }
+    const rect = container.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    selectDragRef.current = { startX: x, startY: y };
+    prim.setDraft(
+      mode === 'price_level'
+        ? { type: 'price_level', x1: 0, y1: y, x2: rect.width, y2: y }
+        : { type: 'region', x1: x, y1: y, x2: x, y2: y },
+    );
+  }, []);
+
+  const handleSelectPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = selectDragRef.current;
+    if (!drag) return;
+    const container = chartContainerRef.current;
+    const prim = selectionPrimitiveRef.current;
+    if (!container || !prim) return;
+    const rect = container.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    prim.setDraft(
+      selectModeRef.current === 'price_level'
+        ? { type: 'price_level', x1: 0, y1: y, x2: rect.width, y2: y }
+        : { type: 'region', x1: drag.startX, y1: drag.startY, x2: x, y2: y },
+    );
+  }, []);
+
+  const handleSelectPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = selectDragRef.current;
+    selectDragRef.current = null;
+    selectionPrimitiveRef.current?.setDraft(null);
+    if (!drag) return; // stray pointerup with no draw — stay armed
+    const mode = selectModeRef.current;
+    const container = chartContainerRef.current;
+    const series = candlestickSeriesRef.current;
+    if (container && series) {
+      const rect = container.getBoundingClientRect();
+      const endX = e.clientX - rect.left;
+      const endY = e.clientY - rect.top;
+      try {
+        if (mode === 'price_level') {
+          const price = series.coordinateToPrice(endY);
+          if (price != null && Number.isFinite(price)) {
+            chartSelectionStore.beginDraft({
+              symbol: selectionSymbol,
+              timeframe: annotationInterval,
+              selectionType: 'price_level',
+              priceLow: price, priceHigh: price,
+              bars: [], barsTruncated: false,
+            });
+          }
+        } else {
+          commitRegionSelection(drag.startX, drag.startY, endX, endY);
+        }
+      } catch (err) {
+        // The chart can be disposed mid-gesture (benign, rare); any other
+        // failure here is a real commit bug. Log at warn so it stays visible
+        // in prod — console.debug is below the browser's default threshold.
+        console.warn('Chart selection commit failed:', err);
+      }
+    }
+    // Tool stays armed so the user can keep drawing; Esc / the tool button disarms.
+  }, [commitRegionSelection, selectionSymbol, annotationInterval]);
+
+  const handleSelectPointerCancel = useCallback(() => {
+    // Pointer sequence aborted (touch interrupted, capture stolen) before a
+    // pointerup — drop the in-progress draft and disarm the drag so the box
+    // doesn't stick on screen. Tool stays armed, like a stray pointerup.
+    selectDragRef.current = null;
+    selectionPrimitiveRef.current?.setDraft(null);
+  }, []);
+
+  // --- Session presentation (the one writer) ---
+  // deriveMarketSession (lib/bars/marketSession) makes every "what does the
+  // price on screen represent" decision; this callback is the only writer of
+  // the series' last-value line styling and the after-hours official-close
+  // reference line. Idempotent via appliedSessionRef, so state-driven effects
+  // and the imperative data paths can all call it freely.
+  const applySessionPresentation = useCallback((lastBarTime: number | null) => {
+    const series = candlestickSeriesRef.current;
+    if (!series) return;
+
+    const session = deriveMarketSession({
+      symbol: symbolRef.current,
+      interval: intervalRef.current,
+      phase: marketPhaseRef.current,
+      headBarTime: lastBarTime,
+    });
+
+    // Official-close reference line while the head bar is after-hours (live
+    // or settled): the provider-exact regular_close, falling back to
+    // previous_close + regular_trading_change (1dp-rounded, cents off).
+    // Pre-market shows no line — the "Prev Close" annotation already marks
+    // the same value.
+    const snap = snapshotRef.current;
+    const prevClose = snap?.previous_close;
+    const regChange = snap?.regular_trading_change as number | undefined;
+    const regularClose = (snap?.regular_close as number | undefined)
+      ?? (prevClose != null && regChange != null ? (prevClose as number) + regChange : undefined);
+    const closePrice = session.showRegularCloseLine && regularClose != null ? regularClose : null;
+
+    const signature = `${session.priceMark}|${closePrice ?? ''}`;
+    if (signature === appliedSessionRef.current) return;
+    appliedSessionRef.current = signature;
+
+    if (session.priceMark === 'ext-pre' || session.priceMark === 'ext-post') {
+      const pre = session.priceMark === 'ext-pre';
+      series.applyOptions({
+        priceLineColor: pre ? EXT_COLOR_PRE : EXT_COLOR_POST,
+        title: pre ? 'Pre' : 'After',
+      });
+    } else if (
+      session.priceMark === 'settled-close'
+      || session.priceMark === 'settled-ext-pre'
+      || session.priceMark === 'settled-ext-post'
+    ) {
+      // A settled ext-hours head bar is NOT the official close — say which
+      // tape ended here, and let the reference line carry the real close.
+      const title = session.priceMark === 'settled-ext-post' ? 'AH Close'
+        : session.priceMark === 'settled-ext-pre' ? 'PM Close'
+          : 'Close';
+      series.applyOptions({ priceLineColor: CLOSE_LINE_COLOR, title });
+    } else {
+      series.applyOptions(PRICE_LINE_RESET);
+    }
+
+    if (extCloseLineRef.current) {
+      try { series.removePriceLine(extCloseLineRef.current); } catch (_) { /* ok */ }
+      extCloseLineRef.current = null;
+    }
+    if (closePrice != null) {
+      extCloseLineRef.current = series.createPriceLine({
+        price: closePrice,
+        title: 'Close',
+        color: CLOSE_LINE_COLOR,
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+      });
+    }
+  }, []);
+
+  // --- Live tick updates from WS (custom/Light mode only) ---
+  // 1min aggregates the second-level WS ticks into its forming bar natively;
+  // 5min–4hour fold the finer WS aggregate into the coarser forming bucket.
+  // 1day uses the quote layer (a separate effect below). Everything else has
+  // no live feed.
   useEffect(() => {
     if (!liveTick || !candlestickSeriesRef.current) return;
-    // Only apply live updates for 1s/1min interval in custom (Light) mode
-    if ((interval !== '1s' && interval !== '1min') || chartMode !== 'custom') return;
+    if (effectiveChartMode !== 'custom') return;
+    const isFoldInterval = WS_FOLD_INTERVALS.has(interval);
+    if (interval !== '1min' && !isFoldInterval) return;
 
     const { time, open, high, low, close, volume } = liveTick;
     if (!time || close == null) return;
@@ -270,13 +674,51 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     // Track when WS last delivered a usable tick (used by REST polling fallback)
     lastLiveTickTimeRef.current = Date.now();
 
+    // Coarser intervals (5min–4hour): fold the finer WS aggregate into the
+    // forming bucket rather than appending it natively. foldMinuteBar returns a
+    // NEW array only when the forming bar actually changed (in-bucket OHLCV
+    // update, or a rollover append); a late/out-of-order tick returns the same
+    // ref → no-op. We drive the forming bar with a surgical series.update() so
+    // zoom is preserved; MA/RSI/extended-hours on the forming bar refresh on
+    // bucket rollover and on the periodic reconcile poll (≤60s), which also
+    // corrects any fold drift.
+    if (isFoldInterval) {
+      const folded = foldMinuteBar(data, { time, open, high, low, close, volume }, INTERVAL_SECONDS[interval]);
+      if (folded !== data) {
+        allDataRef.current = folded;
+        if (folded.length !== data.length) {
+          // Bucket rollover — the previous bar just finalized. Full redraw so
+          // MA/RSI/ext-hours extend past it; while WS stays healthy the REST
+          // poll runs only as the ≤60s reconcile, so nothing else recomputes
+          // them promptly. Once per bucket (5–240 min) and updateSeriesData
+          // never touches the zoom.
+          updateSeriesData(folded);
+          return;
+        }
+        const head = folded[folded.length - 1];
+        candlestickSeriesRef.current.update({
+          time: head.time, open: head.open, high: head.high, low: head.low, close: head.close,
+        });
+        if (volumeSeriesRef.current) {
+          const ct = ctRef.current;
+          const ext = isUSEquity(symbolRef.current) && EXTENDED_HOURS_INTERVALS.has(interval) && getExtendedHoursType(head.time);
+          const up = head.close >= head.open;
+          volumeSeriesRef.current.update({
+            time: head.time,
+            value: head.volume,
+            color: ext ? (up ? ct.extVolumeUp : ct.extVolumeDown) : (up ? ct.upColor : ct.downColor),
+          });
+        }
+      }
+      return;
+    }
+
     // Gap fill: if there's a gap between REST data and first WS tick,
     // fetch REST data to fill it.  Retries up to 3 times with concurrency guard.
-    // Threshold: 5 seconds for 1s, 120s for 1min.
     if (!gapFillDoneRef.current && !gapFillInProgressRef.current && data.length > 0) {
       const lastDataTime = data[data.length - 1].time;
       const gapSec = time - lastDataTime;
-      const gapThreshold = interval === '1s' ? 5 : 120;
+      const gapThreshold = 120;
       if (gapSec > gapThreshold) {
         gapFillRetryRef.current += 1;
         if (gapFillRetryRef.current > 3) {
@@ -285,11 +727,16 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
           gapFillInProgressRef.current = true;
           (async () => {
             try {
-              const fromDate = etDateStr(new Date(lastDataTime * 1000));
-              const toDate = etDateStr();
+              // lastDataTime is a chart time (venue wall clock as fake UTC) —
+              // decode its date by reading it in UTC, never via a real tz.
+              const fromDate = chartSecToDateStr(lastDataTime);
+              const toDate = dateStrInTz(new Date(), timezoneForSymbol(symbol));
               const sym = symbol;
-              const result = await fetchStockData(sym, interval, fromDate, toDate);
-              if (symbolRef.current !== sym) return; // symbol changed, discard stale data
+              const iv = interval;
+              const result = await fetchStockData(sym, iv, fromDate, toDate);
+              // symbol OR interval changed mid-flight — bars from another
+              // granularity must not merge into the current series
+              if (symbolRef.current !== sym || intervalRef.current !== iv) return;
               const fillData = result?.data;
               if (Array.isArray(fillData) && fillData.length > 0) {
                 // Merge: insert bars that fill the gap (between old last bar and current last bar)
@@ -329,38 +776,35 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
       }
     }
 
-    // Clear the "waiting for live data" hint once first tick arrives
-    if (interval === '1s' && error) setError(null);
-
-    // Aggregate 1s ticks into 1m candle when on 1min interval
-    let barTime = time, barOpen = open, barHigh = high, barLow = low, barClose = close, barVolume = volume;
-    if (interval === '1min') {
-      const minuteTime = Math.floor(time / 60) * 60;
-      const agg = minuteAggRef.current;
-      if (minuteTime === agg.time) {
-        agg.high = Math.max(agg.high, high);
-        agg.low = Math.min(agg.low, low);
-        agg.close = close;
-        agg.volume += volume;
-      } else {
-        agg.time = minuteTime;
-        agg.open = open;
-        agg.high = high;
-        agg.low = low;
-        agg.close = close;
-        agg.volume = volume;
-      }
-      barTime = agg.time;
-      barOpen = agg.open;
-      barHigh = agg.high;
-      barLow = agg.low;
-      barClose = agg.close;
-      barVolume = agg.volume;
+    // Aggregate second-level WS ticks into the forming 1-minute candle. 1min
+    // is the only interval that reaches here (coarser intervals folded above;
+    // 1day uses the quote layer).
+    const minuteTime = Math.floor(time / 60) * 60;
+    const agg = minuteAggRef.current;
+    if (minuteTime === agg.time) {
+      agg.high = Math.max(agg.high, high);
+      agg.low = Math.min(agg.low, low);
+      agg.close = close;
+      agg.volume += volume;
+    } else {
+      agg.time = minuteTime;
+      agg.open = open;
+      agg.high = high;
+      agg.low = low;
+      agg.close = close;
+      agg.volume = volume;
     }
+    const barTime = agg.time;
+    const barOpen = agg.open;
+    const barHigh = agg.high;
+    const barLow = agg.low;
+    const barClose = agg.close;
+    const barVolume = agg.volume;
 
     // Skip out-of-order ticks — series.update() only accepts time >= last bar.
-    // Guard uses barTime (post-aggregation) rather than raw time to prevent crashes
-    // when switching intervals (e.g. 1s→1min where minute-flooring produces older times).
+    // Guard uses barTime (post-aggregation) rather than raw time to prevent
+    // crashes when minute-flooring produces a time older than the last bar
+    // (e.g. right after an interval switch).
     if (data.length > 0 && barTime < data[data.length - 1].time) return;
 
     // Update candlestick series in-place (same time = update, newer = append)
@@ -392,8 +836,8 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
       extHoursBgRef.current.setRegions(computeExtendedHoursRegions(data as unknown as ChartConstDataPoint[]));
     }
 
-    // Keep extended-hours price lines in sync with live bars
-    syncExtendedHoursLines(barTime);
+    // Keep the session presentation in sync with live bars
+    applySessionPresentation(barTime);
 
     // Incremental RSI update
     if (rsiSmoothingRef.current && rsiSeriesRef.current) {
@@ -416,7 +860,62 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
         setRsiValue(value.toFixed(0));
       }
     }
-  }, [liveTick, interval, chartMode]);
+  }, [liveTick, interval, effectiveChartMode, applySessionPresentation]);
+
+  // --- Venue market phase (server calendar authority) ---
+  // Seeded by the initial load, refreshed by every delta poll (plus the
+  // next_change_at boundary poll, so it flips at the bell). Mirrored into
+  // marketPhaseRef for the imperative data paths and lifted to the parent for
+  // the header badge.
+  const [marketPhase, setMarketPhase] = useState<string | null>(null);
+  useEffect(() => {
+    marketPhaseRef.current = null;
+    setMarketPhase(null);
+  }, [symbol]);
+  useEffect(() => { onMarketPhase?.(marketPhase); }, [marketPhase, onMarketPhase]);
+
+  // --- Live quote fold for the 1day interval ---
+  // Daily bars have no WS aggregate feed, so the head daily bar is kept live by
+  // folding the shared snapshot quote (close/high/low/volume) into it. The quote
+  // cache is itself kept live by WS write-through, so this fires sub-minute. Bar
+  // creation stays REST-owned — update-only via a surgical series.update so zoom
+  // is preserved. Deliberately does NOT touch lastLiveTickTimeRef, so the 60s
+  // REST poll still runs as the authoritative correction (MA/RSI + drift).
+  const { quote: dayQuote } = useQuote(symbol, {
+    isIndex: (symbol ?? '').startsWith('^'),
+    enabled: interval === '1day' && effectiveChartMode === 'custom',
+  });
+  useEffect(() => {
+    if (interval !== '1day' || effectiveChartMode !== 'custom') return;
+    if (!dayQuote || !candlestickSeriesRef.current) return;
+    const prev = allDataRef.current;
+    if (!prev.length) return;
+    // The session model gates the fold: only while the venue is actually
+    // trading. A settled head bar (pre-market, weekends) must not absorb a
+    // live quote — it corrupts the settled candle and fights the 60s poll in
+    // a visible oscillation — and after the close the quote tracks the
+    // after-hours tape, which must not enter the daily candle either (its
+    // close stays the official close).
+    const session = deriveMarketSession({
+      symbol: symbolRef.current,
+      interval,
+      phase: marketPhase,
+      headBarTime: prev[prev.length - 1].time,
+    });
+    if (!session.foldDailyQuote) return;
+    const folded = applyQuoteToDailyBar(prev, dayQuote);
+    if (folded === prev) return; // no price / empty series → no-op
+    allDataRef.current = folded;
+    const head = folded[folded.length - 1];
+    candlestickSeriesRef.current.update({
+      time: head.time, open: head.open, high: head.high, low: head.low, close: head.close,
+    });
+    if (volumeSeriesRef.current) {
+      const ct = ctRef.current;
+      const up = head.close >= head.open;
+      volumeSeriesRef.current.update({ time: head.time, value: head.volume, color: up ? ct.upColor : ct.downColor });
+    }
+  }, [dayQuote, interval, marketPhase, effectiveChartMode]);
 
   // Temporarily reveal the hidden Light chart for capture, then restore.
   // Since it's behind the TV widget (z-index: -1), no visual flash occurs.
@@ -509,7 +1008,7 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
       const lastCandle = data[data.length - 1];
 
       return {
-        chartMode: chartMode === 'tradingview' ? 'Advanced (TradingView)' : 'Light',
+        chartMode: effectiveChartMode === 'tradingview' ? 'Advanced (TradingView)' : 'Light',
         dateRange: { from: formatDate(firstTime), to: formatDate(lastTime) },
         dataPoints: data.length,
         enabledMAs,
@@ -533,68 +1032,22 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     },
   }));
 
-  // --- Extended-hours price lines (close line + colored current-price line) ---
-  const syncExtendedHoursLines = useCallback((lastBarTime: number) => {
-    const series = candlestickSeriesRef.current;
-    if (!series) return;
-
-    const isExtInterval = isUSEquity(symbolRef.current) && EXTENDED_HOURS_INTERVALS.has(intervalRef.current);
-    const extType = isExtInterval ? getExtendedHoursType(lastBarTime) : null;
-    const prevType = currentExtTypeRef.current;
-
-    if (extType === prevType) return;
-    currentExtTypeRef.current = extType;
-
-    if (extType) {
-      const color = extType === 'pre' ? EXT_COLOR_PRE : EXT_COLOR_POST;
-      const label = extType === 'pre' ? 'Pre' : 'After';
-      // Color the last-value price line amber/blue and label it "Pre"/"After"
-      series.applyOptions({ priceLineColor: color, title: label });
-
-      // After-hours: show today's regular session close (prev_close + regular_trading_change).
-      // Pre-market: skip — the "Prev Close" annotation already shows the same value.
-      if (extCloseLineRef.current) {
-        try { series.removePriceLine(extCloseLineRef.current); } catch (_) { /* ok */ }
-        extCloseLineRef.current = null;
-      }
-      if (extType === 'post') {
-        const snap = snapshotRef.current;
-        // Derive today's 4 PM close: previous_close (yesterday) + regular_trading_change
-        const prevClose = snap?.previous_close;
-        const regChange = snap?.regular_trading_change as number | undefined;
-        const closePrice = (prevClose != null && regChange != null)
-          ? (prevClose as number) + regChange
-          : null;
-        if (closePrice != null) {
-          extCloseLineRef.current = series.createPriceLine({
-            price: closePrice,
-            title: 'Close',
-            color: 'rgba(139,143,163,0.7)',
-            lineWidth: 1,
-            lineStyle: LineStyle.Dashed,
-            axisLabelVisible: true,
-          });
-        }
-      }
-    } else {
-      // Regular hours — reset to defaults
-      series.applyOptions({ priceLineColor: undefined, title: '' });
-      if (extCloseLineRef.current) {
-        try { series.removePriceLine(extCloseLineRef.current); } catch (_) { /* ok */ }
-        extCloseLineRef.current = null;
-      }
-    }
-  }, []);
-
-  // Re-sync extended-hours close line when quoteData or snapshot changes
+  // Re-apply when the snapshot's official-close inputs move — the signature
+  // carries the close-line price, so an unchanged snapshot is a no-op.
   useEffect(() => {
-    if (currentExtTypeRef.current) {
-      // Force re-sync by temporarily clearing the cached type
-      currentExtTypeRef.current = null;
-      const data = allDataRef.current;
-      if (data.length > 0) syncExtendedHoursLines(data[data.length - 1].time);
-    }
-  }, [snapshot?.previous_close, snapshot?.regular_trading_change, syncExtendedHoursLines]);
+    const data = allDataRef.current;
+    if (data.length > 0) applySessionPresentation(data[data.length - 1].time);
+  }, [snapshot?.previous_close, snapshot?.regular_trading_change, applySessionPresentation]);
+
+  // State-driven re-derivation: phase updates (delta/boundary polls), REST
+  // reloads, and the sub-minute dayQuote cadence (which flips the 1day settled
+  // label at session boundaries without a data reload). The imperative data
+  // paths (WS ticks, updateSeriesData) cover the moments between renders.
+  useEffect(() => {
+    if (effectiveChartMode !== 'custom') return;
+    const data = allDataRef.current;
+    if (data.length > 0) applySessionPresentation(data[data.length - 1].time);
+  }, [chartDataForHooks, dayQuote, marketPhase, interval, symbol, effectiveChartMode, applySessionPresentation]);
 
   // --- Update series data helper (used by both initial load and scroll load) ---
   const updateSeriesData = useCallback((data: ChartDataBar[]) => {
@@ -631,9 +1084,9 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
       }
     }
 
-    // Extended-hours price lines (close + colored current price)
+    // Session presentation (last-value line + after-hours close line)
     if (data.length > 0) {
-      syncExtendedHoursLines(data[data.length - 1].time);
+      applySessionPresentation(data[data.length - 1].time);
     }
 
     // All MAs — compute all enabled, clear disabled
@@ -680,7 +1133,32 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
 
     // Update chart data state for overlay hooks
     setChartDataForHooks(data);
-  }, []);
+  }, [applySessionPresentation]);
+
+  // --- Live forming-bar delta-poll (shared controller) ---
+  // The hook owns the watermark + reconcile cursors; the component owns bar
+  // storage (allDataRef) and the WS tick clock (lastLiveTickTimeRef, written by
+  // the fold effect above). Runs only in the custom (Light) chart mode. See
+  // useLiveBars for the reconcile/skip invariants. `seedMeta` seeds the
+  // watermark + currency from the initial loader's metadata.
+  const { seedMeta } = useLiveBars(symbol, interval, {
+    enabled: effectiveChartMode === 'custom',
+    dataRef: allDataRef,
+    lastWsTickRef: lastLiveTickTimeRef,
+    onMeta: onCurrencyMeta,
+    onPhase: (phase) => {
+      // Ref first: the imperative data paths must read the fresh phase
+      // before React commits the state update.
+      marketPhaseRef.current = phase;
+      setMarketPhase(phase);
+    },
+    onBars: (merged) => {
+      updateSeriesData(merged);
+      // Don't re-zoom on poll updates — preserve the user's scroll/zoom.
+      setLastUpdateTime(new Date());
+      setError(null);
+    },
+  });
 
   // --- Merge prepended data helper (shared by scroll-load & MA backfill) ---
   const mergePrependedData = (newData: ChartDataBar[] | null | undefined) => {
@@ -703,44 +1181,14 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     const sym = symbol;
     const { fromStr, toStr } = rangeBeforeOldest(oldestDateRef.current, days);
 
-    const result = await fetchStockData(sym, interval, fromStr, toStr);
-    if (symbolRef.current !== sym) return; // symbol changed, discard stale data
+    const iv = interval;
+    const result = await fetchStockData(sym, iv, fromStr, toStr);
+    // symbol OR interval changed mid-flight — discard cross-granularity bars
+    if (symbolRef.current !== sym || intervalRef.current !== iv) return;
     const newData = result?.data;
     if (newData && Array.isArray(newData) && newData.length > 0) {
       mergePrependedData(newData);
     }
-  };
-
-  // --- Background prefetch for 1s (pre-load next scroll chunk before user reaches edge) ---
-  const triggerPrefetch = () => {
-    if (!PREFETCH_ENABLED_INTERVALS.has(intervalRef.current)) return;
-    if (prefetchingRef.current || prefetchedDataRef.current) return;
-    if (!oldestDateRef.current) return;
-
-    prefetchingRef.current = true;
-    const capturedOldest = oldestDateRef.current;
-    const capturedSym = symbolRef.current;
-    const capturedInterval = intervalRef.current;
-    const days = SCROLL_CHUNK_DAYS[capturedInterval] || 0;
-
-    prefetchAbortRef.current?.abort();
-    const ac = new AbortController();
-    prefetchAbortRef.current = ac;
-
-    const { fromStr, toStr } = rangeBeforeOldest(capturedOldest, days);
-
-    fetchStockData(capturedSym, capturedInterval, fromStr, toStr, { signal: ac.signal }).then(result => {
-      if (ac.signal.aborted || symbolRef.current !== capturedSym) return;
-      if (result?.data?.length > 0) {
-        prefetchedDataRef.current = { data: result.data, anchorOldest: capturedOldest };
-      }
-    }).catch(err => {
-      if (err?.name !== 'AbortError' && err?.name !== 'CanceledError') {
-        console.warn('Prefetch failed:', err);
-      }
-    }).finally(() => {
-      prefetchingRef.current = false;
-    });
   };
 
   // --- Scroll-based lazy loading ---
@@ -749,20 +1197,7 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     fetchingRef.current = true;
     setScrollLoading(true);
     try {
-      const bufData = consumePrefetchBuffer(prefetchedDataRef.current, oldestDateRef.current);
-      if (bufData) {
-        // Instant merge from prefetch buffer — no network wait
-        mergePrependedData(bufData);
-        prefetchedDataRef.current = null;
-        triggerPrefetch();
-      } else {
-        // Buffer miss — fall back to synchronous fetch
-        prefetchedDataRef.current = null;
-        await fetchAndPrepend(SCROLL_CHUNK_DAYS[interval] || 0);
-        if (PREFETCH_ENABLED_INTERVALS.has(interval)) {
-          triggerPrefetch();
-        }
-      }
+      await fetchAndPrepend(SCROLL_CHUNK_DAYS[interval] || 0);
     } catch (err) {
       console.warn('Scroll-load fetch failed:', err);
     } finally {
@@ -850,11 +1285,26 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
       borderVisible: false,
       wickUpColor: t0.upColor,
       wickDownColor: t0.downColor,
+      // Currency-aware price axis + native crosshair label. Scoped to this
+      // series so the volume histogram keeps its `type: 'volume'` format; the
+      // formatter reads the ref so the currency follows `displayCurrency`
+      // without re-creating the series.
+      priceFormat: {
+        type: 'custom',
+        minMove: 0.01,
+        formatter: (price: number) =>
+          formatPrice(price, priceFormatRef.current.code, priceFormatRef.current.decimals),
+      },
     });
 
     // Extended-hours background shading primitive
     extHoursBgRef.current = new ExtendedHoursBgPrimitive();
     candlestickSeriesRef.current.attachPrimitive(extHoursBgRef.current);
+
+    // User chart-selection primitive (draft + committed region / price level)
+    selectionPrimitiveRef.current = new SelectionPrimitive();
+    candlestickSeriesRef.current.attachPrimitive(selectionPrimitiveRef.current);
+    selectionPrimitiveRef.current.setTheme(theme === 'dark' ? 'dark' : 'light');
 
     // Volume histogram series
     volumeSeriesRef.current = chart.addHistogramSeries({
@@ -880,12 +1330,12 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     // Subscribe to crosshair move for tooltip
     chart.subscribeCrosshairMove((param: MouseEventParams) => {
       if (!param.time || !param.point) {
-        setTooltipState((prev) => prev.visible ? { visible: false, x: 0, y: 0, data: null } : prev);
+        if (tooltipStore.get().visible) tooltipStore.set({ visible: false, x: 0, y: 0, data: null });
         return;
       }
       const candleData = param.seriesData.get(candlestickSeriesRef.current) as any;
       if (!candleData) {
-        setTooltipState((prev) => prev.visible ? { visible: false, x: 0, y: 0, data: null } : prev);
+        if (tooltipStore.get().visible) tooltipStore.set({ visible: false, x: 0, y: 0, data: null });
         return;
       }
 
@@ -904,7 +1354,7 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
       const candleTime = (candleData.time ?? param.time) as number;
       const rsiVal = rsiDataMapRef.current.get(candleTime) ?? null;
 
-      setTooltipState({
+      tooltipStore.set({
         visible: true,
         x: param.point.x,
         y: param.point.y,
@@ -1003,7 +1453,7 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
 
       extHoursBgRef.current = null;
       extCloseLineRef.current = null;
-      currentExtTypeRef.current = null;
+      appliedSessionRef.current = null;
       candlestickSeriesRef.current = null;
       volumeSeriesRef.current = null;
       baselineSeriesRef.current = null;
@@ -1019,7 +1469,10 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
         rsiChartRef.current = null;
       }
     };
-  }, []); // Mount only
+    // priceFormatRef is a stable ref (from useCurrencyDisplay) — listed so
+    // exhaustive-deps sees the formatter's read; its identity never changes, so
+    // this stays a mount-only chart-creation effect.
+  }, [priceFormatRef]); // Mount only
 
   // --- Effect: Update watermark when symbol changes ---
   useEffect(() => {
@@ -1189,11 +1642,8 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     gapFillInProgressRef.current = false;
     minuteAggRef.current = { time: 0, open: 0, high: 0, low: 0, close: 0, volume: 0 };
 
-    // Cancel any in-flight stage 2 / prefetch from previous symbol/interval
+    // Cancel any in-flight stage 2 backfill from previous symbol/interval
     stage2AbortRef.current?.abort();
-    prefetchAbortRef.current?.abort();
-    prefetchedDataRef.current = null;
-    prefetchingRef.current = false;
 
     // Unsubscribe previous scroll listener
     if (rangeUnsubRef.current) {
@@ -1204,14 +1654,17 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     // Reset baseline on symbol/interval change
     if (showBaseline) setShowBaseline(false);
 
-    // Reset extended-hours price lines on symbol/interval change
+    // Reset the session presentation on symbol/interval change
     if (extCloseLineRef.current && candlestickSeriesRef.current) {
       try { candlestickSeriesRef.current.removePriceLine(extCloseLineRef.current); } catch (_) { /* ok */ }
     }
     extCloseLineRef.current = null;
-    currentExtTypeRef.current = null;
+    appliedSessionRef.current = null;
     if (candlestickSeriesRef.current) {
-      candlestickSeriesRef.current.applyOptions({ priceLineColor: undefined });
+      // Apply the reset inline (not via the applier): until the new symbol's
+      // data lands there is no head bar to derive from, and the previous
+      // symbol's "Pre"/"After" axis label must not linger (sticky-pill bug).
+      candlestickSeriesRef.current.applyOptions(PRICE_LINE_RESET);
     }
 
     // Clear stale chart data so previous interval/symbol doesn't linger under an error
@@ -1237,14 +1690,15 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     if (chartRef.current) {
       chartRef.current.applyOptions({ watermark: { text: symbol } });
     }
-
     const loadData = async () => {
       setLoading(true);
       setError(null);
 
       try {
         const maxMaPeriod = Math.max(...enabledMaPeriodsRef.current, 0);
-        const { fromStr: fromDate, toStr: toDate } = computeInitialLoadRange(interval, { maxMaPeriod });
+        const { fromStr: fromDate, toStr: toDate } = computeInitialLoadRange(interval, {
+          maxMaPeriod, tz: timezoneForSymbol(symbol),
+        });
 
         const result = await fetchStockData(symbol, interval, fromDate, toDate, { signal: abortController.signal });
 
@@ -1256,20 +1710,26 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
           allDataRef.current = data;
           oldestDateRef.current = data[0].time;
 
+          // Surface loader metadata: seed the delta-poll watermark + currency
+          // through the shared controller (watermark) and the currency hook.
+          seedMeta(result?.meta);
+
           updateSeriesData(data);
 
-          // Apply default view: auto-fit barSpacing + latest bar centered
-          applyDefaultView();
+          // Apply the view: a pending bottom-bar preset wins (this load IS the
+          // preset's interval switch); otherwise default view (auto-fit
+          // barSpacing + latest bar centered).
+          if (pendingRangeRef.current) {
+            applyRangeView(pendingRangeRef.current);
+            pendingRangeRef.current = null;
+          } else {
+            applyDefaultView();
+          }
           if (chartRef.current) {
             chartRef.current.priceScale('right').applyOptions({ autoScale: true });
           }
           setLastUpdateTime(new Date());
           setError(null);
-
-          // Report latest bar to parent so header can show fresh price
-          if (typeof onLatestBar === 'function') {
-            onLatestBar(data[data.length - 1]);
-          }
 
           // Subscribe to visible range changes for scroll-based loading (debounced)
           if (chartRef.current) {
@@ -1277,10 +1737,6 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
               if (rangeChangeTimerRef.current) clearTimeout(rangeChangeTimerRef.current);
               rangeChangeTimerRef.current = setTimeout(() => {
                 if (!range) return;
-                // Prefetch: start loading next chunk early (150 bars from left)
-                if (range.from <= PREFETCH_THRESHOLD && PREFETCH_ENABLED_INTERVALS.has(intervalRef.current)) {
-                  triggerPrefetch();
-                }
                 // Scroll-load: merge when near edge (20 bars from left)
                 if (range.from <= SCROLL_LOAD_THRESHOLD) {
                   handleScrollLoadMore();
@@ -1301,35 +1757,6 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
             setTimeout(async () => {
               if (stage2Abort.signal.aborted || symbolRef.current !== capturedSym) return;
 
-              // --- Today gap fill for 1s: fill missing morning bars ---
-              if (interval === '1s' && oldestDateRef.current) {
-                const firstBarDate = new Date(oldestDateRef.current * 1000);
-                const firstBarMins = firstBarDate.getUTCHours() * 60 + firstBarDate.getUTCMinutes();
-                const todayStr = etDateStr();
-                const firstBarDateStr = etDateStr(firstBarDate);
-
-                // Fill if first bar is from today and starts after 4:30 AM ET (270 mins)
-                if (firstBarDateStr === todayStr && firstBarMins > 270) {
-                  try {
-                    const gapResult = await fetchStockData(capturedSym, '1s', todayStr, todayStr,
-                      { signal: stage2Abort.signal });
-                    if (stage2Abort.signal.aborted || symbolRef.current !== capturedSym) return;
-                    if (gapResult?.data?.length > 0) {
-                      const gapBars = gapResult.data.filter(b => b.time < oldestDateRef.current!);
-                      if (gapBars.length > 0) {
-                        mergePrependedData(gapBars);
-                      }
-                    }
-                  } catch (err: unknown) {
-                    if (err instanceof Error && err.name !== 'AbortError' && err.name !== 'CanceledError') {
-                      console.warn('Today gap fill failed:', err);
-                    }
-                  }
-                }
-              }
-
-              if (stage2Abort.signal.aborted || symbolRef.current !== capturedSym) return;
-
               // --- Backwards backfill: fetch prior days (+ MA lookback overhead) ---
               const maxMaPeriod = Math.max(...enabledMaPeriodsRef.current, 0);
               const maOverhead = Math.ceil((maxMaPeriod / (BARS_PER_DAY[interval] || 1)) * 1.5);
@@ -1346,44 +1773,24 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
                   console.warn('Stage 2 backfill failed:', err);
                 }
               }
-
-              // Start prefetching the next scroll chunk for prefetch-enabled intervals
-              if (PREFETCH_ENABLED_INTERVALS.has(interval) && symbolRef.current === capturedSym) {
-                triggerPrefetch();
-              }
             }, 50);
           }
 
         } else {
-          // Silently downgrade 1s → 1min when ginlix-data unavailable or symbol ineligible
-          if (interval === '1s' && (!ginlixDataEnabled || !supports1sInterval(symbol))) {
-            onIntervalChange?.('1min');
-            return;
-          }
           // Silently downgrade 4H → 1H when provider doesn't support it
           if (interval === '4hour' && !supports4hInterval) {
             onIntervalChange?.('1hour');
             return;
           }
           clearChartSeries();
-          let fallbackMsg;
-          if (interval === '1s') {
-            fallbackMsg = 'No 1s data yet — waiting for pre-market to open (4:00 AM ET).';
-          } else if (interval !== '1day') {
-            fallbackMsg = 'Intraday data not available — market may be closed. Try the 1D interval.';
-          } else {
-            fallbackMsg = 'Stock data not found';
-          }
+          const fallbackMsg = interval !== '1day'
+            ? 'Intraday data not available — market may be closed. Try the 1D interval.'
+            : 'Stock data not found';
           setError(result?.error || fallbackMsg);
           if (typeof onStockMeta === 'function') onStockMeta(null);
         }
       } catch (err: unknown) {
         if (abortController.signal.aborted) return;
-        // Silently downgrade 1s → 1min when ginlix-data unavailable or symbol ineligible
-        if (interval === '1s' && (!ginlixDataEnabled || !supports1sInterval(symbol))) {
-          onIntervalChange?.('1min');
-          return;
-        }
         // Silently downgrade 4H → 1H when provider doesn't support it
         if (interval === '4hour' && !supports4hInterval) {
           onIntervalChange?.('1hour');
@@ -1404,86 +1811,13 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     return () => {
       abortController.abort();
       stage2AbortRef.current?.abort();
-      prefetchAbortRef.current?.abort();
     };
-  }, [symbol, interval, onStockMeta, updateSeriesData, handleScrollLoadMore]);
-
-  // --- REST polling fallback (1s and 1min safety net when WS not delivering) ---
-  useEffect(() => {
-    const is1sPolling = interval === '1s';
-    const is1mPolling = interval === '1min';
-    if ((!is1sPolling && !is1mPolling) || chartMode !== 'custom') return;
-
-    let timer = null;
-    let aborted = false;
-
-    const poll = async () => {
-      if (aborted) return;
-      // Skip if WS delivered a live tick recently
-      if (lastLiveTickTimeRef.current > Date.now() - 5000) return;
-      try {
-        const now = new Date();
-        const toDate = etDateStr(now);
-
-        // Delta-based: fetch only from last known bar's time onward
-        const lastBar = allDataRef.current?.[allDataRef.current.length - 1];
-        let fromDate: string;
-        if (lastBar) {
-          fromDate = etDateStr(new Date(lastBar.time * 1000));
-        } else {
-          const d = new Date(now);
-          d.setDate(d.getDate() - 3);
-          fromDate = etDateStr(d);
-        }
-
-        const result = await fetchStockData(symbol, interval, fromDate, toDate);
-        if (aborted) return;
-
-        const data = result?.data;
-        if (Array.isArray(data) && data.length > 0) {
-          if (lastBar) {
-            // Merge: append only genuinely new bars (compare by unix time)
-            const lastTime = allDataRef.current[allDataRef.current.length - 1].time;
-            const newBars = data.filter(b => b.time > lastTime);
-            if (newBars.length > 0) {
-              const merged = [...allDataRef.current, ...newBars];
-              allDataRef.current = merged;
-              updateSeriesData(merged);
-            }
-          } else {
-            allDataRef.current = data;
-            updateSeriesData(data);
-          }
-
-          // Don't re-zoom on poll updates — preserve user's manual scroll/zoom position
-          setLastUpdateTime(new Date());
-          setError(null);
-
-          // Report latest bar to parent so header stays in sync
-          const latest = allDataRef.current[allDataRef.current.length - 1];
-          if (latest && typeof onLatestBar === 'function') {
-            onLatestBar(latest);
-          }
-        }
-      } catch (err) {
-        if (!aborted) console.debug('REST poll failed:', err);
-      }
-    };
-
-    // 1s: poll every 5s as WS fallback; native 1m: poll every 15s for canonical bars
-    const pollMs = is1sPolling ? 5000 : 15000;
-    timer = setInterval(poll, pollMs);
-
-    return () => {
-      aborted = true;
-      if (timer) clearInterval(timer);
-    };
-  }, [interval, symbol, chartMode, updateSeriesData]);
+  }, [symbol, interval, onStockMeta, updateSeriesData, handleScrollLoadMore, seedMeta]);
 
   // --- Effect 3: TimeScale options per interval ---
   useEffect(() => {
     const isIntraday = interval !== '1day';
-    const showSeconds = interval === '1s' || interval === '1min';
+    const showSeconds = interval === '1min';
     const opts = { timeVisible: isIntraday, secondsVisible: showSeconds };
     if (chartRef.current) chartRef.current.applyOptions({ timeScale: opts });
     if (rsiChartRef.current) rsiChartRef.current.applyOptions({ timeScale: opts });
@@ -1507,6 +1841,38 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     const chartWidth = chartRef.current.options().width || chartContainerRef.current?.clientWidth || 800;
     ts.setVisibleLogicalRange(centerLatestBarView({ chartWidth, barSpacing: target, dataLen }));
   }, []);
+
+  // Fit the visible window to a bottom-bar range preset: from the preset's
+  // left edge (venue-date arithmetic on chart times) to just past the last
+  // bar. 'All' fits the whole series. Clamps to available history.
+  const applyRangeView = useCallback((rangeKey: string) => {
+    if (!chartRef.current) return;
+    const data = allDataRef.current;
+    if (data.length === 0) return;
+    const ts = chartRef.current.timeScale();
+    const start = rangeStartChartSec(rangeKey, data[data.length - 1].time);
+    if (start == null) { ts.fitContent(); return; }
+    const firstIdx = data.findIndex((b) => b.time >= start);
+    ts.setVisibleLogicalRange({
+      from: Math.max(firstIdx, 0) - 0.5,
+      to: data.length + 1.5, // small future gutter, TradingView-style
+    });
+  }, []);
+
+  const handleRangeSelect = useCallback((preset: RangePreset) => {
+    const target = preset.interval === '4hour' && !supports4hInterval
+      ? (preset.fallback ?? '1day')
+      : preset.interval;
+    setActiveRange(preset.key);
+    if (target === intervalRef.current) {
+      applyRangeView(preset.key);
+      return;
+    }
+    // The interval switch re-runs the load effect; its success path consumes
+    // the pending preset instead of applying the default view.
+    pendingRangeRef.current = preset.key;
+    onIntervalChange?.(target);
+  }, [supports4hInterval, onIntervalChange, applyRangeView]);
 
   // --- Tool button handlers ---
   const handleZoomIn = useCallback(() => {
@@ -1540,6 +1906,11 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     setAnnotationsVisible((prev) => !prev);
   }, []);
 
+  const handleClearAgentAnnotations = useCallback(() => {
+    if (!workspaceId || !symbol) return;
+    chartAnnotationStore.clearDisplay(workspaceId, makeChartId(symbol, annotationInterval));
+  }, [workspaceId, symbol, annotationInterval]);
+
   const handleToggleOverlay = useCallback((key: string) => {
     setOverlayVisibility((prev) => ({ ...prev, [key]: !prev[key] }));
   }, []);
@@ -1548,7 +1919,7 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     setPriceScaleMode((prev) => prev === mode ? PriceScaleMode.Normal : mode);
   }, []);
 
-  const isTV = chartMode === 'tradingview';
+  const isTV = effectiveChartMode === 'tradingview';
 
   // --- Toolbar render helpers (shared between wide & compact layouts) ---
 
@@ -1642,6 +2013,52 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     </>
   );
 
+  // Region / price-level selection — first-class toolbar buttons (kept out of
+  // the secondary Tools dropdown so the agent hand-off is one click away).
+  const renderSelectionButtons = () => (
+    <>
+      <button
+        type="button"
+        className={`chart-tool-btn${selectMode === 'region' ? ' chart-tool-btn-active' : ''}`}
+        onClick={() => setSelectMode((m) => (m === 'region' ? 'off' : 'region'))}
+        title={t('marketView.selection.toolRegion')}
+        aria-label={t('marketView.selection.toolRegion')}
+      >
+        <SquareDashedMousePointer size={14} />
+      </button>
+      <button
+        type="button"
+        className={`chart-tool-btn${selectMode === 'price_level' ? ' chart-tool-btn-active' : ''}`}
+        onClick={() => setSelectMode((m) => (m === 'price_level' ? 'off' : 'price_level'))}
+        title={t('marketView.selection.toolPriceLevel')}
+        aria-label={t('marketView.selection.toolPriceLevel')}
+      >
+        <Ruler size={14} />
+      </button>
+    </>
+  );
+
+  // Light / Advanced (custom vs TradingView) mode toggle. Inline by default;
+  // tucked into the overflow menu at the narrowest tier (phone widths).
+  const renderModeButtons = () => (
+    <div className="interval-selector">
+      <button
+        type="button"
+        className={`interval-btn${!isTV ? ' interval-btn-active' : ''}`}
+        onClick={() => { setChartMode('custom'); setIndicatorsOpen(false); setToolsOpen(false); setViewOpen(false); }}
+      >
+        Light
+      </button>
+      <button
+        type="button"
+        className={`interval-btn${isTV ? ' interval-btn-active' : ''}`}
+        onClick={() => { setChartMode('tradingview'); setIndicatorsOpen(false); setToolsOpen(false); setViewOpen(false); }}
+      >
+        Advanced
+      </button>
+    </div>
+  );
+
   const renderViewButtons = () => (
     <>
       <button
@@ -1661,15 +2078,16 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   );
 
   return (
-    <div className={`market-chart-container${isCompact ? ' chart--compact' : ''}`} ref={rootRef}>
+    <div
+      className={`market-chart-container${toolbarLevel >= 1 ? ' chart--c1' : ''}${toolbarLevel >= 2 ? ' chart--c2' : ''}${toolbarLevel >= 3 ? ' chart--c3' : ''}${toolbarLevel >= 4 ? ' chart--c4' : ''}`}
+      ref={rootRef}
+    >
       {/* ---- Toolbar: intervals, indicator dropdown, values, tools dropdown, mode switcher ---- */}
       <div className="chart-tools">
         <div className="chart-tools-left">
           <div className="interval-selector">
             {INTERVALS.filter(({ key }) => PRIMARY_INTERVAL_KEYS.has(key)).map(({ key, label }) => {
-              const is1sDisabled = key === '1s' && (!ginlixDataEnabled || !supports1sInterval(symbol));
-              const is4hDisabled = key === '4hour' && !supports4hInterval;
-              const isDisabled = is1sDisabled || is4hDisabled;
+              const isDisabled = key === '4hour' && !supports4hInterval;
               return (
               <div key={key} style={{ position: 'relative', display: 'inline-flex' }}>
                 <button
@@ -1677,14 +2095,12 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
                   className={`interval-btn${interval === key ? ' interval-btn-active' : ''}${isDisabled ? ' interval-btn-disabled' : ''}`}
                   onClick={() => {
                     if (isDisabled) {
-                      const msg = is1sDisabled
-                        ? (!ginlixDataEnabled ? '1s data is not available' : '1s interval is only available for US stocks')
-                        : '4H data requires FMP or Ginlix Data provider';
-                      setDisabledTooltip(msg);
+                      setDisabledTooltip('4H data requires FMP or Ginlix Data provider');
                       if (disabledTooltipTimer.current) clearTimeout(disabledTooltipTimer.current);
                       disabledTooltipTimer.current = setTimeout(() => setDisabledTooltip(null), 2000);
                       return;
                     }
+                    setActiveRange(null); pendingRangeRef.current = null;
                     onIntervalChange?.(key); setIntervalsOpen(false); setIndicatorsOpen(false); setToolsOpen(false); setViewOpen(false);
                   }}
                 >
@@ -1715,7 +2131,7 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
                       key={key}
                       type="button"
                       className={`interval-dropdown-item${interval === key ? ' interval-dropdown-item-active' : ''}`}
-                      onClick={() => { onIntervalChange?.(key); setIntervalsOpen(false); setIndicatorsOpen(false); setToolsOpen(false); }}
+                      onClick={() => { setActiveRange(null); pendingRangeRef.current = null; onIntervalChange?.(key); setIntervalsOpen(false); setIndicatorsOpen(false); setToolsOpen(false); }}
                     >
                       {label}
                     </button>
@@ -1726,8 +2142,8 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
           </div>
           {!isTV && (
             <>
-              {/* Indicators dropdown — wide only */}
-              <div className="toolbar-dropdown toolbar--wide-only" ref={indicatorsDropdownRef}>
+              {/* Indicators dropdown — inline until tier 3, then into the menu */}
+              <div className="toolbar-dropdown toolbar-item--indicators" ref={indicatorsDropdownRef}>
                 <button
                   type="button"
                   className={`chart-tool-btn${indicatorsOpen ? ' chart-tool-btn-active' : ''}`}
@@ -1742,8 +2158,8 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
                   </div>
                 )}
               </div>
-              {/* Indicator values — wide only */}
-              <div className="chart-indicators toolbar--wide-only">
+              {/* Indicator values — read-only readouts; dropped first (tier 1) */}
+              <div className="chart-indicators toolbar-item--values">
                 {MA_CONFIGS.filter(({ period }) => enabledMaPeriods.includes(period)).map(({ period, color, label }) => (
                   <span className="indicator-item" key={period}>
                     <span className="indicator-color" style={{ backgroundColor: color }} />
@@ -1761,8 +2177,29 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
         <div className="chart-tools-right">
           {!isTV && (
             <>
-              {/* Tools dropdown — wide only */}
-              <div className="toolbar-dropdown toolbar--wide-only" ref={toolsDropdownRef}>
+              {/* Clear annotations — first-class, shown only while agent
+                  annotations are drawn. Clears them from the chart (data stays
+                  in the store; re-open the chat artifact to restore). */}
+              {hasAgentAnnotations && !agentAnnotationsCleared && (
+                <button
+                  type="button"
+                  className="chart-tool-btn chart-clear-annotations-btn"
+                  onClick={handleClearAgentAnnotations}
+                  title={t('marketView.chart.clearAnnotationsTitle')}
+                  aria-label={t('marketView.chart.clearAnnotations')}
+                >
+                  <X size={14} />
+                  <span className="clear-label">{t('marketView.chart.clearAnnotations')}</span>
+                </button>
+              )}
+              {/* Selection tools — first-class, both layouts. Primary entry
+                  point for the chart → agent hand-off, so not buried in a
+                  dropdown. Only meaningful on the Light chart (custom mode). */}
+              <div className="chart-tool-buttons">
+                {renderSelectionButtons()}
+              </div>
+              {/* Tools dropdown — inline until tier 3, then into the menu */}
+              <div className="toolbar-dropdown toolbar-item--tools" ref={toolsDropdownRef}>
                 <button
                   type="button"
                   className={`chart-tool-btn${toolsOpen ? ' chart-tool-btn-active' : ''}`}
@@ -1779,65 +2216,72 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
                   </div>
                 )}
               </div>
-              {/* Zoom, fit, navigation — inline, wide only */}
-              <div className="chart-tool-buttons toolbar--wide-only">
+              {/* Zoom, fit, navigation (scale/view tools) — inline until tier 2 */}
+              <div className="chart-tool-buttons toolbar-item--view">
                 {renderViewButtons()}
               </div>
-              {/* Combined menu — compact only (merges indicators + tools + view) */}
-              <div className="toolbar-dropdown toolbar--compact-only" ref={viewDropdownRef}>
-                <button
-                  type="button"
-                  className={`chart-tool-btn${viewOpen ? ' chart-tool-btn-active' : ''}`}
-                  onClick={() => { setViewOpen((v) => !v); setIndicatorsOpen(false); setToolsOpen(false); }}
-                  title="Chart Settings"
-                >
-                  <Menu size={14} />
-                </button>
-                {viewOpen && (
-                  <div className="toolbar-dropdown-panel toolbar-dropdown-panel--right compact-menu-panel">
-                    {/* Indicators section */}
-                    <div className="compact-menu-section-label">Indicators</div>
-                    {renderIndicatorsContent()}
-                    {/* Tools section */}
-                    <div className="compact-menu-divider" />
-                    <div className="compact-menu-section-label">Tools</div>
-                    <div className="dropdown-tool-grid">
-                      {renderToolsContent()}
+              {/* Overflow menu — appears once anything actionable collapses
+                  (tier 2+). Holds only what's been pulled off the row: View at
+                  tier 2; + Indicators + Tools at tier 3; + Mode at tier 4. */}
+              {toolbarLevel >= 2 && (
+                <div className="toolbar-dropdown toolbar-item--menu" ref={viewDropdownRef}>
+                  <button
+                    type="button"
+                    className={`chart-tool-btn${viewOpen ? ' chart-tool-btn-active' : ''}`}
+                    onClick={() => { setViewOpen((v) => !v); setIndicatorsOpen(false); setToolsOpen(false); }}
+                    title="Chart Settings"
+                  >
+                    <Menu size={14} />
+                  </button>
+                  {viewOpen && (
+                    <div className="toolbar-dropdown-panel toolbar-dropdown-panel--right compact-menu-panel">
+                      {toolbarLevel >= 4 && !isMobile && (
+                        <>
+                          {/* Mode section */}
+                          <div className="compact-menu-section-label">{t('marketView.chart.modeLabel')}</div>
+                          {renderModeButtons()}
+                          <div className="compact-menu-divider" />
+                        </>
+                      )}
+                      {toolbarLevel >= 3 && (
+                        <>
+                          {/* Indicators section */}
+                          <div className="compact-menu-section-label">Indicators</div>
+                          {renderIndicatorsContent()}
+                          {/* Tools section */}
+                          <div className="compact-menu-divider" />
+                          <div className="compact-menu-section-label">Tools</div>
+                          <div className="dropdown-tool-grid">
+                            {renderToolsContent()}
+                          </div>
+                          <div className="compact-menu-divider" />
+                        </>
+                      )}
+                      {/* View section */}
+                      <div className="compact-menu-section-label">View</div>
+                      <div className="dropdown-tool-grid compact-menu-view-grid">
+                        {renderViewButtons()}
+                      </div>
                     </div>
-                    {/* View section */}
-                    <div className="compact-menu-divider" />
-                    <div className="compact-menu-section-label">View</div>
-                    <div className="dropdown-tool-grid compact-menu-view-grid">
-                      {renderViewButtons()}
-                    </div>
-                  </div>
-                )}
-              </div>
+                  )}
+                </div>
+              )}
             </>
           )}
-          <div className="chart-mode-switcher">
-            {/* TV embed-terms attribution. Sibling of the pill so the pill's
-                own background stays symmetric. Only shown when Advanced is
-                active — anchors the attribution to the mode that actually
-                renders TV content. */}
-            {isTV && <TradingViewAttribution />}
-            <div className="interval-selector">
-              <button
-                type="button"
-                className={`interval-btn${!isTV ? ' interval-btn-active' : ''}`}
-                onClick={() => { setChartMode('custom'); setIndicatorsOpen(false); setToolsOpen(false); setViewOpen(false); }}
-              >
-                Light
-              </button>
-              <button
-                type="button"
-                className={`interval-btn${isTV ? ' interval-btn-active' : ''}`}
-                onClick={() => { setChartMode('tradingview'); setIndicatorsOpen(false); setToolsOpen(false); setViewOpen(false); }}
-              >
-                Advanced
-              </button>
+          {/* Mode switch. Hidden entirely on mobile — phones only ever show the
+              Light chart. On desktop, Light (custom) mode tucks it into the
+              overflow menu at tier 4 to save room; Advanced (TV) mode keeps it
+              inline so the required TV attribution is never hidden. */}
+          {!isMobile && (
+            <div className={`chart-mode-switcher${!isTV ? ' toolbar-item--mode' : ''}`}>
+              {/* TV embed-terms attribution. Sibling of the pill so the pill's
+                  own background stays symmetric. Only shown when Advanced is
+                  active — anchors the attribution to the mode that actually
+                  renders TV content. */}
+              {isTV && <TradingViewAttribution />}
+              {renderModeButtons()}
             </div>
-          </div>
+          )}
         </div>
       </div>
 
@@ -1859,18 +2303,55 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
               ref={chartContainerRef}
               className="chart-wrapper"
             >
-              <CrosshairTooltip
-                visible={tooltipState.visible}
-                x={tooltipState.x}
-                y={tooltipState.y}
-                data={tooltipState.data}
-                enabledMaPeriods={enabledMaPeriods}
-                containerWidth={chartContainerRef.current?.clientWidth}
-                containerHeight={chartContainerRef.current?.clientHeight}
+              <CrosshairTooltipLayer
+                store={tooltipStore}
+                containerRef={chartContainerRef}
+                currency={displayCurrency.code}
+                decimals={displayCurrency.decimals}
               />
+              {effectiveChartMode === 'custom' && (
+                <AgentEventOverlay
+                  chartRef={chartRef}
+                  seriesRef={candlestickSeriesRef}
+                  chartData={chartDataForHooks as any}
+                  theme={theme as 'light' | 'dark'}
+                  visible={!agentAnnotationsCleared}
+                  workspaceId={workspaceId ?? null}
+                  symbol={symbol}
+                  timeframe={annotationInterval}
+                />
+              )}
+              {effectiveChartMode === 'custom' && (
+                <div
+                  className="chart-selection-capture"
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    zIndex: 15,
+                    // Off while an editor is open so its textarea is usable; the
+                    // user finishes the note (Add/Cancel) before drawing the next.
+                    pointerEvents: selectMode !== 'off' && editorOpenId == null ? 'auto' : 'none',
+                    cursor: selectMode !== 'off' && editorOpenId == null ? 'crosshair' : 'default',
+                    touchAction: selectMode !== 'off' && editorOpenId == null ? 'none' : 'auto',
+                  }}
+                  onPointerDown={handleSelectPointerDown}
+                  onPointerMove={handleSelectPointerMove}
+                  onPointerUp={handleSelectPointerUp}
+                  onPointerCancel={handleSelectPointerCancel}
+                  onLostPointerCapture={handleSelectPointerCancel}
+                />
+              )}
+              {effectiveChartMode === 'custom' && (
+                <SelectionCommentOverlay
+                  chartRef={chartRef}
+                  seriesRef={candlestickSeriesRef}
+                  symbol={selectionSymbol}
+                  timeframe={annotationInterval}
+                />
+              )}
               {scrollLoading && (
                 <div className="chart-scroll-loading">
-                  <div className="chart-scroll-loading-spinner" />
+                  <Loader size={16} label="Loading history" style={{ color: 'var(--color-text-secondary)' }} />
                 </div>
               )}
             </div>
@@ -1890,6 +2371,23 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
               <div>{error}</div>
             </div>
           )}
+
+          {/* ---- Bottom bar: viewing-window presets + venue clock (TradingView-style) ---- */}
+          <div className="chart-bottom-bar">
+            <div className="chart-range-selector">
+              {RANGE_PRESETS.map((preset) => (
+                <button
+                  key={preset.key}
+                  type="button"
+                  className={`range-btn${activeRange === preset.key ? ' range-btn-active' : ''}`}
+                  onClick={() => handleRangeSelect(preset)}
+                >
+                  {preset.key}
+                </button>
+              ))}
+            </div>
+            <VenueClock tz={timezoneForSymbol(symbol)} />
+          </div>
         </div>
 
         {/* TradingView Advanced Chart (only mounted when active) */}

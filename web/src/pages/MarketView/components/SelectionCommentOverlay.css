@@ -1,0 +1,137 @@
+/* Comment pins + composer for chart selections.
+   The host is click-through; only the pins/composer capture pointer events so
+   chart pan/zoom keeps working everywhere else. */
+
+.selection-comment-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 18; /* above the selection-capture layer (15) + event badges (16), below tooltip (20) */
+}
+
+/* Numbered comment pin (speech bubble) marking a selection. */
+.selection-pin {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  border: none;
+  /* Sharp bottom-left corner reads as a downward comment tail. */
+  border-radius: 12px 12px 12px 3px;
+  /* Small amber marker — the annotation language. Ink on the accent, never
+     white: white lands under 3:1 on this amber in both themes. */
+  background: var(--color-accent-primary);
+  color: var(--color-text-on-accent);
+  font: 700 12px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.selection-pin:hover {
+  filter: brightness(1.08);
+}
+
+.selection-pin:focus-visible {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: 2px;
+}
+
+/* The pin embedded in the composer is a static marker, not a button. */
+.selection-pin--composer {
+  position: static;
+  cursor: default;
+}
+
+.selection-pin--composer:hover {
+  filter: none;
+}
+
+/* Composer row: pin · pill · cancel. */
+.selection-composer {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.selection-composer-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 5px 0 14px;
+  border-radius: 999px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-muted);
+  box-shadow: var(--shadow-card);
+}
+
+.selection-composer-input {
+  appearance: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  width: 190px;
+  max-width: 40vw;
+  color: var(--color-text-primary);
+  font: 400 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.selection-composer-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.selection-composer-send {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  /* Quiet button — the accent belongs to the pin marker, not to the action. */
+  background: var(--color-btn-primary-bg);
+  color: var(--color-btn-primary-text);
+  cursor: pointer;
+}
+
+.selection-composer-send:hover {
+  filter: brightness(1.08);
+}
+
+.selection-composer-send:focus-visible {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: 2px;
+}
+
+.selection-composer-cancel {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 50%;
+  background: var(--color-bg-elevated);
+  box-shadow: var(--shadow-card);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.selection-composer-cancel:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.selection-composer-cancel:focus-visible {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: 2px;
+}

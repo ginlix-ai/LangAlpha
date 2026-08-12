@@ -10,7 +10,7 @@ export function TradingViewSettingsFooter() {
   const { t } = useTranslation();
   return (
     <div
-      className="mt-4 pt-3 flex items-center gap-2 text-[11px]"
+      className="mt-4 pt-3 flex items-center gap-2 text-[0.6875rem]"
       style={{
         borderTop: '1px solid var(--color-border-muted)',
         color: 'var(--color-text-tertiary)',

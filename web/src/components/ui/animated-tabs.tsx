@@ -41,11 +41,12 @@ export function AnimatedTabs({
             className={`
               relative rounded-md px-3 py-1.5 text-sm font-medium
               outline-none transition-colors cursor-pointer
+              focus-visible:ring-2 focus-visible:ring-[var(--color-accent-overlay)]
               ${isActive ? "" : "hover:opacity-60"}
             `}
             style={{
               color: isActive
-                ? 'var(--color-text-on-accent)'
+                ? 'var(--color-text-primary)'
                 : 'var(--color-text-secondary)',
               WebkitTapHighlightColor: "transparent",
             }}
@@ -56,7 +57,10 @@ export function AnimatedTabs({
                 className="absolute inset-0"
                 style={{
                   borderRadius: '6px',
-                  backgroundColor: 'var(--color-accent-primary)',
+                  backgroundColor: 'var(--color-bg-elevated)',
+                  // The elevated fill alone is nearly invisible on a white page,
+                  // so a hairline edge keeps the pill legible on both themes.
+                  boxShadow: 'inset 0 0 0 1px var(--color-border-default)',
                 }}
                 transition={valueChanged ? springTransition : { duration: 0 }}
               />

@@ -29,6 +29,9 @@ class RuntimeContextMiddleware(AgentMiddleware):
         user_data_counts: Optional dict with portfolio/watchlist/preference
             counts for the ``<user_profile>`` awareness block. Snapshot at
             agent-creation time.
+        sandbox_enabled: Whether the agent has a sandbox/filesystem. Gates
+            filesystem-dependent steering in the shared user_profile component
+            (e.g. HTML-report output) — true for PTC, false for Flash.
     """
 
     def __init__(
@@ -37,9 +40,10 @@ class RuntimeContextMiddleware(AgentMiddleware):
         current_time: str,
         user_profile: dict[str, Any] | None = None,
         user_data_counts: dict[str, Any] | None = None,
+        sandbox_enabled: bool = False,
     ) -> None:
         self._context_block = self._build_context_block(
-            current_time, user_profile, user_data_counts
+            current_time, user_profile, user_data_counts, sandbox_enabled
         )
 
     @staticmethod
@@ -47,6 +51,7 @@ class RuntimeContextMiddleware(AgentMiddleware):
         current_time: str,
         user_profile: dict[str, Any] | None,
         user_data_counts: dict[str, Any] | None,
+        sandbox_enabled: bool = False,
     ) -> str:
         loader = get_loader()
         parts: list[str] = []
@@ -65,6 +70,7 @@ class RuntimeContextMiddleware(AgentMiddleware):
                 "components/user_profile.md.j2",
                 user_profile=user_profile or {},
                 user_data_counts=user_data_counts,
+                sandbox_enabled=sandbox_enabled,
             )
             parts.append(f"<user_profile>\n{profile_content}\n</user_profile>")
 

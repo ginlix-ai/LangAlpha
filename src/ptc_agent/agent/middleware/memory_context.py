@@ -11,6 +11,11 @@ from langchain_core.messages import SystemMessage
 from langgraph.store.base import BaseStore
 
 from ptc_agent.agent.backends.store_cache import RequestScopedStoreCache
+from ptc_agent.core.paths import (
+    MEMORY_INDEX_FILENAME,
+    MEMORY_USER_DIR,
+    MEMORY_WORKSPACE_DIR,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -44,9 +49,9 @@ class MemoryContextMiddleware(AgentMiddleware):
         store: BaseStore,
         user_namespace_factory: NamespaceFactory | None = None,
         workspace_namespace_factory: NamespaceFactory | None = None,
-        user_display_path: str = ".agents/user/memory/memory.md",
-        workspace_display_path: str = ".agents/workspace/memory/memory.md",
-        index_key: str = "memory.md",
+        user_display_path: str = f"{MEMORY_USER_DIR}/{MEMORY_INDEX_FILENAME}",
+        workspace_display_path: str = f"{MEMORY_WORKSPACE_DIR}/{MEMORY_INDEX_FILENAME}",
+        index_key: str = MEMORY_INDEX_FILENAME,
         cache: RequestScopedStoreCache | None = None,
     ) -> None:
         self._store = store

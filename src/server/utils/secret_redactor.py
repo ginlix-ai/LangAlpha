@@ -94,12 +94,20 @@ class SecretRedactor:
         self, data: bytes, encoding: str = "utf-8",
         vault_secrets: dict[str, str] | None = None,
     ) -> bytes:
-        """Decode bytes, redact secrets, re-encode. Returns original on decode failure."""
+        """Decode bytes, redact secrets, re-encode.
+
+        On a decode failure, fall back to latin-1 — it maps every byte 0–255 to
+        a codepoint and round-trips losslessly, so a secret written into a
+        non-UTF-8 body is still scrubbed without corrupting binary content (only
+        the secret's own byte-run is replaced). Wide (UTF-16) encodings of a
+        secret are not caught.
+        """
         try:
             text = data.decode(encoding)
+            return self.redact(text, vault_secrets=vault_secrets).encode(encoding)
         except (UnicodeDecodeError, LookupError):
-            return data
-        return self.redact(text, vault_secrets=vault_secrets).encode(encoding)
+            text = data.decode("latin-1")
+            return self.redact(text, vault_secrets=vault_secrets).encode("latin-1")
 
 
 _instance: SecretRedactor | None = None

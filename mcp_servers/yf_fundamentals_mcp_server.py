@@ -1,45 +1,50 @@
 #!/usr/bin/env python3
 """YFinance Fundamentals MCP Server.
 
-Financial statements, earnings, company info, and valuations via yfinance.
+Financial statements, earnings, company info, and valuations via yfinance,
+wrapped in the standard market-data envelope (see
+mcp_servers/AGENT_CONTRACT.md).
 
 Tools:
-- get_income_statement: Quarterly/annual income statement
-- get_balance_sheet: Quarterly/annual balance sheet
-- get_cash_flow: Quarterly/annual cash flow statement
-- get_company_info: Comprehensive company metadata
-- get_earnings_dates: Earnings calendar with EPS estimates vs actuals
-- get_earnings_data: Historical EPS actuals vs estimates (earnings_history)
-- compare_financials: Side-by-side financial statements for multiple tickers
-- compare_valuations: Valuation multiples for multiple tickers
-- get_multiple_stocks_earnings: Earnings data for multiple tickers
+- get_income_statement / get_balance_sheet / get_cash_flow: statements
+- get_company_info: company metadata
+- get_earnings_dates: upcoming/past earnings with EPS estimate vs actual
+- get_earnings_data: historical EPS actual vs estimate
+- compare_financials / compare_valuations / get_multiple_stocks_earnings: multi
 """
 
+# NOTE: Tool docstrings in this file are hand-tuned agent prompt surface (parsed
+# into agent prompts and generated sandbox wrappers) and are content-pinned by
+# tests/unit/mcp_servers/test_agent_contract.py. Read mcp_servers/AGENT_CONTRACT.md
+# before editing; intentional changes must regenerate agent_docstring_lock.json.
+
+from __future__ import annotations
+
+try:
+    import _bootstrap  # noqa: F401  # script launch: mcp_servers/ is sys.path[0]
+except ModuleNotFoundError:  # imported as a package module (tests)
+    from mcp_servers import _bootstrap  # noqa: F401
+
 import json
-from typing import Any, List, Optional
+from typing import List
 
 import pandas as pd
 import yfinance as yf
 from mcp.server.fastmcp import FastMCP
 
+from mcp_servers._envelope import make_error, make_response
+from mcp_servers._yf_common import boundary, format_datetime, safe_detail, serialize_records
+
+SOURCE = "yfinance"
+
 
 # ---------------------------------------------------------------------------
-# Helpers (inlined — each yf server is deployed as a single file)
+# Serialization helpers
 # ---------------------------------------------------------------------------
-
-
-def _format_datetime(value) -> str:
-    """YYYY-MM-DD for dates, YYYY-MM-DD HH:MM:SS for datetimes with time."""
-    if hasattr(value, "hour"):
-        if value.hour or value.minute or value.second:
-            return value.strftime("%Y-%m-%d %H:%M:%S")
-    if hasattr(value, "strftime"):
-        return value.strftime("%Y-%m-%d")
-    return str(value)
 
 
 def _serialize_dataframe(df: pd.DataFrame) -> dict:
-    """Convert financial statement DataFrame to {metric: {date: value}} dict."""
+    """Statement DataFrame → {metric: {date: value}}; date keys newest first."""
     if df is None or df.empty:
         return {}
     df = df.copy()
@@ -48,53 +53,6 @@ def _serialize_dataframe(df: pd.DataFrame) -> dict:
     if isinstance(df.columns, pd.DatetimeIndex):
         df.columns = df.columns.strftime("%Y-%m-%d")
     return json.loads(df.fillna("N/A").to_json(orient="index"))
-
-
-def _serialize_records(df: pd.DataFrame) -> list[dict]:
-    """Convert DataFrame to list of dicts with clean keys and values."""
-    if df is None or df.empty:
-        return []
-    df = df.reset_index() if not isinstance(df.index, pd.RangeIndex) else df.copy()
-    records = df.to_dict(orient="records")
-    cleaned = []
-    for rec in records:
-        clean_rec = {}
-        for key, value in rec.items():
-            clean_key = (
-                str(key)
-                .lower()
-                .replace(" ", "_")
-                .replace("(%)", "_pct")
-                .replace("%", "pct")
-                .replace("(", "")
-                .replace(")", "")
-            )
-            if hasattr(value, "isoformat"):
-                clean_rec[clean_key] = _format_datetime(value)
-            elif isinstance(value, float) and value != value:  # NaN
-                clean_rec[clean_key] = None
-            else:
-                clean_rec[clean_key] = value
-        cleaned.append(clean_rec)
-    return cleaned
-
-
-def _make_response(
-    data_type: str, data: Any, count: Optional[int] = None, **extra: Any
-) -> dict:
-    resp = {"data_type": data_type, "source": "yfinance", "data": data}
-    if count is not None:
-        resp["count"] = count
-    elif isinstance(data, list):
-        resp["count"] = len(data)
-    elif isinstance(data, dict):
-        resp["count"] = len(data)
-    resp.update(extra)
-    return resp
-
-
-def _make_error(msg: str) -> dict:
-    return {"error": msg}
 
 
 # ---------------------------------------------------------------------------
@@ -111,98 +69,134 @@ mcp = FastMCP("YFinanceFundamentalsMCP")
 
 @mcp.tool()
 def get_income_statement(ticker: str, quarterly: bool = True) -> dict:
-    """Get income statement data (revenue, expenses, net income, margins, etc.)
-
-    Returns a dict keyed by metric name (e.g. "Total Revenue", "Net Income"),
-    each mapping dates to values: {metric: {date: value, ...}, ...}.
+    """Income statement (revenue, expenses, margins, net income). Use for
+    profitability and top-line trends.
 
     Args:
-        ticker: Stock ticker symbol (e.g. "AAPL", "MSFT")
-        quarterly: If True returns quarterly data; if False returns annual data
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        quarterly: Quarterly if True, else annual.
+
+    Returns:
+        dict: {symbol, quarterly, count, data, source}. data is Yahoo-native
+        {metric: {date: value}} — metric names are Yahoo-native (e.g.
+        "Total Revenue", "Net Income"); date keys are "YYYY-MM-DD" ordered newest
+        first; values are in the company's reporting currency (native units).
+        count is the number of metrics. On error: {error, detail, symbol} with
+        error not_found|upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
+        stock = yf.Ticker(yf_symbol)
         df = stock.quarterly_income_stmt if quarterly else stock.income_stmt
         if df is None or df.empty:
-            return _make_error(f"No income statement data for {ticker}")
-        return _make_response(
-            "income_statement",
-            _serialize_dataframe(df),
-            ticker=ticker,
-            quarterly=quarterly,
+            return make_error(
+                "not_found", f"No income statement for {symbol}.", symbol=symbol
+            )
+        data = _serialize_dataframe(df)
+        return make_response(
+            data, source=SOURCE, symbol=symbol, count=len(data), quarterly=quarterly
         )
-    except Exception as e:
-        return _make_error(f"Failed to fetch income statement for {ticker}: {e}")
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error", safe_detail("Income statement", e), symbol=symbol
+        )
 
 
 @mcp.tool()
 def get_balance_sheet(ticker: str, quarterly: bool = True) -> dict:
-    """Get balance sheet data (assets, liabilities, equity).
-
-    Returns a dict keyed by metric name (e.g. "Total Assets", "Total Debt"),
-    each mapping dates to values: {metric: {date: value, ...}, ...}.
+    """Balance sheet (assets, liabilities, equity). Use for leverage, liquidity,
+    and capital-structure analysis.
 
     Args:
-        ticker: Stock ticker symbol (e.g. "AAPL", "MSFT")
-        quarterly: If True returns quarterly data; if False returns annual data
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        quarterly: Quarterly if True, else annual.
+
+    Returns:
+        dict: {symbol, quarterly, count, data, source}. data is Yahoo-native
+        {metric: {date: value}} — metric names Yahoo-native (e.g. "Total Assets",
+        "Total Debt"); date keys "YYYY-MM-DD" ordered newest first; values in the
+        company's reporting currency (native units). count is the number of
+        metrics. On error: {error, detail, symbol} with error
+        not_found|upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
+        stock = yf.Ticker(yf_symbol)
         df = stock.quarterly_balance_sheet if quarterly else stock.balance_sheet
         if df is None or df.empty:
-            return _make_error(f"No balance sheet data for {ticker}")
-        return _make_response(
-            "balance_sheet",
-            _serialize_dataframe(df),
-            ticker=ticker,
-            quarterly=quarterly,
+            return make_error(
+                "not_found", f"No balance sheet for {symbol}.", symbol=symbol
+            )
+        data = _serialize_dataframe(df)
+        return make_response(
+            data, source=SOURCE, symbol=symbol, count=len(data), quarterly=quarterly
         )
-    except Exception as e:
-        return _make_error(f"Failed to fetch balance sheet for {ticker}: {e}")
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error", safe_detail("Balance sheet", e), symbol=symbol
+        )
 
 
 @mcp.tool()
 def get_cash_flow(ticker: str, quarterly: bool = True) -> dict:
-    """Get cash flow statement data (operating, investing, financing activities).
-
-    Returns a dict keyed by metric name (e.g. "Operating Cash Flow", "Capital Expenditure"),
-    each mapping dates to values: {metric: {date: value, ...}, ...}.
+    """Cash flow statement (operating, investing, financing). Use for cash
+    generation and capex analysis.
 
     Args:
-        ticker: Stock ticker symbol (e.g. "AAPL", "MSFT")
-        quarterly: If True returns quarterly data; if False returns annual data
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        quarterly: Quarterly if True, else annual.
+
+    Returns:
+        dict: {symbol, quarterly, count, data, source}. data is Yahoo-native
+        {metric: {date: value}} — metric names Yahoo-native (e.g.
+        "Operating Cash Flow", "Capital Expenditure"); date keys "YYYY-MM-DD"
+        ordered newest first; values in the company's reporting currency (native
+        units). count is the number of metrics. On error:
+        {error, detail, symbol} with error not_found|upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
+        stock = yf.Ticker(yf_symbol)
         df = stock.quarterly_cashflow if quarterly else stock.cashflow
         if df is None or df.empty:
-            return _make_error(f"No cash flow data for {ticker}")
-        return _make_response(
-            "cash_flow",
-            _serialize_dataframe(df),
-            ticker=ticker,
-            quarterly=quarterly,
+            return make_error(
+                "not_found", f"No cash flow statement for {symbol}.", symbol=symbol
+            )
+        data = _serialize_dataframe(df)
+        return make_response(
+            data, source=SOURCE, symbol=symbol, count=len(data), quarterly=quarterly
         )
-    except Exception as e:
-        return _make_error(f"Failed to fetch cash flow for {ticker}: {e}")
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error", safe_detail("Cash flow", e), symbol=symbol
+        )
 
 
 @mcp.tool()
 def get_company_info(ticker: str) -> dict:
-    """Get comprehensive company information (sector, industry, market cap, ratios, etc.)
-
-    Returns a flat dict with keys like shortName, sector, industry, marketCap,
-    trailingPE, forwardPE, dividendYield, fullTimeEmployees, longBusinessSummary,
-    etc. None values are omitted.
+    """Company profile and key statistics. Use for sector/industry, market cap,
+    valuation ratios, and business summary.
 
     Args:
-        ticker: Stock ticker symbol (e.g. "AAPL", "MSFT")
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+
+    Returns:
+        dict: {symbol, currency?, count, data, source}. data is one Yahoo-native
+        record — a flat dict of Yahoo `info` fields (e.g. shortName, sector,
+        industry, marketCap, trailingPE, forwardPE, dividendYield,
+        longBusinessSummary); field names are Yahoo-native, price-scale fields
+        are unconverted, and None values are dropped. currency is Yahoo's
+        declared trading currency (a minor-unit label like GBp on some venues),
+        omitted when Yahoo declares none; count is 1. On error:
+        {error, detail, symbol} with error not_found|upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
+        info = yf.Ticker(yf_symbol).info
         if not info:
-            return _make_error(f"No company info for {ticker}")
+            return make_error(
+                "not_found", f"No company info for {symbol}.", symbol=symbol
+            )
 
         cleaned = {}
         for key, value in info.items():
@@ -211,59 +205,82 @@ def get_company_info(ticker: str) -> dict:
             if isinstance(value, float) and value != value:  # NaN
                 continue
             if hasattr(value, "isoformat"):
-                cleaned[key] = _format_datetime(value)
+                cleaned[key] = format_datetime(value)
             else:
                 cleaned[key] = value
 
-        return _make_response("company_info", cleaned, ticker=ticker)
-    except Exception as e:
-        return _make_error(f"Failed to fetch company info for {ticker}: {e}")
+        return make_response(
+            cleaned,
+            source=SOURCE,
+            symbol=symbol,
+            currency=info.get("currency"),
+            count=1,
+        )
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error", safe_detail("Company info", e), symbol=symbol
+        )
 
 
 @mcp.tool()
 def get_earnings_dates(ticker: str) -> dict:
-    """Get earnings announcement dates with EPS estimates vs actuals.
-
-    Returns a list of records with keys: earnings_date (YYYY-MM-DD HH:MM:SS),
-    eps_estimate, reported_eps, surprise_pct. Future dates will have null
-    for reported_eps and surprise_pct.
+    """Earnings announcement dates with EPS estimate vs. actual. Use for the
+    earnings schedule and recent surprises.
 
     Args:
-        ticker: Stock ticker symbol (e.g. "AAPL", "MSFT")
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+
+    Returns:
+        dict: {symbol, count, data, source}. data is a list of Yahoo-native
+        records {earnings_date, eps_estimate, reported_eps, surprise_pct} ordered
+        newest first (future dates included, with null reported_eps/surprise_pct);
+        earnings_date is exchange-local "YYYY-MM-DD HH:MM:SS". On error:
+        {error, detail, symbol} with error not_found|upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
-        dates = stock.earnings_dates
+        dates = yf.Ticker(yf_symbol).earnings_dates
         if dates is None or dates.empty:
-            return _make_error(f"No earnings dates for {ticker}")
-        return _make_response(
-            "earnings_dates", _serialize_records(dates), ticker=ticker
+            return make_error(
+                "not_found", f"No earnings dates for {symbol}.", symbol=symbol
+            )
+        return make_response(
+            serialize_records(dates), source=SOURCE, symbol=symbol
         )
-    except Exception as e:
-        return _make_error(f"Failed to fetch earnings dates for {ticker}: {e}")
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error", safe_detail("Earnings dates", e), symbol=symbol
+        )
 
 
 @mcp.tool()
 def get_earnings_data(ticker: str) -> dict:
-    """Get historical earnings data (EPS estimates vs actuals per quarter).
-
-    Returns a list of records with keys: epsestimate, epsactual,
-    epsdifference, surprisepercent, plus a quarter date field.
-    Same underlying data as get_earnings_history in the analysis server.
+    """Historical EPS estimate vs. actual per quarter. Use to review earnings
+    beats/misses. Same data as get_earnings_history (analysis server).
 
     Args:
-        ticker: Stock ticker symbol (e.g. "AAPL", "MSFT")
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+
+    Returns:
+        dict: {symbol, count, data, source}. data is a list of Yahoo-native
+        records {quarter, epsestimate, epsactual, epsdifference, surprisepercent}
+        in Yahoo's order (oldest first); quarter is "YYYY-MM-DD". On error:
+        {error, detail, symbol} with error not_found|upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
-        earnings = stock.earnings_history
+        earnings = yf.Ticker(yf_symbol).earnings_history
         if earnings is None or earnings.empty:
-            return _make_error(f"No earnings data for {ticker}")
-        return _make_response(
-            "earnings_data", _serialize_records(earnings), ticker=ticker
+            return make_error(
+                "not_found", f"No earnings data for {symbol}.", symbol=symbol
+            )
+        return make_response(
+            serialize_records(earnings), source=SOURCE, symbol=symbol
         )
-    except Exception as e:
-        return _make_error(f"Failed to fetch earnings for {ticker}: {e}")
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error", safe_detail("Earnings data", e), symbol=symbol
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -277,25 +294,37 @@ def compare_financials(
     statement_type: str = "income",
     quarterly: bool = True,
 ) -> dict:
-    """Get financial statements for multiple companies for side-by-side comparison.
-
-    Returns data keyed by ticker symbol, where each value is a
-    {metric: {date: value}} dict. Failed tickers appear in "errors".
+    """Financial statements for several companies for side-by-side comparison.
 
     Args:
-        tickers: List of ticker symbols (e.g. ["AAPL", "MSFT", "GOOGL"])
-        statement_type: "income", "balance", or "cashflow"
-        quarterly: If True returns quarterly data; if False returns annual
+        tickers: Symbols, e.g. ["AAPL", "MSFT", "GOOGL"].
+        statement_type: "income", "balance", or "cashflow".
+        quarterly: Quarterly if True, else annual.
+
+    Returns:
+        dict: {statement_type, quarterly, count, data, source,
+        successful_tickers, errors?}. data is keyed by canonical symbol →
+        Yahoo-native {metric: {date: value}} (date keys "YYYY-MM-DD" newest
+        first, reporting-currency native units, Yahoo-native metric names); count
+        is total metrics across symbols. Failed/empty symbols are omitted and
+        listed in errors as {error, detail, symbol}. On a bad statement_type:
+        {error: invalid_argument, detail, supported}.
     """
     if statement_type not in ("income", "balance", "cashflow"):
-        return _make_error(f"Invalid statement_type '{statement_type}'. Must be 'income', 'balance', or 'cashflow'.")
+        return make_error(
+            "invalid_argument",
+            "statement_type must be one of income, balance, cashflow.",
+            supported=["income", "balance", "cashflow"],
+        )
 
-    data = {}
-    errors = []
+    data: dict[str, dict] = {}
+    errors: list[dict] = []
+    total = 0
 
     for ticker in tickers:
+        symbol, yf_symbol, _ = boundary(ticker)
         try:
-            stock = yf.Ticker(ticker)
+            stock = yf.Ticker(yf_symbol)
             if statement_type == "income":
                 df = stock.quarterly_income_stmt if quarterly else stock.income_stmt
             elif statement_type == "balance":
@@ -304,16 +333,31 @@ def compare_financials(
                 df = stock.quarterly_cashflow if quarterly else stock.cashflow
 
             if df is None or df.empty:
-                errors.append(f"No {statement_type} data for {ticker}")
+                errors.append(
+                    make_error(
+                        "not_found",
+                        f"No {statement_type} statement for {symbol}.",
+                        symbol=symbol,
+                    )
+                )
                 continue
 
-            data[ticker] = _serialize_dataframe(df)
-        except Exception as e:
-            errors.append(f"{ticker}: {e}")
+            serialized = _serialize_dataframe(df)
+            data[symbol] = serialized
+            total += len(serialized)
+        except Exception as e:  # noqa: BLE001
+            errors.append(
+                make_error(
+                    "upstream_error",
+                    safe_detail("Financial statement", e),
+                    symbol=symbol,
+                )
+            )
 
-    result = _make_response(
-        "compare_financials",
+    result = make_response(
         data,
+        source=SOURCE,
+        count=total,
         statement_type=statement_type,
         quarterly=quarterly,
         successful_tickers=list(data.keys()),
@@ -325,14 +369,21 @@ def compare_financials(
 
 @mcp.tool()
 def compare_valuations(tickers: List[str]) -> dict:
-    """Compare valuation metrics (P/E, P/B, dividend yield, etc.) across multiple stocks.
-
-    Returns data keyed by ticker symbol. Each value is a dict with snake_case
-    metric names: trailing_p_e, forward_p_e, price_to_book, dividend_yield,
-    market_cap, enterprise_value, beta, current_price, peg_ratio, etc.
+    """Valuation multiples across several stocks for side-by-side comparison.
 
     Args:
-        tickers: List of ticker symbols (e.g. ["AAPL", "MSFT", "GOOGL"])
+        tickers: Symbols, e.g. ["AAPL", "MSFT", "GOOGL"].
+
+    Returns:
+        dict: {count, data, source, successful_tickers, errors?}. data is keyed
+        by canonical symbol → a dict of snake_case metrics: trailing_p_e,
+        forward_p_e, price_to_book, price_to_sales_trailing12_months,
+        enterprise_to_ebitda, enterprise_to_revenue, peg_ratio, dividend_yield,
+        payout_ratio, market_cap, enterprise_value, beta,
+        fifty_two_week_high/low, fifty_day_average, two_hundred_day_average,
+        current_price (nulls where absent); count is the number of symbols
+        returned. Failed symbols are omitted and listed in errors as
+        {error, detail, symbol}.
     """
     valuation_keys = [
         "trailingPE", "forwardPE", "priceToBook", "priceToSalesTrailing12Months",
@@ -342,15 +393,19 @@ def compare_valuations(tickers: List[str]) -> dict:
         "twoHundredDayAverage", "currentPrice",
     ]
 
-    data = {}
-    errors = []
+    data: dict[str, dict] = {}
+    errors: list[dict] = []
 
     for ticker in tickers:
+        symbol, yf_symbol, _ = boundary(ticker)
         try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
+            info = yf.Ticker(yf_symbol).info
             if not info:
-                errors.append(f"No info data for {ticker}")
+                errors.append(
+                    make_error(
+                        "not_found", f"No info for {symbol}.", symbol=symbol
+                    )
+                )
                 continue
 
             valuations = {}
@@ -364,13 +419,18 @@ def compare_valuations(tickers: List[str]) -> dict:
                 else:
                     valuations[snake_key] = val
 
-            data[ticker] = valuations
-        except Exception as e:
-            errors.append(f"{ticker}: {e}")
+            data[symbol] = valuations
+        except Exception as e:  # noqa: BLE001
+            errors.append(
+                make_error(
+                    "upstream_error", safe_detail("Valuation", e), symbol=symbol
+                )
+            )
 
-    result = _make_response(
-        "compare_valuations",
+    result = make_response(
         data,
+        source=SOURCE,
+        count=len(data),
         successful_tickers=list(data.keys()),
     )
     if errors:
@@ -380,33 +440,50 @@ def compare_valuations(tickers: List[str]) -> dict:
 
 @mcp.tool()
 def get_multiple_stocks_earnings(tickers: List[str]) -> dict:
-    """Get earnings data for multiple stocks in a single call.
-
-    Returns data keyed by ticker symbol, each with an "earnings" list of
-    records (epsestimate, epsactual, epsdifference, surprisepercent) and
-    a "count". Failed tickers appear in "errors".
+    """Historical earnings (EPS estimate vs. actual) for several stocks at once.
 
     Args:
-        tickers: List of ticker symbols (e.g. ["AAPL", "MSFT", "GOOGL"])
+        tickers: Symbols, e.g. ["AAPL", "MSFT", "GOOGL"].
+
+    Returns:
+        dict: {count, data, source, successful_tickers, errors?}. data is keyed
+        by canonical symbol → {count, earnings}; each earnings is a list of
+        Yahoo-native records {quarter, epsestimate, epsactual, epsdifference,
+        surprisepercent} in Yahoo's order (oldest first), quarter "YYYY-MM-DD".
+        Top-level count is total earnings records across symbols. Failed/empty
+        symbols are omitted and listed in errors as {error, detail, symbol}.
     """
-    data = {}
-    errors = []
+    data: dict[str, dict] = {}
+    errors: list[dict] = []
+    total = 0
 
     for ticker in tickers:
+        symbol, yf_symbol, _ = boundary(ticker)
         try:
-            stock = yf.Ticker(ticker)
-            earnings = stock.earnings_history
+            earnings = yf.Ticker(yf_symbol).earnings_history
             if earnings is None or earnings.empty:
-                errors.append(f"No earnings data for {ticker}")
+                errors.append(
+                    make_error(
+                        "not_found",
+                        f"No earnings data for {symbol}.",
+                        symbol=symbol,
+                    )
+                )
                 continue
-            records = _serialize_records(earnings)
-            data[ticker] = {"earnings": records, "count": len(records)}
-        except Exception as e:
-            errors.append(f"{ticker}: {e}")
+            records = serialize_records(earnings)
+            data[symbol] = {"count": len(records), "earnings": records}
+            total += len(records)
+        except Exception as e:  # noqa: BLE001
+            errors.append(
+                make_error(
+                    "upstream_error", safe_detail("Earnings", e), symbol=symbol
+                )
+            )
 
-    result = _make_response(
-        "multiple_stocks_earnings",
+    result = make_response(
         data,
+        source=SOURCE,
+        count=total,
         successful_tickers=list(data.keys()),
     )
     if errors:

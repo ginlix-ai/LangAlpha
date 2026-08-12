@@ -8,9 +8,32 @@ that use the ptc-agent library for code execution in Daytona sandboxes.
 import copy
 from typing import Any, Dict, List, Literal, Mapping, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.server.models.additional_context import AdditionalContext
+
+# Roles the chat path can VALIDLY persist into the ``messages`` channel. The
+# chat path writes ``{"role", "content"}`` dicts straight in; under DeltaChannel
+# that raw write is stored BEFORE the reducer runs, so a role must clear TWO bars:
+#
+#   1. ``convert_to_messages`` must rebuild it from ``{"role", "content"}`` alone
+#      — it is replayed on every reconstruction. ``tool``/``function`` fail here:
+#      they map to ToolMessage/FunctionMessage and need ``tool_call_id``/``name``
+#      ``ChatMessage`` can't supply, so they raise on every resume and brick the
+#      thread.
+#   2. langgraph's ``ensure_message_ids`` must STAMP it at ``put_writes`` (role in
+#      langgraph's ``_MESSAGE_ROLES``). An accepted-but-unstamped role persists
+#      id-less; the hard-stop checkpoint flush / offload write the full list back
+#      via ``aupdate_state`` (which does NOT re-run ``ensure_message_ids``), and the
+#      non-minting reducer can't dedup an id-less message, so it DUPLICATES.
+#
+# ``developer`` clears bar 1 (``convert_to_messages`` maps it to SystemMessage) but
+# FAILS bar 2 (not in langgraph's ``_MESSAGE_ROLES``), so it is excluded — clients
+# wanting developer semantics send ``system``, which maps identically and stamps.
+# ``role`` is client-controlled; reject the rest with a clean 422 before persisting.
+_VALID_MESSAGE_ROLES = frozenset(
+    {"user", "assistant", "system", "human", "ai"}
+)
 
 
 # =============================================================================
@@ -169,10 +192,41 @@ class ChatMessage(BaseModel):
         description="The content of the message, either a string or a list of content items",
     )
 
+    @field_validator("role")
+    @classmethod
+    def _validate_role(cls, v: str) -> str:
+        """Reject roles unsafe under delta replay — see ``_VALID_MESSAGE_ROLES``.
+
+        An unsupported role either raises in ``convert_to_messages`` on every
+        reconstruction (a bricked thread) or persists id-less and duplicates on
+        the hard-stop flush; both are rejected with a 422 before anything persists.
+        """
+        if v not in _VALID_MESSAGE_ROLES:
+            allowed = ", ".join(sorted(_VALID_MESSAGE_ROLES))
+            raise ValueError(
+                f"Unsupported message role {v!r}. Must be one of: {allowed}."
+            )
+        return v
+
 
 # =============================================================================
 # Chat Request/Response Models
 # =============================================================================
+
+
+class ThreadOrigin(BaseModel):
+    """Who initiated a thread — stored under the thread's metadata['origin'].
+
+    'agent' = spawned by another agent (id = dispatching flash thread id),
+    'automation' = scheduled/triggered run (id = automation id), 'system' =
+    set aside for platform-initiated threads. The label is advisory —
+    client-supplied, not authenticated, and nothing branches on it.
+    User-initiated threads carry no origin at all rather than an explicit
+    'user' entry.
+    """
+
+    type: Literal["agent", "automation", "system"]
+    id: Optional[str] = Field(default=None, max_length=100)
 
 
 class ChatRequest(BaseModel):
@@ -205,6 +259,37 @@ class ChatRequest(BaseModel):
     plan_mode: bool = Field(
         default=False,
         description="When True, agent must submit a plan for approval via submit_plan tool before execution",
+    )
+    steer_only: bool = Field(
+        default=False,
+        description="When True, this POST may only steer an in-flight workflow; "
+        "if the thread has none, reject with admission-conflict "
+        "code='not_running' (an SSE error event once the stream has started, "
+        "HTTP 409 otherwise) instead of starting a new turn. Set by gateway "
+        "steer probes, whose SSE readers ignore turn events — without this, a "
+        "steer racing the workflow's exit silently spawns a turn whose output "
+        "(interrupts included) is dropped.",
+    )
+
+    # Idempotency (v4 attempt chain): one logical send = one request_key,
+    # reused verbatim across network retransmits. The server dedups on it
+    # (globally unique), so a lost-response resubmit reconnects to the
+    # existing run instead of starting a duplicate. Server-minted fallback
+    # when omitted (no dedup).
+    request_key: Optional[str] = Field(
+        default=None,
+        description="Client-generated UUID identifying this logical send; "
+        "reuse across retransmits for idempotent delivery.",
+    )
+    # Internal retry provenance: only the /retry route sets it, as a
+    # parameter to _handle_send_message — a body-supplied value is
+    # overwritten there unconditionally, so clients cannot chain a new
+    # attempt onto an arbitrary failed run. The new run reuses the
+    # turn_index with attempt_no+1 and no new query row.
+    retry_of_run_id: Optional[str] = Field(
+        default=None,
+        description="Run id this request is an attempt-chain retry of. "
+        "Internal use only; ignored when supplied by clients.",
     )
 
     # Interrupt/resume support (HITL)
@@ -263,22 +348,84 @@ class ChatRequest(BaseModel):
         description="Override query_type for this request. Internal use only.",
     )
 
+    # Internal: PTC thread id whose report-back this flash run consumes. When a
+    # flash report-back run (dispatched after PTC completion) finishes, its
+    # completion hook clears the durable flash_watch entry for this PTC thread.
+    report_back_ptc_thread_id: Optional[str] = Field(
+        default=None,
+        description="PTC thread id this flash report-back run consumes. "
+        "Internal use only.",
+    )
+
+    # Internal: the flash thread watching this dispatched PTC run. Stamped
+    # into the run's START metadata so finalize can build report-back hook
+    # ordering keys (all completions reporting into one flash thread
+    # serialize) without I/O. An ordering hint only — executors re-resolve
+    # the authoritative origin from Redis at execution time.
+    origin_flash_thread_id: Optional[str] = Field(
+        default=None,
+        description="Flash thread watching this dispatched PTC run. "
+        "Internal use only.",
+    )
+
+    # Internal: dispatch-incarnation token for the report-back pair, minted
+    # per reserve(). Stamped into START metadata; terminal teardowns compare
+    # it against the live origin so a stale clear can never destroy a
+    # re-dispatched pair's watch state.
+    origin_dispatch_gen: Optional[str] = Field(
+        default=None,
+        description="Report-back dispatch generation token. Internal use only.",
+    )
+
+    # Internal: build this turn's agent without the subagent machinery
+    # (no Task/TaskOutput tools). Task report-back turns deliberately do
+    # NOT set it — TaskOutput is their retrieval path; re-announce
+    # recursion is prevented by the outbox's ledger arbitration
+    # (result_delivered_at), not structurally.
+    disable_subagents: Optional[bool] = Field(
+        default=None,
+        description="Build this turn's agent without subagent tools. "
+        "Internal use only.",
+    )
+
+    # Server-stamped: the burst-guard ZSET member held by this request's
+    # admission. The route overwrites whatever a client sent (a forged value
+    # could only orphan the caller's own slot until reap, but stamping keeps
+    # the release chain trustworthy end to end).
+    burst_slot_id: Optional[str] = Field(
+        default=None,
+        description="Burst-guard slot held for this request. Server-stamped.",
+    )
+
     # External thread identity (for channel integrations like Telegram, Slack)
     external_thread_id: Optional[str] = Field(
         default=None,
         description="Stable external thread identifier (e.g. 'chat_id:topic_id'). "
         "When provided with platform, langalpha resolves to an existing thread or creates a new one.",
     )
-    # Format: lowercase prefix (a-z, underscore), optionally `:<UPPERCASE_TOKEN>`
-    # where the suffix accepts A-Z 0-9 and `.` (for tickers like BRK.B).
+    # Format: lowercase prefix (a-z, underscore), optionally `:<SYMBOL>` where the
+    # suffix is a market ticker — it starts with a letter OR digit and accepts
+    # A-Z, 0-9, `.` and `-`. Digit-first symbols are real and common: CN A-shares
+    # (002851.SZ, 600519.SH) and HK tickers (0700.HK) all begin with a digit, not
+    # a letter, so the suffix must not require a leading [A-Z].
     # Current namespace: 'web', 'market_view:<SYMBOL>', 'telegram', 'slack',
     # 'discord', 'feishu'. Reserved prefixes shouldn't be reused for other origins.
     platform: Optional[str] = Field(
         default=None,
-        pattern=r"^[a-z_]+(:[A-Z][A-Z0-9.]*)?$",
+        pattern=r"^[a-z_]+(:[A-Z0-9][A-Z0-9.-]*)?$",
         max_length=50,
-        description="Origin/platform identifier. Examples: 'web', "
-        "'market_view:AAPL', 'telegram', 'slack', 'discord', 'feishu'.",
+        description="Surface the chat originated from. Examples: 'web', "
+        "'market_view:AAPL', 'market_view:002851.SZ', 'telegram', 'slack', "
+        "'discord', 'feishu'. Absent for system-initiated threads (see origin).",
+    )
+    # Orthogonal to platform: platform = which user surface, origin = who
+    # initiated. Absent origin = user-initiated (the common case is never
+    # written). Only affects the caller's own thread labeling, so it is
+    # accepted from any client without gating.
+    origin: Optional["ThreadOrigin"] = Field(
+        default=None,
+        description="Thread initiator provenance, recorded at thread creation "
+        "(ignored for existing threads). Absent = user-initiated.",
     )
 
 

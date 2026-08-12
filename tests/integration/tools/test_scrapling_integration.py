@@ -1,6 +1,6 @@
 """Integration tests for Scrapling crawler backend — hits real websites.
 
-Tests the full stack: ScraplingCrawler → SafeCrawlerWrapper → crawl_tool.
+Tests the stack: ScraplingCrawler → SafeCrawlerWrapper.
 
 Run with:
     uv run pytest tests/integration/tools/test_scrapling_integration.py -m integration -v
@@ -16,6 +16,19 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 _TEST_URL = "https://example.com"
 _TEST_URL_HTTPBIN = "https://httpbin.org/html"
 
+# Some targets (e.g. httpbin.org) push the crawler past the HTTP-only Tier 1
+# into the patchright/Camoufox browser tiers. Those browsers are installed
+# inside sandboxes at runtime, not in CI — skip such tests when the binary is
+# absent rather than failing on an environment gap.
+_BROWSER_MISSING_MARKERS = ("executable doesn't exist", "playwright install")
+
+
+def _skip_if_no_browser(text: str | None) -> None:
+    if text and any(marker in text.lower() for marker in _BROWSER_MISSING_MARKERS):
+        pytest.skip(
+            "scrapling browser tier (patchright/Camoufox) not installed in this environment"
+        )
+
 
 # ---------------------------------------------------------------------------
 # ScraplingCrawler direct tests
@@ -26,7 +39,7 @@ class TestScraplingCrawlerLive:
     """Test ScraplingCrawler against real URLs (Tier 1 HTTP fetch)."""
 
     async def test_tier1_fetch_example_com(self):
-        from src.tools.crawler.scrapling_crawler import ScraplingCrawler
+        from src.tools.web.inhouse.scrapling_crawler import ScraplingCrawler
 
         crawler = ScraplingCrawler()
         output = await crawler.crawl_with_metadata(_TEST_URL)
@@ -39,7 +52,7 @@ class TestScraplingCrawlerLive:
         assert "example" in output.title.lower(), f"Expected 'example' in title, got: {output.title}"
 
     async def test_tier1_returns_markdown_string(self):
-        from src.tools.crawler.scrapling_crawler import ScraplingCrawler
+        from src.tools.web.inhouse.scrapling_crawler import ScraplingCrawler
 
         crawler = ScraplingCrawler()
         markdown = await crawler.crawl(_TEST_URL)
@@ -50,10 +63,16 @@ class TestScraplingCrawlerLive:
         assert "example" in markdown.lower()
 
     async def test_tier1_httpbin_html(self):
-        from src.tools.crawler.scrapling_crawler import ScraplingCrawler
+        from src.tools.web.inhouse.scrapling_crawler import ScraplingCrawler
 
         crawler = ScraplingCrawler()
-        output = await crawler.crawl_with_metadata(_TEST_URL_HTTPBIN)
+        try:
+            output = await crawler.crawl_with_metadata(_TEST_URL_HTTPBIN)
+        except Exception as e:
+            # httpbin.org commonly forces escalation into the browser tiers;
+            # skip if those browsers aren't installed instead of hard-failing.
+            _skip_if_no_browser(str(e))
+            raise
 
         assert output.markdown, "Should return non-empty markdown"
         assert "herman melville" in output.markdown.lower(), (
@@ -70,7 +89,7 @@ class TestSafeCrawlerWrapperLive:
     """Test SafeCrawlerWrapper with Scrapling backend against real URLs."""
 
     async def test_crawl_success(self):
-        from src.tools.crawler.safe_wrapper import SafeCrawlerWrapper
+        from src.tools.web.inhouse.safe_wrapper import SafeCrawlerWrapper
 
         wrapper = SafeCrawlerWrapper(backend="scrapling")
         result = await wrapper.crawl(_TEST_URL)
@@ -82,7 +101,7 @@ class TestSafeCrawlerWrapperLive:
         assert result.error is None
 
     async def test_crawl_returns_title(self):
-        from src.tools.crawler.safe_wrapper import SafeCrawlerWrapper
+        from src.tools.web.inhouse.safe_wrapper import SafeCrawlerWrapper
 
         wrapper = SafeCrawlerWrapper(backend="scrapling")
         result = await wrapper.crawl(_TEST_URL)
@@ -92,7 +111,7 @@ class TestSafeCrawlerWrapperLive:
         assert "example" in result.title.lower()
 
     async def test_crawl_invalid_url_returns_error(self):
-        from src.tools.crawler.safe_wrapper import SafeCrawlerWrapper
+        from src.tools.web.inhouse.safe_wrapper import SafeCrawlerWrapper
 
         wrapper = SafeCrawlerWrapper(backend="scrapling", default_timeout=10.0)
         result = await wrapper.crawl("https://this-domain-does-not-exist-12345.com")
@@ -108,21 +127,20 @@ class TestSafeCrawlerWrapperLive:
         )
 
     async def test_circuit_breaker_starts_healthy(self):
-        from src.tools.crawler.safe_wrapper import SafeCrawlerWrapper
+        from src.tools.web.breaker import CircuitState
+        from src.tools.web.inhouse.safe_wrapper import SafeCrawlerWrapper
 
         wrapper = SafeCrawlerWrapper(backend="scrapling")
         assert wrapper.is_healthy()
-
-        status = wrapper.get_status()
-        assert status["infra_circuit_state"] == "closed"
-        assert status["infra_failure_count"] == 0
-        assert status["host_breaker_count"] == 0
-        assert status["blocked_host_count"] == 0
+        assert wrapper._infra_breaker.state == CircuitState.CLOSED
+        assert wrapper._infra_breaker.failure_count == 0
+        assert not wrapper._host_breakers
+        assert not wrapper._blocked_hosts
 
     async def test_concurrent_crawls(self):
         """Test multiple concurrent crawls don't interfere."""
         import asyncio
-        from src.tools.crawler.safe_wrapper import SafeCrawlerWrapper
+        from src.tools.web.inhouse.safe_wrapper import SafeCrawlerWrapper
 
         wrapper = SafeCrawlerWrapper(backend="scrapling", http_concurrency=5)
         urls = [_TEST_URL, _TEST_URL_HTTPBIN]
@@ -130,48 +148,12 @@ class TestSafeCrawlerWrapperLive:
         results = await asyncio.gather(*[wrapper.crawl(url) for url in urls])
 
         for result in results:
+            if not result.success:
+                # httpbin.org may escalate to a browser tier; skip if absent.
+                _skip_if_no_browser(result.error)
             assert result.success, f"Crawl failed: {result.error}"
             assert result.markdown
 
 
-# ---------------------------------------------------------------------------
-# crawl_tool end-to-end (through SafeCrawlerWrapper)
-# ---------------------------------------------------------------------------
-
-
-class TestCrawlToolLive:
-    """Test crawl_tool end-to-end with Scrapling backend."""
-
-    async def test_crawl_tool_returns_content(self):
-        """Test the crawl tool function directly (bypassing StructuredTool wrapper)."""
-        from src.tools.crawler.safe_wrapper import SafeCrawlerWrapper
-        import src.tools.crawler.safe_wrapper as wrapper_mod
-
-        # Reset singleton to ensure Scrapling backend
-        old = wrapper_mod._safe_wrapper
-        wrapper_mod._safe_wrapper = SafeCrawlerWrapper(backend="scrapling")
-        try:
-            from src.tools.crawl import _crawl_impl
-            result = await _crawl_impl(_TEST_URL)
-
-            assert isinstance(result, dict), f"Expected dict, got {type(result)}: {result}"
-            assert result["url"] == _TEST_URL
-            assert result["crawled_content"]
-            assert "example" in result["crawled_content"].lower()
-        finally:
-            wrapper_mod._safe_wrapper = old
-
-    async def test_crawl_tool_bad_url(self):
-        from src.tools.crawler.safe_wrapper import SafeCrawlerWrapper
-        import src.tools.crawler.safe_wrapper as wrapper_mod
-
-        old = wrapper_mod._safe_wrapper
-        wrapper_mod._safe_wrapper = SafeCrawlerWrapper(backend="scrapling", default_timeout=10.0)
-        try:
-            from src.tools.crawl import _crawl_impl
-            result = await _crawl_impl("https://this-domain-does-not-exist-12345.com")
-
-            assert isinstance(result, str), "Should return error string for failed crawl"
-            assert "failed" in result.lower() or "error" in result.lower()
-        finally:
-            wrapper_mod._safe_wrapper = old
+# The legacy single-page crawl_tool was retired with the site-crawl tools
+# (its role is WebFetch's raw path); SafeCrawlerWrapper coverage above stands.

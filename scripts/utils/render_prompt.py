@@ -109,6 +109,9 @@ def build_parser() -> argparse.ArgumentParser:
     # Feature flags
     p.add_argument("--plan-mode", action="store_true", help="Enable plan mode section.")
     p.add_argument(
+        "--crawl", action="store_true", help="Enable the site-crawl tool section (WebCrawl/WebMap)."
+    )
+    p.add_argument(
         "--storage",
         action="store_true",
         help="Enable cloud storage (affects visualizations).",
@@ -226,6 +229,7 @@ def render(args: argparse.Namespace) -> str:
         subagent_summary=subagent_summary,
         user_profile=user_profile,
         plan_mode=args.plan_mode,
+        crawl_enabled=args.crawl,
         storage_enabled=args.storage,
         ask_user_enabled=not args.no_ask_user,
         current_time=current_time,

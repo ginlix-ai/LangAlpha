@@ -14,7 +14,7 @@ from uuid import uuid4
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
-from src.server.database.conversation import get_db_connection
+from src.server.database.pool import get_db_connection
 from src.server.utils.db import UpdateQueryBuilder
 
 logger = logging.getLogger(__name__)
@@ -197,7 +197,7 @@ async def upsert_portfolio_holding(
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
                 # FOR UPDATE locks the row to prevent concurrent merge races
-                await cur.execute(f"""
+                await cur.execute("""
                     SELECT
                         user_portfolio_id, user_id, symbol, instrument_type, exchange,
                         name, quantity, average_cost, currency, account_name,

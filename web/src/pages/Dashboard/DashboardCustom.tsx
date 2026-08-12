@@ -22,6 +22,7 @@ import { useDashboardPrefs } from './widgets/framework/useDashboardPrefs';
 import type { DashboardPrefs, WidgetInstance } from './widgets/types';
 import type { PresetId } from './widgets/presets';
 import './widgets/index';
+import { useScrollMemory } from '@/lib/scrollMemory';
 import './Dashboard.css';
 
 interface DashboardCustomProps {
@@ -38,6 +39,7 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const mainRef = useRef<HTMLElement>(null);
+  useScrollMemory(mainRef, 'page:dashboard-custom');
 
   const ctx = useDashboardContext();
   const {
@@ -138,8 +140,13 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
       {/* Floating edit-mode toolbar */}
       {editMode && (
         <div
-          className="fixed left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 rounded-full border shadow-lg px-2 py-1.5"
+          className="fixed left-1/2 sidebar-tracking z-40 flex items-center gap-1 rounded-full border shadow-lg px-2 py-1.5"
           style={{
+            // Centered on the content column rather than the viewport, whose
+            // midpoint sits half a sidebar left of the grid below. Shifted by
+            // transform, not by `left`: this box is width:auto, so moving `left`
+            // would also shrink the space it can grow into and crush the row.
+            transform: 'translateX(calc(-50% + var(--sidebar-width) / 2))',
             bottom: '1.5rem',
             backgroundColor: 'var(--color-bg-elevated)',
             borderColor: 'var(--color-border-elevated)',
@@ -150,8 +157,8 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
             onClick={() => setAddOpen(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full transition-colors"
             style={{
-              backgroundColor: 'var(--color-accent-primary)',
-              color: 'var(--color-text-on-accent)',
+              backgroundColor: 'var(--color-btn-primary-bg)',
+              color: 'var(--color-btn-primary-text)',
             }}
           >
             <Plus size={12} /> {t('dashboard.widgets.shell.addWidget')}
@@ -259,7 +266,7 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
       <NewsDetailModal
         newsId={modals.selectedNewsId}
         onClose={modals.closeNews}
-        fallbackUrl={modals.selectedNewsFallbackUrl}
+        fallback={modals.selectedNewsFallback}
       />
       <InsightDetailModal
         marketInsightId={modals.selectedMarketInsightId}
@@ -362,7 +369,7 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
               type="button"
               onClick={portfolio.handleUpdate}
               className="px-3 py-1.5 rounded text-sm font-medium hover:opacity-90"
-              style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
+              style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
             >
               {t('dashboard.widgets.shell.save')}
             </button>

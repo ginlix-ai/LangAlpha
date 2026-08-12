@@ -46,6 +46,10 @@ def _yfinance_available() -> bool:
         return False
 
 
+def _tickertick_available() -> bool:
+    return True  # free, keyless API
+
+
 # ---------------------------------------------------------------------------
 # Async source constructors
 # ---------------------------------------------------------------------------
@@ -91,6 +95,12 @@ async def _build_yfinance_news_source() -> NewsDataSource:
     return YFinanceNewsSource()
 
 
+async def _build_tickertick_news_source() -> NewsDataSource:
+    from .tickertick.news_source import TickerTickNewsSource
+
+    return TickerTickNewsSource()
+
+
 # ---------------------------------------------------------------------------
 # Source registries — map config name → (availability_check, async_constructor)
 # ---------------------------------------------------------------------------
@@ -105,6 +115,7 @@ _NEWS_SOURCE_REGISTRY: dict[str, tuple[Any, Any]] = {
     "ginlix-data": (_ginlix_data_available, _build_ginlix_data_news_source),
     "fmp": (_fmp_available, _build_fmp_news_source),
     "yfinance": (_yfinance_available, _build_yfinance_news_source),
+    "tickertick": (_tickertick_available, _build_tickertick_news_source),
 }
 
 # ---------------------------------------------------------------------------
@@ -136,14 +147,31 @@ async def get_market_data_provider() -> MarketDataSource:
 
         provider_configs = get_market_data_providers()
         entries: list[ProviderEntry] = []
+        sources_by_name: dict[str, Any] = {}
 
         for cfg in provider_configs:
             name = cfg["name"]
             markets = set(cfg.get("markets", ["all"]))
             reg = _SOURCE_REGISTRY.get(name)
             if reg and reg[0]():  # availability check
-                source = await reg[1]()
-                entries.append(ProviderEntry(name=name, source=source, markets=markets))
+                # A provider may appear multiple times (per-capability chain
+                # positions) — all its entries share one source instance.
+                if name not in sources_by_name:
+                    sources_by_name[name] = await reg[1]()
+                entries.append(ProviderEntry(
+                    name=name,
+                    source=sources_by_name[name],
+                    markets=markets,
+                    intraday_markets=(
+                        set(cfg["intraday_markets"]) if cfg.get("intraday_markets") is not None else None
+                    ),
+                    daily_markets=(
+                        set(cfg["daily_markets"]) if cfg.get("daily_markets") is not None else None
+                    ),
+                    snapshot_markets=(
+                        set(cfg["snapshot_markets"]) if cfg.get("snapshot_markets") is not None else None
+                    ),
+                ))
                 logger.debug(
                     "market_data.source.registered | name=%s markets=%s", name, markets
                 )
@@ -207,6 +235,38 @@ async def get_news_data_provider():
 
         _news_data_provider = NewsDataProvider(sources)
         return _news_data_provider
+
+
+# ---------------------------------------------------------------------------
+# Named single-source access (for providers targeted directly, e.g. TickerTick)
+# ---------------------------------------------------------------------------
+
+_news_sources: dict[str, NewsDataSource] = {}
+_news_sources_lock = asyncio.Lock()
+
+
+async def get_news_source(name: str) -> NewsDataSource:
+    """Return a single named :class:`NewsDataSource`, bypassing the fallback chain.
+
+    Used when a caller wants a specific provider (e.g. ``tickertick`` for the
+    dashboard's curated feed) rather than the configured fallback order.
+    """
+    cached = _news_sources.get(name)
+    if cached is not None:
+        return cached
+
+    async with _news_sources_lock:
+        cached = _news_sources.get(name)
+        if cached is not None:
+            return cached
+
+        reg = _NEWS_SOURCE_REGISTRY.get(name)
+        if not reg or not reg[0]():
+            raise ValueError(f"News source '{name}' is not available")
+
+        source = await reg[1]()
+        _news_sources[name] = source
+        return source
 
 
 # ---------------------------------------------------------------------------

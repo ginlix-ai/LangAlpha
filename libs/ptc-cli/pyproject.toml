@@ -1,10 +1,10 @@
 [project]
-name = "ptc-cli"
+name = "langalpha-cli"
 version = "0.1.0"
 description = "PTC Agent CLI - Interactive command-line interface for the PTC Agent"
 readme = "README.md"
-license = { text = "MIT" }
-requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.13"
 dependencies = [
     "httpx>=0.27.0",
     "rich>=13.0.0",
@@ -14,7 +14,7 @@ dependencies = [
     "darkdetect>=0.8.0",
     "pyyaml>=6.0.0",
     "structlog>=24.0.0",
-    "ptc-agent",  # For todo types and validation
+    "langalpha-core",  # For todo types and validation
 ]
 
 [project.scripts]

@@ -11,6 +11,7 @@ import type {
   NotificationVariant,
 } from '@/types/chat';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
+import type { ChartSelectionSnapshot } from '@/pages/MarketView/stores/chartSelectionStore';
 
 // Re-export types for consumers
 export type { ChatMessage, AssistantMessage, UserMessage, NotificationMessage, NotificationVariant };
@@ -29,6 +30,7 @@ export function createUserMessage(
   message: string,
   attachments: AttachmentMeta[] | null = null,
   widgetSnapshots: WidgetContextSnapshot[] | null = null,
+  chartSelections: ChartSelectionSnapshot[] | null = null,
 ): UserMessage {
   const msg: UserMessage = {
     id: `user-${Date.now()}`,
@@ -46,6 +48,9 @@ export function createUserMessage(
   }
   if (widgetSnapshots && widgetSnapshots.length > 0) {
     msg.widgetSnapshots = widgetSnapshots;
+  }
+  if (chartSelections && chartSelections.length > 0) {
+    msg.chartSelections = chartSelections;
   }
   return msg;
 }

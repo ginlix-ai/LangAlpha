@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest';
 import {
   categorizeTool,
   getCompletedRowTitle,
+  getCompletedSummary,
   getInProgressText,
   getToolIcon,
 } from '../toolDisplayConfig';
@@ -134,6 +135,49 @@ describe('getToolIcon — memo write/edit icon variant', () => {
     const editIcon = getToolIcon('Edit', { file_path: '.agents/user/memo/x.md' });
     const writeIcon = getToolIcon('Write', { file_path: '.agents/user/memo/x.md' });
     expect(editIcon).toBe(writeIcon);
+  });
+});
+
+describe('chart annotation — symbol + interval headline', () => {
+  it('summarizes a draw as "SYMBOL · <interval label>"', () => {
+    const summary = getCompletedSummary(
+      'draw_chart_annotation',
+      { args: { symbol: 'nvda', timeframe: '1hour', annotation: { type: 'trendline' } } },
+    );
+    expect(summary).toBe('NVDA · 1H');
+  });
+
+  it('defaults a missing timeframe to 1D (the server-side default)', () => {
+    const summary = getCompletedSummary('draw_chart_annotation', { args: { symbol: 'AAPL' } });
+    expect(summary).toBe('AAPL · 1D');
+  });
+
+  it('summarizes manage_chart_annotations the same way', () => {
+    const summary = getCompletedSummary(
+      'manage_chart_annotations',
+      { args: { symbol: 'TSLA', timeframe: '1day', action: 'clear' } },
+    );
+    expect(summary).toBe('TSLA · 1D');
+  });
+
+  it('falls back to the raw timeframe for an unmapped interval', () => {
+    const summary = getCompletedSummary('draw_chart_annotation', { args: { symbol: 'MSFT', timeframe: '1week' } });
+    expect(summary).toBe('MSFT · 1week');
+  });
+
+  it('returns null when the draw has no symbol (falls through to generic summary)', () => {
+    // No symbol → no chart instance to name; must not emit "undefined · 1D".
+    expect(getCompletedSummary('draw_chart_annotation', { args: {} })).toBeNull();
+    expect(getCompletedSummary('manage_chart_annotations', { args: { timeframe: '1hour' } })).toBeNull();
+  });
+
+  it('labels the row "Annotate Chart" / "Manage Annotations"', () => {
+    expect(getCompletedRowTitle('draw_chart_annotation', { args: { symbol: 'NVDA' } }, tIdentity)).toBe(
+      'toolArtifact.tool.annotateChart',
+    );
+    expect(getCompletedRowTitle('manage_chart_annotations', { args: { symbol: 'NVDA' } }, tIdentity)).toBe(
+      'toolArtifact.tool.manageAnnotations',
+    );
   });
 });
 

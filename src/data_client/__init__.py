@@ -26,5 +26,6 @@ from .registry import (  # noqa: F401 — re-export
     get_financial_data_provider,
     get_market_data_provider,
     get_news_data_provider,
+    get_news_source,
     get_price_provider,
 )

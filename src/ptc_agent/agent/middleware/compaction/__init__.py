@@ -15,10 +15,12 @@ from ptc_agent.agent.middleware.compaction.types import (
 )
 from ptc_agent.agent.middleware.compaction.utils import (
     DEFAULT_SUMMARY_PROMPT,
+    build_compaction_event,
     build_summary_message,
     compute_absolute_cutoff,
     count_tokens_tiktoken,
     get_effective_messages,
+    parse_summary_message,
     resolve_compaction_client,
     strip_base64_from_content,
     strip_base64_from_messages,
@@ -37,7 +39,9 @@ __all__ = [
     "CompactionState",
     "DEFAULT_SUMMARY_PROMPT",
     "aoffload_base64_content",
+    "build_compaction_event",
     "build_summary_message",
+    "parse_summary_message",
     "compact_messages",
     "compute_absolute_cutoff",
     "count_tokens_tiktoken",

@@ -9,10 +9,8 @@ from src.tools.market_data.utils import (
     format_percentage,
     get_rating_label,
 )
-from src.tools.market_data.implementations import (
-    _normalize_market_bars,
-    _safe_result,
-)
+from src.tools.market_data._shared import _normalize_market_bars, _safe_result
+from src.tools.market_data.company import _margin
 
 
 class TestFormatNumber:
@@ -144,3 +142,38 @@ class TestNormalizeMarketBars:
         # Should be sorted newest-first regardless of input order
         assert result[0]["close"] == 110
         assert result[1]["close"] == 100
+
+
+class TestMargin:
+    """Tests for _margin — income-statement margin fractions.
+
+    FMP's stable API dropped the v3 ``*Ratio`` fields, so the helper must
+    derive margins from the raw dollar fields when the ratio is absent.
+    """
+
+    def test_prefers_provider_ratio_when_present(self):
+        # v3-shaped row: the declared ratio wins even if it disagrees with
+        # the raw fields (provider may apply adjustments we don't know).
+        stmt = {"revenue": 200.0, "grossProfit": 100.0, "grossProfitRatio": 0.51}
+        assert _margin(stmt, "grossProfitRatio", "grossProfit") == 0.51
+
+    def test_computes_from_raw_fields_when_ratio_absent(self):
+        # stable-shaped row: no *Ratio fields at all.
+        stmt = {"revenue": 200.0, "grossProfit": 150.0, "operatingIncome": 80.0, "netIncome": 50.0}
+        assert _margin(stmt, "grossProfitRatio", "grossProfit") == 0.75
+        assert _margin(stmt, "operatingIncomeRatio", "operatingIncome") == 0.40
+        assert _margin(stmt, "netIncomeRatio", "netIncome") == 0.25
+
+    def test_net_loss_yields_negative_margin(self):
+        stmt = {"revenue": 200.0, "netIncome": -50.0}
+        assert _margin(stmt, "netIncomeRatio", "netIncome") == -0.25
+
+    def test_zero_or_missing_revenue_returns_none(self):
+        assert _margin({"revenue": 0, "netIncome": 50.0}, "netIncomeRatio", "netIncome") is None
+        assert _margin({"netIncome": 50.0}, "netIncomeRatio", "netIncome") is None
+
+    def test_missing_numerator_returns_none(self):
+        assert _margin({"revenue": 200.0}, "grossProfitRatio", "grossProfit") is None
+
+    def test_empty_row_returns_none(self):
+        assert _margin({}, "grossProfitRatio", "grossProfit") is None

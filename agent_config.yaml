@@ -7,15 +7,13 @@
 
 llm:
   # Model name from src/llms/manifest/models.json
-  name: "qwen3.5-plus"
-  flash: "qwen3.6-flash"
-  compaction: "qwen3.6-flash" # defaults to flash model
-  fetch: "qwen3.6-flash"         # defaults to flash model
+  name: "claude-opus-4-8"
+  flash: "claude-sonnet-5"
+  compaction: "" # blank → same model as flash
+  fetch: ""         # blank → same model as flash
   fallback:
-    - "kimi-k2.5"
-    - "minimax-m3"
-    - "minimax-m2.7"
-    - "glm-5-turbo"
+    - "deepseek-v4-pro"
+    - "glm-5.2"
 
 sandbox:
   # Provider selection: "daytona" (cloud) or "docker" (local).
@@ -38,6 +36,21 @@ sandbox:
     snapshot_enabled: true # Recommended: Enable snapshot-based sandbox creation
     snapshot_name: "langalpha" # Base name for snapshot (hash will be appended)
     snapshot_auto_create: true # Automatically create snapshot if it doesn't exist
+
+  # Platform-secret catalog — Daytona provider only (ignored under docker/memory).
+  # Each entry delivers a backend-owned API key into sandboxes as a managed
+  # Secret: the sandbox env var holds an opaque placeholder, and Daytona
+  # substitutes the real value into outbound HTTPS request *headers* for the
+  # allowlisted hosts only. Declared per deployment (not code); an entry is the
+  # opt-in and works in OSS mode too. Uncomment the FMP example to enable —
+  # boot then fail-closes unless DAYTONA_SECRET_NAMESPACE and the source env
+  # var are set.
+  # platform_secrets:
+  #   - source_env_var: "FMP_API_KEY"        # read from the host .env
+  #     sandbox_env_var: "FMP_API_KEY"       # placeholder-bearing var in the sandbox
+  #     name_suffix: "platform-fmp-api-key"  # Secret name = <DAYTONA_SECRET_NAMESPACE>-<suffix>
+  #     description: "Platform FMP API key"
+  #     hosts: ["financialmodelingprep.com"] # egress substitution allowlist
 
   # Docker local sandbox configuration
   # Ignored when provider is "daytona". Override with DOCKER_SANDBOX_* env vars.
@@ -100,7 +113,7 @@ mcp:
       enabled: true
       description: "Options contracts chain, historical OHLCV, and real-time snapshots"
       instruction: "Use for in-depth options analysis: list contracts/chain (get_options_chain), historical OHLCV bars (get_options_prices), and real-time bid/ask snapshots (get_options_snapshot). Returns raw JSON for programmatic analysis, charting, and strategy modeling. Options tickers use format O:AAPL251219C00150000."
-      tool_exposure_mode: "detailed"
+      tool_exposure_mode: "summary"
       transport: "stdio"
       command: "uv"
       args: ["run", "python", "mcp_servers/options_mcp_server.py"]
@@ -243,7 +256,6 @@ logging:
   file: "logs/ptc.log"
 
 agent:
-  enable_view_image: true
   background_auto_wait: false
 
 # Subagent configuration
@@ -288,7 +300,7 @@ compaction:
 # =============================================================================
 
 # Search API Configuration
-# Options: tavily, bocha, serper
+# Options: tavily, bocha, serper, exa, parallel
 search_api: tavily
 
 # Crawler Configuration
@@ -327,5 +339,5 @@ web_fetch:
 embedding:
   model: embedding-small # Options: embedding-small, embedding-large (see src/llms/llm_config.json)
   batch_size: 100 # Number of texts to embed in a single batch
-  enable_auto_embedding: true # Auto-generate embeddings for new infoflow results
+  enable_auto_embedding: true
   hybrid_search_alpha: 0.5 # Balance between semantic (0.0) and keyword search (1.0)

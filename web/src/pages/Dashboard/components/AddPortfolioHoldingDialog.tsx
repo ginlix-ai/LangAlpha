@@ -255,7 +255,7 @@ function AddPortfolioHoldingDialog({
                     </span>
                     {exchange && (
                       <span
-                        className="text-[10px] font-medium px-1.5 py-0.5 rounded"
+                        className="text-[0.625rem] font-medium px-1.5 py-0.5 rounded"
                         style={{ backgroundColor: 'var(--color-bg-surface, var(--color-bg-hover))', color: 'var(--color-text-secondary)' }}
                       >
                         {exchange}
@@ -334,7 +334,7 @@ function AddPortfolioHoldingDialog({
                   type="button"
                   onClick={handleAdd}
                   className="w-full px-4 py-3 rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
-                  style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
+                  style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
                 >
                   {t('dashboard.addPortfolioDialog.addButton')}
                 </button>

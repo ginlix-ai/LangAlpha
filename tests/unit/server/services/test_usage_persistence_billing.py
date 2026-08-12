@@ -138,7 +138,7 @@ class TestPersistUsageEffectiveByok:
         with patch(
             f"{DB_MODULE}.create_usage_record", mock_create
         ), patch(
-            f"{DB_MODULE}.get_db_connection", mock_get_conn
+            "src.server.database.pool.get_db_connection", mock_get_conn
         ):
             await svc.persist_usage(response_id="resp-1", is_byok=is_byok)
 
@@ -222,7 +222,7 @@ class TestTrackLlmUsageErrorPath:
         with patch(
             f"{DB_MODULE}.create_usage_record", mock_create
         ), patch(
-            f"{DB_MODULE}.get_db_connection", mock_get_conn
+            "src.server.database.pool.get_db_connection", mock_get_conn
         ):
             await svc.persist_usage(response_id="resp-1", is_byok=False)
 

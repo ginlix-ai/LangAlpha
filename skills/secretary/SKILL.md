@@ -34,8 +34,10 @@ Return: `{ success, workspace_id, thread_id, status: "dispatched", report_back }
 - Pass `thread_id` → continues an existing conversation (overrides `workspace_id`)
 - `report_back=True` (default) → when PTC completes, you'll automatically receive the results and should summarize them for the user
 - `report_back=False` → fire-and-forget; the user will check results in the workspace themselves
+- The returned `report_back` field is authoritative, not an echo of your request: it can come back `false` even when you asked for `true` (degraded backend). If it does, results will NOT arrive automatically — poll with `agent_output`.
+- Concurrency caps (report-back dispatches only): at most 5 pending analyses per conversation and 10 per user. Over the cap the dispatch fails with an error starting "too many concurrent analyses" — wait for one to finish, or dispatch with `report_back=False`.
 
-Use the returned `thread_id` with `agent_output` to check progress later (only needed when `report_back=False`).
+Use the returned `thread_id` with `agent_output` to check progress later (only needed when the returned `report_back` is `false`).
 
 ### agent_output
 
@@ -44,6 +46,8 @@ Return: `{ text, status, thread_id, workspace_id }`
 - `status: "running"` — analysis still in progress, text is partial
 - `status: "completed"` — full output available
 - `status: "error"` — something went wrong
+
+**`turns` window** (also on `manage_threads(action="get_output")`): by default you get only the **latest turn's** output. For a thread continued several times, pass `turns=N` for the last N turns or `turns=0` for recent history (up to the 50 most recent turns) — turns come back oldest→newest, separated by `---`. A still-streaming turn always returns just that live turn, regardless of `turns`.
 
 ---
 
@@ -67,6 +71,7 @@ When the user asks for a status overview, combine workspace and thread informati
 When the user wants to follow up on a prior dispatch:
 1. Call `ptc_agent(question="...", thread_id="...")` with the original thread_id
 2. The PTC agent continues in the same thread with full prior context
+3. To review the whole conversation (not just the newest answer), read it back with `agent_output(thread_id="...", turns=0)`
 
 ### Workspace cleanup
 

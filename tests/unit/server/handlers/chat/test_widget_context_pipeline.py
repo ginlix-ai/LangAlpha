@@ -6,7 +6,7 @@ HTTP round-trip would require live DB/Redis/API keys; the parsers themselves
 are pure and easy to compose into a deterministic test.
 """
 
-from src.server.handlers.chat._common import _append_to_last_user_message
+from src.server.handlers.chat.request_prep import _append_to_last_user_message
 from src.server.utils.directive_context import (
     build_directive_reminder,
     parse_directive_contexts,

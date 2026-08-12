@@ -112,8 +112,12 @@ test.describe('SharedChat page', () => {
 
     await page.goto(`/s/${TOKEN}`);
 
-    // Spinner should be visible while waiting for metadata
-    const spinner = page.locator('.animate-spin');
+    // The glyph loader should be visible while waiting for metadata
+    // (Loader renders role="status" with aria-label "Loading"). `exact` matters:
+    // the route is lazy now, so its Suspense fallback (PageLoading, named
+    // "Loading...") would satisfy a substring match and pass this test even if
+    // the metadata spinner never rendered.
+    const spinner = page.getByRole('status', { name: 'Loading', exact: true });
     await expect(spinner).toBeVisible({ timeout: 3000 });
   });
 
@@ -188,7 +192,7 @@ test.describe('SharedChat page', () => {
     await configureSSE({
       method: 'GET',
       path: `/api/v1/public/shared/${TOKEN}/files`,
-      json: { path: '.', files: [{ name: 'analysis.py', type: 'file' }], source: 'workspace' },
+      json: { path: '.', files: ['analysis.py'], source: 'workspace' },
       status: 200,
     });
 

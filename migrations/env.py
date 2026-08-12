@@ -29,7 +29,9 @@ if not current_url or current_url == _PLACEHOLDER:
     db_name = os.getenv("DB_NAME", "postgres")
     db_user = os.getenv("DB_USER", "postgres")
     db_password = os.getenv("DB_PASSWORD", "postgres")
-    sslmode = "require" if "supabase.com" in db_host else "disable"
+    # Read directly rather than importing src.config: migrations must run without
+    # the application stack (and its agent_config.yaml) being importable.
+    sslmode = os.getenv("DB_SSLMODE", "prefer")
 
     database_url = (
         f"postgresql+psycopg://{quote_plus(db_user)}:{quote_plus(db_password)}"

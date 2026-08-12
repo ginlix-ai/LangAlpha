@@ -7,6 +7,7 @@ and excluded-tool bypass logic.
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from deepagents.backends.protocol import WriteResult
 from langchain_core.messages import ToolMessage
 
 from ptc_agent.agent.middleware.large_result_eviction import (
@@ -24,12 +25,18 @@ from ptc_agent.agent.middleware.large_result_eviction import (
 
 
 def _make_backend(write_error: str | None = None) -> MagicMock:
-    """Create a mock backend implementing the awrite interface."""
+    """Create a mock backend whose awrite returns the REAL upstream WriteResult.
+
+    Deliberately not a MagicMock result: one serves any attribute, so a stub
+    kept answering a field deepagents had already deleted and every test here
+    passed against a shape production could not produce.
+    """
     backend = MagicMock()
-    awrite_result = MagicMock()
-    awrite_result.error = write_error
-    awrite_result.path = "/evicted/file.md" if not write_error else None
-    awrite_result.files_update = {"path": "data"} if not write_error else None
+    awrite_result = (
+        WriteResult(error=write_error)
+        if write_error
+        else WriteResult(path="/evicted/file.md")
+    )
     backend.awrite = AsyncMock(return_value=awrite_result)
     return backend
 
@@ -109,9 +116,8 @@ class TestEvictionDecision:
         backend = _make_backend()
         mw = LargeResultEvictionMiddleware(backend=backend, tool_token_limit_before_evict=100)
         msg = ToolMessage(content="small output", tool_call_id="call_1", name="Tool")
-        processed, files_update = await mw._aprocess_large_message(msg)
+        processed = await mw._aprocess_large_message(msg)
         assert processed.content == "small output"
-        assert files_update is None
         backend.awrite.assert_not_called()
 
     @pytest.mark.asyncio
@@ -122,8 +128,7 @@ class TestEvictionDecision:
         # Create content larger than 40 chars
         large_content = "x" * (NUM_CHARS_PER_TOKEN * limit + 100)
         msg = ToolMessage(content=large_content, tool_call_id="call_1", name="Tool")
-        processed, files_update = await mw._aprocess_large_message(msg)
-        assert files_update is not None
+        processed = await mw._aprocess_large_message(msg)
         assert "saved in the filesystem" in processed.content
         backend.awrite.assert_called_once()
         # Eviction paths overwrite prior writes by design.
@@ -134,8 +139,9 @@ class TestEvictionDecision:
         backend = _make_backend()
         mw = LargeResultEvictionMiddleware(backend=backend, tool_token_limit_before_evict=0)
         msg = ToolMessage(content="anything", tool_call_id="call_1", name="Tool")
-        processed, files_update = await mw._aprocess_large_message(msg)
-        assert files_update is None
+        processed = await mw._aprocess_large_message(msg)
+        assert processed.content == "anything"
+        backend.awrite.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_write_failure_returns_original(self):
@@ -144,8 +150,7 @@ class TestEvictionDecision:
         mw = LargeResultEvictionMiddleware(backend=backend, tool_token_limit_before_evict=limit)
         large_content = "x" * (NUM_CHARS_PER_TOKEN * limit + 100)
         msg = ToolMessage(content=large_content, tool_call_id="call_1", name="Tool")
-        processed, files_update = await mw._aprocess_large_message(msg)
-        assert files_update is None
+        processed = await mw._aprocess_large_message(msg)
         # Original content is returned since write failed
         assert processed.content == large_content
 
@@ -173,8 +178,25 @@ class TestAwrapToolCall:
         msg = ToolMessage(content=large_content, tool_call_id="call_1", name="CustomTool")
         handler = AsyncMock(return_value=msg)
         result = await mw.awrap_tool_call(request, handler)
-        from langgraph.types import Command
-        assert isinstance(result, Command)
+        assert isinstance(result, ToolMessage)
+        assert "saved in the filesystem" in result.content
+
+    @pytest.mark.asyncio
+    async def test_glob_result_is_evicted_when_large(self):
+        """Glob is no longer on the exclusion list, so a pathological result must be
+        evicted to the filesystem instead of reaching the model (Glob self-caps for
+        the common case; eviction is the backstop)."""
+        assert "Glob" not in TOOLS_EXCLUDED_FROM_EVICTION
+        backend = _make_backend()
+        limit = 10
+        mw = LargeResultEvictionMiddleware(backend=backend, tool_token_limit_before_evict=limit)
+        request = _make_tool_request("Glob")
+        large_content = "x" * (NUM_CHARS_PER_TOKEN * limit + 100)
+        msg = ToolMessage(content=large_content, tool_call_id="call_1", name="Glob")
+        handler = AsyncMock(return_value=msg)
+        result = await mw.awrap_tool_call(request, handler)
+        assert isinstance(result, ToolMessage)
+        assert "saved in the filesystem" in result.content
 
 
 class TestAinterceptCommandBranch:

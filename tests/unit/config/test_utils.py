@@ -83,6 +83,68 @@ class TestCreateDaytonaConfig:
         assert cfg.python_version == "3.11"
         assert cfg.auto_stop_interval == 1800
 
+    def test_forwards_tier_fields_when_present(self):
+        """default_tier / resource_tiers from yaml reach the config object."""
+        data = {
+            "base_url": "https://test.daytona.io/api",
+            "auto_stop_interval": 1800,
+            "auto_archive_interval": 43200,
+            "auto_delete_interval": 302400,
+            "python_version": "3.11",
+            "default_tier": "performance",
+            "resource_tiers": {
+                "standard": {"cpu": 1, "memory": 1, "disk": 3},
+                "performance": {"cpu": 2, "memory": 4, "disk": 5},
+            },
+        }
+        with patch.dict(os.environ, {"DAYTONA_API_KEY": "test-key"}):
+            cfg = create_daytona_config(data)
+        assert cfg.default_tier == "performance"
+        assert set(cfg.resource_tiers) == {"standard", "performance"}
+        assert cfg.resource_tiers["performance"].memory == 4
+
+    def test_over_ceiling_tier_is_clamped_and_logged(self, caplog):
+        """A tier above the org ceiling is clamped to it, with a warning."""
+        import logging
+
+        from ptc_agent.config.core import RESOURCE_TIER_CEILING
+
+        data = {
+            "base_url": "https://test.daytona.io/api",
+            "auto_stop_interval": 1800,
+            "auto_archive_interval": 43200,
+            "auto_delete_interval": 302400,
+            "python_version": "3.11",
+            "resource_tiers": {
+                "standard": {"cpu": 1, "memory": 1, "disk": 3},
+                "huge": {"cpu": 32, "memory": 64, "disk": 100},
+            },
+        }
+        with patch.dict(os.environ, {"DAYTONA_API_KEY": "test-key"}):
+            with caplog.at_level(logging.WARNING):
+                cfg = create_daytona_config(data)
+        huge = cfg.resource_tiers["huge"]
+        assert (huge.cpu, huge.memory, huge.disk) == (
+            RESOURCE_TIER_CEILING["cpu"],
+            RESOURCE_TIER_CEILING["memory"],
+            RESOURCE_TIER_CEILING["disk"],
+        )
+        assert any("exceeds the org ceiling" in r.message for r in caplog.records)
+
+    def test_tier_fields_default_when_absent(self):
+        """No tier keys in yaml → the DaytonaConfig defaults apply untouched."""
+        data = {
+            "base_url": "https://test.daytona.io/api",
+            "auto_stop_interval": 1800,
+            "auto_archive_interval": 43200,
+            "auto_delete_interval": 302400,
+            "python_version": "3.11",
+        }
+        with patch.dict(os.environ, {"DAYTONA_API_KEY": "test-key"}):
+            cfg = create_daytona_config(data)
+        assert cfg.default_tier == "standard"
+        assert set(cfg.resource_tiers) == {"standard", "performance", "max"}
+
     def test_missing_env_key_defaults_empty(self):
         """If DAYTONA_API_KEY is not set, api_key defaults to empty string."""
         data = {

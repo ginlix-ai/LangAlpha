@@ -18,7 +18,7 @@ from src.server.services.price_monitor import (
     _seconds_until_next_market_open,
     _to_ws_symbol,
 )
-from src.server.services.shared_ws_manager import SharedWSConnectionManager
+from src.server.services.market_data_feed import MarketDataFeed
 
 ET = ZoneInfo("America/New_York")
 
@@ -121,7 +121,7 @@ class TestOnMessage:
 
     def setup_method(self):
         PriceMonitorService._instance = None
-        SharedWSConnectionManager._instances.clear()
+        MarketDataFeed._instances.clear()
 
     @pytest.mark.asyncio
     async def test_evaluates_matching_symbol(self):
@@ -320,7 +320,7 @@ class TestLoadAutomations:
 
     def setup_method(self):
         PriceMonitorService._instance = None
-        SharedWSConnectionManager._instances.clear()
+        MarketDataFeed._instances.clear()
 
     @pytest.mark.asyncio
     async def test_loads_and_subscribes_stocks(self):
@@ -485,7 +485,7 @@ class TestPollSnapshots:
 
     def setup_method(self):
         PriceMonitorService._instance = None
-        SharedWSConnectionManager._instances.clear()
+        MarketDataFeed._instances.clear()
 
     @pytest.mark.asyncio
     async def test_stock_snapshot_evaluates(self):
@@ -561,12 +561,12 @@ class TestSnapshotAuthAttribution:
     """Regression: background REST snapshot calls must carry the service-account
     X-User-Id. ginlix-data rejects service-token calls without a non-empty user_id
     (401), which silently breaks reference prices and the poll fallback. See
-    shared_ws_manager.py for the matching WS-path principal.
+    market_data_feed.py for the matching WS-path principal.
     """
 
     def setup_method(self):
         PriceMonitorService._instance = None
-        SharedWSConnectionManager._instances.clear()
+        MarketDataFeed._instances.clear()
 
     def test_service_user_id_matches_ws_path(self):
         """The REST principal must equal the WS principal so both attribute alike."""

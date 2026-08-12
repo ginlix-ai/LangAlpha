@@ -20,68 +20,51 @@ vi.mock('react-i18next', () => ({
 
 vi.mock('@/lib/supabase', () => ({ supabase: null }));
 
+// Mount with the thread already known (the production shape) so the history
+// loader records its load key up front. Otherwise the sync mock stream commits
+// thread_id AFTER the send resolves, the loader fires post-finalize, and —
+// since finished turns are marked isHistory — it would clear the live bubbles
+// against this fixture's empty replay.
 vi.mock('../utils/threadStorage', () => ({
-  getStoredThreadId: vi.fn().mockReturnValue(null),
+  getStoredThreadId: vi.fn().mockReturnValue('thread-1'),
   setStoredThreadId: vi.fn(),
   removeStoredThreadId: vi.fn(),
 }));
 
-vi.mock('../utils/streamEventHandlers', () => ({
-  handleReasoningSignal: vi.fn(),
-  handleReasoningContent: vi.fn(),
-  handleTextContent: vi.fn(),
-  handleToolCalls: vi.fn(),
-  handleToolCallResult: vi.fn(),
-  handleToolCallChunks: vi.fn(),
-  handleTodoUpdate: vi.fn(),
-  isSubagentEvent: vi.fn().mockReturnValue(false),
-  handleSubagentMessageChunk: vi.fn(),
-  handleSubagentToolCallChunks: vi.fn(),
-  handleSubagentToolCalls: vi.fn(),
-  handleSubagentToolCallResult: vi.fn(),
-  handleTaskSteeringAccepted: vi.fn(),
-  getOrCreateTaskRefs: vi.fn().mockReturnValue({
-    contentOrderCounterRef: { current: 0 },
-    currentReasoningIdRef: { current: null },
-    currentToolCallIdRef: { current: null },
-  }),
-}));
+vi.mock('../../session/stream/mainEventHandlers', async (importOriginal) =>
+  (await import('./chatHookHarness')).mainHandlersMockModule(await importOriginal()));
 
-vi.mock('../utils/historyEventHandlers', () => ({
-  handleHistoryUserMessage: vi.fn(),
-  handleHistoryReasoningSignal: vi.fn(),
-  handleHistoryReasoningContent: vi.fn(),
-  handleHistoryTextContent: vi.fn(),
-  handleHistoryToolCalls: vi.fn(),
-  handleHistoryToolCallResult: vi.fn(),
-  handleHistoryTodoUpdate: vi.fn(),
-  handleHistorySteeringDelivered: vi.fn(),
-  handleHistoryInterrupt: vi.fn(),
-  handleHistoryArtifact: vi.fn(),
-}));
+vi.mock('../../session/subagents/liveEventHandlers', async (importOriginal) =>
+  (await import('./chatHookHarness')).subagentHandlersMockModule(await importOriginal()));
 
-vi.mock('../../utils/api', () => ({
-  sendChatMessageStream: vi.fn(),
-  sendHitlResponse: vi.fn(),
-  replayThreadHistory: vi.fn().mockResolvedValue(undefined),
-  getWorkflowStatus: vi.fn().mockResolvedValue({ can_reconnect: false, status: 'completed' }),
-  reconnectToWorkflowStream: vi.fn(),
-  streamSubagentTaskEvents: vi.fn(),
-  fetchThreadTurns: vi.fn(),
-  submitFeedback: vi.fn(),
-  removeFeedback: vi.fn(),
-  getThreadFeedback: vi.fn().mockResolvedValue([]),
-}));
+vi.mock('../../session/streamRefs', async (importOriginal) =>
+  (await import('./chatHookHarness')).streamRefsMockModule(await importOriginal()));
+
+vi.mock('../../session/history/historyHandlers', async (importOriginal) =>
+  (await import('./chatHookHarness')).historyHandlersMockModule(await importOriginal()));
+
+vi.mock('../../utils/api', async () => (await import('./chatHookHarness')).apiMockModule());
 
 import {
   sendChatMessageStream,
   fetchThreadTurns,
+  replayThreadHistory,
 } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';
-import type { AssistantMessage } from '@/types/chat';
+import type { AssistantMessage, UserMessage } from '@/types/chat';
 
 const mockSendStream = sendChatMessageStream as Mock;
 const mockFetchTurns = fetchThreadTurns as Mock;
+const mockReplay = replayThreadHistory as Mock;
+
+/**
+ * Settle the mount history load before sending — its isHistory-clear must not
+ * land mid-send and remove the finished turn's bubbles.
+ */
+async function settleMountLoad() {
+  await waitFor(() => expect(mockReplay).toHaveBeenCalled());
+  await act(async () => {});
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -139,6 +122,7 @@ describe('useChatMessages – turn index with steering messages', () => {
   it('steering_delivered creates assistant messages with isSteering flag', async () => {
     mockTwoTurnsWithSteering(3);
     const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
+    await settleMountLoad();
 
     await act(async () => {
       await result.current.handleSendMessage('hello', false);
@@ -209,6 +193,7 @@ describe('useChatMessages – turn index with steering messages', () => {
   it('handleRegenerate uses correct turnIndex with steering messages present', async () => {
     mockTwoTurnsWithSteering(2);
     const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
+    await settleMountLoad();
 
     // Send two messages: first with steering, second without
     await act(async () => {
@@ -239,6 +224,62 @@ describe('useChatMessages – turn index with steering messages', () => {
 
     // Without the fix, turnIndex=3 would exceed backend's 2 turns → "checkpoint data unavailable"
     // With the fix, turnIndex=1 correctly maps to turns[1]
+    expect(result.current.messageError).toBeNull();
+  });
+
+  it('refuses to edit a steering bubble; regenerating the continuation re-runs the whole turn', async () => {
+    // A steering message has no turn identity (no /turns boundary). Editing it
+    // must refuse — the fork would land on the NEXT turn and leave the original
+    // steering text in the agent's context. Regenerating the post-steering
+    // continuation is well-defined: the whole owning turn re-runs from its
+    // input checkpoint (mid-run steering can't be replayed), and truncation
+    // normalizes back to the turn's first bubble so the stale half and the
+    // steering bubble leave the transcript with it.
+    mockTwoTurnsWithSteering(1);
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
+    await settleMountLoad();
+
+    await act(async () => {
+      await result.current.handleSendMessage('hello', false);
+    });
+
+    let steeringUserId: string;
+    let steeringAssistantId: string;
+    await waitFor(() => {
+      const su = result.current.messages.find(
+        (m): m is UserMessage => m.role === 'user' && !!(m as UserMessage).steeringDelivered,
+      );
+      const sa = result.current.messages.find(
+        (m): m is AssistantMessage => m.role === 'assistant' && !!(m as AssistantMessage).isSteering,
+      );
+      expect(su).toBeDefined();
+      expect(sa).toBeDefined();
+      steeringUserId = su!.id;
+      steeringAssistantId = sa!.id;
+    });
+
+    const before = result.current.messages;
+    const sendCalls = mockSendStream.mock.calls.length;
+
+    await act(async () => {
+      await result.current.handleEditMessage(steeringUserId!, 'changed my mind');
+    });
+    expect(result.current.messageError).toMatch(/steering/i);
+    expect(result.current.messages).toBe(before); // no optimistic truncation
+    expect(mockSendStream.mock.calls.length).toBe(sendCalls); // no fork sent
+
+    await act(async () => {
+      await result.current.handleRegenerate(steeringAssistantId!);
+    });
+    await waitFor(() => {
+      expect(mockSendStream.mock.calls.length).toBe(sendCalls + 1);
+    });
+    const after = result.current.messages;
+    // Steering user bubble gone with the re-run, single user message remains.
+    expect(after.some((m) => m.role === 'user' && !!(m as UserMessage).steeringDelivered)).toBe(false);
+    expect(after.filter((m) => m.role === 'user').length).toBe(1);
+    // One fresh assistant bubble for the re-run — pre-steering half replaced too.
+    expect(after.filter((m) => m.role === 'assistant').length).toBe(1);
     expect(result.current.messageError).toBeNull();
   });
 });

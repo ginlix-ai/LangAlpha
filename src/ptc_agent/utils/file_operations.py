@@ -11,7 +11,7 @@ module to support active code while that module is being cleaned up.
 """
 
 from datetime import UTC, datetime
-from typing import Any, List
+from typing import List
 
 from typing_extensions import TypedDict
 
@@ -31,56 +31,6 @@ class FileData(TypedDict):
 
     modified_at: str
     """ISO 8601 timestamp of last modification."""
-
-
-def _file_operations_log_reducer(
-    left: list[dict[str, Any]] | None,
-    right: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Reducer for file_operations_log: appends new operations with auto-assigned operation_index.
-
-    This reducer:
-    1. Accumulates file operations throughout workflow execution
-    2. Auto-assigns sequential operation_index per file (0, 1, 2, ...)
-    3. Each file_path has its own independent operation sequence
-
-    Args:
-        left: Existing operations list (or None if first update)
-        right: New operations to append
-
-    Returns:
-        Concatenated list of all operations with operation_index assigned
-
-    Example:
-        # First update: left=None, right=[{file_path: "/a.py"}, {file_path: "/b.py"}]
-        #   → [{file_path: "/a.py", operation_index: 0}, {file_path: "/b.py", operation_index: 0}]
-        # Second update: left=[...], right=[{file_path: "/a.py"}]
-        #   → [..., {file_path: "/a.py", operation_index: 1}]
-    """
-    # Track max operation_index per file_path
-    file_indices: dict[str, int] = {}
-
-    if left is not None:
-        # Scan existing operations to find max index for each file
-        for op in left:
-            file_path = op.get("file_path")
-            if file_path:
-                current_max = file_indices.get(file_path, -1)
-                op_index = op.get("operation_index", -1)
-                file_indices[file_path] = max(current_max, op_index)
-
-    # Assign sequential indices to new operations
-    for op in right:
-        file_path = op.get("file_path")
-        if file_path and "operation_index" not in op:
-            # Get next index for this file (start from 0 if file not seen before)
-            next_index = file_indices.get(file_path, -1) + 1
-            op["operation_index"] = next_index
-            file_indices[file_path] = next_index
-
-    if left is None:
-        return right
-    return left + right  # Append, don't replace
 
 
 def _create_file_data(

@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Newspaper, Clock, Search, X } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
 import { NewsFeedConfigSchema } from '../framework/configSchemas';
@@ -12,21 +13,23 @@ import {
   type NewsArticleDetail,
 } from '../framework/snapshotSerializers';
 import { buildNewsArticleSnapshot } from '../../utils/newsArticleFetch';
+import type { NewsSentimentItem } from '../../utils/newsItem';
 import { RowAttachButton } from '../../components/RowAttachButton';
 import type { WidgetRenderProps } from '../types';
 
-type NewsFeedSource = 'market' | 'portfolio' | 'watchlist';
+type NewsFeedSource = 'top' | 'market' | 'portfolio' | 'watchlist';
 type NewsFeedConfig = { source?: NewsFeedSource; limit?: number };
 
 type DateRangeKey = 'all' | '1h' | '6h' | '24h' | '7d';
 
 const SOURCE_KEY: Record<NewsFeedSource, string> = {
+  top: 'dashboard.widgets.newsFeed.tab_top',
   market: 'dashboard.widgets.newsFeed.tab_market',
   portfolio: 'dashboard.widgets.newsFeed.tab_portfolio',
   watchlist: 'dashboard.widgets.newsFeed.tab_watchlist',
 };
 
-const SOURCES: NewsFeedSource[] = ['market', 'portfolio', 'watchlist'];
+const SOURCES: NewsFeedSource[] = ['top', 'market', 'portfolio', 'watchlist'];
 
 const DATE_RANGES: { key: DateRangeKey; labelKey: string }[] = [
   { key: 'all', labelKey: 'dashboard.widgets.newsFeed.range_all' },
@@ -41,26 +44,16 @@ interface NewsItem {
   title: string;
   source?: string;
   time?: string;
+  publishedAt?: string | null;
   image?: string | null;
   favicon?: string | null;
   tickers?: string[];
   isHot?: boolean;
   articleUrl?: string | null;
-}
-
-function parseRelativeTime(timeStr: string | undefined | null): number | null {
-  if (!timeStr) return null;
-  const now = Date.now();
-  const m = timeStr.match(/^(\d+)\s*(min|hr|hrs|hour|hours|day|days)/i);
-  // Unparseable strings return null (not now). Otherwise items with odd time
-  // formats silently bucket into every recent-window filter.
-  if (!m) return null;
-  const val = parseInt(m[1], 10);
-  const unit = m[2].toLowerCase();
-  if (unit === 'min') return now - val * 60 * 1000;
-  if (unit.startsWith('hr') || unit.startsWith('hour')) return now - val * 3600 * 1000;
-  if (unit.startsWith('day')) return now - val * 86400 * 1000;
-  return null;
+  author?: string | null;
+  description?: string | null;
+  keywords?: string[];
+  sentiments?: NewsSentimentItem[] | null;
 }
 
 function getDateRangeCutoff(key: DateRangeKey): number {
@@ -132,7 +125,7 @@ function NewsRow({
           ) : null}
           {item.source ? (
             <span
-              className="text-[9.5px] font-semibold uppercase tracking-wide truncate"
+              className="text-[0.5938rem] font-semibold uppercase tracking-wide truncate"
               style={{ color: 'var(--color-accent-light)' }}
             >
               {item.source}
@@ -140,7 +133,7 @@ function NewsRow({
           ) : null}
           {item.time ? (
             <span
-              className="text-[10px] flex items-center gap-0.5 flex-shrink-0"
+              className="text-[0.625rem] flex items-center gap-0.5 flex-shrink-0"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               <Clock size={9} /> {item.time}
@@ -148,7 +141,7 @@ function NewsRow({
           ) : null}
         </div>
         <h3
-          className="text-[13px] font-medium leading-snug line-clamp-2"
+          className="text-[0.8125rem] font-medium leading-snug line-clamp-2"
           style={{ color: 'var(--color-text-primary)' }}
           title={item.title}
         >
@@ -159,7 +152,7 @@ function NewsRow({
             {tickers.slice(0, 4).map((t) => (
               <span
                 key={t}
-                className="text-[9.5px] font-bold px-1.5 py-0.5 rounded"
+                className="text-[0.5938rem] font-bold px-1.5 py-0.5 rounded"
                 style={{
                   backgroundColor: 'var(--color-accent-soft)',
                   color: 'var(--color-accent-light)',
@@ -169,7 +162,7 @@ function NewsRow({
               </span>
             ))}
             {tickers.length > 4 ? (
-              <span className="text-[9.5px]" style={{ color: 'var(--color-text-tertiary)' }}>
+              <span className="text-[0.5938rem]" style={{ color: 'var(--color-text-tertiary)' }}>
                 +{tickers.length - 4}
               </span>
             ) : null}
@@ -187,22 +180,59 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
   const [activeTab, setActiveTab] = useState<NewsFeedSource>(initialSource);
   const [tickerFilter, setTickerFilter] = useState('');
   const [dateRange, setDateRange] = useState<DateRangeKey>('all');
+  const [sourceFilter, setSourceFilter] = useState('all');
 
   const sources: Record<NewsFeedSource, { items: NewsItem[]; loading: boolean }> = {
+    top: { items: dashboard.curatedItems as NewsItem[], loading: dashboard.curatedLoading },
     market: { items: dashboard.newsItems as NewsItem[], loading: dashboard.newsLoading },
     portfolio: { items: portfolioNews.items as NewsItem[], loading: portfolioNews.loading },
     watchlist: { items: watchlistNews.items as NewsItem[], loading: watchlistNews.loading },
   };
   const { items, loading } = sources[activeTab];
 
+  // Infinite scroll — only the Top feed is cursor-paginated (TickerTick). As the
+  // user nears the end (rootMargin below), prefetch the next page.
+  const hasNextPage = activeTab === 'top' && !!dashboard.curatedHasNextPage;
+  const isFetchingNextPage = activeTab === 'top' && !!dashboard.curatedIsFetchingNextPage;
+  const fetchNextPage = activeTab === 'top' ? dashboard.curatedFetchNextPage : undefined;
+
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  // Read the latest paging state inside the observer without re-creating it on
+  // every page (which would re-fire on an already-visible sentinel and cascade).
+  const pageStateRef = useRef({ hasNextPage, isFetchingNextPage, fetchNextPage });
+  pageStateRef.current = { hasNextPage, isFetchingNextPage, fetchNextPage };
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (!entries[0]?.isIntersecting) return;
+        const s = pageStateRef.current;
+        if (s.hasNextPage && !s.isFetchingNextPage && s.fetchNextPage) s.fetchNextPage();
+      },
+      { root: scrollRef.current, rootMargin: '500px' },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [activeTab]);
+
+  // Publisher facet derived from the active feed (pre-filter), for the source dropdown.
+  const sourceOptions = useMemo(
+    () => Array.from(new Set(items.map((i) => i.source).filter((s): s is string => !!s))).sort(),
+    [items],
+  );
+
   const switchTab = (key: NewsFeedSource) => {
     setActiveTab(key);
     setTickerFilter('');
     setDateRange('all');
+    setSourceFilter('all');
     updateConfig({ source: key });
   };
 
-  const hasFilters = tickerFilter.trim() !== '' || dateRange !== 'all';
+  const hasFilters = tickerFilter.trim() !== '' || dateRange !== 'all' || sourceFilter !== 'all';
 
   const filteredItems = useMemo(() => {
     let result = items;
@@ -210,15 +240,21 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
     if (query) {
       result = result.filter((item) => item.tickers?.some((t) => t.toUpperCase().includes(query)));
     }
+    if (sourceFilter !== 'all') {
+      result = result.filter((item) => item.source === sourceFilter);
+    }
     if (dateRange !== 'all') {
       const cutoff = getDateRangeCutoff(dateRange);
       result = result.filter((item) => {
-        const ts = parseRelativeTime(item.time);
-        return ts !== null && ts >= cutoff;
+        // Filter on the raw ISO timestamp — not the "24m ago" display string,
+        // whose unit format ("24m" vs "24 min") and wording vary by source and
+        // locale, which silently broke the Top/Market tabs' time filter.
+        const ts = item.publishedAt ? new Date(item.publishedAt).getTime() : NaN;
+        return Number.isFinite(ts) && ts >= cutoff;
       });
     }
     return result;
-  }, [items, tickerFilter, dateRange]);
+  }, [items, tickerFilter, sourceFilter, dateRange]);
 
   // Snapshot exporter: full = visible filtered list, rows = single headline.
   useWidgetContextExport(instance.id, {
@@ -233,7 +269,13 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
       const body = serializeNewsItemsToMarkdown(newsItems);
       const text = wrapWidgetContext(
         'news.feed',
-        { tab: activeTab, count: newsItems.length, dateRange, tickerFilter: tickerFilter || undefined },
+        {
+          tab: activeTab,
+          count: newsItems.length,
+          dateRange,
+          tickerFilter: tickerFilter || undefined,
+          sourceFilter: sourceFilter !== 'all' ? sourceFilter : undefined,
+        },
         body,
       );
       return {
@@ -243,7 +285,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
         description: `${newsItems.length} headline${newsItems.length === 1 ? '' : 's'}`,
         captured_at: new Date().toISOString(),
         text,
-        data: { items: newsItems, tab: activeTab, dateRange, tickerFilter },
+        data: { items: newsItems, tab: activeTab, dateRange, tickerFilter, sourceFilter },
       };
     },
     rows: async (rowId) => {
@@ -277,7 +319,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
             style={{ color: 'var(--color-text-tertiary)' }}
           />
           <span
-            className="text-[10px] font-semibold uppercase tracking-[0.14em]"
+            className="text-[0.625rem] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
             {t('dashboard.widgets.newsFeed.header', { label: t(SOURCE_KEY[activeTab]) })}
@@ -300,7 +342,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
                 key={key}
                 type="button"
                 onClick={() => switchTab(key)}
-                className="px-2.5 py-[3px] text-[10.5px] uppercase tracking-wider rounded-full transition-colors"
+                className="px-2.5 py-[3px] text-[0.6563rem] uppercase tracking-wider rounded-full transition-colors"
                 style={{
                   backgroundColor: isActive ? 'var(--color-bg-card)' : 'transparent',
                   color: isActive ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
@@ -330,7 +372,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
             placeholder={t('dashboard.widgets.newsFeed.tickerPlaceholder')}
             value={tickerFilter}
             onChange={(e) => setTickerFilter(e.target.value)}
-            className="flex-1 text-[11px] bg-transparent border-none outline-none min-w-0"
+            className="flex-1 text-[0.6875rem] bg-transparent border-none outline-none focus-visible:ring-1 focus-visible:ring-ring min-w-0"
             style={{ color: 'var(--color-text-primary)' }}
           />
           {tickerFilter ? (
@@ -357,7 +399,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
                 key={dr.key}
                 type="button"
                 onClick={() => setDateRange(dr.key)}
-                className="px-1.5 py-[3px] rounded text-[10px] uppercase tracking-wider transition-colors"
+                className="px-1.5 py-[3px] rounded text-[0.625rem] uppercase tracking-wider transition-colors"
                 style={{
                   backgroundColor: isActive ? 'var(--color-bg-card)' : 'transparent',
                   color: isActive ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
@@ -370,14 +412,36 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
           })}
         </div>
 
+        {sourceOptions.length > 0 ? (
+          <select
+            value={sourceFilter}
+            onChange={(e) => setSourceFilter(e.target.value)}
+            aria-label={t('dashboard.widgets.newsFeed.sourceLabel')}
+            className="h-7 px-2 rounded-md border text-[0.6875rem] outline-none focus-visible:ring-1 focus-visible:ring-ring cursor-pointer max-w-[140px]"
+            style={{
+              backgroundColor: 'var(--color-bg-subtle)',
+              borderColor: 'var(--color-border-muted)',
+              color: sourceFilter === 'all' ? 'var(--color-text-tertiary)' : 'var(--color-text-primary)',
+            }}
+          >
+            <option value="all">{t('dashboard.widgets.newsFeed.allSources')}</option>
+            {sourceOptions.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        ) : null}
+
         {hasFilters ? (
           <button
             type="button"
             onClick={() => {
               setTickerFilter('');
               setDateRange('all');
+              setSourceFilter('all');
             }}
-            className="text-[10px] uppercase tracking-wider transition-colors"
+            className="text-[0.625rem] uppercase tracking-wider transition-colors"
             style={{ color: 'var(--color-text-tertiary)' }}
             onMouseEnter={(e) => {
               e.currentTarget.style.color = 'var(--color-text-primary)';
@@ -391,7 +455,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
         ) : null}
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto -mx-1 px-1">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto -mx-1 px-1">
         <AnimatePresence mode="wait">
           <motion.div
             key={activeTab}
@@ -436,7 +500,9 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
                     ? t('dashboard.widgets.newsFeed.emptyFiltered')
                     : activeTab === 'market'
                       ? t('dashboard.widgets.newsFeed.emptyMarket')
-                      : t('dashboard.widgets.newsFeed.emptyAddTo', { label: t(SOURCE_KEY[activeTab]).toLowerCase() })}
+                      : activeTab === 'top'
+                        ? t('dashboard.widgets.newsFeed.emptyTop')
+                        : t('dashboard.widgets.newsFeed.emptyAddTo', { label: t(SOURCE_KEY[activeTab]).toLowerCase() })}
                 </div>
               </div>
             ) : (
@@ -451,7 +517,21 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
                       item={item}
                       idx={idx}
                       onClick={() => {
-                        if (item.id != null) modals.openNews(item.id, item.articleUrl ?? null);
+                        if (item.id != null) {
+                          modals.openNews(item.id, {
+                            title: item.title,
+                            source: item.source,
+                            publishedAt: item.publishedAt ?? null,
+                            tickers: item.tickers,
+                            articleUrl: item.articleUrl ?? null,
+                            author: item.author ?? null,
+                            description: item.description ?? null,
+                            keywords: item.keywords,
+                            sentiments: item.sentiments ?? null,
+                            imageUrl: item.image ?? null,
+                            favicon: item.favicon ?? null,
+                          });
+                        }
                       }}
                     />
                     <span className="absolute right-1 top-1/2 -translate-y-1/2 z-10">
@@ -463,6 +543,15 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
             )}
           </motion.div>
         </AnimatePresence>
+
+        {/* Infinite-scroll trigger (Top feed). Sits below the list so the
+            observer fires as the user nears the end and prefetches the next page. */}
+        <div ref={sentinelRef} aria-hidden className="h-px w-full" />
+        {isFetchingNextPage ? (
+          <div className="flex justify-center py-3">
+            <Loader size={20} className="text-[color:var(--color-accent-primary)]" />
+          </div>
+        ) : null}
       </div>
     </div>
   );

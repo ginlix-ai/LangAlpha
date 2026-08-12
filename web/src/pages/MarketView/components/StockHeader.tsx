@@ -42,20 +42,22 @@ interface StockHeaderProps {
   quoteData: QuoteData | null;
   marketStatus: Record<string, unknown> | null;
   snapshot: SnapshotData | null;
+  /** Venue market phase (`pre|open|post|closed`) from the chart's bars responses. */
+  marketPhase?: string | null;
 }
 
 const EXCHANGE_LABELS: Record<string, string> = { HK: 'HK', SS: 'SH', SZ: 'SZ', L: 'LON', T: 'TYO', TO: 'TSX', AX: 'ASX' };
 const PROVIDER_LABELS: Record<string, string> = { 'ginlix-data': 'Ginlix Data', fmp: 'FMP', yfinance: 'yfinance' };
 
-function getDelayedLabel(sym: string | null | undefined): string {
-  if (!sym) return 'Delayed';
+function getVenueStatusLabel(sym: string | null | undefined, status: 'Delayed' | 'Closed'): string {
+  if (!sym) return status;
   const dotIdx = sym.lastIndexOf('.');
-  if (dotIdx === -1) return 'Delayed';
+  if (dotIdx === -1) return status;
   const suffix = sym.slice(dotIdx + 1).toUpperCase();
-  return EXCHANGE_LABELS[suffix] ? `${EXCHANGE_LABELS[suffix]} Delayed` : 'Delayed';
+  return EXCHANGE_LABELS[suffix] ? `${EXCHANGE_LABELS[suffix]} ${status}` : status;
 }
 
-const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta: _chartMeta, displayOverride, onToggleOverview, onOpenWatchlist, wsStatus, wsHasData = false, wsDataLevel = null, ginlixDataEnabled = true, quoteData, marketStatus, snapshot }: StockHeaderProps) => {
+const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta: _chartMeta, displayOverride, onToggleOverview, onOpenWatchlist, wsStatus, wsHasData = false, wsDataLevel = null, ginlixDataEnabled: _ginlixDataEnabled = true, quoteData, marketStatus, snapshot, marketPhase = null }: StockHeaderProps) => {
   const formatNumber = (num: number | null | undefined): string => {
     if (num == null || (num !== 0 && !num)) return '—';
     if (num >= 1e12) return (num / 1e12).toFixed(2) + 'T';
@@ -86,16 +88,36 @@ const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta: _chartMeta, 
   const displayName = displayOverride?.name ?? stockInfo?.Name ?? `${symbol} Corp`;
   const displayExchange = displayOverride?.exchange ?? stockInfo?.Exchange ?? '';
 
-  // Pre/post-market extended hours data
-  const { extPct: extendedChangePercent, extType: extendedType } = getExtendedHoursInfo(marketStatus, snapshot);
-
-  // Data source label from market status providers
-  const providers = (marketStatus?.providers ?? []) as string[];
-  const dataSourceLabel = providers.map(p => PROVIDER_LABELS[p] ?? p).join(', ') || 'REST';
+  // Extended hours (market convention): the big number is the last official
+  // close — today's regular close after-hours, the previous close pre-market —
+  // with a coherent change pair against the previous close; the extended move
+  // renders on its own labeled line against its declared anchor. A live tick
+  // (has a timestamp; quote rows don't) overrides the derived ext price.
+  const { extPct, extType, extPrice, extChange, extAnchor, regularClose } =
+    getExtendedHoursInfo(marketStatus, snapshot);
+  const tickPrice = (realTimePrice as PriceUpdate)?.timestamp != null ? (realTimePrice?.price ?? null) : null;
+  const extDisplayPrice = tickPrice ?? extPrice;
+  const extDisplayChange = tickPrice != null && extAnchor != null ? tickPrice - extAnchor : extChange;
+  const extDisplayPct = tickPrice != null && extAnchor ? ((tickPrice - extAnchor) / extAnchor) * 100 : extPct;
+  const settledClose = (extType === 'post' ? regularClose : previousClose) ?? null;
+  const settledChange = extType === 'post' && regularClose != null && previousClose != null
+    ? regularClose - previousClose
+    : null;
+  const settledChangePct = settledChange != null && previousClose ? (settledChange / previousClose) * 100 : null;
+  const settledColorClass = settledChange == null ? '' : settledChange > 0 ? 'positive' : settledChange < 0 ? 'negative' : '';
 
   // Live = WS connected AND actually delivering aggregate data for this symbol
   const usSymbol = isUSEquity(symbol);
   const isLive = wsStatus === 'connected' && usSymbol && wsHasData;
+
+  // The provider actually serving the displayed price: the WS feed when live
+  // (ginlix-data is the only WS upstream), else whichever provider filled the
+  // snapshot. Fall back to the enabled-provider list for rows without a source.
+  const providers = (marketStatus?.providers ?? []) as string[];
+  const activeSource = isLive ? 'ginlix-data' : (snapshot?.source ?? null);
+  const dataSourceLabel = activeSource
+    ? (PROVIDER_LABELS[activeSource] ?? activeSource)
+    : (providers.map(p => PROVIDER_LABELS[p] ?? p).join(', ') || 'REST');
   const isMobile = useIsMobile();
   const [metricsCollapsed, setMetricsCollapsed] = useState(false);
 
@@ -133,10 +155,15 @@ const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta: _chartMeta, 
                   <span className="data-source-label">Live</span>
                   {tickTime && <span className="data-source-time">{formatTickTime(tickTime)}</span>}
                 </>
+              ) : marketPhase === 'closed' ? (
+                <>
+                  <span className="data-source-dot data-source-dot--closed" />
+                  <span className="data-source-label">{getVenueStatusLabel(symbol, 'Closed')}</span>
+                </>
               ) : (
                 <>
                   <span className="data-source-dot data-source-dot--delayed" />
-                  <span className="data-source-label">{getDelayedLabel(symbol)}</span>
+                  <span className="data-source-label">{getVenueStatusLabel(symbol, 'Delayed')}</span>
                 </>
               )}
               <span className="data-source-tooltip">
@@ -151,35 +178,33 @@ const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta: _chartMeta, 
           </button>
         </div>
         <div className="stock-price-section">
-          {extendedType && extendedChangePercent != null ? (
+          {extType && settledClose != null && extDisplayPrice != null && extDisplayPct != null ? (
             <>
-              {/* Extended hours price — prominent, in session color */}
-              <div className="stock-price" style={{ color: extendedType === 'pre' ? EXT_COLOR_PRE : EXT_COLOR_POST }}>
-                {price != null ? price.toFixed(2) : '—'}
-              </div>
+              {/* Official close — prominent, stable across refreshes and intervals */}
+              <div className={`stock-price ${settledColorClass}`}>{settledClose.toFixed(2)}</div>
+              {settledChange != null && settledChangePct != null && (
+                <div className={`stock-change ${settledColorClass}`}>
+                  {settledChange >= 0 ? '+' : ''}{settledChange.toFixed(2)} {settledChange >= 0 ? '+' : ''}{settledChangePct.toFixed(2)}%
+                </div>
+              )}
+              {/* The extended-hours move, against its own anchor, in session color */}
               <div
                 className="stock-extended-hours"
                 style={{
                   display: 'flex',
                   alignItems: 'center',
                   gap: 4,
-                  fontSize: 13,
-                  color: extendedType === 'pre' ? EXT_COLOR_PRE : EXT_COLOR_POST,
+                  fontSize: '0.8125rem',
+                  color: extType === 'pre' ? EXT_COLOR_PRE : EXT_COLOR_POST,
                 }}
               >
-                {extendedType === 'pre' ? <Sunrise size={13} /> : <Sunset size={13} />}
-                {change >= 0 ? '+' : ''}{change.toFixed(2)} ({extendedChangePercent >= 0 ? '+' : ''}{extendedChangePercent.toFixed(2)}%)
+                {extType === 'pre' ? <Sunrise size={13} /> : <Sunset size={13} />}
+                {extDisplayPrice.toFixed(2)}
+                {extDisplayChange != null && (
+                  <span>{extDisplayChange >= 0 ? '+' : ''}{extDisplayChange.toFixed(2)}</span>
+                )}
+                <span>({extDisplayPct >= 0 ? '+' : ''}{extDisplayPct.toFixed(2)}%)</span>
               </div>
-              {/* Regular session close — during after-hours show today's 4 PM close, during pre-market show prev close */}
-              {extendedType === 'post' && previousClose != null && (snapshot?.regular_trading_change as number | undefined) != null ? (
-                <div style={{ fontSize: 11, marginTop: 2, color: 'var(--color-text-tertiary, #8b8fa3)' }}>
-                  Close {(previousClose + (snapshot!.regular_trading_change as number)).toFixed(2)}
-                </div>
-              ) : extendedType === 'pre' && previousClose != null ? (
-                <div style={{ fontSize: 11, marginTop: 2, color: 'var(--color-text-tertiary, #8b8fa3)' }}>
-                  Close {previousClose.toFixed(2)}
-                </div>
-              ) : null}
             </>
           ) : (
             <>

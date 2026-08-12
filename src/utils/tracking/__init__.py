@@ -37,9 +37,6 @@ from .message_tracker import (
     track_single_message,
 )
 
-# Session logging
-from .session_logger import SessionLogger
-
 # Token tracking
 from .token_tracker import TokenTrackingManager
 
@@ -66,8 +63,6 @@ __all__ = [
     'track_agent_messages_with_tools',
     'track_subgraph_worker_messages',
     'track_single_message',
-    # Session logging
-    'SessionLogger',
     # Token tracking
     'TokenTrackingManager',
     # Serialization helpers

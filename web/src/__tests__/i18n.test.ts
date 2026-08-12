@@ -1,68 +1,45 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import i18n from '../i18n';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { getLocaleCookie, setLocaleCookie, detectLocale } from '../lib/locale';
 
-// The cross-tab `storage` listener in i18n.ts is the only locale-sync mechanism
-// between tabs. Browsers fire `storage` only in OTHER tabs, never the writer,
-// so the handler doesn't need to dedupe its own writes — but it MUST ignore
-// foreign keys, junk values, unsupported locales, and same-locale events
-// (the last is a recursion guard against synthetic re-dispatches).
-describe('i18n cross-tab storage listener', () => {
-  let originalLang: string;
+// localStorage-based locale + the cross-tab `storage` listener were replaced by a
+// single shared `locale` cookie (readable server-side, unlike localStorage).
+// These cover the cookie helpers + cookie-first detection.
+function clearLocaleCookie() {
+  document.cookie = 'locale=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
+}
 
-  beforeEach(() => {
-    originalLang = i18n.language;
+describe('locale cookie helpers', () => {
+  beforeEach(() => clearLocaleCookie());
+
+  it('returns null when no locale cookie is set', () => {
+    expect(getLocaleCookie()).toBeNull();
   });
 
-  afterEach(async () => {
-    if (i18n.language !== originalLang) {
-      await i18n.changeLanguage(originalLang);
-    }
+  it('round-trips a supported locale', () => {
+    setLocaleCookie('zh-CN');
+    expect(getLocaleCookie()).toBe('zh-CN');
   });
 
-  function fire(key: string | null, newValue: string | null) {
-    window.dispatchEvent(
-      new StorageEvent('storage', { key, newValue, storageArea: localStorage }),
-    );
-  }
-
-  it('ignores storage events for unrelated keys', async () => {
-    await i18n.changeLanguage('en-US');
-    const spy = vi.spyOn(i18n, 'changeLanguage');
-    fire('user-prefs', 'zh-CN');
-    expect(spy).not.toHaveBeenCalled();
-    spy.mockRestore();
+  it('ignores unsupported values on write', () => {
+    setLocaleCookie('fr-FR');
+    expect(getLocaleCookie()).toBeNull();
   });
 
-  it('ignores storage events with null/empty newValue (key was removed)', async () => {
-    await i18n.changeLanguage('en-US');
-    const spy = vi.spyOn(i18n, 'changeLanguage');
-    fire('locale', null);
-    fire('locale', '');
-    expect(spy).not.toHaveBeenCalled();
-    spy.mockRestore();
+  it('treats an unsupported cookie value as absent on read', () => {
+    document.cookie = 'locale=zh-TW; path=/'; // valid BCP-47, not supported
+    expect(getLocaleCookie()).toBeNull();
   });
 
-  it('ignores storage events with unsupported locales', async () => {
-    await i18n.changeLanguage('en-US');
-    const spy = vi.spyOn(i18n, 'changeLanguage');
-    fire('locale', 'fr-FR');
-    fire('locale', 'zh-TW'); // valid BCP-47 but not in SUPPORTED_LOCALES
-    fire('locale', '<script>alert(1)</script>');
-    expect(spy).not.toHaveBeenCalled();
-    spy.mockRestore();
+  it('treats a malformed percent-encoded cookie as absent instead of throwing', () => {
+    // getLocaleCookie runs at module load via detectLocale → a throw here
+    // would white-screen the app on every load until cookies are cleared.
+    document.cookie = 'locale=%E0%A4%A; path=/';
+    expect(getLocaleCookie()).toBeNull();
+    expect(() => detectLocale()).not.toThrow();
   });
 
-  it('switches language when a supported locale lands via storage', async () => {
-    await i18n.changeLanguage('en-US');
-    fire('locale', 'zh-CN');
-    expect(i18n.language).toBe('zh-CN');
-  });
-
-  it('no-ops when the storage value matches the current language', async () => {
-    await i18n.changeLanguage('zh-CN');
-    const spy = vi.spyOn(i18n, 'changeLanguage');
-    fire('locale', 'zh-CN');
-    expect(spy).not.toHaveBeenCalled();
-    spy.mockRestore();
+  it('detectLocale prefers a valid cookie', () => {
+    setLocaleCookie('zh-CN');
+    expect(detectLocale()).toBe('zh-CN');
   });
 });

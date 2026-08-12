@@ -5,6 +5,7 @@ import '@testing-library/jest-dom';
 import FileHeaderActions, {
   getFileExtension,
   isMarkdownFile,
+  isHtmlFile,
   isTextMime,
 } from '../FileHeaderActions';
 
@@ -18,6 +19,11 @@ vi.mock('@/components/ui/use-toast', () => ({
   toast: vi.fn(),
 }));
 
+const exportServedPdfMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('../viewers/html/useHtmlActions', () => ({
+  exportServedPdf: (...args: unknown[]) => exportServedPdfMock(...args),
+}));
+
 vi.mock('@/components/ui/dropdown-menu', () => ({
   DropdownMenu: ({ children }: any) => (
     <div data-testid="dropdown-menu">{children}</div>
@@ -29,7 +35,11 @@ vi.mock('@/components/ui/dropdown-menu', () => ({
   DropdownMenuItem: ({ children, onSelect, ...props }: any) => (
     <button onClick={onSelect} {...props}>{children}</button>
   ),
+  DropdownMenuLabel: ({ children }: any) => <div>{children}</div>,
   DropdownMenuSeparator: () => <hr />,
+  DropdownMenuSub: ({ children }: any) => <div>{children}</div>,
+  DropdownMenuSubTrigger: ({ children }: any) => <div>{children}</div>,
+  DropdownMenuSubContent: ({ children }: any) => <div>{children}</div>,
 }));
 
 // --- Default props helper ---
@@ -92,6 +102,18 @@ describe('isMarkdownFile', () => {
 
   it('returns false for non-markdown file without markdown mime', () => {
     expect(isMarkdownFile('data.csv', 'text/csv')).toBe(false);
+  });
+});
+
+describe('isHtmlFile', () => {
+  it('returns true for .html and .htm files', () => {
+    expect(isHtmlFile('report.html')).toBe(true);
+    expect(isHtmlFile('results/page.htm')).toBe(true);
+  });
+
+  it('returns false for non-HTML files', () => {
+    expect(isHtmlFile('report.md')).toBe(false);
+    expect(isHtmlFile('data.json')).toBe(false);
   });
 });
 
@@ -207,6 +229,66 @@ describe('FileHeaderActions', () => {
     expect(
       screen.getByText('filePanel.copyToClipboard'),
     ).toBeInTheDocument();
+  });
+
+  it('renders Download and Save as PDF for HTML file', () => {
+    render(
+      <FileHeaderActions
+        {...defaultProps}
+        selectedFile="results/report.html"
+        fileMime="text/html"
+      />,
+    );
+    expect(screen.getByText('filePanel.download')).toBeInTheDocument();
+    expect(screen.getByText('filePanel.saveAsPdf')).toBeInTheDocument();
+    expect(screen.queryByText('filePanel.copyToClipboard')).not.toBeInTheDocument();
+    expect(screen.queryByText('filePanel.downloadAsPdf')).not.toBeInTheDocument();
+  });
+
+  it('exports the server PDF (with the served URL override) on Save as PDF', async () => {
+    exportServedPdfMock.mockClear();
+    render(
+      <FileHeaderActions
+        {...defaultProps}
+        selectedFile="results/report.html"
+        fileMime="text/html"
+        htmlServedUrl="/api/v1/public/shared/tok-1/files/serve/results/report.html"
+      />,
+    );
+    fireEvent.click(screen.getByText('filePanel.saveAsPdf'));
+    await waitFor(() => {
+      expect(exportServedPdfMock).toHaveBeenCalledWith({
+        workspaceId: 'ws-123',
+        filePath: 'results/report.html',
+        servedUrl: '/api/v1/public/shared/tok-1/files/serve/results/report.html',
+        printHint: 'filePanel.pdfPrintHint',
+        generatingHint: 'filePanel.pdfGenerating',
+        scale: 1,
+        pageNumbers: false,
+        branding: true,
+      });
+    });
+  });
+
+  it('passes the chosen PDF options (scale, page numbers) to the export', async () => {
+    exportServedPdfMock.mockClear();
+    render(
+      <FileHeaderActions
+        {...defaultProps}
+        selectedFile="results/report.html"
+        fileMime="text/html"
+      />,
+    );
+    expect(screen.getByText('filePanel.pdfOptions')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('filePanel.pdfBranding'));
+    fireEvent.click(screen.getByText('filePanel.pdfPageNumbers'));
+    fireEvent.click(screen.getByText('80%'));
+    fireEvent.click(screen.getByText('filePanel.saveAsPdf'));
+    await waitFor(() => {
+      expect(exportServedPdfMock).toHaveBeenCalledWith(
+        expect.objectContaining({ scale: 0.8, pageNumbers: true, branding: false }),
+      );
+    });
   });
 
   it('renders only Download for binary file', () => {

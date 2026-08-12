@@ -18,7 +18,7 @@ from src.server.database.api_keys import is_byok_active
 from src.server.database.oauth_tokens import has_any_oauth_token
 from src.server.database.workspace import get_or_create_flash_workspace
 from src.server.dependencies.usage_limits import enforce_credit_limit
-from src.server.models.chat import ChatMessage, ChatRequest
+from src.server.models.chat import ChatMessage, ChatRequest, ThreadOrigin
 from src.server.services.webhook_client import WebhookClient
 from src.observability import automation_executions, safe_add
 from src.observability.tracing import hash_id as _obs_hash_id, tracer as _otel_tracer
@@ -36,6 +36,50 @@ class AutomationExecutor:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
+
+    async def _precreate_titled_thread(
+        self,
+        automation: Dict[str, Any],
+        thread_id: str,
+        workspace_id: str,
+        agent_mode: str,
+    ) -> None:
+        """Pre-create the run's thread titled "<automation name> — <date>".
+
+        Automation runs bypass POST /threads, so without this the thread would be
+        born inside ensure_thread_exists with the raw instruction as title (then
+        LLM-retitled). A stable name+date reads better for recurring runs. Never
+        raises — on failure the run proceeds and the ensure path creates the row.
+        """
+        name = (automation.get("name") or "").strip()
+        if not name:
+            return  # no name to stamp — let the ensure path LLM-title it
+        try:
+            from zoneinfo import ZoneInfo
+
+            from src.server.database.conversation import create_thread
+
+            try:
+                tz = ZoneInfo(automation.get("timezone") or "UTC")
+            except Exception:
+                tz = timezone.utc
+            run_date = datetime.now(tz).strftime("%Y-%m-%d")
+            await create_thread(
+                conversation_thread_id=thread_id,
+                workspace_id=workspace_id,
+                current_status="completed",
+                msg_type=agent_mode,
+                thread_index=None,
+                title=f"{name} — {run_date}"[:255],
+                metadata={
+                    "origin": {
+                        "type": "automation",
+                        "id": str(automation["automation_id"]),
+                    }
+                },
+            )
+        except Exception as e:
+            logger.warning(f"[AUTOMATION_EXEC] Thread pre-create failed: {e}")
 
     async def _fire_webhook(
         self,
@@ -64,7 +108,8 @@ class AutomationExecutor:
 
         Steps:
         1. Mark execution as running
-        2. Resolve workspace (flash auto-creates, ptc validates)
+        2. Resolve workspace (flash auto-creates; ptc uses the stored id,
+           whose ownership was verified when the automation was written)
         3. Determine thread_id (new or continue)
         4. Build ChatRequest and invoke agent workflow
         5. Drain the async generator
@@ -144,6 +189,9 @@ class AutomationExecutor:
                         automation_id, user_id,
                         conversation_thread_id=thread_id,
                     )
+                await self._precreate_titled_thread(
+                    automation, thread_id, workspace_id, agent_mode
+                )
 
             # ─── Build ChatRequest ─────────────────────────────────
             additional_context = automation.get("additional_context")
@@ -156,9 +204,13 @@ class AutomationExecutor:
                 ],
                 llm_model=automation.get("llm_model"),
                 additional_context=additional_context,
+                origin=ThreadOrigin(type="automation", id=str(automation_id)),
             )
 
             # ─── Invoke agent workflow ─────────────────────────────
+            # TODO(layering): sanctioned services→handlers residual — automation
+            # is an alternate run driver; fixing this means moving the run
+            # entrypoints into services/runs/ with handlers as thin adapters.
             from src.server.handlers.chat import (
                 astream_flash_workflow,
                 astream_ptc_workflow,
@@ -205,9 +257,23 @@ class AutomationExecutor:
             # Wait for background persistence (sse_events) to finish before
             # firing the completed webhook — otherwise the replay endpoint
             # may return empty text because the DB write hasn't landed yet.
-            from src.server.services.background_task_manager import BackgroundTaskManager
-            manager = BackgroundTaskManager.get_instance()
+            from src.server.services.runs.executor import LocalRunExecutor
+            manager = LocalRunExecutor.get_instance()
             await manager.wait_for_persistence(thread_id, run_id)
+
+            # A drained generator is transport, not truth — it ends the same
+            # way for success, a streamed error event, or a cancelled run.
+            # The ledger's terminal row decides the outcome (v4 2.4); any
+            # non-completed outcome routes through the failure branch below.
+            from src.server.database.runs import lifecycle as tl_db
+
+            run_row = await tl_db.get_run(run_id)
+            run_outcome = run_row["status"] if run_row else None
+            if run_outcome != "completed":
+                raise RuntimeError(
+                    f"workflow run finished as '{run_outcome or 'no run row'}'"
+                    f" (run_id={run_id})"
+                )
 
             # ─── Success ───────────────────────────────────────────
             await auto_db.update_execution_status(

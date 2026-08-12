@@ -17,6 +17,16 @@
   background-color: hsl(var(--bg-main));
   overflow: auto;
   box-sizing: border-box;
+  transition: padding-left 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Fixed overlays positioned off --sidebar-width. They are viewport-anchored, so
+   nothing carries them along when the sidebar animates — without this they snap
+   to the new column while .app-main is still easing into it. */
+.sidebar-tracking {
+  transition:
+    left 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .main {

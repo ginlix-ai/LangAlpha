@@ -1,6 +1,6 @@
 """Unit tests for RegexParser (SEC filing regex-based section extraction)."""
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -452,35 +452,32 @@ class TestHtmlToMarkdown:
         assert "Annual Report" in result
         assert "Company overview paragraph" in result
 
-    def test_links_preserved(self):
+    def test_link_text_preserved(self):
+        """PLAIN output keeps anchor text (URLs are dropped — fine for section regexes)."""
         html = '<p>See <a href="https://sec.gov/filing">the filing</a>.</p>'
         result = self.parser._html_to_markdown(html)
-        assert "https://sec.gov/filing" in result
         assert "the filing" in result
 
-    def test_html2text_exception_falls_back(self):
-        """When html2text raises, falls back to _simple_html_to_text."""
+    def test_conversion_exception_falls_back(self):
+        """When html-to-markdown conversion raises, falls back to _simple_html_to_text."""
         html = "<p>Fallback content here</p>"
 
-        mock_h2t = MagicMock()
-        mock_h2t.HTML2Text.return_value.handle.side_effect = RuntimeError("html2text broken")
-
-        with patch.dict("sys.modules", {"html2text": mock_h2t}):
+        with patch(
+            "src.tools.sec.parsers.regex_parser.html_to_markdown.convert",
+            side_effect=RuntimeError("conversion broken"),
+        ):
             result = self.parser._html_to_markdown(html)
 
         assert "Fallback content here" in result
 
-    def test_html2text_import_error_falls_back(self):
-        """When html2text import fails inside the method, falls back."""
-        html = "<p>Import error content</p>"
+    def test_tables_flattened_not_pipe_syntax(self):
+        """Table cells render as plain text (no pipe-table syntax) so section regexes match."""
+        html = "<table><tr><td>Item 15.</td><td>Exhibits</td></tr></table>"
+        result = self.parser._html_to_markdown(html)
 
-        mock_h2t = MagicMock()
-        mock_h2t.HTML2Text.side_effect = Exception("cannot create converter")
-
-        with patch.dict("sys.modules", {"html2text": mock_h2t}):
-            result = self.parser._html_to_markdown(html)
-
-        assert "Import error content" in result
+        assert "Item 15." in result
+        assert "Exhibits" in result
+        assert "|" not in result  # not a markdown pipe-table
 
 
 # ---------------------------------------------------------------------------

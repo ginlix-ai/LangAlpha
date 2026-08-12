@@ -5,11 +5,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
 
 # Add scripts/ci to path so we can import the module
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "ci"))
-from generate_release_notes import format_notes, parse_commits
+from generate_release_notes import (
+    extract_new_contributors,
+    format_notes,
+    parse_commits,
+)
 
 
 class TestParseCommits:
@@ -88,9 +91,8 @@ class TestFormatNotes:
 
     def test_empty_parsed_produces_no_changes(self):
         """Empty parsed dict produces 'No changes since last release'."""
-        result = format_notes({}, "v1.0.0")
+        result = format_notes({})
         assert "No changes since last release" in result
-        assert "# v1.0.0" in result
 
     def test_category_display_order(self):
         """Categories appear in the defined display order."""
@@ -103,7 +105,7 @@ class TestFormatNotes:
                 {"scope": None, "message": "misc", "sha": "ghi9012"}
             ],
         }
-        result = format_notes(parsed, "v1.0.0")
+        result = format_notes(parsed)
         feat_pos = result.index("## New Features")
         fix_pos = result.index("## Bug Fixes")
         other_pos = result.index("## Other Changes")
@@ -116,7 +118,7 @@ class TestFormatNotes:
                 {"scope": "auth", "message": "add login", "sha": "abc1234"}
             ]
         }
-        result = format_notes(parsed, "v1.0.0")
+        result = format_notes(parsed)
         assert "- **auth:** add login (abc1234)" in result
 
     def test_unscoped_entry_formatting(self):
@@ -126,7 +128,7 @@ class TestFormatNotes:
                 {"scope": None, "message": "add dark mode", "sha": "abc1234"}
             ]
         }
-        result = format_notes(parsed, "v1.0.0")
+        result = format_notes(parsed)
         assert "- add dark mode (abc1234)" in result
 
     def test_footer_counts(self):
@@ -140,8 +142,8 @@ class TestFormatNotes:
                 {"scope": None, "message": "c", "sha": "3456789"},
             ],
         }
-        result = format_notes(parsed, "v1.0.0")
-        assert "3 commits total" in result
+        result = format_notes(parsed)
+        assert "3 changes total" in result
         assert "2 features" in result
         assert "1 fix" in result
 
@@ -153,19 +155,47 @@ class TestFormatNotes:
                 {"scope": None, "message": "b", "sha": "2345678"},
             ],
         }
-        result = format_notes(parsed, "v1.0.0")
+        result = format_notes(parsed)
         assert "2 fixes" in result
         assert "fixs" not in result
 
-    def test_version_header(self):
-        """Version string appears as H1 header."""
+    def test_no_h1_header(self):
+        """Notes carry no H1 — the release page supplies the title."""
         parsed = {
             "New Features": [
                 {"scope": None, "message": "a", "sha": "1234567"}
             ]
         }
-        result = format_notes(parsed, "v2026.04.02")
-        assert result.startswith("# v2026.04.02\n")
+        result = format_notes(parsed)
+        assert not result.startswith("# ")
+        assert result.startswith("## New Features")
+
+    def test_new_contributors_before_footer(self):
+        """Contributors section and changelog link render before the footer."""
+        parsed = {
+            "New Features": [
+                {"scope": None, "message": "a", "sha": "1234567"}
+            ]
+        }
+        contributors = ["* @someone made their first contribution in #1"]
+        link = "**Full Changelog**: https://example.com/compare/a...b"
+        result = format_notes(parsed, contributors, link)
+        section_pos = result.index("## New Contributors")
+        link_pos = result.index(link)
+        footer_pos = result.index("---")
+        assert result.index("## New Features") < section_pos < link_pos < footer_pos
+        assert contributors[0] in result
+
+    def test_no_contributors_omits_section(self):
+        """No contributors and no link → neither appears."""
+        parsed = {
+            "New Features": [
+                {"scope": None, "message": "a", "sha": "1234567"}
+            ]
+        }
+        result = format_notes(parsed)
+        assert "New Contributors" not in result
+        assert "Full Changelog" not in result
 
 
 class TestOutputFile:
@@ -178,8 +208,38 @@ class TestOutputFile:
                 {"scope": None, "message": "a", "sha": "1234567"}
             ]
         }
-        content = format_notes(parsed, "v1.0.0")
+        content = format_notes(parsed)
         out_file = tmp_path / "notes.md"
         out_file.write_text(content)
         assert out_file.read_text() == content
-        assert "# v1.0.0" in out_file.read_text()
+
+
+class TestExtractNewContributors:
+    """Test parsing of GitHub generate-notes bodies."""
+
+    BODY = """## What's Changed
+* feat: thing by @owner in https://example.com/pull/1
+* fix: other by @newbie in https://example.com/pull/2
+
+## New Contributors
+* @newbie made their first contribution in https://example.com/pull/2
+
+**Full Changelog**: https://example.com/compare/v1...v2"""
+
+    def test_extracts_contributors_and_link(self):
+        contributors, link = extract_new_contributors(self.BODY)
+        assert contributors == [
+            "* @newbie made their first contribution in https://example.com/pull/2"
+        ]
+        assert link == "**Full Changelog**: https://example.com/compare/v1...v2"
+
+    def test_body_without_contributors(self):
+        """What's Changed bullets are not mistaken for contributors."""
+        body = (
+            "## What's Changed\n"
+            "* feat: thing by @owner in https://example.com/pull/1\n\n"
+            "**Full Changelog**: https://example.com/compare/v1...v2"
+        )
+        contributors, link = extract_new_contributors(body)
+        assert contributors == []
+        assert link == "**Full Changelog**: https://example.com/compare/v1...v2"

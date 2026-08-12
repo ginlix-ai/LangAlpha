@@ -243,6 +243,49 @@ async def test_list_workspaces_invalid_sort_by(client):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/v1/workspaces/quota
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_workspace_quota_platform(client):
+    """Platform mode surfaces per-tier {used, limit}; /quota is not shadowed by /{id}."""
+
+    async def fake_capacity(_user_id, check_quota):
+        return {
+            "spec_performance": {"used": 1, "limit": 3},
+            "spec_max": {"used": 0, "limit": 0},
+            "always_on": {"used": 2, "limit": -1},
+        }[check_quota]
+
+    with patch(
+        "src.server.app.workspaces.get_capacity_status",
+        new=AsyncMock(side_effect=fake_capacity),
+    ):
+        resp = await client.get("/api/v1/workspaces/quota")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "performance": {"used": 1, "limit": 3},
+        "max": {"used": 0, "limit": 0},
+        "always_on": {"used": 2, "limit": -1},
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_workspace_quota_oss_all_null(client):
+    """OSS mode: every capability is None, so the response fields are null."""
+    with patch(
+        "src.server.app.workspaces.get_capacity_status",
+        new=AsyncMock(return_value=None),
+    ):
+        resp = await client.get("/api/v1/workspaces/quota")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"performance": None, "max": None, "always_on": None}
+
+
+# ---------------------------------------------------------------------------
 # GET /api/v1/workspaces/{workspace_id}
 # ---------------------------------------------------------------------------
 
@@ -288,6 +331,28 @@ async def test_get_workspace_forbidden(client):
         )
 
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_get_workspace_malformed_id_returns_404(client):
+    """A non-UUID id is a clean 404, not a 500.
+
+    Regression: a memory-file key reaching the uuid column raised psycopg
+    InvalidTextRepresentation (22P02) in prod, surfaced as a 500. The guard in
+    db_get_workspace must short-circuit to None (→ 404) before any DB access.
+    """
+    resp = await client.get("/api/v1/workspaces/my_notes.md")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_workspace_events_malformed_id_returns_404(client):
+    """The /events endpoint has no try/except, so a malformed id used to be a
+    raw 500. The db_get_workspace guard makes it a clean 404."""
+    resp = await client.get(
+        "/api/v1/workspaces/my_notes.md/events"
+    )
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +687,170 @@ async def test_drain_warm_tasks_cancels_in_flight():
 
 
 # ---------------------------------------------------------------------------
+# POST /api/v1/workspaces/{workspace_id}/always-on
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_always_on_enable_on_stopped_starts_immediately(client):
+    """Enabling always-on on a stopped workspace warms it now, returns 'starting'."""
+    ws = _ws(status="stopped")
+    persisted = _ws(status="stopped", is_always_on=True)
+
+    started_event = asyncio.Event()
+    finish_event = asyncio.Event()
+
+    async def slow_get_session(*args, **kwargs):
+        started_event.set()
+        await finish_event.wait()
+
+    with (
+        patch(
+            "src.server.app.workspaces.db_get_workspace",
+            new_callable=AsyncMock,
+            return_value=ws,
+        ),
+        patch(
+            "src.server.app.workspaces.assert_always_on_allowed",
+            new_callable=AsyncMock,
+        ),
+        patch("src.server.app.workspaces.WorkspaceManager") as MockWM,
+    ):
+        mock_manager = AsyncMock()
+        mock_manager.set_workspace_always_on = AsyncMock(return_value=persisted)
+        mock_manager.get_session_for_workspace = AsyncMock(side_effect=slow_get_session)
+        MockWM.get_instance.return_value = mock_manager
+
+        resp = await client.post(
+            f"/api/v1/workspaces/{ws['workspace_id']}/always-on",
+            json={"enabled": True},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["is_always_on"] is True
+        # Response optimistically reflects the start kicked off this request.
+        assert body["status"] == "starting"
+
+        # The warm start was scheduled in the background, not awaited inline.
+        await asyncio.wait_for(started_event.wait(), timeout=0.5)
+        finish_event.set()
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_always_on_enable_on_running_does_not_start(client):
+    """Enabling always-on on a running workspace stays running, no warm start."""
+    ws = _ws(status="running")
+    persisted = _ws(status="running", is_always_on=True)
+
+    with (
+        patch(
+            "src.server.app.workspaces.db_get_workspace",
+            new_callable=AsyncMock,
+            return_value=ws,
+        ),
+        patch(
+            "src.server.app.workspaces.assert_always_on_allowed",
+            new_callable=AsyncMock,
+        ),
+        patch("src.server.app.workspaces.WorkspaceManager") as MockWM,
+    ):
+        mock_manager = AsyncMock()
+        mock_manager.set_workspace_always_on = AsyncMock(return_value=persisted)
+        mock_manager.get_session_for_workspace = AsyncMock()
+        MockWM.get_instance.return_value = mock_manager
+
+        resp = await client.post(
+            f"/api/v1/workspaces/{ws['workspace_id']}/always-on",
+            json={"enabled": True},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "running"
+    mock_manager.get_session_for_workspace.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_always_on_disable_does_not_start(client):
+    """Disabling always-on never starts the sandbox (and is never gated)."""
+    ws = _ws(status="stopped", is_always_on=True)
+    persisted = _ws(status="stopped", is_always_on=False)
+
+    with (
+        patch(
+            "src.server.app.workspaces.db_get_workspace",
+            new_callable=AsyncMock,
+            return_value=ws,
+        ),
+        patch(
+            "src.server.app.workspaces.assert_always_on_allowed",
+            new_callable=AsyncMock,
+        ) as mock_gate,
+        patch("src.server.app.workspaces.WorkspaceManager") as MockWM,
+    ):
+        mock_manager = AsyncMock()
+        mock_manager.set_workspace_always_on = AsyncMock(return_value=persisted)
+        mock_manager.get_session_for_workspace = AsyncMock()
+        MockWM.get_instance.return_value = mock_manager
+
+        resp = await client.post(
+            f"/api/v1/workspaces/{ws['workspace_id']}/always-on",
+            json={"enabled": False},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "stopped"
+    mock_manager.get_session_for_workspace.assert_not_awaited()
+    mock_gate.assert_not_awaited()  # disable is ungated
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/workspaces/{workspace_id}/duplicate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_duplicate_workspace_forbidden_for_non_owner(client):
+    """Ownership is enforced at the router (403), matching the sibling endpoints."""
+    ws = _ws(user_id="other-user", status="stopped")
+    with patch(
+        "src.server.app.workspaces.db_get_workspace",
+        new_callable=AsyncMock,
+        return_value=ws,
+    ):
+        resp = await client.post(
+            f"/api/v1/workspaces/{ws['workspace_id']}/duplicate"
+        )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_duplicate_workspace_returns_created_copy(client):
+    ws = _ws(status="stopped")
+    copy = _ws(status="stopped")
+    with (
+        patch(
+            "src.server.app.workspaces.db_get_workspace",
+            new_callable=AsyncMock,
+            return_value=ws,
+        ),
+        patch("src.server.app.workspaces.WorkspaceManager") as MockWM,
+    ):
+        mock_manager = AsyncMock()
+        mock_manager.duplicate_workspace = AsyncMock(return_value=copy)
+        MockWM.get_instance.return_value = mock_manager
+
+        resp = await client.post(
+            f"/api/v1/workspaces/{ws['workspace_id']}/duplicate"
+        )
+
+    assert resp.status_code == 201
+    assert resp.json()["workspace_id"] == copy["workspace_id"]
+    mock_manager.duplicate_workspace.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
 # GET /api/v1/workspaces/{workspace_id}/events — SSE status stream
 # ---------------------------------------------------------------------------
 
@@ -702,8 +931,8 @@ async def test_workspace_events_emits_initial_status_then_pubsub_transition(clie
             nonlocal sent
             if not sent:
                 sent = True
-                return {"workspace_id": workspace_id, "status": "running"}
-            return None
+                return ("message", {"workspace_id": workspace_id, "status": "running"})
+            return ("timeout", None)
 
         yield wait
 
@@ -761,7 +990,8 @@ async def test_workspace_events_forwards_archived_sandbox_state(client):
         )
 
         async def wait(timeout):
-            return next(msgs, None)
+            payload = next(msgs, None)
+            return ("message", payload) if payload else ("timeout", None)
 
         yield wait
 
@@ -801,7 +1031,7 @@ async def test_workspace_events_terminates_on_initial_running(client):
     @asynccontextmanager
     async def fake_subscribe(workspace_id):
         async def wait(timeout):
-            return None
+            return ("timeout", None)
 
         yield wait
 
@@ -928,9 +1158,8 @@ async def test_archive_workspace_success(client):
 
 @pytest.mark.asyncio
 async def test_archive_workspace_not_found(client):
-    """Archive endpoint has no `except HTTPException: raise`, so
-    require_workspace_owner's 404 is caught by the generic Exception handler
-    and surfaces as 500."""
+    """Archive re-raises require_workspace_owner's 404 (via the shared
+    _workspace_action_errors context manager), not masked as a 500."""
     with patch(
         "src.server.app.workspaces.db_get_workspace",
         new_callable=AsyncMock,
@@ -940,14 +1169,12 @@ async def test_archive_workspace_not_found(client):
             f"/api/v1/workspaces/{uuid.uuid4()}/archive"
         )
 
-    # HTTPException from require_workspace_owner falls through to
-    # except Exception -> 500 (no `except HTTPException: raise` in this handler)
-    assert resp.status_code == 500
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_archive_workspace_forbidden(client):
-    """Same pattern: missing except-HTTPException-raise -> 500."""
+    """Archive re-raises require_workspace_owner's 403 for a non-owner."""
     ws = _ws(user_id="other-user", status="stopped")
     with patch(
         "src.server.app.workspaces.db_get_workspace",
@@ -958,7 +1185,7 @@ async def test_archive_workspace_forbidden(client):
             f"/api/v1/workspaces/{ws['workspace_id']}/archive"
         )
 
-    assert resp.status_code == 500
+    assert resp.status_code == 403
 
 
 # ---------------------------------------------------------------------------

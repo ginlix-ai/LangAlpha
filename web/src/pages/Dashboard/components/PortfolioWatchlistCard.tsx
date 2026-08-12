@@ -8,6 +8,11 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 import { createFormatter } from '@/lib/format';
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from '@/components/ui/context-menu';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
+import {
+  formatPortfolioMoney,
+  normalizePortfolioCurrency,
+  summarizePortfolioByCurrency,
+} from '../utils/portfolioSummary';
 
 const fmt2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt1 = createFormatter({ minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -20,6 +25,7 @@ interface WatchlistRow {
   change: number;
   changePercent: number;
   isPositive: boolean;
+  quoteAvailable?: boolean;
   previousClose?: number | null;
   earlyTradingChangePercent?: number | null;
   lateTradingChangePercent?: number | null;
@@ -32,9 +38,11 @@ interface PortfolioRow {
   price: number;
   quantity?: number | null;
   average_cost?: number | null;
-  marketValue?: number;
+  currency: string;
+  marketValue?: number | null;
   unrealizedPlPercent?: number | null;
   isPositive?: boolean;
+  quoteAvailable?: boolean;
   previousClose?: number | null;
   earlyTradingChangePercent?: number | null;
   lateTradingChangePercent?: number | null;
@@ -55,8 +63,9 @@ interface WatchlistItemProps {
 function WatchlistItem({ item, index, onDelete, marketStatus, isMobile }: WatchlistItemProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const pos = item.isPositive;
-  const pctStr = (pos ? '+' : '') + fmt2(Number(item.changePercent)) + '%';
+  const hasQuote = item.quoteAvailable !== false;
+  const pos = hasQuote ? item.isPositive ?? true : true;
+  const pctStr = hasQuote ? (pos ? '+' : '') + fmt2(Number(item.changePercent)) + '%' : 'N/A';
   const hasId = !!item.watchlist_item_id;
 
   // Extended hours: show when not regular session and data available
@@ -91,10 +100,19 @@ function WatchlistItem({ item, index, onDelete, marketStatus, isMobile }: Watchl
       <div className="flex items-center gap-4">
         <div className="text-right">
           <div className="text-sm font-medium dashboard-mono" style={{ color: 'var(--color-text-primary)' }}>
-            {fmt2(Number(extType && item.previousClose != null ? item.previousClose : item.price))}
+            {hasQuote
+              ? fmt2(Number(extType && item.previousClose != null ? item.previousClose : item.price))
+              : 'N/A'}
           </div>
-          <div className="text-xs font-medium dashboard-mono" style={{ color: pos ? 'var(--color-profit)' : 'var(--color-loss)' }}>
-            {(pos ? '+' : '') + fmt2(Number(item.change))}
+          <div
+            className="text-xs font-medium dashboard-mono"
+            style={{
+              color: hasQuote
+                ? pos ? 'var(--color-profit)' : 'var(--color-loss)'
+                : 'var(--color-text-secondary)',
+            }}
+          >
+            {hasQuote ? (pos ? '+' : '') + fmt2(Number(item.change)) : 'N/A'}
           </div>
         </div>
 
@@ -102,14 +120,18 @@ function WatchlistItem({ item, index, onDelete, marketStatus, isMobile }: Watchl
           <div
             className="w-16 py-1 rounded-lg text-center text-xs font-bold"
             style={{
-              backgroundColor: pos ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)',
-              color: pos ? 'var(--color-profit)' : 'var(--color-loss)',
+              backgroundColor: hasQuote
+                ? pos ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)'
+                : 'var(--color-bg-subtle)',
+              color: hasQuote
+                ? pos ? 'var(--color-profit)' : 'var(--color-loss)'
+                : 'var(--color-text-secondary)',
             }}
           >
             {pctStr}
           </div>
-          {extType && extPct != null && (
-            <div className="text-[10px] mt-0.5 text-center flex items-center justify-center gap-0.5" style={{ color: extColor }}>
+          {hasQuote && extType && extPct != null && (
+            <div className="text-[0.625rem] mt-0.5 text-center flex items-center justify-center gap-0.5" style={{ color: extColor }}>
               {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
               {fmt2(Number(item.price))} {extPct >= 0 ? '+' : ''}{fmt2(extPct)}%
             </div>
@@ -169,18 +191,32 @@ interface PortfolioItemProps {
 }
 
 function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStatus, isMobile }: PortfolioItemProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const navigate = useNavigate();
-  const pos = item.isPositive;
+  const hasQuote = item.quoteAvailable !== false;
+  const pos = hasQuote ? item.isPositive ?? true : true;
+  const currency = normalizePortfolioCurrency(item.currency);
   const plStr =
-    item.unrealizedPlPercent != null
+    hasQuote && item.unrealizedPlPercent != null
       ? (pos ? '+' : '') + fmt2(Number(item.unrealizedPlPercent)) + '%'
-      : '—';
+      : 'N/A';
   const hasId = !!item.user_portfolio_id;
 
   // Extended hours
   const { extPct, extType, extPrice: _extPrice2 } = getExtendedHoursInfo(marketStatus, item, { shortLabels: true });
   const extColor = extType === 'pre' ? '#fbbf24' : '#3b82f6';
+  const displayMarketValue =
+    hasQuote && item.marketValue != null
+      ? formatPortfolioMoney(item.marketValue, currency, i18n.language)
+      : 'N/A';
+  const displayPrice =
+    hasQuote
+      ? formatPortfolioMoney(
+          Number(extType && item.previousClose != null ? item.previousClose : item.price),
+          currency,
+          i18n.language,
+        )
+      : 'N/A';
 
   const rowContent = (
     <motion.div
@@ -216,10 +252,14 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
       <div className="flex items-center gap-4">
         <div className="text-right">
           <div className="text-sm font-medium dashboard-mono" style={{ color: 'var(--color-text-primary)' }}>
-            {valuesHidden ? '******' : `$${fmt2(Number(item.marketValue || 0))}`}
+            {valuesHidden
+              ? '******'
+              : displayMarketValue}
           </div>
           <div className="text-xs dashboard-mono" style={{ color: 'var(--color-text-secondary)' }}>
-            {valuesHidden ? '***' : `@${fmt2(Number(extType && item.previousClose != null ? item.previousClose : item.price))}`}
+            {valuesHidden
+              ? '***'
+              : displayPrice}
           </div>
         </div>
 
@@ -227,16 +267,20 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
           <div
             className="w-16 py-1 rounded-lg text-center text-xs font-bold"
             style={{
-              backgroundColor: pos ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)',
-              color: pos ? 'var(--color-profit)' : 'var(--color-loss)',
+              backgroundColor: hasQuote
+                ? pos ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)'
+                : 'var(--color-bg-subtle)',
+              color: hasQuote
+                ? pos ? 'var(--color-profit)' : 'var(--color-loss)'
+                : 'var(--color-text-secondary)',
             }}
           >
             {plStr}
           </div>
-          {extType && extPct != null && (
-            <div className="text-[10px] mt-0.5 text-center flex items-center justify-center gap-0.5" style={{ color: extColor }}>
+          {hasQuote && extType && extPct != null && (
+            <div className="text-[0.625rem] mt-0.5 text-center flex items-center justify-center gap-0.5" style={{ color: extColor }}>
               {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
-              {fmt2(Number(item.price))} {extPct >= 0 ? '+' : ''}{fmt2(extPct)}%
+              {formatPortfolioMoney(item.price, currency, i18n.language)} {extPct >= 0 ? '+' : ''}{fmt2(extPct)}%
             </div>
           )}
         </div>
@@ -350,7 +394,7 @@ function PortfolioWatchlistCard({
   onPortfolioEdit,
   marketStatus,
 }: PortfolioWatchlistCardProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const isMobile = useIsMobile();
   const [activeTab, setActiveTabRaw] = useState<PWTabKey>(() => (localStorage.getItem('portfolio_active_tab') as PWTabKey) || 'watchlist');
   const [valuesHidden, setValuesHiddenRaw] = useState(() => localStorage.getItem('portfolio_values_hidden') === 'true');
@@ -367,15 +411,18 @@ function PortfolioWatchlistCard({
     });
   };
 
-  // Compute portfolio summary
-  const totalValue = portfolioRows.reduce((sum, r) => sum + (r.marketValue || 0), 0);
-  const totalCost = portfolioRows.reduce(
-    (sum, r) => sum + (r.average_cost != null ? r.average_cost * (r.quantity || 0) : 0),
-    0
+  const portfolioSummaries = React.useMemo(
+    () => summarizePortfolioByCurrency(portfolioRows),
+    [portfolioRows],
   );
-  const totalPl = totalCost > 0 ? totalValue - totalCost : 0;
-  const totalPlPct = totalCost > 0 ? ((totalValue - totalCost) / totalCost) * 100 : 0;
-  const isPlPositive = totalPl >= 0;
+  const visibleSummaries = React.useMemo(
+    () => portfolioSummaries.filter((summary) => summary.totalValue !== 0),
+    [portfolioSummaries],
+  );
+  const visiblePlSummaries = React.useMemo(
+    () => visibleSummaries.filter((summary) => summary.totalCost > 0),
+    [visibleSummaries],
+  );
 
   return (
     <div
@@ -470,7 +517,9 @@ function PortfolioWatchlistCard({
                 >
                   <div className="flex items-center justify-between mb-1">
                     <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-                      {t('dashboard.portfolioWatchlistCard.netAssetValue')}
+                      {visibleSummaries.length > 1
+                        ? t('dashboard.portfolioWatchlistCard.netAssetValueByCurrency')
+                        : t('dashboard.portfolioWatchlistCard.netAssetValue')}
                     </div>
                     <button
                       onClick={() => setValuesHidden((h) => !h)}
@@ -483,21 +532,37 @@ function PortfolioWatchlistCard({
                     </button>
                   </div>
                   <div
-                    className="text-2xl font-bold mb-2 dashboard-mono"
+                    className={`${visibleSummaries.length > 1 ? 'text-xl' : 'text-2xl'} font-bold mb-2 dashboard-mono`}
                     style={{ color: 'var(--color-text-primary)' }}
                   >
-                    {valuesHidden ? '********' : `$${fmt2(totalValue)}`}
+                    {valuesHidden
+                      ? '********'
+                      : visibleSummaries.length > 0
+                        ? visibleSummaries.map((summary) => (
+                            <div key={summary.currency}>
+                              {formatPortfolioMoney(summary.totalValue, summary.currency, i18n.language)}
+                            </div>
+                          ))
+                        : '--'}
                   </div>
-                  {!valuesHidden && (
-                    <div
-                      className="flex items-center gap-2 text-xs font-medium w-fit px-2 py-1 rounded-full"
-                      style={{
-                        backgroundColor: isPlPositive ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)',
-                        color: isPlPositive ? 'var(--color-profit)' : 'var(--color-loss)',
-                      }}
-                    >
-                      {isPlPositive ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
-                      {isPlPositive ? '+' : '-'}${fmt2(Math.abs(totalPl))} ({fmt1(totalPlPct)}%)
+                  {!valuesHidden && visiblePlSummaries.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {visiblePlSummaries.map((summary) => (
+                        <div
+                          key={summary.currency}
+                          className="flex items-center gap-2 text-xs font-medium w-fit px-2 py-1 rounded-full"
+                          style={{
+                            backgroundColor: summary.isPlPositive
+                              ? 'var(--color-profit-soft)'
+                              : 'var(--color-loss-soft)',
+                            color: summary.isPlPositive ? 'var(--color-profit)' : 'var(--color-loss)',
+                          }}
+                        >
+                          {summary.isPlPositive ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
+                          {summary.isPlPositive ? '+' : '-'}
+                          {formatPortfolioMoney(Math.abs(summary.totalPl), summary.currency, i18n.language)} ({fmt1(Math.abs(summary.totalPlPct))}%)
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>

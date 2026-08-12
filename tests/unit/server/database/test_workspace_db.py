@@ -165,13 +165,14 @@ async def test_get_workspace_found(ws_mock_db, mock_cursor):
     """get_workspace returns dict when row exists."""
     from src.server.database.workspace import get_workspace
 
-    row = _workspace_row(workspace_id="ws-1")
+    ws_id = str(uuid.uuid4())
+    row = _workspace_row(workspace_id=ws_id)
     mock_cursor.fetchone.return_value = row
 
-    result = await get_workspace("ws-1")
+    result = await get_workspace(ws_id)
 
     assert result is not None
-    assert result["workspace_id"] == "ws-1"
+    assert result["workspace_id"] == ws_id
     sql = mock_cursor.execute.call_args[0][0]
     assert "status != 'deleted'" in sql
 
@@ -183,8 +184,51 @@ async def test_get_workspace_not_found(ws_mock_db, mock_cursor):
 
     mock_cursor.fetchone.return_value = None
 
-    result = await get_workspace("nonexistent")
+    result = await get_workspace(str(uuid.uuid4()))
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_workspace_invalid_uuid_short_circuits(ws_mock_db, mock_cursor):
+    """A non-UUID id returns None without touching the DB.
+
+    Regression: a memory-file key (e.g. ``my_notes.md``)
+    reaching ``WHERE workspace_id = %s`` against the uuid column raised
+    psycopg InvalidTextRepresentation (22P02), which handlers surfaced as a
+    spurious 500. The guard must short-circuit to None before any query.
+    """
+    from src.server.database.workspace import get_workspace
+
+    for bad_id in ("my_notes.md", "ws-1", "nonexistent", "", None):
+        assert await get_workspace(bad_id) is None
+
+    mock_cursor.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_workspace_normalizes_noncanonical_uuid(ws_mock_db, mock_cursor):
+    """A Python-parseable but non-canonical id is bound to the query in canonical
+    form, never raw.
+
+    Regression: ``uuid.UUID()`` accepts forms postgres' uuid type rejects (e.g.
+    ``urn:uuid:...``), so a validate-only guard let those reach postgres →
+    InvalidTextRepresentation (22P02) → 500. The guard must normalize and bind
+    the canonical string so postgres always accepts it.
+    """
+    from src.server.database.workspace import get_workspace
+
+    canonical = "12345678-1234-5678-1234-567812345678"
+    mock_cursor.fetchone.return_value = None
+    for variant in (
+        f"urn:uuid:{canonical}",
+        "{%s}" % canonical,
+        canonical.replace("-", ""),
+        canonical.upper(),
+    ):
+        mock_cursor.execute.reset_mock()
+        await get_workspace(variant)
+        params = mock_cursor.execute.call_args[0][1]
+        assert params == (canonical,), f"{variant!r} bound {params!r}, not canonical"
 
 
 @pytest.mark.asyncio

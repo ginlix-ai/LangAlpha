@@ -5,9 +5,13 @@
   <br>
   LangAlpha is built to help interpret financial markets and support investment decisions.
   <br><br>
-  <img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+" />
+  <img src="https://img.shields.io/badge/python-3.13+-blue.svg" alt="Python 3.13+" />
   <a href="https://github.com/langchain-ai/langchain"><img src="https://img.shields.io/badge/LangChain-1c3c3c?logo=langchain&logoColor=white" alt="LangChain" /></a>
   <img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License" />
+</p>
+
+<p align="center">
+  <strong>English</strong> ｜ <a href="docs/README.zh-CN.md">简体中文</a> ｜ <a href="docs/README.ja-JP.md">日本語</a>
 </p>
 
 <p align="center">
@@ -43,15 +47,15 @@ In practice, you create a workspace per research goal ("Q2 rebalance", "data cen
 - **Financial data ecosystem** — Multi-tier provider hierarchy with native tools for quick lookups and MCP servers for bulk data processing, charting, and multi-year analysis in sandboxes.
 - **Persistent workspaces** — Each workspace maps to a dedicated sandbox with structured directories and a workspace notes file (`agent.md`) that compounds research across sessions and threads. A separate long-term memory store (`.agents/user/memory/`, `.agents/workspace/memory/`) persists durable user preferences and cross-sandbox knowledge, and a user-managed memo store (`.agents/user/memo/`) lets you upload PDFs and markdown research notes that the agent can read on demand.
 - **Skills for Financial Research** — Pre-built workflows for DCF models, initiating coverage reports, earnings analysis, morning notes, document generation, and more — activatable by slash command or auto-detection.
-- **Finance Research Workbench** — Web UI with inline financial charts, multi-format file viewer, TradingView charting, real-time WebSocket market data, shareable conversations, and subagent monitoring.
+- **Finance Research Workbench** — Web UI with inline financial charts, multi-format file viewer, TradingView charting, real-time WebSocket market data, agent-drawn chart annotations, a per-turn source-provenance panel, shareable conversations, and subagent monitoring.
 - **Multi-provider model layer** — Provider-agnostic LLM abstraction and automatic failover on error.
 - **Automations** — Schedule recurring or one-shot tasks, or set price-triggered automations that fire when a stock or index hits a real-time price condition.
 - **Secretary** — Flash agent doubles as a secretary: create and manage workspaces, dispatch deep PTC analyses in the background, monitor running tasks, and retrieve results — all through conversational commands with human-in-the-loop approval.
 - **Agent swarm** — Parallel async subagents with isolated context windows, preloaded toolset/skills, mid-execution steering, checkpoint-based resume, and live progress monitoring in the UI.
 - **Live steering** — Send follow-up messages while the agent/subagent is working to course-correct, clarify, or redirect without waiting for it to finish.
-- **Middleware stack** — 25 composable layers handling skill loading, plan mode, multimodal input, auto-compaction, and context management support long-running agent sessions.
+- **Middleware stack** — a deep, composable middleware stack handling skill loading, plan mode, multimodal input, auto-compaction, and context management to support long-running agent sessions.
 - **Security & workspace vault** — Encryption at rest via pgcrypto, automatic credential leak detection and redaction, sandboxed execution, and per-workspace secret storage for safe agent access
-- **Channel integrations** — Use LangAlpha from Slack, Discord with complete feature support.
+- **Channel integrations** — Use LangAlpha from Slack, Discord, Feishu, and Telegram, plus email delivery for scheduled results.
 - **Production-ready infrastructure** — SSE-streamed agent activity with Redis-buffered reconnection replay, background execution decoupled from HTTP connections, and PostgreSQL-backed state persistence.
 
 ## What Powers It
@@ -69,8 +73,8 @@ flowchart TB
     subgraph Server ["FastAPI Backend"]
         API["API Routers<br/>Threads · Workspaces · Market Data<br/>OAuth · Automations · Skills"]
         WSP["WebSocket Proxy"]
-        API --> ChatHandler["Chat Handler<br/>LLM Resolution · Credit Check"]
-        ChatHandler --> BTM["Background Task Manager<br/>asyncio.shield · Workflow Lifecycle"]
+        API --> ChatHandler["Chat Handler<br/>LLM Resolution · Workflow Dispatch"]
+        ChatHandler --> BTM["Background Task Manager<br/>Decoupled Execution · Workflow Lifecycle"]
     end
 
     subgraph PostgreSQL ["PostgreSQL — Dual Pool"]
@@ -104,9 +108,9 @@ LangAlpha runs on a provider-agnostic model layer that abstracts across multiple
 - **PTC mode** for deep, multi-step investment research. Strong reasoning drives multi-step analysis where the agent plans its approach, thinks through financial data, and writes code for complex analysis. Long context lets it cross-reference SEC filings and research reports in a single pass.
 - **Flash mode** for fast conversational responses and workspace orchestration: quick market lookups, chart-and-chat in MarketView, lightweight Q&A, and a secretary that manages workspaces, dispatches deep PTC analyses in the background, and relays results back through natural conversation.
 
-**Bring your own model** — Use your existing AI subscriptions and API keys directly. Connect ChatGPT or Claude subscriptions via OAuth (OpenAI Codex OAuth, Claude Code OAuth), use coding plans from Kimi (Moonshot), GLM (Zhipu), or MiniMax, or supply your own API keys for any supported provider via BYOK. All keys are encrypted at rest via PostgreSQL pgcrypto (see [Security](#security)).
+**Bring your own model** — Use your existing AI subscriptions and API keys directly. Connect ChatGPT or Claude subscriptions via OAuth (OpenAI Codex OAuth, Claude Code OAuth), use coding plans from Kimi (Moonshot), GLM (Zhipu), MiniMax, or Doubao (Volcengine), or supply your own API keys for any supported provider via BYOK. All keys are encrypted at rest via PostgreSQL pgcrypto (see [Security](#security)).
 
-**Model resilience** — 3 retries with exponential backoff on the same model, then automatic failover to a configured fallback model. Reasoning effort (`low`/`medium`/`high`) is normalized across providers automatically.
+**Model resilience** — automatic retries on transient errors, then failover to a configured fallback model. Reasoning effort (`low`/`medium`/`high`) is normalized across providers automatically.
 
 ### Programmatic Tool Calling (PTC) and Workspace Architecture
 
@@ -155,16 +159,20 @@ While PTC excels at complex work like multi-step data processing, financial mode
 - **Company overview** with real-time quotes, price performance, key financial metrics, analyst consensus, and revenue breakdown
 - **SEC filings** (10-K, 10-Q, 8-K) with earnings call transcripts and formatted markdown for citation
 - **Market indices** and **sector performance** for broad market context
-- **Web search** (Tavily, Serper, Bocha) and **web crawling** with circuit breaker fault tolerance
+- **Web search** (Tavily, Serper, Bocha, Exa, Parallel) — manifest-driven provider selection with tiered depth (fast lookup to deep research), plus image search and AI research modes, selectable per user — and **web fetch** with a zero-key built-in crawler plus optional provider delegation (Firecrawl and others), guarded by per-provider circuit breakers, alongside opt-in **site crawling** (WebCrawl/WebMap)
 
 **MCP servers** for raw data consumed through PTC code execution:
 
-- **Price data** for OHLCV time series across stocks, commodities, crypto, and forex
-- **Fundamentals** for multi-year financial statements, ratios, growth metrics, and valuation
+- **Price data** for OHLCV time series across stocks, commodities, crypto, and forex, plus short interest and short volume analytics
+- **Fundamentals** for multi-year financial statements, ratios, growth metrics, valuation, insider trades, dividends and splits, share float, key executives, and technical indicators
 - **Macro economics** for GDP, CPI, unemployment, Fed funds rate, treasury yield curve (1M–30Y), country risk premiums, economic calendar, and earnings calendar
 - **Options** for options chain with filtering, historical OHLCV for option contracts, and real-time bid/ask snapshots
+- **Yahoo Finance suite** (price, fundamentals, analysis, market) for keyless coverage of statements, analyst ratings, holders, screening, and calendars
+- **X (Twitter)** read-only post search, user/tweet lookup, and thread fetch for sentiment and event tracking, plus a **scraping** server for JS-rendered and anti-bot-protected pages
 
 The agent picks the right layer automatically: native tools for fast lookups that fit in context, MCP tools when the task requires bulk data processing, charting, or multi-year trend analysis in the sandbox.
+
+MCP servers are configurable per workspace. Built-in servers can be disabled individually, and custom HTTP or stdio servers — including ones that read credentials from the [workspace vault](#workspace-vault) — can be added through the API or UI, taking effect within seconds without a restart.
 
 #### Data Provider Fallback Chain
 
@@ -173,7 +181,7 @@ LangAlpha supports a three-tier data provider hierarchy. Each tier is optional �
 
 | Tier | Provider                          | Key Required      | What It Adds                                                                               |
 | ---- | --------------------------------- | ----------------- | ------------------------------------------------------------------------------------------ |
-| 1    | **ginlix-data** (hosted proxy)    | `GINLIX_DATA_URL` | Real-time WebSocket price feed, intraday data, extented trading hour data, options data    |
+| 1    | **ginlix-data** (hosted proxy)    | `GINLIX_DATA_URL` | Real-time WebSocket price feed, intraday data, extended trading hour data, options data    |
 | 2    | **FMP** (Financial Modeling Prep) | `FMP_API_KEY`     | High-quality fundamentals, financial statements, macro data, analyst data                  |
 | 3    | **Yahoo Finance** (yfinance)      | *None — free*     | Price history, basic fundamentals, earnings, holdings, insider transactions, ESG, screener |
 
@@ -192,8 +200,8 @@ The agent ships with 23 pre-built financial research skills, each activatable by
 | ------------------------ | ----------------------------------------------------------------------------------------- |
 | **Valuation & Modeling** | DCF Model, Comps Analysis, 3-Statement Model, Model Update, Model Audit                   |
 | **Equity Research**      | Initiating Coverage (30–50pg report), Earnings Preview, Earnings Analysis, Thesis Tracker |
-| **Market Intelligence**  | Morning Note, Catalyst Calendar, Sector Overview, Competitive Analysis, Idea Generation   |
-| **Document Generation**  | PDF, DOCX, PPTX, XLSX — create, edit, extract                                             |
+| **Market Intelligence**  | Morning Note, Catalyst Calendar, Sector Overview, Competitive Analysis, Idea Generation, X Research |
+| **Document Generation**  | PDF, DOCX, PPTX, XLSX, HTML — create, edit, extract                                       |
 | **Operations**           | Investment Deck QC, Scheduled Automations, User Profile & Portfolio                       |
 
 
@@ -213,6 +221,10 @@ The agent natively reads images (PNG, JPG, GIF, WebP) and PDFs — the multimoda
 </p>
 <p align="center"><em>MarketView sends the live chart to the agent for real-time technical analysis.</em></p>
 
+### Agent-Drawn Chart Annotations
+
+Ask the agent to mark up the MarketView chart and it draws directly on the canvas — price levels, trendlines, Fibonacci retracements, event badges, rectangles, and text markers. Annotations stream in live over SSE, persist per workspace and per `symbol:timeframe` pair (a drawing on `NVDA:1day` stays separate from `NVDA:1hour`), and replay on reconnect. When the conversation happens outside MarketView, the chat transcript shows a mini-preview card with the annotation legend and a one-click link to the live chart. The chart-annotation skill loads automatically whenever a message is sent from MarketView, so the agent always knows which ticker and timeframe "the chart" refers to.
+
 ### Automations
 
 The agent can schedule its own tasks from within a conversation — no separate UI needed. Users can also manage automations from the dedicated Automations page with full CRUD, execution history, and manual trigger. All automation types share the same `AutomationExecutor`, configurable agent mode (PTC or Flash), and automatic disabling after consecutive failures.
@@ -231,7 +243,7 @@ The agent can schedule its own tasks from within a conversation — no separate 
 Conditions can be combined (AND logic), and each price automation supports **one-shot** (fire once) or **recurring** mode with a configurable cooldown (minimum 4 hours, or once per trading day by default).
 
 > [!NOTE]
-> Price-triggered automations require the real-time WebSocket feed from ginlix-data. During the beta, this feature is available exclusively on the [hosted platform](https://ginlix.ai). Broader WebSocket data source support is planned for future releases.
+> Price-triggered automations require the real-time WebSocket feed from ginlix-data. During the beta, this feature is available exclusively on the [hosted platform](https://langalpha.ai). Broader WebSocket data source support is planned for future releases.
 
 <p align="center">
   <img src="docs/images/automations-page-mag7-pre-earnings.png" alt="Automations page with template gallery and Mag 7 pre-earnings schedule" width="800" />
@@ -259,7 +271,7 @@ flowchart TB
         S3["user-defined"]
     end
 
-    subgraph Middleware ["Middleware — 25 Layers"]
+    subgraph Middleware ["Middleware Stack"]
         direction LR
         MW1["Tool Safety<br/>Leak Detection<br/>Protected Paths<br/>Error Handling"]
         MW2["Context & Skills<br/>agent.md Injection<br/>Skill Loading<br/>Multimodal"]
@@ -268,7 +280,7 @@ flowchart TB
     end
 
     Agent -- "wraps model + tool calls" --> Middleware
-    Middleware --> LLM["Multi-Provider LLM<br/>Gemini · OpenAI · Anthropic · DeepSeek · ..."]
+    Middleware --> LLM["Multi-Provider LLM<br/>OpenAI · Anthropic · Gemini · DeepSeek<br/>Qwen · Kimi · Doubao · GLM · MiniMax · ..."]
 
     Agent <--> Tools
 
@@ -297,9 +309,9 @@ flowchart TB
 
 ### Agent Swarm
 
-The core agent runs on [LangGraph](https://github.com/langchain-ai/langgraph) and spawns parallel async subagents via a `Task()` tool. Subagents execute concurrently with isolated context windows, preventing drift in long reasoning chains. Each subagent returns synthesized results back to the main agent, keeping the orchestrator lean. The main agent can choose to wait for a subagent's result or continue other pending work. Interrupting the main agent does not stop running subagents, so you can halt the orchestrator, update your requirements, or dispatch additional subagents while existing ones finish in the background. You can also switch to the **Subagents** view in the UI to see their progress in real time (web frontend only).
+The core agent runs on [LangGraph](https://github.com/langchain-ai/langgraph) and spawns parallel async subagents via a `Task()` tool. Subagents execute concurrently with isolated context windows, preventing drift in long reasoning chains. Each subagent returns synthesized results back to the main agent, keeping the orchestrator lean. The main agent can choose to wait for a subagent's result or continue other pending work. You can also switch to the **Subagents** view in the UI to see their progress in real time (web frontend only).
 
-Beyond simple dispatch, the main agent can send follow-up instructions to a still-running subagent via `Task(action="update")`, or resume a completed subagent with full checkpoint context via `Task(action="resume")` for iterative refinement. If the server restarts, subagent state is automatically reconstructed from LangGraph checkpoints.
+Beyond simple dispatch, the main agent can send follow-up instructions to a still-running subagent, or resume a completed one with full context for iterative refinement. If the server restarts, subagent state is automatically reconstructed from its last checkpoint.
 
 <p align="center">
   <img src="docs/images/chat-data-center-moat-ai-compute-timeline.png" alt="Parallel subagents researching the data center compute chain with an interactive AI compute timeline" width="800" />
@@ -310,12 +322,12 @@ Beyond simple dispatch, the main agent can send follow-up instructions to a stil
 
 The agent ships with a middleware stack, including:
 
-- **Live steering** — agents can take wrong turns, chase irrelevant data, or misunderstand your intent mid-analysis. Steering lets you course-correct without waiting. Send a follow-up message at any time while the agent is working — updated instructions, clarifications, or entirely new questions — and the middleware injects it into the conversation before the next LLM call. The agent sees your message as if you had said it in real time, adjusts its plan, and continues from there. Steering works at every level: redirect the main agent, send follow-up instructions to individual background subagents via `Task(action="update")`, or let the system gracefully return unconsumed messages to your input box if the workflow finishes before picking them up. No work is lost, no restarts required.
+- **Live steering** — agents can take wrong turns, chase irrelevant data, or misunderstand your intent mid-analysis. Steering lets you course-correct without waiting. Send a follow-up message at any time while the agent is working — updated instructions, clarifications, or entirely new questions — and the agent picks it up before its next step, as if you had said it in real time. Steering works at every level: redirect the main agent, send follow-ups to individual background subagents, or let the system gracefully return unconsumed messages to your input box if the workflow finishes first. No work is lost, no restarts required.
 - **Dynamic skill loading** via a `LoadSkill` tool that lets the agent discover and activate skill toolsets on demand, keeping the default tool surface lean while making specialized capabilities available when needed
 - **Multimodal** intercepts file reads for images and PDFs, downloads content from the sandbox or URLs, and injects it as base64 into the conversation so multimodal models can interpret them natively
 - **Plan mode** with human-in-the-loop interrupts lets you review and approve the agent's strategy before execution
 - **Auto-compaction** compresses conversation history when approaching token limits, preserving key context while freeing space
-- **Context management** automatically offloads tool results exceeding 40,000 tokens to the workspace filesystem, keeping a truncated preview in context. For very long sessions, a two-tier compaction system first truncates old tool arguments, then LLM-summarizes the conversation history while offloading the full transcript to the workspace for recovery. Research sessions can run indefinitely without hitting token limits.
+- **Context management** automatically offloads large tool results to the workspace filesystem, keeping a short preview in context, and compacts long conversations as they grow — summarizing older turns while keeping the full transcript recoverable in the workspace. Research sessions can run indefinitely without hitting context limits.
 
 See [`src/ptc_agent/agent/middleware/`](src/ptc_agent/agent/middleware/) for the full set.
 
@@ -325,15 +337,19 @@ Acknowledgement: some of middleware components are adapted or inspired by the im
 
 The server streams all agent activity over SSE: text chunks, tool calls with arguments and results, subagent status updates, file operation artifacts, and human-in-the-loop interrupts. Every agent decision is fully traceable in the UI.
 
-Workflows run as independent background tasks behind `asyncio.shield()`, fully decoupled from the HTTP/SSE connection. If the browser tab closes or the network drops, the agent keeps working. On reconnect, up to 150,000 buffered events replay from Redis with `last_event_id` deduplication, picking up exactly where the client left off. A background cleanup task auto-purges abandoned workflows after one hour. Soft interrupts pause the main agent while background subagents continue running.
+Workflows run as independent background tasks, fully decoupled from the HTTP/SSE connection. If the browser tab closes or the network drops, the agent keeps working. On reconnect, up to 150,000 buffered events replay so the client picks up exactly where it left off.
 
-PostgreSQL backs LangGraph checkpointing, conversation history, and user data (watchlists, portfolios, preferences), so agent state and user context persist across sessions. Redis buffers SSE events so that browser refreshes and network drops do not lose in-flight messages: the client reconnects and replays automatically. The server also handles synchronization between local data and sandbox data, keeping MCP, skills, and user context in sync. See the full [API reference](docs/api/README.md) for details.
+PostgreSQL backs LangGraph checkpointing, conversation history, and user data (watchlists, portfolios, preferences), so agent state and user context persist across sessions. Redis buffers SSE events so that browser refreshes and network drops do not lose in-flight messages: the client reconnects and replays automatically. User data is exposed to the agent as virtual JSON files backed directly by the database — reads serialize live rows on demand and writes apply in a single validated transaction, with no sandbox sync round-trip — while skills are synced to the sandbox on session init via a manifest-based cache, re-uploaded only when they change. See the full [API reference](docs/api/README.md) for details.
+
+### Source Provenance
+
+Every external data source the agent touches is traced and surfaced. A provenance middleware records each web search, page fetch, SEC filing, market-data call, MCP tool invocation, and workspace file read — including accesses made by background subagents — and emits a `provenance` stream event per source, none of which enters the LLM context. The UI renders these as a Sources panel beside each turn: sources grouped by type, favicons for web origins, and a detail view exposing the provider, timestamp, captured arguments, a content fingerprint, and a snippet. A *This turn / All sources* toggle reveals the full data footprint across an entire thread, and clicking a file or memo source opens it directly in the workspace file panel — a fully auditable trail of the data behind every research output.
 
 ## Security & Workspace Vault
 
 LangAlpha applies a layered security model across credentials, code execution, and user-supplied secrets.
 
-**Encryption at rest** — All sensitive data (BYOK API keys, OAuth tokens, vault secrets) is encrypted inside PostgreSQL using `pgcrypto` (`pgp_sym_encrypt` / `pgp_sym_decrypt`). Plaintext never exists in the database or in application memory during persistence.
+**Encryption at rest** — All sensitive data (BYOK API keys, OAuth tokens, vault secrets) is encrypted inside PostgreSQL using `pgcrypto`. Plaintext is never stored in the database.
 
 **Credential leak detection** — Every tool output is scanned before it reaches the LLM context. The middleware resolves all known secret values (MCP server keys, sandbox tokens, vault secrets) and redacts any match as `[REDACTED:KEY_NAME]`. The same redaction applies to human-facing surfaces — file reads and downloads are scrubbed before reaching the client.
 
@@ -357,14 +373,17 @@ Vault secrets inherit every protection layer above — encrypted at rest, redact
 
 The web UI is more than a chat interface — it's a full research workbench:
 
-- **Configurable dashboard** — start from a preset layout (Morning Brief, Agent Desk, Researcher, Trader) or build your own from a widget gallery covering markets, intelligence, personal context, agent surfaces, and workspace shortcuts
+- **Configurable dashboard** — start from a preset layout (Morning Brief, Trader, Researcher, Agent Desk, Trader (TradingView), or Portfolio Steward) or build your own from a widget gallery covering markets, intelligence, personal context, agent surfaces, and workspace shortcuts
 - **Inline financial charts** — tool results render as interactive sparklines, bar charts, and overview cards directly in the chat thread
 - **Inline HTML widgets** — the agent can render interactive HTML/SVG visualizations (Chart.js charts, metric cards, data tables) directly in the chat via the `ShowWidget` tool, with theme-aware styling and sandboxed iframes
+- **HTML research reports** — the agent writes full self-contained HTML documents to `results/`, served with real browser semantics (scripts run, CDN libraries load, relative assets resolve), viewable fullscreen and exportable to PDF — distinct from inline widgets and live dashboards
 - **Multi-format file viewer** — PDF (paginated, zoomable), Excel, CSV, HTML preview, and source code (Monaco editor with diff mode) — all viewable inline without download
 - **TradingView charting** — full TradingView Advanced Chart with drawing tools, indicators, and professional candlestick styling
-- **Live market data** — real-time WebSocket price feed with 1-second tick resolution, extended hours visualization, and multiple moving average overlays
+- **Live market data** — real-time WebSocket price feed with 1-second tick resolution (US equities), extended hours visualization, and multiple moving average overlays
+- **Agent-drawn chart annotations** — the agent marks up the MarketView chart with price levels, trendlines, Fibonacci retracements, and event badges, persisted per `symbol:timeframe` and previewed inline in chat
 - **Shareable conversations** — one-click sharing with granular permissions (toggle file browsing and download access), replay via public URL
 - **Real-time subagent monitoring** — watch each background task's streaming output and tool calls live, with the ability to send mid-execution instructions
+- **Source provenance panel** — every turn lists the external sources the agent accessed (web, SEC filings, market data, MCP tools, files) with favicons, content fingerprints, and a per-thread scope toggle
 - **Automations** — CRUD management with cron builder, execution history, manual trigger, and price-triggered automations that fire when a stock or index hits a real-time price condition
 
 <p align="center">
@@ -389,7 +408,7 @@ The web UI is more than a chat interface — it's a full research workbench:
 
 ## Channel Integrations
 
-Use LangAlpha from the tools you already work in. The integration gateway relays messages between messaging platforms and the core agent, with each channel receiving responses in its native format. Channel integrations are available exclusively on our hosted service with one-click setup and quick account binding — visit [integrations](https://ginlix.ai/account/integrations) to get started.
+Use LangAlpha from the tools you already work in. The integration gateway relays messages between messaging platforms and the core agent, with each channel receiving responses in its native format. Channel integrations are available exclusively on our hosted service with one-click setup and quick account binding — visit [integrations](https://platform.langalpha.ai/integrations) to get started.
 
 
 | Feature                        | Slack | Discord | Feishu | Telegram | WhatsApp |
@@ -411,7 +430,7 @@ Slack and Discord offer native channels and thread-level groups, which map natur
 ## Getting Started
 
 > [!TIP]
-> **Don't want to self-host?** Try the [hosted version](https://ginlix.ai) — it includes full data infrastructure (FMP, real-time market data, cloud sandboxes) out of the box. Bring your own LLM key (BYOK) and start immediately with no setup.
+> **Don't want to self-host?** Try the [hosted version](https://langalpha.ai) — it includes full data infrastructure (FMP, real-time market data, cloud sandboxes) out of the box. Bring your own LLM key (BYOK) and start immediately with no setup.
 
 You can start LangAlpha with **nothing but Docker** — no API keys for data, no cloud sandbox. Just Docker for infrastructure and your own LLM subscription for the AI model.
 
@@ -433,8 +452,11 @@ For the full experience, the wizard will prompt you for optional keys — or add
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
 | `DAYTONA_API_KEY`                    | Persistent cloud sandboxes with cross-session workspace support ([daytona.io](https://www.daytona.io/))                 |
 | `FMP_API_KEY`                        | High-quality fundamentals, macro, SEC filings, options ([free tier available](https://site.financialmodelingprep.com/)) |
-| `SERPER_API_KEY` or `TAVILY_API_KEY` | Web search                                                                                                              |
-| `LANGSMITH_API_KEY`                  | Tracing and observability                                                                                               |
+| `SERPER_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`, or `PARALLEL_API_KEY` | Web search (any one enables it)                                                     |
+| `FIRECRAWL_API_KEY`                  | Upgraded web fetch and site crawling (the built-in crawler needs no key)                                                |
+| `LANGSMITH_API_KEY`                  | LangSmith tracing for LangGraph runs                                                                                    |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`        | OpenTelemetry traces and metrics to any OTLP backend (Jaeger, Grafana Tempo, Datadog, Honeycomb, ...)                   |
+| `SANDBOX_PROVIDER`                   | Override the sandbox provider (`daytona` or `docker`); auto-detected from `DAYTONA_API_KEY` when unset                  |
 
 
 > [!NOTE]

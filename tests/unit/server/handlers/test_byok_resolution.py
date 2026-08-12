@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-HANDLER = "src.server.handlers.chat.llm_config"
+HANDLER = "src.server.services.llm.config"
 DB_KEYS = "src.server.database.api_keys"
 
 
@@ -66,7 +66,7 @@ class TestResolveBYOKSystemModel:
 
     @pytest.mark.asyncio
     async def test_not_byok_returns_none(self):
-        from src.server.handlers.chat.llm_config import resolve_byok_llm_client
+        from src.server.services.llm.config import resolve_byok_llm_client
 
         result = await resolve_byok_llm_client("user-1", "gpt-4o", False)
         assert result is None
@@ -74,7 +74,7 @@ class TestResolveBYOKSystemModel:
     @pytest.mark.asyncio
     async def test_system_model_with_key(self):
         """BYOK with system model creates LLM with user's API key."""
-        from src.server.handlers.chat.llm_config import resolve_byok_llm_client
+        from src.server.services.llm.config import resolve_byok_llm_client
 
         mc = _mock_model_config(
             system_models={"gpt-4o": {"provider": "openai"}},
@@ -100,7 +100,7 @@ class TestResolveBYOKSystemModel:
     @pytest.mark.asyncio
     async def test_system_model_no_key_returns_none(self):
         """System model with no BYOK key returns None."""
-        from src.server.handlers.chat.llm_config import resolve_byok_llm_client
+        from src.server.services.llm.config import resolve_byok_llm_client
 
         mc = _mock_model_config(
             system_models={"gpt-4o": {"provider": "openai"}},
@@ -121,7 +121,7 @@ class TestResolveBYOKSystemModel:
     @pytest.mark.asyncio
     async def test_system_model_custom_base_url(self):
         """User's custom base_url should be used if set."""
-        from src.server.handlers.chat.llm_config import resolve_byok_llm_client
+        from src.server.services.llm.config import resolve_byok_llm_client
 
         mc = _mock_model_config(
             system_models={"gpt-4o": {"provider": "openai"}},
@@ -146,7 +146,7 @@ class TestResolveBYOKSystemModel:
     async def test_sub_provider_resolves_parent(self):
         """A sub-provider model resolves the key stored under its parent slug,
         but builds against the model's OWN provider endpoint."""
-        from src.server.handlers.chat.llm_config import resolve_byok_llm_client
+        from src.server.services.llm.config import resolve_byok_llm_client
 
         mc = _mock_model_config(
             system_models={"test-model": {"provider": "acme-platform"}},
@@ -183,7 +183,7 @@ class TestResolveBYOKCustomModel:
     @pytest.mark.asyncio
     async def test_custom_model_with_key(self):
         """Custom model with BYOK key creates LLM from custom config."""
-        from src.server.handlers.chat.llm_config import resolve_byok_llm_client
+        from src.server.services.llm.config import resolve_byok_llm_client
 
         mc = _mock_model_config(
             system_models={},  # Not a system model
@@ -217,7 +217,7 @@ class TestResolveBYOKCustomModel:
     @pytest.mark.asyncio
     async def test_custom_model_no_key_returns_none(self):
         """Custom model without BYOK key returns None (falls back to system default)."""
-        from src.server.handlers.chat.llm_config import resolve_byok_llm_client
+        from src.server.services.llm.config import resolve_byok_llm_client
 
         mc = _mock_model_config(system_models={}, providers={})
         custom_config = {"name": "my-gpt", "model_id": "gpt-4o", "provider": "openai"}
@@ -242,7 +242,7 @@ class TestResolveBYOKCustomModel:
     @pytest.mark.asyncio
     async def test_unknown_model_returns_none(self):
         """Unknown model (not system, not custom) returns None."""
-        from src.server.handlers.chat.llm_config import resolve_byok_llm_client
+        from src.server.services.llm.config import resolve_byok_llm_client
 
         mc = _mock_model_config(system_models={}, providers={})
 

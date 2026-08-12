@@ -1,77 +1,43 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import {
-  Plus, ArrowUp, X, FileText, Loader2, Archive, Square,
-  ScrollText, ChartCandlestick, Zap, FileStack, ChevronDown, ChevronRight, FolderOpen, TextSelect,
-  Terminal, Bot, Shrink, HardDriveDownload, Check, Brain, Flame, Rocket, CircleHelp,
-  Mic, MicOff, Sparkles,
+  Plus, ArrowUp, X, FileText, Archive, Square, ClipboardList,
+  ChartCandlestick, TextSelect, MoreHorizontal, Mic, MicOff,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 import { TokenUsageRing, type TokenUsageData } from './token-usage-ring';
 import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
-  DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuSeparator,
 } from './dropdown-menu';
+import { Loader } from './loader';
 import { usePreferences } from '@/hooks/usePreferences';
+import { useFeatureEnabled } from '@/hooks/useFeatures';
 import { useAllModels } from '@/hooks/useAllModels';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { areModelsCompatible, deriveQuickAccessModels, type ModelMetadata } from './chat-input.models';
+import { deriveQuickAccessModels } from './chat-input.models';
+import type { ModelMetadataEntry } from '@/hooks/useFilteredModels';
 import { supportsXhighEffort } from '@/lib/modelCapabilities';
-import { getSkills, getModelMetadata } from '../../pages/ChatAgent/utils/api';
-import { useToast } from './use-toast';
+import { getModelMetadata } from '../../pages/ChatAgent/utils/api';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
-import { WidgetContextDeck } from '@/pages/Dashboard/widgets/framework/WidgetContextDeck';
 import './chat-input.css';
+import type { ModelOptions, ReadyAttachment, SlashCommand, Workspace } from './chat-input.types';
+import { getSlashCommandIcon, isLargePaste } from './chat-input.helpers';
+import {
+  ChatInputWidgetDeck, FilePreviewCard, MentionAutocompleteList, SlashCommandList,
+} from './chat-input.parts';
+import { ChatInputModelMenu, ModelTriggerMeasure } from './chat-input.modelMenu';
+import { useToolbarItems } from './chat-input.toolbar';
+import {
+  useToolbarFold, CONTAINER_BORDER, CONTAINER_PX, GROUP_GAP, ICON_BUTTON_W, TOKEN_RING_W, TOOLBAR_GAP,
+} from './chat-input.useToolbarFold';
+import { useMentions } from './chat-input.useMentions';
+import { useSlashCommands } from './chat-input.useSlashCommands';
+import { speechSupported, useVoiceInput } from './chat-input.useVoiceInput';
+import { useFileAttachments } from './chat-input.useFileAttachments';
 
-/* --- TYPES --- */
+/** Autosize cap for the composer textarea; past this the box scrolls. */
+const MAX_TEXTAREA_HEIGHT = 200;
 
-interface FileAttachment {
-  id: string;
-  file: File;
-  type: string;
-  preview: string | null;
-  uploadStatus: 'pending' | 'uploading' | 'complete';
-  dataUrl: string | null;
-}
-
-interface MentionedFile {
-  path: string;
-  snippet?: string;
-  label?: string;
-  lineStart?: number;
-  lineEnd?: number;
-  lineCount?: number;
-  source?: string;
-}
-
-interface SlashCommand {
-  type: string;
-  name: string;
-  skillName?: string;
-  description?: string;
-  aliases?: string[];
-}
-
-interface ModelOptions {
-  model: string | null;
-  reasoningEffort: string | null;
-  fastMode: boolean;
-  /**
-   * Widget context snapshots attached via the deck rail. Forwarded to the
-   * backend as `additional_context` items of `type: "widget"`. Image-bearing
-   * snapshots also produce a sibling `type: "image"` MultimodalContext item;
-   * see `widgetSnapshotsToContexts` in `pages/ChatAgent/utils/fileUpload.ts`.
-   */
-  widgetSnapshots?: WidgetContextSnapshot[];
-}
-
-interface ReadyAttachment {
-  file: File;
-  dataUrl: string | null;
-  type: string;
-  preview: string | null;
-}
 
 export interface ChatInputHandle {
   getModelOptions: () => ModelOptions;
@@ -85,18 +51,23 @@ export interface ChatInputHandle {
    */
   addWidgetSnapshot: (snapshot: WidgetContextSnapshot) => void;
   setValue: (text: string) => void;
+  /** Imperatively change the selected model (e.g. the model-fallback
+   *  "Switch to X" action) so the next send uses it. */
+  setModel: (model: string) => void;
 }
 
-interface Workspace {
-  workspace_id: string;
-  name: string;
-  [key: string]: unknown;
-}
 
 export interface ChatInputProps {
   onSend: (message: string, planMode: boolean, attachments: ReadyAttachment[], slashCommands: SlashCommand[], modelOptions: ModelOptions) => void;
   disabled?: boolean;
   isLoading?: boolean;
+  /**
+   * A compaction is in progress with no streaming turn (manual /compact|/offload
+   * runs with isLoading=false). Surfaces the Stop button so the user can
+   * interrupt it, just like a running turn. The Enter-key send path stays open
+   * so a message typed now is queued (mirrors steering during a running turn).
+   */
+  isCompacting?: boolean;
   onStop?: () => void;
   placeholder?: string;
   files?: string[];
@@ -112,210 +83,29 @@ export interface ChatInputProps {
   onRemoveChartImage?: (() => void) | null;
   prefillMessage?: string;
   onClearPrefill?: (() => void) | null;
+  /**
+   * External context attached by the host (e.g. a confirmed chart selection
+   * rendered outside this input). When true, an empty text box still counts as
+   * sendable — the selection carries its own instruction.
+   */
+  hasExternalContext?: boolean;
   tokenUsage?: TokenUsageData | null;
   onAction?: ((cmd: SlashCommand) => void) | null;
   initialModel?: string | null;
+  /** Reports the live model selection (fires on mount and every change). */
+  onModelChange?: ((model: string | null) => void) | null;
   threadModels?: string[];
   dropdownDirection?: 'up' | 'down';
   minRows?: number;
 }
 
-/* --- UTILS --- */
-
-/** Return the appropriate icon for a slash command. */
-function getSlashCommandIcon(cmd: SlashCommand, className: string) {
-  if (cmd.type === 'subagent') return <Bot className={className} />;
-  if (cmd.name === 'offload') return <HardDriveDownload className={className} />;
-  if (cmd.type === 'action') return <Shrink className={className} />;
-  return <Terminal className={className} />;
-}
-
-const formatFileSize = (bytes: number): string => {
-  if (bytes === 0) return '0 Bytes';
-  const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
-
-/* --- FILE PREVIEW CARD --- */
-const FilePreviewCard = ({ file, onRemove }: { file: FileAttachment; onRemove: (id: string) => void }) => {
-  const isMobilePreview = useIsMobile();
-  const isImage = file.type.startsWith('image/') && file.preview;
-
-  return (
-    <div className="relative group flex-shrink-0 w-24 h-24 rounded-xl overflow-hidden border border-[var(--color-border-muted)] bg-[var(--color-bg-elevated)] animate-fade-in transition-all hover:border-[var(--color-border-default)]">
-      {isImage ? (
-        <div className="w-full h-full relative">
-          <img src={file.preview!} alt={file.file.name} className="w-full h-full object-cover" />
-          <div className="absolute inset-0 bg-black/20 group-hover:bg-black/0 transition-colors" />
-        </div>
-      ) : (
-        <div className="w-full h-full p-3 flex flex-col justify-between">
-          <div className="flex items-center gap-2">
-            <div className="p-1.5 rounded" style={{ background: 'var(--color-border-muted)' }}>
-              <FileText className="w-4 h-4" style={{ color: 'var(--color-text-tertiary)' }} />
-            </div>
-            <span className="text-[10px] font-medium uppercase tracking-wider truncate" style={{ color: 'var(--color-text-tertiary)' }}>
-              {file.file.name.split('.').pop()}
-            </span>
-          </div>
-          <div className="space-y-0.5">
-            <p className="text-xs font-medium truncate" style={{ color: 'var(--color-text-muted)' }} title={file.file.name}>
-              {file.file.name}
-            </p>
-            <p className="text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>
-              {formatFileSize(file.file.size)}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Remove Button Overlay */}
-      <button
-        onClick={() => onRemove(file.id)}
-        className={`absolute top-1 right-1 p-1 bg-black/50 hover:bg-black/70 rounded-full text-white transition-opacity ${isMobilePreview ? 'opacity-60' : 'opacity-0 group-hover:opacity-100'}`}
-      >
-        <X className="w-3 h-3" />
-      </button>
-
-      {/* Upload Status */}
-      {file.uploadStatus === 'uploading' && (
-        <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-          <Loader2 className="w-5 h-5 text-white animate-spin" />
-        </div>
-      )}
-    </div>
-  );
-};
-
-/* --- CONSTANTS --- */
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-const MAX_FILES = 5;
-const BUILTIN_SLASH_COMMANDS = [
-  { type: 'subagent', name: 'subagent' },
-  { type: 'action', name: 'compact', aliases: ['compaction', 'summarize'] },
-  { type: 'action', name: 'offload', aliases: ['truncate'] },
-];
-
-/** Derive a short display name from a model key string. */
-function getModelDisplayName(key: string | null): string {
-  if (!key) return '';
-  let name = key;
-  // Strip common provider prefixes
-  for (const prefix of ['claude-', 'gpt-', 'chatgpt-', 'o1-', 'o3-', 'o4-']) {
-    if (name.startsWith(prefix)) { name = name.slice(prefix.length); break; }
-  }
-  // Convert version-like patterns: "opus-4-6" → "Opus 4.6", "sonnet-4-6" → "Sonnet 4.6"
-  name = name
-    .replace(/-(\d+)-(\d+)/, ' $1.$2')
-    .replace(/-(\d+\.\d+)/, ' $1')
-    .replace(/-/g, ' ')
-    .replace(/\b\w/g, (c: string) => c.toUpperCase());
-  return name;
-}
-
 /* --- MAIN COMPONENT --- */
-
-const speechSupported = typeof window !== 'undefined' && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
-
-/* --- WIDGET CONTEXT DECK ---
- *
- * The chat-input live deck is a thin wrapper around the shared
- * `WidgetContextDeck` component (in `pages/Dashboard/widgets/framework/`).
- * The shared component owns card geometry, fanning, outside-click collapse,
- * and the preview modal; we supply the live-deck-only chrome (eyebrow row
- * with clear button, per-card remove `×`, fan-hint chevron) via render
- * slots so the visual + behavioral contract stays identical to the
- * chat-view inline deck.
- */
-function ChatInputWidgetDeck({
-  snapshots,
-  fanned,
-  onToggle,
-  onCollapse,
-  onRemove,
-  onClear,
-  boundaryRef,
-}: {
-  snapshots: WidgetContextSnapshot[];
-  fanned: boolean;
-  onToggle: () => void;
-  onCollapse: () => void;
-  onRemove: (widgetId: string) => void;
-  onClear: () => void;
-  /** The chat-input outer container. Clicks within this boundary (textarea,
-   *  send button, attach controls) keep the deck fanned; only clicks fully
-   *  outside the chat input collapse it. */
-  boundaryRef: React.RefObject<HTMLElement | null>;
-}) {
-  const { t } = useTranslation();
-  const cardCount = snapshots.length;
-  return (
-    <WidgetContextDeck
-      snapshots={snapshots}
-      fanned={fanned}
-      onToggleFan={onToggle}
-      onCollapse={onCollapse}
-      boundaryRef={boundaryRef}
-      className="widget-drag-cancel"
-      testId="widget-context-deck"
-      eyebrow={
-        <div className="widget-deck-eyebrow">
-          <span className="widget-deck-eyebrow-left">
-            <span className="widget-deck-dot" />
-            {t('chat.widgetContext.inContext', { count: cardCount, defaultValue: '{{count}} in context' })}
-            {cardCount > 1 && !fanned && (
-              <span className="widget-deck-hint">{t('chat.widgetContext.fanHint', { defaultValue: 'click to fan' })}</span>
-            )}
-          </span>
-          <span className="widget-deck-eyebrow-right">
-            {fanned && cardCount > 1 && (
-              <button
-                type="button"
-                className="widget-deck-show-less"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onCollapse();
-                }}
-              >
-                {t('chat.widgetContext.showLess', { defaultValue: 'Show less' })}
-              </button>
-            )}
-            <button
-              type="button"
-              className="widget-deck-clear"
-              onClick={(e) => {
-                e.stopPropagation();
-                onClear();
-              }}
-            >
-              {t('chat.widgetContext.clear', { defaultValue: 'Clear' })}
-            </button>
-          </span>
-        </div>
-      }
-      renderCardSlotEnd={(s) => (
-        <button
-          type="button"
-          className="widget-deck-card-remove"
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove(s.widget_id);
-          }}
-          aria-label={t('chat.widgetContext.removeAria', { defaultValue: 'Remove from context' })}
-        >
-          <X className="h-3 w-3" />
-        </button>
-      )}
-    />
-  );
-}
 
 const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput({
   onSend,
   disabled = false,
   isLoading = false,
+  isCompacting = false,
   onStop,
   placeholder = 'Type / for skills, @ for files',
   files: workspaceFiles = [],
@@ -334,12 +124,15 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   // Prefill (trading)
   prefillMessage = '',
   onClearPrefill = null,
+  // Host-attached context (e.g. a chart selection pill) that makes an empty box sendable
+  hasExternalContext = false,
   // Token usage (context window progress)
   tokenUsage = null,
-  // Action commands (e.g. /compact) — fired immediately on selection
+  // Action commands (e.g. /compact) — dispatched on send, not on selection
   onAction = null,
   // Model selector
   initialModel = null,
+  onModelChange = null,
   // All models used in this thread (shown in primary menu)
   threadModels: threadModelsProp = [],
   // Dropdown direction: 'up' (default, for bottom-positioned inputs) or 'down' (for mid-page inputs like ThreadGallery)
@@ -347,10 +140,10 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   // Minimum visible rows for the textarea (default 1 = compact; pass 2 for roomier non-ChatView callsites)
   minRows = 1,
 }, ref) {
-  const { t, i18n } = useTranslation();
-  const { toast } = useToast();
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const { preferences } = usePreferences();
+  const marketWatchEnabled = useFeatureEnabled('market_watch');
   const { validModelNames } = useAllModels();
   const otherPref = (preferences as Record<string, Record<string, unknown>> | null)?.other_preference;
   const starredModels = Array.isArray(otherPref?.starred_models)
@@ -359,9 +152,13 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   const preferredModel = (otherPref?.preferred_model as string | undefined) || null;
   const preferredFlashModel = (otherPref?.preferred_flash_model as string | undefined) || null;
   const [message, setMessage] = useState('');
-  const [attachedFiles, setAttachedFiles] = useState<FileAttachment[]>([]);
-  const [isDragging, setIsDragging] = useState(false);
+  const { attachedFiles, setAttachedFiles, isDragging, handleFiles, removeFile, onDragOver, onDragLeave, onDrop, handlePaste } = useFileAttachments({ mode });
   const [planMode, setPlanMode] = useState(false);
+  const [watchMode, setWatchMode] = useState(false);
+  // Market watch is a PTC capability. The toggle state survives a switch to
+  // flash (the pill just hides), so every payload derives from this gated
+  // value — a watch flipped on in PTC must never ride a flash send.
+  const effectiveMarketWatch = watchMode && marketWatchEnabled && mode !== 'fast';
 
   // Model selector state — use flash model preference when in flash mode
   const modePreferredModel = mode === 'fast' ? (preferredFlashModel || preferredModel) : preferredModel;
@@ -369,25 +166,25 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   const [selectedModel, setSelectedModel] = useState<string | null>(effectiveInitialModel);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [fastMode, setFastMode] = useState(false);
-  const [showMoreModels, setShowMoreModels] = useState(false);
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
 
-  const [modelMetadata, setModelMetadata] = useState<ModelMetadata>({});
-  const navigate = useNavigate();
+  const [modelMetadata, setModelMetadata] = useState<Record<string, ModelMetadataEntry>>({});
 
   // Sync selectedModel when initialModel or preferredModel changes
   useEffect(() => {
     if (effectiveInitialModel) setSelectedModel(effectiveInitialModel);
   }, [effectiveInitialModel]);
 
-  // Fetch model metadata for compatibility checking (eager prefetch, resolves instantly after first load)
+  // Mirror the live selection to the host (ChatView gates the fallback
+  // suggestion pill on the model the next send will actually use).
+  useEffect(() => {
+    onModelChange?.(selectedModel);
+  }, [selectedModel, onModelChange]);
+
+  // Fetch model metadata to detect Codex-SDK models (eager prefetch, resolves instantly after first load)
   useEffect(() => { getModelMetadata().then((d: Record<string, unknown>) => setModelMetadata(d as typeof modelMetadata)).catch(() => { }); }, []);
 
   const isCodexModel = selectedModel ? modelMetadata[selectedModel]?.sdk === 'codex' : false;
   const supportsXhigh = supportsXhighEffort(selectedModel);
-
-  // @file mention state
-  const [mentionedFiles, setMentionedFiles] = useState<MentionedFile[]>([]);
 
   // Widget context deck state. Snapshots arrive via ContextBus.attach (when
   // the user clicks "+" on any widget on the page) or via addWidgetSnapshot
@@ -396,145 +193,28 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   // show the same deck.
   const [widgetSnapshots, setWidgetSnapshots] = useState<WidgetContextSnapshot[]>([]);
   const [deckFanned, setDeckFanned] = useState(false);
-  const [showAutocomplete, setShowAutocomplete] = useState(false);
-  const [autocompleteQuery, setAutocompleteQuery] = useState('');
-  const [activeIndex, setActiveIndex] = useState(0);
-  const [mentionStart, setMentionStart] = useState(-1);
 
-  // /slash command state
-  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
-  const [showSlashMenu, setShowSlashMenu] = useState(false);
-  const [slashQuery, setSlashQuery] = useState('');
-  const [slashActiveIndex, setSlashActiveIndex] = useState(0);
-  const [slashStart, setSlashStart] = useState(-1);
-  const [skills, setSkills] = useState<Array<{ command?: string; name: string; description?: string }>>([]);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
 
-  // Fetch skills filtered by agent mode (re-fetches when mode changes; cached per mode in api.js)
-  const skillsMode = mode === 'fast' ? 'flash' : 'ptc';
-  useEffect(() => {
-    getSkills(skillsMode).then((s: unknown[]) => setSkills(s as typeof skills)).catch(() => { });
-  }, [skillsMode]);
+  // @file mentions and /slash commands — trigger detection, filtering,
+  // selection and menu keyboard navigation live in these two machines. Both
+  // return fresh objects each render, so hooks below depend on the individual
+  // (memoized) members rather than the machine itself.
+  const mentions = useMentions({ textareaRef, message, setMessage, workspaceFiles });
+  const slash = useSlashCommands({ textareaRef, message, setMessage, mode });
+  const {
+    mentionedFiles, setMentionedFiles, pruneRemoved: pruneMentions, detectTrigger: detectMention,
+    close: closeMentions, reset: resetMentions, handleKeyDown: mentionKeyDown, open: mentionsOpen,
+  } = mentions;
+  const {
+    slashCommands, pruneRemoved: pruneSlash, detectTrigger: detectSlash,
+    close: closeSlash, reset: resetSlash, handleKeyDown: slashKeyDown,
+  } = slash;
 
-  // Voice Input (Speech Recognition)
-  const [isListening, setIsListening] = useState(false);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const isStartingRef = useRef(false);
-  const finalTranscriptRef = useRef('');
-  const baseMessageRef = useRef('');
-  const messageRef = useRef(message);
-
-  // Sync message ref
-  useEffect(() => { messageRef.current = message; }, [message]);
-
-  // Stop recognition when loading starts (ghost text fix)
-  useEffect(() => {
-    if (isLoading && recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
-      setIsListening(false);
-    }
-  }, [isLoading]);
-
-  const toggleListening = useCallback(() => {
-    if (isStartingRef.current) return;
-
-    // ALWAYS stop existing instance if it exists (prevents orphaned instances on rapid clicks)
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
-    }
-
-    if (isListening) {
-      setIsListening(false);
-      return;
-    }
-
-    const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognitionAPI) {
-      console.warn("Speech recognition is not supported in this browser.");
-      return;
-    }
-
-    try {
-      const recognition = new SpeechRecognitionAPI();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      // Derived purely from current UI locale
-      recognition.lang = i18n.language.startsWith('zh') ? 'zh-CN' : 'en-US';
-
-      // Capture message BEFORE starting recognition
-      const startMessage = messageRef.current.trim();
-      baseMessageRef.current = startMessage ? startMessage + ' ' : '';
-
-      recognition.onstart = () => {
-        setIsListening(true);
-        isStartingRef.current = false;
-        finalTranscriptRef.current = ''; // Reset for new session
-      };
-
-      recognition.onresult = (event: SpeechRecognitionEvent) => {
-        if (recognitionRef.current !== recognition) return;
-        let interimTranscript = '';
-        // Start from resultIndex to avoid re-processing or duplicating old results
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const result = event.results[i];
-          if (result.isFinal) {
-            finalTranscriptRef.current += result[0].transcript;
-          } else {
-            interimTranscript += result[0].transcript;
-          }
-        }
-        setMessage(baseMessageRef.current + finalTranscriptRef.current + interimTranscript);
-      };
-
-      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-        if (recognitionRef.current !== recognition) return;
-        if (event.error !== 'no-speech' && event.error !== 'aborted') {
-          console.error('Speech recognition error:', event.error);
-          if (event.error === 'not-allowed') {
-            toast({
-              title: t('chat.voice.permissionDenied'),
-              variant: 'destructive',
-            });
-          } else if (event.error === 'service-not-allowed' || event.error === 'network') {
-            toast({
-              title: t('chat.voice.serviceError'),
-              variant: 'destructive',
-            });
-          }
-        }
-        setIsListening(false);
-        isStartingRef.current = false;
-        recognitionRef.current = null;
-      };
-
-      recognition.onend = () => {
-        if (recognitionRef.current !== recognition) return;
-        isStartingRef.current = false; // Release lock in case onstart never fired
-        setIsListening(false);
-        recognitionRef.current = null;
-      };
-
-      recognitionRef.current = recognition;
-      isStartingRef.current = true;
-      recognition.start();
-    } catch (err) {
-      console.error('Failed to start speech recognition:', err);
-      isStartingRef.current = false;
-      recognitionRef.current = null; // Prevent stale ref if start() throws
-      setIsListening(false);
-    }
-  }, [isListening, toast, t, i18n.language]);
-
-  // Clean up recognition on unmount
-  useEffect(() => {
-    return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.abort(); // Terminate immediately without firing callbacks
-        recognitionRef.current = null;
-      }
-    };
-  }, []);
+  // Voice input (speech recognition) — see chat-input.useVoiceInput.
+  const { isListening, toggleListening, stopListening } = useVoiceInput({ message, setMessage, isLoading });
 
   // Stop button state
   const [isStopping, setIsStopping] = useState(false);
@@ -542,7 +222,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   // Expose addContext method for external callers (e.g. FilePanel, message selection)
   useImperativeHandle(ref, () => ({
     getModelOptions() {
-      return { model: selectedModel, reasoningEffort, fastMode };
+      return { model: selectedModel, reasoningEffort, fastMode, marketWatch: effectiveMarketWatch };
     },
     addContext({ path, snippet, label, lineStart, lineEnd, lineCount, source }) {
       if (snippet) {
@@ -578,18 +258,10 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       setMessage(text);
       setTimeout(() => textareaRef.current?.focus(), 0);
     },
-  }), [selectedModel, reasoningEffort, fastMode]);
-
-  // Workspace dropdown
-  const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false);
-  const workspaceMenuRef = useRef<HTMLDivElement>(null);
-  const workspaceBtnRef = useRef<HTMLButtonElement>(null);
-
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const autocompleteRef = useRef<HTMLDivElement>(null);
-  const slashMenuRef = useRef<HTMLDivElement>(null);
-  const chatContainerRef = useRef<HTMLDivElement>(null);
+    setModel(model) {
+      if (model) setSelectedModel(model);
+    },
+  }), [selectedModel, reasoningEffort, fastMode, effectiveMarketWatch, setMentionedFiles]);
 
   // Subscribe to ContextBus so this input mirrors the global widget-context
   // deck. Multiple chat inputs can be visible simultaneously (hero card +
@@ -621,8 +293,6 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     const off = ChatInputRegistry.register(el);
     return off;
   }, []);
-
-  const hasModeToggle = mode !== undefined && onModeChange !== undefined;
 
   // Prefill support
   useEffect(() => {
@@ -660,10 +330,10 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     else localStorage.removeItem(`fast_mode:${selectedModel}`);
   }, [fastMode, selectedModel]);
 
-  // Reset isStopping when loading finishes
+  // Reset isStopping once both a running turn and a compaction have finished.
   useEffect(() => {
-    if (!isLoading) setIsStopping(false);
-  }, [isLoading]);
+    if (!isLoading && !isCompacting) setIsStopping(false);
+  }, [isLoading, isCompacting]);
 
   const handleStop = useCallback(() => {
     if (isStopping) return;
@@ -671,343 +341,82 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     onStop?.();
   }, [isStopping, onStop]);
 
-  // Auto-resize textarea
+  // Auto-resize textarea; past the cap the box scrolls (overflow-y-auto).
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px';
+      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, MAX_TEXTAREA_HEIGHT) + 'px';
     }
   }, [message]);
 
-  // Close workspace menu on click outside
-  useEffect(() => {
-    if (!showWorkspaceMenu) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (workspaceBtnRef.current?.contains(e.target as Node)) return;
-      if (workspaceMenuRef.current && !workspaceMenuRef.current.contains(e.target as Node)) {
-        setShowWorkspaceMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showWorkspaceMenu]);
-
-  // --- File Upload Handling ---
-  const handleFiles = useCallback((newFilesList: FileList | File[]) => {
-    const currentCount = attachedFiles.length;
-    const fileArray = Array.from(newFilesList);
-    const isFlashMode = mode === 'fast';
-
-    const validFiles = [];
-    for (const file of fileArray) {
-      if (currentCount + validFiles.length >= MAX_FILES) break;
-      if (isFlashMode) {
-        // Flash: only images and PDFs
-        const isImage = file.type.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp)$/i.test(file.name);
-        const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
-        if (!isImage && !isPdf) continue;
-      }
-      // PTC: accept any file
-      if (file.size > MAX_FILE_SIZE) continue;
-      validFiles.push(file);
-    }
-
-    const newFiles: FileAttachment[] = validFiles.map((file) => {
-      const isImage = file.type.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp)$/i.test(file.name);
-      return {
-        id: Math.random().toString(36).substr(2, 9),
-        file,
-        type: file.type || (isImage ? 'image/png' : 'application/octet-stream'),
-        preview: isImage ? URL.createObjectURL(file) : null,
-        uploadStatus: 'pending' as const,
-        dataUrl: null,
-      };
-    });
-
-    if (newFiles.length === 0) return;
-
-    setAttachedFiles((prev) => [...prev, ...newFiles]);
-
-    newFiles.forEach((f) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        setAttachedFiles((prev) =>
-          prev.map((p) =>
-            p.id === f.id ? { ...p, uploadStatus: 'complete' as const, dataUrl: reader.result as string } : p
-          )
-        );
-      };
-      reader.onerror = () => {
-        setAttachedFiles((prev) => prev.filter((p) => p.id !== f.id));
-      };
-      reader.readAsDataURL(f.file);
-    });
-  }, [attachedFiles.length, mode]);
-
-  const removeFile = useCallback((id: string) => {
-    setAttachedFiles((prev) => {
-      const file = prev.find((f) => f.id === id);
-      if (file?.preview) URL.revokeObjectURL(file.preview);
-      return prev.filter((f) => f.id !== id);
-    });
-  }, []);
-
-  // Drag & Drop
-  const onDragOver = useCallback((e: React.DragEvent) => {
+  // Large text pastes condense into a pill (snippet-mention mechanics) instead
+  // of flooding the draft. File pastes keep priority — handlePaste prevents
+  // default when it takes the clipboard.
+  const handleTextareaPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    handlePaste(e);
+    if (e.defaultPrevented) return;
+    const text = e.clipboardData.getData('text/plain');
+    if (!isLargePaste(text)) return;
     e.preventDefault();
-    setIsDragging(true);
-  }, []);
-  const onDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-  }, []);
-  const onDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    if (e.dataTransfer.files) handleFiles(e.dataTransfer.files);
-  }, [handleFiles]);
-
-  // Paste Handling
-  const handlePaste = useCallback((e: React.ClipboardEvent) => {
-    const items = e.clipboardData.items;
-    const pastedFiles = [];
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].kind === 'file') {
-        const file = items[i].getAsFile();
-        if (file) pastedFiles.push(file);
-      }
-    }
-    if (pastedFiles.length > 0) {
-      e.preventDefault();
-      handleFiles(pastedFiles);
-    }
-  }, [handleFiles]);
-
-  // --- @File Mention Autocomplete ---
-  const filteredMentionFiles = useMemo(() => {
-    if (!showAutocomplete) return [];
-    const query = autocompleteQuery.toLowerCase();
-    const dirPriority: Record<string, number> = { '': 0, results: 1, data: 2 };
-    return workspaceFiles
-      .filter((f) => f.toLowerCase().includes(query))
-      .sort((a, b) => {
-        const da = a.includes('/') ? a.slice(0, a.indexOf('/')) : '';
-        const db = b.includes('/') ? b.slice(0, b.indexOf('/')) : '';
-        const pa = dirPriority[da] ?? 3;
-        const pb = dirPriority[db] ?? 3;
-        if (pa !== pb) return pa - pb;
-        return a.localeCompare(b);
-      })
-      .slice(0, 10);
-  }, [workspaceFiles, autocompleteQuery, showAutocomplete]);
-
-  useEffect(() => {
-    setActiveIndex(0);
-  }, [filteredMentionFiles.length]);
-
-  // --- /Slash Command Autocomplete ---
-  const filteredSlashCommands = useMemo(() => {
-    if (!showSlashMenu) return [];
-    const query = slashQuery.toLowerCase();
-    const items: SlashCommand[] = [
-      ...skills.filter((s) => s.command).map((s) => ({ type: 'skill', name: s.command!, skillName: s.name, description: t(`chat.slashCommand.${s.command}Desc`, { defaultValue: s.description }) })),
-      ...BUILTIN_SLASH_COMMANDS.map((c) => ({ ...c, description: t(`chat.slashCommand.${c.name}Desc`) })),
-    ];
-    return items
-      .filter((item) => !slashCommands.some((c) => c.name === item.name))
-      .filter((item) => {
-        if (!query) return true;
-        if (item.name.toLowerCase().includes(query)) return true;
-        if (item.description?.toLowerCase().includes(query)) return true;
-        if (item.aliases?.some((a: string) => a.toLowerCase().includes(query))) return true;
-        return false;
-      })
-      .slice(0, 10);
-  }, [skills, showSlashMenu, slashQuery, slashCommands, t]);
-
-  useEffect(() => {
-    setSlashActiveIndex(0);
-  }, [filteredSlashCommands.length]);
+    const lineCount = text.split('\n').length;
+    setMentionedFiles((prev) => {
+      if (prev.some((f) => f.source === 'paste' && f.snippet === text)) return prev;
+      return [...prev, { path: '', snippet: text, label: t('context.pastedLines', { count: lineCount }), lineCount, source: 'paste' }];
+    });
+  }, [handlePaste, setMentionedFiles, t]);
 
   // Detect @ and / triggers on input change
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     setMessage(val);
-
-    // Remove pills whose /{command} or @mention text was deleted from the textarea
-    setSlashCommands((prev) => prev.filter((cmd) => val.includes(`/${cmd.name}`)));
-    setMentionedFiles((prev) => prev.filter((f) => f.snippet || val.includes(`@${f.path}`)));
-
     const cursorPos = e.target.selectionStart;
 
-    // Detect / trigger for slash commands
-    let slashIdx = -1;
-    for (let i = cursorPos - 1; i >= 0; i--) {
-      const ch = val[i];
-      if (ch === '/') {
-        if (i === 0 || /\s/.test(val[i - 1])) {
-          slashIdx = i;
-        }
-        break;
-      }
-      if (/\s/.test(ch)) break;
-    }
+    // Pills whose /{command} or @mention text was deleted go with it
+    pruneSlash(val);
+    pruneMentions(val);
 
-    if (slashIdx >= 0) {
-      const partial = val.slice(slashIdx + 1, cursorPos);
-      setSlashStart(slashIdx);
-      setSlashQuery(partial);
-      setShowSlashMenu(true);
-      // Close @mention when /slash is active
-      setShowAutocomplete(false);
-      setMentionStart(-1);
-      setAutocompleteQuery('');
-      return;
-    } else {
-      setShowSlashMenu(false);
-      setSlashStart(-1);
-      setSlashQuery('');
-    }
+    // A live /slash trigger wins: the two menus never show at once.
+    if (detectSlash(val, cursorPos)) closeMentions();
+    else detectMention(val, cursorPos);
+  }, [pruneSlash, pruneMentions, detectSlash, detectMention, closeMentions]);
 
-    // Detect @ trigger for file mentions
-    let atIdx = -1;
-    for (let i = cursorPos - 1; i >= 0; i--) {
-      const ch = val[i];
-      if (ch === '@') {
-        if (i === 0 || /\s/.test(val[i - 1])) {
-          atIdx = i;
-        }
-        break;
-      }
-      if (/\s/.test(ch)) break;
-    }
-
-    if (atIdx >= 0) {
-      const partial = val.slice(atIdx + 1, cursorPos);
-      setMentionStart(atIdx);
-      setAutocompleteQuery(partial);
-      setShowAutocomplete(true);
-    } else {
-      setShowAutocomplete(false);
-      setMentionStart(-1);
-      setAutocompleteQuery('');
-    }
-  }, []);
-
-  const selectFile = useCallback((filePath: string) => {
-    if (mentionStart < 0) return;
-    const cursorPos = textareaRef.current?.selectionStart ?? message.length;
-    const before = message.slice(0, mentionStart);
-    const after = message.slice(cursorPos);
-    const newMessage = before + '@' + filePath + ' ' + after;
-    setMessage(newMessage);
-
-    setMentionedFiles((prev) => {
-      if (prev.some((f) => f.path === filePath)) return prev;
-      return [...prev, { path: filePath }];
-    });
-
-    setShowAutocomplete(false);
-    setMentionStart(-1);
-    setAutocompleteQuery('');
-
-    setTimeout(() => {
-      if (textareaRef.current) {
-        const newCursorPos = before.length + 1 + filePath.length + 1;
-        textareaRef.current.focus();
-        textareaRef.current.setSelectionRange(newCursorPos, newCursorPos);
-      }
-    }, 0);
-  }, [mentionStart, message]);
-
-  const removeMention = useCallback((path: string, label?: string, snippet?: string) => {
-    setMentionedFiles((prev) => prev.filter((f) => {
-      if (snippet) return !(f.snippet === snippet && f.path === path);
-      if (label) return !(f.path === path && f.label === label);
-      return !(f.path === path && !f.label);
-    }));
-    // Also remove @path text from textarea
-    setMessage((prev) => prev.replace(new RegExp(`(^|\\s)@${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`), '$1$2').trim());
-  }, []);
-
-  const selectSlashCommand = useCallback((cmd: SlashCommand) => {
-    if (slashStart < 0) return;
-    const cursorPos = textareaRef.current?.selectionStart ?? message.length;
-    const before = message.slice(0, slashStart);
-    const after = message.slice(cursorPos);
-
-    // Action commands fire immediately — no pill, no send required
-    if (cmd.type === 'action') {
-      setMessage(before + after);
-      setShowSlashMenu(false);
-      setSlashStart(-1);
-      setSlashQuery('');
-      onAction?.(cmd);
-      setTimeout(() => {
-        if (textareaRef.current) {
-          textareaRef.current.focus();
-          textareaRef.current.setSelectionRange(before.length, before.length);
-        }
-      }, 0);
-    } else {
-      // Retain /{command} in textarea and add pill
-      const inserted = `/${cmd.name} `;
-      const newMsg = before + inserted + after;
-      setMessage(newMsg);
-      setShowSlashMenu(false);
-      setSlashStart(-1);
-      setSlashQuery('');
-      setSlashCommands((prev) => {
-        if (prev.some((c) => c.name === cmd.name)) return prev;
-        return [...prev, cmd];
-      });
-      const newCursor = before.length + inserted.length;
-      setTimeout(() => {
-        if (textareaRef.current) {
-          textareaRef.current.focus();
-          textareaRef.current.setSelectionRange(newCursor, newCursor);
-        }
-      }, 0);
-    }
-  }, [slashStart, message, onAction]);
-
-  const removeSlashCommand = useCallback((name: string) => {
-    setSlashCommands((prev) => prev.filter((c) => c.name !== name));
-    // Also remove /{command} text from textarea
-    setMessage((prev) => prev.replace(new RegExp(`(^|\\s)/${name}(\\s|$)`), '$1$2').trim());
-  }, []);
-
-  // Scroll active autocomplete item into view
-  useEffect(() => {
-    if (!showAutocomplete || !autocompleteRef.current) return;
-    const items = autocompleteRef.current.querySelectorAll('.mention-autocomplete-item');
-    if (items[activeIndex]) {
-      items[activeIndex].scrollIntoView({ block: 'nearest' });
-    }
-  }, [activeIndex, showAutocomplete]);
-
-  // Scroll active slash menu item into view
-  useEffect(() => {
-    if (!showSlashMenu || !slashMenuRef.current) return;
-    const items = slashMenuRef.current.querySelectorAll('.mention-autocomplete-item');
-    if (items[slashActiveIndex]) {
-      items[slashActiveIndex].scrollIntoView({ block: 'nearest' });
-    }
-  }, [slashActiveIndex, showSlashMenu]);
-
-  // Close autocomplete on blur
+  // Close both autocompletes on blur
   const handleBlur = useCallback(() => {
     setTimeout(() => {
-      setShowAutocomplete(false);
-      setShowSlashMenu(false);
+      closeMentions();
+      closeSlash();
     }, 200);
-  }, []);
+  }, [closeMentions, closeSlash]);
 
   // --- Send ---
-  const hasContent = message.trim() || attachedFiles.length > 0 || !!chartImage || mentionedFiles.some((f) => f.snippet) || widgetSnapshots.length > 0;
+  const hasContent = message.trim() || attachedFiles.length > 0 || !!chartImage || mentionedFiles.some((f) => f.snippet) || widgetSnapshots.length > 0 || hasExternalContext;
 
   const handleSend = useCallback(() => {
     if (!hasContent || disabled) return;
+
+    // System action commands (/compact, /offload) are standalone: they run on
+    // send rather than starting a chat turn. If any are present, fire them and
+    // clear the input — don't dispatch a message.
+    const actionCommands = slashCommands.filter((c) => c.type === 'action');
+    if (actionCommands.length > 0) {
+      actionCommands.forEach((c) => onAction?.(c));
+      // Fully reset the draft, same as a normal send — an action must not leave
+      // staged attachments / mentions / widget context behind for the next turn.
+      setMessage('');
+      resetSlash();
+      attachedFiles.forEach((f) => { if (f.preview) URL.revokeObjectURL(f.preview); });
+      setAttachedFiles([]);
+      resetMentions();
+      if (widgetSnapshots.length > 0) {
+        ContextBus.clear();
+      }
+      setDeckFanned(false);
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+      }
+      return;
+    }
+
     const readyAttachments = attachedFiles
       .filter((f) => f.dataUrl)
       .map((f) => ({
@@ -1024,6 +433,9 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
         if (f.source === 'chat') {
           return `\n<details>\n<summary>[${t('context.fromAgentResponse')}]</summary>\n\n\`\`\`\n${f.snippet}\n\`\`\`\n</details>`;
         }
+        if (f.source === 'paste') {
+          return `\n<details>\n<summary>[${t('context.pastedText')}]</summary>\n\n\`\`\`\n${f.snippet}\n\`\`\`\n</details>`;
+        }
         const lineInfo = f.lineStart != null
           ? ` (lines ${f.lineStart}-${f.lineEnd}, ${f.lineCount} line${f.lineCount !== 1 ? 's' : ''})`
           : '';
@@ -1035,13 +447,14 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       model: selectedModel,
       reasoningEffort,
       fastMode,
+      marketWatch: effectiveMarketWatch,
       widgetSnapshots: widgetSnapshots.length ? widgetSnapshots : undefined,
     });
     setMessage('');
     attachedFiles.forEach(f => { if (f.preview) URL.revokeObjectURL(f.preview); });
     setAttachedFiles([]);
-    setMentionedFiles([]);
-    setSlashCommands([]);
+    resetMentions();
+    resetSlash();
     // Clear widget deck on send. Other mounted chat inputs hear the same
     // clear via ContextBus so the deck empties everywhere — single source
     // of truth.
@@ -1049,70 +462,27 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       ContextBus.clear();
     }
     setDeckFanned(false);
-    setShowAutocomplete(false);
-    setShowSlashMenu(false);
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [hasContent, disabled, message, planMode, attachedFiles, onSend, mentionedFiles, slashCommands, selectedModel, reasoningEffort, fastMode, widgetSnapshots, t]);
+  }, [hasContent, disabled, message, planMode, effectiveMarketWatch, attachedFiles, setAttachedFiles, onSend, onAction,
+    mentionedFiles, resetMentions, slashCommands, resetSlash,
+    selectedModel, reasoningEffort, fastMode, widgetSnapshots, t]);
 
   // --- Keyboard & Language Detection ---
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // If user starts typing while voice input is active, terminate the voice input.
     // We treat any single character key or delete/backspace as a signal to stop.
-    if (isListening && recognitionRef.current && (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete')) {
-      recognitionRef.current.stop();
+    if (isListening && (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete')) {
+      stopListening();
     }
 
-    // Slash command menu keyboard navigation
-    if (showSlashMenu && filteredSlashCommands.length > 0) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setSlashActiveIndex((prev) => (prev + 1) % filteredSlashCommands.length);
-        return;
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSlashActiveIndex((prev) => (prev - 1 + filteredSlashCommands.length) % filteredSlashCommands.length);
-        return;
-      }
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault();
-        selectSlashCommand(filteredSlashCommands[slashActiveIndex]);
-        return;
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        setShowSlashMenu(false);
-        return;
-      }
-    }
+    // An open autocomplete owns the navigation keys (slash menu first — it
+    // suppresses the mention menu while active).
+    if (slashKeyDown(e)) return;
+    if (mentionKeyDown(e)) return;
 
-    // @mention autocomplete keyboard navigation
-    if (showAutocomplete && filteredMentionFiles.length > 0) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setActiveIndex((prev) => (prev + 1) % filteredMentionFiles.length);
-        return;
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setActiveIndex((prev) => (prev - 1 + filteredMentionFiles.length) % filteredMentionFiles.length);
-        return;
-      }
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault();
-        selectFile(filteredMentionFiles[activeIndex]);
-        return;
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        setShowAutocomplete(false);
-        return;
-      }
-    }
-
-    if (e.key === 'Enter' && !showAutocomplete) {
+    if (e.key === 'Enter' && !mentionsOpen) {
       // Cmd/Ctrl+Enter inserts a newline at the cursor (browsers suppress this by default)
       if (e.metaKey || e.ctrlKey) {
         e.preventDefault();
@@ -1133,30 +503,51 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
         handleSend();
       }
     }
+  }, [slashKeyDown, mentionKeyDown, mentionsOpen, handleSend, isListening, stopListening, message]);
 
-    if (e.key === 'Escape' && showAutocomplete) {
-      setShowAutocomplete(false);
-    }
-  }, [showSlashMenu, filteredSlashCommands, slashActiveIndex, selectSlashCommand, showAutocomplete, filteredMentionFiles, activeIndex, selectFile, handleSend, isListening, message]);
+  /* --- Progressive toolbar folding ---
+   *
+   * The labeled toggles fold into a ⋯ overflow menu only when the measured row
+   * can't hold them — whatever fits stays inline, the rest overflows in
+   * declaration (priority) order. Widths come from a hidden measure row that
+   * renders the SAME components, so any locale / workspace name / model label
+   * is measured, never guessed. */
+  const toolbarItems = useToolbarItems({
+    mode, onModeChange, ptcDisabledReason,
+    planMode, setPlanMode, watchMode, setWatchMode, marketWatchEnabled,
+    workspaces, selectedWorkspaceId, onWorkspaceChange,
+  });
 
-  // Workspace selector helpers
-  const selectedWorkspaceName = useMemo(() => {
-    if (!workspaces || !selectedWorkspaceId) return 'Workspace';
-    const ws = workspaces.find((w) => w.workspace_id === selectedWorkspaceId);
-    return ws?.name || 'Workspace';
-  }, [workspaces, selectedWorkspaceId]);
-
-  const showWorkspaceSelector = hasModeToggle && mode === 'ptc' && workspaces && workspaces.length > 0;
+  const ringVisible = !!(tokenUsage && tokenUsage.threshold > 0 && tokenUsage.total > 0);
+  const micReserved = speechSupported && !!otherPref?.voice_input_enabled;
+  const { measureRowRef, fold } = useToolbarFold({
+    containerRef: chatContainerRef,
+    items: toolbarItems,
+    // The model pill is measured too, but it isn't foldable.
+    measureKey: `${selectedModel}|${fastMode && isCodexModel}`,
+    // Left of the first pill: container border + px-3, the attach button, and
+    // the optional ring / chart-capture button (see the action bar below).
+    fixedLeft: CONTAINER_BORDER + CONTAINER_PX + ICON_BUTTON_W
+      + (ringVisible ? TOOLBAR_GAP + TOKEN_RING_W : 0)
+      + (onCaptureChart ? TOOLBAR_GAP + ICON_BUTTON_W : 0),
+    // Right group: the model pill (measured), the mic, and send/stop. Mic
+    // reserve ignores isLoading on purpose — the fold set must not jump when a
+    // turn starts and the mic hides.
+    rightReserve: (widths) => GROUP_GAP + (widths.model ?? 0)
+      + (micReserved ? TOOLBAR_GAP + ICON_BUTTON_W : 0)
+      + TOOLBAR_GAP + ICON_BUTTON_W,
+  });
+  const inlineItems = toolbarItems.filter((i) => fold.inline.has(i.id));
+  const foldedItems = toolbarItems.filter((i) => fold.folded.includes(i.id));
 
   /** Quick-access models for both the desktop submenu and mobile inline expand */
   const moreModelsItems = useMemo(
     () => deriveQuickAccessModels({
-      preferredModel, preferredFlashModel, starredModels,
-      validModelNames, initialModel, selectedModel, modelMetadata,
+      preferredModel, preferredFlashModel, starredModels, validModelNames,
       // Don't repeat models already shown in the primary (selected + thread) section.
       excludeModels: [selectedModel, ...threadModelsProp].filter((m): m is string => !!m),
     }),
-    [preferredModel, preferredFlashModel, starredModels, validModelNames, initialModel, selectedModel, modelMetadata, threadModelsProp],
+    [preferredModel, preferredFlashModel, starredModels, validModelNames, selectedModel, threadModelsProp],
   );
 
   return (
@@ -1169,7 +560,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       {/* Main Container */}
       <div
         ref={chatContainerRef}
-        className={`chat-input-container flex flex-col items-stretch transition-all duration-200 relative z-10 rounded-2xl cursor-text border border-[hsl(var(--primary))] bg-[var(--color-bg-card)] ${isListening ? 'recording' : ''}`}
+        className={`chat-input-container flex flex-col items-stretch transition-all duration-200 relative z-10 rounded-2xl cursor-text border border-[var(--color-border-input)] bg-[var(--color-bg-card)] ${isListening ? 'recording' : ''}`}
         onClick={() => textareaRef.current?.focus()}
       >
         {isListening && (
@@ -1226,7 +617,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                   <span>/{cmd.name}</span>
                   <button
                     className="mention-pill-remove"
-                    onClick={(e) => { e.stopPropagation(); removeSlashCommand(cmd.name); }}
+                    onClick={(e) => { e.stopPropagation(); slash.removeCommand(cmd.name); }}
                     title="Remove"
                   >
                     <X className="h-2.5 w-2.5" />
@@ -1235,22 +626,30 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
               ))}
               {mentionedFiles.map((f, idx) => {
                 const isSnippet = !!f.snippet;
+                const isPaste = f.source === 'paste';
                 const name = isSnippet ? f.label : f.path.split('/').pop();
                 const pillKey = (f.path || '') + '::' + (f.label || '') + '::' + idx;
+                // Snippet tooltips preview, not mirror — a condensed paste can
+                // be tens of KB and title= renders it all.
+                const tooltip = isSnippet
+                  ? (f.snippet!.length > 500 ? f.snippet!.slice(0, 500) + '…' : f.snippet)
+                  : f.path;
                 return (
                   <div
                     key={pillKey}
                     className={`mention-pill ${isSnippet ? 'mention-pill-snippet' : ''}`}
-                    title={isSnippet ? f.snippet : f.path}
+                    title={tooltip}
                   >
-                    {isSnippet
-                      ? <TextSelect className="h-3 w-3 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
-                      : <FileText className="h-3 w-3 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
+                    {isPaste
+                      ? <ClipboardList className="h-3 w-3 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
+                      : isSnippet
+                        ? <TextSelect className="h-3 w-3 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
+                        : <FileText className="h-3 w-3 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
                     }
                     <span>{name}</span>
                     <button
                       className="mention-pill-remove"
-                      onClick={(e) => { e.stopPropagation(); removeMention(f.path, f.label, f.snippet); }}
+                      onClick={(e) => { e.stopPropagation(); mentions.removeMention(f.path, f.label, f.snippet); }}
                       title="Remove"
                     >
                       <X className="h-2.5 w-2.5" />
@@ -1285,62 +684,25 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
             </div>
           )}
 
-          {/* Autocomplete dropdown (above textarea) */}
-          {showAutocomplete && (
-            <div className="mention-autocomplete" ref={autocompleteRef}>
-              {filteredMentionFiles.length === 0 ? (
-                <div className="mention-autocomplete-empty">
-                  {workspaceFiles.length === 0 ? 'No files available' : 'No matching files'}
-                </div>
-              ) : (
-                filteredMentionFiles.map((filePath, idx) => {
-                  const name = filePath.split('/').pop();
-                  const dir = filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : '';
-                  return (
-                    <div
-                      key={filePath}
-                      className={`mention-autocomplete-item ${idx === activeIndex ? 'active' : ''}`}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        selectFile(filePath);
-                      }}
-                      onMouseEnter={() => setActiveIndex(idx)}
-                    >
-                      <FileText className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-                      <span className="file-name">{name}</span>
-                      {dir && <span className="file-path">{dir}/</span>}
-                    </div>
-                  );
-                })
-              )}
-            </div>
+          {/* Autocomplete dropdowns (above textarea) */}
+          {mentionsOpen && (
+            <MentionAutocompleteList
+              listRef={mentions.listRef}
+              files={mentions.filtered}
+              activeIndex={mentions.activeIndex}
+              hasWorkspaceFiles={workspaceFiles.length > 0}
+              onSelect={mentions.selectFile}
+              onHover={mentions.setActiveIndex}
+            />
           )}
-
-          {/* Slash command dropdown */}
-          {showSlashMenu && (
-            <div className="mention-autocomplete" ref={slashMenuRef}>
-              {filteredSlashCommands.length === 0 ? (
-                <div className="mention-autocomplete-empty">
-                  {t('chat.slashCommand.noMatching')}
-                </div>
-              ) : (
-                filteredSlashCommands.map((cmd, idx) => (
-                  <div
-                    key={cmd.name}
-                    className={`mention-autocomplete-item ${idx === slashActiveIndex ? 'active' : ''}`}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      selectSlashCommand(cmd);
-                    }}
-                    onMouseEnter={() => setSlashActiveIndex(idx)}
-                  >
-                    {getSlashCommandIcon(cmd, "h-4 w-4 flex-shrink-0 slash-cmd-icon")}
-                    <span className="slash-cmd-name">/{cmd.name}</span>
-                    <span className="slash-cmd-desc">{cmd.description}</span>
-                  </div>
-                ))
-              )}
-            </div>
+          {slash.open && (
+            <SlashCommandList
+              listRef={slash.listRef}
+              commands={slash.filtered}
+              activeIndex={slash.activeIndex}
+              onSelect={slash.selectCommand}
+              onHover={slash.setActiveIndex}
+            />
           )}
 
           {/* Textarea */}
@@ -1349,17 +711,17 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
               ref={textareaRef}
               value={message}
               onChange={handleChange}
-              onPaste={handlePaste}
+              onPaste={handleTextareaPaste}
               onKeyDown={handleKeyDown}
               onBlur={handleBlur}
               onCompositionStart={() => {
                 // Terminate voice input if IME starts
-                if (isListening && recognitionRef.current) {
-                  recognitionRef.current.stop();
+                if (isListening) {
+                  stopListening();
                 }
               }}
               placeholder={isListening ? "" : placeholder}
-              className={`w-full bg-transparent border-0 outline-none text-[var(--color-text-primary)] ${isMobile ? 'text-base' : 'text-sm'} placeholder:text-[var(--color-text-tertiary)] resize-none overflow-hidden leading-relaxed block transition-opacity duration-300 ${isListening ? 'opacity-20' : 'opacity-100'}`}
+              className={`font-content w-full bg-transparent border-0 outline-none text-[var(--color-text-primary)] ${isMobile ? 'text-base' : 'text-sm'} placeholder:text-[var(--color-text-tertiary)] resize-none overflow-y-auto leading-relaxed block transition-opacity duration-300 ${isListening ? 'opacity-20' : 'opacity-100'}`}
               rows={minRows}
               disabled={disabled}
               style={{ minHeight: `${minRows * 1.5}em` }}
@@ -1368,12 +730,14 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
 
           {/* Action Bar */}
           <div className="flex gap-2 w-full items-center">
-            {/* Left Tools */}
-            <div className="relative flex-1 flex items-center shrink min-w-0 gap-1">
+            {/* Left Tools — min-width:auto (no min-w-0) on purpose: the group's
+                min-content floor makes the RIGHT group absorb any over-squeeze
+                (model label truncates) instead of the groups overlapping. */}
+            <div className="relative flex-1 flex items-center shrink gap-1">
               {/* Attach Button */}
               <button
                 onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
-                className="inline-flex items-center justify-center h-8 w-8 rounded-lg transition-colors text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5 active:scale-95"
+                className="inline-flex flex-none items-center justify-center h-8 w-8 rounded-lg transition-colors text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5 active:scale-95"
                 type="button"
                 aria-label="Attach file"
               >
@@ -1381,7 +745,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
               </button>
 
               {/* Token Usage Ring */}
-              {tokenUsage && tokenUsage.threshold > 0 && tokenUsage.total > 0 && (
+              {ringVisible && tokenUsage && (
                 <TokenUsageRing tokenUsage={tokenUsage} />
               )}
 
@@ -1389,7 +753,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
               {onCaptureChart && (
                 <button
                   onClick={(e) => { e.stopPropagation(); onCaptureChart(); }}
-                  className="inline-flex items-center justify-center h-8 w-8 rounded-lg transition-colors text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5 active:scale-95"
+                  className="inline-flex flex-none items-center justify-center h-8 w-8 rounded-lg transition-colors text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5 active:scale-95"
                   type="button"
                   title="Attach chart screenshot"
                   aria-label="Capture chart"
@@ -1398,347 +762,90 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                 </button>
               )}
 
-              {/* Mode Toggle (fast/ptc) */}
-              {hasModeToggle && (() => {
-                const ptcBlocked = mode === 'fast' && !!ptcDisabledReason;
-                return (
-                  <button
-                    className="inline-flex items-center rounded-full border-none"
-                    style={{
-                      gap: '6px',
-                      padding: '6px 10px',
-                      fontSize: '13px',
-                      fontWeight: 500,
-                      background: 'transparent',
-                      color: ptcBlocked ? 'var(--color-text-quaternary, #9ca3af)' : 'var(--color-text-muted, #8b8fa3)',
-                      border: '1px solid transparent',
-                      cursor: ptcBlocked ? 'not-allowed' : 'pointer',
-                      opacity: ptcBlocked ? 0.6 : 1,
-                      transition: 'background 0.2s, color 0.2s, border-color 0.2s',
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (ptcBlocked) return;
-                      onModeChange(mode === 'fast' ? 'ptc' : 'fast');
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!ptcBlocked) e.currentTarget.style.background = 'var(--color-border-muted)';
-                    }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                    type="button"
-                    aria-disabled={ptcBlocked || undefined}
-                    title={
-                      ptcBlocked
-                        ? ptcDisabledReason!
-                        : mode === 'fast'
-                          ? 'Flash — quick answer using flash model'
-                          : 'PTC — full agent with workspace and tools'
-                    }
-                  >
-                    {mode === 'fast' ? <Zap className="h-4 w-4" /> : <FileStack className="h-4 w-4" />}
-                    <span>{mode === 'fast' ? 'Flash' : 'PTC'}</span>
-                  </button>
-                );
-              })()}
+              {/* Foldable toggles — whatever fits, in priority order */}
+              {inlineItems.map((item) => (
+                <React.Fragment key={item.id}>{item.inline({})}</React.Fragment>
+              ))}
 
-              {/* Workspace Selector */}
-              {showWorkspaceSelector && (
-                <div className="relative" ref={workspaceMenuRef}>
-                  <button
-                    ref={workspaceBtnRef}
-                    className="inline-flex items-center rounded-full border-none cursor-pointer"
-                    style={{
-                      gap: '4px',
-                      padding: '6px 10px',
-                      fontSize: '13px',
-                      fontWeight: 500,
-                      background: showWorkspaceMenu ? 'var(--color-accent-soft)' : 'transparent',
-                      color: showWorkspaceMenu ? 'var(--color-accent-light)' : 'var(--color-text-muted, #8b8fa3)',
-                      border: showWorkspaceMenu ? '1px solid var(--color-accent-overlay)' : '1px solid transparent',
-                      transition: 'background 0.2s, color 0.2s, border-color 0.2s',
-                    }}
-                    onClick={(e) => { e.stopPropagation(); setShowWorkspaceMenu((v) => !v); }}
-                    onMouseEnter={(e) => {
-                      if (!showWorkspaceMenu) e.currentTarget.style.background = 'var(--color-border-muted)';
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!showWorkspaceMenu) e.currentTarget.style.background = 'transparent';
-                    }}
-                    type="button"
-                    title="Select workspace"
+              {/* ⋯ overflow — only the toggles that didn't fit inline. The
+                  amber dot marks a folded-but-active toggle. */}
+              {foldedItems.length > 0 && (
+                <DropdownMenu modal={false}>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      className="relative inline-flex flex-none items-center justify-center h-8 w-8 rounded-lg transition-colors text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5 data-[state=open]:bg-foreground/5 data-[state=open]:text-[var(--color-text-muted)]"
+                      onClick={(e) => e.stopPropagation()}
+                      type="button"
+                      title={t('chat.moreTools', { defaultValue: 'More tools' })}
+                      aria-label={t('chat.moreTools', { defaultValue: 'More tools' })}
+                    >
+                      <MoreHorizontal className="w-4 h-4" />
+                      {foldedItems.some((item) => item.active) && (
+                        <span
+                          className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full"
+                          style={{ background: 'var(--color-accent-primary)' }}
+                        />
+                      )}
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    align="start"
+                    side={dropdownDirection === 'down' ? 'bottom' : 'top'}
+                    className="w-52"
+                    container={isMobile ? chatContainerRef.current : undefined}
                   >
-                    <FolderOpen className="h-4 w-4" />
-                    <span className="max-w-[100px] truncate">{selectedWorkspaceName}</span>
-                    <ChevronDown className="h-3 w-3" />
-                  </button>
-                  {showWorkspaceMenu && (
-                    <div className="workspace-dropdown workspace-dropdown-up">
-                      {workspaces.map((ws) => (
-                        <div
-                          key={ws.workspace_id}
-                          className={`workspace-dropdown-item ${ws.workspace_id === selectedWorkspaceId ? 'active' : ''}`}
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            onWorkspaceChange?.(ws.workspace_id);
-                            setShowWorkspaceMenu(false);
-                          }}
-                        >
-                          <FolderOpen className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-                          <span>{ws.name}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                    {foldedItems.map((item, idx) => (
+                      <React.Fragment key={item.id}>
+                        {idx > 0 && foldedItems[idx - 1].group !== item.group && <DropdownMenuSeparator />}
+                        {item.menu()}
+                      </React.Fragment>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )}
 
-              {/* Plan Mode Toggle — shown when no mode toggle (PTC enforced) OR mode === 'ptc' */}
-              {(!hasModeToggle || mode === 'ptc') && (
-                <button
-                  className={`inline-flex items-center rounded-full border-none cursor-pointer${planMode ? ' plan-mode-toggle-active' : ''}`}
-                  style={{
-                    gap: '6px',
-                    padding: '6px 10px',
-                    fontSize: '13px',
-                    fontWeight: 500,
-                    background: planMode ? 'var(--color-border-muted)' : 'transparent',
-                    color: 'var(--color-text-muted, #8b8fa3)',
-                    border: '1px solid transparent',
-                    transition: 'background 0.2s, color 0.2s, border-color 0.2s',
-                  }}
-                  onClick={(e) => { e.stopPropagation(); setPlanMode(!planMode); }}
-                  onMouseEnter={(e) => {
-                    if (!planMode) e.currentTarget.style.background = 'var(--color-border-muted)';
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!planMode) e.currentTarget.style.background = 'transparent';
-                  }}
-                  type="button"
-                  title="Plan mode — agent creates a plan for approval before executing"
-                >
-                  <ScrollText className="h-4 w-4" style={planMode ? { color: 'var(--color-accent-light)' } : {}} />
-                  <span>Plan</span>
-                </button>
-              )}
+              {/* Hidden measure row — the SAME components rendered geometry-only
+                  (no handlers, menus, or aria state), so the fold budget can
+                  never drift from what actually paints. */}
+              <div
+                ref={measureRowRef}
+                aria-hidden
+                className="invisible pointer-events-none absolute top-0 -left-[9999px] flex items-center gap-1 whitespace-nowrap"
+              >
+                {toolbarItems.filter((i) => i.visible).map((item) => (
+                  <span key={item.id} data-measure={item.id}>{item.inline({ measureOnly: true })}</span>
+                ))}
+                <span data-measure="model">
+                  <ModelTriggerMeasure selectedModel={selectedModel} fastMode={fastMode} isCodexModel={isCodexModel} />
+                </span>
+              </div>
             </div>
 
             {/* Right Tools */}
             <div className="flex flex-row items-center min-w-0 gap-1">
-              {/* Model Selector — show if there's anything to pick (quick-access
-                  list or current selection), or if the user has stars to manage
-                  even when they all filter out (keeps the settings link reachable). */}
-              {(moreModelsItems.length > 0 || starredModels.length > 0 || selectedModel) && (
-                <DropdownMenu modal={false} open={modelMenuOpen} onOpenChange={(open) => { setModelMenuOpen(open); if (!open) setShowMoreModels(false); }}>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      className="model-selector-trigger inline-flex items-center gap-1 rounded-full cursor-pointer py-1.5 px-2.5 text-[13px] font-medium border border-transparent transition-colors outline-none"
-                      onClick={(e) => e.stopPropagation()}
-                      type="button"
-                      title="Select model"
-                    >
-                      <span className="max-w-[120px] truncate">{getModelDisplayName(selectedModel) || 'Model'}</span>
-                      {fastMode && isCodexModel && <Rocket className="h-3 w-3" style={{ color: 'var(--color-accent-light)' }} />}
-                      <ChevronDown className="h-3 w-3" />
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent
-                    align="end"
-                    side={dropdownDirection === 'down' ? 'bottom' : 'top'}
-                    className="w-60"
-                    container={isMobile ? chatContainerRef.current : undefined}
-                    data-click-outside-ignore
-                    onClick={(e) => e.stopPropagation()}
-                    style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-muted)' }}
-                  >
-                    {/* Thread models */}
-                    {(() => {
-                      const primaryModels: string[] = threadModelsProp.length > 0
-                        ? [...new Set([...threadModelsProp, selectedModel].filter((m): m is string => !!m))]
-                        : [selectedModel].filter((m): m is string => !!m);
-                      return primaryModels
-                        .filter((m: string) => !initialModel || areModelsCompatible(selectedModel, m, modelMetadata))
-                        .map((m: string) => (
-                          <DropdownMenuItem
-                            key={m}
-                            onSelect={() => setSelectedModel(m)}
-                            className="text-[13px] justify-between"
-                            style={{ color: 'var(--color-text-primary)' }}
-                          >
-                            <span>{getModelDisplayName(m)}</span>
-                            {m === selectedModel && <Check className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />}
-                          </DropdownMenuItem>
-                        ));
-                    })()}
-                    <DropdownMenuSeparator style={{ backgroundColor: 'var(--color-border-muted)' }} />
-                    {/* Reasoning effort (custom control — not a menu item, won't close on click) */}
-                    <div className="model-effort-section">
-                      <span className="model-effort-label">{t('chat.modelSelector.reasoningEffort')}</span>
-                      <div className="model-effort-toggle">
-                        {([
-                          ['low', Zap, t('chat.modelSelector.effortLow')],
-                          ['medium', Brain, t('chat.modelSelector.effortMedium')],
-                          ['high', Flame, t('chat.modelSelector.effortHigh')],
-                          ...(supportsXhigh ? [['xhigh', Sparkles, t('chat.modelSelector.effortXhigh')]] as const : []),
-                        ] as const).map(([level, Icon, label]) => (
-                          <button
-                            key={level}
-                            className={`model-effort-btn ${level === reasoningEffort ? 'active' : ''}`}
-                            onMouseDown={(e) => {
-                              e.preventDefault();
-                              setReasoningEffort(level === reasoningEffort ? null : level);
-                            }}
-                            title={label}
-                          >
-                            <Icon className="h-3.5 w-3.5" />
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    {/* Fast mode (Codex only — custom control, won't close on click) */}
-                    {isCodexModel && (
-                      <div className="model-effort-section">
-                        <span className="model-effort-label">
-                          <Rocket className="h-3.5 w-3.5" style={{ marginRight: 4, verticalAlign: '-2px', display: 'inline' }} />
-                          {t('chat.modelSelector.fastMode')}
-                          <span className="fast-mode-help-wrap">
-                            <CircleHelp className="fast-mode-help-icon" />
-                            <span className="fast-mode-help-tooltip">{t('chat.modelSelector.fastModeHelpLine1')}<br />{t('chat.modelSelector.fastModeHelpLine2')}</span>
-                          </span>
-                        </span>
-                        <button
-                          className={`fast-mode-switch ${fastMode ? 'active' : ''}`}
-                          onMouseDown={(e) => { e.preventDefault(); setFastMode((v) => !v); }}
-                          title={t('chat.modelSelector.fastModeDesc')}
-                          role="switch"
-                          aria-checked={fastMode}
-                        >
-                          <span className="fast-mode-switch-thumb" />
-                        </button>
-                      </div>
-                    )}
-                    <DropdownMenuSeparator style={{ backgroundColor: 'var(--color-border-muted)' }} />
-                    {/* More models — desktop: sub-menu flyout, mobile: inline toggle with onMouseDown (same pattern as effort buttons) */}
-                    {isMobile ? (
-                      <>
-                        {/* Toggle trigger — onMouseDown fires after pointerup on mobile, avoiding Radix's pointer sequence race */}
-                        <div
-                          className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer rounded-sm transition-colors hover:bg-accent/15"
-                          style={{ color: 'var(--color-text-tertiary)' }}
-                          role="menuitem"
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            setShowMoreModels((v) => !v);
-                          }}
-                        >
-                          <span>{t('chat.modelSelector.moreModels')}</span>
-                          <ChevronRight className={`h-3.5 w-3.5 transition-transform ${showMoreModels ? 'rotate-90' : ''}`} />
-                        </div>
-                        {/* Model items — plain divs (not DropdownMenuItems) to avoid Collection registration changes */}
-                        <div className={showMoreModels ? '' : 'hidden'}>
-                          {moreModelsItems.length > 0 ? (
-                            moreModelsItems.map((m) => (
-                              <div
-                                key={m}
-                                className="relative flex w-full cursor-default select-none items-center justify-between rounded-sm px-3 py-2 pl-6 text-[13px] outline-none transition-colors hover:bg-accent/15"
-                                style={{ color: 'var(--color-text-primary)' }}
-                                role="menuitem"
-                                onMouseDown={(e) => {
-                                  e.preventDefault();
-                                  setSelectedModel(m);
-                                  setModelMenuOpen(false);
-                                }}
-                              >
-                                <span>{getModelDisplayName(m)}</span>
-                                {m === selectedModel && <Check className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />}
-                              </div>
-                            ))
-                          ) : (
-                            <div
-                              className="relative flex w-full cursor-default select-none items-center rounded-sm px-3 py-2 pl-6 text-xs outline-none transition-colors hover:bg-accent/15"
-                              style={{ color: 'var(--color-text-tertiary)' }}
-                              role="menuitem"
-                              onMouseDown={(e) => {
-                                e.preventDefault();
-                                navigate('/settings?tab=model');
-                                setModelMenuOpen(false);
-                              }}
-                            >
-                              {t('chat.modelSelector.configureModels')}
-                            </div>
-                          )}
-                        </div>
-                      </>
-                    ) : (
-                      <DropdownMenuSub>
-                        <DropdownMenuSubTrigger
-                          className="text-xs justify-between"
-                          style={{ color: 'var(--color-text-tertiary)' }}
-                        >
-                          <span className="flex-1">{t('chat.modelSelector.moreModels')}</span>
-                          <ChevronRight className="h-3.5 w-3.5" />
-                        </DropdownMenuSubTrigger>
-                        <DropdownMenuSubContent
-                          className="w-60"
-                          data-click-outside-ignore
-                          collisionPadding={{ top: 8, right: 8, bottom: 60, left: 8 }}
-                          style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-muted)' }}
-                        >
-                          {moreModelsItems.length > 0 ? (
-                            moreModelsItems.map((m) => (
-                              <DropdownMenuItem
-                                key={m}
-                                onSelect={() => setSelectedModel(m)}
-                                className="text-[13px] justify-between"
-                                style={{ color: 'var(--color-text-primary)' }}
-                              >
-                                <span>{getModelDisplayName(m)}</span>
-                                {m === selectedModel && <Check className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />}
-                              </DropdownMenuItem>
-                            ))
-                          ) : (
-                            <DropdownMenuItem
-                              onSelect={() => navigate('/settings?tab=model')}
-                              className="text-xs"
-                              style={{ color: 'var(--color-text-tertiary)' }}
-                            >
-                              {t('chat.modelSelector.configureModels')}
-                            </DropdownMenuItem>
-                          )}
-                        </DropdownMenuSubContent>
-                      </DropdownMenuSub>
-                    )}
-                    {isMobile ? (
-                      <div
-                        className="relative flex w-full cursor-default select-none items-center rounded-sm px-3 py-2 text-xs outline-none transition-colors hover:bg-accent/15"
-                        style={{ color: 'var(--color-text-tertiary)' }}
-                        role="menuitem"
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          navigate('/settings?tab=model');
-                          setModelMenuOpen(false);
-                        }}
-                      >
-                        {t('chat.modelSelector.manageModels')}
-                      </div>
-                    ) : (
-                      <DropdownMenuItem
-                        onSelect={() => navigate('/settings?tab=model')}
-                        className="text-xs"
-                        style={{ color: 'var(--color-text-tertiary)' }}
-                      >
-                        {t('chat.modelSelector.manageModels')}
-                      </DropdownMenuItem>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
+              <ChatInputModelMenu
+                selectedModel={selectedModel}
+                onSelectModel={setSelectedModel}
+                threadModels={threadModelsProp}
+                validModelNames={validModelNames}
+                moreModelsItems={moreModelsItems}
+                hasStarredModels={starredModels.length > 0}
+                reasoningEffort={reasoningEffort}
+                onReasoningEffortChange={setReasoningEffort}
+                fastMode={fastMode}
+                onFastModeChange={setFastMode}
+                isCodexModel={isCodexModel}
+                supportsXhigh={supportsXhigh}
+                dropdownDirection={dropdownDirection}
+                containerRef={chatContainerRef}
+              />
               {/* Voice Input Button (Show only if enabled in user settings) */}
               {speechSupported && !isLoading && !!otherPref?.voice_input_enabled && (
                 <div className="flex items-center">
                   <button
                     onClick={(e) => { e.stopPropagation(); toggleListening(); }}
                     disabled={disabled}
-                    className={`inline-flex items-center justify-center h-8 w-8 rounded-xl transition-all active:scale-95 mic-button ${isListening ? 'recording' : 'text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5'}`}
+                    className={`inline-flex flex-none items-center justify-center h-8 w-8 rounded-xl transition-all active:scale-95 mic-button ${isListening ? 'recording' : 'text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5'}`}
                     type="button"
                     title={isListening ? t('chat.voice.stop') : t('chat.voice.start')}
                     aria-label={isListening ? t('chat.voice.stop') : t('chat.voice.start')}
@@ -1751,18 +858,20 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                   </button>
                 </div>
               )}
-              {/* Send / Stop Button */}
-              {isLoading && onStop ? (
+              {/* Send / Stop Button. Stop also shows during a compaction with no
+                  streaming turn (manual /compact|/offload) so the user can
+                  interrupt it; the Enter-key send path stays open for queuing. */}
+              {(isLoading || isCompacting) && onStop ? (
                 <button
-                  className="w-8 h-8 rounded-xl flex items-center justify-center transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                  style={{ backgroundColor: isStopping ? 'var(--color-btn-danger-pressed)' : 'var(--color-btn-danger)', color: 'var(--color-text-on-accent)' }}
+                  className="stop-button w-8 h-8 flex-none rounded-xl flex items-center justify-center transition-colors disabled:cursor-not-allowed"
                   onClick={(e) => { e.stopPropagation(); handleStop(); }}
                   disabled={isStopping}
-                  title={isStopping ? 'Stopping...' : 'Stop'}
+                  title={isStopping ? t('chat.stopping') : t('chat.stop')}
+                  aria-label={isStopping ? t('chat.stopping') : t('chat.stop')}
                   type="button"
                 >
                   {isStopping ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <Loader size={16} label={t('chat.stopping')} className="text-current" />
                   ) : (
                     <Square className="h-4 w-4" fill="currentColor" />
                   )}
@@ -1771,10 +880,10 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                 <button
                   onClick={(e) => { e.stopPropagation(); handleSend(); }}
                   disabled={!hasContent || disabled}
-                  className="inline-flex items-center justify-center h-8 w-8 rounded-xl transition-colors active:scale-95 disabled:cursor-default"
+                  className="inline-flex flex-none items-center justify-center h-8 w-8 rounded-xl transition-colors active:scale-95 disabled:cursor-default"
                   style={{
-                    backgroundColor: !hasContent || disabled ? 'var(--color-accent-disabled)' : 'var(--color-accent-primary)',
-                    color: !hasContent || disabled ? 'var(--color-text-tertiary)' : 'var(--color-text-on-accent)',
+                    backgroundColor: !hasContent || disabled ? 'var(--color-bg-elevated)' : 'var(--color-btn-primary-bg)',
+                    color: !hasContent || disabled ? 'var(--color-text-quaternary)' : 'var(--color-btn-primary-text)',
                   }}
                   type="button"
                   aria-label="Send message"
@@ -1813,4 +922,8 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   );
 });
 
-export default ChatInput;
+// Memoized: ChatView re-renders on every streamed chunk, and without the memo
+// the whole composer subtree (model menu, attachment deck, autocomplete) rides
+// along. Effective only while ChatView keeps the callback props identity-stable
+// (latest-ref pattern there) — keystrokes stay internal state either way.
+export default React.memo(ChatInput);

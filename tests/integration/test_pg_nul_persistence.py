@@ -94,11 +94,10 @@ class TestWorkspaceFileBulkUpsert:
 
 class TestConversationResponseSseEvents:
     async def test_sse_events_with_nul_in_tool_result_persists(
-        self, seed_workspace, patched_get_db_connection
+        self, seed_workspace, patched_get_db_connection, seed_response
     ):
         """JSONB must accept a tool-result event payload that contains NUL bytes."""
         from src.server.database.conversation import (
-            create_response,
             create_thread,
             get_responses_for_thread,
         )
@@ -125,7 +124,7 @@ class TestConversationResponseSseEvents:
         ]
 
         response_id = str(uuid.uuid4())
-        await create_response(
+        await seed_response(
             conversation_response_id=response_id,
             conversation_thread_id=thread_id,
             turn_index=0,

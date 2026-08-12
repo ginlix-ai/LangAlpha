@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { Paperclip, Loader2 } from 'lucide-react';
+import { Paperclip } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { Loader } from '@/components/ui/loader';
 import { ContextBus } from '@/lib/contextBus';
 import { getWidgetContextSnapshot } from '../widgets/framework/contextSnapshot';
 import { useToast } from '@/components/ui/use-toast';
@@ -68,7 +69,11 @@ export function RowAttachButton({ instanceId, rowId, className }: RowAttachButto
       aria-label={t('dashboard.widgets.frame.addRowToContext', { defaultValue: 'Attach to chat' })}
       title={t('dashboard.widgets.frame.addRowToContextTitle', { defaultValue: 'Attach to chat' })}
     >
-      {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Paperclip className="h-3 w-3" />}
+      {busy ? (
+        <span aria-hidden="true" className="flex-shrink-0">
+          <Loader size={12} className="text-current" />
+        </span>
+      ) : <Paperclip className="h-3 w-3" />}
     </button>
   );
 }

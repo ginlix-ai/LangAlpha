@@ -1,9 +1,9 @@
 """
-Tests for src/server/handlers/streaming_handler.py
+Tests for src/server/services/runs/sse_producer.py
 
 Covers:
 - StreamEventAccumulator: accumulation, merging, max buffer size
-- WorkflowStreamHandler: SSE event formatting, keepalive, error events
+- RunSSEProducer: SSE event formatting, keepalive, error events
 """
 
 import asyncio
@@ -21,7 +21,7 @@ class TestStreamEventAccumulator:
     """Tests for the StreamEventAccumulator class."""
 
     def _make_accumulator(self, max_bytes=16 * 1024):
-        from src.server.handlers.streaming_handler import StreamEventAccumulator
+        from src.server.services.runs.sse_producer import StreamEventAccumulator
 
         return StreamEventAccumulator(max_merged_bytes=max_bytes)
 
@@ -189,17 +189,17 @@ class TestStreamEventAccumulator:
 
 
 # ---------------------------------------------------------------------------
-# WorkflowStreamHandler — SSE formatting helpers
+# RunSSEProducer — SSE formatting helpers
 # ---------------------------------------------------------------------------
 
 
-class TestWorkflowStreamHandlerFormatting:
-    """Tests for WorkflowStreamHandler SSE formatting methods."""
+class TestRunSSEProducerFormatting:
+    """Tests for RunSSEProducer SSE formatting methods."""
 
     def _make_handler(self, thread_id="test-thread"):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(thread_id=thread_id, run_id="r-test")
+        return RunSSEProducer(thread_id=thread_id, run_id="r-test")
 
     def test_format_sse_event_basic(self):
         handler = self._make_handler()
@@ -224,6 +224,26 @@ class TestWorkflowStreamHandlerFormatting:
         )
         parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
         assert "content" not in parsed
+
+    def test_format_sse_event_nan_becomes_null(self):
+        """NaN/Inf in event data must never reach the wire as bare `NaN` tokens.
+
+        Bare NaN is invalid JSON — browser JSON.parse throws and the whole SSE
+        frame (e.g. a tool_call_result) is silently dropped.
+        """
+        handler = self._make_handler()
+        result = handler._format_sse_event(
+            "tool_call_result",
+            {
+                "content": "ok",
+                "artifact": {"close": float("nan"), "series": [1.0, float("inf")]},
+            },
+        )
+        payload = result.split("data: ", 1)[1].rstrip("\n")
+        assert "NaN" not in payload and "Infinity" not in payload
+        parsed = json.loads(payload)
+        assert parsed["artifact"]["close"] is None
+        assert parsed["artifact"]["series"] == [1.0, None]
 
     def test_format_sse_event_accumulates_by_default(self):
         handler = self._make_handler()
@@ -336,7 +356,7 @@ class TestWorkflowStreamHandlerFormatting:
 
     def test_classify_stream_exception_parses_status_from_message(self):
         """When status_code isn't on the exception, parse it from the message."""
-        from src.server.handlers.streaming_handler import classify_stream_exception
+        from src.server.services.runs.sse_producer import classify_stream_exception
         import httpx
 
         exc = httpx.HTTPError("got HTTP 429 from upstream, backing off")
@@ -385,7 +405,7 @@ class TestWorkflowStreamHandlerFormatting:
 
 
 # ---------------------------------------------------------------------------
-# WorkflowStreamHandler — tool call filtering
+# RunSSEProducer — tool call filtering
 # ---------------------------------------------------------------------------
 
 
@@ -393,9 +413,9 @@ class TestToolCallFiltering:
     """Tests for the _filter_tool_calls method."""
 
     def _make_handler(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(thread_id="test-thread", run_id="r-test")
+        return RunSSEProducer(thread_id="test-thread", run_id="r-test")
 
     def test_filters_empty_name(self):
         handler = self._make_handler()
@@ -426,7 +446,7 @@ class TestToolCallFiltering:
 
 
 # ---------------------------------------------------------------------------
-# WorkflowStreamHandler — _extract_reasoning_summary_index
+# RunSSEProducer — _extract_reasoning_summary_index
 # ---------------------------------------------------------------------------
 
 
@@ -434,28 +454,28 @@ class TestExtractReasoningSummaryIndex:
     """Tests for _extract_reasoning_summary_index static method."""
 
     def test_returns_index_from_reasoning_dict(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
         content = {
             "type": "reasoning",
             "summary": [{"type": "summary_text", "text": "thought", "index": 2}],
         }
-        assert WorkflowStreamHandler._extract_reasoning_summary_index(content) == 2
+        assert RunSSEProducer._extract_reasoning_summary_index(content) == 2
 
     def test_returns_none_for_non_reasoning(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        assert WorkflowStreamHandler._extract_reasoning_summary_index("hello") is None
+        assert RunSSEProducer._extract_reasoning_summary_index("hello") is None
 
     def test_returns_none_for_reasoning_without_summary(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
         content = {"type": "reasoning", "status": "in_progress"}
-        assert WorkflowStreamHandler._extract_reasoning_summary_index(content) is None
+        assert RunSSEProducer._extract_reasoning_summary_index(content) is None
 
 
 # ---------------------------------------------------------------------------
-# WorkflowStreamHandler — interrupt handling
+# RunSSEProducer — interrupt handling
 # ---------------------------------------------------------------------------
 
 
@@ -463,9 +483,9 @@ class TestInterruptHandling:
     """Tests for _handle_interrupt method."""
 
     def _make_handler(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(thread_id="int-thread", run_id="r-test")
+        return RunSSEProducer(thread_id="int-thread", run_id="r-test")
 
     def test_handles_dict_interrupt_value(self):
         handler = self._make_handler()
@@ -501,7 +521,7 @@ class TestInterruptHandling:
 
 
 # ---------------------------------------------------------------------------
-# WorkflowStreamHandler — event_counter integration
+# RunSSEProducer — event_counter integration
 # ---------------------------------------------------------------------------
 
 
@@ -515,9 +535,9 @@ class TestTaskArtifactEvent:
     """
 
     def _make_handler(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(thread_id="t-task-artifact", run_id="r-test")
+        return RunSSEProducer(thread_id="t-task-artifact", run_id="r-test")
 
     def test_task_artifact_event_includes_tool_call_id(self):
         """Artifact event for a spawned task must carry tool_call_id."""
@@ -564,7 +584,100 @@ class TestTaskArtifactEvent:
 
 
 # ---------------------------------------------------------------------------
-# WorkflowStreamHandler — event_counter integration
+# RunSSEProducer — provenance custom-event dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestProvenanceEvent:
+    """Tests the provenance branch of the custom-event dispatch.
+
+    The middleware emits a flat ``{"type": "provenance", ...}`` custom event
+    with ``agent=None``; the handler strips ``type``, resolves ``agent`` from
+    the LangGraph namespace, and re-emits a flat ``provenance`` SSE event whose
+    fields land at the top level (matching the frontend's ProvenanceEvent).
+    """
+
+    def _make_handler(self):
+        from src.server.services.runs.sse_producer import RunSSEProducer
+
+        return RunSSEProducer(
+            thread_id="t-provenance",
+            run_id="r-test",
+        )
+
+    def _dispatch(self, handler, event_data, agent_from_stream):
+        """Drive the REAL provenance transform used by the dispatch branch."""
+        prov_data = handler._resolve_provenance_event(event_data, agent_from_stream)
+        raw = handler._format_sse_event("provenance", prov_data)
+        event_line = raw.split("\n")[1]
+        parsed = json.loads(raw.split("data: ", 1)[1].rstrip("\n"))
+        return event_line, parsed
+
+    def test_provenance_event_is_flat_with_resolved_main_agent(self):
+        """Fields land at the top level; agent resolves to main with no namespace."""
+        handler = self._make_handler()
+        event_data = {
+            "type": "provenance",
+            "record_id": "rec-001",
+            "source_type": "web_search",
+            "identifier": "https://example.com/article",
+            "title": "Example Article",
+            "provider": "tavily",
+            "tool_call_id": "tc-001",
+            "args_fingerprint": {"query": "example"},
+            "result_sha256": "abc123",
+            "result_size": 4096,
+            "result_snippet": "snippet text",
+            "timestamp": "2024-01-01T00:00:00Z",
+            "agent": None,
+        }
+        event_line, parsed = self._dispatch(handler, event_data, agent_from_stream=())
+
+        assert event_line == "event: provenance"
+        # type becomes the event name, not a payload field
+        assert "type" not in parsed
+        # main agent (empty namespace) is pinned to "main", honoring the
+        # "main" | "task:{id}" contract (not the _extract_agent_name fallback).
+        assert parsed["agent"] == "main"
+        # all middleware fields pass through flat
+        assert parsed["record_id"] == "rec-001"
+        assert parsed["source_type"] == "web_search"
+        assert parsed["identifier"] == "https://example.com/article"
+        assert parsed["title"] == "Example Article"
+        assert parsed["provider"] == "tavily"
+        assert parsed["tool_call_id"] == "tc-001"
+        assert parsed["args_fingerprint"] == {"query": "example"}
+        assert parsed["result_sha256"] == "abc123"
+        assert parsed["result_size"] == 4096
+        assert parsed["result_snippet"] == "snippet text"
+        assert parsed["timestamp"] == "2024-01-01T00:00:00Z"
+        # no nested data envelope
+        assert "data" not in parsed
+
+    def test_provenance_event_resolves_subagent_attribution(self):
+        """A task-namespace event yields task:{id} attribution from the
+        checkpoint namespace stamped at invocation — no registration."""
+        handler = self._make_handler()
+        event_data = {
+            "type": "provenance",
+            "record_id": "rec-002",
+            "source_type": "file_read",
+            "identifier": "work/notes.md",
+            "timestamp": "2024-01-01T00:00:00Z",
+            "agent": None,
+        }
+        event_line, parsed = self._dispatch(
+            handler, event_data, agent_from_stream=("task:sub42", "tools:ns-uuid-1")
+        )
+
+        assert event_line == "event: provenance"
+        assert parsed["agent"] == "task:sub42"
+        assert parsed["source_type"] == "file_read"
+        assert parsed["identifier"] == "work/notes.md"
+
+
+# ---------------------------------------------------------------------------
+# RunSSEProducer — event_counter integration
 # ---------------------------------------------------------------------------
 
 
@@ -572,9 +685,9 @@ class TestEventCounter:
     """Test that event_counter (shared counter) is respected."""
 
     def test_uses_event_counter_when_set(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        handler = WorkflowStreamHandler(thread_id="t1", run_id="r-test")
+        handler = RunSSEProducer(thread_id="t1", run_id="r-test")
         counter = MagicMock()
         counter.next.side_effect = [42, 43]
         handler.event_counter = counter
@@ -594,8 +707,8 @@ class TestToolNodeInnerLLMSuppression:
     namespace resolves to a subagent identity (task:*/research:*)."""
 
     def _handler(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
-        return WorkflowStreamHandler(thread_id="t-tool-gate", run_id="r-test")
+        from src.server.services.runs.sse_producer import RunSSEProducer
+        return RunSSEProducer(thread_id="t-tool-gate", run_id="r-test")
 
     def _chunk(self, content, kwargs=None):
         from langchain_core.messages import AIMessageChunk
@@ -756,9 +869,9 @@ class TestResolveTokenThreshold:
     lie from the user's perspective."""
 
     def _handler(self, agent_config=None):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(thread_id="t1", run_id="r-test", agent_config=agent_config)
+        return RunSSEProducer(thread_id="t1", run_id="r-test", agent_config=agent_config)
 
     def _cfg(self, threshold: int):
         cfg = MagicMock()
@@ -801,9 +914,9 @@ class TestCompactionChunkRouting:
     regular output as compaction)."""
 
     def _handler(self):
-        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return WorkflowStreamHandler(thread_id="t1", run_id="r-test")
+        return RunSSEProducer(thread_id="t1", run_id="r-test")
 
     def test_reasoning_signal_routes_to_compaction_when_flagged(self):
         handler = self._handler()
@@ -861,3 +974,738 @@ class TestCompactionChunkRouting:
         # Simulate the error-signal discard path
         handler._compaction_windows.discard(ns)
         assert ns not in handler._compaction_windows
+
+
+# ---------------------------------------------------------------------------
+# Stop-point reconciliation (decision 1b / T3-A): finalize_stopped_events
+# ---------------------------------------------------------------------------
+
+
+class TestFinalizeStoppedEvents:
+    """A user stop must close every open streaming structure so replay shows
+    partial fragments marked 'stopped' instead of live-looking zombies."""
+
+    def _handler(self, thread_id="t-stop"):
+        from src.server.services.runs.sse_producer import RunSSEProducer
+
+        return RunSSEProducer(thread_id=thread_id, run_id="r-stop")
+
+    def _events(self, handler):
+        return handler.get_sse_events() or []
+
+    def test_mid_reasoning_gets_reasoning_complete(self):
+        handler = self._handler()
+        # Simulate an open reasoning block on the main agent.
+        handler.reasoning_active.add("agent")
+        handler._open_message_ids["agent"] = "msg-1"
+
+        out = handler.finalize_stopped_events()
+
+        # A reasoning_signal:"complete" was appended for the open block.
+        assert any(
+            e["event"] in ("message_chunk", "compaction_chunk")
+            and e["data"].get("content_type") == "reasoning_signal"
+            and e["data"].get("content") == "complete"
+            for e in out
+        )
+        # Reasoning state cleared.
+        assert not handler.reasoning_active
+
+    def test_mid_tool_args_gets_terminal_close(self):
+        handler = self._handler()
+        # Simulate an in-flight Anthropic tool-call stream.
+        handler.anthropic_tool_call_state[("agent", 0)] = {
+            "name": "execute_code",
+            "id": "call-1",
+            "args_accumulated": '{"code": "import pa',
+        }
+        handler._open_message_ids["agent"] = "msg-tool"
+
+        out = handler.finalize_stopped_events()
+
+        assert any(
+            e["event"] == "tool_call_chunks"
+            and e["data"].get("finish_reason") == "stopped"
+            for e in out
+        )
+        assert not handler.anthropic_tool_call_state
+
+    def test_same_agent_in_both_tool_states_closes_once(self):
+        """A mid-turn provider fallback can leave the same agent in both the
+        Response-API and Anthropic tool-call dicts; the stop must emit exactly
+        one tool-call close for that agent, not two."""
+        handler = self._handler()
+        handler.function_call_state[("agent", 0)] = {"name": "execute_code", "id": "c1"}
+        handler.anthropic_tool_call_state[("agent", 1)] = {"name": "execute_code", "id": "c2"}
+        handler._open_message_ids["agent"] = "msg-tool"
+
+        out = handler.finalize_stopped_events()
+
+        tool_closes = [
+            e
+            for e in out
+            if e["event"] == "tool_call_chunks"
+            and e["data"].get("agent") == "agent"
+            and e["data"].get("finish_reason") == "stopped"
+        ]
+        assert len(tool_closes) == 1
+        assert not handler.function_call_state
+        assert not handler.anthropic_tool_call_state
+
+    def test_mid_artifact_gets_stopped_status(self):
+        handler = self._handler()
+        # Simulate an in-progress artifact.
+        handler._open_artifacts["art-1"] = {
+            "artifact_type": "chart",
+            "artifact_id": "art-1",
+            "agent": "agent",
+            "status": "in_progress",
+            "payload": {},
+        }
+
+        out = handler.finalize_stopped_events()
+
+        assert any(
+            e["event"] == "artifact"
+            and e["data"].get("artifact_id") == "art-1"
+            and e["data"].get("status") == "stopped"
+            for e in out
+        )
+        assert not handler._open_artifacts
+
+    def test_open_message_gets_finish_reason_stopped(self):
+        handler = self._handler()
+        handler._open_message_ids["agent"] = "msg-open"
+
+        out = handler.finalize_stopped_events()
+
+        assert any(
+            e["event"] == "message_chunk"
+            and e["data"].get("id") == "msg-open"
+            and e["data"].get("finish_reason") == "stopped"
+            for e in out
+        )
+        assert not handler._open_message_ids
+
+    def test_clean_boundary_appends_no_synthetic_events(self):
+        """Negative case: nothing open ⇒ no synthetic close events."""
+        handler = self._handler()
+        # A clean, already-closed message with a terminal finish_reason.
+        handler._format_sse_event(
+            "message_chunk",
+            {
+                "thread_id": "t-stop",
+                "agent": "agent",
+                "id": "msg-done",
+                "role": "assistant",
+                "content": "done.",
+                "finish_reason": "stop",
+            },
+        )
+        before = self._events(handler)
+
+        out = handler.finalize_stopped_events()
+
+        # No new events were appended.
+        assert len(out) == len(before)
+        assert not any(
+            e["data"].get("finish_reason") == "stopped" for e in out
+        )
+
+    def test_idempotent_double_stop_no_duplicate_closes(self):
+        """The stop-finalized marker prevents duplicate synthetic closes on a
+        second stop / handler re-entry."""
+        handler = self._handler()
+        handler.reasoning_active.add("agent")
+        handler._open_message_ids["agent"] = "msg-1"
+
+        first = handler.finalize_stopped_events()
+        first_len = len(first)
+
+        second = handler.finalize_stopped_events()
+
+        assert len(second) == first_len
+        assert handler._stop_finalized is True
+
+
+# ---------------------------------------------------------------------------
+# Compaction admission-guard wiring
+# ---------------------------------------------------------------------------
+
+
+class TestCompactionWindowGuard:
+    """_open_compaction_window / _close_compaction_window drive the
+    ThreadMutationRunner admission window off compaction-window cardinality:
+    the window opens on the FIRST window and closes only when the LAST one
+    (main + any overlapping subgraph window) is gone."""
+
+    RUNNER = (
+        "src.server.services.thread_mutation."
+        "ThreadMutationRunner.get_instance"
+    )
+
+    def _make_handler(self, thread_id="test-thread"):
+        from src.server.services.runs.sse_producer import RunSSEProducer
+
+        return RunSSEProducer(thread_id=thread_id, run_id="r-test")
+
+    def test_first_window_opens_guard(self):
+        handler = self._make_handler()
+        runner = MagicMock()
+        runner.open_auto_compaction_window.return_value = True
+        with patch(self.RUNNER, return_value=runner):
+            handler._open_compaction_window(())
+        runner.open_auto_compaction_window.assert_called_once_with("test-thread")
+        assert handler._compaction_active is True
+        assert () in handler._compaction_windows
+
+    def test_overlapping_windows_open_guard_once(self):
+        handler = self._make_handler()
+        runner = MagicMock()
+        with patch(self.RUNNER, return_value=runner):
+            handler._open_compaction_window(())
+            handler._open_compaction_window(("sub",))
+        runner.open_auto_compaction_window.assert_called_once_with("test-thread")
+        assert handler._compaction_windows == {(), ("sub",)}
+
+    def test_guard_released_only_when_last_window_closes(self):
+        handler = self._make_handler()
+        runner = MagicMock()
+        runner.open_auto_compaction_window.return_value = True
+        with patch(self.RUNNER, return_value=runner):
+            handler._open_compaction_window(())
+            handler._open_compaction_window(("sub",))
+            handler._close_compaction_window(("sub",))
+            # One window remains → the admission window must stay open.
+            runner.close_auto_compaction_window.assert_not_called()
+            assert handler._compaction_active is True
+            handler._close_compaction_window(())
+        runner.close_auto_compaction_window.assert_called_once_with("test-thread")
+        assert handler._compaction_active is False
+        assert handler._compaction_windows == set()
+
+    def test_close_without_open_is_noop(self):
+        handler = self._make_handler()
+        runner = MagicMock()
+        with patch(self.RUNNER, return_value=runner):
+            handler._close_compaction_window(())
+        runner.close_auto_compaction_window.assert_not_called()
+        assert handler._compaction_active is False
+
+    def test_open_auto_compaction_window_skips_release_when_guard_not_owned(self):
+        """open_auto_compaction_window returning False means another op already holds the
+        thread's mutation slot. This handler must NOT take ownership:
+        _compaction_active stays False so closing the window (or the
+        outer-finally net) never close_auto_compaction_window()s a slot it does not own."""
+        handler = self._make_handler()
+        runner = MagicMock()
+        runner.open_auto_compaction_window.return_value = False
+        with patch(self.RUNNER, return_value=runner):
+            handler._open_compaction_window(())
+            assert handler._compaction_active is False
+            handler._close_compaction_window(())
+        runner.close_auto_compaction_window.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_outer_finally_releases_guard_on_stream_error(self):
+        """The outer finally is the sole safety net: if the stream aborts
+        (error / cancel / timeout) with a compaction window still open, the
+        admission window is closed exactly once so a queued POST is never
+        stranded."""
+        handler = self._make_handler(thread_id="t-finally")
+        runner = MagicMock()
+        runner.open_auto_compaction_window.return_value = True
+        graph = MagicMock()
+        graph.astream.side_effect = RuntimeError("graph blew up")
+        with patch(self.RUNNER, return_value=runner):
+            handler._open_compaction_window(())  # _compaction_active=True
+            with pytest.raises(RuntimeError):
+                async for _ in handler.stream_workflow(
+                    graph, {}, {"configurable": {}}
+                ):
+                    pass
+        runner.close_auto_compaction_window.assert_called_once_with("t-finally")
+        assert handler._compaction_active is False
+
+    @pytest.mark.asyncio
+    async def test_outer_finally_clears_windows_so_guard_is_reacquirable(self):
+        """The safety net must also clear _compaction_windows, not just
+        _compaction_active. A stale window left behind would make a later
+        _open_compaction_window see was_empty=False and skip open_auto_compaction_window,
+        silently failing to re-arm the admission window if the handler is
+        ever reused."""
+        handler = self._make_handler(thread_id="t-reopen")
+        runner = MagicMock()
+        runner.open_auto_compaction_window.return_value = True
+        graph = MagicMock()
+        graph.astream.side_effect = RuntimeError("graph blew up")
+        with patch(self.RUNNER, return_value=runner):
+            handler._open_compaction_window(())
+            with pytest.raises(RuntimeError):
+                async for _ in handler.stream_workflow(
+                    graph, {}, {"configurable": {}}
+                ):
+                    pass
+            # The safety net left no stale windows behind...
+            assert handler._compaction_windows == set()
+            runner.open_auto_compaction_window.reset_mock()
+            # ...so a subsequent open re-arms the window from scratch.
+            handler._open_compaction_window(())
+        runner.open_auto_compaction_window.assert_called_once_with("t-reopen")
+        assert handler._compaction_active is True
+
+
+# ---------------------------------------------------------------------------
+# Model resilience events (model_retry / model_fallback + error trace)
+# ---------------------------------------------------------------------------
+
+
+class _CustomEventGraph:
+    """LangGraph stand-in whose astream yields custom-mode events."""
+
+    def __init__(self, events, namespace=()):
+        self._events = events
+        self._namespace = namespace
+
+    def astream(
+        self, _input_state, config=None, stream_mode=None, subgraphs=None,
+        durability=None,
+    ):
+        async def _gen():
+            for event in self._events:
+                yield (self._namespace, "custom", event)
+
+        return _gen()
+
+
+class TestModelResilienceEvents:
+    def _make_handler(self, thread_id="res-thread"):
+        from src.server.services.runs.sse_producer import RunSSEProducer
+
+        return RunSSEProducer(thread_id=thread_id, run_id="r-test")
+
+    async def _collect(self, handler, events, namespace=()):
+        return [
+            chunk
+            async for chunk in handler.stream_workflow(
+                _CustomEventGraph(events, namespace), input_state={}, config={}
+            )
+        ]
+
+    @staticmethod
+    def _find_event(chunks, event_type):
+        for chunk in chunks:
+            if f"event: {event_type}\n" in chunk:
+                return json.loads(chunk.split("data: ", 1)[1].rstrip("\n"))
+        return None
+
+    @pytest.mark.asyncio
+    async def test_model_retry_emitted_but_not_persisted(self):
+        handler = self._make_handler()
+        chunks = await self._collect(
+            handler,
+            [
+                {
+                    "type": "model_retry",
+                    "model": "primary-model",
+                    "attempt": 1,
+                    "max_retries": 3,
+                    "error": "upstream 500 at https://user:secret@api.example.com/v1",
+                    "status_code": 500,
+                    "delay_seconds": 1.0,
+                }
+            ],
+        )
+        data = self._find_event(chunks, "model_retry")
+        assert data is not None
+        assert data["thread_id"] == "res-thread"
+        assert data["model"] == "primary-model"
+        assert data["attempt"] == 1
+        assert data["max_retries"] == 3
+        assert data["status_code"] == 500
+        # Credentials scrubbed from the middleware-provided error text
+        assert "secret" not in data["error"]
+        # Main-stream events pin "main" (empty namespace + no langgraph_node
+        # in the middleware payload would otherwise hit the "agent" fallback).
+        assert data["agent"] == "main"
+        # Transient: never persisted to the SSE event log
+        persisted = handler.get_sse_events() or []
+        assert "model_retry" not in [e["event"] for e in persisted]
+
+    @pytest.mark.asyncio
+    async def test_model_fallback_emitted_and_persisted(self):
+        handler = self._make_handler()
+        chunks = await self._collect(
+            handler,
+            [
+                {
+                    "type": "model_fallback",
+                    "from_model": "primary-model",
+                    "to_model": "fallback-a",
+                    "from_is_primary": True,
+                    "error": "Error code: 404",
+                    "status_code": 404,
+                    "attempts_on_from": 1,
+                }
+            ],
+        )
+        data = self._find_event(chunks, "model_fallback")
+        assert data is not None
+        assert data["from_model"] == "primary-model"
+        assert data["to_model"] == "fallback-a"
+        assert data["from_is_primary"] is True
+        assert data["attempts_on_from"] == 1
+        assert data["agent"] == "main"
+        # Persisted so the transcript note survives history replay
+        persisted = handler.get_sse_events() or []
+        assert "model_fallback" in [e["event"] for e in persisted]
+
+    @pytest.mark.asyncio
+    async def test_model_fallback_ui_record_unwraps_to_legacy_shape(self):
+        # push_ui_message wraps the payload in a langgraph ui record; the
+        # handler must unwrap it to the same wire shape as the legacy event.
+        handler = self._make_handler()
+        chunks = await self._collect(
+            handler,
+            [
+                {
+                    "type": "ui",
+                    "id": "ui-abc123",
+                    "name": "model_fallback",
+                    "props": {
+                        "from_model": "primary-model",
+                        "to_model": "fallback-a",
+                        "from_is_primary": True,
+                        "error": "Error code: 404 https://user:secret@host/v1",
+                        "status_code": 404,
+                        "attempts_on_from": 1,
+                    },
+                    "metadata": {},
+                }
+            ],
+        )
+        data = self._find_event(chunks, "model_fallback")
+        assert data is not None
+        assert data["from_model"] == "primary-model"
+        assert data["to_model"] == "fallback-a"
+        assert data["agent"] == "main"
+        assert "secret" not in data["error"]
+        # No artifact event leaks from the generic ui passthrough
+        assert self._find_event(chunks, "artifact") is None
+        persisted = handler.get_sse_events() or []
+        assert "model_fallback" in [e["event"] for e in persisted]
+
+    @pytest.mark.asyncio
+    async def test_subagent_namespace_attributed(self):
+        handler = self._make_handler()
+        chunks = await self._collect(
+            handler,
+            [
+                {
+                    "type": "model_fallback",
+                    "from_model": "m-a",
+                    "to_model": "m-b",
+                    "from_is_primary": True,
+                    "error": "x",
+                    "status_code": 400,
+                    "attempts_on_from": 1,
+                }
+            ],
+            namespace=("task-ns-uuid",),
+        )
+        data = self._find_event(chunks, "model_fallback")
+        assert data is not None
+        # Without a background registry the raw namespace passes through —
+        # the point is main-agent events don't get subagent attribution and
+        # vice versa.
+        assert data["agent"] == "task-ns-uuid"
+
+
+class TestFormatErrorEventResilienceTrace:
+    def _make_handler(self):
+        from src.server.services.runs.sse_producer import RunSSEProducer
+
+        return RunSSEProducer(thread_id="err-thread", run_id="r-test")
+
+    @staticmethod
+    def _trace():
+        return {
+            "model": "primary-model",
+            "attempted_models": [
+                {
+                    "model": "primary-model",
+                    "error": "Error code: 404 at https://user:secret@h/v1",
+                    "status_code": 404,
+                    "attempts": 1,
+                },
+                {
+                    "model": "fallback-a",
+                    "error": "param mismatch",
+                    "status_code": 400,
+                    "attempts": 1,
+                },
+            ],
+        }
+
+    def test_trace_enriches_error_event(self):
+        exc = RuntimeError("Error calling model 'primary-model'")
+        exc.__model_resilience__ = self._trace()
+        handler = self._make_handler()
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["model"] == "primary-model"
+        attempted = parsed["attempted_models"]
+        assert [a["model"] for a in attempted] == ["primary-model", "fallback-a"]
+        # Per-entry error text is sanitized before hitting the wire
+        assert "secret" not in attempted[0]["error"]
+        assert attempted[1]["status_code"] == 400
+
+    def test_trace_found_via_cause_chain(self):
+        inner = RuntimeError("primary failed")
+        inner.__model_resilience__ = self._trace()
+        try:
+            try:
+                raise inner
+            except Exception as e:
+                raise RuntimeError("wrapped") from e
+        except RuntimeError as outer:
+            exc = outer
+        handler = self._make_handler()
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["model"] == "primary-model"
+
+    def test_no_trace_no_new_fields(self):
+        exc = RuntimeError("plain failure")
+        handler = self._make_handler()
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert "model" not in parsed
+        assert "attempted_models" not in parsed
+        assert parsed["error_kind"] == "internal"
+
+    def test_generic_exception_with_trace_classifies_upstream(self):
+        # A generic (non-SDK) exception carrying the trace is still a
+        # model-call failure — it must not fall into the internal-error
+        # banner path, which drops the model/attempted-models context.
+        exc = RuntimeError("Error calling model 'primary-model'")
+        exc.__model_resilience__ = self._trace()
+        handler = self._make_handler()
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["error_kind"] == "upstream"
+        # Status comes from the primary attempt record; 404 drives the hints.
+        assert parsed["status_code"] == 404
+        assert parsed["hints"] == ["model_access", "try_another_model"]
+
+    def test_generic_exception_with_trace_but_no_status(self):
+        trace = self._trace()
+        trace["attempted_models"][0]["status_code"] = None
+        exc = RuntimeError("model call blew up without a status")
+        exc.__model_resilience__ = trace
+        handler = self._make_handler()
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["error_kind"] == "upstream"
+        assert "status_code" not in parsed
+        assert parsed["hints"] == [
+            "api_key",
+            "model_access",
+            "provider_status",
+            "try_another_model",
+        ]
+
+
+class TestSanitizeErrorText:
+    """Credential shapes are masked before error text reaches the wire."""
+
+    def test_url_userinfo_stripped(self):
+        from src.server.services.runs.sse_producer import _sanitize_error_text
+
+        out = _sanitize_error_text("GET https://user:hunter2@api.example.com/v1 failed")
+        assert "hunter2" not in out
+        assert "https://api.example.com/v1" in out
+
+    def test_bearer_token_masked(self):
+        from src.server.services.runs.sse_producer import _sanitize_error_text
+
+        out = _sanitize_error_text("401 with header Authorization: Bearer abc123def456xyz")
+        assert "abc123def456xyz" not in out
+        assert "[REDACTED]" in out
+
+    def test_key_params_masked(self):
+        from src.server.services.runs.sse_producer import _sanitize_error_text
+
+        out = _sanitize_error_text('request had api_key="tok_0123456789abcdef" set')
+        assert "tok_0123456789abcdef" not in out
+        out = _sanitize_error_text("x-api-key: somelongsecretvalue1")
+        assert "somelongsecretvalue1" not in out
+
+    def test_sk_style_token_masked(self):
+        from src.server.services.runs.sse_producer import _sanitize_error_text
+
+        out = _sanitize_error_text("Invalid API key provided: sk-abcdef0123456789")
+        assert "sk-abcdef0123456789" not in out
+
+    def test_url_query_key_param_masked(self):
+        from src.server.services.runs.sse_producer import _sanitize_error_text
+
+        out = _sanitize_error_text(
+            "400 for url https://example.googleapis.com/v1/models/m:generateContent"
+            "?key=AIzaSyExampleExampleExample123&alt=json"
+        )
+        assert "AIza" not in out
+        assert "?key=[REDACTED]" in out
+        assert "&alt=json" in out
+
+    def test_plain_error_text_unchanged(self):
+        from src.server.services.runs.sse_producer import _sanitize_error_text
+
+        text = "Error code: 404 - model 'some-model' not found"
+        assert _sanitize_error_text(text) == text
+
+
+class _MultiModeGraph:
+    """LangGraph stand-in whose astream yields pre-built (ns, mode, data) tuples."""
+
+    def __init__(self, events):
+        self._events = events
+
+    def astream(
+        self, _input_state, config=None, stream_mode=None, subgraphs=None,
+        durability=None,
+    ):
+        async def _gen():
+            for event in self._events:
+                yield event
+
+        return _gen()
+
+
+class TestTaskLaneOwnership:
+    """Exclusive lane ownership: task-namespace frames never ride the main
+    stream (their canonical copies live in the per-task channel), and a
+    task-namespace interrupt never enters root lifecycle."""
+
+    def _make_handler(self):
+        from src.server.services.runs.sse_producer import RunSSEProducer
+
+        return RunSSEProducer(thread_id="lane-thread", run_id="r-lane")
+
+    async def _collect(self, handler, events):
+        return [
+            chunk
+            async for chunk in handler.stream_workflow(
+                _MultiModeGraph(events), input_state={}, config={}
+            )
+        ]
+
+    def test_resolve_task_lane_literal_namespace_needs_no_registration(self):
+        handler = self._make_handler()
+        assert (
+            handler._resolve_task_lane(("task:e88Ssw", "model:abc"))
+            == "task:e88Ssw"
+        )
+
+    def test_resolve_task_lane_main_namespaces_stay_main(self):
+        handler = self._make_handler()
+        assert handler._resolve_task_lane(()) is None
+        assert handler._resolve_task_lane(("model:uuid-a",)) is None
+        assert handler._resolve_task_lane(("tools:uuid-b", "model:uuid-c")) is None
+
+    @pytest.mark.asyncio
+    async def test_task_message_frames_suppressed_from_main(self):
+        from langchain_core.messages import AIMessageChunk
+
+        handler = self._make_handler()
+        events = [
+            (
+                ("task:e88Ssw",),
+                "messages",
+                (AIMessageChunk(content="task text", id="m-task"), {}),
+            ),
+            (
+                ("model:uuid-main",),
+                "messages",
+                (AIMessageChunk(content="main text", id="m-main"), {}),
+            ),
+        ]
+        chunks = await self._collect(handler, events)
+        joined = "".join(chunks)
+        assert "main text" in joined
+        assert "task text" not in joined
+        persisted = handler.get_sse_events() or []
+        assert not any(
+            "task text" in json.dumps(e.get("data", {})) for e in persisted
+        )
+
+    @pytest.mark.asyncio
+    async def test_task_interrupt_never_enters_root_lifecycle(self):
+        handler = self._make_handler()
+        events = [
+            (("task:e88Ssw",), "updates", {"__interrupt__": [object()]}),
+        ]
+        await self._collect(handler, events)
+        assert handler.saw_interrupt is False
+        assert handler._pending_interrupts == []
+
+    @pytest.mark.asyncio
+    async def test_main_interrupt_still_buffers(self):
+        handler = self._make_handler()
+
+        async def _no_verify(_graph):
+            return False
+
+        handler._verify_interrupt_durable = _no_verify
+        events = [((), "updates", {"__interrupt__": [object()]})]
+        await self._collect(handler, events)
+        assert handler.saw_interrupt is True
+        assert len(handler._pending_interrupts) == 1
+
+    @pytest.mark.asyncio
+    async def test_task_context_window_and_provenance_suppressed(self):
+        handler = self._make_handler()
+        events = [
+            (
+                ("task:e88Ssw",),
+                "custom",
+                {"type": "context_window", "action": "token_usage",
+                 "input_tokens": 10, "total_tokens": 10},
+            ),
+            (
+                ("task:e88Ssw",),
+                "custom",
+                {"type": "provenance", "source": "web", "result_sha256": "x"},
+            ),
+            (
+                (),
+                "custom",
+                {"type": "context_window", "action": "token_usage",
+                 "input_tokens": 5, "total_tokens": 5},
+            ),
+        ]
+        chunks = await self._collect(handler, events)
+        cw = [c for c in chunks if "event: context_window\n" in c]
+        assert len(cw) == 1  # only the main-lane copy
+        assert '"agent": "main"' in cw[0] or '"agent": "agent"' in cw[0]
+        assert not any("event: provenance\n" in c for c in chunks)
+
+    @pytest.mark.asyncio
+    async def test_task_summarize_window_bookkeeping_still_runs(self):
+        # Suppressed from the wire, but the compaction admission window must
+        # still open for task namespaces (the stream-end finally closes it).
+        handler = self._make_handler()
+        runner = MagicMock()
+        runner.open_auto_compaction_window.return_value = True
+        events = [
+            (
+                ("task:e88Ssw",),
+                "custom",
+                {"type": "context_window", "action": "summarize",
+                 "signal": "start"},
+            ),
+        ]
+        with patch(TestCompactionWindowGuard.RUNNER, return_value=runner):
+            chunks = await self._collect(handler, events)
+        runner.open_auto_compaction_window.assert_called_once_with("lane-thread")
+        assert not any("event: context_window\n" in c for c in chunks)

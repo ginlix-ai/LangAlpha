@@ -5,7 +5,7 @@ Covers:
 - HITL response serialization (serialize_hitl_response_map, summarize_hitl_response_map)
 - _append_to_last_user_message helper
 
-Error classification (classify_error) is tested in test_chat_common.py.
+Error classification (classify_error) is tested in test_request_prep.py.
 LLM config resolution is tested in test_resolve_llm_config.py.
 """
 
@@ -138,14 +138,14 @@ class TestAppendToLastUserMessage:
     """Tests for the _append_to_last_user_message helper."""
 
     def test_appends_to_string_content(self):
-        from src.server.handlers.chat._common import _append_to_last_user_message
+        from src.server.handlers.chat.request_prep import _append_to_last_user_message
 
         messages = [{"role": "user", "content": "hello"}]
         _append_to_last_user_message(messages, " world")
         assert messages[0]["content"] == "hello world"
 
     def test_appends_to_list_content(self):
-        from src.server.handlers.chat._common import _append_to_last_user_message
+        from src.server.handlers.chat.request_prep import _append_to_last_user_message
 
         messages = [
             {"role": "user", "content": [{"type": "text", "text": "hello"}]}
@@ -155,14 +155,14 @@ class TestAppendToLastUserMessage:
         assert messages[0]["content"][1] == {"type": "text", "text": " extra"}
 
     def test_no_op_when_empty_messages(self):
-        from src.server.handlers.chat._common import _append_to_last_user_message
+        from src.server.handlers.chat.request_prep import _append_to_last_user_message
 
         messages = []
         _append_to_last_user_message(messages, "text")
         assert messages == []
 
     def test_no_op_when_last_is_not_user(self):
-        from src.server.handlers.chat._common import _append_to_last_user_message
+        from src.server.handlers.chat.request_prep import _append_to_last_user_message
 
         messages = [{"role": "assistant", "content": "hi"}]
         _append_to_last_user_message(messages, " appended")

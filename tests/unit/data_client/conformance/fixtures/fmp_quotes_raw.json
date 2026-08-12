@@ -1,0 +1,76 @@
+{
+  "_meta": {
+    "captured_at": "2026-07-04T23:12:03.841131+00:00",
+    "source": "fmp",
+    "endpoint": "GET /stable/batch-quote",
+    "api_call": "FMPClient.get_batch_quotes([\"AAPL\", \"VOD.L\", \"0700.HK\"])",
+    "params": {
+      "symbols": "AAPL,VOD.L,0700.HK"
+    },
+    "symbol": [
+      "AAPL",
+      "VOD.L",
+      "0700.HK"
+    ],
+    "notes": "Raw batch-quote response."
+  },
+  "data": [
+    {
+      "symbol": "AAPL",
+      "name": "Apple Inc.",
+      "price": 308.63,
+      "changePercentage": 4.84068,
+      "change": 14.25,
+      "volume": 71897697,
+      "dayLow": 293.68,
+      "dayHigh": 309.42,
+      "yearHigh": 317.4,
+      "yearLow": 201.5,
+      "marketCap": 4532958682280,
+      "priceAvg50": 293.523,
+      "priceAvg200": 270.69144,
+      "exchange": "NASDAQ",
+      "open": 294.085,
+      "previousClose": 294.38,
+      "timestamp": 1783022401
+    },
+    {
+      "symbol": "VOD.L",
+      "name": "Vodafone Group Plc",
+      "price": 98.7,
+      "changePercentage": 0.02026753,
+      "change": 0.02,
+      "volume": 30144775,
+      "dayLow": 97.94,
+      "dayHigh": 99.54,
+      "yearHigh": 131.1,
+      "yearLow": 67.546,
+      "marketCap": 22727352900,
+      "priceAvg50": 111.2542,
+      "priceAvg200": 103.903,
+      "exchange": "LSE",
+      "open": 98.82,
+      "previousClose": 98.68,
+      "timestamp": 1783093992
+    },
+    {
+      "symbol": "0700.HK",
+      "name": "Tencent Holdings Limited",
+      "price": 431.2,
+      "changePercentage": 0.23245,
+      "change": 1,
+      "volume": 24957596,
+      "dayLow": 431.2,
+      "dayHigh": 445.8,
+      "yearHigh": 683,
+      "yearLow": 411,
+      "marketCap": 3885602440843.0005,
+      "priceAvg50": 453.152,
+      "priceAvg200": 553.1485,
+      "exchange": "HKSE",
+      "open": 433,
+      "previousClose": 430.2,
+      "timestamp": 1783066093
+    }
+  ]
+}

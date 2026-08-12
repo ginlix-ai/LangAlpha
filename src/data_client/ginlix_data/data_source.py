@@ -7,15 +7,25 @@ from datetime import date, timedelta
 from typing import Any
 
 from src.data_client.base import FetchResult
-from src.utils.market_hours import current_trading_date
+from src.data_client.normalize import build_series
+from src.market_protocol import InstrumentRef, Series
+from src.market_protocol.symbology import index_legacy_to_polygon
 
 from .client import GinlixDataClient
 
 logger = logging.getLogger(__name__)
 
-# FMP-style interval → ginlix-data (timespan, multiplier)
+
+def normalize_series(rows: list[dict], *, ref: InstrumentRef, schema: str) -> Series:
+    """Normalize ginlix-data bars (epoch-ms ``time`` already UTC) to a Series."""
+    return build_series(
+        rows, ref=ref, schema=schema, publisher="ginlix-data",
+        ts_of=lambda row: int(row["time"]) if row.get("time") else 0,
+    )
+
+# FMP-style interval → ginlix-data (timespan, multiplier). Second bars are
+# WS-only (forming-bar stream) — deliberately absent here.
 INTERVAL_MAP: dict[str, tuple[str, int]] = {
-    "1s": ("second", 1),
     "1min": ("minute", 1),
     "5min": ("minute", 5),
     "15min": ("minute", 15),
@@ -24,33 +34,23 @@ INTERVAL_MAP: dict[str, tuple[str, int]] = {
     "4hour": ("hour", 4),
 }
 
-# Yahoo Finance / FMP symbol
-_INDEX_SYMBOL_MAP: dict[str, str] = {
-    "GSPC": "I:SPX",
-    "DJI": "I:DJI",
-    "IXIC": "I:COMP",
-    "RUT": "I:RUT",
-    "VIX": "I:VIX",
-    "NDX": "I:NDX",
-}
+# Legacy bare index symbol → Polygon wire spelling, from the protocol symbology
+# (single source of truth); reverse for snapshot response → bare lookup.
+_INDEX_SYMBOL_MAP: dict[str, str] = index_legacy_to_polygon()
 _REVERSE_INDEX_SYMBOL_MAP: dict[str, str] = {v: k for k, v in _INDEX_SYMBOL_MAP.items()}
 
 
 class GinlixDataSource:
     """Market data source backed by ginlix-data REST API."""
 
+    # Per-page limit for the upstream API (max 50000). The client auto-
+    # paginates, so the actual result set may exceed this.
+    _DEFAULT_LIMIT = 5000
+
     # Interval-aware lookback windows (trading days).
     # Each live cache key stores bars from this window; incoming requests
     # with a from/to that falls within the window are served from cache.
-    # Per-page limit for the upstream API (max 50000).  The client auto-
-    # paginates, so the actual result set may exceed this.
-    _LIMIT_BY_INTERVAL: dict[str, int] = {
-        "1s": 50000,  # max per page; auto-pagination fetches remaining
-    }
-    _DEFAULT_LIMIT = 5000
-
     _LOOKBACK_BY_INTERVAL: dict[str, int] = {
-        "1s": 0,       # today only; extended hours can reach 57K bars, desc sort keeps newest
         "1min": 5,     # ~1,950 bars, ~230 KB
         "5min": 10,    # ~780 bars, ~95 KB
         "15min": 10,   # ~260 bars, ~32 KB
@@ -80,22 +80,11 @@ class GinlixDataSource:
     def _default_dates(
         from_date: str | None, to_date: str | None, lookback_days: int
     ) -> tuple[str, str]:
-        """ginlix-data requires from/to — supply sensible defaults.
-
-        For zero-lookback intervals (e.g. 1s), use ``current_trading_date()``
-        so that after-hours / overnight queries fetch the most recent trading
-        day's data instead of an empty future date.
-        """
+        """ginlix-data requires from/to — supply sensible defaults."""
         if to_date is None:
-            if lookback_days == 0:
-                to_date = current_trading_date()
-            else:
-                to_date = date.today().strftime("%Y-%m-%d")
+            to_date = date.today().strftime("%Y-%m-%d")
         if from_date is None:
-            if lookback_days == 0:
-                from_date = current_trading_date()
-            else:
-                from_date = (date.today() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+            from_date = (date.today() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
         return from_date, to_date
 
     async def get_intraday(
@@ -114,7 +103,7 @@ class GinlixDataSource:
         timespan, multiplier = INTERVAL_MAP[interval]
         lookback = self._LOOKBACK_BY_INTERVAL.get(interval, 7)
         from_date, to_date = self._default_dates(from_date, to_date, lookback)
-        limit = self._LIMIT_BY_INTERVAL.get(interval, self._DEFAULT_LIMIT)
+        limit = self._DEFAULT_LIMIT
         logger.info(
             "get_intraday %s %s from=%s to=%s limit=%d",
             api_symbol, interval, from_date, to_date, limit,
@@ -203,6 +192,7 @@ class GinlixDataSource:
         """Normalize a ginlix-data snapshot to the unified snapshot shape."""
         session = raw.get("session", {})
         last_trade = raw.get("last_trade", {})
+        last_minute = raw.get("last_minute", {})
         ticker = raw.get("ticker", "")
         # For indices, reverse-map I:SPX → GSPC etc.
         if asset_type == "indices":
@@ -220,6 +210,17 @@ class GinlixDataSource:
             "volume": int(session["volume"]) if session.get("volume") is not None else None,
             "market_status": raw.get("market_status"),
             "last_trade_price": last_trade.get("price") if last_trade else None,
+            # Close of the most recent minute aggregate — the consolidated last
+            # sale. Unlike last_trade (and the session change fields derived
+            # from it), it excludes odd-lot prints that don't update the
+            # official last, so it matches what the chart's bars show.
+            "last_minute_close": last_minute.get("close") if last_minute else None,
+            # Provider-exact regular-session close. `price` maps the same wire
+            # field, but downstream live-tick write-through overwrites `price`,
+            # so the settled close needs its own untouched key. The provider's
+            # change fields are served at reduced precision (1dp) — deriving
+            # the close from them is off by cents; this field is exact.
+            "regular_close": session.get("close"),
             "regular_trading_change": session.get("regular_trading_change"),
             "regular_trading_change_percent": session.get("regular_trading_change_percent"),
             "early_trading_change": session.get("early_trading_change"),

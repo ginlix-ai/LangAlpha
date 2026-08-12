@@ -32,6 +32,9 @@
   background: var(--color-bg-page);
   border-radius: 999px;
   padding: 1px;
+  /* Hairline ring masks the icon underneath so the ✕ reads as a deliberate
+   * status chip rather than a stray glyph. Monochrome by design. */
+  box-shadow: 0 0 0 1px var(--color-bg-page);
 }
 
 /* --- Accordion timeline --------------------------------------------------- */
@@ -137,7 +140,7 @@
 }
 
 .titem-title {
-  font-size: 13.5px;
+  font-size: 0.8438rem;
   font-weight: 400;
   color: var(--color-text-primary);
   line-height: 1.35;
@@ -208,8 +211,8 @@
   display: inline-flex;
   align-items: center;
   cursor: pointer;
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
   line-height: 1.4;
   padding: 0;
   background: transparent;
@@ -250,7 +253,7 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--Labels-Tertiary);
 }
 
@@ -272,7 +275,7 @@
   margin-top: 4px;
   padding: 0;
   background: transparent;
-  font-size: 12.5px;
+  font-size: 0.7813rem;
   line-height: 1.55;
   color: var(--Labels-Secondary);
 }
@@ -303,7 +306,7 @@
     top: 29px;
   }
   .nhdr {
-    font-size: 11.5px;
+    font-size: 0.7188rem;
     flex-wrap: wrap;
     row-gap: 4px;
   }

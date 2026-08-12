@@ -157,6 +157,10 @@ class GinlixDataClient:
 
         Returns the ``results`` array from the response envelope.
         """
+        # asset_type is interpolated into the request path; reject anything
+        # that could smuggle path segments alongside the service token.
+        if asset_type not in ("stocks", "indices", "options"):
+            raise ValueError(f"invalid asset_type: {asset_type!r}")
         resp = await self.http.get(
             f"/api/v1/data/snapshots/{asset_type}",
             params={"symbols": ",".join(symbols)},

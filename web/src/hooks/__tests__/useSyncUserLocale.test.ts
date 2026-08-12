@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { useSyncUserLocale } from '../useSyncUserLocale';
+import { getLocaleCookie, setLocaleCookie } from '../../lib/locale';
 
 vi.mock('../useUser', () => ({
   useUser: vi.fn(),
@@ -31,24 +32,28 @@ function makeI18n(language = 'en-US'): I18nStub {
   return stub;
 }
 
+function clearLocaleCookie() {
+  document.cookie = 'locale=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
+}
+
 let mockI18n: I18nStub;
 
 describe('useSyncUserLocale', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    localStorage.clear();
+    clearLocaleCookie();
     mockI18n = makeI18n('en-US');
     mockUseTranslation.mockReturnValue({ i18n: mockI18n });
   });
 
-  it('applies the server locale on first render', () => {
+  it('seeds locale from the server on first render (no cookie yet)', () => {
     mockUseUser.mockReturnValue({ user: { locale: 'zh-CN' } });
 
     renderHook(() => useSyncUserLocale());
 
     expect(mockI18n.changeLanguage).toHaveBeenCalledTimes(1);
     expect(mockI18n.changeLanguage).toHaveBeenCalledWith('zh-CN');
-    expect(localStorage.getItem('locale')).toBe('zh-CN');
+    expect(getLocaleCookie()).toBe('zh-CN');
   });
 
   it('does not re-apply when user.locale changes after the first sync (regression: locale race)', () => {
@@ -57,35 +62,41 @@ describe('useSyncUserLocale', () => {
     const { rerender } = renderHook(() => useSyncUserLocale());
 
     expect(mockI18n.changeLanguage).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem('locale')).toBe('zh-CN');
+    expect(getLocaleCookie()).toBe('zh-CN');
 
-    // Simulate a stale /users/me refetch returning the prior server value while
-    // the user has just picked a different locale locally.
+    // Stale /users/me refetch returns the prior server value after a local pick.
     mockUseUser.mockReturnValue({ user: { locale: 'en-US' } });
     rerender();
 
-    // Latch must hold: no second changeLanguage, localStorage untouched.
+    // Latch holds: no second changeLanguage, cookie untouched.
     expect(mockI18n.changeLanguage).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem('locale')).toBe('zh-CN');
+    expect(getLocaleCookie()).toBe('zh-CN');
   });
 
-  it('latches even when the first render is a no-op (user.locale already matches i18n.language)', () => {
-    mockI18n = makeI18n('en-US');
-    mockUseTranslation.mockReturnValue({ i18n: mockI18n });
+  it('an existing cookie wins — the DB value does not override it', () => {
+    setLocaleCookie('en-US');
+    mockUseUser.mockReturnValue({ user: { locale: 'zh-CN' } });
+
+    renderHook(() => useSyncUserLocale());
+
+    expect(mockI18n.changeLanguage).not.toHaveBeenCalled();
+    expect(getLocaleCookie()).toBe('en-US');
+  });
+
+  it('seeds the cookie even when i18n already matches (no changeLanguage needed), and latches', () => {
     mockUseUser.mockReturnValue({ user: { locale: 'en-US' } });
 
     const { rerender } = renderHook(() => useSyncUserLocale());
 
-    // First render: locale matches i18n.language, so changeLanguage is not
-    // called, but the latch must still trip.
+    // i18n.language already 'en-US' → no changeLanguage, but the cookie is seeded.
     expect(mockI18n.changeLanguage).not.toHaveBeenCalled();
-    expect(localStorage.getItem('locale')).toBeNull();
+    expect(getLocaleCookie()).toBe('en-US');
 
-    // Later refetch returns a different locale: latch must block the sync.
+    // Latch blocks a later differing refetch.
     mockUseUser.mockReturnValue({ user: { locale: 'zh-CN' } });
     rerender();
 
     expect(mockI18n.changeLanguage).not.toHaveBeenCalled();
-    expect(localStorage.getItem('locale')).toBeNull();
+    expect(getLocaleCookie()).toBe('en-US');
   });
 });

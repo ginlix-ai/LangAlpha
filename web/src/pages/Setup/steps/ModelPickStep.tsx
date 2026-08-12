@@ -1,7 +1,8 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Loader2, Check, Plus, X, KeyRound, Info } from 'lucide-react';
+import { Check, Plus, X, KeyRound, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Loader } from '@/components/ui/loader';
 import { Input } from '@/components/ui/input';
 import { useAllModels } from '@/hooks/useAllModels';
 import { useConfiguredProviders } from '@/hooks/useConfiguredProviders';
@@ -354,7 +355,7 @@ export default function ModelPickStep() {
   if (modelsLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-5 w-5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
+        <Loader size={20} className="text-[color:var(--color-text-tertiary)]" />
       </div>
     );
   }
@@ -469,7 +470,7 @@ export default function ModelPickStep() {
               if (!trimmed || slug === trimmed) return null;
               return (
                 <span
-                  className="text-[11px]"
+                  className="text-[0.6875rem]"
                   style={{ color: 'var(--color-text-tertiary)' }}
                 >
                   {slug
@@ -498,7 +499,7 @@ export default function ModelPickStep() {
               }}
             />
             <span
-              className="text-[11px]"
+              className="text-[0.6875rem]"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               {t('setup.customModelIdHint')}
@@ -512,7 +513,7 @@ export default function ModelPickStep() {
               {t('setup.capabilities', { defaultValue: 'Capabilities' })}:
             </span>
             <span
-              className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
+              className="inline-flex items-center rounded-full px-2 py-0.5 text-[0.625rem] font-medium"
               style={{ background: 'var(--color-accent-soft)', color: 'var(--color-accent-primary)', opacity: 0.6 }}
             >
               Text
@@ -524,7 +525,7 @@ export default function ModelPickStep() {
                   key={mod}
                   type="button"
                   onClick={() => toggleCustomModality(mod)}
-                  className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors"
+                  className="inline-flex items-center rounded-full px-2 py-0.5 text-[0.625rem] font-medium transition-colors"
                   style={{
                     background: active ? 'var(--color-accent-soft)' : 'transparent',
                     color: active ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
@@ -613,7 +614,7 @@ export default function ModelPickStep() {
                   </span>
                   {isCustom && (
                     <span
-                      className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                      className="text-[0.625rem] px-1.5 py-0.5 rounded font-medium"
                       style={{
                         background: 'var(--color-bg-page)',
                         color: 'var(--color-text-tertiary)',
@@ -687,7 +688,9 @@ export default function ModelPickStep() {
         >
           {saving ? (
             <>
-              <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+              <span aria-hidden="true" className="mr-1.5 flex-shrink-0">
+                <Loader size={16} className="text-current" />
+              </span>
               {t('setup.saving')}
             </>
           ) : (

@@ -1,89 +1,31 @@
 """YFinance Analysis MCP Server.
 
-Provides analyst data, holdings, insider activity, news, and ESG tools.
+Analyst data, holdings, insider activity, news, ESG, and estimate tools,
+wrapped in the standard market-data envelope (see
+mcp_servers/AGENT_CONTRACT.md).
 """
 
-import math
-from typing import Any, Optional
+# NOTE: Tool docstrings in this file are hand-tuned agent prompt surface (parsed
+# into agent prompts and generated sandbox wrappers) and are content-pinned by
+# tests/unit/mcp_servers/test_agent_contract.py. Read mcp_servers/AGENT_CONTRACT.md
+# before editing; intentional changes must regenerate agent_docstring_lock.json.
 
-import pandas as pd
+from __future__ import annotations
+
+try:
+    import _bootstrap  # noqa: F401  # script launch: mcp_servers/ is sys.path[0]
+except ModuleNotFoundError:  # imported as a package module (tests)
+    from mcp_servers import _bootstrap  # noqa: F401
+
+import math
+
 import yfinance as yf
 from mcp.server.fastmcp import FastMCP
 
+from mcp_servers._envelope import make_error, make_response
+from mcp_servers._yf_common import boundary, clean_value, safe_detail, serialize_records
 
-# ---------------------------------------------------------------------------
-# Helpers (inlined — each yf server is deployed as a single file)
-# ---------------------------------------------------------------------------
-
-
-def _format_datetime(value) -> str:
-    """YYYY-MM-DD for dates, YYYY-MM-DD HH:MM:SS for datetimes with time."""
-    if hasattr(value, "hour"):
-        if value.hour or value.minute or value.second:
-            return value.strftime("%Y-%m-%d %H:%M:%S")
-    if hasattr(value, "strftime"):
-        return value.strftime("%Y-%m-%d")
-    return str(value)
-
-
-def _serialize_records(df: pd.DataFrame) -> list[dict]:
-    """Convert DataFrame to list of dicts with clean keys and values."""
-    if df is None or df.empty:
-        return []
-    df = df.reset_index() if not isinstance(df.index, pd.RangeIndex) else df.copy()
-    records = df.to_dict(orient="records")
-    cleaned = []
-    for rec in records:
-        clean_rec = {}
-        for key, value in rec.items():
-            clean_key = (
-                str(key)
-                .lower()
-                .replace(" ", "_")
-                .replace("(%)", "_pct")
-                .replace("%", "pct")
-                .replace("(", "")
-                .replace(")", "")
-            )
-            if hasattr(value, "isoformat"):
-                clean_rec[clean_key] = _format_datetime(value)
-            elif isinstance(value, float) and value != value:  # NaN
-                clean_rec[clean_key] = None
-            else:
-                clean_rec[clean_key] = value
-        cleaned.append(clean_rec)
-    return cleaned
-
-
-def _clean_value(obj):
-    """Recursively clean a value for JSON serialization."""
-    if isinstance(obj, dict):
-        return {k: _clean_value(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_clean_value(item) for item in obj]
-    if hasattr(obj, "isoformat"):
-        return _format_datetime(obj)
-    if isinstance(obj, float) and (obj != obj):  # NaN
-        return None
-    return obj
-
-
-def _make_response(
-    data_type: str, data: Any, count: Optional[int] = None, **extra: Any
-) -> dict:
-    resp = {"data_type": data_type, "source": "yfinance", "data": data}
-    if count is not None:
-        resp["count"] = count
-    elif isinstance(data, list):
-        resp["count"] = len(data)
-    elif isinstance(data, dict):
-        resp["count"] = len(data)
-    resp.update(extra)
-    return resp
-
-
-def _make_error(msg: str) -> dict:
-    return {"error": msg}
+SOURCE = "yfinance"
 
 
 # ---------------------------------------------------------------------------
@@ -95,245 +37,377 @@ mcp = FastMCP("YFinanceAnalysisMCP")
 
 @mcp.tool()
 def get_analyst_recommendations(ticker: str) -> dict:
-    """Get analyst recommendations for a stock.
+    """Aggregated analyst recommendation counts by period. Use to gauge the
+    buy/hold/sell balance over recent periods.
 
-    Returns a list of records with keys: period, strongbuy, buy, hold,
-    sell, strongsell — aggregated recommendation counts by period.
+    Args:
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+
+    Returns:
+        dict: {symbol, count, data, source}. data is a list of Yahoo-native
+        records {period, strongbuy, buy, hold, sell, strongsell} in Yahoo's
+        order (period "0m" current, "-1m", "-2m", "-3m"). Empty data means none
+        published. On error: {error, detail, symbol} with error upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
-        recs = stock.recommendations
-        data = _serialize_records(recs)
-        return _make_response("analyst_recommendations", data, ticker=ticker)
-    except Exception as e:
-        return _make_error(f"Failed to get analyst recommendations for {ticker}: {e}")
+        data = serialize_records(yf.Ticker(yf_symbol).recommendations)
+        return make_response(data, source=SOURCE, symbol=symbol)
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error",
+            safe_detail("Analyst recommendations", e),
+            symbol=symbol,
+        )
 
 
 @mcp.tool()
 def get_sustainability_data(ticker: str) -> dict:
-    """Get ESG/sustainability scores and metrics for a stock.
+    """ESG / sustainability scores for a company. Use for ESG risk context.
 
-    Returns a dict of ESG metric names to values. Returns empty dict
-    if no sustainability data is available for this ticker.
+    Args:
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+
+    Returns:
+        dict: {symbol, count, data, source}. data is a single Yahoo-native ESG
+        record mapping metric name → value (e.g. totalEsg, environmentScore,
+        socialScore, governanceScore); missing metrics are null. count is 1 when
+        data exists, else 0 (empty {} when Yahoo has no ESG coverage). On error:
+        {error, detail, symbol} with error upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
-        sus = stock.sustainability
+        sus = yf.Ticker(yf_symbol).sustainability
         if sus is None or sus.empty:
-            return _make_response("sustainability", {}, ticker=ticker)
+            return make_response({}, source=SOURCE, symbol=symbol, count=0)
         data = {str(k): v for k, v in sus.iloc[:, 0].items()}
-        # Clean NaN values
-        data = {k: (None if isinstance(v, float) and math.isnan(v) else v) for k, v in data.items()}
-        return _make_response("sustainability", data, ticker=ticker)
-    except Exception as e:
-        return _make_error(f"Failed to get sustainability data for {ticker}: {e}")
+        data = {
+            k: (None if isinstance(v, float) and math.isnan(v) else v)
+            for k, v in data.items()
+        }
+        return make_response(data, source=SOURCE, symbol=symbol, count=1)
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error", safe_detail("Sustainability data", e), symbol=symbol
+        )
 
 
 @mcp.tool()
 def get_institutional_holders(ticker: str) -> dict:
-    """Get institutional holders for a stock.
+    """Top institutional holders of a stock. Use to see which institutions hold
+    the largest positions.
 
-    Returns a list of records with keys: date_reported (YYYY-MM-DD),
-    holder, shares, value, pctheld.
+    Args:
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+
+    Returns:
+        dict: {symbol, count, data, source}. data is a list of Yahoo-native
+        records {date_reported, holder, shares, value, pctheld} in Yahoo's order
+        (largest holders first); date_reported is "YYYY-MM-DD". Empty data means
+        none reported. On error: {error, detail, symbol} with error
+        upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
-        holders = stock.institutional_holders
-        data = _serialize_records(holders)
-        return _make_response("institutional_holders", data, ticker=ticker)
-    except Exception as e:
-        return _make_error(f"Failed to get institutional holders for {ticker}: {e}")
+        data = serialize_records(yf.Ticker(yf_symbol).institutional_holders)
+        return make_response(data, source=SOURCE, symbol=symbol)
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error",
+            safe_detail("Institutional holders", e),
+            symbol=symbol,
+        )
 
 
 @mcp.tool()
 def get_mutualfund_holders(ticker: str) -> dict:
-    """Get mutual fund holders for a stock.
+    """Top mutual-fund holders of a stock. Use to see the largest fund
+    positions.
 
-    Returns a list of records with keys: date_reported (YYYY-MM-DD),
-    holder, shares, value.
+    Args:
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+
+    Returns:
+        dict: {symbol, count, data, source}. data is a list of Yahoo-native
+        records {date_reported, holder, shares, value, pctheld} in Yahoo's order
+        (largest first); date_reported is "YYYY-MM-DD". Empty data means none
+        reported. On error: {error, detail, symbol} with error upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
-        holders = stock.mutualfund_holders
-        data = _serialize_records(holders)
-        return _make_response("mutualfund_holders", data, ticker=ticker)
-    except Exception as e:
-        return _make_error(f"Failed to get mutual fund holders for {ticker}: {e}")
+        data = serialize_records(yf.Ticker(yf_symbol).mutualfund_holders)
+        return make_response(data, source=SOURCE, symbol=symbol)
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error",
+            safe_detail("Mutual fund holders", e),
+            symbol=symbol,
+        )
 
 
 @mcp.tool()
 def get_insider_transactions(ticker: str) -> dict:
-    """Get insider transactions for a stock.
+    """Recent insider buy/sell transactions. Use to track insider activity.
 
-    Returns a list of records with keys: start_date (YYYY-MM-DD),
-    insider, position, url, transaction, text, shares, value, ownership.
+    Args:
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+
+    Returns:
+        dict: {symbol, count, data, source}. data is a list of Yahoo-native
+        records {start_date, insider, position, url, transaction, text, shares,
+        value, ownership} in Yahoo's order (most recent first); start_date is
+        "YYYY-MM-DD". Empty data means none reported. On error:
+        {error, detail, symbol} with error upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
-        txns = stock.insider_transactions
-        data = _serialize_records(txns)
-        return _make_response("insider_transactions", data, ticker=ticker)
-    except Exception as e:
-        return _make_error(f"Failed to get insider transactions for {ticker}: {e}")
+        data = serialize_records(yf.Ticker(yf_symbol).insider_transactions)
+        return make_response(data, source=SOURCE, symbol=symbol)
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error",
+            safe_detail("Insider transactions", e),
+            symbol=symbol,
+        )
 
 
 @mcp.tool()
 def get_insider_roster(ticker: str) -> dict:
-    """Get insider roster (list of insiders with their positions and holdings).
+    """Current insiders and their holdings. Use to see who the insiders are and
+    their share positions.
 
-    Returns a list of records with keys: name, position, url,
-    most_recent_transaction, latest_transaction_date,
-    shares_owned_directly, shares_owned_indirectly, etc.
+    Args:
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+
+    Returns:
+        dict: {symbol, count, data, source}. data is a list of Yahoo-native
+        records {name, position, url, most_recent_transaction,
+        latest_transaction_date, shares_owned_directly,
+        shares_owned_indirectly, ...} in Yahoo's order; date fields are
+        "YYYY-MM-DD". Empty data means none reported. On error:
+        {error, detail, symbol} with error upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
-        roster = stock.insider_roster_holders
-        data = _serialize_records(roster)
-        return _make_response("insider_roster", data, ticker=ticker)
-    except Exception as e:
-        return _make_error(f"Failed to get insider roster for {ticker}: {e}")
+        data = serialize_records(yf.Ticker(yf_symbol).insider_roster_holders)
+        return make_response(data, source=SOURCE, symbol=symbol)
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error", safe_detail("Insider roster", e), symbol=symbol
+        )
 
 
 @mcp.tool()
 def get_news(ticker: str, count: int = 10, tab: str = "news") -> dict:
-    """Get latest news articles for a stock.
-
-    Returns a list of article dicts from Yahoo Finance. Article structure
-    varies but typically includes nested content with title, publisher,
-    url, and publish date fields.
+    """Latest news articles for a stock. Use to pull recent headlines and
+    coverage.
 
     Args:
-        ticker: Stock ticker symbol (e.g. "AAPL", "MSFT")
-        count: Number of articles to return (default 10)
-        tab: News tab — "news", "all", or "press releases"
-    """
-    try:
-        stock = yf.Ticker(ticker)
-        articles = stock.get_news(count=count, tab=tab)
-        if not articles:
-            return _make_response("news", [], ticker=ticker)
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        count: Number of articles (default 10).
+        tab: One of "news", "all", or "press releases".
 
-        # Light cleanup: convert datetime objects and NaN values
-        cleaned = []
-        for item in articles:
-            cleaned.append(_clean_value(item))
-        return _make_response("news", cleaned, ticker=ticker)
-    except Exception as e:
-        return _make_error(f"Failed to get news for {ticker}: {e}")
+    Returns:
+        dict: {symbol, count, data, source}. data is a list of raw Yahoo-native
+        article dicts in Yahoo's order (most recent first); each has nested
+        `content` with title, publisher, url, and publish-date fields (exact
+        shape is Yahoo-native and varies). Empty data means no articles. On
+        error: {error, detail, symbol} with error upstream_error.
+    """
+    symbol, yf_symbol, _ = boundary(ticker)
+    try:
+        articles = yf.Ticker(yf_symbol).get_news(count=count, tab=tab)
+        if not articles:
+            return make_response([], source=SOURCE, symbol=symbol)
+        data = [clean_value(item) for item in articles]
+        return make_response(data, source=SOURCE, symbol=symbol)
+    except Exception as e:  # noqa: BLE001
+        return make_error("upstream_error", safe_detail("News", e), symbol=symbol)
 
 
 @mcp.tool()
 def get_analyst_price_targets(ticker: str) -> dict:
-    """Get analyst price target summary for a stock.
+    """Analyst price-target summary for a stock. Use for consensus target vs.
+    current price.
 
-    Returns a dict with keys: current, low, high, mean, median — all
-    numeric price values. Returns empty dict if no targets available.
+    Args:
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+
+    Returns:
+        dict: {symbol, count, data, source}. data is a single Yahoo-native
+        record {current, low, high, mean, median}; price values are as reported
+        by Yahoo (minor units on some venues, e.g. LSE pence) and currency is
+        omitted — no declared-currency source on this path. count is 1 when data
+        exists, else 0 (empty {} when unavailable). On error:
+        {error, detail, symbol} with error upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
-        targets = stock.analyst_price_targets
+        targets = yf.Ticker(yf_symbol).analyst_price_targets
         if not targets:
-            return _make_response("analyst_price_targets", {}, ticker=ticker)
-        return _make_response("analyst_price_targets", _clean_value(targets), ticker=ticker)
-    except Exception as e:
-        return _make_error(f"Failed to get analyst price targets for {ticker}: {e}")
+            return make_response({}, source=SOURCE, symbol=symbol, count=0)
+        return make_response(
+            clean_value(targets),
+            source=SOURCE,
+            symbol=symbol,
+            count=1,
+        )
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error",
+            safe_detail("Analyst price targets", e),
+            symbol=symbol,
+        )
 
 
 @mcp.tool()
 def get_upgrades_downgrades(ticker: str) -> dict:
-    """Get history of analyst upgrades and downgrades for a stock.
+    """History of analyst rating changes (upgrades/downgrades). Use to track
+    how the sell-side rating evolved.
 
-    Returns a list of records with keys: gradedate (YYYY-MM-DD),
-    firm, tograde, fromgrade, action.
+    Args:
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+
+    Returns:
+        dict: {symbol, count, data, source}. data is a list of Yahoo-native
+        records {gradedate, firm, tograde, fromgrade, action} in Yahoo's order
+        (most recent first); gradedate is "YYYY-MM-DD". Empty data means none
+        reported. On error: {error, detail, symbol} with error upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
-        ud = stock.upgrades_downgrades
-        data = _serialize_records(ud)
-        return _make_response("upgrades_downgrades", data, ticker=ticker)
-    except Exception as e:
-        return _make_error(f"Failed to get upgrades/downgrades for {ticker}: {e}")
+        data = serialize_records(yf.Ticker(yf_symbol).upgrades_downgrades)
+        return make_response(data, source=SOURCE, symbol=symbol)
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error",
+            safe_detail("Upgrades/downgrades", e),
+            symbol=symbol,
+        )
 
 
 @mcp.tool()
 def get_earnings_history(ticker: str) -> dict:
-    """Get historical earnings per share (estimate vs actual, surprise %).
+    """Historical EPS estimate vs. actual with surprise. Use to review recent
+    earnings beats/misses. Same data as get_earnings_data (fundamentals server).
 
-    Returns a list of records with keys: quarter (YYYY-MM-DD), epsestimate,
-    epsactual, epsdifference, surprisepercent. Same underlying data as
-    get_earnings_data in the fundamentals server.
+    Args:
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+
+    Returns:
+        dict: {symbol, count, data, source}. data is a list of Yahoo-native
+        records {quarter, epsestimate, epsactual, epsdifference, surprisepercent}
+        in Yahoo's order (oldest first); quarter is "YYYY-MM-DD". Empty data
+        means none reported. On error: {error, detail, symbol} with error
+        upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
-        eh = stock.earnings_history
-        data = _serialize_records(eh)
-        return _make_response("earnings_history", data, ticker=ticker)
-    except Exception as e:
-        return _make_error(f"Failed to get earnings history for {ticker}: {e}")
+        data = serialize_records(yf.Ticker(yf_symbol).earnings_history)
+        return make_response(data, source=SOURCE, symbol=symbol)
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error", safe_detail("Earnings history", e), symbol=symbol
+        )
 
 
 @mcp.tool()
 def get_earnings_estimates(ticker: str) -> dict:
-    """Get earnings estimates for upcoming quarters and years.
+    """Forward EPS estimates by period. Use for consensus EPS for coming
+    quarters and years.
 
-    Returns a list of records indexed by period (0q, +1q, 0y, +1y) with
-    keys: numberofanalysts, avg, low, high, yearagoeps, growth.
+    Args:
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+
+    Returns:
+        dict: {symbol, count, data, source}. data is a list of Yahoo-native
+        records, one per period {period (0q, +1q, 0y, +1y), numberofanalysts,
+        avg, low, high, yearagoeps, growth} in Yahoo's period order. Empty data
+        means none published. On error: {error, detail, symbol} with error
+        upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
-        ee = stock.earnings_estimate
-        data = _serialize_records(ee)
-        return _make_response("earnings_estimates", data, ticker=ticker)
-    except Exception as e:
-        return _make_error(f"Failed to get earnings estimates for {ticker}: {e}")
+        data = serialize_records(yf.Ticker(yf_symbol).earnings_estimate)
+        return make_response(data, source=SOURCE, symbol=symbol)
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error", safe_detail("Earnings estimates", e), symbol=symbol
+        )
 
 
 @mcp.tool()
 def get_revenue_estimates(ticker: str) -> dict:
-    """Get revenue estimates for upcoming quarters and years.
+    """Forward revenue estimates by period. Use for consensus revenue for coming
+    quarters and years.
 
-    Returns a list of records indexed by period (0q, +1q, 0y, +1y) with
-    keys: numberofanalysts, avg, low, high, yearagorevenue, growth.
+    Args:
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+
+    Returns:
+        dict: {symbol, count, data, source}. data is a list of Yahoo-native
+        records, one per period {period (0q, +1q, 0y, +1y), numberofanalysts,
+        avg, low, high, yearagorevenue, growth} in Yahoo's period order. Empty
+        data means none published. On error: {error, detail, symbol} with error
+        upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
-        re_ = stock.revenue_estimate
-        data = _serialize_records(re_)
-        return _make_response("revenue_estimates", data, ticker=ticker)
-    except Exception as e:
-        return _make_error(f"Failed to get revenue estimates for {ticker}: {e}")
+        data = serialize_records(yf.Ticker(yf_symbol).revenue_estimate)
+        return make_response(data, source=SOURCE, symbol=symbol)
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error", safe_detail("Revenue estimates", e), symbol=symbol
+        )
 
 
 @mcp.tool()
 def get_growth_estimates(ticker: str) -> dict:
-    """Get growth estimates comparing stock vs industry, sector, and index.
+    """Growth estimates for the stock vs. industry, sector, and index. Use to
+    compare a name's growth outlook to its peers.
 
-    Returns a list of records indexed by period (0q, +1q, 0y, +1y, +5y, -5y)
-    with keys: stock, industry, sector, index — each a growth rate.
+    Args:
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+
+    Returns:
+        dict: {symbol, count, data, source}. data is a list of Yahoo-native
+        records, one per period {period (0q, +1q, 0y, +1y, +5y, -5y), stock,
+        industry, sector, index}, each a growth rate, in Yahoo's period order.
+        Empty data means none published. On error: {error, detail, symbol} with
+        error upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
-        ge = stock.growth_estimates
-        data = _serialize_records(ge)
-        return _make_response("growth_estimates", data, ticker=ticker)
-    except Exception as e:
-        return _make_error(f"Failed to get growth estimates for {ticker}: {e}")
+        data = serialize_records(yf.Ticker(yf_symbol).growth_estimates)
+        return make_response(data, source=SOURCE, symbol=symbol)
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error", safe_detail("Growth estimates", e), symbol=symbol
+        )
 
 
 @mcp.tool()
 def get_major_holders(ticker: str) -> dict:
-    """Get major holders breakdown (insider %, institutions %, etc.).
+    """Ownership breakdown (insider %, institution %, etc.). Use for a
+    high-level ownership summary.
 
-    Returns a list of records with keys: breakdown (label) and value
-    (percentage or count).
+    Args:
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+
+    Returns:
+        dict: {symbol, count, data, source}. data is a list of Yahoo-native
+        records {breakdown, value} where breakdown is the label and value the
+        percentage or count. Empty data means unavailable. On error:
+        {error, detail, symbol} with error upstream_error.
     """
+    symbol, yf_symbol, _ = boundary(ticker)
     try:
-        stock = yf.Ticker(ticker)
-        mh = stock.major_holders
-        data = _serialize_records(mh)
-        return _make_response("major_holders", data, ticker=ticker)
-    except Exception as e:
-        return _make_error(f"Failed to get major holders for {ticker}: {e}")
+        data = serialize_records(yf.Ticker(yf_symbol).major_holders)
+        return make_response(data, source=SOURCE, symbol=symbol)
+    except Exception as e:  # noqa: BLE001
+        return make_error(
+            "upstream_error", safe_detail("Major holders", e), symbol=symbol
+        )
 
 
 if __name__ == "__main__":

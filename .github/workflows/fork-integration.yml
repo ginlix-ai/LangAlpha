@@ -1,0 +1,97 @@
+name: Fork Integration Tests
+
+# Integration tests for FORK PRs only. Same-repo PRs and pushes run in test.yml.
+#
+# SECURITY: pull_request_target runs in the base-repo context (so DAYTONA_API_KEY
+# is available) and this job checks out and executes the fork's UNTRUSTED code.
+# `uv sync` builds the root project AND the editable libs/ptc-cli from
+# fork-controlled source, so fork build hooks (pyproject.toml / hatch hooks /
+# uv.lock / conftest.py) auto-run BEFORE pytest, with the key in the env. The
+# reviewer MUST audit build config + lockfile + libs/, not just the test files.
+# This is only safe because:
+#   1. the `fork-ci` environment requires a maintainer to approve each run, and
+#      the gate re-fires on every push (synchronize);
+#   2. the Daytona key is scoped to Sandboxes Write+Delete, so a leaked key only
+#      buys sandbox churn (no data, snapshots, registries, or volumes);
+#   3. GITHUB_TOKEN is pinned to contents:read with persist-credentials:false,
+#      so fork code cannot escalate to repo write via the checkout token.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: fork-integration-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  backend-integration-fork:
+    # Forks only — same-repo PRs are handled by test.yml's ungated job.
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    # Required reviewers on this environment are the maintainer-approval gate.
+    environment: fork-ci
+    # Least privilege: this job only needs to read the repo to check out + test.
+    # Without it, pull_request_target inherits the repo default (can be write),
+    # handing fork build-hook code a repo-write token via the checkout credential.
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: langalpha_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_NAME: langalpha_test
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      REDIS_URL: redis://localhost:6379
+      SANDBOX_TEST_PROVIDER: daytona
+      DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+      DAYTONA_BASE_URL: ${{ secrets.DAYTONA_BASE_URL }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # Pin to the exact head SHA from the event payload (UNTRUSTED fork
+          # code — see the SECURITY note above). This is immutable and equals the
+          # commit the fork-ci reviewer approved, so a force-push after approval
+          # cannot swap in unreviewed code before checkout (no TOCTOU window).
+          # We test the fork commit in isolation; the post-merge push CI on main
+          # re-tests the real merged result.
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          # Don't write the token into .git/config — fork code that runs during
+          # `uv sync`/pytest could otherwise read it back and use it.
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "latest"
+      - run: uv sync --group dev --extra test
+      - run: sudo apt-get install -y ripgrep
+      # Skip docker-provider sandbox tests; they need GHCR auth + buildx
+      # and are owned by the sandbox-integration workflow's docker tier.
+      - run: uv run pytest tests/integration/ -v --tb=short -m integration --ignore=tests/integration/sandbox/providers --junitxml=test-results/backend-integration.xml --sandbox-metrics --sandbox-metrics-file test-results/session_metrics.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: backend-integration-fork-results
+          path: test-results/

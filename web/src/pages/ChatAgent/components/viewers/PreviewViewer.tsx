@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { RefreshCw, ExternalLink, X, Loader2, Globe, AlertCircle } from 'lucide-react';
+import { RefreshCw, ExternalLink, X, Globe, AlertCircle } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import './PreviewViewer.css';
 import type { PreviewData } from '../../hooks/utils/types';
 
@@ -90,7 +91,7 @@ export default function PreviewViewer({ url, port, title, loading: externalLoadi
         /* Server is starting — show frosted glass overlay with spinner */
         <div className="preview-viewer-resize-overlay" style={{ cursor: 'default' }}>
           <div className="preview-viewer-resize-card" style={{ flexDirection: 'column', alignItems: 'center', gap: 16, padding: '28px 36px' }}>
-            <div className="preview-viewer-spinner" />
+            <Loader size={20} label="Starting server" style={{ color: 'var(--color-accent-primary)' }} />
             <div className="preview-viewer-resize-info" style={{ alignItems: 'center' }}>
               <span className="preview-viewer-resize-title">Starting server...</span>
               <span className="preview-viewer-resize-url">{displayTitle} :{port}</span>
@@ -105,7 +106,7 @@ export default function PreviewViewer({ url, port, title, loading: externalLoadi
             <div className="preview-viewer-resize-info" style={{ alignItems: 'center' }}>
               <span className="preview-viewer-resize-title">Server offline</span>
               <span className="preview-viewer-resize-url">{displayTitle} :{port}</span>
-              <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 4 }}>
+              <span style={{ fontSize: '0.6875rem', color: 'var(--color-text-tertiary)', marginTop: 4 }}>
                 Click Refresh to restart
               </span>
             </div>
@@ -116,7 +117,7 @@ export default function PreviewViewer({ url, port, title, loading: externalLoadi
         <>
           {loading && !showDragOverlay && (
             <div className="preview-viewer-loading">
-              <Loader2 size={24} className="animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
+              <Loader size={24} className="text-[color:var(--color-text-tertiary)]" />
             </div>
           )}
           {showDragOverlay && (

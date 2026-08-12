@@ -10,9 +10,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import re
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 # Ordered: first match wins display position
@@ -44,8 +47,13 @@ CONVENTIONAL_RE = re.compile(
 
 
 def get_commits(commit_range: str | None) -> list[tuple[str, str]]:
-    """Run git log and return (full_sha, subject) pairs."""
-    cmd = ["git", "log", "--no-merges", "--format=%H %s"]
+    """Run git log and return (full_sha, subject) pairs.
+
+    First-parent only: a PR's individual commits are implementation detail, so
+    the walk yields one entry per PR — the merge commit under merge-commit PRs,
+    the squashed commit under squash PRs — plus any direct push to main.
+    """
+    cmd = ["git", "log", "--first-parent", "--format=%H %s"]
     if commit_range:
         cmd.append(commit_range)
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -99,12 +107,66 @@ def parse_commits(
     return groups
 
 
-def format_notes(parsed: dict[str, list[dict[str, str]]], version: str) -> str:
-    """Render parsed commits as markdown release notes."""
-    if not parsed:
-        return f"# {version}\n\nNo changes since last release.\n"
+def fetch_generated_notes(version: str, previous_tag: str | None) -> str | None:
+    """Fetch GitHub's auto-generated notes body via the generate-notes API.
 
-    lines = [f"# {version}", ""]
+    Requires GITHUB_REPOSITORY and GH_TOKEN/GITHUB_TOKEN env vars; returns
+    None when they are absent (e.g. local runs).
+    """
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not repo or not token:
+        return None
+
+    payload: dict[str, str] = {"tag_name": version, "target_commitish": "main"}
+    if previous_tag:
+        payload["previous_tag_name"] = previous_tag
+
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/releases/generate-notes",
+        data=json.dumps(payload).encode(),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read())["body"]
+
+
+def extract_new_contributors(body: str) -> tuple[list[str], str | None]:
+    """Pull the New Contributors bullets and Full Changelog line from a
+    generate-notes body."""
+    contributors: list[str] = []
+    full_changelog = None
+    in_section = False
+    for line in body.splitlines():
+        if line.startswith("## New Contributors"):
+            in_section = True
+        elif line.startswith("## "):
+            in_section = False
+        elif line.startswith("**Full Changelog**"):
+            in_section = False
+            full_changelog = line.strip()
+        elif in_section and line.startswith("*"):
+            contributors.append(line.strip())
+    return contributors, full_changelog
+
+
+def format_notes(
+    parsed: dict[str, list[dict[str, str]]],
+    new_contributors: list[str] | None = None,
+    full_changelog: str | None = None,
+) -> str:
+    """Render parsed commits as markdown release notes.
+
+    No H1 header — the release page already shows the tag as its title.
+    """
+    if not parsed:
+        return "No changes since last release.\n"
+
+    lines: list[str] = []
 
     # Ordered output: follow CATEGORIES order, then "Other Changes" last
     seen_categories: list[str] = []
@@ -126,6 +188,19 @@ def format_notes(parsed: dict[str, list[dict[str, str]]], version: str) -> str:
                 lines.append(f"- {entry['message']} ({entry['sha']})")
         lines.append("")
 
+    if new_contributors:
+        lines.append("## New Contributors")
+        lines.append("")
+        lines.append(
+            "A warm welcome and thank you to our new contributors this release:"
+        )
+        lines.append("")
+        lines.extend(new_contributors)
+        lines.append("")
+    if full_changelog:
+        lines.append(full_changelog)
+        lines.append("")
+
     # Footer with counts
     lines.append("---")
     count_parts = []
@@ -138,7 +213,7 @@ def format_notes(parsed: dict[str, list[dict[str, str]]], version: str) -> str:
         )
         count_parts.append(f"{n} {singular if n == 1 else plural}")
 
-    lines.append(f"*{', '.join(count_parts)} — {total} commits total*")
+    lines.append(f"*{', '.join(count_parts)} — {total} changes total*")
     lines.append("")
 
     return "\n".join(lines)
@@ -156,7 +231,11 @@ def main() -> None:
     parser.add_argument(
         "--version",
         required=True,
-        help="Version tag for the release header (e.g. v2026.04.02)",
+        help="Version tag of the release being cut (e.g. v2026.04.02)",
+    )
+    parser.add_argument(
+        "--previous-tag",
+        help="Previous release tag, used to detect new contributors.",
     )
     parser.add_argument(
         "--output",
@@ -166,7 +245,17 @@ def main() -> None:
 
     commits = get_commits(args.commit_range)
     parsed = parse_commits(commits)
-    notes = format_notes(parsed, args.version)
+
+    new_contributors: list[str] = []
+    full_changelog = None
+    try:
+        body = fetch_generated_notes(args.version, args.previous_tag)
+        if body:
+            new_contributors, full_changelog = extract_new_contributors(body)
+    except Exception as exc:  # noqa: BLE001 — never fail the release on this
+        print(f"warning: could not fetch new contributors: {exc}", file=sys.stderr)
+
+    notes = format_notes(parsed, new_contributors, full_changelog)
 
     if args.output:
         Path(args.output).write_text(notes)

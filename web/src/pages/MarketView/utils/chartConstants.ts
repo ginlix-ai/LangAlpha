@@ -1,11 +1,33 @@
-// --- Chart theme constants ---
-/** @deprecated Use getChartTheme(theme).bg instead */
-export const CHART_BG = '#000000';
-/** @deprecated Use getChartTheme(theme).text instead */
-export const CHART_TEXT = '#666666';
-/** @deprecated Use getChartTheme(theme).grid instead */
-export const CHART_GRID = '#1A1A1A';
+/**
+ * MarketView page chart constants.
+ *
+ * The shared interval vocabulary, load/poll/live tables, and symbol
+ * classification now live in lib/bars (so lib/ never imports a page); they are
+ * re-exported here for page-internal callers. Cross-page consumers should import
+ * those from '@/lib/bars' directly. Everything defined below is MarketView-page
+ * presentation: theme colors, scroll/UI layout, extended-hours session shading,
+ * and MA/RSI/overlay config.
+ */
+export {
+  AUTO_FIT_BARS,
+  BARS_PER_DAY,
+  DELTA_POLL_CADENCE_MS,
+  INITIAL_LOAD_DAYS,
+  INTERVAL_LABEL,
+  INTERVAL_SECONDS,
+  INTERVALS,
+  STAGE1_LOAD_DAYS,
+  WS_FOLD_INTERVALS,
+  WS_RECONCILE_POLL_MS,
+  WS_STALE_WINDOW_MS,
+} from '@/lib/bars/chartConstants';
+export type { IntervalConfig } from '@/lib/bars/chartConstants';
+export { FOREIGN_EXCHANGES, isUSEquity } from '@/lib/bars/exchanges';
+import { createThemeResolver } from '@/lib/themeTokens';
+import { getExtendedHoursType } from '@/lib/bars/marketSession';
+import type { ExtendedHoursType } from '@/lib/bars/marketSession';
 
+// --- Chart theme constants ---
 export interface ChartThemeColors {
   bg: string;
   text: string;
@@ -30,88 +52,121 @@ export interface ChartThemeColors {
   baselineDownFill2: string;
 }
 
-// Light theme overrides
-export const CHART_THEME: Record<'dark' | 'light', ChartThemeColors> = {
+// Canvas config can't read CSS custom properties, so each solid slot names the
+// token it comes from and is resolved off <html> at paint time. A non-`--`
+// entry is a one-off: the pre/post-market washes have no token, and the
+// alpha derivations need opacities no *-soft/-border token carries.
+const CHART_SOURCES: Record<'dark' | 'light', ChartThemeColors> = {
   dark: {
-    bg: '#000000',
-    text: '#666666',
-    grid: '#1A1A1A',
-    upColor: '#10b981',
-    downColor: '#ef4444',
-    volumeUp: 'rgba(16,185,129,0.3)',
-    volumeDown: 'rgba(239,68,68,0.3)',
+    bg: '--color-bg-card',
+    text: '--color-text-secondary',
+    grid: '--color-border-default',
+    upColor: '--color-profit',
+    downColor: '--color-loss',
+    volumeUp: 'rgba(63,185,80,0.3)',
+    volumeDown: 'rgba(248,81,73,0.3)',
     extBgPre: 'rgba(251,191,36,0.08)',       // amber/yellow pre-market
     extBgPost: 'rgba(59,130,246,0.10)',      // dark blue after-hours
-    extVolumeUp: 'rgba(16,185,129,0.15)',
-    extVolumeDown: 'rgba(239,68,68,0.15)',
-    watermark: 'rgba(102,102,102,0.06)',
-    rsiLine: '#667eea',
-    rsiTop: 'rgba(102,126,234,0.3)',
-    rsiBottom: 'rgba(102,126,234,0.02)',
-    baselineUp: '#10b981',
-    baselineUpFill1: 'rgba(16,185,129,0.2)',
-    baselineUpFill2: 'rgba(16,185,129,0.02)',
-    baselineDown: '#ef4444',
-    baselineDownFill1: 'rgba(239,68,68,0.02)',
-    baselineDownFill2: 'rgba(239,68,68,0.2)',
+    extVolumeUp: 'rgba(63,185,80,0.15)',
+    extVolumeDown: 'rgba(248,81,73,0.15)',
+    watermark: 'rgba(230,230,228,0.05)',
+    rsiLine: '--color-accent-primary',
+    rsiTop: 'rgba(233,149,74,0.2)',
+    rsiBottom: 'rgba(233,149,74,0.02)',
+    baselineUp: '--color-profit',
+    baselineUpFill1: 'rgba(63,185,80,0.2)',
+    baselineUpFill2: 'rgba(63,185,80,0.02)',
+    baselineDown: '--color-loss',
+    baselineDownFill1: 'rgba(248,81,73,0.02)',
+    baselineDownFill2: 'rgba(248,81,73,0.2)',
   },
   light: {
-    bg: '#FFFCF9',
-    text: '#7A756F',
-    grid: '#E8E2DB',
-    upColor: '#16A34A',
-    downColor: '#DC2626',
-    volumeUp: 'rgba(22,163,74,0.25)',
-    volumeDown: 'rgba(220,38,38,0.25)',
+    bg: '--color-bg-card',
+    text: '--color-text-secondary',
+    grid: '--color-border-default',
+    upColor: '--color-profit',
+    downColor: '--color-loss',
+    volumeUp: 'rgba(26,127,55,0.25)',
+    volumeDown: 'rgba(207,34,46,0.25)',
     extBgPre: 'rgba(217,119,6,0.05)',        // amber/yellow pre-market
     extBgPost: 'rgba(30,64,175,0.06)',       // dark blue after-hours
-    extVolumeUp: 'rgba(22,163,74,0.12)',
-    extVolumeDown: 'rgba(220,38,38,0.12)',
-    watermark: 'rgba(45,43,40,0.04)',
-    rsiLine: '#37528B',
-    rsiTop: 'rgba(55,82,139,0.2)',
-    rsiBottom: 'rgba(55,82,139,0.02)',
-    baselineUp: '#16A34A',
-    baselineUpFill1: 'rgba(22,163,74,0.15)',
-    baselineUpFill2: 'rgba(22,163,74,0.02)',
-    baselineDown: '#DC2626',
-    baselineDownFill1: 'rgba(220,38,38,0.02)',
-    baselineDownFill2: 'rgba(220,38,38,0.15)',
+    extVolumeUp: 'rgba(26,127,55,0.12)',
+    extVolumeDown: 'rgba(207,34,46,0.12)',
+    watermark: 'rgba(31,31,30,0.04)',
+    rsiLine: '--color-accent-primary',
+    rsiTop: 'rgba(208,125,51,0.2)',
+    rsiBottom: 'rgba(208,125,51,0.02)',
+    baselineUp: '--color-profit',
+    baselineUpFill1: 'rgba(26,127,55,0.15)',
+    baselineUpFill2: 'rgba(26,127,55,0.02)',
+    baselineDown: '--color-loss',
+    baselineDownFill1: 'rgba(207,34,46,0.02)',
+    baselineDownFill2: 'rgba(207,34,46,0.15)',
   },
 };
 
+/** Literal mirror of CHART_SOURCES — the jsdom / pre-stamp path. */
+export const CHART_THEME: Record<'dark' | 'light', ChartThemeColors> = {
+  dark: {
+    bg: '#232426',
+    text: '#9B9FA6',
+    grid: '#2E3033',
+    upColor: '#3FB950',
+    downColor: '#F85149',
+    volumeUp: 'rgba(63,185,80,0.3)',
+    volumeDown: 'rgba(248,81,73,0.3)',
+    extBgPre: 'rgba(251,191,36,0.08)',       // amber/yellow pre-market
+    extBgPost: 'rgba(59,130,246,0.10)',      // dark blue after-hours
+    extVolumeUp: 'rgba(63,185,80,0.15)',
+    extVolumeDown: 'rgba(248,81,73,0.15)',
+    watermark: 'rgba(230,230,228,0.05)',
+    rsiLine: '#E9954A',
+    rsiTop: 'rgba(233,149,74,0.2)',
+    rsiBottom: 'rgba(233,149,74,0.02)',
+    baselineUp: '#3FB950',
+    baselineUpFill1: 'rgba(63,185,80,0.2)',
+    baselineUpFill2: 'rgba(63,185,80,0.02)',
+    baselineDown: '#F85149',
+    baselineDownFill1: 'rgba(248,81,73,0.02)',
+    baselineDownFill2: 'rgba(248,81,73,0.2)',
+  },
+  light: {
+    bg: '#FFFFFF',
+    text: '#73726E',
+    grid: '#E8E8E6',
+    upColor: '#1A7F37',
+    downColor: '#CF222E',
+    volumeUp: 'rgba(26,127,55,0.25)',
+    volumeDown: 'rgba(207,34,46,0.25)',
+    extBgPre: 'rgba(217,119,6,0.05)',        // amber/yellow pre-market
+    extBgPost: 'rgba(30,64,175,0.06)',       // dark blue after-hours
+    extVolumeUp: 'rgba(26,127,55,0.12)',
+    extVolumeDown: 'rgba(207,34,46,0.12)',
+    watermark: 'rgba(31,31,30,0.04)',
+    rsiLine: '#D07D33',
+    rsiTop: 'rgba(208,125,51,0.2)',
+    rsiBottom: 'rgba(208,125,51,0.02)',
+    baselineUp: '#1A7F37',
+    baselineUpFill1: 'rgba(26,127,55,0.15)',
+    baselineUpFill2: 'rgba(26,127,55,0.02)',
+    baselineDown: '#CF222E',
+    baselineDownFill1: 'rgba(207,34,46,0.02)',
+    baselineDownFill2: 'rgba(207,34,46,0.15)',
+  },
+};
+
+const resolveChartTheme = createThemeResolver(CHART_SOURCES, CHART_THEME);
+
 export function getChartTheme(theme: 'dark' | 'light'): ChartThemeColors {
-  return CHART_THEME[theme] || CHART_THEME.dark;
+  return resolveChartTheme(theme === 'light' ? 'light' : 'dark');
 }
-
-export interface IntervalConfig {
-  key: string;
-  label: string;
-}
-
-export const INTERVALS: IntervalConfig[] = [
-  { key: '1s',    label: '1s'  },
-  { key: '1min',  label: '1m'  },
-  { key: '5min',  label: '5m'  },
-  { key: '15min', label: '15m' },
-  { key: '30min', label: '30m' },
-  { key: '1hour', label: '1H'  },
-  { key: '4hour', label: '4H'  },
-  { key: '1day',  label: '1D'  },
-];
 
 // Intervals shown as direct buttons in the toolbar
-export const PRIMARY_INTERVAL_KEYS = new Set(['1s', '1min', '1day']);
-
-// Days of history per interval for initial load (0 = full history)
-export const INITIAL_LOAD_DAYS: Record<string, number> = {
-  '1s': 0, '1min': 7, '5min': 30, '15min': 60, '30min': 120,
-  '1hour': 180, '4hour': 365, '1day': 0,
-};
+export const PRIMARY_INTERVAL_KEYS = new Set(['1min', '1day']);
 
 // Days to prepend on scroll-left per interval
 export const SCROLL_CHUNK_DAYS: Record<string, number> = {
-  '1s': 0, '1min': 5, '5min': 20, '15min': 30, '30min': 60,
+  '1min': 5, '5min': 20, '15min': 30, '30min': 60,
   '1hour': 120, '4hour': 180, '1day': 365,
 };
 
@@ -120,24 +175,10 @@ export const SCROLL_LOAD_THRESHOLD = 20;
 // Debounce delay for visible range changes (ms)
 export const RANGE_CHANGE_DEBOUNCE_MS = 300;
 
-// Stage 1 (fast) initial load — days to fetch for immediate render.
-// Intervals not listed here skip staged loading entirely.
-export const STAGE1_LOAD_DAYS: Record<string, number> = {
-  '1s': 0,    // 1s: stage 1 = no date range (today's data from backend)
-  '1min': 2,  // 1min: stage 1 = 2 days (fast render)
-};
-
 // Stage 2 (background backfill) — additional days to fetch silently after stage 1.
 export const STAGE2_BACKFILL_DAYS: Record<string, number> = {
-  '1s': 1,    // backfill 1 prior day
   '1min': 5,  // backfill remaining 5 days (total = 2 + 5 = 7 = INITIAL_LOAD_DAYS)
 };
-
-// Background prefetch: intervals that pre-load the next scroll chunk before user reaches the edge
-export const PREFETCH_ENABLED_INTERVALS = new Set(['1s']);
-
-// How far from left edge (in bars) to trigger background prefetch (well before SCROLL_LOAD_THRESHOLD=20)
-export const PREFETCH_THRESHOLD = 150;
 
 // --- MA / RSI / Volume configuration ---
 export interface MAConfig {
@@ -157,22 +198,9 @@ export const MA_CONFIGS: MAConfig[] = [
 export const DEFAULT_ENABLED_MA: number[] = [20, 50];
 export const RSI_PERIODS: number[] = [7, 14, 21];
 
-// Approximate trading bars per day per interval (extended hours: 4AM-8PM = 16h)
-export const BARS_PER_DAY: Record<string, number> = {
-  '1s': 57600, '1min': 960, '5min': 192, '15min': 64, '30min': 32,
-  '1hour': 16, '4hour': 4, '1day': 1,
-};
-
-// Ideal visible bar count per interval (legacy, used by scroll-load heuristics)
-export const AUTO_FIT_BARS: Record<string, number> = {
-  '1s': 300, '1min': 390, '5min': 390, '15min': 200,
-  '30min': 200, '1hour': 180, '4hour': 180, '1day': 180,
-};
-
 // Target bar spacing (pixels) per interval for readable candlestick charts.
 // Container width determines how many bars are visible at this spacing.
 export const TARGET_BAR_SPACING: Record<string, number> = {
-  '1s': 5,     // Dense: overview of rapid ticks
   '1min': 8,   // Sweet spot for intraday monitoring
   '5min': 8,
   '15min': 9,
@@ -184,7 +212,7 @@ export const TARGET_BAR_SPACING: Record<string, number> = {
 
 // --- Overlay constants ---
 export const OVERLAY_COLORS: Record<string, string> = {
-  earnings: '#10b981',
+  earnings: '#3FB950',
   grades: '#22d3ee',
   priceTargets: '#a78bfa',
 };
@@ -195,31 +223,16 @@ export const OVERLAY_LABELS: Record<string, string> = {
   priceTargets: 'PT',
 };
 
-// --- Extended-hours detection ---
+// --- Extended-hours presentation ---
+// Session semantics (window math, ext interval set) live in the session model
+// (@/lib/bars/marketSession); this file keeps the page's colors + shading.
 export const EXT_COLOR_PRE = '#fbbf24';   // amber — pre-market
 export const EXT_COLOR_POST = '#3b82f6';  // blue  — after-hours
-export const EXTENDED_HOURS_INTERVALS = new Set(['1s', '1min', '5min', '15min', '30min', '1hour']);
-
-export type ExtendedHoursType = 'pre' | 'post';
-
-/**
- * Check if a unix timestamp (seconds) falls outside regular market hours.
- * Times are ET wall-clock stored as UTC (the 'Z' trick).
- * Regular session: 9:30 – 16:00 ET.
- * Returns 'pre' (pre-market), 'post' (after-hours), or null (regular).
- */
-export function getExtendedHoursType(timeSec: number): ExtendedHoursType | null {
-  const d = new Date(timeSec * 1000);
-  const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
-  if (mins < 570) return 'pre';   // before 9:30
-  if (mins >= 960) return 'post'; // 16:00 or later
-  return null;
-}
-
-/** @deprecated Use getExtendedHoursType(t) !== null */
-export function isExtendedHours(timeSec: number): boolean {
-  return getExtendedHoursType(timeSec) !== null;
-}
+// Neutral grey for lines that mark a SETTLED close — must never look like a
+// live price (the ext colors above are the UI's "live extended price" hues).
+export const CLOSE_LINE_COLOR = 'rgba(139,143,163,0.7)';
+export { EXTENDED_HOURS_INTERVALS, getExtendedHoursType } from '@/lib/bars/marketSession';
+export type { ExtendedHoursType } from '@/lib/bars/marketSession';
 
 export interface ExtendedHoursRegion {
   start: number;
@@ -236,7 +249,7 @@ export interface ChartDataPoint {
  * Max time (seconds) between two consecutive bars before we consider the
  * stream to have "jumped" and forcibly close the currently-open extended-
  * hours region. Pre/post-market windows are at most ~5.5h and ~4h long, and
- * within a session bars on supported intervals (1s..1hour) are always spaced
+ * within a session bars on supported intervals (1min..1hour) are always spaced
  * well under this. Any gap larger than this is a day-boundary crossing or a
  * backend data gap — both cases where a region should not be stretched.
  */
@@ -290,22 +303,4 @@ export function computeExtendedHoursRegions(data: ChartDataPoint[]): ExtendedHou
     regions.push({ start: regionStart, end: prevTime!, type: regionType! });
   }
   return regions;
-}
-
-// --- Symbol classification ---
-export const FOREIGN_EXCHANGES = new Set(['HK', 'SS', 'SZ', 'L', 'T', 'TO', 'AX', 'DE', 'PA', 'MC']);
-
-/** Returns true for US-listed equities (not indexes, not foreign stocks). */
-export function isUSEquity(sym: string | null | undefined): boolean {
-  if (!sym) return true;
-  if (sym.startsWith('^')) return false;
-  const dotIdx = sym.lastIndexOf('.');
-  if (dotIdx === -1) return true;
-  const suffix = sym.slice(dotIdx + 1).toUpperCase();
-  return !FOREIGN_EXCHANGES.has(suffix);
-}
-
-/** 1s interval is only supported for US equities. */
-export function supports1sInterval(sym: string | null | undefined): boolean {
-  return isUSEquity(sym);
 }

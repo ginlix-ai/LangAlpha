@@ -19,8 +19,8 @@ export function SettingsDoneButton({ onClick, label }: Props) {
         onClick={onClick}
         className="settings-done-btn px-3 py-1.5 rounded text-sm font-medium transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
         style={{
-          backgroundColor: 'var(--color-accent-primary)',
-          color: 'var(--color-text-on-accent)',
+          backgroundColor: 'var(--color-btn-primary-bg)',
+          color: 'var(--color-btn-primary-text)',
           outlineColor: 'var(--color-accent-primary)',
         }}
       >

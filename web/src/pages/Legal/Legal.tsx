@@ -59,7 +59,7 @@ function Legal() {
               Reproduced verbatim from the upstream project&apos;s NOTICE file.
             </p>
             <pre
-              className="whitespace-pre-wrap text-[13px] p-4 rounded border font-mono"
+              className="whitespace-pre-wrap text-[0.8125rem] p-4 rounded border font-mono"
               style={{
                 backgroundColor: 'var(--color-bg-subtle)',
                 borderColor: 'var(--color-border-muted)',

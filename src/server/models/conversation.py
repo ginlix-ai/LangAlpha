@@ -5,9 +5,9 @@ This module defines response models for workspace thread endpoints that work wit
 the query-response schema (workspaces, thread, query, response).
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ==================== Workspace Thread Response Models ====================
@@ -25,12 +25,64 @@ class WorkspaceThreadListItem(BaseModel):
     )
     platform: Optional[str] = Field(
         None,
-        description="Origin platform: 'web', 'market_view:<SYMBOL>', or channel "
-        "name ('telegram', 'slack', 'discord', 'feishu'). NULL for pre-tracking rows.",
+        description="Surface the thread originated from: 'web', 'market_view:<SYMBOL>', "
+        "or channel name ('telegram', 'slack', 'discord', 'feishu'). NULL for "
+        "pre-tracking rows and system-initiated threads.",
+    )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Thread annotations. Known keys: 'origin' — "
+        "{type: 'agent'|'automation'|'system', id?} recording who initiated "
+        "the thread; absent origin = user-initiated.",
     )
     is_shared: bool = Field(False, description="Whether thread is publicly shared")
+    is_pinned: bool = Field(
+        False, description="Pinned threads sort first within their workspace"
+    )
+    archived_at: Optional[datetime] = Field(
+        None,
+        description="When the thread was archived; NULL = active. Archived "
+        "threads are excluded from listings unless explicitly requested.",
+    )
+    turn_count: Optional[int] = Field(
+        None,
+        description="Number of turns (user queries) in the thread; only the "
+        "list queries compute it — other constructor sites omit it.",
+    )
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
+
+    # Lifecycle enrichment (thread-lifecycle v6) — derived from the latest
+    # attempt on the run ledger. All optional: only the list queries join the
+    # lifecycle LATERAL; other constructor sites (rename, external-id) omit
+    # them. `current_status` above stays for back-compat.
+    run_status: Optional[str] = Field(
+        None,
+        description="Latest run's PUBLIC status (idle|queued|running|stopping|"
+        "recovering|completed|interrupted|failed|cancelled); 'idle' when the "
+        "thread has no runs.",
+    )
+    interrupt_reason: Optional[str] = Field(
+        None, description="Latest attempt's interrupt reason when interrupted"
+    )
+    latest_run_seq: Optional[int] = Field(
+        None, description="Latest attempt's monotonic run sequence (0 = none)"
+    )
+    latest_run_id: Optional[str] = Field(
+        None, description="Latest attempt's run id — the causal /seen token"
+    )
+    last_seen_run_seq: Optional[int] = Field(
+        None, description="Durable seen cursor (thread row)"
+    )
+    unseen: Optional[bool] = Field(
+        None,
+        description="Latest run settled (completed/failed/cancelled) and the "
+        "user hasn't seen it. interrupted is NOT unseen — needs-input is its "
+        "own indicator.",
+    )
+    run_started_at: Optional[datetime] = Field(
+        None, description="Latest attempt's start time (start, not settle)"
+    )
 
     model_config = ConfigDict(json_schema_extra={
         "example": {
@@ -151,12 +203,103 @@ class WorkspaceMessagesResponse(BaseModel):
 
 # ==================== Thread Management Request/Response Models ====================
 
+class ThreadCreateRequest(BaseModel):
+    """Request model for POST /api/v1/threads (pre-creation with auto-title).
+
+    ``workspace_id`` is required for ptc mode; flash mode resolves the shared
+    flash workspace when omitted — mirroring the message-send path so a
+    pre-created thread is indistinguishable from an ensure_thread_exists row.
+    """
+    workspace_id: Optional[str] = Field(None, description="Target workspace")
+    first_query: str = Field(
+        ..., min_length=1,
+        description="The user's first message; stamped as the initial title "
+        "and fed to title generation.",
+    )
+
+    @field_validator("first_query")
+    @classmethod
+    def _clip_first_query(cls, v: str) -> str:
+        # Clients send the full first message; the server consumes at most
+        # 4000 chars of it (title-prompt clip; the title stamp is [:255]).
+        # Truncate rather than reject so long pastes don't 422 the fast door.
+        return v[:4000]
+    agent_mode: Literal["flash", "ptc"] = Field("ptc")
+    # Same contract as ChatRequest.platform (see models/chat.py for the format
+    # rationale) — pre-created MarketView threads must carry their tag since
+    # ensure_thread_exists never updates platform on an existing row.
+    platform: Optional[str] = Field(
+        default=None,
+        pattern=r"^[a-z_]+(:[A-Z0-9][A-Z0-9.-]*)?$",
+        max_length=50,
+        description="Origin/platform identifier, e.g. 'web', 'market_view:AAPL'.",
+    )
+    timezone: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="IANA timezone identifier (e.g., 'America/New_York'); "
+        "localizes relative-time resolution during title generation.",
+    )
+
+
+class ThreadCreateResponse(BaseModel):
+    """201 body of POST /api/v1/threads — the created row.
+
+    ``title`` is the creation-time stamp (the raw first query). The generated
+    title arrives later on the lifecycle feed; it is never awaited here.
+    """
+    thread_id: str
+    workspace_id: str
+    thread_index: int
+    title: Optional[str] = None
+    msg_type: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class ThreadUpdateRequest(BaseModel):
-    """Request model for updating a thread."""
+    """Request model for updating a thread (title, pin, archive).
+
+    Only fields explicitly present in the request are applied — the endpoint
+    reads ``model_fields_set``, so ``{"is_pinned": true}`` cannot clear the
+    title as a side effect.
+    """
     title: Optional[str] = Field(None, max_length=255, description="New thread title")
+    is_pinned: Optional[bool] = Field(
+        None, description="Pin (true) or unpin (false) the thread"
+    )
+    archived: Optional[bool] = Field(
+        None, description="Archive (true) or unarchive (false) the thread"
+    )
 
     model_config = ConfigDict(json_schema_extra={
         "example": {"title": "Tesla Stock Analysis"},
+    })
+
+
+class ThreadExternalIdRequest(BaseModel):
+    """Request model for stamping a channel identity onto a thread.
+
+    Both fields are required and non-empty — the stamp API never clears
+    ``external_id`` back to NULL (the partial-unique dedup index relies on it).
+    """
+    platform: str = Field(
+        ...,
+        min_length=1,
+        max_length=50,
+        description="Origin platform to stamp (e.g. 'telegram', 'slack', "
+        "'discord', 'feishu').",
+    )
+    external_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        description="External channel thread identifier to stamp "
+        "(e.g. 'chat_id:topic_id').",
+    )
+
+    model_config = ConfigDict(json_schema_extra={
+        "example": {"platform": "telegram", "external_id": "chat_id:topic_id"},
     })
 
 

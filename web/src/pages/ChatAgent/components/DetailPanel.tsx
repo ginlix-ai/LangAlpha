@@ -7,6 +7,7 @@ import iconRobo from '../../../assets/img/icon-robo.png';
 import iconRoboSing from '../../../assets/img/icon-robo-sing.png';
 import { useTranslation } from 'react-i18next';
 import ToolCallDetailView, { type ToolCallProcessRecord, type SubagentInfo } from './ToolCallDetailView';
+import { taskCardStatusKind } from './taskStatusUi';
 
 interface PlanData {
   description?: string;
@@ -43,7 +44,7 @@ function DetailPanel({ toolCallProcess, planData, onClose, onOpenFile, onOpenSub
             <Zap className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
             <span
               className="font-semibold truncate"
-              style={{ color: 'var(--color-text-primary)', fontSize: 14 }}
+              style={{ color: 'var(--color-text-primary)', fontSize: '0.875rem' }}
             >
               {t('toolArtifact.planDetails')}
             </span>
@@ -78,7 +79,13 @@ function DetailPanel({ toolCallProcess, planData, onClose, onOpenFile, onOpenSub
   const artifact = toolCallProcess.toolCallResult?.artifact;
   const content = toolCallProcess.toolCallResult?.content;
   const subagentType = isTaskTool ? ((toolCallProcess.toolCall?.args?.subagent_type as string) || 'general-purpose') : '';
-  const isSubagentCompleted = isTaskTool && (toolCallProcess._subagentStatus === 'completed' || !!content);
+  // Status only — a Task's reply exists from the moment it is dispatched, so
+  // `content` marked every running task "completed" and contradicted the
+  // status chip the panel body renders. Liveness is the question the icon
+  // answers, not completion: the body below picks the same way, and a failed
+  // or stopped task is as done working as a finished one.
+  const isSubagentLive =
+    isTaskTool && taskCardStatusKind(toolCallProcess._subagentStatus) === 'running';
 
   return (
     <div
@@ -95,23 +102,23 @@ function DetailPanel({ toolCallProcess, planData, onClose, onOpenFile, onOpenSub
       >
         <div className="flex items-center gap-2 min-w-0">
           {isTaskTool ? (
-            <img src={isSubagentCompleted ? iconRobo : iconRoboSing} alt="Subagent" className="w-5 h-5 flex-shrink-0" />
+            <img src={isSubagentLive ? iconRoboSing : iconRobo} alt="Subagent" className="w-5 h-5 flex-shrink-0" />
           ) : (
             <IconComponent className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
           )}
           <span
             className="font-semibold truncate"
-            style={{ color: 'var(--color-text-primary)', fontSize: 14 }}
+            style={{ color: 'var(--color-text-primary)', fontSize: '0.875rem' }}
           >
             {displayName}
           </span>
           {isTaskTool && subagentType && (
-            <span style={{ color: 'var(--Labels-Tertiary)', fontSize: 13 }}>
+            <span style={{ color: 'var(--Labels-Tertiary)', fontSize: '0.8125rem' }}>
               — {subagentType}
             </span>
           )}
           {!isTaskTool && (toolCallProcess.toolCall?.args?.symbol as string | undefined) && (
-            <span style={{ color: 'var(--Labels-Tertiary)', fontSize: 13 }}>
+            <span style={{ color: 'var(--Labels-Tertiary)', fontSize: '0.8125rem' }}>
               — {toolCallProcess.toolCall!.args!.symbol as string}
             </span>
           )}

@@ -295,7 +295,7 @@ function UserQuestionCard({ questionData, onAnswer, onSkip }: UserQuestionCardPr
       {/* Question text */}
       <div className="flex items-start gap-2 pb-2">
         <HelpCircle className="h-4 w-4 flex-shrink-0 mt-1" style={{ color: 'var(--color-accent-light)' }} />
-        <div className="text-[15px] font-medium min-w-0" style={{ color: 'var(--color-text-primary)' }}>
+        <div className="text-[0.9375rem] font-medium min-w-0" style={{ color: 'var(--color-text-primary)' }}>
           <Markdown variant="compact" content={question} />
         </div>
       </div>

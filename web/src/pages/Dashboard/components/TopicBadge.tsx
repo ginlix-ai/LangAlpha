@@ -28,7 +28,7 @@ interface TopicBadgeProps {
 function TopicBadge({ text, trend }: TopicBadgeProps) {
   return (
     <span
-      className="px-1.5 py-0.5 sm:px-3 sm:py-1.5 rounded sm:rounded-lg border text-[10px] sm:text-xs font-medium"
+      className="px-1.5 py-0.5 sm:px-3 sm:py-1.5 rounded sm:rounded-lg border text-[0.625rem] sm:text-xs font-medium"
       style={trendStyles[trend] || trendStyles.neutral}
     >
       #{text}

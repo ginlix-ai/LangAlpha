@@ -32,9 +32,16 @@ class TestFinancialStatementsLive:
 
         result = await get_financial_statements("MSFT", statement_type="all", limit=1)
         assert "error" not in result, result.get("error")
-        assert result["count"]["income_statement"] >= 1
-        assert result["count"]["balance_sheet"] >= 1
-        assert result["count"]["cash_flow"] >= 1
+        # "all" → data is a dict of the three statement lists; count is the int total.
+        data = result["data"]
+        assert len(data["income_statement"]) >= 1
+        assert len(data["balance_sheet"]) >= 1
+        assert len(data["cash_flow"]) >= 1
+        assert result["count"] == (
+            len(data["income_statement"])
+            + len(data["balance_sheet"])
+            + len(data["cash_flow"])
+        )
 
 
 @skip_no_fmp
@@ -44,8 +51,8 @@ class TestFinancialRatiosLive:
 
         result = await get_financial_ratios("AAPL", limit=3)
         assert "error" not in result, result.get("error")
-        assert result["count"]["key_metrics"] > 0
-        assert result["count"]["ratios"] > 0
+        assert len(result["data"]["key_metrics"]) > 0
+        assert len(result["data"]["ratios"]) > 0
 
 
 @skip_no_fmp
@@ -55,7 +62,7 @@ class TestGrowthMetricsLive:
 
         result = await get_growth_metrics("AAPL", limit=3)
         assert "error" not in result, result.get("error")
-        assert result["count"]["financial_growth"] > 0
+        assert len(result["data"]["financial_growth"]) > 0
 
 
 @skip_no_fmp
@@ -86,8 +93,8 @@ class TestDividendsAndSplitsLive:
 
         result = await get_dividends_and_splits("AAPL")
         assert "error" not in result, result.get("error")
-        assert result["count"]["dividends"] > 0
-        assert result["count"]["splits"] > 0
+        assert len(result["data"]["dividends"]) > 0
+        assert len(result["data"]["splits"]) > 0
 
 
 @skip_no_fmp

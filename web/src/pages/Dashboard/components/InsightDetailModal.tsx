@@ -6,6 +6,7 @@ import TopicBadge from './TopicBadge';
 import { getInsightDetail } from '../utils/api';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { MobileBottomSheet } from '@/components/ui/mobile-bottom-sheet';
+import { Loader } from '@/components/ui/loader';
 import { useToast } from '@/components/ui/use-toast';
 import { ContextBus } from '@/lib/contextBus';
 import { buildInsightWidgetSnapshot, normalizeInsight } from '../utils/insightFetch';
@@ -82,10 +83,7 @@ function InsightBody({
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
-        <div
-          className="h-8 w-8 border-2 rounded-full animate-spin"
-          style={{ borderColor: 'var(--color-border-default)', borderTopColor: 'var(--color-accent-primary)' }}
-        />
+        <Loader size={32} className="text-[color:var(--color-accent-primary)]" />
       </div>
     );
   }
@@ -103,7 +101,7 @@ function InsightBody({
       <div className={isMobile ? '' : 'p-6 md:p-8 pb-0'}>
         <div className="flex items-center gap-2 sm:gap-3 mb-3 sm:mb-4 flex-wrap">
           <div
-            className="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full border flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-xs font-semibold uppercase tracking-wider"
+            className="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full border flex items-center gap-1.5 sm:gap-2 text-[0.625rem] sm:text-xs font-semibold uppercase tracking-wider"
             style={{
               backgroundColor: 'var(--color-accent-soft)',
               borderColor: 'var(--color-accent-overlay)',
@@ -115,7 +113,7 @@ function InsightBody({
           </div>
           {detail.model && (
             <span
-              className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"
+              className="px-2 py-0.5 rounded text-[0.625rem] font-bold uppercase tracking-wider"
               style={{
                 backgroundColor: 'var(--color-bg-hover)',
                 color: 'var(--color-text-secondary)',
@@ -125,7 +123,7 @@ function InsightBody({
             </span>
           )}
           {detail.completed_at && (
-            <span className="text-[11px] sm:text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+            <span className="text-[0.6875rem] sm:text-xs" style={{ color: 'var(--color-text-secondary)' }}>
               {formatDate(detail.completed_at)}
             </span>
           )}
@@ -133,19 +131,17 @@ function InsightBody({
             <button
               type="button"
               onClick={onAttach}
-              className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] sm:text-xs font-medium transition-colors"
+              className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[0.6875rem] sm:text-xs font-medium transition-colors"
               style={{
                 backgroundColor: 'var(--color-accent-soft)',
                 borderColor: 'var(--color-accent-overlay)',
                 color: 'var(--color-accent-primary)',
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = 'var(--color-accent-primary)';
-                e.currentTarget.style.color = '#fff';
+                e.currentTarget.style.opacity = '0.9';
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = 'var(--color-accent-soft)';
-                e.currentTarget.style.color = 'var(--color-accent-primary)';
+                e.currentTarget.style.opacity = '1';
               }}
               title={t('dashboard.widgets.frame.addToContext', { defaultValue: 'Attach to chat' })}
             >
@@ -172,7 +168,7 @@ function InsightBody({
 
         {detail.summary && (
           <p
-            className="text-[13px] sm:text-sm leading-relaxed mb-4 sm:mb-6"
+            className="text-[0.8125rem] sm:text-sm leading-relaxed mb-4 sm:mb-6"
             style={{ color: 'var(--color-text-secondary)' }}
           >
             {detail.summary}
@@ -200,7 +196,7 @@ function InsightBody({
                   style={i > 0 ? { borderTop: '1px solid var(--color-border-muted)' } : undefined}
                 >
                   <span
-                    className="text-[11px] sm:text-xs font-bold mt-0.5 shrink-0 w-4 sm:w-5 text-right"
+                    className="text-[0.6875rem] sm:text-xs font-bold mt-0.5 shrink-0 w-4 sm:w-5 text-right"
                     style={{ color: 'var(--color-text-tertiary)' }}
                   >
                     {i + 1}
@@ -208,7 +204,7 @@ function InsightBody({
                   <div className="min-w-0 flex-1">
                     <div className={isMobile ? 'flex flex-col gap-1' : 'flex items-start justify-between gap-3'}>
                       <h3
-                        className="text-[13px] sm:text-sm font-semibold leading-snug"
+                        className="text-[0.8125rem] sm:text-sm font-semibold leading-snug"
                         style={{ color: 'var(--color-text-primary)' }}
                       >
                         {item.title}
@@ -218,7 +214,7 @@ function InsightBody({
                           href={item.url}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 text-[11px] sm:text-xs shrink-0 transition-opacity hover:opacity-80"
+                          className="inline-flex items-center gap-1.5 text-[0.6875rem] sm:text-xs shrink-0 transition-opacity hover:opacity-80"
                           style={{ color: 'var(--color-text-tertiary)' }}
                         >
                           {favicon ? (
@@ -231,7 +227,7 @@ function InsightBody({
                       )}
                     </div>
                     <p
-                      className="text-[13px] sm:text-sm leading-relaxed mt-1"
+                      className="text-[0.8125rem] sm:text-sm leading-relaxed mt-1"
                       style={{ color: 'var(--color-text-secondary)' }}
                     >
                       {item.body}

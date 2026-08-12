@@ -1,0 +1,12 @@
+provider = "zhipuai"
+
+# structured_output=false provider-wide, overriding models.dev (which marks it true
+# on several GLM models). The flag's consumer (langchain agents factory
+# _supports_provider_strategy) reads it as "provider-native response_format
+# json_schema works". Live-probed on bigmodel paas/v4: json_schema is accepted
+# (HTTP 200) but silently ignored — the model returns prose, and create_agent's
+# ProviderStrategy then fails with StructuredOutputValidationError. With the flag
+# false, create_agent auto-detection falls back to ToolStrategy (function calling),
+# which GLM supports reliably — same path ChatZai.with_structured_output defaults to.
+[overrides]
+structured_output = false

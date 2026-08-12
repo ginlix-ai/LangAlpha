@@ -120,3 +120,36 @@ class TestSubagentCompilerClientInjection:
 
         assert isinstance(subagent_model, _FakeClient)
         assert subagent_model.name == stored.name
+
+
+# ── Prompt feature gating ─────────────────────────────────────────────────────
+
+
+def _base_path_defn() -> SubagentDefinition:
+    """Definition with no custom prompt → base template + tool_guide render."""
+    return SubagentDefinition(
+        name="research",
+        description="test subagent",
+        role_prompt="Do research.",
+    )
+
+
+class TestSubagentPromptFeatureGating:
+    """The prompt must mirror the tool binding: watch_market is gated out of
+    the finance tool set per user (agent.py), so a subagent prompt advertising
+    it with the flag off would drive calls to a missing tool."""
+
+    def test_watch_market_absent_when_flag_off(self):
+        compiler = _compiler(config=_config(features={"market_watch": False}))
+        result = compiler.compile(_base_path_defn())
+        assert "watch_market" not in result["system_prompt"]
+
+    def test_watch_market_present_when_flag_on(self):
+        compiler = _compiler(config=_config(features={"market_watch": True}))
+        result = compiler.compile(_base_path_defn())
+        assert "watch_market" in result["system_prompt"]
+
+    def test_no_config_fails_closed(self):
+        compiler = _compiler()
+        result = compiler.compile(_base_path_defn())
+        assert "watch_market" not in result["system_prompt"]

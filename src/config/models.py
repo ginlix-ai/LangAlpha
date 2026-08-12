@@ -4,9 +4,9 @@ Pydantic models for infrastructure configuration.
 These models define the schema for config.yaml (infrastructure settings).
 """
 
-from typing import Dict, List, Literal
+from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class BackgroundExecutionConfig(BaseModel):
@@ -72,11 +72,43 @@ class BackgroundExecutionConfig(BaseModel):
     checkpoint_flush_timeout: float = Field(
         default=10.0, description="Timeout (seconds) for checkpoint state reads/writes"
     )
+    admission_compaction_wait_timeout: float = Field(
+        default=180.0,
+        gt=0,
+        description=(
+            "Max seconds a new turn blocks at admission for an in-progress "
+            "compaction (auto Tier-2 summarize or manual /compact|/offload) to "
+            "finish before returning 'compacting' -> 409 retry. Summarize is a "
+            "full LLM call over a large transcript and can run minutes, so this "
+            "is generous to avoid spurious 409s; keep it under the governing "
+            "in-request limits — the upstream nginx proxy_read_timeout and the "
+            "client read timeout (the connection is held this long while the "
+            "turn waits). NOTE: timeout_keep_alive (300s) is NOT the bound; it "
+            "only caps idle time BETWEEN requests, not an in-flight request. "
+            "Admission floors this at compaction_timeout + a small margin so a "
+            "healthy in-progress compaction is never 409'd before its own call "
+            "budget self-terminates and releases the guard."
+        ),
+    )
+    compaction_timeout: float = Field(
+        default=180.0,
+        gt=0,
+        description=(
+            "Wall-clock budget (seconds) for a single compaction LLM call "
+            "(auto Tier-2 summarize and manual /compact). The call is wrapped "
+            "in asyncio.wait_for so a hung summarize fails naturally — auto "
+            "emits a 'summarize error' (closing the window), manual raises -> "
+            "HTTP 500 — instead of blocking the thread forever. Bounded below "
+            "the httpx client timeout (600s) and below admission_compaction_"
+            "wait_timeout so the call self-terminates before admission 409s."
+        ),
+    )
     wait_for_persistence_timeout: float = Field(
         default=30.0, description="Max seconds callers block waiting for persistence completion"
     )
-    soft_interrupt_wait_timeout: float = Field(
-        default=30.0, description="Max seconds to wait for soft-interrupted workflow to finish"
+    stop_drain_timeout: float = Field(
+        default=1.5,
+        description="Max seconds to drain killed-subagent events before the stop teardown sentinel",
     )
     max_workflow_retries: int = Field(
         default=3, description="Max transient-error retry count for workflow execution"
@@ -110,6 +142,7 @@ class RedisTTLConfig(BaseModel):
     steering: int = Field(
         default=3600, description="TTL for steering message Redis keys (1 hour)"
     )
+    market_watch: int = Field(default=21600, description="Market watch list TTL in seconds")
     memo_metadata_inflight: int = Field(
         default=300,
         description=(
@@ -143,6 +176,27 @@ class RedisConfig(BaseModel):
 
     cache_enabled: bool = Field(default=True, description="Enable/disable caching globally")
     max_connections: int = Field(default=10, description="Connection pool size")
+    # Pools are split by connection LIFETIME, not by feature: short cache ops
+    # must never queue behind a stream reader parked in XREAD BLOCK, and a
+    # subscriber holding a connection for 30 minutes must not sit in either.
+    stream_max_connections: int = Field(
+        default=100,
+        ge=1,
+        le=10000,
+        description="Pool size for blocking stream readers (XREAD)",
+    )
+    pubsub_max_connections: int = Field(
+        default=150,
+        ge=1,
+        le=10000,
+        description="Pool size for long-lived pub/sub subscriptions",
+    )
+    pool_timeout: float = Field(
+        default=2.0,
+        gt=0,
+        le=60,
+        description="Seconds a caller queues for a free cache connection before failing",
+    )
     socket_timeout: int = Field(
         default=5, description="Redis socket read/write timeout in seconds"
     )
@@ -157,10 +211,18 @@ class RedisConfig(BaseModel):
 
 
 class MarketDataProviderConfig(BaseModel):
-    """Configuration for a single market data provider."""
+    """Configuration for a single market data provider.
+
+    Per-capability market lists override ``markets`` for that capability
+    only (None = no override). Market tokens: region codes plus ``all``
+    and ``non-us``.
+    """
 
     name: str
     markets: List[str] = Field(default_factory=lambda: ["all"])
+    intraday_markets: Optional[List[str]] = None
+    daily_markets: Optional[List[str]] = None
+    snapshot_markets: Optional[List[str]] = None
 
 
 class MarketDataConfig(BaseModel):
@@ -175,6 +237,179 @@ class NewsDataConfig(BaseModel):
     providers: List[MarketDataProviderConfig] = Field(default_factory=list)
 
 
+class NewsPollFeedConfig(BaseModel):
+    """One global feed kept warm by the news refresh poller.
+
+    ``provider`` None targets the provider chain (Market general feed); a name
+    (e.g. ``tickertick``) targets that source directly. Always polled with no
+    tickers, so it maps to a global cache key — ``news:tickertick:general:50``
+    with a provider, ``news:general:50`` without one.
+    """
+
+    provider: str | None = Field(default=None)
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class NewsPollConfig(BaseModel):
+    """News refresh poller — delta-merges the latest page into a rolling buffer."""
+
+    enabled: bool = Field(default=True)
+    interval_seconds: int = Field(default=60, ge=10)
+    max_items: int = Field(default=100, ge=1, le=500)
+    feeds: List[NewsPollFeedConfig] = Field(default_factory=list)
+
+
+class FeatureFlagOverride(BaseModel):
+    """Deployment override for a code-declared feature (src/config/features.py).
+
+    Unset fields inherit the catalog defaults, so a config.yaml entry only
+    needs the fields it wants to change.
+    """
+
+    enabled: Optional[bool] = Field(
+        default=None, description="Kill switch: false turns the feature off for everyone"
+    )
+    gate: Optional[Literal["none", "opt_in", "opt_out", "plan"]] = Field(
+        default=None,
+        description=(
+            "Access model while enabled: everyone / user opt-in / user opt-out "
+            "/ platform plan tier"
+        ),
+    )
+    min_tier: Optional[int] = Field(
+        default=None, description="Plan gate only: minimum platform access tier"
+    )
+
+
+class MarketWatchConfig(BaseModel):
+    """Market watch tuning (the on/off flag lives in the features registry)."""
+
+    min_interval_seconds: int = Field(
+        default=25, ge=5, description="Throttle between injections per thread"
+    )
+    max_symbols: int = Field(default=10, ge=1, le=50, description="Watch list cap")
+    cache_breakpoint_pin: bool = Field(
+        default=True,
+        description=(
+            "Pin a provider cache breakpoint on the last durable message so the "
+            "ephemeral stamp doesn't break incremental caching"
+        ),
+    )
+
+
+class WorkflowOrchestrationConfig(BaseModel):
+    """Caps and timeouts for RunWorkflow programmatic subagent runs."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Expose the RunWorkflow tool to the PTC main agent",
+    )
+    memory_limit_mb: int = Field(
+        default=128,
+        ge=16,
+        le=1024,
+        description="QuickJS heap limit per workflow run (MB)",
+    )
+    cpu_budget_s: float = Field(
+        default=30.0,
+        gt=0,
+        le=600,
+        description="Continuous-JS interrupt budget in seconds (host awaits excluded)",
+    )
+    schema_max_bytes: int = Field(
+        default=4096,
+        ge=256,
+        le=65536,
+        description="Max serialized size of a dispatch schema",
+    )
+    schema_max_depth: int = Field(
+        default=5,
+        ge=1,
+        le=16,
+        description="Max nesting depth of a dispatch schema",
+    )
+    schema_max_properties: int = Field(
+        default=32,
+        ge=1,
+        le=256,
+        description="Max keys at any schema object level",
+    )
+    max_dispatches_per_run: int = Field(
+        default=64, ge=1, le=256, description="Max subagent dispatches per run"
+    )
+    max_concurrent_children: int = Field(
+        default=8, ge=1, le=32, description="Max concurrently running children"
+    )
+    child_timeout: int = Field(
+        default=1800, ge=1, le=7200, description="Per-child subagent timeout in seconds"
+    )
+    run_timeout: int = Field(
+        default=16200,
+        ge=1,
+        le=86400,
+        description=(
+            "Whole-run wall-clock timeout in seconds; must exceed "
+            "child_timeout or the run dies before any child of it can. The "
+            "default clears several sequential waves of children"
+        ),
+    )
+    max_runs_per_thread: int = Field(
+        default=2, ge=1, le=8, description="Max concurrently active runs per thread"
+    )
+    max_result_bytes: int = Field(
+        default=1024 * 1024,
+        ge=1024,
+        le=16 * 1024 * 1024,
+        description=(
+            "Per-child result dump cap; bounds what the script manipulates in "
+            "JS, not what any reader is handed"
+        ),
+    )
+    max_summary_bytes: int = Field(
+        default=96 * 1024,
+        ge=1024,
+        le=1024 * 1024,
+        description=(
+            "Cap on the run summary — the text handed to the model and "
+            "archived for TaskOutput; the full value stays in result.json"
+        ),
+    )
+    max_prompt_chars: int = Field(
+        default=400_000,
+        ge=1,
+        le=1_000_000,
+        description="Per-dispatch prompt length cap",
+    )
+    max_script_bytes: int = Field(
+        default=200 * 1024,
+        ge=1024,
+        le=4 * 1024 * 1024,
+        description="Workflow script size cap in bytes",
+    )
+
+    @model_validator(mode="after")
+    def _run_timeout_outlasts_one_child(self) -> "WorkflowOrchestrationConfig":
+        """Reject a run timeout no child can time out inside.
+
+        At or below one ``child_timeout`` the run-level kill always beats the
+        per-child one, so every timeout is reported as the blunt whole-run
+        failure and no child is ever named. The bound stops at one child on
+        purpose: covering a worst-case wave would assume every child burns its
+        full timeout with none overlapping, which is a property of the script
+        rather than of the configuration — and asserting it here left in-range
+        settings (``max_concurrent_children: 1``) unsatisfiable at every
+        ``run_timeout``. The shipped default still carries several waves of
+        margin, as a recommendation rather than a rule.
+        """
+        if self.run_timeout <= self.child_timeout:
+            raise ValueError(
+                f"workflow.run_timeout={self.run_timeout} must exceed "
+                f"child_timeout={self.child_timeout}, or the run dies before "
+                "any child of it can"
+            )
+        return self
+
+
 class InfrastructureConfig(BaseModel):
     """Root model for infrastructure configuration (config.yaml)."""
 
@@ -184,7 +419,7 @@ class InfrastructureConfig(BaseModel):
     debug: bool = Field(default=False, description="Debug mode flag")
     ptc_recursion_limit: int = Field(default=2000, ge=1, le=10000, description="PTC agent recursion limit")
     flash_recursion_limit: int = Field(default=500, ge=1, le=10000, description="Flash agent recursion limit")
-    workflow_timeout: int = Field(default=3200, description="Workflow timeout in seconds")
+    workflow_timeout: int = Field(default=21600, description="Workflow timeout in seconds")
     sse_keepalive_interval: float = Field(
         default=15.0, description="SSE keepalive interval in seconds"
     )
@@ -197,6 +432,12 @@ class InfrastructureConfig(BaseModel):
         default=True, description="Enable Redis cache warming on startup"
     )
     langsmith_tracing: bool = Field(default=False, description="Enable LangSmith tracing")
+    market_watch: MarketWatchConfig = Field(default_factory=MarketWatchConfig)
+
+    # User-facing product features (deployment overrides of the code catalog
+    # in src/config/features.py). Distinct from the infra toggles above, which
+    # are operator-only and never exposed to users.
+    features: Dict[str, FeatureFlagOverride] = Field(default_factory=dict)
 
     # SSE Event Logging
     sse_event_log_enabled: bool = Field(default=True, description="Enable SSE event logging")
@@ -228,3 +469,9 @@ class InfrastructureConfig(BaseModel):
     # Market Data
     market_data: MarketDataConfig = Field(default_factory=MarketDataConfig)
     news_data: NewsDataConfig = Field(default_factory=NewsDataConfig)
+    news_poll: NewsPollConfig = Field(default_factory=NewsPollConfig)
+
+    # RunWorkflow orchestration caps
+    workflow: WorkflowOrchestrationConfig = Field(
+        default_factory=WorkflowOrchestrationConfig
+    )

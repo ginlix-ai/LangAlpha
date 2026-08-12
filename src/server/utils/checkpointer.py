@@ -15,15 +15,37 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres import AsyncPostgresStore
 from psycopg_pool import AsyncConnectionPool
 
+from src.config.env import DB_SSLMODE
 from src.config.settings import get_checkpointer_pool_max
 
 logger = logging.getLogger(__name__)
+
+# Message ids under DeltaChannel are stamped upstream by langgraph's
+# ``ensure_message_ids`` (>=1.2.2) at ``put_writes`` time, before the checkpointer
+# persists the raw delta write; the vendored reducer in ``ptc_agent.agent.state``
+# never mints. So id-less ``messages`` writes already carry stable ids by the time
+# they reach the savers below — no id-stamping shim is needed here.
 
 # Module-level connection pool cache to reuse connections across graph compilations
 _postgres_pool_cache: dict[str, AsyncConnectionPool] = {}
 
 # Module-level store instance (shares pool with checkpointer)
 _postgres_store: Optional[AsyncPostgresStore] = None
+
+# Warn once per process, not once per connection (see database/pool.py).
+_warned_plaintext = False
+
+
+def _warn_if_plaintext(conn) -> None:
+    """Surface an unencrypted session so `prefer` can't downgrade silently."""
+    global _warned_plaintext
+    if _warned_plaintext or DB_SSLMODE != "prefer" or conn.pgconn.ssl_in_use:
+        return
+    _warned_plaintext = True
+    logger.warning(
+        "Checkpoint Postgres session is unencrypted — the server did not offer TLS "
+        "(DB_SSLMODE=prefer). Set DB_SSLMODE=require to fail closed instead."
+    )
 
 
 def _on_reconnect_failed(pool):
@@ -46,6 +68,7 @@ async def _configure_postgres_connection(conn) -> None:
     - Connection failures with poolers
     """
     conn.prepare_threshold = 0
+    _warn_if_plaintext(conn)
     logger.debug("Configured checkpoint connection with prepare_threshold=0")
 
 
@@ -82,11 +105,9 @@ def get_checkpointer(memory_type: str = "memory", **kwargs) -> Optional[Any]:
             "MEMORY_DB_PASSWORD", "postgres"
         )
 
-        # Auto-detect SSL mode for Supabase
         from urllib.parse import quote_plus
 
-        sslmode = "require" if "supabase.com" in db_host else "disable"
-        db_uri = f"postgresql://{quote_plus(db_user)}:{quote_plus(db_password)}@{db_host}:{db_port}/{db_name}?sslmode={sslmode}"
+        db_uri = f"postgresql://{quote_plus(db_user)}:{quote_plus(db_password)}@{db_host}:{db_port}/{db_name}?sslmode={DB_SSLMODE}"
 
         # Cache connection pools by URI to avoid creating new pools on every graph instantiation
         if db_uri not in _postgres_pool_cache:

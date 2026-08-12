@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from psycopg.rows import dict_row
 
-from src.server.database.conversation import get_db_connection
+from src.server.database.pool import get_db_connection
 from src.server.utils.pg_sanitize import strip_pg_nul_str
 
 logger = logging.getLogger(__name__)
@@ -534,6 +534,69 @@ async def delete_all_files(
 
     except Exception as e:
         logger.error(f"Error deleting all files for workspace {workspace_id}: {e}")
+        raise
+
+
+async def copy_workspace_files(
+    source_id: str,
+    dest_id: str,
+    *,
+    conn=None,
+) -> int:
+    """
+    Copy all files from one workspace to another.
+
+    Inserts fresh rows for dest_id mirroring every file under source_id.
+    Primary keys and created_at/updated_at use their DB defaults (new uuid,
+    NOW()); all content columns are carried over.
+
+    Args:
+        source_id: Workspace UUID to copy files from
+        dest_id: Workspace UUID to copy files into
+        conn: Optional database connection to reuse
+
+    Returns:
+        Number of rows inserted
+    """
+    try:
+
+        async def _execute(cur):
+            await cur.execute(
+                """
+                INSERT INTO workspace_files (
+                    workspace_id, file_path, file_name, file_size,
+                    content_hash, content_text, content_binary, mime_type,
+                    is_binary, permissions, sandbox_modified_at
+                )
+                SELECT
+                    %s, file_path, file_name, file_size,
+                    content_hash, content_text, content_binary, mime_type,
+                    is_binary, permissions, sandbox_modified_at
+                FROM workspace_files
+                WHERE workspace_id = %s
+                """,
+                (dest_id, source_id),
+            )
+            return cur.rowcount
+
+        if conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                copied = await _execute(cur)
+        else:
+            async with get_db_connection() as conn:
+                async with conn.cursor(row_factory=dict_row) as cur:
+                    copied = await _execute(cur)
+
+        if copied:
+            logger.info(
+                f"Copied {copied} files from workspace {source_id} to {dest_id}"
+            )
+        return copied
+
+    except Exception as e:
+        logger.error(
+            f"Error copying files from workspace {source_id} to {dest_id}: {e}"
+        )
         raise
 
 

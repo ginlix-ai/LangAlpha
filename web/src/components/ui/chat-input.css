@@ -15,8 +15,8 @@
   border-radius: 4px;
   background-color: var(--color-accent-soft);
   color: var(--color-text-primary);
-  font-size: 12px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
   line-height: 1.4;
   max-width: 200px;
 }
@@ -73,14 +73,14 @@
 /* ====== Slash command autocomplete description ====== */
 
 .mention-autocomplete-item .slash-cmd-name {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--color-text-primary);
   white-space: nowrap;
 }
 
 .mention-autocomplete-item .slash-cmd-desc {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -109,7 +109,7 @@
 
 .mention-autocomplete-empty {
   padding: 12px 14px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-text-tertiary);
 }
 
@@ -128,7 +128,7 @@
 }
 
 .mention-autocomplete-item .file-name {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -136,7 +136,7 @@
 }
 
 .mention-autocomplete-item .file-path {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -172,7 +172,7 @@
   gap: 8px;
   padding: 8px 14px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-text-primary);
   transition: background-color 0.1s;
 }
@@ -209,7 +209,7 @@
 }
 
 .model-effort-label {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-text-tertiary);
   white-space: nowrap;
 }
@@ -226,7 +226,7 @@
   padding: 3px 10px;
   border: none;
   border-radius: 4px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
   background: transparent;
@@ -257,7 +257,7 @@
 }
 
 .fast-mode-switch:hover {
-  background-color: var(--color-border);
+  background-color: var(--color-border-default);
 }
 
 .fast-mode-switch.active {
@@ -305,9 +305,12 @@
   bottom: calc(100% + 6px);
   left: 50%;
   transform: translateX(-50%);
-  background: var(--color-bg-tooltip, #333);
-  color: var(--color-text-on-tooltip, #fff);
-  font-size: 11px;
+  /* Same surface as components/ui/tooltip.tsx. The border is load-bearing in
+     light theme, where bg-elevated is a near-white on a white composer. */
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-muted);
+  color: var(--color-text-primary);
+  font-size: 0.6875rem;
   font-weight: 400;
   line-height: 1.4;
   padding: 6px 10px;
@@ -328,6 +331,24 @@
     width: calc(100vw - 32px);
     max-width: 280px;
   }
+}
+
+/* ====== Stop button (quiet ink) ====== */
+
+/* Wears the send button's face — the square glyph alone says stop. Red is
+ * reserved for hover intent so a running stream never shows an alarm slab. */
+.stop-button {
+  background: var(--color-btn-primary-bg);
+  color: var(--color-btn-primary-text);
+}
+
+.stop-button:hover:not(:disabled) {
+  background: var(--color-btn-stop-hover-bg);
+  color: var(--color-btn-stop-hover-fg);
+}
+
+.stop-button:disabled {
+  opacity: 0.7;
 }
 
 /* ====== Voice Input (Mic) ====== */
@@ -361,6 +382,12 @@
 .chat-input-container {
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
+}
+
+/* Resting border stays neutral; focus is an intentional-action moment, so it
+ * earns a full-strength accent edge (never a fill or a glow). */
+.chat-input-container:focus-within:not(.recording) {
+  border-color: var(--color-accent-primary);
 }
 
 .chat-input-container.recording {
@@ -406,7 +433,7 @@
   pointer-events: none;
   z-index: 10;
   color: var(--color-text-muted);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   opacity: 0.8;
 }
@@ -486,8 +513,8 @@
   justify-content: space-between;
   gap: 12px;
   padding: 0 4px;
-  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
-  font-size: 9.5px;
+  font-family: var(--font-mono);
+  font-size: 0.5938rem;
   text-transform: uppercase;
   letter-spacing: 0.18em;
   color: var(--color-accent-primary, #b88a2c);
@@ -505,7 +532,6 @@
   height: 4px;
   border-radius: 50%;
   background: var(--color-accent-primary, #b88a2c);
-  box-shadow: 0 0 5px rgba(184, 138, 44, 0.4);
   flex-shrink: 0;
 }
 
@@ -513,10 +539,9 @@
   text-transform: none;
   letter-spacing: 0;
   font-style: italic;
-  font-size: 11px;
+  font-size: 0.6875rem;
   margin-left: 6px;
   opacity: 0.85;
-  font-family: var(--font-serif, "Instrument Serif", Georgia, serif);
 }
 
 .widget-deck-eyebrow-right {
@@ -531,7 +556,7 @@
   background: transparent;
   border: 0;
   font: inherit;
-  font-size: 9.5px;
+  font-size: 0.5938rem;
   text-transform: uppercase;
   letter-spacing: 0.18em;
   color: var(--color-text-tertiary, #8a8a8a);
@@ -541,7 +566,7 @@
 }
 
 .widget-deck-clear:hover {
-  color: var(--color-danger, #c43d3d);
+  color: var(--color-icon-danger);
 }
 
 /* Show-less pill — appears left of Clear when the deck is fanned. Pill
@@ -552,8 +577,7 @@
   border: 1px solid var(--color-border-muted, rgba(20, 20, 23, 0.08));
   background: var(--color-bg-card, rgba(255, 255, 255, 0.6));
   font: inherit;
-  font-size: 11px;
-  font-family: var(--font-serif, "Instrument Serif", Georgia, serif);
+  font-size: 0.6875rem;
   letter-spacing: 0;
   text-transform: none;
   color: var(--color-text-secondary, #4a4a4a);
@@ -613,8 +637,8 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  background: rgba(184, 138, 44, 0.08);
-  color: var(--color-accent-primary, #b88a2c);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-primary);
   overflow: hidden;
 }
 
@@ -636,7 +660,7 @@
 
 .widget-deck-card-title {
   font-weight: 500;
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.2;
   color: var(--color-text-primary, #1a1a1c);
   overflow: hidden;
@@ -645,7 +669,7 @@
 }
 
 .widget-deck-card-snippet {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-text-tertiary, #8a8a8a);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -674,8 +698,8 @@
 }
 
 .widget-deck-card-remove:hover {
-  color: var(--color-danger, #c43d3d);
-  background: rgba(196, 61, 61, 0.08);
+  color: var(--color-icon-danger);
+  background: var(--color-loss-soft);
 }
 
 /* Top card always shows its remove button. Fan-out reveals all of them. */

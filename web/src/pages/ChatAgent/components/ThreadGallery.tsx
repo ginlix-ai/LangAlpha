@@ -1,14 +1,20 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { ArrowLeft, Loader2, Folder, FileText, Zap } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { ArrowLeft, Folder, FileText, Zap, Archive } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../../../lib/queryKeys';
+import { patchThreadRows, rollbackThreadRows } from '@/lib/threadRowActions';
+import { patchThreadTitle } from '@/lib/threadListCache';
+import { threadGalleryQuery } from '../utils/threadGalleryQuery';
 import { useWorkspace } from '../../../hooks/useWorkspace';
+import { scrollMemory, useScrollMemory } from '@/lib/scrollMemory';
 import ThreadCard from './ThreadCard';
 import DeleteConfirmModal from './DeleteConfirmModal';
 import RenameThreadModal from './RenameThreadModal';
+import { useArchiveThreadConfirm } from './threadArchiveAction';
 import ChatInput from '../../../components/ui/chat-input';
 import type { ChatInputHandle } from '../../../components/ui/chat-input';
 import { attachmentsToContexts } from '../utils/fileUpload';
@@ -16,7 +22,8 @@ import { SYSTEM_DIR_PREFIXES } from './FilePanel';
 import RightPanel from './RightPanel';
 import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
 import SandboxSettingsPanel from './SandboxSettingsPanel';
-import { getWorkspaceThreads, deleteThread, updateThreadTitle } from '../utils/api';
+import { deleteThread, updateThreadTitle, updateThread } from '../utils/api';
+import { isValidUuid } from '../utils/uuid';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
 import { removeStoredThreadId } from '../hooks/utils/threadStorage';
 import { saveChatSession } from '../hooks/utils/chatSessionRestore';
@@ -34,11 +41,6 @@ interface ThreadRecord {
   is_shared?: boolean;
   first_query_content?: string;
   [key: string]: unknown;
-}
-
-interface ThreadsResponse {
-  threads: ThreadRecord[];
-  total: number;
 }
 
 interface DeleteModalState {
@@ -69,7 +71,6 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   const queryClient = useQueryClient();
   const { theme } = useTheme();
   const iconComputer = theme === 'light' ? iconComputerDark : iconComputerLight;
-  const [threads, setThreads] = useState<ThreadRecord[]>([]);
 
   // Workspace detail via React Query (useWorkspace)
   const { data: wsData, error: wsError } = useWorkspace(workspaceId);
@@ -79,12 +80,36 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   const workspaceStatus = (wsData?.status || locationState?.workspaceStatus || null) as string | null;
   const isFlash = workspaceStatus === 'flash';
 
-  // Thread loading via React Query
-  const { data: threadData, isLoading: isThreadsLoading, error: threadError } = useQuery({
-    queryKey: queryKeys.threads.byWorkspace(workspaceId),
-    queryFn: () => getWorkspaceThreads(workspaceId),
+  // Archived view toggle. Both views live under the byWorkspace prefix
+  // (queryKeys.threads.gallery), so prefix invalidations refresh both — and
+  // the shared row patcher reaches this list's pages the same way it reaches
+  // the sidebar's finite pages.
+  const [showArchived, setShowArchived] = useState(false);
+
+  // Paged thread list. React Query owns the pages, the total, and the
+  // has-more arithmetic; the rows are rendered straight from the cache so a
+  // patch landing from anywhere (title generation, seen cursor, optimistic
+  // create) paints here without a local copy to re-sync.
+  const {
+    data: threadPages,
+    isLoading: isThreadsLoading,
+    isPlaceholderData,
+    error: threadError,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
+    ...threadGalleryQuery(workspaceId, showArchived),
     enabled: !!workspaceId,
-    staleTime: 30_000,
+    // Keep the outgoing list on screen (dimmed) while the archived toggle
+    // fetches its view, instead of flashing the full-screen loader. Scoped to
+    // the same workspace — switching workspaces must NOT show the previous
+    // workspace's threads, so the placeholder only carries across the
+    // archived-flag flip.
+    placeholderData: (prev, prevQuery) => {
+      const prevKey = prevQuery?.queryKey as unknown[] | undefined;
+      return prevKey?.[2] === workspaceId ? prev : undefined;
+    },
     retry: (failureCount, error) => {
       // Don't retry 403/404 — access denied or workspace not found won't resolve on retry
       const status = (error as { response?: { status?: number } })?.response?.status;
@@ -92,6 +117,21 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
       return failureCount < 3;
     },
   });
+
+  const threads = useMemo(
+    () => (threadPages?.pages ?? []).flatMap((page) => page.threads || []),
+    [threadPages],
+  );
+  // Row-order signature for framer-motion's layoutDependency: cards re-measure
+  // only on genuine reorders, not on every gallery render (e.g. the file-panel
+  // divider drag, which re-renders at pointer rate).
+  const threadOrderSignature = useMemo(
+    () => threads.map((th) => th.thread_id).join('|'),
+    [threads],
+  );
+  // Every page echoes the server count (and the row patcher keeps all copies in
+  // step), so the freshest page carries the current total.
+  const totalThreads = threadPages?.pages[threadPages.pages.length - 1]?.total ?? null;
 
   // Detect 403 or 404 from either workspace or thread queries
   const accessDenied =
@@ -121,6 +161,10 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   const [files, setFiles] = useState<string[]>([]);
   const isDraggingRef = useRef(false);
   const [isDragging, setIsDragging] = useState(false);
+  // Armed for the duration of a divider drag; unmount mid-drag would otherwise
+  // strand document listeners and app-wide col-resize/no-select body styles.
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => dragCleanupRef.current?.(), []);
   const containerRef = useRef<HTMLDivElement>(null);
   const containerWidthRef = useRef<number>(0);
   const DIVIDER_WIDTH = 4; // px -- matches w-[4px] divider
@@ -129,15 +173,14 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
     chatInputRef.current?.addContext(ctx as any); // TODO: type properly
   }, []);
 
-  // Infinite scroll pagination state
-  const [totalThreads, setTotalThreads] = useState<number | null>(null);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  // Refs to avoid stale closures in IntersectionObserver callback
-  const isLoadingMoreRef = useRef(false);
-  const hasMoreRef = useRef(false);
-  const threadsLengthRef = useRef(0);
+  // Keyed per view: the active and archived lists have unrelated heights, so
+  // a saved offset from one must not restore into the other.
+  useScrollMemory(scrollContainerRef, `threads:${workspaceId}:${showArchived ? 'archived' : 'active'}`);
+  // Sentinel below the last card: intersecting it (within rootMargin) pulls the
+  // next page. Also covers the short-list case a scroll listener can't — with
+  // no overflow the sentinel is simply already on screen.
+  const loadMoreSentinelRef = useRef<HTMLDivElement>(null);
 
   // Shared workspace files for the FilePanel (skip for flash workspaces -- no sandbox)
   const {
@@ -207,90 +250,36 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
     };
   }, [workspaceId]);
 
-  // Sync threads state from React Query data
+  // Infinite scroll: observe the sentinel, pull the next page while it's in
+  // view. Re-runs after each page so a still-visible sentinel keeps filling a
+  // tall container; React Query dedupes concurrent fetches for the same page.
   useEffect(() => {
-    if (threadData) {
-      const data = threadData as ThreadsResponse;
-      setThreads(data.threads || []);
-      setTotalThreads(data.total || 0);
-      setHasMore((data.threads?.length || 0) < (data.total || 0));
-    }
-  }, [threadData]);
+    const sentinel = loadMoreSentinelRef.current;
+    const root = scrollContainerRef.current;
+    if (!sentinel || !root || !hasNextPage || isFetchingNextPage) return;
+    const observer = new IntersectionObserver(
+      (entries) => { if (entries[0]?.isIntersecting) void fetchNextPage(); },
+      { root, rootMargin: '300px' },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, threads.length]);
 
-  // Keep refs in sync with state for IntersectionObserver callback
-  useEffect(() => { isLoadingMoreRef.current = isLoadingMore; }, [isLoadingMore]);
-  useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
-  useEffect(() => { threadsLengthRef.current = threads.length; }, [threads.length]);
-
-  /**
-   * Load more threads for infinite scroll.
-   * Uses refs to avoid stale closures -- safe to call from IntersectionObserver.
-   */
-  const loadMoreThreads = useCallback(async () => {
-    if (isLoadingMoreRef.current || !hasMoreRef.current) return;
-    isLoadingMoreRef.current = true;
-    setIsLoadingMore(true);
-    try {
-      const offset = threadsLengthRef.current;
-      const moreData = await getWorkspaceThreads(workspaceId, 20, offset) as ThreadsResponse;
-      const moreThreads = moreData.threads || [];
-      const updatedTotal = moreData.total ?? 0;
-      setThreads((prev) => [...prev, ...moreThreads]);
-      setTotalThreads(updatedTotal);
-      const newHasMore = offset + moreThreads.length < updatedTotal;
-      setHasMore(newHasMore);
-    } catch (err) {
-      console.error('Error loading more threads:', err);
-    } finally {
-      isLoadingMoreRef.current = false;
-      setIsLoadingMore(false);
-    }
-  }, [workspaceId]);
-
-  // Scroll-based infinite loading: trigger when near bottom of scroll container
-  useEffect(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      if (isLoadingMoreRef.current || !hasMoreRef.current) return;
-      const { scrollTop, scrollHeight, clientHeight } = el;
-      if (scrollHeight - scrollTop - clientHeight < 300) {
-        loadMoreThreads();
-      }
-    };
-    el.addEventListener('scroll', onScroll, { passive: true });
-    return () => el.removeEventListener('scroll', onScroll);
-  }, [loadMoreThreads]);
-
-  // Auto-fill: if content doesn't overflow the container, keep loading until it does
-  useEffect(() => {
-    const el = scrollContainerRef.current;
-    if (!el || !hasMore || isLoadingMore) return;
-    // Use rAF to ensure layout is computed after render
-    const raf = requestAnimationFrame(() => {
-      if (el.scrollHeight <= el.clientHeight) {
-        loadMoreThreads();
-      }
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [hasMore, isLoadingMore, threads.length, loadMoreThreads]);
-
-  /**
-   * Handles thread selection
-   */
-  const handleThreadClick = (thread: ThreadRecord) => {
+  // Card callbacks are useCallback-stable: ThreadCard is memoized, so a fresh
+  // closure per render would defeat the memo for the whole list.
+  const handleThreadClick = useCallback((thread: Record<string, unknown>) => {
     if (onThreadSelect) {
-      onThreadSelect(workspaceId, thread.thread_id, isFlash ? 'flash' : null);
+      onThreadSelect(workspaceId, thread.thread_id as string, isFlash ? 'flash' : null);
     }
-  };
+  }, [onThreadSelect, workspaceId, isFlash]);
 
   /**
    * Handles delete icon click - opens confirmation modal
    */
-  const handleDeleteClick = (thread: Record<string, unknown>) => {
+  const handleDeleteClick = useCallback((thread: Record<string, unknown>) => {
     setDeleteModal({ isOpen: true, thread: thread as ThreadRecord });
     setDeleteError(null);
-  };
+  }, []);
 
   /**
    * Handles confirmed thread deletion
@@ -313,6 +302,8 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
     try {
       await deleteThread(threadId);
 
+      scrollMemory.forget(`thread:${threadId}`);
+
       // Clean up localStorage: remove thread ID for deleted thread
       if (workspaceId) {
         // Check if the deleted thread is the currently stored thread for this workspace
@@ -322,18 +313,16 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
         }
       }
 
-      // Remove thread from list and adjust total
-      setThreads((prev) =>
-        prev.filter((t) => t.thread_id !== threadId)
+      // Drop the row from every cached list for this workspace (this gallery's
+      // pages and the sidebar's), totals included, then reconcile.
+      patchThreadRows(queryClient, queryKeys.threads.byWorkspace(workspaceId), (rows) =>
+        rows.some((th) => th.thread_id === threadId) ? rows.filter((th) => th.thread_id !== threadId) : rows,
       );
-      setTotalThreads((prev) => (prev != null ? prev - 1 : prev));
-
-      // Invalidate thread query cache
       queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(workspaceId) });
 
       // If the deleted thread is currently active, navigate back to thread gallery
       if (currentThreadId === threadId) {
-        navigate(`/chat/${workspaceId}`);
+        navigate(isValidUuid(workspaceId) ? `/chat/${workspaceId}` : '/chat');
       }
 
       // Close modal
@@ -359,10 +348,47 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   /**
    * Handles rename icon click - opens rename modal
    */
-  const handleRenameClick = (thread: Record<string, unknown>) => {
+  const handleRenameClick = useCallback((thread: Record<string, unknown>) => {
     setRenameModal({ isOpen: true, thread: thread as ThreadRecord });
     setRenameError(null);
-  };
+  }, []);
+
+  // Archive (from the active view) or unarchive (from the archived view).
+  // Either way the row leaves the CURRENT list. Optimistic so the card's exit
+  // animation IS the feedback; the prefix invalidation then refreshes both
+  // views plus the sidebar's page caches, and a failure puts the row back.
+  const handleArchiveToggle = useCallback(async (thread: Record<string, unknown>, archived: boolean) => {
+    const threadId = thread.thread_id as string | undefined;
+    if (!threadId) return;
+    const snapshot = patchThreadRows(queryClient, queryKeys.threads.byWorkspace(workspaceId), (rows) =>
+      rows.some((th) => th.thread_id === threadId) ? rows.filter((th) => th.thread_id !== threadId) : rows,
+    );
+    try {
+      await updateThread(threadId, { archived });
+      queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(workspaceId) });
+    } catch (err) {
+      rollbackThreadRows(queryClient, snapshot);
+      console.error('Error updating thread archive state:', err);
+    }
+  }, [workspaceId, queryClient]);
+
+  // Stable per-direction wrappers — inline `(th) => handleArchiveToggle(...)`
+  // closures at the call site would break the ThreadCard memo every render.
+  // Archiving goes through the shared confirm (live runs ask first); unarchive
+  // is never gated.
+  const { requestArchive, dialog: archiveConfirmDialog } = useArchiveThreadConfirm();
+  const handleArchive = useCallback(
+    (thread: Record<string, unknown>) => {
+      const threadId = thread.thread_id as string | undefined;
+      if (!threadId) return;
+      requestArchive(threadId, () => { void handleArchiveToggle(thread, true); });
+    },
+    [requestArchive, handleArchiveToggle],
+  );
+  const handleUnarchive = useCallback(
+    (thread: Record<string, unknown>) => handleArchiveToggle(thread, false),
+    [handleArchiveToggle],
+  );
 
   /**
    * Handles confirmed thread rename
@@ -385,16 +411,15 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
     try {
       const updatedThread = await updateThreadTitle(threadId, newTitle) as ThreadRecord;
 
-      // Update thread in list
-      setThreads((prev) =>
-        prev.map((t) =>
-          t.thread_id === threadId
-            ? { ...t, title: updatedThread.title, updated_at: updatedThread.updated_at }
-            : t
-        )
+      // Same writer the lifecycle feed uses for generated titles — every cached
+      // list holding the row, plus its detail entry. The response's updated_at
+      // versions the patch so a slower generated-title event can't undo it.
+      patchThreadTitle(
+        queryClient,
+        threadId,
+        (updatedThread.title as string | undefined) ?? newTitle,
+        updatedThread.updated_at as string | undefined,
       );
-
-      // Invalidate thread query cache
       queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(workspaceId) });
 
       // Close modal
@@ -506,26 +531,35 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
       setFilePanelWidth(clampPanelWidthUtil(startWidth + delta, containerW));
     };
 
-    const onMouseUp = () => {
+    // Hoisted declarations: teardown and onMouseUp reference each other.
+    function teardown() {
+      dragCleanupRef.current = null;
       isDraggingRef.current = false;
-      setIsDragging(false);
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
-    };
+    }
+
+    function onMouseUp() {
+      setIsDragging(false);
+      teardown();
+    }
 
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
+    dragCleanupRef.current = teardown;
   }, [filePanelWidth]);
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="flex flex-col items-center gap-4">
-          <Loader2 className="h-8 w-8 animate-spin" style={{ color: 'var(--color-accent-primary)' }} />
+          <span aria-hidden="true" className="flex-shrink-0">
+            <Loader size={32} className="text-[color:var(--color-accent-primary)]" />
+          </span>
           <p className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
             {t('thread.loadingThreads')}
           </p>
@@ -543,10 +577,10 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
           </p>
           <button
             onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(workspaceId) })}
-            className="px-4 py-2 rounded-md text-sm font-medium transition-colors"
+            className="px-4 py-2 rounded-md text-sm font-medium transition-opacity hover:opacity-90"
             style={{
-              backgroundColor: 'var(--color-accent-primary)',
-              color: 'var(--color-text-on-accent)',
+              backgroundColor: 'var(--color-btn-primary-bg)',
+              color: 'var(--color-btn-primary-text)',
             }}
           >
             {t('common.retry')}
@@ -563,9 +597,6 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
       style={{
         position: 'relative',
         backgroundColor: 'var(--color-bg-page)',
-        backgroundImage: 'radial-gradient(circle at center, var(--color-dot-grid) 0.75px, transparent 0.75px)',
-        backgroundSize: '18px 18px',
-        backgroundPosition: '0 0'
       }}
     >
       {/* Main Content Area */}
@@ -658,7 +689,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                       return (
                         <div
                           key={index}
-                          className="flex items-center gap-2 text-[13px] rounded-md px-1 py-1 -mx-1 transition-colors hover:bg-foreground/5"
+                          className="flex items-center gap-2 text-[0.8125rem] rounded-md px-1 py-1 -mx-1 transition-colors hover:bg-foreground/5"
                           style={{ color: 'var(--color-text-tertiary)' }}
                           onClick={(e) => {
                             e.stopPropagation();
@@ -681,39 +712,90 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
             <div className="w-full flex flex-col gap-4 pb-8 enter-fade-up enter-fade-up-d4">
               <div className="flex items-center justify-between">
                 <h2 className="text-base font-medium" style={{ color: 'var(--color-text-primary)' }}>
-                  {t('thread.tasks')}
+                  {showArchived ? t('thread.archivedTasks') : t('thread.tasks')}
                 </h2>
+                <button
+                  type="button"
+                  onClick={() => setShowArchived((v) => !v)}
+                  className="flex items-center gap-1.5 text-xs px-2 py-1 rounded-md transition-colors hover:bg-foreground/5"
+                  style={{ color: showArchived ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}
+                  aria-pressed={showArchived}
+                >
+                  <Archive className="h-3.5 w-3.5" />
+                  {t('thread.archived')}
+                </button>
               </div>
 
               {threads.length === 0 ? (
                 // Empty state
                 <div className="flex flex-col items-center justify-center py-12">
                   <p className="text-sm mb-2" style={{ color: 'var(--color-text-tertiary)' }}>
-                    {t('thread.noThreadsYet')}
+                    {showArchived ? t('thread.noArchivedThreads') : t('thread.noThreadsYet')}
                   </p>
-                  <p className="text-xs text-center max-w-md" style={{ color: 'var(--color-text-tertiary)' }}>
-                    {t('thread.startConversation')}
-                  </p>
-                </div>
-              ) : (
-                // Thread list
-                <div className="flex flex-col gap-2">
-                  {threads.map((thread) => (
-                    <ThreadCard
-                      key={thread.thread_id}
-                      thread={thread}
-                      onClick={() => handleThreadClick(thread)}
-                      onDelete={handleDeleteClick}
-                      onRename={handleRenameClick}
-                    />
-                  ))}
-                  {/* Loading spinner for infinite scroll */}
-                  {isLoadingMore && (
-                    <div className="flex items-center justify-center py-4">
-                      <Loader2 className="h-5 w-5 animate-spin" style={{ color: 'var(--color-accent-primary)' }} />
-                    </div>
+                  {!showArchived && (
+                    <p className="text-xs text-center max-w-md" style={{ color: 'var(--color-text-tertiary)' }}>
+                      {t('thread.startConversation')}
+                    </p>
                   )}
                 </div>
+              ) : (
+                // Thread list. The container is keyed per view (workspace +
+                // archived flag) so a view swap remounts it with a single
+                // cross-fade — a fresh inner Presence with initial={false}
+                // keeps the bulk swap from playing 20 concurrent card
+                // animations. It dims while showing placeholder (outgoing)
+                // rows during the archived-toggle fetch. Per-card exit +
+                // layout animate the single-card case: archive/unarchive
+                // collapses the card while neighbors glide up. Card spacing
+                // lives INSIDE the motion wrapper (pb-2, not container gap)
+                // so the exit collapse swallows the gap too.
+                <motion.div
+                  key={`${workspaceId}:${showArchived}`}
+                  className="flex flex-col"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: isPlaceholderData ? 0.45 : 1 }}
+                  transition={{ duration: 0.15, ease: 'easeInOut' }}
+                >
+                  <AnimatePresence initial={false}>
+                    {threads.map((thread) => (
+                      <motion.div
+                        key={thread.thread_id}
+                        layout="position"
+                        layoutDependency={threadOrderSignature}
+                        className="pb-2"
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{
+                          layout: { duration: 0.22, ease: [0.22, 1, 0.36, 1] },
+                          height: { duration: 0.18, ease: 'easeInOut' },
+                          opacity: { duration: 0.15, ease: 'easeInOut' },
+                        }}
+                        style={{ overflow: 'hidden' }}
+                      >
+                        {/* Archive affordances derive from the ROW, not the
+                            view toggle: while isPlaceholderData shows the
+                            previous view's rows the toggle has already
+                            flipped, so the view flag would offer Archive on
+                            an archived row. */}
+                        <ThreadCard
+                          thread={thread}
+                          onClick={handleThreadClick}
+                          onDelete={handleDeleteClick}
+                          onRename={handleRenameClick}
+                          onArchive={!thread.archived_at ? handleArchive : undefined}
+                          onUnarchive={thread.archived_at ? handleUnarchive : undefined}
+                        />
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                  {/* Infinite-scroll sentinel + its spinner */}
+                  {hasNextPage && (
+                    <div ref={loadMoreSentinelRef} className="flex items-center justify-center py-4">
+                      {isFetchingNextPage && (
+                        <Loader size={20} className="text-[color:var(--color-accent-primary)]" />
+                      )}
+                    </div>
+                  )}
+                </motion.div>
               )}
             </div>
           </div>
@@ -741,7 +823,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
               <RightPanel
                 workspaceId={workspaceId}
                 onClose={() => setShowFilePanel(false)}
-                targetFile={filePanelTargetFile}
+                panelTarget={filePanelTargetFile ? { kind: 'file', path: filePanelTargetFile } : null}
                 onTargetFileHandled={() => setFilePanelTargetFile(null)}
                 files={panelFiles}
                 filesLoading={panelFilesLoading}
@@ -771,6 +853,9 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
         error={deleteError}
         itemType="thread"
       />
+
+      {/* Archive-while-running confirmation (opens only for a live thread) */}
+      {archiveConfirmDialog}
 
       {/* Rename Thread Modal */}
       <RenameThreadModal

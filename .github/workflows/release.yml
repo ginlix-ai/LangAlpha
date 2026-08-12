@@ -50,17 +50,24 @@ jobs:
           PREV=$(git tag --sort=-creatordate | head -1)
           if [ -n "$PREV" ]; then
             echo "range=${PREV}..HEAD" >> "$GITHUB_OUTPUT"
+            echo "tag=$PREV" >> "$GITHUB_OUTPUT"
             echo "Previous tag: $PREV"
           else
             echo "range=" >> "$GITHUB_OUTPUT"
+            echo "tag=" >> "$GITHUB_OUTPUT"
             echo "No previous tags — using full history"
           fi
 
       - name: Generate release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ARGS="--version ${{ steps.version.outputs.tag }}"
           if [ -n "${{ steps.prev.outputs.range }}" ]; then
             ARGS="$ARGS --range ${{ steps.prev.outputs.range }}"
+          fi
+          if [ -n "${{ steps.prev.outputs.tag }}" ]; then
+            ARGS="$ARGS --previous-tag ${{ steps.prev.outputs.tag }}"
           fi
           python3 scripts/ci/generate_release_notes.py $ARGS --output release_notes.md
           cat release_notes.md >> "$GITHUB_STEP_SUMMARY"

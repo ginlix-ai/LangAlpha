@@ -582,3 +582,55 @@ describe('variant isolation (no brand_key promotion)', () => {
     expect(augmented.byok_providers).not.toContain('z-ai');
   });
 });
+
+// ---------------------------------------------------------------------------
+// oauth_plans gate (buildVisibleModels step 3b)
+// ---------------------------------------------------------------------------
+
+describe('oauth_plans gate', () => {
+  const rawApiModels = {
+    openai: { models: ['gpt-5.3-codex-spark-oauth', 'gpt-5.6-sol-oauth'], display_name: 'OpenAI' },
+  };
+  const rawMetadata: Record<string, ModelMetadataEntry> = {
+    'gpt-5.3-codex-spark-oauth': {
+      provider: 'codex-oauth',
+      access_type: 'oauth',
+      oauth_plans: ['pro', 'prolite'],
+    },
+    'gpt-5.6-sol-oauth': { provider: 'codex-oauth', access_type: 'oauth' },
+  };
+  const codexConnected = (planType: string | null): ConfiguredProvider[] => [
+    {
+      provider: 'codex-oauth',
+      display_name: 'ChatGPT Codex',
+      access_type: 'oauth',
+      plan_type: planType,
+    },
+  ];
+
+  it('hides a plan-gated model when the connected plan is not allowed', () => {
+    const result = buildVisibleModels(rawApiModels, rawMetadata, [], {}, null, codexConnected('team'));
+    expect(result.models.openai?.models).toEqual(['gpt-5.6-sol-oauth']);
+  });
+
+  it('keeps a plan-gated model when the connected plan is allowed (case-insensitive)', () => {
+    const result = buildVisibleModels(rawApiModels, rawMetadata, [], {}, null, codexConnected('Prolite'));
+    expect(result.models.openai?.models).toEqual(['gpt-5.3-codex-spark-oauth', 'gpt-5.6-sol-oauth']);
+  });
+
+  it('fails open when the connected plan is unknown', () => {
+    const result = buildVisibleModels(rawApiModels, rawMetadata, [], {}, null, codexConnected(null));
+    expect(result.models.openai?.models).toEqual(['gpt-5.3-codex-spark-oauth', 'gpt-5.6-sol-oauth']);
+  });
+
+  it('applies the gate in platform mode too', () => {
+    const platform = {
+      tier: 0,
+      model_tier: 0,
+      byok_providers: [],
+      oauth_providers: ['codex-oauth'],
+    } as unknown as PlatformModelsResponse;
+    const result = buildVisibleModels(rawApiModels, rawMetadata, [], {}, platform, codexConnected('team'));
+    expect(result.models.openai?.models).toEqual(['gpt-5.6-sol-oauth']);
+  });
+});

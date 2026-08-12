@@ -54,7 +54,7 @@ Save when: the user points you at a specific resource, or a particular source/to
 
 ## How to save a memory
 
-Two-step process. Use `write_file` to create the detail file, then `edit_file` (or another `write_file`) to add a pointer line to `memory.md`.
+Two-step process. Use `Write` to create the detail file, then `Edit` (or another `Write`) to add a pointer line to `memory.md`.
 
 **Step 1** — write the detail file with frontmatter:
 
@@ -109,4 +109,4 @@ Memory can go stale. Before acting on a recalled fact — especially prices, hol
 
 ## Limitations
 
-- **Workspace Python code cannot open memory files directly.** `open(".agents/user/memory/foo.md")` inside `execute_code` will fail — memory lives outside the workspace filesystem. If your code needs a memory file's content, read it with `read_file` first and pass it as a string into your script.
+- **Workspace Python code cannot open memory files directly.** `open(".agents/user/memory/foo.md")` inside `execute_code` will fail — memory lives outside the workspace filesystem. If your code needs a memory file's content, read it with `Read` first and pass it as a string into your script.

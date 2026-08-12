@@ -25,7 +25,13 @@ jobs:
   backend-integration:
     runs-on: ubuntu-latest
     needs: backend-unit
-    if: github.event_name == 'push' || github.event.pull_request.base.ref == 'main'
+    # Same-repo PRs + pushes only. Fork PRs can't read secrets on the
+    # `pull_request` event, so they run through fork-integration.yml
+    # (pull_request_target, gated by the fork-ci environment reviewers) instead.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.pull_request.base.ref == 'main' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     environment: integration
     services:
       postgres:
@@ -113,6 +119,21 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run typecheck
       - run: pnpm vitest run --reporter=verbose
+      # Bundle the app to assert what lands on the critical path; typecheck above
+      # already covers the tsc half of `pnpm build`, so invoke vite directly.
+      #
+      # Build the deployed configuration, not the default one. Two knobs change
+      # what ships, and both are inlined at build time: VITE_HOST_MODE selects
+      # the auth provider, and the Supabase URL/key decide whether the SDK
+      # survives tree-shaking at all — `supabase.ts` guards the client behind
+      # `url && key`, so unset vars fold that to null and drop ~57 kB gz the
+      # real build carries. Placeholders are enough; nothing dials them.
+      - run: pnpm exec vite build
+        env:
+          VITE_HOST_MODE: platform
+          VITE_SUPABASE_URL: https://example.supabase.co
+          VITE_SUPABASE_PUBLISHABLE_KEY: ci-placeholder-key
+      - run: node scripts/check-critical-path.mjs
 
   frontend-e2e:
     runs-on: ubuntu-latest

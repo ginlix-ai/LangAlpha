@@ -21,16 +21,19 @@ import {
   PortfolioRowItem,
 } from './_holdingsPrimitives';
 import { formatPortfolioNavMarkdownLine, portfolioSummary } from './_holdingsHelpers';
+import { normalizePortfolioCurrency } from '../../utils/portfolioSummary';
 
 type PortfolioConfig = { valuesHidden?: boolean };
 
 function rowToQuote(r: PortfolioRow) {
+  const hasQuote = r.quoteAvailable !== false;
   return {
     symbol: r.symbol,
-    price: r.price,
+    price: hasQuote ? r.price : undefined,
     shares: r.quantity ?? undefined,
-    marketValue: r.marketValue,
-    changePercent: r.unrealizedPlPercent ?? undefined,
+    marketValue: hasQuote ? r.marketValue ?? undefined : undefined,
+    changePercent: hasQuote ? r.unrealizedPlPercent ?? undefined : undefined,
+    currency: normalizePortfolioCurrency(r.currency),
   };
 }
 
@@ -68,7 +71,7 @@ function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<Portfolio
         widget_id: `${instance.id}/${rowId}`,
         label:
           row.symbol +
-          (row.unrealizedPlPercent != null
+          (row.quoteAvailable !== false && row.unrealizedPlPercent != null
             ? ` · ${row.unrealizedPlPercent >= 0 ? '+' : ''}${row.unrealizedPlPercent.toFixed(2)}%`
             : ''),
         description: t('dashboard.widgets.portfolio.title'),
@@ -101,7 +104,7 @@ function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<Portfolio
             style={{ color: 'var(--color-text-tertiary)' }}
           />
           <span
-            className="text-[10px] font-semibold uppercase tracking-[0.14em]"
+            className="text-[0.625rem] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
             {t('dashboard.widgets.portfolio.header')}

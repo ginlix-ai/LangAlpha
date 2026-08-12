@@ -15,7 +15,7 @@ Interactive command-line interface for PTC Agent.
 
 ## Prerequisites
 
-- Python 3.12+
+- Python 3.13+
 - Node.js (for MCP servers)
 - Daytona account with API key
 

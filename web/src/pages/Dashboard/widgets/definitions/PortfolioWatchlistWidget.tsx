@@ -23,6 +23,7 @@ import {
   WatchlistRowItem,
 } from './_holdingsPrimitives';
 import { formatPortfolioNavMarkdownLine, portfolioSummary } from './_holdingsHelpers';
+import { normalizePortfolioCurrency } from '../../utils/portfolioSummary';
 
 type PWTabKey = 'watchlist' | 'portfolio';
 
@@ -32,21 +33,24 @@ type PortfolioWatchlistConfig = {
 };
 
 function watchlistRowToQuote(r: WatchlistRow) {
+  const hasQuote = r.quoteAvailable !== false;
   return {
     symbol: r.symbol,
-    price: r.price,
-    change: r.change,
-    changePercent: r.changePercent,
+    price: hasQuote ? r.price : undefined,
+    change: hasQuote ? r.change : undefined,
+    changePercent: hasQuote ? r.changePercent : undefined,
   };
 }
 
 function portfolioRowToQuote(r: PortfolioRow) {
+  const hasQuote = r.quoteAvailable !== false;
   return {
     symbol: r.symbol,
-    price: r.price,
+    price: hasQuote ? r.price : undefined,
     shares: r.quantity ?? undefined,
-    marketValue: r.marketValue,
-    changePercent: r.unrealizedPlPercent ?? undefined,
+    marketValue: hasQuote ? r.marketValue ?? undefined : undefined,
+    changePercent: hasQuote ? r.unrealizedPlPercent ?? undefined : undefined,
+    currency: normalizePortfolioCurrency(r.currency),
   };
 }
 
@@ -126,7 +130,7 @@ function PortfolioWatchlistWidget({
           widget_id: `${instance.id}/${rowId}`,
           label:
             row.symbol +
-            (row.changePercent !== undefined
+            (row.quoteAvailable !== false && row.changePercent !== undefined
               ? ` · ${row.changePercent >= 0 ? '+' : ''}${row.changePercent.toFixed(2)}%`
               : ''),
           description: t('dashboard.widgets.portfolioWatchlist.headerWatchlist'),
@@ -149,7 +153,7 @@ function PortfolioWatchlistWidget({
         widget_id: `${instance.id}/${rowId}`,
         label:
           row.symbol +
-          (row.unrealizedPlPercent != null
+          (row.quoteAvailable !== false && row.unrealizedPlPercent != null
             ? ` · ${row.unrealizedPlPercent >= 0 ? '+' : ''}${row.unrealizedPlPercent.toFixed(2)}%`
             : ''),
         description: t('dashboard.widgets.portfolioWatchlist.headerHoldings'),
@@ -190,7 +194,7 @@ function PortfolioWatchlistWidget({
             style={{ color: 'var(--color-text-tertiary)' }}
           />
           <span
-            className="text-[10px] font-semibold uppercase tracking-[0.14em]"
+            className="text-[0.625rem] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
             {activeTab === 'watchlist'
@@ -211,7 +215,7 @@ function PortfolioWatchlistWidget({
           <button
             type="button"
             onClick={() => switchTab('watchlist')}
-            className="px-2.5 py-[3px] text-[10.5px] uppercase tracking-wider rounded-full transition-colors"
+            className="px-2.5 py-[3px] text-[0.6563rem] uppercase tracking-wider rounded-full transition-colors"
             style={{
               backgroundColor:
                 activeTab === 'watchlist' ? 'var(--color-bg-card)' : 'transparent',
@@ -230,7 +234,7 @@ function PortfolioWatchlistWidget({
           <button
             type="button"
             onClick={() => switchTab('portfolio')}
-            className="px-2.5 py-[3px] text-[10.5px] uppercase tracking-wider rounded-full transition-colors"
+            className="px-2.5 py-[3px] text-[0.6563rem] uppercase tracking-wider rounded-full transition-colors"
             style={{
               backgroundColor:
                 activeTab === 'portfolio' ? 'var(--color-bg-card)' : 'transparent',

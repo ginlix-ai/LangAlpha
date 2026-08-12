@@ -1,5 +1,7 @@
+import copy
 import os
 import json
+import uuid
 from pathlib import Path
 from typing import Dict, Optional, Any
 from dotenv import load_dotenv
@@ -7,6 +9,10 @@ from langchain_openai import ChatOpenAI
 from langchain_core.language_models import BaseChatModel
 from langchain_deepseek import ChatDeepSeek
 from langchain_qwq import ChatQwen
+
+from .endpoints import is_official_openai_endpoint
+from .pricing_utils import get_price_tier
+from .reasoning_lineage import ROUTE_ENDPOINT_SEP
 
 load_dotenv()
 
@@ -64,7 +70,8 @@ class ModelConfig:
             for vkey, overrides in variants.items():
                 merged = {**shared, **overrides}
                 if vkey != group_key:
-                    merged["parent_provider"] = group_key
+                    # setdefault: a variant may declare an explicit parent_provider
+                    merged.setdefault("parent_provider", group_key)
                 flat[vkey] = merged
 
             if not has_self_variant:
@@ -151,7 +158,7 @@ class ModelConfig:
             return parent_info.get("display_name", parent.title())
         return provider.title()
 
-    def get_model_metadata(self) -> dict[str, dict[str, str | int]]:
+    def get_model_metadata(self) -> dict[str, dict[str, Any]]:
         """Return {model_key: {sdk, provider, access_type, ...}} for all visible models."""
         result = {}
         for model_name, model_info in self.llm_config.items():
@@ -161,10 +168,30 @@ class ModelConfig:
             provider_info = self.get_provider_info(provider)
             sdk = provider_info.get("sdk", "unknown")
             access_type = provider_info.get("access_type", "api_key")
-            entry: dict[str, str | int] = {"sdk": sdk, "provider": provider, "access_type": access_type}
+            entry: dict[str, Any] = {"sdk": sdk, "provider": provider, "access_type": access_type}
             # Only include tier when explicitly set — absence means "not platform-managed"
             if "tier" in model_info:
                 entry["tier"] = model_info["tier"]
+            # OAuth plan allowlist — the connected subscription's plan_type must
+            # be one of these for the model to be usable (absence = no gate).
+            if "oauth_plans" in model_info:
+                entry["oauth_plans"] = model_info["oauth_plans"]
+            # Optional editorial metadata for the model-detail flyout. Additive —
+            # only surfaced for models that authored it in models.json; the
+            # frontend renders only the rows that are present.
+            for key in (
+                "speed",
+                "intelligence",
+                "context",
+                "input_modalities",
+            ):
+                if key in model_info:
+                    entry[key] = model_info[key]
+            # Cost tier (1-5) derived live from canonical providers.json pricing —
+            # not stored in models.json, so it auto-syncs when prices change.
+            price_tier = get_price_tier(model_info.get("model_id", model_name), provider)
+            if price_tier is not None:
+                entry["price"] = price_tier
             # Mark variants that require their own API key (different env_key from parent).
             # e.g. z-ai-cn needs ZAI_CN_API_KEY, not ZAI_API_KEY.
             parent_provider = provider_info.get("parent_provider")
@@ -190,9 +217,51 @@ class ModelConfig:
 
 _UNSET = object()  # Sentinel to distinguish "no override" from "override to None"
 
+# Header spellings the first-party codex clients send — codex-rs:
+# session-id/thread-id, opencode/hermes: session_id.
+_CODEX_SESSION_HEADERS = ("session-id", "thread-id", "session_id")
+
+
+def _derive_codex_affinity(cache_key: str) -> str:
+    """UUID-normalize a cache key for codex session headers — pass-through for
+    UUID keys, uuid5 otherwise so raw key material never egresses in a header."""
+    try:
+        return str(uuid.UUID(str(cache_key)))
+    except ValueError:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"codex-session:{cache_key}"))
+
+
+def _merged_default_headers(params: dict, *bases: dict | None) -> dict:
+    """Merge header sources left-to-right (later wins), ending with any
+    ``parameters``-level ``default_headers`` already expanded into ``params``
+    so it augments the base headers instead of replacing the mapping."""
+    merged: dict = {}
+    for base in bases:
+        merged.update(base or {})
+    merged.update(params.get("default_headers") or {})
+    return merged
+
 # Name regex for custom models: alphanumeric start, then alphanumeric/./_/-/:
 # Colon allowed for Ollama-style name:tag format (e.g. gemma4:31b)
 CUSTOM_MODEL_NAME_RE = r"^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,62}$"
+
+
+def _profile_overrides_from_config(model_info: dict) -> dict[str, Any]:
+    """Map a models.json entry onto ``ModelProfile`` keys (manifest is the SoT)."""
+    overrides: dict[str, Any] = {}
+    context = model_info.get("context")
+    if isinstance(context, int):
+        overrides["max_input_tokens"] = context
+    max_tokens = (model_info.get("parameters") or {}).get("max_tokens")
+    if isinstance(max_tokens, int):
+        overrides["max_output_tokens"] = max_tokens
+    modalities = model_info.get("input_modalities")
+    if isinstance(modalities, list):
+        overrides["text_inputs"] = "text" in modalities
+        overrides["image_inputs"] = "image" in modalities
+        overrides["audio_inputs"] = "audio" in modalities
+        overrides["video_inputs"] = "video" in modalities
+    return overrides
 
 
 class LLM:
@@ -200,6 +269,12 @@ class LLM:
 
     # Class-level model config instance
     _model_config = None
+
+    # Both real constructors set this; the default only covers instances built
+    # attribute-by-attribute off ``__new__``. Downstream reads fail closed
+    # (get_input_modalities treats an unknown model as text-only), so a missing
+    # stamp costs a stripped image block, never a rejected request.
+    custom_model_name: str | None = None
 
     @classmethod
     def get_model_config(cls) -> ModelConfig:
@@ -242,8 +317,11 @@ class LLM:
         if not api_key and model_info.get("system_provider"):
             self.provider = model_info["system_provider"]
 
-        self.parameters = model_info.get("parameters", {}).copy()
-        self.extra_body = model_info.get("extra_body", {}).copy()
+        # Deep copy: reasoning-effort overrides mutate nested dicts (e.g.
+        # extra_body.thinking); a shallow copy would contaminate the
+        # process-wide manifest for every subsequent request.
+        self.parameters = copy.deepcopy(model_info.get("parameters", {}))
+        self.extra_body = copy.deepcopy(model_info.get("extra_body", {}))
 
         # Override with any provided parameters
         self.parameters.update(override_params)
@@ -310,7 +388,8 @@ class LLM:
             api_key: Optional API key override (e.g. from BYOK).
             base_url_override: Override base URL. _UNSET = no override.
             cache_key: Session-stable key sent as ``prompt_cache_key`` on
-                OpenAI/Codex requests (always-on for Codex; opt-in for OpenAI).
+                OpenAI/Codex requests (always-on for Codex, which also derives
+                session-affinity headers from it; opt-in for OpenAI).
             **override_params: Additional parameters to override defaults.
 
         Returns:
@@ -321,8 +400,8 @@ class LLM:
         instance.custom_model_name = config.get("name", config["model_id"])
         instance.model = config["model_id"]
         instance.provider = config["provider"]
-        instance.parameters = (config.get("parameters") or {}).copy()
-        instance.extra_body = (config.get("extra_body") or {}).copy()
+        instance.parameters = copy.deepcopy(config.get("parameters") or {})
+        instance.extra_body = copy.deepcopy(config.get("extra_body") or {})
         instance.parameters.update(override_params)
         instance.api_key_override = api_key
 
@@ -380,8 +459,9 @@ class LLM:
 
         ``cache_key`` becomes ``prompt_cache_key`` on OpenAI/Codex requests via
         ``model_kwargs`` (not ``bind()``) so it survives ``bind_tools()`` and
-        ``with_structured_output()``. Codex always applies the key; regular
-        OpenAI applies it only when the provider opts in via providers.json.
+        ``with_structured_output()``. Codex always applies the key — and also
+        derives session-affinity headers from it — while regular OpenAI applies
+        it only when the provider opts in via providers.json.
         """
         effective_cache_key: str | None = None
         if cache_key and (
@@ -396,6 +476,8 @@ class LLM:
             client = self._get_codex_llm(cache_key=effective_cache_key)
         elif self.sdk == "deepseek":
             client = self._get_deepseek_llm()
+        elif self.sdk == "glm":
+            client = self._get_glm_llm()
         elif self.sdk == "qwq":
             client = self._get_qwq_llm()
         elif self.sdk == "anthropic":
@@ -406,12 +488,43 @@ class LLM:
             raise ValueError(f"Unsupported SDK: {self.sdk} for provider {self.provider}")
 
         # Tag the client with billing metadata so PerCallTokenTracker can
-        # attribute each LLM call to the correct billing source.
+        # attribute each LLM call to the correct billing source, and with the
+        # resolved provider so ReasoningCompatibilityMiddleware can tell whose
+        # reasoning blocks these are. ``self.provider`` is read after the
+        # system_provider reassignment above, so the stamp names the route the
+        # request actually takes — langchain's own ``model_provider`` field
+        # cannot be trusted here (ChatAnthropic reports "anthropic" for every
+        # Anthropic-compatible shim).
+        # ``manifest_model`` is the models.json key, not ``self.model`` (the API
+        # model id) — it is what get_input_modalities() looks up. Middleware that
+        # runs inside ModelResilienceMiddleware sees a substituted client, so a
+        # capability read has to come off the client in hand rather than off a
+        # name captured when the stack was built.
         billing_type = self._resolve_billing_type()
         existing = client.metadata or {}
-        client.metadata = {**existing, "billing_type": billing_type}
+        client.metadata = {
+            **existing,
+            "billing_type": billing_type,
+            "provider_route": self._provider_route(),
+            "manifest_model": self.custom_model_name,
+        }
 
         return client
+
+    def _provider_route(self) -> str:
+        """Identity of the upstream this client actually reaches.
+
+        The provider key alone is not that identity. BYOK can repoint a built-in
+        provider at another endpoint, and a custom Anthropic-shaped provider is
+        rewritten onto its manifest parent to inherit the right SDK (#221) —
+        both keep ``provider`` while changing the upstream. Since a reasoning
+        signature is only verifiable by the endpoint that minted it, an
+        off-manifest ``base_url`` is qualified into the route so it gets its own
+        lineage instead of inheriting the manifest route's trust.
+        """
+        if self.base_url != self.provider_info.get("base_url"):
+            return f"{self.provider}{ROUTE_ENDPOINT_SEP}{self.base_url}"
+        return self.provider
 
     def _resolve_api_key(self) -> str:
         """Resolve API key: BYOK override > env var > local fallback.
@@ -450,9 +563,6 @@ class LLM:
         }
         params.update(self._resolve_base_url("base_url"))
 
-        if self.default_headers:
-            params["default_headers"] = self.default_headers
-
         # Handle Response API if configured
         if self.use_response_api:
             params["output_version"] = "responses/v1"
@@ -463,6 +573,20 @@ class LLM:
 
         # Add all parameters from llm_config
         params.update(self.parameters)
+
+        # Merged after the parameters expansion so a parameters["default_headers"]
+        # entry augments the provider-level headers instead of clobbering them.
+        merged_headers = _merged_default_headers(params, self.default_headers)
+        if merged_headers:
+            params["default_headers"] = merged_headers
+
+        # Explicit prompt caching is api.openai.com-only: strip the opt-in when
+        # routed anywhere else (platform proxy, OpenAI-compatible endpoints) so
+        # ineligible backends never see the param or the breakpoint marker.
+        if params.get("prompt_cache_options") is not None and not is_official_openai_endpoint(
+            params.get("base_url") or params.get("openai_api_base")
+        ):
+            params.pop("prompt_cache_options")
 
         # Pass extra_body for provider-specific fields (e.g. caching, thinking)
         if self.extra_body:
@@ -489,13 +613,36 @@ class LLM:
         }
         params.update(self._resolve_base_url("base_url"))
 
-        if self.default_headers:
-            params["default_headers"] = self.default_headers
-
         if self.use_response_api:
             params["output_version"] = "responses/v1"
 
         params.update(self.parameters)
+
+        # The codex backend gates newer models (e.g. GPT-5.6 Luna) to first-party
+        # clients: without an originator naming a known client AND a User-Agent
+        # carrying the matching "<originator>/" prefix, it 404s "Model not found".
+        # Built after the parameters merge so a parameters["default_headers"]
+        # entry augments the mapping instead of clobbering it.
+        params["default_headers"] = _merged_default_headers(
+            params,
+            {"originator": "codex_cli_rs", "User-Agent": "codex_cli_rs/0.46.0"},
+            self.default_headers,
+        )
+
+        # Cache affinity: the codex backend routes its prompt cache by session
+        # headers, not by prompt_cache_key (wire-tested ~3× fewer warm-chain
+        # misses). Pinned headers win over the derived value, checked
+        # case-insensitively so a differently-cased pin can't end up
+        # contradicting a derived duplicate on the wire.
+        if cache_key:
+            affinity = _derive_codex_affinity(cache_key)
+            present = {k.lower() for k in params["default_headers"]}
+            for header in _CODEX_SESSION_HEADERS:
+                if header not in present:
+                    params["default_headers"][header] = affinity
+
+        # The codex backend 400s on explicit-caching params — never forward the opt-in.
+        params.pop("prompt_cache_options", None)
 
         if self.extra_body:
             params["extra_body"] = self.extra_body
@@ -524,6 +671,37 @@ class LLM:
             params["extra_body"] = self.extra_body
 
         return ChatDeepSeek(**params)
+
+    def _get_glm_llm(self):
+        """Get GLM/bigmodel LLM via vendored langchain-zai ``ChatZai`` (reasoning round-trip)."""
+        from src.llms.vendor.langchain_zai import ChatZai
+
+        params = {
+            "model": self.model,
+            "api_key": self._resolve_api_key(),
+            "stream_usage": True,
+            "max_retries": 5,
+            "timeout": 600.0,
+        }
+        params.update(self._resolve_base_url("base_url"))
+
+        # Add all parameters from llm_config
+        params.update(self.parameters)
+
+        if self.extra_body:
+            params["extra_body"] = self.extra_body
+
+        client = ChatZai(**params)
+
+        # Override the package profile with manifest values so the two can't drift
+        # (compaction reads profile["max_input_tokens"]); capability flags preserved.
+        model_info = self.model_config.get_model_config(self.custom_model_name) or {}
+        overrides = _profile_overrides_from_config(model_info)
+        if overrides:
+            base = client.profile if isinstance(client.profile, dict) else {}
+            client.profile = {**base, **overrides}
+
+        return client
 
     def _get_qwq_llm(self):
         """Get QwQ or QwQ-compatible LLM (for Qwen models with reasoning support)."""
@@ -564,14 +742,17 @@ class LLM:
         if self.base_url:
             params["base_url"] = self.base_url
 
-        if self.default_headers:
-            params["default_headers"] = self.default_headers
-
         # Add all parameters from llm_config, excluding enable_caching
         # (enable_caching is not a ChatAnthropic parameter, it's used by our caching logic)
         # This will override max_tokens if explicitly set in model config
         filtered_params = {k: v for k, v in self.parameters.items() if k != "enable_caching"}
         params.update(filtered_params)
+
+        # Merged after the parameters expansion so a parameters["default_headers"]
+        # entry augments the provider-level headers instead of clobbering them.
+        merged_headers = _merged_default_headers(params, self.default_headers)
+        if merged_headers:
+            params["default_headers"] = merged_headers
 
         # Pass extra_body via model_kwargs so ChatAnthropic's Pydantic validator
         # doesn't warn about an unknown field (extra_body isn't a declared field).
@@ -629,7 +810,8 @@ def create_llm(
         base_url: Override base URL. None = SDK default, str = custom URL.
         reasoning_effort: Optional reasoning effort level ("low", "medium", "high").
         cache_key: Session-stable key sent as ``prompt_cache_key`` on
-            OpenAI/Codex requests (always-on for Codex; opt-in for OpenAI).
+            OpenAI/Codex requests (always-on for Codex, which also derives
+            session-affinity headers from it; opt-in for OpenAI).
         **kwargs: Additional parameters to override
 
     Returns:
@@ -663,7 +845,8 @@ def create_llm_from_custom(
         api_key: Optional API key override (e.g. from BYOK).
         base_url: Override base URL. _UNSET = no override, None = SDK default.
         cache_key: Session-stable key sent as ``prompt_cache_key`` on
-            OpenAI/Codex requests (always-on for Codex; opt-in for OpenAI).
+            OpenAI/Codex requests (always-on for Codex, which also derives
+            session-affinity headers from it; opt-in for OpenAI).
         **kwargs: Additional parameters to override.
 
     Returns:
@@ -679,7 +862,11 @@ def narrow_prompt_cache_key(model: Any, suffix: str) -> Any:
 
     Used to namespace parallel sub-tasks (subagent fanout, compaction) onto
     separate OpenAI cache shards — OpenAI rate-limits at ~15 RPM per
-    (prefix + ``prompt_cache_key``) bucket. No-op when the model has no
+    (prefix + ``prompt_cache_key``) bucket. Codex session-affinity headers are
+    deliberately NOT narrowed: they pin a replica (not a cache scope), the
+    copy shares the parent's already-built HTTP clients so a field-level
+    header update never reaches the wire anyway, and riding the parent
+    thread's lane is what codex-rs itself does. No-op when the model has no
     ``prompt_cache_key`` set or ``suffix`` is empty.
     """
     if not suffix:
@@ -752,6 +939,41 @@ def get_input_modalities(
     if custom_modalities is not None:
         return custom_modalities
     return LLM.get_model_config().get_input_modalities(model_name)
+
+
+# Published per-request PDF page ceilings. Anthropic's is the only one that
+# moves with the context window (600 at 1M, 100 below it), and it is the reason
+# a single global cap can't be right: the same document is fine on Sonnet 5 and
+# rejected on Sonnet 4.6. OpenAI documents a size limit but no page limit, hence
+# None — "not bounded by pages" rather than "unknown".
+_ANTHROPIC_SDK_PROVIDERS = frozenset({"anthropic", "claude-oauth", "doubao-anthropic"})
+_GEMINI_MAX_PDF_PAGES = 1000
+_ANTHROPIC_MAX_PDF_PAGES_1M = 600
+_ANTHROPIC_MAX_PDF_PAGES = 100
+
+
+def get_max_pdf_pages(model_name: str) -> int | None:
+    """Documented per-request PDF page ceiling for a model, or None if unbounded.
+
+    Unknown models get the tightest published ceiling rather than None: this
+    gates what we transmit, so guessing generously turns an unknown into a 400
+    the caller has no way to recover.
+    """
+    model_info = LLM.get_model_config().get_model_config(model_name) or {}
+    provider = model_info.get("provider", "")
+
+    if provider in _ANTHROPIC_SDK_PROVIDERS:
+        context = model_info.get("context") or 0
+        return (
+            _ANTHROPIC_MAX_PDF_PAGES_1M
+            if context >= 1_000_000
+            else _ANTHROPIC_MAX_PDF_PAGES
+        )
+    if provider == "gemini":
+        return _GEMINI_MAX_PDF_PAGES
+    if provider in ("openai", "codex-oauth"):
+        return None
+    return _ANTHROPIC_MAX_PDF_PAGES
 
 
 def should_enable_caching(model_name: str) -> bool:

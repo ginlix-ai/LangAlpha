@@ -22,14 +22,14 @@ import { loadFixture } from './helpers/loadFixture.js';
 
 const ws1 = sampleWorkspace();
 const ws2 = sampleWorkspace({
-  workspace_id: 'ws-2',
+  workspace_id: 'a0000002-0000-4000-8000-000000000002',
   name: 'Alpha Research',
   description: 'Second workspace',
 });
 const th1 = sampleThread();
 const th2 = sampleThread({
-  thread_id: 'th-2',
-  workspace_id: 'ws-1',
+  thread_id: 'b0000002-0000-4000-8000-000000000002',
+  workspace_id: 'a0000001-0000-4000-8000-000000000001',
   title: 'Second thread',
 });
 
@@ -40,11 +40,11 @@ function workspaceOverrides() {
   };
 }
 
-/** Overrides that populate a thread list for ws-1. */
+/** Overrides that populate a thread list for a0000001-0000-4000-8000-000000000001. */
 function threadOverrides() {
   return {
     ...workspaceOverrides(),
-    'GET /workspaces/ws-1': ws1,
+    'GET /workspaces/a0000001-0000-4000-8000-000000000001': ws1,
     'GET /threads': { threads: [th1, th2], total: 2 },
   };
 }
@@ -53,10 +53,10 @@ function threadOverrides() {
 function chatViewOverrides() {
   return {
     ...threadOverrides(),
-    'GET /threads/th-1': th1,
-    'GET /threads/th-1/status': { can_reconnect: false, status: 'idle' },
-    'GET /threads/th-1/turns': {
-      thread_id: 'th-1',
+    'GET /threads/b0000001-0000-4000-8000-000000000001': th1,
+    'GET /threads/b0000001-0000-4000-8000-000000000001/status': { can_reconnect: false, status: 'idle' },
+    'GET /threads/b0000001-0000-4000-8000-000000000001/turns': {
+      thread_id: 'b0000001-0000-4000-8000-000000000001',
       turns: [
         {
           turn_index: 0,
@@ -66,15 +66,24 @@ function chatViewOverrides() {
       ],
       retry_checkpoint_id: 'cp-retry-0',
     },
-    'GET /workspaces/ws-1/files': { files: [] },
+    'GET /workspaces/a0000001-0000-4000-8000-000000000001/files': { files: [] },
   };
+}
+
+/**
+ * Gallery card for a workspace, scoped by test id: the sidebar renders the
+ * same workspace names, so a bare getByText(name) is ambiguous and races the
+ * gallery's lazy chunk (matching the nav row instead of the card).
+ */
+function workspaceCard(page, name) {
+  return page.getByTestId('workspace-card').filter({ has: page.getByText(name, { exact: true }) });
 }
 
 /** Configure replay SSE to return replay_done immediately (empty history). */
 async function configureEmptyReplay() {
   await configureSSE({
     method: 'GET',
-    path: '/api/v1/threads/th-1/messages/replay',
+    path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages/replay',
     events: [sseEvents.replayDone()],
     delay: 10,
   });
@@ -141,7 +150,7 @@ test.describe('Workspace Gallery', () => {
   });
 
   test('delete workspace removes card', async ({ page }) => {
-    // Use a dynamic mock: after DELETE is called, GET /workspaces returns without ws-1
+    // Use a dynamic mock: after DELETE is called, GET /workspaces returns without a0000001-0000-4000-8000-000000000001
     let wsDeleted = false;
     await mockAPI(page, {
       'GET /workspaces': (route) => {
@@ -154,7 +163,7 @@ test.describe('Workspace Gallery', () => {
           body: JSON.stringify(data),
         });
       },
-      'DELETE /workspaces/ws-1': (route) => {
+      'DELETE /workspaces/a0000001-0000-4000-8000-000000000001': (route) => {
         wsDeleted = true;
         return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
       },
@@ -162,15 +171,14 @@ test.describe('Workspace Gallery', () => {
     await page.goto('/chat');
 
     // Wait for card to appear
-    const researchCard = page.getByText('Research', { exact: true });
+    const researchCard = workspaceCard(page, 'Research');
     await expect(researchCard).toBeVisible({ timeout: 10000 });
 
     // Hover on the workspace card to reveal the 3-dot menu
-    const cardContainer = researchCard.locator('xpath=ancestor::div[contains(@class, "group")]').first();
-    await cardContainer.hover();
+    await researchCard.hover();
 
-    // Click the 3-dot menu button (MoreHorizontal icon)
-    await cardContainer.locator('button:has(svg)').first().click();
+    // Click the 3-dot menu button (MoreHorizontal icon, the card's only button)
+    await researchCard.locator('button:has(svg)').first().click();
 
     // Click Delete in the dropdown (Radix renders menu items as role="menuitem")
     await page.getByRole('menuitem', { name: 'Delete' }).click();
@@ -179,8 +187,8 @@ test.describe('Workspace Gallery', () => {
     await expect(page.locator('h2', { hasText: 'Delete Workspace' })).toBeVisible();
     await page.getByRole('button', { name: 'Delete' }).click();
 
-    // The Research card should disappear (refetch returns without ws-1)
-    await expect(page.getByText('Research', { exact: true })).not.toBeVisible({ timeout: 10000 });
+    // The Research card should disappear (refetch returns without a0000001-0000-4000-8000-000000000001)
+    await expect(researchCard).not.toBeVisible({ timeout: 10000 });
   });
 
   test('click workspace navigates to thread gallery', async ({ page }) => {
@@ -190,7 +198,7 @@ test.describe('Workspace Gallery', () => {
     await page.goto('/chat');
 
     // Wait for Research card
-    const researchCard = page.getByText('Research', { exact: true });
+    const researchCard = workspaceCard(page, 'Research');
     await expect(researchCard).toBeVisible({ timeout: 10000 });
 
     // Click the workspace card
@@ -213,10 +221,10 @@ test.describe('Thread Gallery', () => {
   test('thread list renders', async ({ page }) => {
     await mockAPI(page, {
       ...threadOverrides(),
-      'GET /workspaces/ws-1/files': { files: [] },
+      'GET /workspaces/a0000001-0000-4000-8000-000000000001/files': { files: [] },
     });
 
-    await page.goto('/chat/ws-1');
+    await page.goto('/chat/a0000001-0000-4000-8000-000000000001');
 
     // Thread titles should be visible
     await expect(page.locator('h3.text-sm.font-normal.truncate', { hasText: 'Test conversation' })).toBeVisible({ timeout: 10000 });
@@ -227,11 +235,11 @@ test.describe('Thread Gallery', () => {
     await mockAPI(page, {
       ...threadOverrides(),
       ...chatViewOverrides(),
-      'GET /workspaces/ws-1/files': { files: [] },
+      'GET /workspaces/a0000001-0000-4000-8000-000000000001/files': { files: [] },
     });
     await configureEmptyReplay();
 
-    await page.goto('/chat/ws-1');
+    await page.goto('/chat/a0000001-0000-4000-8000-000000000001');
 
     // Click on first thread
     const threadCard = page.locator('h3.text-sm.font-normal.truncate', { hasText: 'Test conversation' });
@@ -243,13 +251,24 @@ test.describe('Thread Gallery', () => {
   });
 
   test('delete thread removes from list', async ({ page }) => {
+    // Dynamic mock: the gallery refetches the list after a delete, so the mock
+    // must stop returning the deleted thread once DELETE has been called.
+    let thDeleted = false;
     await mockAPI(page, {
       ...threadOverrides(),
-      'DELETE /threads/th-1': { success: true },
-      'GET /workspaces/ws-1/files': { files: [] },
+      'GET /threads': (route) => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(thDeleted ? { threads: [th2], total: 1 } : { threads: [th1, th2], total: 2 }),
+      }),
+      'DELETE /threads/b0000001-0000-4000-8000-000000000001': (route) => {
+        thDeleted = true;
+        return route.fulfill({ status: 200, contentType: 'application/json', body: '{"success": true}' });
+      },
+      'GET /workspaces/a0000001-0000-4000-8000-000000000001/files': { files: [] },
     });
 
-    await page.goto('/chat/ws-1');
+    await page.goto('/chat/a0000001-0000-4000-8000-000000000001');
 
     // Wait for thread to appear
     const threadTitle = page.locator('h3.text-sm.font-normal.truncate', { hasText: 'Test conversation' });
@@ -289,7 +308,7 @@ test.describe('Chat View -- SSE Streaming', () => {
     // Configure replay with a user message and assistant response
     await configureSSE({
       method: 'GET',
-      path: '/api/v1/threads/th-1/messages/replay',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages/replay',
       events: [
         sseEvents.userMessage('What is AAPL trading at?', 0),
         sseEvents.messageChunk('Apple (AAPL) is currently trading at $185.50.'),
@@ -300,7 +319,7 @@ test.describe('Chat View -- SSE Streaming', () => {
       delay: 10,
     });
 
-    await page.goto('/chat/t/th-1');
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
 
     // Both user and assistant messages should appear
     await expect(page.getByText('What is AAPL trading at?')).toBeVisible({ timeout: 10000 });
@@ -314,7 +333,7 @@ test.describe('Chat View -- SSE Streaming', () => {
     // Configure the SSE response for sending a message
     await configureSSE({
       method: 'POST',
-      path: '/api/v1/threads/th-1/messages',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages',
       events: [
         sseEvents.messageChunk('The S&P 500 '),
         sseEvents.messageChunk('is up 1.2% today.'),
@@ -324,7 +343,7 @@ test.describe('Chat View -- SSE Streaming', () => {
       delay: 30,
     });
 
-    await page.goto('/chat/t/th-1');
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
     await page.waitForSelector('textarea', { timeout: 10000 });
 
     // Type a message and send
@@ -343,7 +362,7 @@ test.describe('Chat View -- SSE Streaming', () => {
     // Replay with a tool call sequence
     await configureSSE({
       method: 'GET',
-      path: '/api/v1/threads/th-1/messages/replay',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages/replay',
       events: [
         sseEvents.userMessage('Search for NVDA earnings'),
         sseEvents.toolCalls([{ name: 'WebSearch', args: { query: 'NVDA earnings Q4 2025' }, id: toolCallId }]),
@@ -357,7 +376,7 @@ test.describe('Chat View -- SSE Streaming', () => {
       delay: 10,
     });
 
-    await page.goto('/chat/t/th-1');
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
 
     // The tool call card should appear. The accordion header is now
     // content-aware (skill/memory/memo/code/web/search/file/generic) — for
@@ -373,7 +392,7 @@ test.describe('Chat View -- SSE Streaming', () => {
     // Replay that ends with an interrupt
     await configureSSE({
       method: 'GET',
-      path: '/api/v1/threads/th-1/messages/replay',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages/replay',
       events: [
         sseEvents.userMessage('Analyze TSLA'),
         sseEvents.interrupt('int-1', 'Here is my plan:\n1. Fetch TSLA financials\n2. Create a chart'),
@@ -382,7 +401,7 @@ test.describe('Chat View -- SSE Streaming', () => {
       delay: 10,
     });
 
-    await page.goto('/chat/t/th-1');
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
 
     // Plan approval card should be visible
     await expect(page.getByText('Plan Approval Required')).toBeVisible({ timeout: 10000 });
@@ -394,13 +413,12 @@ test.describe('Chat View -- SSE Streaming', () => {
   test('approve plan resumes workflow', async ({ page }) => {
     await mockAPI(page, {
       ...chatViewOverrides(),
-      'POST /threads/th-1/interrupt': { success: true },
     });
 
     // Replay with interrupt
     await configureSSE({
       method: 'GET',
-      path: '/api/v1/threads/th-1/messages/replay',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages/replay',
       events: [
         sseEvents.userMessage('Analyze TSLA'),
         sseEvents.interrupt('int-1', 'Plan:\n1. Fetch data\n2. Analyze'),
@@ -412,7 +430,7 @@ test.describe('Chat View -- SSE Streaming', () => {
     // Configure the POST for plan approval (HITL response sends as message)
     await configureSSE({
       method: 'POST',
-      path: '/api/v1/threads/th-1/messages',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages',
       events: [
         sseEvents.messageChunk('Executing the plan...'),
         sseEvents.finishStop(),
@@ -421,7 +439,7 @@ test.describe('Chat View -- SSE Streaming', () => {
       delay: 30,
     });
 
-    await page.goto('/chat/t/th-1');
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
 
     // Wait for approval UI
     await expect(page.getByText('Plan Approval Required')).toBeVisible({ timeout: 10000 });
@@ -433,12 +451,12 @@ test.describe('Chat View -- SSE Streaming', () => {
     await expect(page.getByText('Plan Approved')).toBeVisible({ timeout: 10000 });
   });
 
-  test('stop button interrupts streaming', async ({ page }) => {
-    let interruptCalled = false;
+  test('stop button cancels streaming', async ({ page }) => {
+    let cancelCalled = false;
     await mockAPI(page, {
       ...chatViewOverrides(),
-      'POST /threads/*/interrupt': (route) => {
-        interruptCalled = true;
+      'POST /threads/*/cancel': (route) => {
+        cancelCalled = true;
         return route.fulfill({
           status: 200,
           contentType: 'application/json',
@@ -451,7 +469,7 @@ test.describe('Chat View -- SSE Streaming', () => {
     // Configure a slow SSE stream
     await configureSSE({
       method: 'POST',
-      path: '/api/v1/threads/th-1/messages',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages',
       events: [
         sseEvents.messageChunk('Starting analysis...'),
         sseEvents.messageChunk(' Step 1 complete.'),
@@ -463,7 +481,7 @@ test.describe('Chat View -- SSE Streaming', () => {
       delay: 500, // Slow enough to click stop
     });
 
-    await page.goto('/chat/t/th-1');
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
     await page.waitForSelector('textarea', { timeout: 10000 });
 
     // Send a message
@@ -474,10 +492,12 @@ test.describe('Chat View -- SSE Streaming', () => {
     await expect(page.getByText('Starting analysis...')).toBeVisible({ timeout: 10000 });
     await page.locator('button[title="Stop"]').click();
 
-    // Verify the interrupt was sent (via page.route capture)
-    // Wait for the button to change to "Stopping..." (deterministic signal that the click handler ran)
-    await expect(page.locator('button[title="Stopping..."]')).toBeVisible({ timeout: 5000 });
-    expect(interruptCalled).toBe(true);
+    // stopWorkflow optimistically clears loading so the stop feels instant, which
+    // immediately swaps the Stop button back to Send (the transient "Stopping..."
+    // title is never observable). Assert that swap as the deterministic signal the
+    // handler ran, then confirm the cancel POST fired.
+    await expect(page.locator('button[aria-label="Send message"]')).toBeVisible({ timeout: 5000 });
+    await expect.poll(() => cancelCalled, { timeout: 5000 }).toBe(true);
   });
 
   test('403 on thread shows access denied', async ({ page }) => {
@@ -501,13 +521,13 @@ test.describe('Chat View -- SSE Streaming', () => {
     // Configure the send endpoint to return 429
     await configureSSE({
       method: 'POST',
-      path: '/api/v1/threads/th-1/messages',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages',
       status: 429,
       errorBody: { detail: 'Rate limit exceeded. Please try again later.' },
       events: [],
     });
 
-    await page.goto('/chat/t/th-1');
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
     await page.waitForSelector('textarea', { timeout: 10000 });
 
     // Send a message
@@ -524,7 +544,7 @@ test.describe('Chat View -- SSE Streaming', () => {
     // Replay with a conversation
     await configureSSE({
       method: 'GET',
-      path: '/api/v1/threads/th-1/messages/replay',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages/replay',
       events: [
         sseEvents.userMessage('Tell me about AAPL'),
         sseEvents.messageChunk('Apple Inc. is a technology company.'),
@@ -538,7 +558,7 @@ test.describe('Chat View -- SSE Streaming', () => {
     // Configure the response after editing
     await configureSSE({
       method: 'POST',
-      path: '/api/v1/threads/th-1/messages',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages',
       events: [
         sseEvents.messageChunk('Google (GOOGL) is a subsidiary of Alphabet.'),
         sseEvents.finishStop(),
@@ -547,7 +567,7 @@ test.describe('Chat View -- SSE Streaming', () => {
       delay: 30,
     });
 
-    await page.goto('/chat/t/th-1');
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
 
     // Wait for the user message to appear
     await expect(page.getByText('Tell me about AAPL')).toBeVisible({ timeout: 10000 });
@@ -577,7 +597,7 @@ test.describe('Chat View -- SSE Streaming', () => {
     // Replay with a conversation
     await configureSSE({
       method: 'GET',
-      path: '/api/v1/threads/th-1/messages/replay',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages/replay',
       events: [
         sseEvents.userMessage('Explain options trading'),
         sseEvents.messageChunk('Options are financial derivatives.'),
@@ -591,7 +611,7 @@ test.describe('Chat View -- SSE Streaming', () => {
     // Configure regenerate response
     await configureSSE({
       method: 'POST',
-      path: '/api/v1/threads/th-1/messages',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages',
       events: [
         sseEvents.messageChunk('Options trading involves contracts that give the holder the right to buy or sell.'),
         sseEvents.finishStop(),
@@ -600,7 +620,7 @@ test.describe('Chat View -- SSE Streaming', () => {
       delay: 30,
     });
 
-    await page.goto('/chat/t/th-1');
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
 
     // Wait for the assistant message
     await expect(page.getByText('Options are financial derivatives.')).toBeVisible({ timeout: 10000 });
@@ -619,11 +639,11 @@ test.describe('Chat View -- SSE Streaming', () => {
   test('file panel opens and lists files', async ({ page }) => {
     await mockAPI(page, {
       ...chatViewOverrides(),
-      'GET /workspaces/ws-1/files': { files: ['report.pdf', 'analysis.py', 'chart.png'] },
+      'GET /workspaces/a0000001-0000-4000-8000-000000000001/files': { files: ['report.pdf', 'analysis.py', 'chart.png'] },
     });
     await configureEmptyReplay();
 
-    await page.goto('/chat/t/th-1');
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
     await page.waitForSelector('textarea', { timeout: 10000 });
 
     // Click the file panel toggle button (title="Workspace Files")
@@ -641,7 +661,7 @@ test.describe('Chat View -- SSE Streaming', () => {
     // Replay includes workspace_status starting event before content
     await configureSSE({
       method: 'GET',
-      path: '/api/v1/threads/th-1/messages/replay',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages/replay',
       events: [sseEvents.replayDone()],
       delay: 10,
     });
@@ -649,7 +669,7 @@ test.describe('Chat View -- SSE Streaming', () => {
     // Configure send to show workspace starting status
     await configureSSE({
       method: 'POST',
-      path: '/api/v1/threads/th-1/messages',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages',
       events: [
         sseEvents.workspaceStatus('starting'),
         sseEvents.workspaceStatus('ready'),
@@ -660,7 +680,7 @@ test.describe('Chat View -- SSE Streaming', () => {
       delay: 100,
     });
 
-    await page.goto('/chat/t/th-1');
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
     await page.waitForSelector('textarea', { timeout: 10000 });
 
     // Send a message to trigger workspace starting
@@ -677,13 +697,13 @@ test.describe('Chat View -- SSE Streaming', () => {
   test('reconnect resumes in-progress stream', async ({ page }) => {
     await mockAPI(page, {
       ...chatViewOverrides(),
-      'GET /threads/th-1/status': { can_reconnect: true, status: 'streaming' },
+      'GET /threads/b0000001-0000-4000-8000-000000000001/status': { can_reconnect: true, status: 'streaming' },
     });
 
     // Replay returns conversation history
     await configureSSE({
       method: 'GET',
-      path: '/api/v1/threads/th-1/messages/replay',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages/replay',
       events: [
         sseEvents.userMessage('Analyze the portfolio'),
         sseEvents.messageChunk('Starting portfolio analysis...'),
@@ -695,7 +715,7 @@ test.describe('Chat View -- SSE Streaming', () => {
     // Reconnect stream picks up where it left off
     await configureSSE({
       method: 'GET',
-      path: '/api/v1/threads/th-1/messages/stream',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages/stream',
       events: [
         sseEvents.messageChunk(' Your portfolio returned 12% YTD.'),
         sseEvents.finishStop(),
@@ -704,7 +724,7 @@ test.describe('Chat View -- SSE Streaming', () => {
       delay: 30,
     });
 
-    await page.goto('/chat/t/th-1');
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
 
     // The reconnected stream content should appear
     await expect(page.getByText('Your portfolio returned 12% YTD.')).toBeVisible({ timeout: 15000 });
@@ -724,14 +744,14 @@ function steeringChatOverrides(turnCount = 1) {
   }));
   return {
     ...threadOverrides(),
-    'GET /threads/th-1': th1,
-    'GET /threads/th-1/status': { can_reconnect: false, status: 'idle' },
-    'GET /threads/th-1/turns': {
-      thread_id: 'th-1',
+    'GET /threads/b0000001-0000-4000-8000-000000000001': th1,
+    'GET /threads/b0000001-0000-4000-8000-000000000001/status': { can_reconnect: false, status: 'idle' },
+    'GET /threads/b0000001-0000-4000-8000-000000000001/turns': {
+      thread_id: 'b0000001-0000-4000-8000-000000000001',
       turns,
       retry_checkpoint_id: 'cp-retry-0',
     },
-    'GET /workspaces/ws-1/files': { files: [] },
+    'GET /workspaces/a0000001-0000-4000-8000-000000000001/files': { files: [] },
   };
 }
 
@@ -749,7 +769,7 @@ test.describe('Steering -- History Replay', () => {
 
     await configureSSE({
       method: 'GET',
-      path: '/api/v1/threads/th-1/messages/replay',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages/replay',
       events: [
         sseEvents.userMessage('any investment opportunity?', 0),
         ...turn0Events,
@@ -758,7 +778,7 @@ test.describe('Steering -- History Replay', () => {
       delay: 5,
     });
 
-    await page.goto('/chat/t/th-1');
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
 
     // User query should appear
     await expect(page.getByText('any investment opportunity?')).toBeVisible({ timeout: 15000 });
@@ -790,7 +810,7 @@ test.describe('Steering -- History Replay', () => {
 
     await configureSSE({
       method: 'GET',
-      path: '/api/v1/threads/th-1/messages/replay',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages/replay',
       events: [
         sseEvents.userMessage('any investment opportunity?', 0),
         ...turn0Events,
@@ -801,7 +821,7 @@ test.describe('Steering -- History Replay', () => {
       delay: 2,
     });
 
-    await page.goto('/chat/t/th-1');
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
 
     // Wait for post-steering content to confirm replay completed
     await expect(page.getByText('All three subagents updated')).toBeVisible({ timeout: 30000 });

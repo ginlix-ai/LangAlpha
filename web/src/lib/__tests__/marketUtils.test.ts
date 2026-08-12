@@ -67,14 +67,90 @@ describe('getExtendedHoursInfo', () => {
     expect(result.extType).toBeNull();
   });
 
-  it('computes extPrice and extChange from previousClose and extPct', () => {
+  it('falls back to previousClose as the post anchor when the row lacks regular_trading_change', () => {
     const status = { market: 'closed', afterHours: false, earlyHours: false };
     const data = { lateTradingChangePercent: 5.0, previousClose: 100 };
     const result = getExtendedHoursInfo(status, data);
 
     expect(result.extPrice).toBe(105);
     expect(result.extChange).toBe(5);
+    expect(result.extAnchor).toBe(100);
     expect(result.prevClose).toBe(100);
+    expect(result.regularClose).toBeNull();
+  });
+
+  it('anchors the after-hours move on the regular close, not the previous close', () => {
+    // latePct is declared against today's regular close; anchoring it on
+    // prevClose was the wrong-basis bug this pins against.
+    const status = { market: 'closed', afterHours: false, earlyHours: false };
+    const data = { late_trading_change_percent: -1.0, previous_close: 200, regular_trading_change: -10 };
+    const result = getExtendedHoursInfo(status, data);
+
+    expect(result.regularClose).toBe(190);
+    expect(result.extAnchor).toBe(190);
+    expect(result.extPrice).toBe(188.1);
+    expect(result.extChange).toBe(-1.9);
+  });
+
+  it('prefers the provider-exact regular_close over the rounded-change derivation', () => {
+    // regular_trading_change is served at 1dp; prevClose + (-10) says 190 but
+    // the exact close is 189.96 — the exact field must win.
+    const status = { market: 'closed', afterHours: false, earlyHours: false };
+    const data = {
+      late_trading_change_percent: -1.0,
+      previous_close: 200,
+      regular_trading_change: -10,
+      regular_close: 189.96,
+    };
+    const result = getExtendedHoursInfo(status, data);
+
+    expect(result.regularClose).toBe(189.96);
+    expect(result.extAnchor).toBe(189.96);
+  });
+
+  it('prefers the exact dollar extended change over the rounded percent', () => {
+    const status = { market: 'closed', afterHours: false, earlyHours: false };
+    const data = {
+      late_trading_change_percent: -1.1,
+      late_trading_change: -1.06,
+      previous_close: 200,
+      regular_close: 189.96,
+    };
+    const result = getExtendedHoursInfo(status, data);
+
+    expect(result.extChange).toBe(-1.06);
+    expect(result.extPrice).toBe(188.9);
+    expect(result.extPct).toBe(-1.1);
+  });
+
+  it('prefers the minute-aggregate close and re-derives the whole triple from it', () => {
+    // The provider's late change tracks the raw last trade (odd lots
+    // included); the aggregate close is the consolidated last sale that the
+    // chart shows — it must win, with change and pct recomputed against the
+    // anchor so the line is one coherent statement.
+    const status = { market: 'closed', afterHours: false, earlyHours: false };
+    const data = {
+      late_trading_change_percent: -1.1,
+      late_trading_change: -1.06,
+      last_minute_close: 189.2,
+      previous_close: 200,
+      regular_close: 189.96,
+    };
+    const result = getExtendedHoursInfo(status, data);
+
+    expect(result.extPrice).toBe(189.2);
+    expect(result.extChange).toBe(-0.76);
+    expect(result.extPct).toBe(-0.4);
+  });
+
+  it('anchors the pre-market move on the previous close even when regular_trading_change is present', () => {
+    const status = { market: 'open', afterHours: false, earlyHours: true };
+    const data = { earlyTradingChangePercent: 2.0, previousClose: 100, regularTradingChange: -5 };
+    const result = getExtendedHoursInfo(status, data);
+
+    expect(result.extAnchor).toBe(100);
+    expect(result.extPrice).toBe(102);
+    expect(result.extChange).toBe(2);
   });
 
   it('handles snake_case field names (raw snapshot data)', () => {

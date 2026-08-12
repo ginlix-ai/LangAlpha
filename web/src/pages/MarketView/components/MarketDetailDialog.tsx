@@ -81,7 +81,7 @@ export default function MarketDetailDialog({ payload, onClose }: MarketDetailDia
         >
           <div
             className="font-semibold truncate"
-            style={{ color: 'var(--color-text-primary)', fontSize: 14 }}
+            style={{ color: 'var(--color-text-primary)', fontSize: '0.875rem' }}
           >
             {title}
           </div>

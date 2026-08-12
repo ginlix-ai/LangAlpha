@@ -4,12 +4,14 @@
  */
 import { api } from '@/api/client';
 import { supabase } from '@/lib/supabase';
-import { utcMsToChartSec } from '@/lib/utils';
+import { normalizeIndexKey } from '@/lib/marketUtils';
+
+// Legacy full-window bar loader now lives in lib/bars (so lib/ never imports a
+// page); re-exported for page-internal callers that still import it from here.
+export { fetchStockData } from '@/lib/bars/legacyBars';
+export type { StockDataResult } from '@/lib/bars/legacyBars';
 
 const baseURL = api.defaults.baseURL;
-
-/** Strip leading ^ from index symbols to match backend batch response keys. */
-const normalizeSymbolKey = (sym: string): string => sym.replace(/^\^/, '');
 
 /**
  * Build the WebSocket URL for the market data aggregate stream.
@@ -48,99 +50,6 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-interface ChartDataPoint {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
-
-interface StockDataResult {
-  data: ChartDataPoint[];
-  error?: string;
-}
-
-/**
- * Fetch stock historical data for charting
- * Uses backend API endpoint: GET /api/v1/market-data/intraday/stocks/{symbol}
- *
- * @param {string} symbol - Stock symbol (e.g., 'AAPL', 'MSFT')
- * @param {string} interval - Data interval (default: '1hour' for daily-like view, supports: 1min, 5min, 15min, 30min, 1hour, 4hour)
- * @param {string} [fromDate] - Start date in YYYY-MM-DD format
- * @param {string} [toDate] - End date in YYYY-MM-DD format
- * @param {Object} [options] - Additional options
- * @param {AbortSignal} [options.signal] - AbortController signal for cancellation
- * @returns {Promise<{data: Array, error?: string, fiftyTwoWeekHigh?: number, fiftyTwoWeekLow?: number}>} Chart data in lightweight-charts format
- */
-export async function fetchStockData(
-  symbol: string,
-  interval: string = '1hour',
-  fromDate: string | undefined,
-  toDate: string | undefined,
-  { signal }: { signal?: AbortSignal } = {}
-): Promise<StockDataResult> {
-  if (!symbol || !symbol.trim()) {
-    return { data: [], error: 'Symbol is required' };
-  }
-
-  const symbolUpper = symbol.trim().toUpperCase();
-  const isIndex = symbolUpper.startsWith('^');
-
-  try {
-    // Use daily endpoint for 1day interval, intraday endpoint for everything else
-    const isDaily = interval === '1day';
-    const market = isIndex ? 'indexes' : 'stocks';
-    const url = isDaily
-      ? `/api/v1/market-data/daily/${market}/${encodeURIComponent(symbolUpper)}`
-      : `/api/v1/market-data/intraday/${market}/${encodeURIComponent(symbolUpper)}`;
-    const params: Record<string, string> = isDaily ? {} : { interval };
-
-    if (fromDate) params.from = fromDate;
-    if (toDate) params.to = toDate;
-
-    const { data } = await api.get(url, { params, signal });
-
-    const dataPoints = data?.data || [];
-
-    if (!Array.isArray(dataPoints) || dataPoints.length === 0) {
-      return { data: [], error: 'No data available' };
-    }
-
-    // Convert backend format to lightweight-charts format
-    // Backend returns: { time: <unix_ms>, open, high, low, close, volume }
-    const chartData = dataPoints.map((point: Record<string, unknown>) => ({
-      time: utcMsToChartSec(point.time as number),
-      open: parseFloat(point.open as string) || 0,
-      high: parseFloat(point.high as string) || 0,
-      low: parseFloat(point.low as string) || 0,
-      close: parseFloat(point.close as string) || 0,
-      volume: parseFloat(point.volume as string) || 0,
-    })).filter((item: ChartDataPoint) =>
-      !isNaN(item.open) && !isNaN(item.high) && !isNaN(item.low) && !isNaN(item.close) && item.time > 0
-    ).sort((a: ChartDataPoint, b: ChartDataPoint) => a.time - b.time)
-    .filter((item: ChartDataPoint, i: number, arr: ChartDataPoint[]) => i === 0 || item.time !== arr[i - 1].time);
-
-    if (chartData.length === 0) {
-      return { data: [], error: 'Data conversion failed' };
-    }
-
-    return {
-      data: chartData,
-    };
-  } catch (error: unknown) {
-    // Don't treat abort as an error
-    if (error instanceof Error && (error.name === 'CanceledError' || error.name === 'AbortError')) {
-      return { data: [], error: 'Request cancelled' };
-    }
-    console.error('Error fetching stock data from backend:', error);
-    const axiosError = error as { response?: { data?: { detail?: string } }; message?: string };
-    const errorMsg = axiosError?.response?.data?.detail || axiosError?.message || 'Failed to fetch stock data';
-    return { data: [], error: errorMsg };
-  }
-}
-
 interface SnapshotData {
   symbol: string;
   name?: string;
@@ -163,7 +72,7 @@ export async function fetchSnapshot(symbol: string, { signal }: { signal?: Abort
   if (!symbol || !symbol.trim()) throw new Error('Symbol is required');
   const symbolUpper = symbol.trim().toUpperCase();
   const isIndex = symbolUpper.startsWith('^');
-  const norm = normalizeSymbolKey(symbolUpper);
+  const norm = normalizeIndexKey(symbolUpper);
   const endpoint = isIndex
     ? `/api/v1/market-data/snapshots/indexes?symbols=${encodeURIComponent(norm)}`
     : `/api/v1/market-data/snapshots/stocks/${encodeURIComponent(symbolUpper)}`;
@@ -173,7 +82,7 @@ export async function fetchSnapshot(symbol: string, { signal }: { signal?: Abort
     // index batch returns { snapshots: [...], count } — extract first match
     if (isIndex) {
       const results: SnapshotData[] = data?.snapshots || data?.results || [];
-      if (Array.isArray(results)) return results.find((s: SnapshotData) => normalizeSymbolKey(s.symbol) === norm) || results[0] || null;
+      if (Array.isArray(results)) return results.find((s: SnapshotData) => normalizeIndexKey(s.symbol) === norm) || results[0] || null;
       return null;
     }
     return data || null;
@@ -220,14 +129,12 @@ interface StockQuoteResult {
 }
 
 /**
- * Consolidated stock quote — uses snapshot endpoint for accurate price/change data.
- * Returns { stockInfo, realTimePrice, snapshot } where snapshot is the raw snapshot data.
+ * Pure transform: raw snapshot row → { stockInfo, realTimePrice, snapshot }.
+ * A null/price-less snapshot yields the fallback shape (no realTimePrice). Kept
+ * side-effect-free so both `fetchStockQuote` and the quote-layer-driven
+ * `useStockData` derive an identical result from the same snapshot.
  */
-export async function fetchStockQuote(symbol: string, { signal }: { signal?: AbortSignal } = {}): Promise<StockQuoteResult> {
-  if (!symbol || !symbol.trim()) {
-    throw new Error('Symbol is required');
-  }
-
+export function mapSnapshotToStockQuote(symbol: string, snap: SnapshotData | null): StockQuoteResult {
   const symbolUpper = symbol.trim().toUpperCase();
   const isIndex = symbolUpper.startsWith('^');
   const fallbackInfo: StockInfo = {
@@ -246,56 +153,67 @@ export async function fetchStockQuote(symbol: string, { signal }: { signal?: Abo
     DividendYield: null,
   };
 
+  if (!snap || snap.price == null) {
+    return { stockInfo: fallbackInfo, realTimePrice: null, snapshot: null };
+  }
+
+  const price = snap.price;
+  const previousClose = snap.previous_close ?? 0;
+  const change = snap.change ?? (price - previousClose);
+  const changePct = snap.change_percent != null
+    ? parseFloat(snap.change_percent.toFixed(2))
+    : (previousClose ? parseFloat(((change / previousClose) * 100).toFixed(2)) : 0);
+
+  const stockInfo: StockInfo = {
+    Symbol: symbolUpper,
+    Name: snap.name || `${symbolUpper} Corp`,
+    Exchange: '',
+    Price: price,
+    Open: snap.open ?? 0,
+    High: snap.high ?? 0,
+    Low: snap.low ?? 0,
+    Volume: snap.volume ?? 0,
+    '52WeekHigh': null,
+    '52WeekLow': null,
+    AverageVolume: null,
+    SharesOutstanding: null,
+    MarketCapitalization: null,
+    DividendYield: null,
+  };
+
+  const realTimePrice: RealTimePrice = {
+    symbol: symbolUpper,
+    price: Math.round(price * 100) / 100,
+    open: Math.round((snap.open ?? 0) * 100) / 100,
+    high: Math.round((snap.high ?? 0) * 100) / 100,
+    low: Math.round((snap.low ?? 0) * 100) / 100,
+    change: Math.round(change * 100) / 100,
+    changePercent: changePct,
+    volume: snap.volume ?? 0,
+    previousClose: Math.round(previousClose * 100) / 100,
+  };
+
+  return { stockInfo, realTimePrice, snapshot: snap };
+}
+
+/**
+ * Consolidated stock quote — uses snapshot endpoint for accurate price/change data.
+ * Returns { stockInfo, realTimePrice, snapshot } where snapshot is the raw snapshot data.
+ */
+export async function fetchStockQuote(symbol: string, { signal }: { signal?: AbortSignal } = {}): Promise<StockQuoteResult> {
+  if (!symbol || !symbol.trim()) {
+    throw new Error('Symbol is required');
+  }
+
   try {
     const snap = await fetchSnapshot(symbol, { signal });
-
-    if (!snap || snap.price == null) {
-      return { stockInfo: fallbackInfo, realTimePrice: null, snapshot: null };
-    }
-
-    const price = snap.price;
-    const previousClose = snap.previous_close ?? 0;
-    const change = snap.change ?? (price - previousClose);
-    const changePct = snap.change_percent != null
-      ? parseFloat(snap.change_percent.toFixed(2))
-      : (previousClose ? parseFloat(((change / previousClose) * 100).toFixed(2)) : 0);
-
-    const stockInfo: StockInfo = {
-      Symbol: symbolUpper,
-      Name: snap.name || `${symbolUpper} Corp`,
-      Exchange: '',
-      Price: price,
-      Open: snap.open ?? 0,
-      High: snap.high ?? 0,
-      Low: snap.low ?? 0,
-      Volume: snap.volume ?? 0,
-      '52WeekHigh': null,
-      '52WeekLow': null,
-      AverageVolume: null,
-      SharesOutstanding: null,
-      MarketCapitalization: null,
-      DividendYield: null,
-    };
-
-    const realTimePrice: RealTimePrice = {
-      symbol: symbolUpper,
-      price: Math.round(price * 100) / 100,
-      open: Math.round((snap.open ?? 0) * 100) / 100,
-      high: Math.round((snap.high ?? 0) * 100) / 100,
-      low: Math.round((snap.low ?? 0) * 100) / 100,
-      change: Math.round(change * 100) / 100,
-      changePercent: changePct,
-      volume: snap.volume ?? 0,
-      previousClose: Math.round(previousClose * 100) / 100,
-    };
-
-    return { stockInfo, realTimePrice, snapshot: snap };
+    return mapSnapshotToStockQuote(symbol, snap);
   } catch (error: unknown) {
     if (error instanceof Error && (error.name === 'CanceledError' || error.name === 'AbortError')) {
       throw error;
     }
     console.error('Error fetching stock quote:', error);
-    return { stockInfo: fallbackInfo, realTimePrice: null, snapshot: null };
+    return mapSnapshotToStockQuote(symbol, null);
   }
 }
 

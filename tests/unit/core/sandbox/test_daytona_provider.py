@@ -216,6 +216,185 @@ class TestDaytonaProvider:
         assert isinstance(runtime, DaytonaRuntime)
         mock_daytona_client.create.assert_called_once()
 
+    @patch("ptc_agent.core.sandbox.providers.daytona.AsyncDaytona")
+    @pytest.mark.asyncio
+    async def test_create_raises_when_elevated_tier_snapshot_missing(
+        self, MockAsyncDaytona, mock_daytona_client
+    ):
+        """An elevated tier whose snapshot can't be built must fail loudly, not
+        silently create a base-sized (under-provisioned) sandbox for a billed tier."""
+        from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
+
+        provider = DaytonaProvider.__new__(DaytonaProvider)
+        provider._config = DaytonaConfig(api_key="test-key")  # default_tier=standard
+        provider._working_dir = "/home/workspace"
+        provider._client = mock_daytona_client
+
+        # performance resolves to real resources; snapshot build fails (None).
+        with patch.object(provider, "_ensure_snapshot", return_value=None):
+            with pytest.raises(RuntimeError, match="tier snapshot"):
+                await provider.create(tier="performance")
+
+        mock_daytona_client.create.assert_not_called()
+
+    def test_snapshot_hash_changes_on_resource_retune(self):
+        """C1: retuning a tier's cpu (same packages) must change the snapshot
+        hash so the stale-sized snapshot isn't silently reused."""
+        from daytona import Resources
+
+        from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
+
+        provider = DaytonaProvider.__new__(DaytonaProvider)
+        provider._working_dir = "/home/workspace"
+
+        baseline = provider._get_snapshot_hash(
+            ["pkg-a"], resources=Resources(cpu=1, memory=1, disk=3)
+        )
+        retuned_cpu = provider._get_snapshot_hash(
+            ["pkg-a"], resources=Resources(cpu=2, memory=1, disk=3)
+        )
+        # Same resources, same packages -> stable (deterministic cache key).
+        stable = provider._get_snapshot_hash(
+            ["pkg-a"], resources=Resources(cpu=1, memory=1, disk=3)
+        )
+        assert baseline == stable
+        assert baseline != retuned_cpu
+
+    def test_config_rejects_default_tier_missing_from_tiers(self):
+        """C4a: the default tier must be present in resource_tiers, else the
+        create path can't size base sandboxes — fail fast at config load."""
+        from ptc_agent.config.core import ResourceTier
+
+        with pytest.raises(ValueError, match="default_tier"):
+            DaytonaConfig(
+                default_tier="ghost",
+                resource_tiers={
+                    "standard": ResourceTier(cpu=1, memory=1, disk=3)
+                },
+            )
+
+    @pytest.mark.asyncio
+    async def test_ensure_snapshot_name_changes_on_resource_retune(self):
+        """C1 end-to-end: the built snapshot NAME differs across a resize, so a
+        retune yields a new snapshot instead of reusing the stale-sized one."""
+        from daytona import Resources
+
+        from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
+
+        provider = DaytonaProvider.__new__(DaytonaProvider)
+        provider._working_dir = "/home/workspace"
+        provider._config = DaytonaConfig(api_key="test-key")
+
+        client = AsyncMock()
+        client.snapshot.list = AsyncMock(return_value=MagicMock(items=[]))
+        client.snapshot.create = AsyncMock()
+        provider._client = client
+
+        name_small = await provider._ensure_snapshot(
+            ["pkg"], tier="performance",
+            resources=Resources(cpu=2, memory=4, disk=5),
+        )
+        name_big = await provider._ensure_snapshot(
+            ["pkg"], tier="performance",
+            resources=Resources(cpu=4, memory=8, disk=10),
+        )
+        assert name_small and name_big
+        assert name_small != name_big
+        assert name_small.startswith("ptc-base-performance-")
+
+    @patch("ptc_agent.core.sandbox.providers.daytona.AsyncDaytona")
+    @pytest.mark.asyncio
+    async def test_create_default_tier_resolves_configured_resources(
+        self, MockAsyncDaytona, mock_daytona_client
+    ):
+        """C2: the default tier's configured cpu/mem/disk are now applied
+        (resolved and baked into its snapshot) instead of being inert."""
+        from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
+
+        provider = DaytonaProvider.__new__(DaytonaProvider)
+        provider._config = DaytonaConfig(api_key="test-key")  # standard 1/1/3
+        provider._working_dir = "/home/workspace"
+        provider._client = mock_daytona_client
+
+        mock_ensure = AsyncMock(return_value="ptc-base-standard-deadbeef")
+        with patch.object(provider, "_ensure_snapshot", mock_ensure):
+            await provider.create()
+
+        kwargs = mock_ensure.call_args.kwargs
+        assert kwargs["tier"] == "standard"
+        assert kwargs["resources"].cpu == 1
+        assert kwargs["resources"].memory == 1
+        assert kwargs["resources"].disk == 3
+
+    @patch("ptc_agent.core.sandbox.providers.daytona.AsyncDaytona")
+    @pytest.mark.asyncio
+    async def test_create_default_tier_no_raise_when_snapshot_missing(
+        self, MockAsyncDaytona, mock_daytona_client
+    ):
+        """C2 guardrail: the default tier degrades to a base-sized sandbox when
+        its snapshot can't be built — base-size ~= default, so no hard failure."""
+        from ptc_agent.core.sandbox.providers.daytona import (
+            DaytonaProvider,
+            DaytonaRuntime,
+        )
+
+        provider = DaytonaProvider.__new__(DaytonaProvider)
+        provider._config = DaytonaConfig(api_key="test-key")
+        provider._working_dir = "/home/workspace"
+        provider._client = mock_daytona_client
+
+        with patch.object(provider, "_ensure_snapshot", return_value=None):
+            runtime = await provider.create(tier="standard")
+
+        assert isinstance(runtime, DaytonaRuntime)
+        mock_daytona_client.create.assert_called_once()
+
+    @patch("ptc_agent.core.sandbox.providers.daytona.AsyncDaytona")
+    @pytest.mark.asyncio
+    async def test_create_elevated_tier_no_raise_when_snapshots_disabled(
+        self, MockAsyncDaytona, mock_daytona_client
+    ):
+        """Guardrail: snapshots globally disabled never expected a sized snapshot,
+        so an elevated tier degrades to base-sized instead of raising."""
+        from ptc_agent.core.sandbox.providers.daytona import (
+            DaytonaProvider,
+            DaytonaRuntime,
+        )
+
+        provider = DaytonaProvider.__new__(DaytonaProvider)
+        provider._config = DaytonaConfig(api_key="test-key", snapshot_enabled=False)
+        provider._working_dir = "/home/workspace"
+        provider._client = mock_daytona_client
+
+        # _ensure_snapshot runs for real and returns None (disabled), no raise.
+        runtime = await provider.create(tier="performance")
+
+        assert isinstance(runtime, DaytonaRuntime)
+        mock_daytona_client.create.assert_called_once()
+
+    @patch("ptc_agent.core.sandbox.providers.daytona.AsyncDaytona")
+    @pytest.mark.asyncio
+    async def test_create_unknown_tier_falls_back_without_raising(
+        self, MockAsyncDaytona, mock_daytona_client
+    ):
+        """C4b: a tier removed from config must stay recoverable — warn + base
+        size, not raise (raising would lock the workspace out permanently)."""
+        from ptc_agent.core.sandbox.providers.daytona import (
+            DaytonaProvider,
+            DaytonaRuntime,
+        )
+
+        provider = DaytonaProvider.__new__(DaytonaProvider)
+        provider._config = DaytonaConfig(api_key="test-key")
+        provider._working_dir = "/home/workspace"
+        provider._client = mock_daytona_client
+
+        with patch.object(provider, "_ensure_snapshot", return_value=None):
+            runtime = await provider.create(tier="ghost-tier")
+
+        assert isinstance(runtime, DaytonaRuntime)
+        mock_daytona_client.create.assert_called_once()
+
     @pytest.mark.asyncio
     async def test_get_returns_runtime(self, mock_daytona_client):
         from ptc_agent.core.sandbox.providers.daytona import (

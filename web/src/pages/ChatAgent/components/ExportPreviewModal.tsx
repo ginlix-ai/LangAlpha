@@ -10,6 +10,7 @@ import { Select } from '@/components/ui/select';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import Markdown from './Markdown';
 import { stripLineNumbers } from './toolDisplayConfig';
+import { PRINT_PAGE_STYLE } from './printPageStyle';
 import './ExportPreviewModal.css';
 
 // ---------------------------------------------------------------------------
@@ -306,9 +307,15 @@ export default function ExportPreviewModal({
   // <style data-pagedjs-inserted-styles> with @page{margin:0} into the parent,
   // so those copied styles win by cascade order. Using !important ensures our
   // margins take precedence regardless of source order.
+  //
+  // color-scheme belongs here rather than in the stylesheet: pageStyle is
+  // inlined into the iframe, whereas this component's lazy chunk arrives as a
+  // <link> that the iframe re-fetches — and react-to-print prints anyway if
+  // that fetch fails, which would leave index.html's unscoped dark scheme in
+  // force. Scoping it here also keeps it off the app's own Ctrl+P output.
   const handlePrint = useReactToPrint({
     contentRef: printRef,
-    pageStyle: '@page { size: A4 !important; margin: 15mm !important; }',
+    pageStyle: PRINT_PAGE_STYLE,
   });
 
   // ---- CSS vars for source (used by react-to-print) ----

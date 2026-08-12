@@ -10,6 +10,7 @@ import structlog
 from langchain_core.tools import tool
 
 from ptc_agent.agent.backends import FilesystemBackend, ReadOnlyStoreError
+from ptc_agent.core.paths import MEMO_USER_DIR
 from src.server.services.user_data_io import UserDataValidationError
 
 logger = structlog.get_logger(__name__)
@@ -27,7 +28,29 @@ VISUAL_EXTENSIONS = IMAGE_EXTENSIONS | DOCUMENT_EXTENSIONS
 # tier; serve their extracted text through the regular read path instead of
 # the multimodal/document middleware (which is wired to the sandbox FS, not
 # the composite memo backend).
-_MEMO_TEXT_PREFIX = ".agents/user/memo/"
+_MEMO_TEXT_PREFIX = f"{MEMO_USER_DIR}/"
+
+
+def is_memo_text_path(file_path: str) -> bool:
+    """Whether this path lives in the store-backed memo tier, not the sandbox FS.
+
+    Both the Read tool and MultimodalMiddleware classify against this, and they
+    have to agree: if the middleware disagrees it intercepts a memo PDF, looks
+    for it on the sandbox FS, and replaces the extracted text the tool just
+    returned with a not-found error. Note this is a location test, not a content
+    test — it answers True for a memo *image* too, which the read path then
+    serves as text. That is a pre-existing gap in the memo tier (binaries have
+    no public URL either), not something the caller can distinguish here.
+    """
+    # Glob/Grep virtualize store-backed matches as ``/.agents/...`` and users
+    # may pass ``./.agents/...`` from a relative cwd. ``lstrip`` would strip
+    # every leading ``.`` and ``/`` indiscriminately (it's a charset, not a
+    # substring), so we match each literal prefix.
+    if file_path.startswith("./"):
+        file_path = file_path[2:]
+    elif file_path.startswith("/"):
+        file_path = file_path[1:]
+    return file_path.startswith(_MEMO_TEXT_PREFIX)
 
 # Type alias for operation callback
 OperationCallback = Callable[[dict[str, Any]], None]
@@ -84,17 +107,7 @@ def create_filesystem_tools(
             # in the store and the multimodal middleware would otherwise fail
             # to find the file on the sandbox FS.
             suffix = Path(file_path).suffix.lower()
-            # Glob/Grep virtualize store-backed matches as ``/.agents/...`` and
-            # users may pass ``./.agents/...`` from a relative cwd. ``lstrip``
-            # would strip every leading ``.`` and ``/`` indiscriminately (it's
-            # a charset, not a substring), so we match each literal prefix.
-            _stripped = file_path
-            if _stripped.startswith("./"):
-                _stripped = _stripped[2:]
-            elif _stripped.startswith("/"):
-                _stripped = _stripped[1:]
-            is_memo_path = _stripped.startswith(_MEMO_TEXT_PREFIX)
-            if suffix in VISUAL_EXTENSIONS and not is_memo_path:
+            if suffix in VISUAL_EXTENSIONS and not is_memo_text_path(file_path):
                 # Validate the path exists before returning acknowledgment
                 normalized_path = backend.normalize_path(file_path)
                 logger.info("Loading image file", file_path=file_path, normalized_path=normalized_path)

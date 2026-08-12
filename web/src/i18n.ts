@@ -2,29 +2,13 @@ import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import enUS from './locales/en-US.json';
 import zhCN from './locales/zh-CN.json';
+import { detectLocale } from './lib/locale';
 
-const SUPPORTED_LOCALES = ['en-US', 'zh-CN'] as const;
-
-function detectLocale(): string {
-  // 1. Explicit user choice persisted in localStorage
-  const stored = localStorage.getItem('locale');
-  if (stored && SUPPORTED_LOCALES.includes(stored as typeof SUPPORTED_LOCALES[number])) {
-    return stored;
-  }
-
-  // 2. Browser language — try exact match first, then prefix match
-  const browserLang = navigator.language; // e.g. "zh-CN", "zh-TW", "en-GB"
-  if (SUPPORTED_LOCALES.includes(browserLang as typeof SUPPORTED_LOCALES[number])) {
-    return browserLang;
-  }
-  const prefix = browserLang.split('-')[0]; // "zh", "en"
-  const prefixMatch = SUPPORTED_LOCALES.find((l) => l.startsWith(prefix + '-'));
-  if (prefixMatch) return prefixMatch;
-
-  // 3. Fallback
-  return 'en-US';
-}
-
+// Locale resolution (cookie → browser language → English) lives in ./lib/locale,
+// shared with the cookie helpers that components use. The cross-tab `storage`
+// listener was removed along with localStorage-based locale: locale now rides a
+// shared cookie (readable server-side, unlike localStorage); other tabs adopt a
+// change on their next navigation.
 i18n.use(initReactI18next).init({
   resources: {
     'en-US': { translation: enUS },
@@ -34,16 +18,5 @@ i18n.use(initReactI18next).init({
   fallbackLng: 'en-US',
   interpolation: { escapeValue: false },
 });
-
-// Cross-tab locale sync: `storage` events fire only in OTHER tabs (not the
-// writer), so this won't recurse.
-if (typeof window !== 'undefined') {
-  window.addEventListener('storage', (e) => {
-    if (e.key !== 'locale' || !e.newValue) return;
-    if (!SUPPORTED_LOCALES.includes(e.newValue as typeof SUPPORTED_LOCALES[number])) return;
-    if (i18n.language === e.newValue) return;
-    i18n.changeLanguage(e.newValue);
-  });
-}
 
 export default i18n;

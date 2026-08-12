@@ -1,6 +1,7 @@
 import { useEffect, type RefObject } from 'react';
 import type { ISeriesApi, Time } from 'lightweight-charts';
 import type { ChartDataPoint } from '@/types/market';
+import { getChartTheme } from '../utils/chartConstants';
 
 interface EarningsEntry {
   date?: string;
@@ -57,9 +58,26 @@ function snapToNearestBar(chartData: ChartDataPoint[], dateStr: string): number 
   return chartData[lo].time;
 }
 
+type OverlayMarker = {
+  time: Time;
+  position: 'aboveBar' | 'belowBar' | 'inBar';
+  shape: 'arrowUp' | 'arrowDown' | 'circle' | 'square';
+  color: string;
+  text?: string;
+};
+
+const VALID_MARKER_SHAPES: ReadonlySet<string> = new Set([
+  'arrowUp',
+  'arrowDown',
+  'circle',
+  'square',
+]);
+
 /**
  * Manages series markers on the candlestick series.
- * Combines earnings surprises and analyst grade changes into markers.
+ * Combines earnings surprises, analyst grade changes, and caller-supplied
+ * agent markers into a single ``setMarkers`` call (LWC replaces the full
+ * list each call, so all sources must merge here).
  */
 export function useChartOverlays(
   candlestickSeriesRef: RefObject<ISeriesApi<'Candlestick'> | null>,
@@ -67,7 +85,9 @@ export function useChartOverlays(
   earningsData: EarningsEntry[] | null,
   overlayData: OverlayData | null,
   overlayVisibility: OverlayVisibility | null,
-  symbol: string | null
+  symbol: string | null,
+  extraMarkers: OverlayMarker[] = [],
+  theme: 'dark' | 'light' = 'dark'
 ): void {
   useEffect(() => {
     const series = candlestickSeriesRef.current;
@@ -78,7 +98,10 @@ export function useChartOverlays(
       return;
     }
 
-    const markers: Array<{ time: Time; position: 'aboveBar' | 'belowBar'; shape: 'arrowUp' | 'arrowDown'; color: string; text: string }> = [];
+    const markers: OverlayMarker[] = [];
+    // Themed profit/loss pair — canvas markers can't read CSS variables, so
+    // they go through the resolved chart theme, never hex literals.
+    const { upColor, downColor } = getChartTheme(theme);
 
     // Earnings markers
     if (overlayVisibility?.earnings && earningsData && Array.isArray(earningsData)) {
@@ -96,7 +119,7 @@ export function useChartOverlays(
           time: time as Time,
           position: isBeat ? 'belowBar' : 'aboveBar',
           shape: isBeat ? 'arrowUp' : 'arrowDown',
-          color: isBeat ? '#10b981' : '#ef4444',
+          color: isBeat ? upColor : downColor,
           text: 'E',
         });
       });
@@ -115,17 +138,29 @@ export function useChartOverlays(
           time: time as Time,
           position: isUpgrade ? 'belowBar' : 'aboveBar',
           shape: isUpgrade ? 'arrowUp' : 'arrowDown',
-          color: isUpgrade ? '#22d3ee' : '#f87171',
+          color: isUpgrade ? upColor : downColor,
           text: isUpgrade ? '\u2191' : '\u2193',
         });
       });
     }
 
+    // Merge caller-supplied agent markers
+    if (extraMarkers && extraMarkers.length > 0) {
+      markers.push(...extraMarkers);
+    }
+
+    // Drop any marker without a valid shape/time. setMarkers replaces the whole
+    // list and throws on a malformed entry, so one bad agent marker would
+    // otherwise blank every marker here — earnings and grades included.
+    const safeMarkers = markers.filter(
+      (m) => VALID_MARKER_SHAPES.has(m.shape) && Number.isFinite(m.time as number),
+    );
+
     // Sort markers by time (required by lightweight-charts)
-    markers.sort((a, b) => (a.time as number) - (b.time as number));
+    safeMarkers.sort((a, b) => (a.time as number) - (b.time as number));
 
     try {
-      series.setMarkers(markers);
+      series.setMarkers(safeMarkers);
     } catch (_) {
       /* series may be disposed */
     }
@@ -135,5 +170,5 @@ export function useChartOverlays(
         try { series.setMarkers([]); } catch (_) { /* already cleaned */ }
       }
     };
-  }, [candlestickSeriesRef, chartData, earningsData, overlayData, overlayVisibility, symbol]);
+  }, [candlestickSeriesRef, chartData, earningsData, overlayData, overlayVisibility, symbol, extraMarkers, theme]);
 }

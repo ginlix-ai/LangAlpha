@@ -40,7 +40,7 @@ export function TokenUsageRing({ tokenUsage }: TokenUsageRingProps) {
   const dashOffset = CIRCUMFERENCE * (1 - pct);
 
   const tooltipContent = (
-    <div style={{ fontSize: 12, lineHeight: 1.7 }}>
+    <div style={{ fontSize: '0.75rem', lineHeight: 1.7 }}>
       <div style={{ marginBottom: 2 }}><strong>Context window</strong></div>
       <div>Total input&ensp;<span style={{ opacity: 0.7 }}>{fmt(totalInput)}</span></div>
       <div>Total output&ensp;<span style={{ opacity: 0.7 }}>{fmt(totalOutput)}</span></div>

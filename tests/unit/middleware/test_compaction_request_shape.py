@@ -9,6 +9,7 @@ prompt MUST be framed as a ``SystemMessage`` rather than a bare user string.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,6 +20,18 @@ from ptc_agent.agent.middleware.compaction.middleware import (
     _build_summary_request,
 )
 from src.llms import maybe_disable_streaming
+
+
+@pytest.fixture(autouse=True)
+def _offline_token_counter(monkeypatch):
+    """cl100k_base fetches its BPE file on first use; the unit suite blocks
+    sockets, so a cold cache (CI runners) turns counting into a network
+    error. These tests assert request shape, not token math — stub the
+    encoder loader at its definition site so every caller stays offline."""
+    from ptc_agent.agent.middleware.compaction import utils as compaction_utils
+
+    fake = SimpleNamespace(encode=lambda text: [0] * (len(text) // 4 + 1))
+    monkeypatch.setattr(compaction_utils, "_get_tiktoken_encoder", lambda: fake)
 
 
 class TestBuildSummaryRequest:
@@ -146,6 +159,73 @@ async def test_compact_messages_calls_llm_with_system_message(monkeypatch):
     assert isinstance(sent[-1], HumanMessage)
 
 
+@pytest.mark.asyncio
+async def test_chained_compaction_anchors_and_reconstructs_safely(monkeypatch):
+    """Chained compact_messages must stamp an ``anchor_message_id`` on the new
+    event, ground ``cutoff_index`` at that anchor in the raw list, and never
+    reconstruct a summary immediately followed by an orphaned tool_result."""
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    from ptc_agent.agent.middleware.compaction import compact as compact_module
+    from ptc_agent.agent.middleware.compaction.utils import get_effective_messages
+
+    fake_llm = MagicMock()
+    fake_llm.ainvoke = AsyncMock(
+        return_value=MagicMock(content="summary", additional_kwargs={})
+    )
+    monkeypatch.setattr(compact_module, "get_llm_by_type", lambda model_name: fake_llm)
+
+    async def _passthrough_offload(backend, messages):
+        return messages
+
+    monkeypatch.setattr(compact_module, "aoffload_base64_content", _passthrough_offload)
+
+    async def _noop_offload_to_backend(backend, messages):
+        return None
+
+    monkeypatch.setattr(compact_module, "aoffload_to_backend", _noop_offload_to_backend)
+
+    async def _noop_offload_args(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(compact_module, "aoffload_truncated_args", _noop_offload_args)
+
+    def _turn(i):
+        # Human -> AI -> Tool, so the safe cutoff often lands on a ToolMessage.
+        return [
+            HumanMessage(content=f"q{i}", id=f"h{i}"),
+            AIMessage(content=f"a{i}", id=f"a{i}"),
+            ToolMessage(content="r", id=f"t{i}", tool_call_id=f"tc{i}"),
+        ]
+
+    messages = [m for i in range(6) for m in _turn(i)]
+
+    first = await compact_module.compact_messages(
+        messages=messages, keep_messages=4, model_name="gpt-4o", backend=None
+    )
+    event1 = first["event"]
+    assert event1.get("anchor_message_id") is not None
+    eff1 = get_effective_messages(messages, event1)
+    assert not isinstance(eff1[1], ToolMessage)
+
+    # Chain: append a fresh turn and compact again from the prior event.
+    messages2 = messages + _turn(99)
+    second = await compact_module.compact_messages(
+        messages=messages2,
+        keep_messages=4,
+        model_name="gpt-4o",
+        backend=None,
+        previous_event=event1,
+    )
+    event2 = second["event"]
+    anchor = event2.get("anchor_message_id")
+    assert anchor is not None
+    # cutoff_index is grounded at the anchor message in the raw list.
+    assert messages2[event2["cutoff_index"]].id == anchor
+    eff2 = get_effective_messages(messages2, event2)
+    assert not isinstance(eff2[1], ToolMessage)
+
+
 class TestCompactMessagesErrorPath:
     """Manual /compact must fail loudly, not fabricate fake summary text. A
     silent fallback here corrupted thread state with a bogus "compacted"
@@ -209,6 +289,57 @@ class TestCompactMessagesErrorPath:
         ]
 
         with pytest.raises(RuntimeError, match="empty summary"):
+            await compact_module.compact_messages(
+                messages=messages,
+                keep_messages=1,
+                model_name="gpt-4o",
+                backend=None,
+            )
+
+
+class TestCompactMessagesTimeout:
+    """The compaction LLM call carries its own wall-clock budget so a hung
+    summarize fails naturally (raising -> HTTP 500, releasing the admission
+    guard) instead of blocking the thread forever. The timeout lives on the
+    call, not on a flat admission-side 409 clock."""
+
+    def _patch_offload_stubs(self, monkeypatch, compact_module):
+        async def _passthrough(backend, messages):
+            return messages
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(compact_module, "aoffload_base64_content", _passthrough)
+        monkeypatch.setattr(compact_module, "aoffload_to_backend", _noop)
+        monkeypatch.setattr(compact_module, "aoffload_truncated_args", _noop)
+
+    @pytest.mark.asyncio
+    async def test_raises_timeout_when_llm_call_exceeds_budget(self, monkeypatch):
+        import asyncio
+
+        from ptc_agent.agent.middleware.compaction import compact as compact_module
+
+        async def _hang(*args, **kwargs):
+            await asyncio.sleep(10)
+
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = _hang
+
+        monkeypatch.setattr(
+            compact_module, "get_llm_by_type", lambda model_name: fake_llm
+        )
+        # Tiny budget so the hung call trips the wait_for almost immediately.
+        monkeypatch.setattr(compact_module, "get_compaction_timeout", lambda: 0.01)
+        self._patch_offload_stubs(monkeypatch, compact_module)
+
+        messages = [
+            HumanMessage(content="a", id="1"),
+            HumanMessage(content="b", id="2"),
+            HumanMessage(content="c", id="3"),
+        ]
+
+        with pytest.raises((asyncio.TimeoutError, TimeoutError)):
             await compact_module.compact_messages(
                 messages=messages,
                 keep_messages=1,
@@ -302,6 +433,44 @@ class TestAcreateSummaryWindowClose:
         )
 
         assert "upstream down" in result
+        assert ("summarize", "start") in calls
+        assert ("summarize", "error") in calls
+
+    @pytest.mark.asyncio
+    async def test_timeout_emits_error_and_returns_fallback(self, monkeypatch):
+        """A hung auto summarize must self-terminate on the compaction budget,
+        then close the window (error signal) and return a fallback string —
+        same shape as any other LLM failure, so the guard is released."""
+        import asyncio
+
+        mw = self._make_middleware()
+
+        async def _hang(*args, **kwargs):
+            await asyncio.sleep(10)
+
+        mw.model.ainvoke = _hang
+
+        calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            mw,
+            "_emit_context_signal",
+            lambda a, s, **k: calls.append((a, s)),
+        )
+
+        from ptc_agent.agent.middleware.compaction import middleware as mw_mod
+
+        async def _passthrough(backend, messages):
+            return messages
+
+        monkeypatch.setattr(mw_mod, "aoffload_base64_content", _passthrough)
+        # Tiny budget so the hung call trips the wait_for almost immediately.
+        monkeypatch.setattr(mw_mod, "get_compaction_timeout", lambda: 0.01)
+
+        result = await mw._acreate_summary(
+            [HumanMessage(content="hi", id="h")], original_count=1
+        )
+
+        assert result.startswith("Error generating summary")
         assert ("summarize", "start") in calls
         assert ("summarize", "error") in calls
 

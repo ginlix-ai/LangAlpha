@@ -8,11 +8,14 @@ This module defines pure data classes for core configuration:
 - Logging settings
 """
 
+import logging
 import re
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+logger = logging.getLogger(__name__)
 
 # Default security lists — used by SecurityConfig defaults and create_default_security_config()
 DEFAULT_ALLOWED_IMPORTS = [
@@ -24,6 +27,27 @@ DEFAULT_ALLOWED_IMPORTS = [
 DEFAULT_BLOCKED_PATTERNS: list[str] = []
 
 
+# Organization resource ceiling — every tier is clamped to these maxima.
+# cpu in vCPU cores, memory in GiB, disk in GiB.
+RESOURCE_TIER_CEILING = {"cpu": 4, "memory": 8, "disk": 10}
+
+
+class ResourceTier(BaseModel):
+    """A named sandbox resource preset (vCPU cores, memory GiB, disk GiB)."""
+
+    cpu: int = Field(ge=1)
+    memory: int = Field(ge=1)
+    disk: int = Field(ge=1)
+
+
+def _default_resource_tiers() -> dict[str, ResourceTier]:
+    return {
+        "standard": ResourceTier(cpu=1, memory=1, disk=3),
+        "performance": ResourceTier(cpu=2, memory=4, disk=5),
+        "max": ResourceTier(cpu=4, memory=8, disk=10),
+    }
+
+
 class DaytonaConfig(BaseModel):
     """Daytona sandbox configuration.
 
@@ -33,6 +57,7 @@ class DaytonaConfig(BaseModel):
 
     api_key: str = ""  # Set via DAYTONA_API_KEY env var, validated later
     base_url: str = "https://app.daytona.io/api"
+    secret_namespace: str = ""  # Set via DAYTONA_SECRET_NAMESPACE
     auto_stop_interval: int = 3600  # 1 hour
     auto_archive_interval: int = 604800  # 7 days — keep stopped (fast restart) before cold storage
     auto_delete_interval: int = 7776000  # 90 days — total dormant lifetime
@@ -42,6 +67,40 @@ class DaytonaConfig(BaseModel):
     snapshot_enabled: bool = True
     snapshot_name: str | None = None
     snapshot_auto_create: bool = True
+
+    # Resource tier presets (operator-tunable in agent_config.yaml).
+    default_tier: str = "standard"
+    resource_tiers: dict[str, ResourceTier] = Field(
+        default_factory=_default_resource_tiers, validate_default=True
+    )
+
+    @field_validator("resource_tiers")
+    @classmethod
+    def _clamp_tiers_to_ceiling(
+        cls, v: dict[str, ResourceTier]
+    ) -> dict[str, ResourceTier]:
+        """Clamp every tier to the org ceiling (clamp, never reject)."""
+        for name, tier in v.items():
+            for resource, ceiling in RESOURCE_TIER_CEILING.items():
+                value = getattr(tier, resource)
+                if value > ceiling:
+                    logger.warning(
+                        "resource_tiers[%r].%s=%s exceeds the org ceiling %s; clamping",
+                        name, resource, value, ceiling,
+                    )
+                    setattr(tier, resource, ceiling)
+        return v
+
+    @model_validator(mode="after")
+    def _default_tier_must_exist(self) -> "DaytonaConfig":
+        """The default tier must resolve to a real preset — the create path
+        relies on it to size base sandboxes, so a missing default is a config bug."""
+        if self.default_tier not in self.resource_tiers:
+            raise ValueError(
+                f"default_tier {self.default_tier!r} is not defined in "
+                f"resource_tiers (available: {sorted(self.resource_tiers)})"
+            )
+        return self
 
 
 class SecurityConfig(BaseModel):
@@ -122,8 +181,13 @@ class MCPServerConfig(BaseModel):
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
     url: str | None = None  # For SSE/HTTP transports
+    headers: dict[str, str] = Field(default_factory=dict)  # For SSE/HTTP transports
     tool_exposure_mode: Literal["summary", "detailed"] | None = None  # Per-server override
     vault_blueprints: list[VaultBlueprint] = Field(default_factory=list)
+    # 'builtin' = from agent_config.yaml; 'workspace' = user-configured per-workspace.
+    # Workspace servers are untrusted: vault-only secret resolution, neutral prompt framing.
+    source: Literal["builtin", "workspace"] = "builtin"
+    discovery_uses_secrets: bool = False  # workspace servers: resolve vault secrets during discovery (default off = secret-less probe)
 
 
 class MCPConfig(BaseModel):
@@ -227,12 +291,73 @@ class DockerConfig(BaseModel):
     preview_base_url: str | None = None
 
 
+class PlatformSecretDefinition(BaseModel):
+    """One backend-owned platform credential, declared in agent_config.yaml.
+
+    The set of entries is the deployment's platform-secret catalog: convergence,
+    certification, and the fleet generation all operate on every entry at once,
+    and any set change registers as an identity change that re-pends the fleet.
+    Declared in deployment config (not code) so the OSS repo reveals the
+    mechanism without the hosted vendor list.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    source_env_var: str
+    sandbox_env_var: str
+    name_suffix: str
+    description: str
+    hosts: tuple[str, ...]
+
+    @field_validator("source_env_var", "sandbox_env_var")
+    @classmethod
+    def _validate_env_var(cls, v: str) -> str:
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", v):
+            raise ValueError(f"invalid environment variable name: {v!r}")
+        return v
+
+    @field_validator("name_suffix")
+    @classmethod
+    def _validate_name_suffix(cls, v: str) -> str:
+        # Length-bounded so the derived Secret name (namespace + '-' + suffix)
+        # stays under the provider/DB limit enforced in resolve_platform_secrets.
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,62}", v):
+            raise ValueError(f"invalid Secret name suffix: {v!r}")
+        return v
+
+    @field_validator("hosts")
+    @classmethod
+    def _validate_hosts(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        if not v:
+            raise ValueError("hosts must name at least one egress target")
+        for host in v:
+            if not re.fullmatch(r"[a-z0-9]([a-z0-9.-]*[a-z0-9])?", host):
+                raise ValueError(f"invalid egress host: {host!r}")
+        return v
+
+
 class SandboxConfig(BaseModel):
     """Provider-agnostic sandbox configuration wrapper."""
 
     provider: Literal["daytona", "docker", "memory"] = "daytona"
     daytona: DaytonaConfig = Field(default_factory=DaytonaConfig)
     docker: DockerConfig = Field(default_factory=DockerConfig)
+    platform_secrets: tuple[PlatformSecretDefinition, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_unique_platform_secrets(self) -> "SandboxConfig":
+        # Both keys must be unique across the catalog: a duplicate
+        # sandbox_env_var collapses the binding map (and collides the rollout
+        # row keyed on it), and a duplicate name_suffix resolves two entries to
+        # one provider Secret — either silently mounts the wrong credential.
+        for field in ("sandbox_env_var", "name_suffix"):
+            values = [getattr(d, field) for d in self.platform_secrets]
+            duplicates = sorted({v for v in values if values.count(v) > 1})
+            if duplicates:
+                raise ValueError(
+                    f"duplicate {field} in platform_secrets: {duplicates}"
+                )
+        return self
 
 
 class CoreConfig(BaseModel):

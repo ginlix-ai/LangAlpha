@@ -1,27 +1,28 @@
 """Standalone functions for manual compaction and offloading triggers."""
 
+import asyncio
 import logging
-import uuid
 from typing import Any, cast
 
-from langchain_core.messages import AnyMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import AnyMessage, ToolMessage
 from langchain_core.messages.utils import trim_messages
-from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from langchain.chat_models import BaseChatModel
 
+from src.config.settings import get_compaction_timeout
 from src.llms.content_utils import format_llm_content
 from ptc_agent.config.agent import CompactionConfig
 from src.llms import get_llm_by_type
 
+from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.middleware.compaction.types import (
     CompactionEvent,
     _DEFAULT_FALLBACK_MESSAGE_COUNT,
 )
 from ptc_agent.agent.middleware.compaction.utils import (
     DEFAULT_SUMMARY_PROMPT,
+    build_compaction_event,
     build_summary_message,
-    compute_absolute_cutoff,
     count_tokens_tiktoken,
     get_effective_messages,
     truncate_message_args,
@@ -91,9 +92,7 @@ async def compact_messages(
         raise ValueError("No messages to compact")
 
     # Ensure all messages have IDs
-    for msg in messages:
-        if msg.id is None:
-            msg.id = str(uuid.uuid4())
+    ensure_message_ids(messages)
 
     # Reconstruct effective messages from previous event
     effective = get_effective_messages(messages, previous_event)
@@ -197,9 +196,17 @@ async def compact_messages(
     # and fabricating a fake summary would corrupt state (a "compacted" cutoff
     # with garbage summary text) while reporting HTTP 200 to the client.
     # trigger_compaction's outer except converts the raise into HTTP 500.
+    #
+    # The call carries its own wall-clock budget: a hung summarize raises
+    # TimeoutError here (rather than blocking the thread forever), which the
+    # except below re-raises -> HTTP 500. The timeout lives on the call, not on
+    # a flat admission-side 409 clock.
     try:
-        response = await compaction_model.ainvoke(
-            _build_summary_request(DEFAULT_SUMMARY_PROMPT, messages_to_summarize)
+        response = await asyncio.wait_for(
+            compaction_model.ainvoke(
+                _build_summary_request(DEFAULT_SUMMARY_PROMPT, messages_to_summarize)
+            ),
+            timeout=get_compaction_timeout(),
         )
     except Exception as e:
         logger.error(f"[Compaction] manual compact LLM call failed: {e}")
@@ -214,17 +221,22 @@ async def compact_messages(
         raise RuntimeError("Compaction LLM returned empty summary")
 
     # Build summary message using shared utility
-    summary_message = build_summary_message(summary_text, file_path)
+    summary_message = build_summary_message(
+        summary_text, file_path, original_message_count=len(effective)
+    )
 
-    # Compute absolute cutoff for chaining
-    absolute_cutoff = compute_absolute_cutoff(cutoff_index, previous_event)
+    # Build the event with an id anchor (cutoff grounded in the raw list)
+    event = build_compaction_event(
+        raw_messages=messages,
+        preserved_messages=preserved,
+        summary_message=summary_message,
+        file_path=file_path,
+        effective_cutoff=cutoff_index,
+        previous_event=previous_event,
+    )
 
     return {
-        "event": CompactionEvent(
-            cutoff_index=absolute_cutoff,
-            summary_message=summary_message,
-            file_path=file_path,
-        ),
+        "event": event,
         "summary_text": summary_text,
         "original_count": len(effective),
         "preserved_count": len(preserved) + 1,  # +1 for summary message
@@ -259,7 +271,8 @@ async def offload_tool_args(
 
     Returns:
         Dict with:
-        - "messages": The full message list with offloaded content (for aupdate_state)
+        - "messages": Only the changed messages, keyed by their existing ids, for
+          an in-place ``aupdate_state`` overwrite (NOT a REMOVE_ALL full rewrite)
         - "offloaded_args": Number of tool call args offloaded (Write/Edit/ExecuteCode)
         - "offloaded_reads": Number of Read results offloaded (duplicates + non-critical)
         - "original_count": Total message count (unchanged)
@@ -271,10 +284,13 @@ async def offload_tool_args(
     if not messages:
         raise ValueError("No messages to offload")
 
-    # Ensure all messages have IDs
-    for msg in messages:
-        if msg.id is None:
-            msg.id = str(uuid.uuid4())
+    # Ensure all messages have IDs, then snapshot the list so we can detect which
+    # messages truncation actually changed. The truncate_* helpers preserve order
+    # and length, returning the SAME object for unchanged messages and a
+    # model_copy (same id) for changed ones, so an identity diff isolates the
+    # changes.
+    ensure_message_ids(messages)
+    original_messages = list(messages)
 
     config = (compaction_config or CompactionConfig()).model_dump()
 
@@ -322,8 +338,21 @@ async def offload_tool_args(
     if originals and backend is not None:
         await aoffload_truncated_args(backend, originals)
 
+    # Return ONLY the messages truncation actually changed, keyed by their
+    # existing ids, so the DeltaChannel reducer overwrites them in place. A
+    # blanket REMOVE_ALL + full-list rewrite would, if it ran concurrently with a
+    # live turn (e.g. an offload during a Redis outage that bypassed the admission
+    # gate), rebuild from a stale snapshot and silently wipe messages appended in
+    # between. In-place id-keyed writes leave concurrently-appended messages
+    # untouched.
+    changed = [
+        msg
+        for original, msg in zip(original_messages, messages)
+        if msg is not original
+    ]
+
     return {
-        "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages],
+        "messages": changed,
         "offloaded_args": len(originals),
         "offloaded_reads": len(read_ids),
         "original_count": len(messages),

@@ -12,6 +12,9 @@ export interface ConfiguredProvider {
    * itself. Carried through so model filters can treat the brand as
    * configured when any of its variants are (e.g. z-ai-coding → z-ai). */
   brand_key?: string;
+  /** Connected subscription plan for OAuth providers (e.g. "pro", "team").
+   * Consulted by the ``oauth_plans`` per-model gate; null/absent = unknown. */
+  plan_type?: string | null;
 }
 
 /**
@@ -67,6 +70,7 @@ export function useConfiguredProviders() {
         provider: 'codex-oauth',
         display_name: 'ChatGPT Codex',
         access_type: 'oauth',
+        plan_type: codexStatus.plan_type ?? null,
       });
     }
     if (claudeStatus?.connected) {
@@ -74,6 +78,7 @@ export function useConfiguredProviders() {
         provider: 'claude-oauth',
         display_name: 'Claude (OAuth)',
         access_type: 'oauth',
+        plan_type: claudeStatus.plan_type ?? null,
       });
     }
 

@@ -18,10 +18,33 @@ type WatchlistData = ReturnType<typeof useWatchlistData>;
 type PortfolioData = ReturnType<typeof usePortfolioData>;
 type TickerNews = ReturnType<typeof useTickerNews>;
 
+interface NewsModalSentiment {
+  ticker: string;
+  sentiment: string;
+  reasoning?: string;
+}
+
+/** The clicked news row's full body — the list now inlines description/keywords/
+ *  sentiments, so the detail modal renders straight from this with no by-id
+ *  round-trip (and still survives one for any future richer-body provider). */
+export interface NewsModalFallback {
+  title?: string;
+  source?: string;
+  publishedAt?: string | null;
+  tickers?: string[];
+  articleUrl?: string | null;
+  author?: string | null;
+  description?: string | null;
+  keywords?: string[];
+  sentiments?: NewsModalSentiment[] | null;
+  imageUrl?: string | null;
+  favicon?: string | null;
+}
+
 interface ModalActions {
   selectedNewsId: string | null;
-  selectedNewsFallbackUrl: string | null;
-  openNews: (id: string | number, fallbackUrl?: string | null) => void;
+  selectedNewsFallback: NewsModalFallback | null;
+  openNews: (id: string | number, fallback?: NewsModalFallback) => void;
   closeNews: () => void;
   selectedMarketInsightId: string | null;
   openInsight: (id: string) => void;
@@ -56,11 +79,11 @@ export function DashboardDataProvider({ children }: { children: ReactNode }) {
   const dashboard = useDashboardData();
   const watchlist = useWatchlistData();
   const portfolio = usePortfolioData();
-  const portfolioNews = useTickerNews(portfolio.rows, 'portfolio');
-  const watchlistNews = useTickerNews(watchlist.rows, 'watchlist');
+  const portfolioNews = useTickerNews(portfolio.rows, 'portfolio', 'tickertick');
+  const watchlistNews = useTickerNews(watchlist.rows, 'watchlist', 'tickertick');
 
   const [selectedNewsId, setSelectedNewsId] = useState<string | null>(null);
-  const [selectedNewsFallbackUrl, setSelectedNewsFallbackUrl] = useState<string | null>(null);
+  const [selectedNewsFallback, setSelectedNewsFallback] = useState<NewsModalFallback | null>(null);
   const [selectedMarketInsightId, setSelectedMarketInsightId] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirmState>({
     open: false,
@@ -69,13 +92,13 @@ export function DashboardDataProvider({ children }: { children: ReactNode }) {
     onConfirm: null,
   });
 
-  const openNews = useCallback((id: string | number, fallbackUrl?: string | null) => {
+  const openNews = useCallback((id: string | number, fallback?: NewsModalFallback) => {
     setSelectedNewsId(String(id));
-    setSelectedNewsFallbackUrl(fallbackUrl ?? null);
+    setSelectedNewsFallback(fallback ?? null);
   }, []);
   const closeNews = useCallback(() => {
     setSelectedNewsId(null);
-    setSelectedNewsFallbackUrl(null);
+    setSelectedNewsFallback(null);
   }, []);
 
   const requestDeleteConfirm = useCallback((state: Omit<DeleteConfirmState, 'open'>) => {
@@ -115,7 +138,7 @@ export function DashboardDataProvider({ children }: { children: ReactNode }) {
   const modals = useMemo<ModalActions>(
     () => ({
       selectedNewsId,
-      selectedNewsFallbackUrl,
+      selectedNewsFallback,
       openNews,
       closeNews,
       selectedMarketInsightId,
@@ -128,7 +151,7 @@ export function DashboardDataProvider({ children }: { children: ReactNode }) {
     }),
     [
       selectedNewsId,
-      selectedNewsFallbackUrl,
+      selectedNewsFallback,
       openNews,
       closeNews,
       selectedMarketInsightId,

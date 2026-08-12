@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useStableArray } from '@/hooks/useStableArray';
 import './ChatMinimap.css';
 
 type MessageRecord = Record<string, unknown>;
@@ -6,6 +7,13 @@ type MessageRecord = Record<string, unknown>;
 interface UserEntry {
   id: string;
   preview: string;
+}
+
+function userEntriesEqual(prev: UserEntry[], next: UserEntry[]): boolean {
+  return (
+    next.length === prev.length &&
+    next.every((e, i) => e.id === prev[i].id && e.preview === prev[i].preview)
+  );
 }
 
 interface ChatMinimapProps {
@@ -29,16 +37,25 @@ export default function ChatMinimap({ messages, scrollAreaRef }: ChatMinimapProp
   const [visibleMessageId, setVisibleMessageId] = useState<string | null>(null);
   const entriesRef = useRef<HTMLDivElement>(null);
 
-  // Extract user messages with preview text
-  const userEntries: UserEntry[] = useMemo(() => {
-    return (messages ?? [])
-      .filter((m) => (m.role as string) === 'user')
-      .map((m) => {
-        const content = (m.content as string) || '';
-        const preview = content.length > 60 ? content.slice(0, 60) + '...' : content;
-        return { id: m.id as string, preview };
-      });
-  }, [messages]);
+  // Extract user messages with preview text. `messages` takes a fresh array
+  // identity on every streamed chunk, but user entries only change when a
+  // message is sent/edited — keep the previous array identity when the
+  // content is unchanged, so the observer/listener effects below don't tear
+  // down and rebuild on every chunk.
+  const userEntries: UserEntry[] = useStableArray(
+    useMemo(
+      () =>
+        (messages ?? [])
+          .filter((m) => (m.role as string) === 'user')
+          .map((m) => {
+            const content = (m.content as string) || '';
+            const preview = content.length > 60 ? content.slice(0, 60) + '...' : content;
+            return { id: m.id as string, preview };
+          }),
+      [messages],
+    ),
+    userEntriesEqual,
+  );
 
   // IntersectionObserver to track which user message is visible
   useEffect(() => {
@@ -189,7 +206,7 @@ export default function ChatMinimap({ messages, scrollAreaRef }: ChatMinimapProp
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap',
-                    fontSize: 12,
+                    fontSize: '0.75rem',
                     lineHeight: '18px',
                     color: isActive
                       ? 'var(--color-text-primary)'
@@ -254,7 +271,7 @@ export default function ChatMinimap({ messages, scrollAreaRef }: ChatMinimapProp
               style={{
                 flex: 1,
                 minWidth: 0,
-                fontSize: 12,
+                fontSize: '0.75rem',
                 lineHeight: '18px',
                 color: isAtBottom
                   ? 'var(--color-text-primary)'

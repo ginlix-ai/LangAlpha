@@ -8,7 +8,7 @@ having a dedicated Daytona sandbox (1:1 mapping).
 import uuid
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -70,6 +70,39 @@ class WorkspaceUpdate(BaseModel):
     )
 
 
+class WorkspaceSpecRequest(BaseModel):
+    """Request model for changing a workspace's sandbox spec tier."""
+
+    tier: Literal["standard", "performance", "max"] = Field(
+        description="Target sandbox spec preset",
+    )
+
+
+class WorkspaceAlwaysOnRequest(BaseModel):
+    """Request model for toggling a workspace's always-on flag."""
+
+    enabled: bool = Field(description="Whether to keep the sandbox always-on")
+
+
+class WorkspaceCapacity(BaseModel):
+    """Count-quota status for one elevated capability (platform mode only)."""
+
+    used: int = Field(description="How many of this capability the user occupies")
+    limit: int = Field(description="Plan ceiling for this capability; -1 = unlimited")
+
+
+class WorkspaceQuotaResponse(BaseModel):
+    """Per-capability count quotas for the change-spec / always-on UI.
+
+    Each field is null when the quota does not apply — OSS mode, the platform is
+    unreachable, or it reports no count for that capability.
+    """
+
+    performance: Optional[WorkspaceCapacity] = None
+    max: Optional[WorkspaceCapacity] = None
+    always_on: Optional[WorkspaceCapacity] = None
+
+
 class WorkspaceResponse(BaseModel):
     """Response model for workspace details."""
 
@@ -103,6 +136,14 @@ class WorkspaceResponse(BaseModel):
     )
     is_pinned: bool = Field(False, description="Whether workspace is pinned to top")
     sort_order: int = Field(0, description="Manual sort order within pin group")
+    resource_tier: str = Field(
+        "standard",
+        description="Sandbox spec preset: standard, performance, max",
+    )
+    is_always_on: bool = Field(
+        False,
+        description="Whether auto-stop is disabled (always-on sandbox)",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

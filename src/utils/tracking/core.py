@@ -543,7 +543,7 @@ class ExecutionAnalyzer:
         """Determine task status based on metrics, output quality, and task type."""
         import re
 
-        # TaskStatus value constants (using strings directly to avoid circular import)
+        # LocalRunStatus value constants (using strings directly to avoid circular import)
         SUCCESS = "success"
         FAILURE = "failure"
         PARTIAL_SUCCESS = "partial_success"

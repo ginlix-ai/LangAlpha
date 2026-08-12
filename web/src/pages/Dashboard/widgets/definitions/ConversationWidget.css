@@ -6,13 +6,7 @@
   border-radius: 24px;
   overflow: hidden;
   border: 1px solid var(--color-border-muted);
-  background:
-    linear-gradient(
-      135deg,
-      var(--color-bg-card) 0%,
-      var(--color-bg-card) 45%,
-      color-mix(in srgb, var(--color-accent-primary) 8%, var(--color-bg-card)) 100%
-    );
+  background: var(--color-bg-card);
   box-shadow:
     0 1px 0 0 rgba(255, 255, 255, 0.05) inset,
     0 2px 4px rgba(0, 0, 0, 0.04),
@@ -27,24 +21,6 @@
   color: var(--color-accent-primary);
   opacity: 0.10;
   transform: rotate(-8deg);
-  pointer-events: none;
-  z-index: 0;
-}
-
-.conversation-widget__wash {
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(
-      ellipse 70% 50% at 95% -5%,
-      color-mix(in srgb, var(--color-accent-primary) 24%, transparent) 0%,
-      transparent 60%
-    ),
-    radial-gradient(
-      ellipse 60% 40% at 5% 110%,
-      color-mix(in srgb, var(--color-accent-primary) 12%, transparent) 0%,
-      transparent 55%
-    );
   pointer-events: none;
   z-index: 0;
 }
@@ -99,7 +75,7 @@
 
 .conversation-widget__date {
   font-family: 'JetBrains Mono', 'Menlo', monospace;
-  font-size: 11px;
+  font-size: 0.6875rem;
   letter-spacing: 0.10em;
   text-transform: uppercase;
   color: var(--color-text-tertiary);
@@ -137,7 +113,7 @@
   align-items: center;
   gap: 6px;
   font-family: 'JetBrains Mono', 'Menlo', monospace;
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -180,7 +156,7 @@
   border: 1px solid var(--color-border-muted);
   background: color-mix(in srgb, var(--color-bg-elevated) 65%, transparent);
   color: var(--color-text-secondary);
-  font-size: 12.5px;
+  font-size: 0.7813rem;
   max-width: 240px;
   flex-shrink: 0;
   cursor: pointer;
@@ -213,7 +189,7 @@
 }
 
 .conversation-widget__chip-age {
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--color-text-tertiary);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;

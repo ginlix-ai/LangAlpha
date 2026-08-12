@@ -271,6 +271,7 @@ class UsagePersistenceService:
             True if successful, False otherwise
         """
         from src.server.database import conversation as qr_db
+        from src.server.database import pool
 
         if timestamp is None:
             timestamp = datetime.now(timezone.utc)
@@ -320,7 +321,7 @@ class UsagePersistenceService:
             if conn:
                 await qr_db.create_usage_record(usage_data, conn=conn)
             else:
-                async with qr_db.get_db_connection() as new_conn:
+                async with pool.get_db_connection() as new_conn:
                     await qr_db.create_usage_record(usage_data, conn=new_conn)
 
             logger.info(

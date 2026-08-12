@@ -1,6 +1,6 @@
 """Backfill conversation_threads.platform = 'web' for pre-tracking rows.
 
-Before this commit, only ginlix-integration set `platform` (telegram/slack/
+Before this commit, only channel integrations set `platform` (telegram/slack/
 discord/feishu). All web-originated threads (ChatAgent and MarketView) wrote
 NULL. From this commit on, web clients send 'web' or 'market_view:<SYMBOL>'.
 

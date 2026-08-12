@@ -33,7 +33,7 @@ function WidgetFallback() {
   const { t } = useTranslation();
   return (
     <div
-      className="h-full w-full flex items-center justify-center text-[11px]"
+      className="h-full w-full flex items-center justify-center text-[0.6875rem]"
       style={{ color: 'var(--color-text-tertiary)' }}
     >
       {t('dashboard.widgets.common.loading')}
@@ -59,7 +59,7 @@ class WidgetErrorBoundary extends ReactComponent<
       return (
         <div
           className="h-full w-full flex flex-col items-center justify-center px-3 py-2 text-center gap-1"
-          style={{ color: 'var(--color-text-tertiary)', fontSize: '11px', lineHeight: 1.4 }}
+          style={{ color: 'var(--color-text-tertiary)', fontSize: '0.6875rem', lineHeight: 1.4 }}
         >
           <span style={{ fontWeight: 500 }}>{i18n.t('dashboard.widgets.frame.errorBoundary')}</span>
           <span style={{ opacity: 0.75 }}>{this.props.widgetType}</span>

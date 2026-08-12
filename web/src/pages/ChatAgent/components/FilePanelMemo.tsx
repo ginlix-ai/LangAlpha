@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, Suspense } from 'react';
-import { HardDrive, Loader2, RefreshCw, ScrollText } from 'lucide-react';
+import { HardDrive, ScrollText } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import { useTranslation } from 'react-i18next';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { useToast } from '@/components/ui/use-toast';
@@ -93,7 +94,9 @@ export function useAddToMemo({
       title: t('context.memoAdding', { name: shortName }),
       description: (
         <span className="inline-flex items-center gap-2 text-xs">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <span aria-hidden="true" className="flex-shrink-0">
+            <Loader size={14} className="text-current" />
+          </span>
           {t('context.memoUploading')}
         </span>
       ),
@@ -130,7 +133,9 @@ export function useAddToMemo({
           : t('context.memoAddSuccess', { name: shortName }),
         description: (
           <span className="inline-flex items-center gap-2 text-xs">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <span aria-hidden="true" className="flex-shrink-0">
+              <Loader size={14} className="text-current" />
+            </span>
             {t('context.memoGenerating')}
           </span>
         ),
@@ -281,7 +286,11 @@ export function MemoStaleBanner({
             onClick={onSync}
             disabled={syncing}
           >
-            {syncing && <Loader2 className="h-3 w-3 animate-spin" />}
+            {syncing && (
+              <span aria-hidden="true" className="flex-shrink-0">
+                <Loader size={12} className="text-current" />
+              </span>
+            )}
             {syncing ? t('filePanel.memoBanner.syncing') : t('filePanel.memoBanner.sync')}
           </button>
         )}
@@ -305,7 +314,7 @@ export function MemoStaleBanner({
 function DiffSpinner(): React.ReactElement {
   return (
     <div className="flex items-center justify-center h-full">
-      <RefreshCw className="h-5 w-5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
+      <Loader size={20} className="text-[color:var(--color-text-tertiary)]" />
     </div>
   );
 }

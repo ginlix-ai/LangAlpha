@@ -26,9 +26,8 @@ import { useDashboardPrefs } from '../useDashboardPrefs';
 
 /**
  * Build a queryClient pre-seeded with the same prefs the mocked usePreferences
- * returns. The replay-aware flush reads from this cache, not from the hook
- * snapshot, so we have to keep them in sync for "preserves sibling keys"
- * assertions to mean what they say.
+ * returns. The writer's cold-cache check reads this cache, not the hook
+ * snapshot, so they have to stay in sync for writes to be accepted.
  */
 function makePrimedClient(): QueryClient {
   // gcTime: Infinity so seeded data survives vi.advanceTimersByTime() ticks.
@@ -57,8 +56,8 @@ describe('useDashboardPrefs', () => {
 
   it('cold-cache gate: update() is a no-op while preferences are still loading', () => {
     // Regression: without the gate, a fast click before the GET resolves
-    // would PUT { other_preference: { dashboard: {...} } } and clobber
-    // sibling server-side keys (theme, locale).
+    // would PUT a dashboard built from `{}` and wipe the user's saved layout
+    // (the server replaces the dashboard key wholesale).
     loadingState.isLoading = true;
     prefsState.current = null;
     const { result } = renderHookWithProviders(() => useDashboardPrefs(), { queryClient: makePrimedClient() });
@@ -91,7 +90,10 @@ describe('useDashboardPrefs', () => {
     expect(mockMutate).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves sibling other_preference keys (theme) when flushing', () => {
+  // The backend shallow-merges top-level other_preference keys (JSONB ||) —
+  // re-sending cached siblings would replay a stale value over a newer write
+  // from another tab. The payload must carry ONLY the dashboard key.
+  it('sends only the dashboard key — siblings are preserved by the server merge', () => {
     const { result } = renderHookWithProviders(() => useDashboardPrefs(), { queryClient: makePrimedClient() });
     act(() => {
       result.current.setMode('custom');
@@ -99,7 +101,7 @@ describe('useDashboardPrefs', () => {
     const payload = mockMutate.mock.calls[0][0] as {
       other_preference: { theme?: string; dashboard?: { mode: string } };
     };
-    expect(payload.other_preference.theme).toBe('dark');
+    expect(Object.keys(payload.other_preference)).toEqual(['dashboard']);
     expect(payload.other_preference.dashboard?.mode).toBe('custom');
   });
 
@@ -132,10 +134,12 @@ describe('useDashboardPrefs', () => {
     expect(result.current.prefs.history?.length ?? 0).toBeLessThanOrEqual(3);
   });
 
-  it('replay-aware flush reads the freshest queryClient snapshot, not the queue-time ref', () => {
-    // Tab A queues an edit. While the debounce is pending, Tab B writes and
-    // we receive the broadcast → cache gets a NEW theme value. Tab A's flush
-    // must use the new theme, not the snapshot it captured at queue time.
+  it('a cross-tab cache update mid-debounce never leaks siblings into the flush payload', () => {
+    // Tab A queues an edit. While the debounce is pending, Tab B's write lands
+    // in the cache (new theme + a key this tab has never seen). Tab A's flush
+    // must still PUT only the dashboard key: Tab B's values are preserved by
+    // the server-side merge, not replayed from this tab's cache — replaying
+    // them is how a stale cache used to revert another tab's settings.
     const queryClient = makePrimedClient();
     const { result } = renderHookWithProviders(() => useDashboardPrefs(), { queryClient });
     act(() => {
@@ -147,17 +151,13 @@ describe('useDashboardPrefs', () => {
         other_preference: { theme: 'light', remoteAddedKey: 'remote' },
       });
     });
-    // Sanity: confirm cache has the cross-tab value before flush fires.
-    const cachedNow = queryClient.getQueryData(queryKeys.user.preferences()) as { other_preference: Record<string, unknown> };
-    expect(cachedNow.other_preference.theme).toBe('light');
     act(() => {
       vi.advanceTimersByTime(800);
     });
     const payload = mockMutate.mock.calls[0][0] as {
       other_preference: { theme?: string; remoteAddedKey?: string; dashboard?: { mode: string } };
     };
-    expect(payload.other_preference.theme).toBe('light');
-    expect(payload.other_preference.remoteAddedKey).toBe('remote');
+    expect(Object.keys(payload.other_preference)).toEqual(['dashboard']);
     expect(payload.other_preference.dashboard?.mode).toBe('custom');
   });
 

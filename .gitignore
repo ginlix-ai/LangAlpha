@@ -101,5 +101,9 @@ docs/videos/
 TODO.md
 
 # Per-developer skills (canonical) and Claude Code's symlinked mirror — both local-only.
-.agents/
+# No trailing slash: in worktrees these are symlinks, which a dir-only pattern misses.
+.agents
 .claude/
+
+docs/pr_context/
+.astack/

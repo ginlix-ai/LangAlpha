@@ -14,6 +14,10 @@ interface UseWorkspaceFilesResult {
   refresh: () => Promise<void>;
 }
 
+// Stable fallback — a fresh [] per render would churn the identity of every
+// consumer's `files` prop while the query has no data yet.
+const NO_FILES: string[] = [];
+
 export function useWorkspaceFiles(
   workspaceId: string | null,
   { includeSystem = false }: UseWorkspaceFilesOptions = {},
@@ -42,7 +46,7 @@ export function useWorkspaceFiles(
   }, [queryClient, workspaceId, includeSystem]);
 
   return {
-    files: data?.files || [],
+    files: data?.files || NO_FILES,
     loading: isLoading,
     error: error
       ? ((error as { response?: { status?: number } }).response?.status === 503

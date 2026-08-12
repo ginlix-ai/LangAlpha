@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import i18n from '@/i18n';
+import { relativeTime } from '@/lib/format';
 import {
   Workflow,
   ArrowUpRight,
@@ -28,31 +29,6 @@ const BUCKET_KEY: Record<BucketKey, string> = {
   paused: 'dashboard.widgets.automations.bucket_paused',
   error: 'dashboard.widgets.automations.bucket_attention',
 };
-
-function formatRelativeRun(ts?: string | null): string {
-  if (!ts) return '';
-  const then = new Date(ts).getTime();
-  if (Number.isNaN(then)) return '';
-  const diff = then - Date.now();
-  const abs = Math.abs(diff);
-  const mins = Math.round(abs / 60000);
-  if (mins < 1) return i18n.t('dashboard.widgets.common.relativeNow');
-  let when: string;
-  if (mins < 60) when = `${mins}m`;
-  else {
-    const hrs = Math.round(mins / 60);
-    if (hrs < 24) when = `${hrs}h`;
-    else {
-      const days = Math.round(hrs / 24);
-      if (days < 7) when = `${days}d`;
-      else when = `${Math.round(days / 7)}w`;
-    }
-  }
-  const key = diff >= 0
-    ? 'dashboard.widgets.common.relativeFuture'
-    : 'dashboard.widgets.common.relativePast';
-  return i18n.t(key, { when });
-}
 
 function triggerLabel(a: Automation): string {
   if (a.trigger_type === 'price') {
@@ -90,8 +66,8 @@ function AutomationRow({
       ? 'var(--color-accent-primary)'
       : 'var(--color-text-tertiary)';
 
-  const nextRun = isActive ? formatRelativeRun(automation.next_run_at) : '';
-  const lastRun = !isActive && automation.last_run_at ? formatRelativeRun(automation.last_run_at) : '';
+  const nextRun = isActive ? relativeTime(automation.next_run_at) : '';
+  const lastRun = !isActive && automation.last_run_at ? relativeTime(automation.last_run_at) : '';
   const rightText = nextRun
     || (lastRun
       ? t('dashboard.widgets.automations.lastRun', { when: lastRun })
@@ -136,13 +112,13 @@ function AutomationRow({
         )}
         <span className="flex-1 min-w-0 flex flex-col gap-0.5 overflow-hidden">
           <span
-            className="text-[13px] truncate leading-tight font-medium"
+            className="text-[0.8125rem] truncate leading-tight font-medium"
             style={{ color: 'var(--color-text-primary)' }}
           >
             {automation.name || t('dashboard.widgets.automations.untitled')}
           </span>
           <span
-            className="text-[10px] uppercase tracking-wider truncate"
+            className="text-[0.625rem] uppercase tracking-wider truncate"
             style={{ color: 'var(--color-text-tertiary)', opacity: 0.85 }}
           >
             {triggerLabel(automation)}
@@ -152,7 +128,7 @@ function AutomationRow({
 
       {rightText ? (
         <span
-          className="text-[10.5px] dashboard-mono uppercase tracking-wider tabular-nums flex-shrink-0 group-hover:opacity-0 transition-opacity"
+          className="text-[0.6563rem] dashboard-mono uppercase tracking-wider tabular-nums flex-shrink-0 group-hover:opacity-0 transition-opacity"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
           {rightText}
@@ -234,7 +210,7 @@ function BucketSection({
         style={{ backgroundColor: 'var(--color-bg-card)' }}
       >
         <span
-          className="text-[9.5px] font-semibold uppercase tracking-[0.16em]"
+          className="text-[0.5938rem] font-semibold uppercase tracking-[0.16em]"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
           {label}
@@ -244,7 +220,7 @@ function BucketSection({
           style={{ backgroundColor: 'var(--color-border-muted)' }}
         />
         <span
-          className="text-[10px] dashboard-mono tabular-nums"
+          className="text-[0.625rem] dashboard-mono tabular-nums"
           style={{ color: 'var(--color-text-tertiary)', opacity: 0.7 }}
         >
           {String(items.length).padStart(2, '0')}
@@ -373,7 +349,7 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
             style={{ color: 'var(--color-text-tertiary)' }}
           />
           <span
-            className="text-[10px] font-semibold uppercase tracking-[0.14em]"
+            className="text-[0.625rem] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
             {t('dashboard.widgets.automations.header')}
@@ -388,7 +364,7 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
         <button
           type="button"
           onClick={() => navigate('/automations')}
-          className="group flex items-center gap-1 text-[11px] uppercase tracking-wider transition-colors"
+          className="group flex items-center gap-1 text-[0.6875rem] uppercase tracking-wider transition-colors"
           style={{ color: 'var(--color-text-tertiary)' }}
           onMouseEnter={(e) => {
             e.currentTarget.style.color = 'var(--color-text-primary)';
@@ -434,7 +410,7 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
               <button
                 type="button"
                 onClick={() => navigate('/automations')}
-                className="text-[11px] uppercase tracking-wider underline-offset-4 hover:underline"
+                className="text-[0.6875rem] uppercase tracking-wider underline-offset-4 hover:underline"
                 style={{ color: 'var(--color-text-secondary)' }}
               >
                 {t('dashboard.widgets.automations.emptyCta')}

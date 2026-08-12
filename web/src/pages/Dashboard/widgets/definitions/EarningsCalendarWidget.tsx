@@ -115,7 +115,7 @@ function EarningsRow({
         }}
       >
         <span
-          className="font-bold text-[10px] dashboard-mono"
+          className="font-bold text-[0.625rem] dashboard-mono"
           style={{ color: 'var(--color-text-secondary)' }}
         >
           {(item.symbol || '??').substring(0, 2).toUpperCase()}
@@ -123,20 +123,20 @@ function EarningsRow({
       </div>
       <div className="flex-1 min-w-0 flex flex-col gap-0.5">
         <span
-          className="text-[13px] font-semibold leading-tight truncate"
+          className="text-[0.8125rem] font-semibold leading-tight truncate"
           style={{ color: 'var(--color-text-primary)' }}
         >
           {item.symbol}
         </span>
         <span
-          className="text-[10.5px] truncate"
+          className="text-[0.6563rem] truncate"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
           {item.companyName || item.symbol}
         </span>
       </div>
       <span
-        className="text-[10.5px] dashboard-mono uppercase tracking-wider tabular-nums flex-shrink-0"
+        className="text-[0.6563rem] dashboard-mono uppercase tracking-wider tabular-nums flex-shrink-0"
         style={{ color: 'var(--color-text-tertiary)' }}
       >
         {label}
@@ -167,7 +167,7 @@ function BucketSection({
         style={{ backgroundColor: 'var(--color-bg-card)' }}
       >
         <span
-          className="text-[9.5px] font-semibold uppercase tracking-[0.16em]"
+          className="text-[0.5938rem] font-semibold uppercase tracking-[0.16em]"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
           {label}
@@ -177,7 +177,7 @@ function BucketSection({
           style={{ backgroundColor: 'var(--color-border-muted)' }}
         />
         <span
-          className="text-[10px] dashboard-mono tabular-nums"
+          className="text-[0.625rem] dashboard-mono tabular-nums"
           style={{ color: 'var(--color-text-tertiary)', opacity: 0.7 }}
         >
           {String(items.length).padStart(2, '0')}
@@ -308,7 +308,7 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
             style={{ color: 'var(--color-text-tertiary)' }}
           />
           <span
-            className="text-[10px] font-semibold uppercase tracking-[0.14em]"
+            className="text-[0.625rem] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
             {t('dashboard.widgets.earningsCalendar.header')}
@@ -321,7 +321,7 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
           </span>
         </div>
         <span
-          className="text-[10px] uppercase tracking-wider flex-shrink-0"
+          className="text-[0.625rem] uppercase tracking-wider flex-shrink-0"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
           {t('dashboard.widgets.earningsCalendar.windowLabel', { days: windowDays })}
@@ -358,7 +358,7 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
                 {t('dashboard.widgets.earningsCalendar.empty')}
               </div>
               <div
-                className="text-[11px]"
+                className="text-[0.6875rem]"
                 style={{ color: 'var(--color-text-tertiary)' }}
               >
                 {t('dashboard.widgets.earningsCalendar.emptyHint', { days: windowDays })}

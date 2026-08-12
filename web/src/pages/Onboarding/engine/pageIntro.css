@@ -1,0 +1,271 @@
+/*
+ * Page-intro modal visual panel — blueprint style lifted from the
+ * ginlix-platform landing page: blue radial glow, faint drafting grid, teal
+ * pulse accents, mono-labelled product mockups. The panel follows the app
+ * theme: near-black blueprint in dark mode, paper-light in light mode. All
+ * surface/line colors below are tokens so the scenes render in both.
+ */
+
+.intro-visual {
+  --iv-blue: #5a82d8;
+  --iv-blue-deep: #4161a4;
+  --iv-teal: #0fedbe;
+  --iv-amber: #ffc400;
+  --iv-red: #ff6b6e;
+  --iv-edge: rgba(232, 238, 248, 0.55);
+  --iv-text: rgba(255, 255, 255, 0.86);
+  --iv-text-2: rgba(255, 255, 255, 0.6);
+  --iv-text-3: rgba(255, 255, 255, 0.36);
+  /* wireframe surfaces + skeleton lines */
+  --iv-line: rgba(255, 255, 255, 0.14);
+  --iv-line-2: rgba(255, 255, 255, 0.3);
+  --iv-line-3: rgba(255, 255, 255, 0.1);
+  --iv-border: rgba(255, 255, 255, 0.08);
+  --iv-fill: rgba(255, 255, 255, 0.13);
+  --iv-grid: rgba(232, 238, 248, 0.05);
+  --iv-mk-bg: rgba(10, 11, 14, 0.82);
+  --iv-mk-border: rgba(255, 255, 255, 0.12);
+  --iv-mk-shadow: 0 16px 44px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(90, 130, 216, 0.07);
+  --iv-region-bg: rgba(255, 255, 255, 0.03);
+  --iv-ease: cubic-bezier(0.16, 1, 0.3, 1);
+
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse 95% 70% at 78% 12%, rgba(65, 97, 164, 0.4), transparent 70%),
+    radial-gradient(ellipse 70% 55% at 18% 112%, rgba(15, 237, 190, 0.1), transparent 70%),
+    #060709;
+  color: var(--iv-text);
+}
+
+/* Light theme: paper panel, ink lines, accents darkened for contrast. */
+[data-theme='light'] .intro-visual {
+  --iv-teal: #0a9f7c;
+  --iv-amber: #c27c00;
+  --iv-red: #d8494c;
+  --iv-text: rgba(18, 22, 30, 0.88);
+  --iv-text-2: rgba(18, 22, 30, 0.62);
+  --iv-text-3: rgba(18, 22, 30, 0.4);
+  --iv-line: rgba(18, 22, 30, 0.14);
+  --iv-line-2: rgba(18, 22, 30, 0.34);
+  --iv-line-3: rgba(18, 22, 30, 0.1);
+  --iv-border: rgba(18, 22, 30, 0.1);
+  --iv-fill: rgba(18, 22, 30, 0.14);
+  --iv-grid: rgba(18, 22, 30, 0.05);
+  --iv-mk-bg: rgba(255, 255, 255, 0.9);
+  --iv-mk-border: rgba(18, 22, 30, 0.12);
+  --iv-mk-shadow: 0 16px 44px rgba(18, 22, 30, 0.14), 0 0 0 1px rgba(90, 130, 216, 0.08);
+  --iv-region-bg: rgba(18, 22, 30, 0.03);
+
+  background:
+    radial-gradient(ellipse 95% 70% at 78% 12%, rgba(90, 130, 216, 0.16), transparent 70%),
+    radial-gradient(ellipse 70% 55% at 18% 112%, rgba(10, 159, 124, 0.08), transparent 70%),
+    #f4f1ea;
+}
+
+/* Radix's built-in close button sits over the visual panel — follow the
+   panel's theme rather than the default dialog foreground. */
+.intro-dialog > button {
+  color: rgba(255, 255, 255, 0.7);
+}
+.intro-dialog > button:hover {
+  color: #fff;
+}
+[data-theme='light'] .intro-dialog > button {
+  color: rgba(18, 22, 30, 0.55);
+}
+[data-theme='light'] .intro-dialog > button:hover {
+  color: rgba(18, 22, 30, 0.85);
+}
+
+/* Drafting grid, faded toward the edges. */
+.intro-visual::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--iv-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--iv-grid) 1px, transparent 1px);
+  background-size: 28px 28px;
+  -webkit-mask-image: radial-gradient(ellipse 95% 85% at 55% 42%, black 25%, transparent 78%);
+  mask-image: radial-gradient(ellipse 95% 85% at 55% 42%, black 25%, transparent 78%);
+  pointer-events: none;
+}
+
+/* Mockup card — landing `.mk` style. */
+.intro-mk {
+  position: relative;
+  border: 1px solid var(--iv-mk-border);
+  border-radius: 10px;
+  background: var(--iv-mk-bg);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--iv-mk-shadow);
+}
+
+.intro-mk--accent {
+  border-color: rgba(90, 130, 216, 0.55);
+  box-shadow: var(--iv-mk-shadow), 0 0 18px rgba(90, 130, 216, 0.28);
+}
+
+/* A region inside the zoomed-out page wireframe. Dim by default; `--hot`
+   marks the area the current step is talking about. */
+.intro-region {
+  border: 1px solid var(--iv-border);
+  border-radius: 8px;
+  background: var(--iv-region-bg);
+}
+
+.intro-region--hot {
+  border-color: rgba(90, 130, 216, 0.6);
+  background: rgba(90, 130, 216, 0.07);
+  box-shadow: 0 0 14px rgba(90, 130, 216, 0.22);
+}
+
+.intro-region--dashed {
+  border-style: dashed;
+  background: transparent;
+}
+
+/* Staggered reveal — set `--rv` per element. */
+.intro-rv {
+  animation: intro-rv-enter 0.65s var(--iv-ease, cubic-bezier(0.16, 1, 0.3, 1)) both;
+  animation-delay: var(--rv, 0s);
+}
+
+@keyframes intro-rv-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Bars growing from the baseline (mini charts). */
+.intro-bar {
+  transform-origin: bottom;
+  animation: intro-bar-grow 0.7s var(--iv-ease) both;
+  animation-delay: var(--rv, 0s);
+}
+
+@keyframes intro-bar-grow {
+  from {
+    transform: scaleY(0.12);
+    opacity: 0.35;
+  }
+  to {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+/* Sparkline wire-draw — landing `bp-wire-draw`. */
+.intro-wire {
+  stroke-dasharray: 240;
+  stroke-dashoffset: 240;
+  animation: intro-wire-draw 1.1s var(--iv-ease) both;
+  animation-delay: var(--rv, 0.15s);
+}
+
+@keyframes intro-wire-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* Teal attention dot — landing `la-pulse`. */
+.intro-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--iv-teal);
+  box-shadow: 0 0 0 0 rgba(15, 237, 190, 0.55);
+  animation: intro-pulse 2s var(--iv-ease) infinite;
+}
+
+.intro-pulse--blue {
+  background: var(--iv-blue);
+  box-shadow: 0 0 0 0 rgba(90, 130, 216, 0.6);
+  animation-name: intro-pulse-blue;
+}
+
+@keyframes intro-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(15, 237, 190, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(15, 237, 190, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(15, 237, 190, 0);
+  }
+}
+
+@keyframes intro-pulse-blue {
+  0% {
+    box-shadow: 0 0 0 0 rgba(90, 130, 216, 0.6);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(90, 130, 216, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(90, 130, 216, 0);
+  }
+}
+
+/* One-shot click ripple — fired by the scripted cursor in a scene. */
+.intro-click {
+  border-radius: 50%;
+  border: 1.5px solid var(--iv-blue);
+  opacity: 0;
+  animation: intro-click 0.55s var(--iv-ease) both;
+  animation-delay: var(--rv, 0s);
+}
+
+@keyframes intro-click {
+  0% {
+    transform: scale(0.3);
+    opacity: 0;
+  }
+  25% {
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.7);
+    opacity: 0;
+  }
+}
+
+/* Element popping in after a scripted click (e.g. the created modal). */
+.intro-pop {
+  animation: intro-pop 0.45s var(--iv-ease) both;
+  animation-delay: var(--rv, 0s);
+}
+
+@keyframes intro-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .intro-rv,
+  .intro-bar,
+  .intro-wire,
+  .intro-pulse,
+  .intro-click,
+  .intro-pop {
+    animation: none;
+  }
+  .intro-wire {
+    stroke-dashoffset: 0;
+  }
+}

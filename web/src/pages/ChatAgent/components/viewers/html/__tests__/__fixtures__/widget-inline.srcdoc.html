@@ -1,0 +1,118 @@
+<!DOCTYPE html><html><head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh; style-src 'unsafe-inline'; img-src data: blob:; font-src cdnjs.cloudflare.com cdn.jsdelivr.net; connect-src cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh;">
+<style>
+:root {
+  
+}
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--color-text-primary); background: transparent; overflow: hidden; }
+
+body > :first-child {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+}
+</style>
+<script>
+(function(){
+  var _p=JSON.parse;
+  JSON.parse=function(t,r){
+    if(typeof t==='string')t=t.replace(/\bNaN\b/g,'null').replace(/(?<![A-Za-z_])-?Infinity\b/g,'null');
+    return _p.call(this,t,r);
+  };
+  var shown={},count=0,rendering=false;
+  function showError(msg){
+    if(rendering||shown[msg])return;
+    shown[msg]=1;
+    if(++count>5)return;
+    rendering=true;
+    msg=String(msg).slice(0,500);
+    var root=document.body||document.documentElement;
+    var d=document.createElement('div');
+    d.style.cssText='margin:12px;padding:14px 16px;background:var(--color-bg-card);border:0.5px solid var(--color-border-muted);border-radius:10px;display:flex;align-items:center;gap:12px;';
+    var dot=document.createElement('span');
+    dot.style.cssText='flex-shrink:0;width:6px;height:6px;border-radius:50%;background:var(--color-loss);';
+    var mid=document.createElement('div');
+    mid.style.cssText='flex:1;min-width:0;';
+    var detail=document.createElement('div');
+    detail.style.cssText='font:13px/1.4 ui-monospace,SFMono-Regular,monospace;color:var(--color-text-muted);white-space:pre-wrap;word-break:break-word;';
+    detail.textContent=msg;
+    mid.appendChild(detail);
+    var b=document.createElement('button');
+    b.textContent='Fix';
+    b.style.cssText='flex-shrink:0;padding:6px 14px;border-radius:8px;border:0.5px solid var(--color-border-default);background:var(--color-bg-elevated);color:var(--color-text-primary);font:500 13px/1 -apple-system,sans-serif;cursor:pointer;transition:background 0.15s;';
+    b.onmouseover=function(){b.style.background='var(--color-bg-hover)';};
+    b.onmouseout=function(){b.style.background='var(--color-bg-elevated)';};
+    b.onclick=function(){window.sendPrompt('The widget threw an error: '+msg+'. Please fix the widget code and call ShowWidget again.');b.textContent='Sent';b.disabled=true;b.style.opacity='0.4';b.style.cursor='default';};
+    d.appendChild(dot);d.appendChild(mid);d.appendChild(b);
+    root.appendChild(d);
+    parent.postMessage({type:'widget:resize',height:root.scrollHeight},'*');
+    rendering=false;
+  }
+  window.onerror=function(_,__,___,____,e){showError(e&&e.message||String(_));};
+  window.addEventListener('unhandledrejection',function(e){showError(e.reason&&e.reason.message||String(e.reason));});
+  document.addEventListener('click',function(e){
+    if(e.defaultPrevented)return;
+    var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;
+    if(!a)return;
+    var href=a.getAttribute('href')||'';
+    if(href.charAt(0)==='#')return;
+    if(!/^https?:/i.test(a.href)){e.preventDefault();return;}
+    if(a.host===location.host)return;
+    e.preventDefault();
+    window.open(a.href,'_blank','noopener,noreferrer');
+  });
+})();
+</script>
+<script>window.__WIDGET_DATA__ = {"a.json":"{\"x\":1}"};</script>
+<script>
+window.sendPrompt = function(text) {
+  parent.postMessage({ type: 'widget:sendPrompt', text: String(text) }, '*');
+};
+(function() {
+  var lastH = 0;
+  var pending = 0;
+  function reportHeight() {
+    if (!document.body) return;
+    var h = document.body.scrollHeight;
+    if (h > 0 && Math.abs(h - lastH) > 2) {
+      lastH = h;
+      parent.postMessage({ type: 'widget:resize', height: h }, '*');
+    }
+  }
+  function debouncedReport() {
+    if (pending) return;
+    pending = requestAnimationFrame(function() {
+      pending = 0;
+      reportHeight();
+    });
+  }
+  document.addEventListener('DOMContentLoaded', function() {
+    var mo = new MutationObserver(debouncedReport);
+    mo.observe(document.body, { childList: true, subtree: true });
+    if (typeof ResizeObserver === 'function') {
+      new ResizeObserver(debouncedReport).observe(document.body);
+    }
+    reportHeight();
+  });
+  var checks = [100, 300, 800, 2000, 5000];
+  checks.forEach(function(ms) { setTimeout(reportHeight, ms); });
+  // A container width change is a pure reflow — no DOM mutation — so the
+  // observers above never see it; track the viewport and body box directly.
+  window.addEventListener('resize', debouncedReport);
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'widget:themeUpdate' && e.data.css) {
+      var style = document.querySelector('style');
+      if (style) {
+        style.textContent = style.textContent.replace(
+          /:root\s*\{[^}]*\}/,
+          ':root {\n  ' + e.data.css + '\n}'
+        );
+      }
+    }
+  });
+})();
+</script>
+</head><body><div>hi</div></body></html>

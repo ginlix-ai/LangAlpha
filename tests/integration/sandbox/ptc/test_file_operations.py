@@ -93,6 +93,34 @@ class TestFileOperations:
         py_matches = [m for m in matches if m.endswith(".py")]
         assert len(py_matches) >= 2
 
+    async def test_glob_excludes_dependency_dirs(self, shared_sandbox):
+        """Recursive glob must skip dependency/build/cache dirs so it can't walk a
+        huge dependency tree into the model context — but only the intermediate dir
+        components: a file that merely shares a noise-dir name must survive."""
+        wd = shared_sandbox._work_dir
+        await shared_sandbox.aupload_file_bytes(f"{wd}/proj/app.py", b"# app")
+        await shared_sandbox.aupload_file_bytes(f"{wd}/proj/node_modules/pkg/index.js", b"// dep")
+        await shared_sandbox.aupload_file_bytes(f"{wd}/proj/.git/config", b"[core]")
+        # A regular file named exactly like an excluded dir must not be dropped.
+        await shared_sandbox.aupload_file_bytes(f"{wd}/proj/vendor", b"# a file, not a dir")
+
+        matches = await shared_sandbox.aglob_files("**/*", path=f"{wd}/proj")
+
+        assert any(m.endswith("/app.py") for m in matches)
+        assert any(m.endswith("/vendor") for m in matches)
+        assert not any("node_modules" in m for m in matches)
+        assert not any("/.git/" in m for m in matches)
+
+    async def test_glob_into_excluded_dir_still_works(self, shared_sandbox):
+        """Exclusion applies to the tree walked from the search root, not the root
+        itself: pointing glob directly inside an excluded dir must return its files."""
+        wd = shared_sandbox._work_dir
+        await shared_sandbox.aupload_file_bytes(f"{wd}/proj/node_modules/pkg/index.js", b"// dep")
+
+        matches = await shared_sandbox.aglob_files("**/*", path=f"{wd}/proj/node_modules")
+
+        assert any(m.endswith("/index.js") for m in matches)
+
     async def test_grep_content(self, shared_sandbox):
         wd = shared_sandbox._work_dir
         await shared_sandbox.aupload_file_bytes(

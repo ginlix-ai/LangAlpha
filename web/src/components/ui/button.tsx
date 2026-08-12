@@ -11,13 +11,17 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant = "default", size = "default", ...props }, ref) => {
+    // Accent discipline (DESIGN.md): the amber is annotation-only — never a
+    // button fill, hover wash, or focus ring. Primary is the neutral
+    // near-white/near-charcoal pair; hovers are the neutral tint.
     const variants: Record<ButtonVariant, string> = {
-      default: "bg-primary text-primary-foreground hover:bg-primary/90",
+      default:
+        "bg-[var(--color-btn-primary-bg)] text-[var(--color-btn-primary-text)] hover:opacity-90",
       destructive: "bg-destructive text-destructive-foreground hover:bg-destructive/90",
-      outline: "border border-input bg-background hover:bg-accent hover:text-accent-foreground",
+      outline: "border border-input bg-background hover:bg-[var(--color-bg-hover)]",
       secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-      ghost: "hover:bg-accent hover:text-accent-foreground",
-      link: "text-primary underline-offset-4 hover:underline",
+      ghost: "hover:bg-[var(--color-bg-hover)]",
+      link: "underline-offset-4 hover:underline",
     }
 
     const sizes: Record<ButtonSize, string> = {

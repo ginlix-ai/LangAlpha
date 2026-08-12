@@ -107,7 +107,7 @@ function EarningsItem({ item, index: _index, isPast }: EarningsItemProps) {
 function SectionLabel({ label }: SectionLabelProps) {
   return (
     <div
-      className="text-[10px] font-bold uppercase tracking-wider px-3 pt-2 pb-1"
+      className="text-[0.625rem] font-bold uppercase tracking-wider px-3 pt-2 pb-1"
       style={{ color: 'var(--color-text-secondary)' }}
     >
       {label}
@@ -235,11 +235,11 @@ function EarningsModal({ earnings, onClose }: EarningsModalProps) {
                   opacity: isPast && !isActive ? 0.7 : 1,
                 }}
               >
-                <span className="text-[10px] uppercase tracking-wider" style={{ opacity: 0.8 }}>
+                <span className="text-[0.625rem] uppercase tracking-wider" style={{ opacity: 0.8 }}>
                   {weekday}
                 </span>
                 <span className="font-bold">{label}</span>
-                <span className="text-[10px] mt-0.5" style={{ opacity: 0.7 }}>
+                <span className="text-[0.625rem] mt-0.5" style={{ opacity: 0.7 }}>
                   {t('dashboard.earningsCalendarCard.stockCount', { count: group.items.length })}
                 </span>
               </button>

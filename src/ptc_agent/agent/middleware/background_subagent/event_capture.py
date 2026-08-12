@@ -6,9 +6,6 @@ Injected into subagents running in the background. It:
   routing them through ``BackgroundTaskRegistry.append_captured_event``, which
   spills each record to the per-task Redis Stream for SSE replay and post-turn
   persistence.
-- Emits a ``subagent_identity`` custom stream event on the first model call so
-  the streaming handler can map LangGraph namespace UUIDs to stable background
-  task identities.
 - Reports tool-call metrics (``total_tool_calls``, ``tool_call_counts``,
   ``current_tool``) back to the ``BackgroundTaskRegistry``.
 """
@@ -81,10 +78,6 @@ class SubagentEventCaptureMiddleware(AgentMiddleware):
     - Capture LLM output events (reasoning, text, tool_calls, tool_call_result)
       into the per-task Redis Stream via ``append_captured_event`` so they can
       be replayed to SSE clients that connect (or reconnect) to a per-task stream.
-    - Emit a ``subagent_identity`` custom stream event on the first model call.
-      The streaming handler receives this event *with* the LangGraph namespace
-      tuple attached, which lets it register the mapping from opaque
-      ``tools:<uuid>`` namespace to our stable ``agent_id``.
     - Report tool-call metrics (count, top tools, current tool) so the main
       agent's ``TaskOutput`` tool can show meaningful progress.
 
@@ -110,58 +103,13 @@ class SubagentEventCaptureMiddleware(AgentMiddleware):
         super().__init__()
         self.tools = []  # No additional tools
         self.registry = registry
-        self._emitted_identity: set[str] = (
-            set()
-        )  # task_ids that already emitted identity event
-
-    def clear_identity(self, tool_call_id: str) -> None:
-        """Remove a tool_call_id from the emitted identity set.
-
-        Called when resuming a completed subagent so that the
-        ``subagent_identity`` event is re-emitted on the resumed
-        invocation's first model call, allowing the streaming handler
-        to register new namespace UUID mappings.
-
-        Args:
-            tool_call_id: The tool_call_id to clear
-        """
-        self._emitted_identity.discard(tool_call_id)
 
     async def awrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """Emit subagent_identity stream event on first model call.
-
-        This runs BEFORE the LLM generates any output, so the streaming
-        handler can register the namespace mapping before any message_chunk
-        or tool_call_chunks events arrive.
-
-        The custom event carries ``tool_call_id``; the streaming infrastructure
-        automatically attaches the correct ``namespace_tuple`` so the handler
-        knows which LangGraph namespace UUID maps to which background task.
-        """
-        tool_call_id = current_background_tool_call_id.get()
-
-        if tool_call_id and self.registry and tool_call_id not in self._emitted_identity:
-            try:
-                from langgraph.config import get_stream_writer
-
-                writer = get_stream_writer()
-                writer({"type": "subagent_identity", "tool_call_id": tool_call_id})
-                self._emitted_identity.add(tool_call_id)
-                logger.debug(
-                    "Emitted subagent_identity event",
-                    tool_call_id=tool_call_id,
-                )
-            except Exception as e:
-                logger.debug(
-                    "Failed to emit subagent_identity event",
-                    tool_call_id=tool_call_id,
-                    error=str(e),
-                )
-
+        """Capture the model's tool calls into the per-task event stream."""
         response = await handler(request)
 
         # Capture events for post-interrupt persistence

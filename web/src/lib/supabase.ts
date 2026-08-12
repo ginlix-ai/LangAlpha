@@ -4,10 +4,11 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 /**
- * Parent domain for the auth cookie. Unset (dev) → host-scoped. In platform
- * prod set to ".ginlix.ai" so every subdomain shares one session — SSO.
+ * Parent domain for first-party cookies, via the shared VITE_COOKIE_DOMAIN knob
+ * (also scopes the locale cookie). Unset → host-only (the default). Set to a
+ * parent domain so every subdomain shares one session — SSO.
  */
-const cookieDomain = import.meta.env.VITE_AUTH_COOKIE_DOMAIN as string | undefined;
+const cookieDomain = import.meta.env.VITE_COOKIE_DOMAIN as string | undefined;
 
 if (supabaseUrl && !supabaseKey) {
   console.warn('[supabase] VITE_SUPABASE_URL is set but VITE_SUPABASE_PUBLISHABLE_KEY is missing');

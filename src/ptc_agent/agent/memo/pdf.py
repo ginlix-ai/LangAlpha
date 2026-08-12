@@ -1,6 +1,6 @@
 """PDF text extraction on raw bytes — pdfplumber primary, pypdf fallback.
 
-Mirrors the internals of ``src/tools/crawler/extractors/pdf.py`` but takes
+Mirrors the internals of ``src/tools/web/inhouse/extractors/pdf.py`` but takes
 ``bytes`` directly instead of a URL. The crawler's ``PdfExtractor`` downloads
 the PDF over HTTP — wrong entry point for memo uploads where the bytes are
 already in hand.

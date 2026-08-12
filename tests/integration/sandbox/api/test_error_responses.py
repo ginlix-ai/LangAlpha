@@ -36,7 +36,7 @@ class TestFlashWorkspaceHandling:
 
         app = create_test_app(router)
         with patch(
-            "src.server.app.workspace_files.db_get_workspace",
+            "src.server.app.workspace_files.crud.db_get_workspace",
             AsyncMock(return_value=_make_workspace(status="flash")),
         ):
             async with AsyncClient(
@@ -94,7 +94,7 @@ class TestStoppedWorkspaceWriteRejection:
 
         app = create_test_app(router)
         with patch(
-            "src.server.app.workspace_files.db_get_workspace",
+            "src.server.app.workspace_files.crud.db_get_workspace",
             AsyncMock(return_value=_make_workspace(status="stopped")),
         ):
             async with AsyncClient(
@@ -141,7 +141,7 @@ class TestWorkspaceNotFound:
 
         app = create_test_app(router)
         with patch(
-            "src.server.app.workspace_files.db_get_workspace",
+            "src.server.app.workspace_files.crud.db_get_workspace",
             AsyncMock(return_value=None),
         ):
             async with AsyncClient(
@@ -174,7 +174,7 @@ class TestOwnershipEnforcement:
 
         app = create_test_app(router)
         with patch(
-            "src.server.app.workspace_files.db_get_workspace",
+            "src.server.app.workspace_files.crud.db_get_workspace",
             AsyncMock(return_value=_make_workspace(user_id="other-user-999")),
         ):
             async with AsyncClient(

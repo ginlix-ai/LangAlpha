@@ -173,8 +173,6 @@ describe('ExportPreviewModal', () => {
     // Default size is 11px
     expect(screen.getByText('11px')).toBeInTheDocument();
 
-    // All stepper buttons (font size has 2, line height has 2 = 4 total)
-    const buttons = screen.getAllByRole('button');
     // Font size stepper buttons are the first pair of minus/plus buttons.
     // Find by the stepper value context: the button immediately before "11px" text.
     const steppers = document.querySelectorAll('.export-preview-stepper');

@@ -79,10 +79,9 @@ ALLOWLIST: dict[tuple[str, str], int] = {
     ("src/ptc_agent/config/agent.py", "create_llm"): 1,
     # flash standalone build.
     ("src/ptc_agent/agent/flash/agent.py", "create_llm"): 1,
-    # flash fallback-model name path.
-    ("src/ptc_agent/agent/flash/agent.py", "get_llm_by_type"): 1,
-    # main-agent fallback-model name path.
-    ("src/ptc_agent/agent/agent.py", "get_llm_by_type"): 1,
+    # fallback-model name path (build_fallback_pairs, OSS standalone — server
+    # runs pre-resolve fallback_llm_clients via resolve_llm_config first).
+    ("src/ptc_agent/agent/middleware/model_resilience.py", "get_llm_by_type"): 1,
     # compaction summarizer name path (compact.py helper).
     ("src/ptc_agent/agent/middleware/compaction/compact.py", "get_llm_by_type"): 1,
     # compaction middleware fallback name path.
@@ -90,9 +89,13 @@ ALLOWLIST: dict[tuple[str, str], int] = {
     # compaction middleware model coercion (string model -> chat model).
     ("src/ptc_agent/agent/middleware/compaction/middleware.py", "init_chat_model"): 1,
     # non-BYOK fetch name path (reached only for non-credentialed users).
-    ("src/tools/fetch.py", "get_llm"): 1,
+    ("src/tools/web/fetch.py", "get_llm"): 1,
+    # The resolution layer itself — the sanctioned constructor home. Entered
+    # scan scope when 3.1 moved it from handlers/chat (never a scan root).
+    ("src/server/services/llm/config.py", "create_llm"): 3,
+    ("src/server/services/llm/config.py", "create_llm_from_custom"): 2,
     # user_id=None system path AND resolved-None platform fallback (two calls).
-    ("src/server/services/llm_service.py", "create_llm"): 2,
+    ("src/server/services/llm/service.py", "create_llm"): 2,
 }
 
 

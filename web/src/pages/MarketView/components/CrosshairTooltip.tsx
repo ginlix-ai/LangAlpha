@@ -1,4 +1,6 @@
 import React from 'react';
+import { currencySymbol } from '@/lib/bars';
+import type { ValueStore } from '@/lib/valueStore';
 import './CrosshairTooltip.css';
 
 interface TooltipData {
@@ -12,17 +14,27 @@ interface TooltipData {
   rsiValue?: number | null;
 }
 
+export interface CrosshairTooltipState {
+  visible: boolean;
+  x: number;
+  y: number;
+  data: TooltipData | null;
+}
+
 interface CrosshairTooltipProps {
   visible: boolean;
   x: number;
   y: number;
   data: TooltipData | null;
-  enabledMaPeriods: number[];
   containerWidth?: number;
   containerHeight?: number;
+  /** ISO currency code — prefixes O/H/L/C with its symbol when provided. */
+  currency?: string;
+  /** Price decimal places (defaults to 2). */
+  decimals?: number;
 }
 
-function CrosshairTooltip({ visible, x, y, data, enabledMaPeriods: _enabledMaPeriods, containerWidth, containerHeight }: CrosshairTooltipProps) {
+function CrosshairTooltip({ visible, x, y, data, containerWidth, containerHeight, currency, decimals }: CrosshairTooltipProps) {
   if (!visible || !data) return null;
 
   const isUp = data.close >= data.open;
@@ -34,7 +46,9 @@ function CrosshairTooltip({ visible, x, y, data, enabledMaPeriods: _enabledMaPer
   const clampedX = Math.min(Math.max(x + 16, 0), (containerWidth || 800) - tooltipWidth - 8);
   const clampedY = Math.min(Math.max(y - 10, 0), (containerHeight || 500) - tooltipHeight - 8);
 
-  const formatPrice = (v: number | null | undefined): string => v != null ? v.toFixed(2) : '\u2014';
+  const priceDecimals = typeof decimals === 'number' && decimals >= 0 ? decimals : 2;
+  const priceSymbol = currency ? currencySymbol(currency) : '';
+  const formatPrice = (v: number | null | undefined): string => v != null ? `${priceSymbol}${v.toFixed(priceDecimals)}` : '\u2014';
   const formatVol = (v: number | null | undefined): string => {
     if (v == null) return '\u2014';
     if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
@@ -45,7 +59,9 @@ function CrosshairTooltip({ visible, x, y, data, enabledMaPeriods: _enabledMaPer
   const formatDate = (ts: number | null | undefined): string => {
     if (!ts) return '';
     const d = new Date(ts * 1000);
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    // Chart times encode venue wall clock as fake UTC — read them back in UTC.
+    // A browser-local read shifts the date for users away from the venue.
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
   };
 
   return (
@@ -89,3 +105,38 @@ function CrosshairTooltip({ visible, x, y, data, enabledMaPeriods: _enabledMaPer
 }
 
 export default React.memo(CrosshairTooltip);
+
+interface CrosshairTooltipLayerProps {
+  store: ValueStore<CrosshairTooltipState>;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  currency?: string;
+  decimals?: number;
+}
+
+/**
+ * Subscribes to the crosshair store so per-mousemove updates re-render only
+ * this leaf, not the chart component that owns the lightweight-charts
+ * subscription. All props are identity-stable — the memo shields the layer
+ * from parent re-renders while the store drives its own.
+ */
+export const CrosshairTooltipLayer = React.memo(function CrosshairTooltipLayer({
+  store,
+  containerRef,
+  currency,
+  decimals,
+}: CrosshairTooltipLayerProps) {
+  const state = React.useSyncExternalStore(store.subscribe, store.get);
+  return (
+    <CrosshairTooltip
+      visible={state.visible}
+      x={state.x}
+      y={state.y}
+      data={state.data}
+      containerWidth={containerRef.current?.clientWidth}
+      containerHeight={containerRef.current?.clientHeight}
+      currency={currency}
+      decimals={decimals}
+    />
+  );
+});
+

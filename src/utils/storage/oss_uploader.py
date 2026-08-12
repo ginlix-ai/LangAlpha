@@ -38,7 +38,6 @@ Configuration:
 
 import base64
 import logging
-import mimetypes
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,43 +45,10 @@ from pathlib import Path
 import alibabacloud_oss_v2 as oss
 import alibabacloud_oss_v2.exceptions as oss_exceptions
 
+from src.utils.mime import resolve_content_type
+
 # Configure logging
 logger = logging.getLogger(__name__)
-
-# MIME type mapping for common image formats
-# Used as fallback when mimetypes module doesn't recognize extension
-IMAGE_MIME_TYPES = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".svg": "image/svg+xml",
-    ".ico": "image/x-icon",
-    ".bmp": "image/bmp",
-    ".tiff": "image/tiff",
-    ".tif": "image/tiff",
-}
-
-
-def _get_content_type(key: str) -> str | None:
-    """Get the MIME content type for a file based on its extension.
-
-    Args:
-        key: File path or OSS key with extension
-
-    Returns:
-        MIME type string, or None if unknown
-    """
-    ext = Path(key).suffix.lower()
-
-    # Try our image-specific mapping first
-    if ext in IMAGE_MIME_TYPES:
-        return IMAGE_MIME_TYPES[ext]
-
-    # Fall back to mimetypes module
-    mime_type, _ = mimetypes.guess_type(key)
-    return mime_type
 
 
 class OSSConfig:
@@ -156,8 +122,8 @@ def upload_file(key: str, file_path: str, content_type: str | None = None) -> bo
         return False
 
     # Auto-detect content type from key (OSS path) or file path
-    if content_type is None:
-        content_type = _get_content_type(key) or _get_content_type(file_path)
+    if not content_type:
+        content_type = resolve_content_type(key, default=resolve_content_type(file_path))
 
     try:
         client = get_oss_client()
@@ -243,8 +209,8 @@ def upload_bytes(key: str, data: bytes, content_type: str | None = None) -> bool
         return False
 
     # Auto-detect content type from key extension if not provided
-    if content_type is None:
-        content_type = _get_content_type(key)
+    if not content_type:
+        content_type = resolve_content_type(key)
 
     try:
         client = get_oss_client()

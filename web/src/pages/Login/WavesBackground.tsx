@@ -200,6 +200,18 @@ function WavesBackground() {
     const resizeObserver = new ResizeObserver(syncSize);
     resizeObserver.observe(container);
     window.addEventListener('resize', syncSize);
+
+    // Honor reduced-motion: draw the static grid once and skip the rAF loop +
+    // cursor listeners entirely (no 60fps physics on an idle login screen).
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reducedMotion) {
+      drawLines();
+      return () => {
+        resizeObserver.disconnect();
+        window.removeEventListener('resize', syncSize);
+      };
+    }
+
     window.addEventListener('mousemove', onMouseMove);
     container.addEventListener('touchmove', onTouchMove, { passive: false });
 

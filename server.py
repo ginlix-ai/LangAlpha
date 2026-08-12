@@ -35,6 +35,12 @@ if __name__ == "__main__":
         choices=["debug", "info", "warning", "error", "critical"],
         help="Log level (default: info)",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of uvicorn worker processes (default: 1)",
+    )
 
     args = parser.parse_args()
 
@@ -59,6 +65,16 @@ if __name__ == "__main__":
     if args.reload:
         reload = True
 
+    # Uvicorn never exposes the worker count to the app, so hand it over via
+    # env: the lifespan refuses --workers>1 when the WriterGuard fence cannot
+    # activate (non-Postgres checkpointer or split app/checkpoint databases).
+    # That hard gate is the whole multi-worker admission story — the old
+    # single-worker warning's mechanisms (in-process report-back caps/drain,
+    # in-memory compaction guard, BTM liveness healing) are all distributed
+    # or deleted as of v4 Phase 2 (accepted residual: same-pair dispatch
+    # lifecycle overlap across processes, gen-CAS-bounded last-writer-wins).
+    os.environ["LANGALPHA_WORKERS"] = str(args.workers)
+
     try:
         logger.info(f"Starting server on {args.host}:{args.port}")
         uvicorn.run(
@@ -66,6 +82,7 @@ if __name__ == "__main__":
             host=args.host,
             port=args.port,
             reload=reload,
+            workers=args.workers,
             log_level=args.log_level,
             timeout_keep_alive=300,  # 5 minutes - for long-running workflows
             timeout_graceful_shutdown=60,  # 60 seconds for graceful shutdown

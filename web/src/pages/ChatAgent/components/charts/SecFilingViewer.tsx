@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ExternalLink, FileText, Calendar, Building2, Layers, Newspaper, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { Loader } from '@/components/ui/loader';
 import { api } from '../../../../api/client';
 
 const TEXT_COLOR = 'var(--color-text-tertiary)';
@@ -69,7 +70,7 @@ function AnnualQuarterlyView({ data }: FilingDataProps): React.ReactElement {
           >
             {data.symbol as string}
           </span>
-          <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-text-primary)' }}>
+          <span style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
             {t('toolArtifact.filing', { type: data.filing_type as string })}
           </span>
         </div>
@@ -120,7 +121,9 @@ function AnnualQuarterlyView({ data }: FilingDataProps): React.ReactElement {
                 style={{ backgroundColor: 'var(--color-bg-overlay-strong)' }}
               >
                 <div className="flex items-center gap-2">
-                  <div className="h-4 w-4 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: `${ACCENT} transparent ${ACCENT} ${ACCENT}` }} />
+                  <span aria-hidden="true" className="flex-shrink-0">
+                    <Loader size={16} className="text-[color:var(--color-accent-primary)]" />
+                  </span>
                   <span className="text-xs" style={{ color: TEXT_COLOR }}>{t('toolArtifact.loadingSecDocument')}</span>
                 </div>
               </div>
@@ -161,7 +164,7 @@ function EightKListView({ data }: FilingDataProps): React.ReactElement {
           >
             {data.symbol as string}
           </span>
-          <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-text-primary)' }}>
+          <span style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
             {t('toolArtifact.8kFilings')}
           </span>
         </div>
@@ -190,7 +193,7 @@ function EightKListView({ data }: FilingDataProps): React.ReactElement {
               {!!filing.has_press_release && (
                 <span
                   className="text-xs px-1.5 py-0.5 rounded"
-                  style={{ backgroundColor: 'var(--color-profit-soft)', color: 'var(--color-profit)', fontSize: 10 }}
+                  style={{ backgroundColor: 'var(--color-profit-soft)', color: 'var(--color-profit)', fontSize: '0.625rem' }}
                 >
                   {t('toolArtifact.pressRelease')}
                 </span>

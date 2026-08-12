@@ -22,6 +22,12 @@ from .langgraph_store import (
 )
 from .sandbox import SandboxBackend
 from .store_cache import RequestScopedStoreCache
+from .workflows import (
+    PREBUILT_READ_ONLY_ERROR,
+    WorkflowsBackend,
+    prebuilt_workflow_backend,
+    workflow_namespace,
+)
 
 # Backward-compat alias
 DaytonaBackend = SandboxBackend
@@ -35,10 +41,14 @@ __all__ = [
     "InvalidStoreKeyError",
     "StoreContentTooLargeError",
     "NamespaceFactory",
+    "PREBUILT_READ_ONLY_ERROR",
     "ReadOnlyStoreError",
     "RequestScopedStoreCache",
     "SandboxBackend",
     "StoreBackend",
+    "WorkflowsBackend",
     "lock_for_namespace",
+    "prebuilt_workflow_backend",
     "validate_store_key",
+    "workflow_namespace",
 ]

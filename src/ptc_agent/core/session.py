@@ -27,12 +27,36 @@ class Session:
         """
         self.conversation_id = conversation_id
         self.config = config
+        # Pristine server list snapshotted before the WorkspaceManager mutates
+        # ``config.mcp.servers`` to the resolved composite. Restored on stop() so
+        # a restart re-resolves from built-ins, not the prior resolution.
+        self._pristine_mcp_servers = list(config.mcp.servers)
         self.sandbox: PTCSandbox | None = None
         self.mcp_registry: MCPRegistry | None = None
+        # The built-in registry this session connected/borrowed. ``mcp_registry``
+        # above may be SWAPPED to a per-workspace composite that wraps this one;
+        # cleanup/stop must disconnect the BUILTIN (when owned), never the
+        # composite (which has no live subprocesses to tear down).
+        self._builtin_mcp_registry: MCPRegistry | None = None
         # False means we're borrowing the process-global frozen registry;
         # stop/cleanup must NOT call disconnect_all on a borrowed instance.
         self._owns_mcp_registry: bool = False
         self._initialized = False
+
+        # Per-workspace MCP resolution, cached once per session (resolved by the
+        # WorkspaceManager under its lock, then re-used per turn so create_agent
+        # never re-resolves or re-queries the DB). ``mcp_registry`` may be
+        # swapped to a composite (built-ins + user servers) by the manager;
+        # ``mcp_tool_summary`` is the precomputed prompt summary string;
+        # ``mcp_config_version`` tags which workspace config version produced
+        # the current composite + summary.
+        self.mcp_tool_summary: str | None = None
+        self.mcp_config_version: int | None = None
+
+        # The platform-secret fleet generation whose bindings were last applied
+        # to this session's sandbox (the ``mcp_config_version`` analog) — lets
+        # the per-acquisition resync short-circuit without touching the provider.
+        self.platform_secret_version: int | None = None
 
         # agent.md cache with dirty flag (force first read)
         self._agent_md_cache: str | None = None
@@ -52,6 +76,13 @@ class Session:
                         self.sandbox.normalize_path("agent.md")
                     )
                 except Exception:
+                    # A missing agent.md is a silent None from aread_file_text;
+                    # reaching here means the read itself failed.
+                    logger.warning(
+                        "Failed to read agent.md",
+                        conversation_id=self.conversation_id,
+                        exc_info=True,
+                    )
                     self._agent_md_cache = None
             else:
                 self._agent_md_cache = None
@@ -69,6 +100,8 @@ class Session:
         user_id: str | None = None,
         workspace_id: str | None = None,
         on_state_observed: Callable[[str], None] | None = None,
+        tier: str | None = None,
+        auto_stop_minutes: int | None = None,
     ) -> None:
         """Initialize the session (connect MCP servers and setup sandbox).
 
@@ -80,6 +113,10 @@ class Session:
             on_state_observed: Optional sync callback invoked with the initial
                 sandbox state string when reconnecting (ignored on new-sandbox
                 path since state doesn't exist yet). See PTCSandbox.reconnect.
+            tier: Resource tier to size a newly-created sandbox at (ignored on the
+                reconnect path — an existing sandbox keeps its size).
+            auto_stop_minutes: Auto-stop interval override in minutes (0 for
+                always-on) applied to a newly-created sandbox.
         """
         if self._initialized:
             logger.warning(
@@ -101,6 +138,7 @@ class Session:
         else:
             self.mcp_registry = MCPRegistry(self.config)
             self._owns_mcp_registry = True
+        self._builtin_mcp_registry = self.mcp_registry
 
         if sandbox_id:
             # RECONNECT MODE: Run MCP connections and sandbox start in parallel
@@ -137,7 +175,9 @@ class Session:
 
             try:
                 snapshot_name, _ = await asyncio.gather(
-                    self.sandbox.setup_sandbox_workspace(),
+                    self.sandbox.setup_sandbox_workspace(
+                        tier=tier, auto_stop_minutes=auto_stop_minutes
+                    ),
                     self.mcp_registry.connect_all(),
                 )
             except Exception:
@@ -210,6 +250,7 @@ class Session:
             self.mcp_registry = MCPRegistry(self.config)
             self._owns_mcp_registry = True
             await self.mcp_registry.connect_all()
+        self._builtin_mcp_registry = self.mcp_registry
         mcp_ms = (time.time() - _t0) * 1000
 
         # Attach registry to sandbox (needed later for sync_sandbox_assets)
@@ -241,10 +282,15 @@ class Session:
             await self.sandbox.cleanup()
             self.sandbox = None
 
-        if self.mcp_registry and self._owns_mcp_registry:
-            await self.mcp_registry.disconnect_all()
+        # Disconnect the BUILTIN registry (never the composite — it has no live
+        # subprocesses). mcp_registry may have been swapped to a composite.
+        if self._builtin_mcp_registry and self._owns_mcp_registry:
+            await self._builtin_mcp_registry.disconnect_all()
         self.mcp_registry = None
+        self._builtin_mcp_registry = None
         self._owns_mcp_registry = False
+        self.mcp_tool_summary = None
+        self.mcp_config_version = None
 
         self._initialized = False
         self._agent_md_dirty = True
@@ -273,8 +319,8 @@ class Session:
             except Exception:
                 pass
 
-        if self.mcp_registry and self._owns_mcp_registry:
-            await self.mcp_registry.disconnect_all()
+        if self._builtin_mcp_registry and self._owns_mcp_registry:
+            await self._builtin_mcp_registry.disconnect_all()
 
         # Mark as uninitialized so the next restart will reconnect.
         # This preserves the fast early-return path in initialize() when the
@@ -283,7 +329,13 @@ class Session:
         self._agent_md_dirty = True
         self.sandbox = None
         self.mcp_registry = None
+        self._builtin_mcp_registry = None
         self._owns_mcp_registry = False
+        self.mcp_tool_summary = None
+        self.mcp_config_version = None
+        # Restore the pristine server list so a restart re-enters PTCSandbox with
+        # the unresolved built-ins, not the stale per-workspace resolution.
+        self.config.mcp.servers = list(self._pristine_mcp_servers)
 
         logger.info("Session stopped", conversation_id=self.conversation_id)
 

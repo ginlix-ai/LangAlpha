@@ -7,6 +7,11 @@ export default {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        // Route the `font-mono` utility onto the locked JetBrains Mono face
+        // (DESIGN.md); without this it silently resolves to ui-monospace.
+        mono: ["JetBrains Mono", "Menlo", "ui-monospace", "SFMono-Regular", "monospace"],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",

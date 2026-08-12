@@ -143,7 +143,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
       <div
         className="sticky top-0 z-30 flex items-center justify-between px-4 sm:px-6 py-3"
         style={{
-          backgroundColor: 'var(--color-bg-page)',
+          backgroundColor: 'var(--color-bg-canvas)',
           borderBottom: '1px solid var(--color-border-muted)',
           backdropFilter: 'blur(12px)',
           WebkitBackdropFilter: 'blur(12px)',
@@ -289,8 +289,8 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
                   onClick={() => layoutToggle.onEditModeChange?.(!layoutToggle.editMode)}
                   className="p-2 rounded-md transition-colors"
                   style={{
-                    color: layoutToggle.editMode ? 'var(--color-text-on-accent)' : 'var(--color-text-secondary)',
-                    backgroundColor: layoutToggle.editMode ? 'var(--color-accent-primary)' : 'transparent',
+                    color: layoutToggle.editMode ? 'var(--color-btn-primary-text)' : 'var(--color-text-secondary)',
+                    backgroundColor: layoutToggle.editMode ? 'var(--color-btn-primary-bg)' : 'transparent',
                   }}
                   aria-label={t(layoutToggle.editMode ? 'dashboard.layoutToggle.exitEditLayout' : 'dashboard.layoutToggle.editLayout')}
                   title={t(layoutToggle.editMode ? 'dashboard.layoutToggle.exitEditLayout' : 'dashboard.layoutToggle.editLayout')}

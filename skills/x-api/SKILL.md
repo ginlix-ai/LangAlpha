@@ -108,14 +108,14 @@ Every tool returns `{"error": "...", ...}` on failure — they never raise. Alwa
 ## Do / Don't
 
 - **Do** read `token = get("X_BEARER_TOKEN")` once and reuse it across calls.
-- **Do** cross-reference with `get_stock_daily_prices` and `get_sec_filing` when investigating price moves or disclosures.
+- **Do** cross-reference with `get_daily_prices` and `get_sec_filing` when investigating price moves or disclosures.
 - **Don't** hardcode tokens. Ever.
 - **Don't** cache `next_token` across sessions — cursors can expire.
 - **Don't** assume every author is resolved — check for `{unresolved: true}` before reading `username`.
 
 ## Related
 
-- `get_stock_daily_prices` — cross-reference X sentiment with price action
+- `get_daily_prices` — cross-reference X sentiment with price action
 - `get_sec_filing` — pair chatter with official disclosures
 - `scrapling` `get` / `fetch` — fallback for public pages when the API is blocked
 - `web_search` — broader news search that also indexes X posts

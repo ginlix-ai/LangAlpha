@@ -103,6 +103,14 @@ def get_crawler_backend(default: str = "scrapling") -> str:
     return str(_get_tool_config('crawler.backend', default))
 
 
+def get_crawl_provider(default: str = "firecrawl") -> str:
+    """Read crawl_provider from agent_config.yaml; defaults to firecrawl."""
+    provider = _get_tool_config('crawl_provider')
+    if isinstance(provider, str) and provider:
+        return provider
+    return default
+
+
 # =============================================================================
 # Sitemap Configuration
 # =============================================================================

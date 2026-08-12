@@ -6,22 +6,44 @@ Reusable CSS and component patterns for financial dashboards. Copy-paste ready.
 
 ## Simple Tier (Vanilla HTML / CSS / JS)
 
-### 1. Base Dark Theme
+### 1. Theme Foundation
 
-Complete CSS foundation. Include this in every dashboard `<style>` block.
+Complete CSS foundation. Include this in every dashboard `<style>` block, and style
+everything below it with the bridge variables only — never a palette hex.
 
 ```css
-/* === Dark Theme Foundation === */
+/* === Theme Foundation === */
+/* App token if injected; else OS-adaptive fallback (private --fb-* names can
+   never override injected tokens). Component styles below use the bridge names. */
 :root {
-  --bg-page: #0f1117;
-  --bg-card: #1a1d27;
-  --bg-hover: #252a36;
-  --text-primary: #e5e7eb;
-  --text-secondary: #9ca3af;
-  --accent: #3b82f6;
-  --positive: #10b981;
-  --negative: #ef4444;
-  --border: #2d3748;
+  --bg-page:      var(--color-bg-page,      var(--fb-bg-page));
+  --bg-card:      var(--color-bg-card,      var(--fb-bg-card));
+  --bg-elevated:  var(--color-bg-elevated,  var(--fb-bg-elevated));
+  --bg-subtle:    var(--color-bg-subtle,    var(--fb-bg-subtle));
+  --bg-hover:     var(--color-bg-hover,     var(--fb-bg-hover));
+  --text-primary:   var(--color-text-primary,   var(--fb-text-primary));
+  --text-secondary: var(--color-text-secondary, var(--fb-text-secondary));
+  --text-tertiary:  var(--color-text-tertiary,  var(--fb-text-tertiary));
+  --border:   var(--color-border-muted,   var(--fb-border-muted));
+  --accent:   var(--color-accent-primary, var(--fb-accent-primary));
+  --positive: var(--color-profit,  var(--fb-profit));
+  --negative: var(--color-loss,    var(--fb-loss));
+  --warning:  var(--color-warning, var(--fb-warning));
+
+  --fb-bg-page: #fbfaf8; --fb-bg-card: #ffffff; --fb-bg-elevated: #ffffff;
+  --fb-bg-subtle: #f4f2ee; --fb-bg-hover: #efece7;
+  --fb-text-primary: #1a1a1a; --fb-text-secondary: #5a5a5a; --fb-text-tertiary: #8a8a8a;
+  --fb-border-muted: #e4e1dc; --fb-accent-primary: #1f5fb4;
+  --fb-profit: #1a7f4f; --fb-loss: #b42318; --fb-warning: #b7791f;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fb-bg-page: #0f1117; --fb-bg-card: #1a1d27; --fb-bg-elevated: #20242f;
+    --fb-bg-subtle: #161a24; --fb-bg-hover: #252a36;
+    --fb-text-primary: #e8e8e8; --fb-text-secondary: #9ca3af; --fb-text-tertiary: #6b7280;
+    --fb-border-muted: #262a33; --fb-accent-primary: #5b9bff;
+    --fb-profit: #3fb37a; --fb-loss: #f0685a; --fb-warning: #d69e2e;
+  }
 }
 
 /* Reset */
@@ -320,7 +342,7 @@ Data table with sticky header, alternating rows, right-aligned numbers, and posi
 
 /* Alternating row backgrounds */
 .fin-table tbody tr:nth-child(even) {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-subtle);
 }
 
 /* Hover highlight */
@@ -452,7 +474,8 @@ CSS-only spinner with semi-transparent backdrop. Show while data loads, hide whe
   left: 0;
   width: 100%;
   height: 100%;
-  background: rgba(15, 17, 23, 0.85);
+  /* Translucent scrim in the current theme's page color */
+  background: color-mix(in srgb, var(--bg-page) 85%, transparent);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -595,7 +618,8 @@ function formatMultiple(value, decimals = 1) {
 
 ### 1. Tailwind Config
 
-Extend the default Tailwind config with financial dashboard colors. Dark theme is the default.
+Map the Tailwind color names onto the bridge variables, so the React tier themes the
+same way the vanilla tier does.
 
 ```javascript
 // tailwind.config.js
@@ -605,15 +629,16 @@ export default {
   theme: {
     extend: {
       colors: {
-        page:      '#0f1117',
-        card:      '#1a1d27',
-        hover:     '#252a36',
-        border:    '#2d3748',
-        accent:    '#3b82f6',
-        positive:  '#10b981',
-        negative:  '#ef4444',
-        'text-primary':   '#e5e7eb',
-        'text-secondary': '#9ca3af',
+        page:      'var(--bg-page)',
+        card:      'var(--bg-card)',
+        subtle:    'var(--bg-subtle)',
+        hover:     'var(--bg-hover)',
+        border:    'var(--border)',
+        accent:    'var(--accent)',
+        positive:  'var(--positive)',
+        negative:  'var(--negative)',
+        'text-primary':   'var(--text-primary)',
+        'text-secondary': 'var(--text-secondary)',
       },
       fontFamily: {
         sans: [
@@ -630,6 +655,9 @@ export default {
 Base styles in `src/index.css`:
 
 ```css
+/* Paste the Theme Foundation :root block (Simple Tier §1) here — the Tailwind
+   color names above resolve through its bridge variables. */
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -919,7 +947,7 @@ export default function FinancialTable({
               <tr
                 key={i}
                 className={`hover:bg-hover transition-colors ${
-                  i % 2 === 1 ? 'bg-white/[0.02]' : ''
+                  i % 2 === 1 ? 'bg-subtle' : ''
                 }`}
               >
                 {columns.map(col => renderCell(row, col))}

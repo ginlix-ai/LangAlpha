@@ -6,7 +6,6 @@ import {
   Download,
   FileText,
   Info,
-  Loader2,
   Pencil,
   RefreshCw,
   ScrollText,
@@ -27,6 +26,7 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from '@/components/ui/hover-card';
+import { Loader } from '@/components/ui/loader';
 import {
   useDeleteUserMemo,
   useReadUserMemo,
@@ -187,7 +187,7 @@ function StatusBadge({ status }: { status: MemoMetadataStatus | null | undefined
   if (status === 'ready') {
     return (
       <span
-        className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
+        className="inline-flex items-center rounded-full px-2 py-0.5 text-[0.625rem] font-medium"
         style={{
           backgroundColor: 'var(--color-accent-soft)',
           color: 'var(--color-accent-primary)',
@@ -200,7 +200,7 @@ function StatusBadge({ status }: { status: MemoMetadataStatus | null | undefined
   if (status === 'failed') {
     return (
       <span
-        className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
+        className="inline-flex items-center rounded-full px-2 py-0.5 text-[0.625rem] font-medium"
         style={{
           backgroundColor: 'var(--color-loss-soft)',
           color: 'var(--color-loss)',
@@ -212,13 +212,15 @@ function StatusBadge({ status }: { status: MemoMetadataStatus | null | undefined
   }
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
+      className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.625rem] font-medium"
       style={{
         backgroundColor: 'var(--color-border-muted)',
         color: 'var(--color-text-tertiary)',
       }}
     >
-      <Loader2 className="h-3 w-3 animate-spin" />
+      <span aria-hidden="true" className="flex-shrink-0">
+        <Loader size={12} className="text-current" />
+      </span>
       {t('memoPanel.status.pending')}
     </span>
   );
@@ -830,11 +832,11 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                 title={t('memoPanel.actions.regenerate')}
                 disabled={regenerateMutation.isPending}
               >
-                <RefreshCw
-                  className={`h-4 w-4 ${
-                    regenerateMutation.isPending ? 'animate-spin' : ''
-                  }`}
-                />
+                {regenerateMutation.isPending ? (
+                  <Loader size={16} className="text-current" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
               </button>
             )}
             <button
@@ -940,7 +942,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                 className="flex items-center justify-center py-10"
                 style={{ color: 'var(--color-text-tertiary)' }}
               >
-                <Loader2 className="h-5 w-5 animate-spin" />
+                <Loader size={20} className="text-current" />
               </div>
             )
           ) : editing ? (
@@ -973,12 +975,12 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                   disabled={writeMutation.isPending}
                   className="px-3 py-1.5 rounded text-xs font-medium"
                   style={{
-                    backgroundColor: 'var(--color-accent-primary)',
-                    color: 'var(--color-text-on-accent)',
+                    backgroundColor: 'var(--color-btn-primary-bg)',
+                    color: 'var(--color-btn-primary-text)',
                   }}
                 >
                   {writeMutation.isPending ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
+                    <Loader size={12} className="text-current" />
                   ) : (
                     t('memoPanel.actions.save')
                   )}
@@ -993,11 +995,13 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
               {t('memoPanel.loading')}
             </div>
           ) : isMarkdown ? (
-            <Markdown
-              content={content}
-              variant="panel"
-              onOpenFile={onOpenFile ? handleBodyLinkOpen : undefined}
-            />
+            <div className="font-content">
+              <Markdown
+                content={content}
+                variant="panel"
+                onOpenFile={onOpenFile ? handleBodyLinkOpen : undefined}
+              />
+            </div>
           ) : (
             <pre
               className="whitespace-pre-wrap break-words text-xs font-mono"
@@ -1115,9 +1119,11 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                 title={t('memoPanel.refresh')}
                 disabled={list.isFetching}
               >
-                <RefreshCw
-                  className={`h-4 w-4 ${list.isFetching ? 'animate-spin' : ''}`}
-                />
+                {list.isFetching ? (
+                  <Loader size={16} className="text-current" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
               </button>
               <button
                 onClick={() => setSelectMode(true)}
@@ -1131,13 +1137,15 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                 onClick={() => fileInputRef.current?.click()}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium"
                 style={{
-                  backgroundColor: 'var(--color-accent-primary)',
-                  color: 'var(--color-text-on-accent)',
+                  backgroundColor: 'var(--color-btn-primary-bg)',
+                  color: 'var(--color-btn-primary-text)',
                 }}
                 disabled={uploadMutation.isPending}
               >
                 {uploadMutation.isPending ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span aria-hidden="true" className="flex-shrink-0">
+                    <Loader size={14} className="text-current" />
+                  </span>
                 ) : (
                   <Upload className="h-3.5 w-3.5" />
                 )}
@@ -1314,7 +1322,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                       color: 'var(--color-text-primary)',
                       backgroundColor:
                         selectMode && isSelected
-                          ? 'var(--color-accent-soft)'
+                          ? 'var(--color-bg-elevated)'
                           : 'transparent',
                     }}
                     onMouseEnter={(e) => {
@@ -1325,7 +1333,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                     onMouseLeave={(e) => {
                       (e.currentTarget as HTMLTableRowElement).style.backgroundColor =
                         selectMode && isSelected
-                          ? 'var(--color-accent-soft)'
+                          ? 'var(--color-bg-elevated)'
                           : 'transparent';
                     }}
                   >
@@ -1359,7 +1367,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                           </div>
                           {isSandboxSourced && showProvenance && (
                             <div
-                              className="truncate max-w-[14rem] text-[10px]"
+                              className="truncate max-w-[14rem] text-[0.625rem]"
                               style={{ color: 'var(--color-text-tertiary)' }}
                               title={sourceTitle}
                             >

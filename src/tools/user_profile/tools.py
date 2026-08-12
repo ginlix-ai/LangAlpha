@@ -166,7 +166,7 @@ async def _update_risk_preference(config: RunnableConfig, data: dict[str, Any], 
         user_id=user_id, risk_preference=risk_pref, replace=replace
     )
     await invalidate_user_prefs_cache(user_id)
-    from src.ptc_agent.agent.graph import invalidate_user_profile_cache as _inv_profile
+    from ptc_agent.agent.graph import invalidate_user_profile_cache as _inv_profile
     await _inv_profile(user_id)
     await maybe_complete_onboarding(user_id)
     return {"success": True, "risk_preference": prefs.get("risk_preference", {})}
@@ -185,7 +185,7 @@ async def _update_investment_preference(config: RunnableConfig, data: dict[str, 
         user_id=user_id, investment_preference=investment_pref, replace=replace
     )
     await invalidate_user_prefs_cache(user_id)
-    from src.ptc_agent.agent.graph import invalidate_user_profile_cache as _inv_profile
+    from ptc_agent.agent.graph import invalidate_user_profile_cache as _inv_profile
     await _inv_profile(user_id)
     return {"success": True, "investment_preference": prefs.get("investment_preference", {})}
 
@@ -203,7 +203,7 @@ async def _update_agent_preference(config: RunnableConfig, data: dict[str, Any],
         user_id=user_id, agent_preference=agent_pref, replace=replace
     )
     await invalidate_user_prefs_cache(user_id)
-    from src.ptc_agent.agent.graph import invalidate_user_profile_cache as _inv_profile
+    from ptc_agent.agent.graph import invalidate_user_profile_cache as _inv_profile
     await _inv_profile(user_id)
     return {"success": True, "agent_preference": prefs.get("agent_preference", {})}
 

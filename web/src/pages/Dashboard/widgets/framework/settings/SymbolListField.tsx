@@ -106,7 +106,7 @@ export function SymbolListField({
         {value.map((sym) => (
           <span
             key={sym}
-            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] dashboard-mono"
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[0.6875rem] dashboard-mono"
             style={{
               backgroundColor: 'var(--color-bg-subtle)',
               color: 'var(--color-text-primary)',
@@ -145,12 +145,12 @@ export function SymbolListField({
         />
       </div>
       {helper && (
-        <span className="text-[11px] mt-1 block" style={{ color: 'var(--color-text-tertiary)' }}>
+        <span className="text-[0.6875rem] mt-1 block" style={{ color: 'var(--color-text-tertiary)' }}>
           {helper}
         </span>
       )}
       {atCap && (
-        <span className="text-[11px] mt-1 block" style={{ color: 'var(--color-text-tertiary)' }}>
+        <span className="text-[0.6875rem] mt-1 block" style={{ color: 'var(--color-text-tertiary)' }}>
           {t('dashboard.widgets.settings.symbolListHelperAtCap', { max })}
         </span>
       )}

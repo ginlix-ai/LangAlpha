@@ -1,51 +1,10 @@
-import React, { useState } from 'react';
+import React from 'react';
 import * as HoverCard from '@radix-ui/react-hover-card';
 import { useCitationMetadata } from './CitationMetadataContext';
+import { Favicon } from './Favicon';
 import './CitationBubble.css';
 
 type MarkdownComponentProps = Record<string, any>;
-
-function Monogram({ letter, size = 14 }: { letter: string; size?: number }): React.ReactElement {
-  return (
-    <span
-      style={{
-        width: size,
-        height: size,
-        borderRadius: size / 2,
-        background: 'var(--color-bg-surface)',
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: size * 0.65,
-        fontWeight: 600,
-        color: 'var(--color-text-secondary)',
-        flexShrink: 0,
-        textTransform: 'uppercase',
-      }}
-    >
-      {letter}
-    </span>
-  );
-}
-
-function Favicon({ domain, size = 14 }: { domain: string; size?: number }): React.ReactElement {
-  const [failed, setFailed] = useState(false);
-
-  if (failed) {
-    return <Monogram letter={domain.charAt(0)} size={size} />;
-  }
-
-  return (
-    <img
-      src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=32`}
-      alt=""
-      width={size}
-      height={size}
-      style={{ borderRadius: size > 14 ? 3 : 2, flexShrink: 0 }}
-      onError={() => setFailed(true)}
-    />
-  );
-}
 
 function CitationBubble({ node: _node, label, href, ...props }: MarkdownComponentProps): React.ReactElement {
   const meta = useCitationMetadata(href || '');
@@ -113,7 +72,7 @@ function CitationBubble({ node: _node, label, href, ...props }: MarkdownComponen
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
               <Favicon domain={domain} size={16} />
               <span style={{
-                fontSize: 12,
+                fontSize: '0.75rem',
                 fontWeight: 500,
                 color: 'var(--color-text-tertiary)',
                 letterSpacing: '0.01em',
@@ -130,7 +89,7 @@ function CitationBubble({ node: _node, label, href, ...props }: MarkdownComponen
                 rel="noopener noreferrer"
                 className="cite-bubble-card-title"
                 style={{
-                  fontSize: 14,
+                  fontSize: '0.875rem',
                   fontWeight: 500,
                   lineHeight: 1.45,
                   color: 'var(--color-text-primary)',
@@ -149,7 +108,7 @@ function CitationBubble({ node: _node, label, href, ...props }: MarkdownComponen
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{
-                  fontSize: 12,
+                  fontSize: '0.75rem',
                   color: 'var(--color-accent-primary)',
                   textDecoration: 'none',
                   display: 'block',
@@ -166,7 +125,7 @@ function CitationBubble({ node: _node, label, href, ...props }: MarkdownComponen
             {/* Date + Snippet */}
             {(meta?.date || meta?.snippet) && (
               <div style={{
-                fontSize: 12,
+                fontSize: '0.75rem',
                 color: 'var(--color-text-tertiary)',
                 marginTop: 6,
                 lineHeight: 1.5,

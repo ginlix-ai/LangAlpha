@@ -15,17 +15,25 @@ from uuid import UUID
 
 import redis.asyncio as redis
 import redis.exceptions as redis_exceptions
-from redis.asyncio.connection import ConnectionPool
+from redis.asyncio.connection import BlockingConnectionPool, ConnectionPool
 
 from src.config.settings import (
     is_redis_cache_enabled,
     get_nested_config,
     get_redis_max_connections,
+    get_redis_pool_timeout,
     get_redis_socket_timeout,
     get_redis_socket_connect_timeout,
 )
 
 logger = logging.getLogger(__name__)
+
+# set() without a TTL used to write an immortal key (`if ttl:`), turning
+# every missed cleanup into a permanent Redis leak. Immortality is now
+# opt-in via ttl=PERSIST; an omitted TTL falls back to a generous safety
+# net that outlives any legitimate transient state.
+PERSIST = -1
+SAFETY_TTL = 7 * 24 * 3600
 
 
 class DateTimeEncoder(json.JSONEncoder):
@@ -36,6 +44,49 @@ class DateTimeEncoder(json.JSONEncoder):
         if isinstance(obj, UUID):
             return str(obj)
         return super().default(obj)
+
+
+class EventBufferUnavailableError(RuntimeError):
+    """Redis event transport is disabled or not connected.
+
+    Distinct from a transient wire failure on purpose: there is nothing to
+    retry, so the caller must fail the run immediately instead of burning its
+    retry budget.
+    """
+
+
+# How often an active stream re-asserts "no TTL". Every write used to PERSIST,
+# which cost one command per event to insure against a rare stale stamp; a
+# periodic heal buys the same protection for ~0.2% of the traffic. Private:
+# both extras are derived from ``event_id`` below, so no caller needs to know
+# the cadence to ask for the right one.
+_HEAL_INTERVAL = 512
+
+
+def is_pool_exhaustion(err: BaseException) -> bool:
+    """True when ``err`` means "no pool slot", whatever pool class raised it.
+
+    Three spellings must map to one concept: ``MaxConnectionsError`` (non-blocking
+    pool, redis-py ≥5), the bare-parent ``"Too many connections"`` string from
+    older/forked variants, and ``ConnectionError("No connection available.")``
+    — what ``BlockingConnectionPool`` raises when its acquire timeout expires.
+    Missing the third would make the exhaustion detector go silent exactly
+    where we are moving the hot pools.
+    """
+    if isinstance(err, getattr(redis_exceptions, "MaxConnectionsError", ())):
+        return True
+    text = str(err)
+    return "Too many connections" in text or "No connection available" in text
+
+
+# Compare-and-delete: only release a lock we still own, so a request whose lock
+# already expired can't delete the lock a later holder acquired.
+_RELEASE_LOCK_LUA = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('del', KEYS[1])
+end
+return 0
+"""
 
 
 class RedisCacheClient:
@@ -106,12 +157,19 @@ class RedisCacheClient:
             return
 
         try:
+            # Blocking, now that nothing long-lived shares this pool: stream
+            # readers and pub/sub subscribers have their own. Every remaining
+            # caller is a short op, so a momentary shortage should cost a few
+            # ms of queueing — not an instant error that kills a live turn.
+            #
             # health_check_interval: redis-py sends PING on idle connections before
             # handing them out, so poisoned connections (dropped by the server or
             # network) get detected and discarded instead of lingering in the pool.
-            self.pool = ConnectionPool.from_url(
+            pool_timeout = get_redis_pool_timeout()
+            self.pool = BlockingConnectionPool.from_url(
                 self.url,
                 max_connections=self.max_connections,
+                timeout=pool_timeout,
                 socket_timeout=self.socket_timeout,
                 socket_connect_timeout=self.socket_connect_timeout,
                 decode_responses=False,
@@ -124,7 +182,8 @@ class RedisCacheClient:
             await self.client.ping()
             logger.info(
                 f"Redis cache connected: {self.url} "
-                f"(pool max={self.max_connections}, health_check=30s)"
+                f"(pool max={self.max_connections}, acquire_timeout={pool_timeout}s, "
+                f"health_check=30s)"
             )
 
         except Exception as e:
@@ -142,25 +201,11 @@ class RedisCacheClient:
             await self.pool.disconnect()
 
     def _log_error(self, context: str, err: Exception) -> None:
-        """Log a Redis error, with pool stats if the error is pool exhaustion.
-
-        Tested against redis-py 5.x where `MaxConnectionsError` is a subclass
-        of `ConnectionError`. The string fallback (`"Too many connections"`)
-        catches older/forked variants that raise the bare parent type.
-        Pool-internal attributes are underscore-prefixed in redis-py; we guard
-        with getattr so a future rename degrades gracefully to a plain log line.
-        """
-        is_pool_exhaustion = (
-            isinstance(err, getattr(redis_exceptions, "MaxConnectionsError", ()))
-            or "Too many connections" in str(err)
-        )
-        if is_pool_exhaustion:
-            in_use = len(getattr(self.pool, "_in_use_connections", []) or [])
-            avail = len(getattr(self.pool, "_available_connections", []) or [])
+        """Log a Redis error, with pool stats if the error is pool exhaustion."""
+        if is_pool_exhaustion(err):
             logger.error(
                 f"{context} — {type(err).__name__}: {err} "
-                f"(pool: in_use={in_use}, available={avail}, "
-                f"max={self.max_connections})"
+                f"(pool: {self.pool_snapshot()})"
             )
         else:
             logger.error(f"{context}: {err}")
@@ -218,6 +263,20 @@ class RedisCacheClient:
             self.stats["errors"] += 1
             return None
 
+    async def get_strict(self, key: str) -> Optional[Any]:
+        """Get with fail-loud semantics: None ONLY for a confirmed-absent key.
+
+        For callers whose retry path is an exception (outbox executors) —
+        the swallowing ``get`` would turn a Redis blip into "no data" and
+        let a required effect ack as a no-op.
+        """
+        if not self.enabled or not self.client:
+            raise RuntimeError("Redis cache disabled — strict read unavailable")
+        value = await self.client.get(key)
+        if value is None:
+            return None
+        return json.loads(value)
+
     async def set(
         self,
         key: str,
@@ -230,7 +289,9 @@ class RedisCacheClient:
         Args:
             key: Cache key
             value: Value to cache (will be JSON serialized)
-            ttl: Time-to-live in seconds (optional)
+            ttl: Time-to-live in seconds. Omitted → SAFETY_TTL (7 days), so a
+                missed cleanup can never leak a key forever; pass PERSIST for
+                a deliberately immortal key.
 
         Returns:
             True if successful, False otherwise
@@ -242,11 +303,10 @@ class RedisCacheClient:
             # Serialize to JSON with datetime support
             serialized = json.dumps(value, ensure_ascii=False, cls=DateTimeEncoder)
 
-            # Set with optional TTL
-            if ttl:
-                await self.client.setex(key, ttl, serialized)
-            else:
+            if ttl == PERSIST:
                 await self.client.set(key, serialized)
+            else:
+                await self.client.setex(key, ttl if ttl and ttl > 0 else SAFETY_TTL, serialized)
 
             self.stats["sets"] += 1
             logger.debug(f"Cache SET: {key} (TTL: {ttl}s)")
@@ -260,6 +320,71 @@ class RedisCacheClient:
             self._log_error(f"Cache set error for {key}", e)
             self.stats["errors"] += 1
             return False
+
+    async def set_many(self, items: list[tuple[str, Any, Optional[int]]]) -> bool:
+        """Write many ``(key, value, ttl)`` triples over ONE pooled connection.
+
+        The gather-of-``set()`` alternative takes a connection per key, so a
+        single wide fill can exhaust the pool by itself — which is how a
+        250-symbol quote fill DoS'd a 150-slot pool from one request.
+        """
+        if not items:
+            return True
+        if not self.enabled or not self.client:
+            return False
+
+        try:
+            async with self.client.pipeline(transaction=False) as pipe:
+                for key, value, ttl in items:
+                    serialized = json.dumps(
+                        value, ensure_ascii=False, cls=DateTimeEncoder
+                    )
+                    if ttl == PERSIST:
+                        pipe.set(key, serialized)
+                    else:
+                        pipe.setex(
+                            key, ttl if ttl and ttl > 0 else SAFETY_TTL, serialized
+                        )
+                await pipe.execute()
+            self.stats["sets"] += len(items)
+            return True
+        except (TypeError, ValueError) as e:
+            logger.error(f"Failed to serialize values for set_many: {e}")
+            self.stats["errors"] += 1
+            return False
+        except Exception as e:
+            self._log_error(f"Cache set_many error ({len(items)} keys)", e)
+            self.stats["errors"] += 1
+            return False
+
+    async def mget(self, keys: list) -> list:
+        """Get many keys in one round trip; result aligns with *keys* (None = miss)."""
+        if not keys:
+            return []
+        if not self.enabled or not self.client:
+            return [None] * len(keys)
+
+        try:
+            values = await self.client.mget(keys)
+        except Exception as e:
+            self._log_error("Cache mget error", e)
+            self.stats["errors"] += 1
+            return [None] * len(keys)
+
+        out = []
+        for key, value in zip(keys, values):
+            if value is None:
+                self.stats["misses"] += 1
+                out.append(None)
+                continue
+            try:
+                out.append(json.loads(value))
+                self.stats["hits"] += 1
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to deserialize cache value for {key}: {e}")
+                self.stats["errors"] += 1
+                out.append(None)
+        return out
 
     async def delete(self, key: str) -> bool:
         """
@@ -320,6 +445,54 @@ class RedisCacheClient:
             self.stats["errors"] += 1
             return 0
 
+    async def scan_keys(self, pattern: str) -> list[str]:
+        """Return all keys matching *pattern* using non-blocking SCAN.
+
+        Uses SCAN (via ``scan_iter``) rather than KEYS so a large keyspace can't
+        block the Redis event loop on a shared instance.
+        """
+        if not self.enabled or not self.client:
+            return []
+
+        try:
+            keys: list[str] = []
+            async for key in self.client.scan_iter(match=pattern, count=100):
+                keys.append(key.decode("utf-8") if isinstance(key, bytes) else key)
+            return keys
+        except Exception as e:
+            self._log_error(f"Cache scan error for {pattern}", e)
+            self.stats["errors"] += 1
+            return []
+
+    async def acquire_lock(self, key: str, token: str, ttl_ms: int) -> bool | None:
+        """Try to acquire a short-lived distributed lock via ``SET key NX PX``.
+
+        Returns True if acquired (caller is the leader), False if another holder
+        owns it, or None if Redis is unavailable — in which case the caller
+        should proceed without coordination rather than block.
+        """
+        if not self.enabled or not self.client:
+            return None
+
+        try:
+            ok = await self.client.set(key, token, nx=True, px=ttl_ms)
+            return bool(ok)
+        except Exception as e:
+            self._log_error(f"Lock acquire error for {key}", e)
+            self.stats["errors"] += 1
+            return None
+
+    async def release_lock(self, key: str, token: str) -> None:
+        """Release a lock only if this caller still owns it (compare-and-delete)."""
+        if not self.enabled or not self.client:
+            return
+
+        try:
+            await self.client.eval(_RELEASE_LOCK_LUA, 1, key, token)
+        except Exception as e:
+            self._log_error(f"Lock release error for {key}", e)
+            self.stats["errors"] += 1
+
     async def exists(self, key: str) -> bool:
         """
         Check if key exists in cache.
@@ -358,351 +531,128 @@ class RedisCacheClient:
             logger.error(f"Cache TTL error for {key}: {e}")
             return -2
 
-    # ==================== List Operations ====================
+    def pool_snapshot(self) -> str:
+        """Human-readable pool occupancy for error logs, never raises.
 
-    async def list_append(
-        self,
-        key: str,
-        value: Any,
-        max_size: Optional[int] = None,
-        ttl: Optional[int] = None,
-    ) -> bool:
+        Pool-internal attributes are underscore-prefixed in redis-py; a future
+        rename degrades to zeros rather than masking the original error.
         """
-        Append value to Redis list and optionally trim to max size.
-
-        Args:
-            key: Redis key
-            value: Value to append (will be JSON serialized)
-            max_size: Optional max list size (LTRIM to enforce FIFO)
-            ttl: Optional TTL for the entire list
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if not self.enabled or not self.client:
-            return False
-
-        try:
-            # Serialize value (handle both strings and objects)
-            if isinstance(value, str):
-                serialized = value
-            else:
-                serialized = json.dumps(value, ensure_ascii=False, cls=DateTimeEncoder)
-
-            # Atomic RPUSH + LTRIM + EXPIRE via pipeline
-            async with self.client.pipeline(transaction=True) as pipe:
-                pipe.rpush(key, serialized)
-                if max_size:
-                    pipe.ltrim(key, -max_size, -1)
-                if ttl:
-                    pipe.expire(key, ttl)
-                await pipe.execute()
-
-            self.stats["sets"] += 1
-            logger.debug(f"List APPEND: {key} (max_size: {max_size})")
-            return True
-
-        except Exception as e:
-            self._log_error(f"List append error for {key}", e)
-            self.stats["errors"] += 1
-            return False
-
-    async def list_range(
-        self,
-        key: str,
-        start: int = 0,
-        end: int = -1,
-    ) -> list:
-        """
-        Get range of elements from Redis list.
-
-        Args:
-            key: Redis key
-            start: Start index (0-based)
-            end: End index (-1 means end of list)
-
-        Returns:
-            List of values (strings, not deserialized)
-        """
-        if not self.enabled or not self.client:
-            return []
-
-        try:
-            values = await self.client.lrange(key, start, end)
-
-            if not values:
-                self.stats["misses"] += 1
-                return []
-
-            self.stats["hits"] += 1
-
-            # Decode bytes to strings
-            result = []
-            for value in values:
-                if isinstance(value, bytes):
-                    result.append(value.decode('utf-8'))
-                else:
-                    result.append(value)
-
-            return result
-
-        except Exception as e:
-            logger.error(f"List range error for {key}: {e}")
-            self.stats["errors"] += 1
-            return []
-
-    async def list_length(self, key: str) -> int:
-        """
-        Get length of Redis list.
-
-        Args:
-            key: Redis key
-
-        Returns:
-            List length, or 0 if not found/error
-        """
-        if not self.enabled or not self.client:
-            return 0
-
-        try:
-            return await self.client.llen(key)
-        except Exception as e:
-            logger.error(f"List length error for {key}: {e}")
-            self.stats["errors"] += 1
-            return 0
-
-    # ==================== Hash Operations ====================
-
-    async def hash_set(
-        self,
-        key: str,
-        field: str,
-        value: Any,
-        ttl: Optional[int] = None,
-    ) -> bool:
-        """
-        Set hash field value.
-
-        When `ttl` is set, HSET and EXPIRE are pipelined in a single MULTI/EXEC
-        so the write takes one pool checkout instead of two.
-
-        Args:
-            key: Redis key
-            field: Hash field name
-            value: Value to set (will be JSON serialized)
-            ttl: Optional TTL for the entire hash
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if not self.enabled or not self.client:
-            return False
-
-        try:
-            # Serialize value
-            serialized = json.dumps(value, ensure_ascii=False, cls=DateTimeEncoder)
-
-            # Pipeline HSET + EXPIRE so we make one pool checkout instead of two.
-            # Under high event rate the doubled checkouts per hash write were a
-            # contributor to pool exhaustion.
-            if ttl:
-                async with self.client.pipeline(transaction=True) as pipe:
-                    pipe.hset(key, field, serialized)
-                    pipe.expire(key, ttl)
-                    await pipe.execute()
-            else:
-                await self.client.hset(key, field, serialized)
-
-            self.stats["sets"] += 1
-            logger.debug(f"Hash SET: {key}:{field} (TTL: {ttl}s)")
-            return True
-
-        except Exception as e:
-            self._log_error(f"Hash set error for {key}:{field}", e)
-            self.stats["errors"] += 1
-            return False
-
-    async def hash_get(self, key: str, field: str) -> Optional[Any]:
-        """
-        Get hash field value.
-
-        Args:
-            key: Redis key
-            field: Hash field name
-
-        Returns:
-            Deserialized value or None
-        """
-        if not self.enabled or not self.client:
-            return None
-
-        try:
-            value = await self.client.hget(key, field)
-
-            if value is None:
-                self.stats["misses"] += 1
-                return None
-
-            self.stats["hits"] += 1
-
-            # Decode if bytes
-            if isinstance(value, bytes):
-                value = value.decode('utf-8')
-
-            # Deserialize JSON
-            return json.loads(value)
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to deserialize hash field {key}:{field}: {e}")
-            self.stats["errors"] += 1
-            return None
-        except Exception as e:
-            logger.error(f"Hash get error for {key}:{field}: {e}")
-            self.stats["errors"] += 1
-            return None
-
-    async def hash_get_all(self, key: str) -> dict:
-        """
-        Get all hash fields and values.
-
-        Args:
-            key: Redis key
-
-        Returns:
-            Dictionary of field -> value (deserialized)
-        """
-        if not self.enabled or not self.client:
-            return {}
-
-        try:
-            data = await self.client.hgetall(key)
-
-            if not data:
-                self.stats["misses"] += 1
-                return {}
-
-            self.stats["hits"] += 1
-
-            # Deserialize all values
-            result = {}
-            for field, value in data.items():
-                try:
-                    # Decode bytes keys and values
-                    field_str = field.decode('utf-8') if isinstance(field, bytes) else field
-                    value_str = value.decode('utf-8') if isinstance(value, bytes) else value
-                    result[field_str] = json.loads(value_str)
-                except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                    logger.error(f"Failed to deserialize hash field: {e}")
-
-            return result
-
-        except Exception as e:
-            self._log_error(f"Hash get all error for {key}", e)
-            self.stats["errors"] += 1
-            return {}
+        in_use = len(getattr(self.pool, "_in_use_connections", []) or [])
+        avail = len(getattr(self.pool, "_available_connections", []) or [])
+        return f"in_use={in_use}, available={avail}, max={self.max_connections}"
 
     async def pipelined_event_buffer(
         self,
-        meta_key: str,
-        max_size: int,
-        ttl: int,
+        stream_key: str,
         *,
-        event: Optional[str] = None,
-        last_event_id: Optional[int] = None,
-        stream_key: Optional[str] = None,
-        stream_event: Optional[str] = None,
-        stream_record: Optional[str] = None,
-    ) -> tuple[bool, int]:
-        """Atomic pipeline for the SSE event-buffer hot path.
+        event_id: int,
+        max_size: int,
+        stream_event: str | bytes,
+        stream_record: str | bytes | None = None,
+        ttl: Optional[int] = None,
+        bare: bool = False,
+    ) -> None:
+        """Append one SSE frame to a run's event stream. Raises on failure.
 
-        Collapses meta-hash + Stream commands into one MULTI/EXEC so the
-        whole spill takes one pool checkout. The XADD payload is taken
-        from ``stream_event`` when set, otherwise ``event``. Main-workflow
-        callers pass only ``event``; the subagent caller passes
-        ``stream_event`` (pre-rendered SSE wire) and ``stream_record``
-        (JSON record) — when both are passed, ``event`` is unused.
+        Steady state is a single bare ``XADD``. The explicit ``{event_id}-0``
+        id is both the frontend's integer cursor and the write's idempotency
+        fence — a duplicate id is rejected by Redis, which is what lets the
+        caller retry an ambiguous write safely.
 
-        When ``stream_record`` is provided, the XADD entry carries a second
-        ``b"record"`` field with the JSON record payload. The post-turn
-        collector (``iter_subagent_events_full``) reads this field via
-        XRANGE to rebuild full subagent history without a separate List.
+        Two extras ride along, both derived from ``event_id`` because both are
+        properties of where the frame sits in the run: the first frame DELs
+        whatever a crashed predecessor left under the key, and every 512th
+        re-PERSISTs so a TTL stamped by a failed cleanup or a stale collector
+        can't expire a live stream. ``bare`` suppresses both, which is what a
+        retry needs — replaying a DEL could erase a frame this process never
+        wrote, and replaying a PERSIST could re-immortalize a stream already
+        stamped terminal.
 
-        Raises ValueError when a stream write is requested (both
-        ``stream_key`` and ``last_event_id`` provided) but neither
-        ``event`` nor ``stream_event`` carries a payload — that would
-        advance the meta ``seq`` counter past an event that was never
-        written.
+        When ``stream_record`` is given the entry carries a second
+        ``b"record"`` field, which the post-turn collector reads back with
+        XRANGE instead of keeping a parallel List.
 
-        Returns (success, seq). On success ``seq`` is the new event count
-        (1+); on failure it's 0.
+        Never swallows the cause: the caller classifies by exception type, and
+        a bare ``False`` would erase the difference between "pool exhausted,
+        nothing was sent" and "reply lost, the write may have landed".
         """
         if not self.enabled or not self.client:
-            return False, 0
+            raise EventBufferUnavailableError(
+                f"Redis event transport unavailable for {stream_key}"
+            )
+
+        payload = (
+            stream_event.encode("utf-8")
+            if isinstance(stream_event, str)
+            else stream_event
+        )
+        fields: dict[bytes, bytes] = {b"event": payload}
+        if stream_record is not None:
+            fields[b"record"] = (
+                stream_record.encode("utf-8")
+                if isinstance(stream_record, str)
+                else stream_record
+            )
+        append = dict(
+            id=f"{int(event_id)}-0", maxlen=max_size, approximate=True
+        )
+        reset_epoch = not bare and event_id == 1
+        heal_retention = not bare and event_id % _HEAL_INTERVAL == 0
 
         try:
-            now_iso_json = json.dumps(datetime.now().isoformat())
-            async with self.client.pipeline(transaction=True) as pipe:
-                # Dirty-resume guard. When last_event_id == 1 we're at the
-                # start of a fresh handler instance. If a prior turn left
-                # state behind (process crash before ``clear_event_buffer``
-                # ran), DEL the stream + ``seq`` counter in the same
-                # MULTI/EXEC so XADD with id=1-0 and HINCRBY land on fresh
-                # state. ``created_at`` is preserved (HDEL only ``seq``).
-                guard_cmds = 0
-                if last_event_id == 1:
-                    if stream_key is not None:
+            if not (reset_epoch or heal_retention or ttl is not None):
+                await self.client.xadd(stream_key, fields, **append)
+            else:
+                async with self.client.pipeline(transaction=True) as pipe:
+                    if reset_epoch:
                         pipe.delete(stream_key)
-                        guard_cmds += 1
-                    pipe.hdel(meta_key, "seq")
-                    guard_cmds += 1
-
-                pipe.hincrby(meta_key, "seq", 1)
-                pipe.hsetnx(meta_key, "created_at", now_iso_json)
-                pipe.hset(meta_key, "updated_at", now_iso_json)
-                if last_event_id is not None:
-                    pipe.hset(meta_key, "last_event_id", json.dumps(last_event_id))
-                pipe.expire(meta_key, ttl)
-                # Stream write when both key and id are provided. Explicit
-                # ID `<seq>-0` keeps the cursor integer-friendly for the
-                # frontend's parseInt-based last_event_id parsing while
-                # preserving Redis Streams' lexicographic ordering.
-                if stream_key is not None and last_event_id is not None:
-                    raw = stream_event if stream_event is not None else event
-                    if raw is None:
-                        raise ValueError(
-                            "pipelined_event_buffer needs `event` or "
-                            "`stream_event` when writing to a stream"
-                        )
-                    payload = raw.encode("utf-8") if isinstance(raw, str) else raw
-                    fields: dict[bytes, bytes] = {b"event": payload}
-                    if stream_record is not None:
-                        record_bytes = (
-                            stream_record.encode("utf-8")
-                            if isinstance(stream_record, str)
-                            else stream_record
-                        )
-                        fields[b"record"] = record_bytes
-                    pipe.xadd(
-                        stream_key,
-                        fields,
-                        id=f"{last_event_id}-0",
-                        maxlen=max_size,
-                        approximate=True,
-                    )
-                    pipe.expire(stream_key, ttl)
-                results = await pipe.execute()
-            self.stats["sets"] += 1
-            seq = (
-                int(results[guard_cmds])
-                if len(results) > guard_cmds
-                else 0
-            )
-            return True, seq
-        except Exception as e:
-            log_target = stream_key or meta_key
-            self._log_error(f"Pipelined event buffer failed for {log_target}", e)
+                    pipe.xadd(stream_key, fields, **append)
+                    if ttl is not None:
+                        pipe.expire(stream_key, ttl)
+                    elif heal_retention:
+                        pipe.persist(stream_key)
+                    await pipe.execute()
+        except Exception:
             self.stats["errors"] += 1
-            return False, 0
+            raise
+        self.stats["sets"] += 1
+
+    async def stream_tail(
+        self, stream_key: str
+    ) -> Optional[tuple[int, Optional[bytes], Optional[bytes]]]:
+        """Newest entry's integer id, ``event`` and ``record``; None if empty.
+
+        The disambiguator for an ambiguous write: MAXLEN trims from the head,
+        never the tail, so the newest entry is a stable witness of what landed.
+        Auto-id frames (the run_end/error path) carry a millisecond timestamp
+        and therefore compare far above any event id — which is exactly the
+        signal that something other than this writer appended.
+
+        Both fields ride along because the id alone cannot prove authorship:
+        a run's stream is reset at event 1, so a crashed predecessor's frame
+        can sit under the very id the caller is about to write. ``record`` is
+        returned as well as ``event`` because it is the only field carrying
+        the writer's ownership ids — the rendered SSE frame does not. One
+        XREVRANGE returns all three, so proving the bytes costs no round trip.
+        """
+        if not self.enabled or not self.client:
+            return None
+        entries = await self.client.xrevrange(stream_key, count=1)
+        if not entries:
+            return None
+        raw, fields = entries[0][0], entries[0][1]
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8")
+        fields = fields or {}
+
+        def _as_bytes(value: Any) -> Optional[bytes]:
+            return value.encode("utf-8") if isinstance(value, str) else value
+
+        return (
+            int(str(raw).split("-", 1)[0]),
+            _as_bytes(fields.get(b"event")),
+            _as_bytes(fields.get(b"record")),
+        )
 
     async def clear_all(self) -> bool:
         """
@@ -777,6 +727,11 @@ def get_cache_client() -> RedisCacheClient:
         _cache_client = RedisCacheClient(max_connections=get_redis_max_connections())
 
     return _cache_client
+
+
+def peek_cache_pool() -> Optional[ConnectionPool]:
+    """The cache pool if one exists, without building it (metrics callbacks)."""
+    return _cache_client.pool if _cache_client is not None else None
 
 
 async def init_cache() -> None:

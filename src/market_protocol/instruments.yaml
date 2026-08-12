@@ -1,0 +1,68 @@
+# Seed registry: per-instrument overrides applied on top of the suffix/MIC
+# heuristic in symbology.py. Keys are legacy spellings (bare US tickers or
+# suffixed foreign tickers), uppercased on load. Supported override fields:
+# mic, name, currency, price_currency, display_unit, calendar_id.
+#
+# Bare US tickers default to XNYS (calendar-equivalent to XNAS); pin known
+# Nasdaq listings here so their instrument keys carry the true listing MIC.
+instruments:
+  AAPL:
+    mic: XNAS
+    name: Apple Inc.
+  MSFT:
+    mic: XNAS
+    name: Microsoft Corporation
+  GOOGL:
+    mic: XNAS
+    name: Alphabet Inc.
+  AMZN:
+    mic: XNAS
+    name: "Amazon.com, Inc."
+  META:
+    mic: XNAS
+    name: "Meta Platforms, Inc."
+  NVDA:
+    mic: XNAS
+    name: NVIDIA Corporation
+  TSLA:
+    mic: XNAS
+    name: "Tesla, Inc."
+  AVGO:
+    mic: XNAS
+    name: Broadcom Inc.
+  NFLX:
+    mic: XNAS
+    name: "Netflix, Inc."
+  AMD:
+    mic: XNAS
+    name: "Advanced Micro Devices, Inc."
+  INTC:
+    mic: XNAS
+    name: Intel Corporation
+  QCOM:
+    mic: XNAS
+    name: QUALCOMM Incorporated
+  CSCO:
+    mic: XNAS
+    name: "Cisco Systems, Inc."
+  ADBE:
+    mic: XNAS
+    name: Adobe Inc.
+  PEP:
+    mic: XNAS
+    name: "PepsiCo, Inc."
+  COST:
+    mic: XNAS
+    name: Costco Wholesale Corporation
+  TMUS:
+    mic: XNAS
+    name: "T-Mobile US, Inc."
+  MU:
+    mic: XNAS
+    name: "Micron Technology, Inc."
+  PLTR:
+    mic: XNAS
+    name: Palantir Technologies Inc.
+  COIN:
+    mic: XNAS
+    name: "Coinbase Global, Inc."

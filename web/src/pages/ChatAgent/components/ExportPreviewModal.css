@@ -22,7 +22,7 @@
 }
 
 .export-preview-sidebar-label {
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   color: var(--color-text-secondary);
   margin-bottom: 4px;
@@ -31,7 +31,7 @@
 /* Match Select component inner font-size to sidebar (13px vs default text-sm 14px) */
 .export-preview-sidebar select,
 .export-preview-mobile-settings select {
-  font-size: 13px !important;
+  font-size: 0.8125rem !important;
 }
 
 /* Select component wrapper — remove gap between label and control */
@@ -71,7 +71,7 @@
   cursor: not-allowed;
 }
 .export-preview-stepper-value {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--color-text-primary);
   min-width: 40px;
@@ -88,10 +88,10 @@
   width: 100%;
   padding: 10px;
   border: none;
-  background: var(--color-accent-primary);
-  color: white;
+  background: var(--color-btn-primary-bg);
+  color: var(--color-btn-primary-text);
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s;
@@ -243,7 +243,7 @@
 
 /* Page count label in sidebar */
 .export-preview-page-count {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-text-secondary);
   text-align: center;
 }
@@ -279,7 +279,7 @@
   gap: 12px;
   height: 100%;
   color: var(--color-text-secondary);
-  font-size: 13px;
+  font-size: 0.8125rem;
   text-align: center;
 }
 .export-preview-retry-btn {
@@ -288,7 +288,7 @@
   border-radius: 6px;
   background: var(--color-bg-elevated);
   color: var(--color-text-primary);
-  font-size: 13px;
+  font-size: 0.8125rem;
   cursor: pointer;
   transition: all 0.15s;
 }
@@ -305,7 +305,7 @@
   border-radius: 6px;
   background: transparent;
   color: var(--color-text-secondary);
-  font-size: 13px;
+  font-size: 0.8125rem;
   cursor: pointer;
   transition: all 0.15s;
 }
@@ -329,7 +329,7 @@
   padding: 0 0 4px;
 }
 .export-preview-mobile-title {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--color-text-primary);
 }
@@ -371,7 +371,7 @@
 }
 .export-preview-mobile-row-pair .export-preview-stepper-value {
   flex: 1;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
 }
 
@@ -477,7 +477,9 @@
     margin: 15mm; /* Paged.js @page{margin:0} is scoped to media=screen during print */
   }
 
-  /* Unclip ancestor chain — react-to-print iframe inherits parent stylesheets */
+  /* Unclip ancestor chain — react-to-print iframe inherits parent stylesheets.
+     The matching `color-scheme: light` lives in the pageStyle prop, not here —
+     see the comment on useReactToPrint in ExportPreviewModal.tsx. */
   html, body {
     height: auto !important;
     overflow: visible !important;

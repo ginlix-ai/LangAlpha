@@ -21,31 +21,32 @@ from ptc_agent.agent.middleware import (
     resolve_compaction_client,
     SkillsMiddleware,
     AskUserMiddleware,
+    LeakDetectionMiddleware,
+    MultimodalMiddleware,
+    ProvenanceMiddleware,
+    ReasoningCompatibilityMiddleware,
 )
+from ptc_agent.agent.middleware.openai_prompt_caching import OpenAIPromptCachingMiddleware
 from ptc_agent.agent.middleware.runtime_context import RuntimeContextMiddleware
+from ptc_agent.agent.state import DeltaAgentState
 from ptc_agent.agent.prompts import format_current_time, get_loader
 from ptc_agent.config import AgentConfig
 
-# Import model resilience middleware
-try:
-    from langchain.agents.middleware import (
-        ModelRetryMiddleware,
-        ModelFallbackMiddleware,
-    )
-except ImportError:
-    ModelRetryMiddleware = None  # type: ignore[misc,assignment]
-    ModelFallbackMiddleware = None  # type: ignore[misc,assignment]
+from ptc_agent.agent.middleware.model_resilience import (
+    ModelResilienceMiddleware,
+    build_fallback_pairs,
+)
 
 # External tools only (no sandbox, no MCP)
-from src.tools.search import get_web_search_tool
-from src.tools.fetch import web_fetch_tool
+from src.tools.web.search import get_web_search_tool
+from src.tools.web.fetch import web_fetch_tool
 from src.tools.sec.tool import get_sec_filing
 from src.tools.market_data.tool import (
-    get_stock_daily_prices,
+    get_daily_prices,
     get_company_overview,
-    get_market_indices,
+    get_market_overview,
     get_options_chain,
-    get_sector_performance,
+    get_quote,
     screen_stocks,
 )
 
@@ -125,6 +126,8 @@ class FlashAgent:
             max_search_results=10,
             time_range=None,
             verbose=False,
+            provider=self.config.search_api,
+            depth=self.config.search_depth,
         )
         tools.append(web_search_tool)
         tools.append(web_fetch_tool)
@@ -133,11 +136,11 @@ class FlashAgent:
         tools.extend(
             [
                 get_sec_filing,
-                get_stock_daily_prices,
+                get_quote,
+                get_daily_prices,
                 get_company_overview,
-                get_market_indices,
+                get_market_overview,
                 get_options_chain,
-                get_sector_performance,
                 screen_stocks,
             ]
         )
@@ -202,11 +205,24 @@ class FlashAgent:
         # Build system prompt (time + profile injected by RuntimeContextMiddleware)
         system_prompt = self._build_system_prompt(tools)
 
+        # Leak detector wired into provenance so web/market/SEC snippets are
+        # scrubbed before they're emitted/persisted, mirroring the main agent.
+        # Flash has no MCP/vault secret surface today, so this is effectively a
+        # no-op now; wiring it keeps the two modes consistent and active the
+        # moment Flash ever gains a secret source.
+        leak_detection = LeakDetectionMiddleware(
+            mcp_servers=None,
+            vault_secrets=None,
+        )
+
         # Minimal shared middleware stack
         shared_middleware: list[Any] = [
             ToolArgumentParsingMiddleware(),
             ToolErrorHandlingMiddleware(),
+            leak_detection,
             ToolResultNormalizationMiddleware(),
+            # Traces web/market/SEC reads (filesystem/MCP extractors no-op here).
+            ProvenanceMiddleware(redactor=leak_detection.redact),
         ]
 
         # Add dynamic skill loader middleware (Flash mode: inline SKILL.md)
@@ -254,39 +270,45 @@ class FlashAgent:
                 threshold=self.config.compaction.token_threshold,
             )
 
-        # Model resilience middleware (retry + fallback)
-        if ModelFallbackMiddleware is not None and self.config.llm.fallback:
-            # Use pre-resolved clients (OAuth/BYOK-aware) when available
-            if self.config.fallback_llm_clients:
-                fallback_instances = self.config.fallback_llm_clients
-            else:
-                from src.llms import get_llm_by_type
-                fallback_instances = [
-                    get_llm_by_type(name) for name in self.config.llm.fallback
-                ]
-            main_middleware.append(ModelFallbackMiddleware(*fallback_instances))
-            logger.info(
-                "Flash model fallback enabled",
-                fallback_models=self.config.llm.fallback,
+        # Model resilience middleware (retry + fallback + progress events)
+        fallbacks = build_fallback_pairs(self.config)
+        main_middleware.append(
+            ModelResilienceMiddleware(
+                primary_name=self.config.llm.flash or self.config.llm.name,
+                primary_client=self.llm,
+                fallbacks=fallbacks,
+                max_retries=3,
+                backoff_factor=2.0,
+                initial_delay=1.0,
+                max_delay=60.0,
+                jitter=True,
             )
+        )
+        logger.info(
+            "Flash model resilience enabled",
+            max_retries=3,
+            fallback_models=[name for name, _ in fallbacks],
+        )
 
-        if ModelRetryMiddleware is not None:
-            main_middleware.append(
-                ModelRetryMiddleware(
-                    max_retries=3,
-                    on_failure="error",
-                    backoff_factor=2.0,
-                    initial_delay=1.0,
-                    max_delay=60.0,
-                    jitter=True,
-                )
+        # Only the read-side strip is live here: Flash exposes no filesystem
+        # tool at all, so the injection half has nothing to intercept. Without
+        # it, a mid-thread switch to a text-only model replays an earlier turn's
+        # image/PDF blocks and strict providers reject the request outright.
+        # Inside model resilience so it strips against the post-fallback model.
+        main_middleware.append(
+            MultimodalMiddleware(
+                sandbox=None,
+                model_name=self.config.llm.flash or self.config.llm.name,
+                custom_modalities=self.config.input_modalities,
             )
-            logger.info("Flash model retry enabled", max_retries=3)
+        )
 
-        # Prompt caching, empty tool call retry, and tool call patching
+        # Prompt caching (per-provider breakpoints), empty tool call retry,
+        # and tool call patching
         main_middleware.extend(
             [
                 AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+                OpenAIPromptCachingMiddleware(),
                 EmptyToolCallRetryMiddleware(),
                 PatchToolCallsMiddleware(),
             ]
@@ -296,12 +318,20 @@ class FlashAgent:
         runtime_context_middleware = RuntimeContextMiddleware(
             current_time=current_time,
             user_profile=user_profile,
+            sandbox_enabled=False,  # Flash has no sandbox/filesystem.
         )
 
         # Build final middleware stack
         # RuntimeContextMiddleware is last (innermost) so it appends after
-        # the cache breakpoint, keeping the static prompt cacheable.
-        middleware = [*shared_middleware, *main_middleware, runtime_context_middleware]
+        # the cache breakpoint, keeping the static prompt cacheable;
+        # ReasoningCompatibilityMiddleware sits inside model resilience so it
+        # sanitizes against the post-fallback model, not the requested one.
+        middleware = [
+            *shared_middleware,
+            *main_middleware,
+            runtime_context_middleware,
+            ReasoningCompatibilityMiddleware(),
+        ]
 
         logger.info(
             "Creating Flash agent",
@@ -316,6 +346,7 @@ class FlashAgent:
             middleware=middleware,
             checkpointer=checkpointer,
             store=store,
+            state_schema=DeltaAgentState,
         )
         if response_format is not None:
             create_kwargs["response_format"] = response_format

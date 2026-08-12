@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { registerAuthReset } from '@/lib/authResets';
+import { Loader } from '@/components/ui/loader';
+import { buildHtmlSrcDoc } from './html/buildHtmlSrcDoc';
+import { useHtmlSandbox } from './html/useHtmlSandbox';
+import { useHtmlActions } from './html/useHtmlActions';
+import HtmlActionBar from './html/HtmlActionBar';
+import HtmlFullscreenModal from './html/HtmlFullscreenModal';
 import './InlineWidget.css';
 
 interface InlineWidgetProps {
@@ -9,203 +16,62 @@ interface InlineWidgetProps {
   data?: Record<string, string>;
 }
 
-/** CSS variables to inject into the widget iframe for theme matching. */
-const THEME_VARS = [
-  '--color-bg-page',
-  '--color-bg-card',
-  '--color-bg-elevated',
-  '--color-bg-input',
-  '--color-bg-surface',
-  '--color-bg-hover',
-  '--color-bg-subtle',
-  '--color-border-muted',
-  '--color-border-default',
-  '--color-border-elevated',
-  '--color-border-subtle',
-  '--color-text-primary',
-  '--color-text-secondary',
-  '--color-text-tertiary',
-  '--color-text-quaternary',
-  '--color-text-muted',
-  '--color-accent-primary',
-  '--color-accent-soft',
-  '--color-profit',
-  '--color-profit-soft',
-  '--color-loss',
-  '--color-loss-soft',
-  '--color-warning',
-  '--color-info',
-  '--color-success',
-];
+/**
+ * Last reported height per widget content, so a revisited thread reserves the
+ * real height immediately instead of the 150px guess — the first live report
+ * then lands as a small correction rather than a layout jolt. Session-scoped.
+ */
+const lastKnownHeights = new Map<string, number>();
 
-/** CSS safety net: force outermost element to be seamless regardless of agent HTML. */
-const SEAMLESS_OVERRIDE = `
-body > :first-child {
-  background: transparent !important;
-  border: none !important;
-  border-radius: 0 !important;
-  box-shadow: none !important;
-  margin: 0 !important;
-}`;
-
-function resolveThemeVars(): string {
-  const style = getComputedStyle(document.documentElement);
-  return THEME_VARS.map((v) => {
-    const val = style.getPropertyValue(v).trim();
-    return val ? `${v}: ${val};` : '';
-  })
-    .filter(Boolean)
-    .join('\n  ');
+/** The cache outlives unmounts by design; wiped on sign-out/account switch
+ * (module singletons outlive React — web/AGENTS.md). Exported for tests. */
+export function resetInlineWidgetHeightCache() {
+  lastKnownHeights.clear();
 }
+registerAuthReset(resetInlineWidgetHeightCache);
 
-function buildSrcDoc(html: string, widgetData?: Record<string, string>): string {
-  const themeCSS = resolveThemeVars();
-  const dataScript = widgetData && Object.keys(widgetData).length > 0
-    ? `<script>window.__WIDGET_DATA__ = ${JSON.stringify(widgetData).replace(/<\//g, '<\\/')};</script>\n`
-    : '';
-
-  // Injected before any widget code runs:
-  // 1. Patch JSON.parse to handle NaN/Infinity from Python's json.dumps (not valid JSON).
-  // 2. Catch uncaught errors and unhandled rejections, display an inline error overlay.
-  const earlyScripts = `<script>
-(function(){
-  var _p=JSON.parse;
-  JSON.parse=function(t,r){
-    if(typeof t==='string')t=t.replace(/\\bNaN\\b/g,'null').replace(/(?<![A-Za-z_])-?Infinity\\b/g,'null');
-    return _p.call(this,t,r);
-  };
-  var shown={},count=0,rendering=false;
-  function showError(msg){
-    if(rendering||shown[msg])return;
-    shown[msg]=1;
-    if(++count>5)return;
-    rendering=true;
-    msg=String(msg).slice(0,500);
-    var root=document.body||document.documentElement;
-    var d=document.createElement('div');
-    d.style.cssText='margin:12px;padding:14px 16px;background:var(--color-bg-card);border:0.5px solid var(--color-border-muted);border-radius:10px;display:flex;align-items:center;gap:12px;';
-    var dot=document.createElement('span');
-    dot.style.cssText='flex-shrink:0;width:6px;height:6px;border-radius:50%;background:var(--color-loss);';
-    var mid=document.createElement('div');
-    mid.style.cssText='flex:1;min-width:0;';
-    var detail=document.createElement('div');
-    detail.style.cssText='font:13px/1.4 ui-monospace,SFMono-Regular,monospace;color:var(--color-text-muted);white-space:pre-wrap;word-break:break-word;';
-    detail.textContent=msg;
-    mid.appendChild(detail);
-    var b=document.createElement('button');
-    b.textContent='Fix';
-    b.style.cssText='flex-shrink:0;padding:6px 14px;border-radius:8px;border:0.5px solid var(--color-border-default);background:var(--color-bg-elevated);color:var(--color-text-primary);font:500 13px/1 -apple-system,sans-serif;cursor:pointer;transition:background 0.15s;';
-    b.onmouseover=function(){b.style.background='var(--color-bg-hover)';};
-    b.onmouseout=function(){b.style.background='var(--color-bg-elevated)';};
-    b.onclick=function(){window.sendPrompt('The widget threw an error: '+msg+'. Please fix the widget code and call ShowWidget again.');b.textContent='Sent';b.disabled=true;b.style.opacity='0.4';b.style.cursor='default';};
-    d.appendChild(dot);d.appendChild(mid);d.appendChild(b);
-    root.appendChild(d);
-    parent.postMessage({type:'widget:resize',height:root.scrollHeight},'*');
-    rendering=false;
+function widgetHeightKey(html: string, data?: Record<string, string>): string {
+  let h = 5381;
+  for (let i = 0; i < html.length; i++) h = ((h << 5) + h + html.charCodeAt(i)) | 0;
+  let dataSig = '';
+  if (data) {
+    for (const k of Object.keys(data)) dataSig += `${k}:${data[k].length};`;
   }
-  window.onerror=function(_,__,___,____,e){showError(e&&e.message||String(_));};
-  window.addEventListener('unhandledrejection',function(e){showError(e.reason&&e.reason.message||String(e.reason));});
-})();
-</script>\n`;
-
-  return `<!DOCTYPE html><html><head>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh; style-src 'unsafe-inline'; img-src data: blob:; font-src cdnjs.cloudflare.com cdn.jsdelivr.net; connect-src cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh;">
-<style>
-:root {
-  ${themeCSS}
-}
-*, *::before, *::after { box-sizing: border-box; }
-body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--color-text-primary); background: transparent; overflow: hidden; }
-${SEAMLESS_OVERRIDE}
-</style>
-${earlyScripts}${dataScript}<script>
-window.sendPrompt = function(text) {
-  parent.postMessage({ type: 'widget:sendPrompt', text: String(text) }, '*');
-};
-(function() {
-  var lastH = 0;
-  var pending = 0;
-  function reportHeight() {
-    if (!document.body) return;
-    var h = document.body.scrollHeight;
-    if (h > 0 && Math.abs(h - lastH) > 2) {
-      lastH = h;
-      parent.postMessage({ type: 'widget:resize', height: h }, '*');
-    }
-  }
-  function debouncedReport() {
-    if (pending) return;
-    pending = requestAnimationFrame(function() {
-      pending = 0;
-      reportHeight();
-    });
-  }
-  document.addEventListener('DOMContentLoaded', function() {
-    var mo = new MutationObserver(debouncedReport);
-    mo.observe(document.body, { childList: true, subtree: true });
-    reportHeight();
-  });
-  var checks = [100, 300, 800, 2000, 5000];
-  checks.forEach(function(ms) { setTimeout(reportHeight, ms); });
-  window.addEventListener('message', function(e) {
-    if (e.data && e.data.type === 'widget:themeUpdate' && e.data.css) {
-      var style = document.querySelector('style');
-      if (style) {
-        style.textContent = style.textContent.replace(
-          /:root\\s*\\{[^}]*\\}/,
-          ':root {\\n  ' + e.data.css + '\\n}'
-        );
-      }
-    }
-  });
-})();
-</script>
-</head><body>${html}</body></html>`;
+  return `${h}|${html.length}|${dataSig}`;
 }
 
 export default function InlineWidget({ html, title, onSendPrompt, data }: InlineWidgetProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [height, setHeight] = useState<number | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
 
-  const srcDoc = useMemo(() => buildSrcDoc(html, data), [html, data]);
-
-  const handleMessage = useCallback(
-    (e: MessageEvent) => {
-      if (!iframeRef.current || e.source !== iframeRef.current.contentWindow) return;
-
-      const { type, height: h, text } = e.data || {};
-      if (type === 'widget:resize' && typeof h === 'number' && h > 0) {
-        setHeight((prev) => {
-          const next = Math.ceil(h);
-          return prev === next ? prev : next;
-        });
-      } else if (type === 'widget:sendPrompt' && typeof text === 'string' && text.trim()) {
-        onSendPrompt?.(text.trim());
-      }
-    },
-    [onSendPrompt],
+  const srcDoc = useMemo(() => buildHtmlSrcDoc('widget-inline', { html, data }), [html, data]);
+  const fullscreenSrcDoc = useMemo(
+    () => buildHtmlSrcDoc('widget-fullscreen', { html, data }),
+    [html, data],
   );
 
-  useEffect(() => {
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
-  }, [handleMessage]);
+  const { height } = useHtmlSandbox({ iframeRef, autoHeight: true, onSendPrompt });
 
+  const heightKey = useMemo(() => widgetHeightKey(html, data), [html, data]);
+  const lastRecorded = useRef<number | null>(null);
   useEffect(() => {
-    const observer = new MutationObserver(() => {
-      if (!iframeRef.current?.contentWindow) return;
-      const themeCSS = resolveThemeVars();
-      iframeRef.current.contentWindow.postMessage(
-        { type: 'widget:themeUpdate', css: themeCSS },
-        '*',
-      );
-    });
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['data-theme'],
-    });
-    return () => observer.disconnect();
-  }, []);
+    // Record only fresh measurements — a key change alone must not re-file the
+    // previous document's height under the new content's key.
+    if (height != null && height !== lastRecorded.current) {
+      lastKnownHeights.set(heightKey, height);
+      lastRecorded.current = height;
+    }
+  }, [height, heightKey]);
+
+  // Live report wins; cached height bridges the load; 150px is the cold guess.
+  const displayHeight = height ?? lastKnownHeights.get(heightKey) ?? null;
+
+  const actions = useHtmlActions({ mode: 'widget', srcDoc, fileName: title });
+  const fullscreenActions = useHtmlActions({
+    mode: 'widget',
+    srcDoc: fullscreenSrcDoc,
+    fileName: title,
+  });
 
   // No max-height cap — widgets span naturally to fit content (charts, tables,
   // dashboards). The agent controls HTML output and the skill doc guides it to
@@ -213,17 +79,51 @@ export default function InlineWidget({ html, title, onSendPrompt, data }: Inline
   // than a tall widget pushing chat down.
   return (
     <div className="inline-widget-container">
+      {/* Popup tokens: links the agent embeds must open as REAL tabs — a
+          sandbox-inheriting tab has no cookie access, so external sites' bot
+          checks break. buildHtmlSrcDoc's click handler forces noopener, and a
+          noopener'd tab is the reach a chat markdown link already has. */}
       <iframe
         ref={iframeRef}
         srcDoc={srcDoc}
-        sandbox="allow-scripts"
+        sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
         title={title || 'Widget'}
         className="inline-widget-frame"
         style={{
-          height: height != null ? `${height}px` : '150px',
-          opacity: height != null ? 1 : 0,
+          height: displayHeight != null ? `${displayHeight}px` : '150px',
+          opacity: displayHeight != null ? 1 : 0,
         }}
       />
+      {height == null && (
+        // Shown until the document reports its first measurement — even when a
+        // cached height already reserved the box, the content is still loading.
+        <span className="inline-widget-loading">
+          <Loader
+           
+            size={14}
+           
+            label="Rendering widget"
+            className="text-[color:var(--color-text-tertiary)]"
+          />
+        </span>
+      )}
+      <HtmlActionBar
+        variant="overlay"
+        onFullscreen={() => setFullscreen(true)}
+        onOpenInNewTab={actions.openInNewTab}
+        onDownload={actions.downloadHtml}
+        onExportPdf={actions.exportPdf}
+      />
+      {fullscreen && (
+        <HtmlFullscreenModal
+          variant="widget"
+          open={fullscreen}
+          onOpenChange={setFullscreen}
+          title={title || 'Widget'}
+          srcDoc={fullscreenSrcDoc}
+          actions={fullscreenActions}
+        />
+      )}
     </div>
   );
 }

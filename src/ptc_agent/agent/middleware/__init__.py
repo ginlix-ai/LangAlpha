@@ -56,6 +56,11 @@ from .todo_operations import (
     TodoWriteMiddleware,
 )
 
+# Provenance middleware (data-access tracing → provenance SSE events)
+from .provenance import (
+    ProvenanceMiddleware,
+)
+
 # Compaction middleware
 from .compaction import (
     CompactionMiddleware,
@@ -72,6 +77,11 @@ from .skills import (
 # Large result eviction middleware
 from .large_result_eviction import (
     LargeResultEvictionMiddleware,
+)
+
+# Market watch middleware (live price injection for watched tickers)
+from .market_watch import (
+    MarketWatchMiddleware,
 )
 
 # Steering middleware
@@ -99,9 +109,14 @@ from .runtime_context import (
     RuntimeContextMiddleware,
 )
 
-# Anthropic thinking-block sanitizer (repairs orphan signature-only blocks)
-from .anthropic_thinking_sanitizer import (
-    AnthropicThinkingSanitizerMiddleware,
+# OpenAI prompt-cache breakpoint middleware (GPT-5.6+ explicit caching)
+from .openai_prompt_caching import (
+    OpenAIPromptCachingMiddleware,
+)
+
+# Cross-provider reasoning sanitizer (origin + shape gates, origin stamping)
+from .reasoning_compat import (
+    ReasoningCompatibilityMiddleware,
 )
 
 # Subagent steering middleware
@@ -145,6 +160,8 @@ __all__ = [
     "FileOperationState",
     # Todo operations
     "TodoWriteMiddleware",
+    # Provenance
+    "ProvenanceMiddleware",
     # Compaction
     "CompactionMiddleware",
     "DEFAULT_SUMMARY_PROMPT",
@@ -154,6 +171,8 @@ __all__ = [
     "SkillsMiddleware",
     # Large result eviction
     "LargeResultEvictionMiddleware",
+    # Market watch
+    "MarketWatchMiddleware",
     # Steering
     "SteeringMiddleware",
     # Subagent steering
@@ -166,8 +185,10 @@ __all__ = [
     "MemoAwarenessMiddleware",
     # Runtime context
     "RuntimeContextMiddleware",
-    # Anthropic thinking sanitizer
-    "AnthropicThinkingSanitizerMiddleware",
+    # OpenAI prompt caching
+    "OpenAIPromptCachingMiddleware",
+    # Cross-provider reasoning sanitizer
+    "ReasoningCompatibilityMiddleware",
     # Subagent middleware
     "CompiledSubAgent",
     "SubAgent",

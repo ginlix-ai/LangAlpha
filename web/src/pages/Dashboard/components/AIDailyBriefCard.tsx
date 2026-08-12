@@ -1,11 +1,13 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { Sparkles, ArrowRight, Newspaper, Clock, ChevronDown, Loader2 } from 'lucide-react';
+import { Sparkles, ArrowRight, Newspaper, Clock, ChevronDown } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Loader } from '@/components/ui/loader';
 import { useTranslation } from 'react-i18next';
 import TopicBadge from './TopicBadge';
 import { getTodayInsights, getInsightDetail, generatePersonalizedInsight } from '../utils/api';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import i18n from '@/i18n';
+import { relativeTime } from '@/lib/format';
 import { RowAttachButton } from './RowAttachButton';
 
 interface InsightTopic {
@@ -53,20 +55,6 @@ const TYPE_CONFIG: Record<string, TypeConfigEntry> = {
   post_market: { labelKey: 'dashboard.brief.typeLabel.postMarket', accent: '#a78bfa' },
   personalized: { labelKey: 'dashboard.brief.typeLabel.personalized', accent: '#f59e0b' },
 };
-
-function formatRelativeTime(timestamp: string | undefined): string {
-  if (!timestamp) return '';
-  const now = new Date();
-  const then = new Date(timestamp);
-  const diffMs = now.getTime() - then.getTime();
-  const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return i18n.t('dashboard.widgets.common.relativeNow');
-  if (diffMin < 60) return i18n.t('dashboard.widgets.common.relativePast', { when: `${diffMin}m` });
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return i18n.t('dashboard.widgets.common.relativePast', { when: `${diffHr}h` });
-  const diffDay = Math.floor(diffHr / 24);
-  return i18n.t('dashboard.widgets.common.relativePast', { when: `${diffDay}d` });
-}
 
 function formatTime(timestamp: string | undefined): string {
   if (!timestamp) return '';
@@ -129,7 +117,7 @@ function MobileTopicRow({ topics }: { topics: InsightTopic[] }) {
       {overflow > 0 && (
         <span
           data-overflow="true"
-          className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+          className="px-1.5 py-0.5 rounded text-[0.625rem] font-medium"
           style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-bg-tag)', border: '1px solid var(--color-bg-tag)' }}
         >
           {t('dashboard.brief.overflowMore', { count: overflow })}
@@ -244,7 +232,7 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
       <div
         className="relative rounded-3xl overflow-hidden border p-8"
         style={{
-          borderColor: 'var(--color-accent-overlay)',
+          borderColor: 'var(--color-border-default)',
           background: 'var(--color-bg-card)',
         }}
       >
@@ -271,7 +259,7 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
       <div
         className="relative rounded-3xl overflow-hidden border p-8 flex items-center justify-center"
         style={{
-          borderColor: 'var(--color-accent-overlay)',
+          borderColor: 'var(--color-border-default)',
           background: 'var(--color-bg-card)',
           minHeight: 200,
         }}
@@ -284,7 +272,7 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
     );
   }
 
-  const updatedAgo = formatRelativeTime(latest.completed_at);
+  const updatedAgo = relativeTime(latest.completed_at);
   const topics = latest.topics || [];
   const latestType = TYPE_CONFIG[latest.type] || TYPE_CONFIG.market_update;
   const isPersonalized = latest.type === 'personalized';
@@ -326,15 +314,15 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
         transition={{ delay: 0.2 }}
         className="relative group rounded-3xl overflow-hidden border"
         style={{
-          borderColor: 'var(--color-accent-overlay)',
-          background: `linear-gradient(135deg, var(--color-bg-card) 0%, var(--color-bg-card) 60%, var(--color-accent-soft) 100%)`,
+          borderColor: 'var(--color-border-default)',
+          background: 'var(--color-bg-card)',
           cursor: older.length > 0 ? 'pointer' : 'default',
           zIndex: 1,
         }}
         onClick={handleCardClick}
       >
         <div className="absolute top-0 right-0 p-6 opacity-20 group-hover:opacity-40 transition-opacity pointer-events-none hidden sm:block">
-          <Newspaper size={120} style={{ color: 'var(--color-accent-primary)' }} />
+          <Newspaper size={120} style={{ color: 'var(--color-text-tertiary)' }} />
         </div>
 
         <div className="relative z-10 p-4 sm:p-8 flex flex-col gap-8 items-start">
@@ -353,7 +341,7 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
               </div>
               {isPersonalized && (
                 <span
-                  className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider"
+                  className="px-2 py-0.5 rounded-full text-[0.625rem] font-semibold uppercase tracking-wider"
                   style={{
                     color: latestType.accent,
                     backgroundColor: `color-mix(in srgb, ${latestType.accent} 15%, transparent)`,
@@ -394,8 +382,8 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
                 }}
                 className="group/btn flex items-center justify-center gap-1.5 w-full py-2.5 rounded-lg text-sm font-semibold transition-colors"
                 style={{
-                  backgroundColor: 'var(--color-btn-primary-bg, var(--color-accent-primary))',
-                  color: 'var(--color-btn-primary-text, #fff)',
+                  backgroundColor: 'var(--color-btn-primary-bg)',
+                  color: 'var(--color-btn-primary-text)',
                 }}
               >
                 {t('dashboard.brief.readFullBrief')}
@@ -412,7 +400,11 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
                   opacity: generating ? 0.6 : 1,
                 }}
               >
-                {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                {generating ? (
+                  <span aria-hidden="true" className="flex-shrink-0">
+                    <Loader size={14} className="text-current" />
+                  </span>
+                ) : <Sparkles size={14} />}
                 {generating ? t('dashboard.brief.generating') : t('dashboard.brief.generatePersonalized')}
               </button>
               {generateError && (
@@ -455,7 +447,11 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
                 onMouseEnter={(e) => { if (!generating) e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)'; }}
                 onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
               >
-                {generating ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                {generating ? (
+                  <span aria-hidden="true" className="flex-shrink-0">
+                    <Loader size={16} className="text-current" />
+                  </span>
+                ) : <Sparkles size={16} />}
                 {generating ? t('dashboard.brief.generating') : t('dashboard.brief.generatePersonalized')}
               </button>
               <button
@@ -465,8 +461,8 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
                 }}
                 className="group/btn flex items-center gap-2 px-6 py-3 rounded-xl font-semibold transition-colors shadow-lg"
                 style={{
-                  backgroundColor: 'var(--color-btn-primary-bg, var(--color-accent-primary))',
-                  color: 'var(--color-btn-primary-text, #fff)',
+                  backgroundColor: 'var(--color-btn-primary-bg)',
+                  color: 'var(--color-btn-primary-text)',
                 }}
                 onMouseEnter={(e) => (e.currentTarget.style.opacity = '0.9')}
                 onMouseLeave={(e) => (e.currentTarget.style.opacity = '1')}
@@ -518,7 +514,7 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
               >
                 <div className="flex items-center gap-2 mb-4">
                   <span
-                    className="text-[10px] font-semibold uppercase tracking-wider"
+                    className="text-[0.625rem] font-semibold uppercase tracking-wider"
                     style={{ color: 'var(--color-text-tertiary)' }}
                   >
                     {t('dashboard.brief.earlierInsights')}
@@ -553,7 +549,7 @@ function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
                           />
 
                           <span
-                            className="text-[10px] font-semibold uppercase tracking-wider shrink-0 px-2 py-0.5 rounded"
+                            className="text-[0.625rem] font-semibold uppercase tracking-wider shrink-0 px-2 py-0.5 rounded"
                             style={{
                               color: cfg.accent,
                               backgroundColor: `color-mix(in srgb, ${cfg.accent} 15%, transparent)`,

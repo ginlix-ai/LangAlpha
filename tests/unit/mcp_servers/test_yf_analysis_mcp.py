@@ -1,4 +1,4 @@
-"""Tests for yf_analysis_mcp_server."""
+"""Tests for yf_analysis_mcp_server — standard envelope + machine error codes."""
 
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -23,6 +23,8 @@ from mcp_servers.yf_analysis_mcp_server import (
     get_upgrades_downgrades,
 )
 
+from .conftest import assert_error, assert_ok_envelope
+
 
 # --- Fixtures ---
 
@@ -33,9 +35,6 @@ def mock_ticker():
         stock = MagicMock()
         mock_cls.return_value = stock
         yield stock
-
-
-# --- Helper to build DataFrames ---
 
 
 def _df(data, columns=None, index=None):
@@ -52,31 +51,25 @@ class TestGetAnalystRecommendations:
             columns=["Date", "Firm", "To Grade", "From Grade", "Action"],
         )
         result = get_analyst_recommendations("AAPL")
-        assert result["data_type"] == "analyst_recommendations"
-        assert result["ticker"] == "AAPL"
-        assert len(result["data"]) == 1
+        assert_ok_envelope(result, source="yfinance", symbol="AAPL", count=1)
         assert result["data"][0]["firm"] == "Firm A"
 
     def test_empty(self, mock_ticker):
         mock_ticker.recommendations = pd.DataFrame()
         result = get_analyst_recommendations("AAPL")
-        assert result["data"] == []
-        assert result["count"] == 0
+        assert_ok_envelope(result, count=0)
 
     def test_none(self, mock_ticker):
         mock_ticker.recommendations = None
         result = get_analyst_recommendations("AAPL")
-        assert result["data"] == []
+        assert_ok_envelope(result, count=0)
 
     def test_exception(self, mock_ticker):
-        mock_ticker.recommendations = property(
-            lambda self: (_ for _ in ()).throw(Exception("API error"))
-        )
         type(mock_ticker).recommendations = property(
             lambda self: (_ for _ in ()).throw(Exception("API error"))
         )
         result = get_analyst_recommendations("AAPL")
-        assert "error" in result
+        assert_error(result, "upstream_error", symbol="AAPL")
 
 
 # --- get_sustainability_data ---
@@ -89,13 +82,14 @@ class TestGetSustainabilityData:
             index=["totalEsg", "environmentScore", "socialScore"],
         )
         result = get_sustainability_data("AAPL")
-        assert result["data_type"] == "sustainability"
+        assert_ok_envelope(result, symbol="AAPL", count=1)
         assert result["data"]["totalEsg"] == 25.0
         assert result["data"]["environmentScore"] == 10.0
 
     def test_empty(self, mock_ticker):
         mock_ticker.sustainability = pd.DataFrame()
         result = get_sustainability_data("AAPL")
+        assert_ok_envelope(result, count=0)
         assert result["data"] == {}
 
     def test_none(self, mock_ticker):
@@ -117,7 +111,7 @@ class TestGetSustainabilityData:
             lambda self: (_ for _ in ()).throw(Exception("fail"))
         )
         result = get_sustainability_data("AAPL")
-        assert "error" in result
+        assert_error(result, "upstream_error")
 
 
 # --- get_institutional_holders ---
@@ -130,22 +124,21 @@ class TestGetInstitutionalHolders:
             columns=["Date Reported", "Holder", "Shares", "Value", "pctHeld"],
         )
         result = get_institutional_holders("AAPL")
-        assert result["data_type"] == "institutional_holders"
-        assert len(result["data"]) == 1
+        assert_ok_envelope(result, symbol="AAPL", count=1)
         assert result["data"][0]["holder"] == "Vanguard"
         assert result["data"][0]["shares"] == 1200000
 
     def test_empty(self, mock_ticker):
         mock_ticker.institutional_holders = pd.DataFrame()
         result = get_institutional_holders("AAPL")
-        assert result["data"] == []
+        assert_ok_envelope(result, count=0)
 
     def test_exception(self, mock_ticker):
         type(mock_ticker).institutional_holders = property(
             lambda self: (_ for _ in ()).throw(Exception("fail"))
         )
         result = get_institutional_holders("AAPL")
-        assert "error" in result
+        assert_error(result, "upstream_error")
 
 
 # --- get_mutualfund_holders ---
@@ -158,20 +151,20 @@ class TestGetMutualfundHolders:
             columns=["Date Reported", "Holder", "Shares", "Value", "pctHeld"],
         )
         result = get_mutualfund_holders("AAPL")
-        assert result["data_type"] == "mutualfund_holders"
+        assert_ok_envelope(result, symbol="AAPL")
         assert result["data"][0]["holder"] == "Fidelity Fund"
 
     def test_empty(self, mock_ticker):
         mock_ticker.mutualfund_holders = pd.DataFrame()
         result = get_mutualfund_holders("AAPL")
-        assert result["data"] == []
+        assert_ok_envelope(result, count=0)
 
     def test_exception(self, mock_ticker):
         type(mock_ticker).mutualfund_holders = property(
             lambda self: (_ for _ in ()).throw(Exception("fail"))
         )
         result = get_mutualfund_holders("AAPL")
-        assert "error" in result
+        assert_error(result, "upstream_error")
 
 
 # --- get_insider_transactions ---
@@ -197,21 +190,21 @@ class TestGetInsiderTransactions:
             ],
         )
         result = get_insider_transactions("AAPL")
-        assert result["data_type"] == "insider_transactions"
+        assert_ok_envelope(result, symbol="AAPL")
         assert result["data"][0]["insider"] == "John Doe"
         assert result["data"][0]["transaction"] == "Sale"
 
     def test_empty(self, mock_ticker):
         mock_ticker.insider_transactions = pd.DataFrame()
         result = get_insider_transactions("AAPL")
-        assert result["data"] == []
+        assert_ok_envelope(result, count=0)
 
     def test_exception(self, mock_ticker):
         type(mock_ticker).insider_transactions = property(
             lambda self: (_ for _ in ()).throw(Exception("fail"))
         )
         result = get_insider_transactions("AAPL")
-        assert "error" in result
+        assert_error(result, "upstream_error")
 
 
 # --- get_insider_roster ---
@@ -239,21 +232,21 @@ class TestGetInsiderRoster:
             ],
         )
         result = get_insider_roster("AAPL")
-        assert result["data_type"] == "insider_roster"
+        assert_ok_envelope(result, symbol="AAPL")
         assert result["data"][0]["name"] == "Jane Smith"
         assert result["data"][0]["position"] == "CFO"
 
     def test_empty(self, mock_ticker):
         mock_ticker.insider_roster_holders = pd.DataFrame()
         result = get_insider_roster("AAPL")
-        assert result["data"] == []
+        assert_ok_envelope(result, count=0)
 
     def test_exception(self, mock_ticker):
         type(mock_ticker).insider_roster_holders = property(
             lambda self: (_ for _ in ()).throw(Exception("fail"))
         )
         result = get_insider_roster("AAPL")
-        assert "error" in result
+        assert_error(result, "upstream_error")
 
 
 # --- get_news ---
@@ -278,20 +271,18 @@ class TestGetNews:
             },
         ]
         result = get_news("AAPL", count=5)
-        assert result["data_type"] == "news"
-        assert result["count"] == 2
+        assert_ok_envelope(result, symbol="AAPL", count=2)
         assert result["data"][0]["title"] == "Apple announces new product"
 
     def test_empty(self, mock_ticker):
         mock_ticker.get_news.return_value = []
         result = get_news("AAPL")
-        assert result["data"] == []
-        assert result["count"] == 0
+        assert_ok_envelope(result, count=0)
 
     def test_none(self, mock_ticker):
         mock_ticker.get_news.return_value = None
         result = get_news("AAPL")
-        assert result["data"] == []
+        assert_ok_envelope(result, count=0)
 
     def test_with_datetime_objects(self, mock_ticker):
         mock_ticker.get_news.return_value = [
@@ -320,7 +311,7 @@ class TestGetNews:
     def test_exception(self, mock_ticker):
         mock_ticker.get_news.side_effect = Exception("API error")
         result = get_news("AAPL")
-        assert "error" in result
+        assert_error(result, "upstream_error")
 
 
 # --- get_analyst_price_targets ---
@@ -336,13 +327,17 @@ class TestGetAnalystPriceTargets:
             "median": 192.0,
         }
         result = get_analyst_price_targets("AAPL")
-        assert result["data_type"] == "analyst_price_targets"
+        assert_ok_envelope(result, symbol="AAPL", count=1)
+        # currency omitted: values are Yahoo-reported with no declared-currency
+        # source on this path (avoids mislabeling minor-unit venues).
+        assert "currency" not in result
         assert result["data"]["current"] == 185.0
         assert result["data"]["high"] == 220.0
 
     def test_empty(self, mock_ticker):
         mock_ticker.analyst_price_targets = {}
         result = get_analyst_price_targets("AAPL")
+        assert_ok_envelope(result, count=0)
         assert result["data"] == {}
 
     def test_none(self, mock_ticker):
@@ -355,7 +350,7 @@ class TestGetAnalystPriceTargets:
             lambda self: (_ for _ in ()).throw(Exception("fail"))
         )
         result = get_analyst_price_targets("AAPL")
-        assert "error" in result
+        assert_error(result, "upstream_error")
 
 
 # --- get_upgrades_downgrades ---
@@ -369,21 +364,21 @@ class TestGetUpgradesDowngrades:
             index=pd.DatetimeIndex(["2024-01-20"]),
         )
         result = get_upgrades_downgrades("AAPL")
-        assert result["data_type"] == "upgrades_downgrades"
+        assert_ok_envelope(result, symbol="AAPL")
         assert result["data"][0]["firm"] == "Morgan Stanley"
         assert result["data"][0]["tograde"] == "Overweight"
 
     def test_empty(self, mock_ticker):
         mock_ticker.upgrades_downgrades = pd.DataFrame()
         result = get_upgrades_downgrades("AAPL")
-        assert result["data"] == []
+        assert_ok_envelope(result, count=0)
 
     def test_exception(self, mock_ticker):
         type(mock_ticker).upgrades_downgrades = property(
             lambda self: (_ for _ in ()).throw(Exception("fail"))
         )
         result = get_upgrades_downgrades("AAPL")
-        assert "error" in result
+        assert_error(result, "upstream_error")
 
 
 # --- get_earnings_history ---
@@ -397,20 +392,20 @@ class TestGetEarningsHistory:
             index=pd.DatetimeIndex(["2024-01-25"]),
         )
         result = get_earnings_history("AAPL")
-        assert result["data_type"] == "earnings_history"
+        assert_ok_envelope(result, symbol="AAPL")
         assert result["data"][0]["epsactual"] == 1.46
 
     def test_empty(self, mock_ticker):
         mock_ticker.earnings_history = pd.DataFrame()
         result = get_earnings_history("AAPL")
-        assert result["data"] == []
+        assert_ok_envelope(result, count=0)
 
     def test_exception(self, mock_ticker):
         type(mock_ticker).earnings_history = property(
             lambda self: (_ for _ in ()).throw(Exception("fail"))
         )
         result = get_earnings_history("AAPL")
-        assert "error" in result
+        assert_error(result, "upstream_error")
 
 
 # --- get_earnings_estimates ---
@@ -424,20 +419,19 @@ class TestGetEarningsEstimates:
             index=["0q"],
         )
         result = get_earnings_estimates("AAPL")
-        assert result["data_type"] == "earnings_estimates"
-        assert len(result["data"]) == 1
+        assert_ok_envelope(result, symbol="AAPL", count=1)
 
     def test_empty(self, mock_ticker):
         mock_ticker.earnings_estimate = pd.DataFrame()
         result = get_earnings_estimates("AAPL")
-        assert result["data"] == []
+        assert_ok_envelope(result, count=0)
 
     def test_exception(self, mock_ticker):
         type(mock_ticker).earnings_estimate = property(
             lambda self: (_ for _ in ()).throw(Exception("fail"))
         )
         result = get_earnings_estimates("AAPL")
-        assert "error" in result
+        assert_error(result, "upstream_error")
 
 
 # --- get_revenue_estimates ---
@@ -451,20 +445,19 @@ class TestGetRevenueEstimates:
             index=["0q"],
         )
         result = get_revenue_estimates("AAPL")
-        assert result["data_type"] == "revenue_estimates"
-        assert len(result["data"]) == 1
+        assert_ok_envelope(result, symbol="AAPL", count=1)
 
     def test_empty(self, mock_ticker):
         mock_ticker.revenue_estimate = pd.DataFrame()
         result = get_revenue_estimates("AAPL")
-        assert result["data"] == []
+        assert_ok_envelope(result, count=0)
 
     def test_exception(self, mock_ticker):
         type(mock_ticker).revenue_estimate = property(
             lambda self: (_ for _ in ()).throw(Exception("fail"))
         )
         result = get_revenue_estimates("AAPL")
-        assert "error" in result
+        assert_error(result, "upstream_error")
 
 
 # --- get_growth_estimates ---
@@ -478,20 +471,19 @@ class TestGetGrowthEstimates:
             index=["0q"],
         )
         result = get_growth_estimates("AAPL")
-        assert result["data_type"] == "growth_estimates"
-        assert len(result["data"]) == 1
+        assert_ok_envelope(result, symbol="AAPL", count=1)
 
     def test_empty(self, mock_ticker):
         mock_ticker.growth_estimates = pd.DataFrame()
         result = get_growth_estimates("AAPL")
-        assert result["data"] == []
+        assert_ok_envelope(result, count=0)
 
     def test_exception(self, mock_ticker):
         type(mock_ticker).growth_estimates = property(
             lambda self: (_ for _ in ()).throw(Exception("fail"))
         )
         result = get_growth_estimates("AAPL")
-        assert "error" in result
+        assert_error(result, "upstream_error")
 
 
 # --- get_major_holders ---
@@ -504,17 +496,16 @@ class TestGetMajorHolders:
             columns=["Value", "Breakdown"],
         )
         result = get_major_holders("AAPL")
-        assert result["data_type"] == "major_holders"
-        assert len(result["data"]) == 2
+        assert_ok_envelope(result, symbol="AAPL", count=2)
 
     def test_empty(self, mock_ticker):
         mock_ticker.major_holders = pd.DataFrame()
         result = get_major_holders("AAPL")
-        assert result["data"] == []
+        assert_ok_envelope(result, count=0)
 
     def test_exception(self, mock_ticker):
         type(mock_ticker).major_holders = property(
             lambda self: (_ for _ in ()).throw(Exception("fail"))
         )
         result = get_major_holders("AAPL")
-        assert "error" in result
+        assert_error(result, "upstream_error")

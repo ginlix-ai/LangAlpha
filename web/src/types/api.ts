@@ -13,6 +13,10 @@ export interface User {
   has_oauth_token?: boolean;
   access_tier?: number;
   plan_display_name?: string | null;
+  /** Completed the personalization flow (i.e. configured a BYOK key). */
+  personalization_completed?: boolean;
+  /** Completed the legacy first-run onboarding flow. */
+  onboarding_completed?: boolean;
   created_at?: string;
   updated_at?: string;
   [key: string]: unknown;
@@ -22,7 +26,30 @@ export interface UserPreferences {
   [key: string]: unknown;
 }
 
+// --- Feature flags ---
+
+/**
+ * One feature flag as seen by the current user. `enabled` is the effective
+ * value (user override when allowed + set, else the system default);
+ * `user_override` is the raw override (null = unset, follows the default).
+ * `gate` is the access model — only `opt_in`/`opt_out` accept user overrides.
+ */
+export interface FeatureState {
+  key: string;
+  label: string;
+  description: string;
+  /** Honest cost of opting in to an experimental feature; English-only, null when none. */
+  tradeoffs: string | null;
+  enabled: boolean;
+  gate: 'none' | 'opt_in' | 'opt_out' | 'plan';
+  min_tier: number | null;
+  user_override: boolean | null;
+}
+
 // --- Workspace ---
+
+/** Sandbox resource tier. */
+export type ResourceTier = 'standard' | 'performance' | 'max';
 
 export interface Workspace {
   workspace_id: string;
@@ -30,6 +57,10 @@ export interface Workspace {
   status?: string;
   description?: string;
   config?: Record<string, unknown>;
+  /** Sandbox resource tier. Absent on flash / legacy rows. */
+  resource_tier?: ResourceTier;
+  /** Keep the sandbox running (idle auto-stop disabled). Absent on flash / legacy rows. */
+  is_always_on?: boolean;
   created_at?: string;
   updated_at?: string;
   [key: string]: unknown;
@@ -40,6 +71,22 @@ export interface WorkspacesResponse {
   total?: number;
 }
 
+/** Count-quota status for one elevated capability. `limit === -1` means unlimited. */
+export interface WorkspaceCapacity {
+  used: number;
+  limit: number;
+}
+
+/**
+ * Per-capability workspace quotas (platform mode only). Each field is null when the
+ * quota does not apply — OSS mode, the platform is unreachable, or no count reported.
+ */
+export interface WorkspaceQuota {
+  performance: WorkspaceCapacity | null;
+  max: WorkspaceCapacity | null;
+  always_on: WorkspaceCapacity | null;
+}
+
 export interface ReorderItem {
   workspace_id: string;
   position: number;
@@ -47,12 +94,39 @@ export interface ReorderItem {
 
 // --- Thread ---
 
+/** Who initiated a thread; absent origin (or empty metadata) = user-initiated. */
+export interface ThreadOrigin {
+  type: 'agent' | 'automation' | 'system';
+  /** agent → dispatching flash thread id; automation → automation id */
+  id?: string;
+}
+
+export interface ThreadMetadata {
+  origin?: ThreadOrigin;
+  [key: string]: unknown;
+}
+
 export interface Thread {
   workspace_id: string;
   thread_id: string;
   title: string | null;
+  metadata?: ThreadMetadata;
+  /** Pinned threads sort first within their workspace. */
+  is_pinned?: boolean;
+  /** Archive stamp; null/absent = active. Archived rows only appear when explicitly requested. */
+  archived_at?: string | null;
+  /** Turn count (list responses only). */
+  turn_count?: number;
   created_at?: string;
   updated_at?: string;
+  // Lifecycle enrichment (present on list responses for threads with runs).
+  /** Public status of the latest run: running|stopping|recovering|queued|completed|interrupted|failed|cancelled */
+  run_status?: string;
+  interrupt_reason?: string | null;
+  latest_run_seq?: number;
+  latest_run_id?: string | null;
+  last_seen_run_seq?: number;
+  run_started_at?: string | null;
   [key: string]: unknown;
 }
 
@@ -69,23 +143,23 @@ export interface DeleteThreadResponse {
   message: string;
 }
 
-export interface ThreadTurn {
-  turn_index: number;
-  edit_checkpoint_id: string | null;
-  regenerate_checkpoint_id: string;
-}
-
-export interface ThreadTurnsResponse {
-  thread_id: string;
-  turns: ThreadTurn[];
-  retry_checkpoint_id: string | null;
-}
-
-export interface WorkflowStatus {
-  can_reconnect: boolean;
-  status: string;
-  [key: string]: unknown;
-}
+/**
+ * The backend's public workflow-run status vocabulary — the `status` field of the
+ * `/status` and dispatch-liveness responses. Single source of truth for the wire
+ * spellings: `idle` = not yet registered; `queued`/`recovering` = registered but
+ * no output yet; `stopping` = a live run being cancelled. Consumers that read
+ * untrusted wire values still take `unknown` and narrow against these members.
+ */
+export type WorkflowRunStatus =
+  | 'idle'
+  | 'queued'
+  | 'running'
+  | 'stopping'
+  | 'recovering'
+  | 'completed'
+  | 'interrupted'
+  | 'failed'
+  | 'cancelled';
 
 // --- Thread Sharing ---
 
@@ -199,16 +273,6 @@ export interface NewsResponse {
   results: NewsArticle[];
   count: number;
   next_cursor: string | null;
-}
-
-// --- InfoFlow ---
-
-export interface InfoFlowResponse {
-  results: unknown[];
-  total: number;
-  limit: number;
-  offset: number;
-  has_more: boolean;
 }
 
 // --- Earnings ---

@@ -2,6 +2,8 @@
 
 import asyncio
 import os
+import threading
+from collections import deque
 from types import TracebackType
 from typing import Any
 
@@ -16,11 +18,51 @@ from src.observability.tracing import tracer as _otel_tracer
 
 logger = structlog.get_logger(__name__)
 
-# Discard MCP subprocess stderr — noisy INFO logs (e.g. "Processing request
-# of type ListToolsRequest") and failures surface as connection errors in
-# our process instead.  Needs a real FD because the MCP SDK passes it as
-# stderr to subprocess.Popen.
-_devnull = open(os.devnull, "w")  # noqa: SIM115
+
+class _StderrTail:
+    """Bounded in-memory tail of an MCP subprocess's stderr.
+
+    ``errlog`` reaches ``subprocess.Popen`` as the child's stderr, so it must
+    be a real file descriptor: a pipe drained by a daemon thread into a
+    bounded deque. Steady-state server chatter never reaches our logs; on a
+    connection failure :meth:`tail` recovers the crash output that would
+    otherwise surface only as an opaque "Connection closed".
+    """
+
+    def __init__(self, max_lines: int = 80) -> None:
+        self._lines: deque[str] = deque(maxlen=max_lines)
+        read_fd, write_fd = os.pipe()
+        self.writer = os.fdopen(write_fd, "w")
+        self._reader = os.fdopen(read_fd, "r", errors="replace")
+        # The drain thread lives for the connection's whole lifetime (not just
+        # connect): it copies subprocess stderr into the deque until EOF.
+        self._thread = threading.Thread(target=self._drain, daemon=True)
+        self._thread.start()
+
+    def _drain(self) -> None:
+        # The thread owns the read end: EOF arrives once every write end
+        # (ours and the exited subprocess's dup) is closed.
+        with self._reader:
+            for line in self._reader:
+                self._lines.append(line.rstrip("\n"))
+
+    def tail(self, *, drain: bool = False) -> str:
+        """Snapshot of the captured lines.
+
+        Pass ``drain=True`` on the failure path to close the writer and join
+        the drain thread first, so the read can't race the daemon thread still
+        appending the subprocess's dying output into the bounded deque.
+        """
+        if drain:
+            self.close()
+            self._thread.join(timeout=0.25)
+        return "\n".join(list(self._lines))
+
+    def close(self) -> None:
+        try:
+            self.writer.close()
+        except OSError:
+            pass
 
 
 class MCPToolInfo:
@@ -234,6 +276,7 @@ class MCPServerConnector:
         statements within a single task, ensuring contexts are entered and
         exited in LIFO order within the same task.
         """
+        stderr_capture: _StderrTail | None = None
         try:
             if self.config.transport == "http":
                 # HTTP transport - use direct JSON-RPC over HTTP POST
@@ -310,7 +353,8 @@ class MCPServerConnector:
                 )
 
                 # Proper nested async with pattern (MCP SDK best practice)
-                async with stdio_client(server_params, errlog=_devnull) as (read_stream, write_stream):
+                stderr_capture = _StderrTail()
+                async with stdio_client(server_params, errlog=stderr_capture.writer) as (read_stream, write_stream):
                     async with ClientSession(read_stream, write_stream) as session:
                         self.session = session
 
@@ -342,13 +386,24 @@ class MCPServerConnector:
             import traceback
             error_details = traceback.format_exc()
 
+            stderr_tail = ""
+            if stderr_capture is not None:
+                # Close the writer and join the drain thread before reading, so
+                # the tail can't race the daemon still draining the dying
+                # subprocess's traceback into the deque.
+                stderr_tail = stderr_capture.tail(drain=True)
+
             logger.error(
                 "Failed to connect to MCP server",
                 server=self.config.name,
                 error=str(e),
                 error_type=type(e).__name__,
                 traceback=error_details,
+                stderr_tail=stderr_tail or None,
             )
+        finally:
+            if stderr_capture is not None:
+                stderr_capture.close()
 
     async def _discover_tools(self) -> None:
         """Discover available tools from the server."""
@@ -860,3 +915,179 @@ def clear_global_registry() -> None:
     """Drop the process-global registry reference."""
     global _GLOBAL_REGISTRY
     _GLOBAL_REGISTRY = None
+
+
+# ---------------------------------------------------------------------------
+# Per-workspace composite registry (append-only over the frozen built-ins).
+# ---------------------------------------------------------------------------
+#
+# A workspace's effective MCP set = the process-global built-ins (taken
+# verbatim, never round-tripped through the discovery cache) PLUS the
+# workspace's user-configured servers, whose tool schemas come from the
+# sanitized discovery snapshot. User servers have NO host code path: their
+# tools execute only inside the sandbox, so any host-side ``call_tool`` raises.
+#
+# A zero-user-server workspace short-circuits to the built-in registry object
+# itself (identity), which is what keeps such workspaces byte-identical to the
+# pre-change behavior (manifest hash + prompt summary unchanged).
+
+
+class _SchemaConfig:
+    """Minimal ``CoreConfig``-shaped view exposing the effective ``mcp.servers``.
+
+    Duck-types only the ``.mcp`` attribute consumers read off a registry's
+    ``.config`` (``.mcp.servers`` and ``.mcp.tool_exposure_mode``). Built-in
+    config objects are reused verbatim; only the server list is the merged
+    built-ins + user servers.
+    """
+
+    def __init__(self, builtin_config: CoreConfig, servers: list[MCPServerConfig]) -> None:
+        self._builtin_config = builtin_config
+        self.mcp = builtin_config.mcp.model_copy(update={"servers": servers})
+
+    def __getattr__(self, name: str) -> Any:
+        # Defer every other attribute to the built-in CoreConfig so the composite
+        # remains a faithful stand-in (e.g. ``.filesystem``, ``.sandbox``).
+        return getattr(self._builtin_config, name)
+
+
+class SchemaOnlyRegistry:
+    """Duck-typed ``MCPRegistry`` over built-in connectors + user-server schemas.
+
+    Read-only: built-in tools come straight from the frozen global registry's
+    connectors; user-server tools are wrapped ``MCPToolInfo`` from the sanitized
+    discovery cache. Host-side execution (``call_tool``) of a user server is
+    never permitted — those tools run only inside the sandbox.
+    """
+
+    def __init__(
+        self,
+        builtin_registry: "MCPRegistry",
+        user_servers: list[MCPServerConfig],
+        tool_schemas: dict[str, list[dict]],
+        disabled_builtin_names: frozenset[str] = frozenset(),
+    ) -> None:
+        self._builtin_registry = builtin_registry
+        self._user_names = frozenset(s.name for s in user_servers)
+        # Built-ins a workspace turned off: excluded from get_all_tools(),
+        # connectors, and the effective config so the agent neither sees nor can
+        # call them (a disable-marker must take effect at runtime, not just in
+        # the resolver).
+        self._disabled_builtin_names = frozenset(disabled_builtin_names)
+        # User-server tools, in deterministic per-server order, wrapped as
+        # MCPToolInfo so every downstream reader (codegen, formatter, hash) sees
+        # the same shape as a built-in. Original tool names are preserved;
+        # codegen re-sanitizes them.
+        self._user_tools: dict[str, list[MCPToolInfo]] = {}
+        for server in user_servers:
+            schemas = tool_schemas.get(server.name)
+            if not schemas:
+                # Pending/error server: contributes config (so the prompt can
+                # mention it) but zero tools.
+                continue
+            self._user_tools[server.name] = [
+                MCPToolInfo(
+                    name=schema.get("name", ""),
+                    description=schema.get("description", "") or "",
+                    input_schema=schema.get("input_schema") or {},
+                    server_name=server.name,
+                )
+                for schema in schemas
+            ]
+        # Effective config: enabled built-ins (verbatim, minus disabled) + user
+        # servers, so the formatter sees each user server's
+        # description/instruction/source and never a workspace-disabled built-in.
+        effective_builtins = [
+            s
+            for s in builtin_registry.config.mcp.servers
+            if s.name not in self._disabled_builtin_names
+        ]
+        effective_servers = [*effective_builtins, *user_servers]
+        self.config = _SchemaConfig(builtin_registry.config, effective_servers)
+
+    @property
+    def frozen(self) -> bool:
+        """Always frozen — a schema-only snapshot has no live subprocesses."""
+        return True
+
+    @property
+    def connectors(self) -> dict[str, "MCPServerConnector"]:
+        """Built-in connectors ONLY — user servers have no host connector, ever.
+
+        Workspace-disabled built-ins are excluded so a disabled built-in's
+        connector is neither visible nor callable.
+        """
+        connectors = self._builtin_registry.connectors
+        if not self._disabled_builtin_names:
+            return connectors
+        return {
+            name: conn
+            for name, conn in connectors.items()
+            if name not in self._disabled_builtin_names
+        }
+
+    def get_all_tools(self) -> dict[str, list[MCPToolInfo]]:
+        """Enabled built-in tools (minus disabled), then user-server tools."""
+        tools_by_server: dict[str, list[MCPToolInfo]] = {
+            name: tools
+            for name, tools in self._builtin_registry.get_all_tools().items()
+            if name not in self._disabled_builtin_names
+        }
+        tools_by_server.update(self._user_tools)
+        return tools_by_server
+
+    def get_tool_info(self, server_name: str, tool_name: str) -> MCPToolInfo | None:
+        """Look up a tool by server + name across built-ins and user servers."""
+        if server_name in self._disabled_builtin_names:
+            return None
+        if server_name in self._user_tools:
+            for tool in self._user_tools[server_name]:
+                if tool.name == tool_name:
+                    return tool
+            return None
+        return self._builtin_registry.get_tool_info(server_name, tool_name)
+
+    async def call_tool(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> Any:
+        """Reject host-side execution of user-server tools; delegate built-ins."""
+        if server_name in self._disabled_builtin_names:
+            raise RuntimeError(
+                f"Built-in MCP server {server_name!r} is disabled for this workspace."
+            )
+        if server_name in self._user_names:
+            raise RuntimeError(
+                f"Host-side call_tool is not supported for user MCP server "
+                f"{server_name!r}; user-server tools execute only inside the "
+                f"sandbox."
+            )
+        return await self._builtin_registry.call_tool(server_name, tool_name, arguments)
+
+
+def build_composite_registry(
+    builtin_registry: "MCPRegistry",
+    user_servers: list[MCPServerConfig],
+    tool_schemas: dict[str, list[dict]],
+    disabled_builtin_names: frozenset[str] = frozenset(),
+) -> Any:
+    """Append user-server schemas onto the frozen built-in registry.
+
+    ``user_servers`` are ``source='workspace'``, enabled, in resolver order
+    (built-ins config-order, then user servers alphabetical). ``tool_schemas``
+    maps a server name to its sanitized ``[{name, description, input_schema}]``
+    snapshot; only ``status='ok'`` servers appear. ``disabled_builtin_names``
+    are built-ins a workspace turned off — excluded from tools/connectors/config
+    so the agent can't see or call them at runtime.
+
+    When there are NO user servers AND no disabled built-ins, the built-in
+    registry is returned UNCHANGED (identity), keeping clean workspaces
+    byte-identical downstream.
+    """
+    if not user_servers and not disabled_builtin_names:
+        return builtin_registry
+    return SchemaOnlyRegistry(
+        builtin_registry, user_servers, tool_schemas, disabled_builtin_names
+    )

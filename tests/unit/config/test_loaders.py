@@ -12,13 +12,10 @@ Covers:
 - generate_config_template()
 """
 
-import asyncio
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from ptc_agent.config.agent import AgentConfig, LLMConfig
 from ptc_agent.config.loaders import generate_config_template, load_from_dict
 
 
@@ -152,20 +149,18 @@ class TestLoadFromDictOptionalSections:
     def test_no_agent_section(self):
         """Missing agent section uses defaults."""
         config = load_from_dict(_full_config_dict())
-        assert config.enable_view_image is True
         assert config.background_auto_wait is False
 
     def test_agent_section_with_values(self):
-        data = _full_config_dict(agent={"enable_view_image": False, "background_auto_wait": True})
+        data = _full_config_dict(agent={"background_auto_wait": True})
         config = load_from_dict(data)
-        assert config.enable_view_image is False
         assert config.background_auto_wait is True
 
     def test_agent_section_none(self):
         """YAML sections with only comments parse as None."""
         data = _full_config_dict(agent=None)
         config = load_from_dict(data)
-        assert config.enable_view_image is True
+        assert config.background_auto_wait is False
 
     def test_no_skills_section(self):
         config = load_from_dict(_full_config_dict())
@@ -345,6 +340,16 @@ class TestLoadFromDictCompaction:
         data = _full_config_dict(search_api="serper")
         config = load_from_dict(data)
         assert config.search_api == "serper"
+
+    def test_default_search_depth(self):
+        config = load_from_dict(_full_config_dict())
+        assert config.search_depth == "standard"
+
+    def test_custom_search_depth(self):
+        """Operators restore pre-branch behavior via search_depth in agent_config.yaml."""
+        data = _full_config_dict(search_depth="deep")
+        config = load_from_dict(data)
+        assert config.search_depth == "deep"
 
 
 # ---------------------------------------------------------------------------

@@ -83,8 +83,8 @@ Save all outputs to `$WORK_DIR/work/{task}/`.
 - Excel workbook with calendar view and sortable columns
 - Weekly preview note (markdown)
 
-> For all Excel formatting standards, follow the guidelines in `skills/xlsx/SKILL.md`.
-> After generating Excel, run recalculation: `python skills/xlsx/scripts/recalc.py calendar.xlsx 30`
+> For all Excel formatting standards, follow the guidelines in `.agents/skills/xlsx/SKILL.md`.
+> After generating Excel, run recalculation: `python .agents/skills/xlsx/scripts/recalc.py calendar.xlsx 30`
 
 ## Important Notes
 

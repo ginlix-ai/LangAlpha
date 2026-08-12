@@ -124,7 +124,6 @@ export function warmWorkspace(
       // proper UX. Log in dev so programmer mistakes (URL typos, response
       // shape changes) don't disappear silently.
       if (import.meta.env?.DEV) {
-        // eslint-disable-next-line no-console
         console.warn('[warmWorkspace] failed', workspaceId, err);
       }
     } finally {

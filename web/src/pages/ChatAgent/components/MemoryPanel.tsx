@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, useMemo } from 'react';
 import { ArrowLeft, Brain, FileText, RefreshCw, X } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import { useTranslation } from 'react-i18next';
 import {
   useUserMemory,
@@ -263,12 +264,14 @@ export default function MemoryPanel({
           title={t('memoryPanel.refresh')}
           disabled={list.loading}
         >
-          <RefreshCw className={`h-4 w-4 ${list.loading ? 'animate-spin' : ''}`} />
+          {list.loading
+            ? <Loader size={16} className="text-current" />
+            : <RefreshCw className="h-4 w-4" />}
         </button>
       </div>
 
       {/* Root path hint */}
-      <div className="px-3 py-1.5 text-[11px]"
+      <div className="px-3 py-1.5 text-[0.6875rem]"
            style={{ color: 'var(--color-text-tertiary)' }}>
         {rootLabel}
       </div>
@@ -343,7 +346,7 @@ export default function MemoryPanel({
             />
             <div className="flex-1 min-w-0">
               <div className="text-sm truncate">{entry.key}</div>
-              <div className="text-[10px]"
+              <div className="text-[0.625rem]"
                    style={{ color: 'var(--color-text-tertiary)' }}>
                 {formatBytes(entry.size)}
                 {entry.modified_at && ` · ${formatTime(entry.modified_at)}`}

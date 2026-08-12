@@ -37,6 +37,10 @@ from src.server.services.cache.intraday_cache_service import (
 from src.server.services.cache.daily_cache_service import (
     DailyCacheService,
 )
+from src.server.services.cache.quote_cache_service import QuoteCacheService
+from src.market_protocol import to_canonical, to_legacy_api
+from src.market_protocol.enums import AssetClass
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
@@ -58,6 +62,43 @@ def _convert_data_points(raw_data: list) -> list[IntradayDataPoint]:
         )
         for point in raw_data
     ]
+
+
+def _boundary_symbol(symbol: str, *, is_index: bool = False, equity: bool = False) -> str:
+    """Protocol boundary: canonicalize an inbound spelling, then map back to
+    the legacy API form.
+
+    Every spelling of one instrument (``aapl`` / ``AAPL.US`` / ``^GSPC`` /
+    ``I:SPX`` / ``SPX.INDEX``) collapses here so caches and providers see a
+    single spelling. ``equity=True`` (stock OHLCV endpoints) suppresses the
+    bare index-family auto-detect so a real equity ticker that collides with
+    an index alias (COMP) is not silently served index data; explicit ``^``/
+    ``I:`` spellings still resolve as indexes. Reverse-mapped to the legacy
+    form until the Phase 3 instrument_key cache cutover. Unparseable input
+    passes through untouched.
+    """
+    hint = AssetClass.INDEX if is_index else (AssetClass.EQUITY if equity else None)
+    try:
+        ref = to_canonical(symbol, asset_class=hint)
+        legacy = to_legacy_api(ref)
+        if equity and ref.asset_class is AssetClass.INDEX:
+            # Explicit index spelling (^GSPC / I:SPX) on an equity endpoint:
+            # keep the marker, or downstream re-canonicalization (cache keys,
+            # quote refs — which hint EQUITY) would flip it to an equity.
+            return f"^{legacy}"
+        return legacy
+    except Exception:
+        logger.debug("market_data.boundary.passthrough | symbol=%r", symbol)
+        return symbol
+
+
+def _boundary_symbols(
+    symbols: list[str], *, is_index: bool = False, equity: bool = False
+) -> list[str]:
+    """Boundary-map a symbol list, deduping spellings that collapse."""
+    return list(
+        dict.fromkeys(_boundary_symbol(s, is_index=is_index, equity=equity) for s in symbols)
+    )
 
 
 async def _get_daily(
@@ -109,6 +150,8 @@ async def get_stock_intraday(
             status_code=422,
             detail=f"Invalid interval '{interval}' for stocks. Supported: {', '.join(STOCK_INTERVALS)}"
         )
+
+    symbol = _boundary_symbol(symbol, equity=True)
 
     try:
         service = IntradayCacheService.get_instance()
@@ -168,7 +211,7 @@ async def get_stock_daily(
 ) -> DailyResponse:
     """Get daily historical data for a single stock."""
     try:
-        return await _get_daily(symbol, user_id, from_date, to_date)
+        return await _get_daily(_boundary_symbol(symbol, equity=True), user_id, from_date, to_date)
     except HTTPException:
         raise
     except Exception as e:
@@ -190,7 +233,9 @@ async def get_index_daily(
 ) -> DailyResponse:
     """Get daily historical data for a single index."""
     try:
-        return await _get_daily(symbol, user_id, from_date, to_date, is_index=True)
+        return await _get_daily(
+            _boundary_symbol(symbol, is_index=True), user_id, from_date, to_date, is_index=True,
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -214,12 +259,6 @@ async def get_batch_stocks_intraday(
     user_id: CurrentUserId,
 ) -> BatchIntradayResponse:
     """Get intraday data for multiple stocks."""
-    if request.interval == "1s":
-        raise HTTPException(
-            status_code=422,
-            detail="1s interval is not supported for batch requests. Use the single-symbol endpoint instead.",
-        )
-
     # Validate interval
     if request.interval not in STOCK_INTERVALS:
         raise HTTPException(
@@ -230,7 +269,7 @@ async def get_batch_stocks_intraday(
     try:
         service = IntradayCacheService.get_instance()
         results, errors, cache_stats = await service.get_batch_stocks(
-            symbols=request.symbols,
+            symbols=_boundary_symbols(request.symbols, equity=True),
             interval=request.interval,
             from_date=request.from_date,
             to_date=request.to_date,
@@ -282,6 +321,8 @@ async def get_index_intraday(
             status_code=422,
             detail=f"Invalid interval '{interval}' for indexes. Supported: {', '.join(INDEX_INTERVALS)}"
         )
+
+    symbol = _boundary_symbol(symbol, is_index=True)
 
     try:
         service = IntradayCacheService.get_instance()
@@ -338,12 +379,6 @@ async def get_batch_indexes_intraday(
     user_id: CurrentUserId,
 ) -> BatchIntradayResponse:
     """Get intraday data for multiple indexes."""
-    if request.interval == "1s":
-        raise HTTPException(
-            status_code=422,
-            detail="1s interval is not supported for batch requests. Use the single-symbol endpoint instead.",
-        )
-
     # Validate interval
     if request.interval not in INDEX_INTERVALS:
         raise HTTPException(
@@ -354,7 +389,7 @@ async def get_batch_indexes_intraday(
     try:
         service = IntradayCacheService.get_instance()
         results, errors, cache_stats = await service.get_batch_indexes(
-            symbols=request.symbols,
+            symbols=_boundary_symbols(request.symbols, is_index=True),
             interval=request.interval,
             from_date=request.from_date,
             to_date=request.to_date,
@@ -487,7 +522,7 @@ async def get_company_overview(symbol: str, user_id: CurrentUserId) -> CompanyOv
         if cached is not None:
             return CompanyOverviewResponse(**cached)
 
-        from src.tools.market_data.implementations import fetch_company_overview_data
+        from src.tools.market_data.company import fetch_company_overview_data
 
         artifact = await fetch_company_overview_data(symbol_upper)
 
@@ -613,8 +648,11 @@ async def get_analyst_data(
 # Snapshot Endpoints
 # =============================================================================
 
-_SNAPSHOT_CACHE_TTL = 15  # seconds
 _MARKET_STATUS_CACHE_TTL = 30  # seconds
+
+# Enforced batch width — matches the documented "max 250" in the query docs;
+# bounds the Redis MGET width and upstream fan-out per request.
+_MAX_BATCH_SNAPSHOT_SYMBOLS = 250
 
 
 @router.get(
@@ -628,7 +666,7 @@ async def get_stock_snapshots(
     symbols: str = Query(..., description="Comma-separated stock symbols (max 250)"),
 ) -> SnapshotResponse:
     """Get batch snapshots for stocks."""
-    return await _get_batch_snapshots(symbols, "stocks", "stocks", user_id)
+    return await _get_batch_snapshots(symbols, "stocks", user_id)
 
 
 @router.get(
@@ -642,35 +680,35 @@ async def get_index_snapshots(
     symbols: str = Query(..., description="Comma-separated index symbols (e.g. GSPC,IXIC,DJI)"),
 ) -> SnapshotResponse:
     """Get batch snapshots for indexes."""
-    return await _get_batch_snapshots(symbols, "indices", "indexes", user_id)
+    return await _get_batch_snapshots(symbols, "indices", user_id)
 
 
 async def _get_batch_snapshots(
-    symbols: str, asset_type: str, cache_prefix: str, user_id: str,
+    symbols: str, asset_type: str, user_id: str,
 ) -> SnapshotResponse:
-    """Shared implementation for batch stock/index snapshot endpoints."""
-    symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    """Shared implementation for batch stock/index snapshot endpoints.
+
+    Thin wrapper over QuoteCacheService: per-instrument cache keys, one
+    batched upstream fill for misses, in-flight dedup. Unresolvable symbols
+    are dropped from the response (no null-field rows).
+    """
+    symbol_list = _boundary_symbols(
+        [s.strip().upper() for s in symbols.split(",") if s.strip()],
+        is_index=(asset_type == "indices"),
+        equity=(asset_type != "indices"),
+    )
     if not symbol_list:
         raise HTTPException(status_code=422, detail="At least one symbol is required")
+    if len(symbol_list) > _MAX_BATCH_SNAPSHOT_SYMBOLS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many symbols ({len(symbol_list)}); max {_MAX_BATCH_SNAPSHOT_SYMBOLS} per request",
+        )
 
     try:
-        from src.utils.cache.redis_cache import get_cache_client
-        from src.data_client import get_market_data_provider
-
-        cache = get_cache_client()
-        cache_key = f"snapshot:{cache_prefix}:{','.join(sorted(symbol_list))}"
-
-        cached = await cache.get(cache_key)
-        if cached is not None:
-            snapshots = [SnapshotData(**s) for s in cached]
-            return SnapshotResponse(snapshots=snapshots, count=len(snapshots))
-
-        provider = await get_market_data_provider()
-        raw = await provider.get_snapshots(symbol_list, asset_type=asset_type, user_id=user_id)
-
+        service = QuoteCacheService.get_instance()
+        raw = await service.get_quotes(symbol_list, asset_type=asset_type, user_id=user_id)
         snapshots = [SnapshotData(**item) for item in raw]
-        await cache.set(cache_key, [s.model_dump() for s in snapshots], ttl=_SNAPSHOT_CACHE_TTL)
-
         return SnapshotResponse(snapshots=snapshots, count=len(snapshots))
 
     except HTTPException:
@@ -687,29 +725,16 @@ async def _get_batch_snapshots(
     description="Retrieve real-time snapshot data for a single stock symbol.",
 )
 async def get_single_stock_snapshot(symbol: str, user_id: CurrentUserId) -> SnapshotData:
-    """Get snapshot for a single stock."""
-    symbol = symbol.strip().upper()
+    """Get snapshot for a single stock — same cache path as the batch endpoint."""
+    symbol = _boundary_symbol(symbol.strip().upper(), equity=True)
 
     try:
-        from src.utils.cache.redis_cache import get_cache_client
-        from src.data_client import get_market_data_provider
-
-        cache = get_cache_client()
-        cache_key = f"snapshot:stock:{symbol}"
-
-        cached = await cache.get(cache_key)
-        if cached is not None:
-            return SnapshotData(**cached)
-
-        provider = await get_market_data_provider()
-        raw = await provider.get_snapshots([symbol], asset_type="stocks", user_id=user_id)
+        service = QuoteCacheService.get_instance()
+        raw = await service.get_quotes([symbol], asset_type="stocks", user_id=user_id)
 
         if not raw:
             raise HTTPException(status_code=404, detail="No snapshot data available for this symbol")
-        snap = SnapshotData(**raw[0])
-        await cache.set(cache_key, snap.model_dump(), ttl=_SNAPSHOT_CACHE_TTL)
-
-        return snap
+        return SnapshotData(**raw[0])
 
     except HTTPException:
         raise

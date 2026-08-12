@@ -118,7 +118,7 @@ function NewsRow({ item, idx, onNewsClick, skipAnimation }: NewsRowProps) {
           )}
           {item.source && (
             <span
-              className="text-[10px] font-medium uppercase tracking-wide"
+              className="text-[0.625rem] font-medium uppercase tracking-wide"
               style={{ color: 'var(--color-accent-light)' }}
             >
               {item.source}
@@ -143,7 +143,7 @@ function NewsRow({ item, idx, onNewsClick, skipAnimation }: NewsRowProps) {
             {tickers.slice(0, 4).map((t) => (
               <span
                 key={t}
-                className="text-[10px] font-bold px-1.5 py-0.5 rounded"
+                className="text-[0.625rem] font-bold px-1.5 py-0.5 rounded"
                 style={{
                   backgroundColor: 'var(--color-accent-soft)',
                   color: 'var(--color-accent-light)',
@@ -153,7 +153,7 @@ function NewsRow({ item, idx, onNewsClick, skipAnimation }: NewsRowProps) {
               </span>
             ))}
             {tickers.length > 4 && (
-              <span className="text-[10px]" style={{ color: 'var(--color-text-secondary)' }}>
+              <span className="text-[0.625rem]" style={{ color: 'var(--color-text-secondary)' }}>
                 +{tickers.length - 4}
               </span>
             )}
@@ -345,7 +345,7 @@ function NewsFeedCard({
               placeholder={t('dashboard.newsFeedCard.tickerPlaceholder')}
               value={tickerFilter}
               onChange={(e) => setTickerFilter(e.target.value)}
-              className="flex-1 text-[11px] bg-transparent border-none outline-none min-w-0"
+              className="flex-1 text-[0.6875rem] bg-transparent border-none outline-none min-w-0"
               style={{ color: 'var(--color-text-primary)' }}
             />
             {tickerFilter && (
@@ -367,7 +367,7 @@ function NewsFeedCard({
                 <button
                   key={key}
                   onClick={() => setDateRange(key)}
-                  className="px-2 py-1 rounded-md text-[11px] font-medium transition-all"
+                  className="px-2 py-1 rounded-md text-[0.6875rem] font-medium transition-all"
                   style={{
                     backgroundColor: isActive ? 'var(--color-bg-elevated)' : 'transparent',
                     color: isActive ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',

@@ -154,13 +154,11 @@ class TestAgentConfigCreate:
                 daytona_api_key="key",
                 python_version="3.11",
                 log_level="DEBUG",
-                enable_view_image=False,
                 background_auto_wait=True,
                 subagents_enabled=["general-purpose", "research"],
             )
         assert config.daytona.python_version == "3.11"
         assert config.logging.level == "DEBUG"
-        assert config.enable_view_image is False
         assert config.background_auto_wait is True
         assert config.subagents.enabled == ["general-purpose", "research"]
 
@@ -220,9 +218,20 @@ class TestAgentConfigToCoreConfig:
         config = _minimal_config()
         core = config.to_core_config()
         assert core.security is config.security
-        assert core.mcp is config.mcp
         assert core.logging is config.logging
         assert core.filesystem is config.filesystem
+
+    def test_mcp_is_a_deep_copy_not_shared(self):
+        """Each CoreConfig owns its MCPConfig so per-workspace edits can't bleed."""
+        config = _minimal_config()
+        core = config.to_core_config()
+        assert core.mcp is not config.mcp
+        assert core.mcp == config.mcp
+        # Mutating the per-workspace copy leaves the source AgentConfig untouched.
+        core.mcp.servers.append(
+            MCPServerConfig(name="injected", source="workspace")
+        )
+        assert config.mcp.servers == []
 
 
 # ---------------------------------------------------------------------------
@@ -423,3 +432,29 @@ class TestAgentConfigNewFields:
     def test_custom_search_api(self):
         config = _minimal_config(search_api="serper")
         assert config.search_api == "serper"
+
+
+class TestAgentConfigFeatureEnabled:
+    def test_resolved_features_win(self):
+        config = _minimal_config()
+        config.features = {"market_watch": False}
+        assert config.feature_enabled("market_watch") is False
+        config.features = {"market_watch": True}
+        assert config.feature_enabled("market_watch") is True
+
+    def test_unresolved_falls_back_to_no_user_default(self):
+        config = _minimal_config()
+        assert config.features is None
+        with patch(
+            "src.config.features.default_feature_enabled", return_value=False
+        ) as gate:
+            assert config.feature_enabled("market_watch") is False
+        gate.assert_called_once_with("market_watch")
+
+    def test_missing_key_falls_back_to_no_user_default(self):
+        config = _minimal_config()
+        config.features = {"other_feature": True}
+        with patch(
+            "src.config.features.default_feature_enabled", return_value=True
+        ):
+            assert config.feature_enabled("market_watch") is True

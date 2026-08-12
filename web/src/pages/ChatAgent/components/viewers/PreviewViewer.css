@@ -20,7 +20,7 @@
   gap: 6px;
   flex: 1;
   min-width: 0;
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   color: var(--color-text-primary);
   overflow: hidden;
@@ -33,7 +33,7 @@
   align-items: center;
   padding: 1px 6px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   color: var(--color-text-tertiary);
@@ -73,7 +73,9 @@
   min-height: 0;
   width: 100%;
   border: none;
-  background: #ffffff;
+  /* Visible only until the served app paints its own canvas — theme-aware so
+     dark mode doesn't flash a white sheet during load. */
+  background: var(--color-bg-page);
 }
 
 .preview-viewer-loading {
@@ -120,25 +122,14 @@
 }
 
 .preview-viewer-resize-title {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   color: var(--color-text-primary);
 }
 
 .preview-viewer-resize-url {
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   color: var(--color-text-tertiary);
 }
 
-@keyframes preview-spinner {
-  to { transform: rotate(360deg); }
-}
-.preview-viewer-spinner {
-  width: 24px;
-  height: 24px;
-  border: 2.5px solid var(--color-border-muted, #e5e7eb);
-  border-top-color: var(--color-accent-primary, #4161A4);
-  border-radius: 50%;
-  animation: preview-spinner 0.8s linear infinite;
-}

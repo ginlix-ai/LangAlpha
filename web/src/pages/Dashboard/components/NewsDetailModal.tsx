@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   X, Calendar, Hash, ExternalLink, TrendingUp, TrendingDown, Minus, Tag,
   Paperclip,
@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { getNewsArticle } from '../utils/api';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { MobileBottomSheet } from '@/components/ui/mobile-bottom-sheet';
+import { Loader } from '@/components/ui/loader';
 import { useToast } from '@/components/ui/use-toast';
 import { ContextBus } from '@/lib/contextBus';
 import { buildNewsWidgetSnapshot, normalizeArticle } from '../utils/newsArticleFetch';
@@ -38,10 +39,46 @@ interface Article {
   [key: string]: unknown;
 }
 
+/** The clicked row's full body. The list inlines description/keywords/sentiments,
+ *  so a seed with a description renders the complete modal with no by-id fetch.
+ *  Rows without one still fall back to the fetch (optional enrichment). */
+interface NewsFallback {
+  title?: string;
+  source?: string;
+  publishedAt?: string | null;
+  tickers?: string[];
+  articleUrl?: string | null;
+  author?: string | null;
+  description?: string | null;
+  keywords?: string[];
+  sentiments?: ArticleSentiment[] | null;
+  imageUrl?: string | null;
+  favicon?: string | null;
+}
+
 interface NewsDetailModalProps {
   newsId: string | null;
   onClose: () => void;
+  /** Legacy (Classic dashboard): URL-only fallback for the empty state. */
   fallbackUrl?: string | null;
+  /** Rich fallback from the clicked row — preferred. */
+  fallback?: NewsFallback | null;
+}
+
+function fallbackToArticle(fb: NewsFallback | null | undefined): Article | null {
+  if (!fb?.title) return null;
+  return {
+    title: fb.title,
+    description: fb.description ?? undefined,
+    image_url: fb.imageUrl ?? undefined,
+    article_url: fb.articleUrl ?? undefined,
+    author: fb.author ?? undefined,
+    published_at: fb.publishedAt ?? undefined,
+    source: fb.source ? { name: fb.source, favicon_url: fb.favicon ?? undefined } : undefined,
+    keywords: fb.keywords ?? [],
+    tickers: fb.tickers ?? [],
+    sentiments: fb.sentiments ?? undefined,
+  };
 }
 
 function attachArticleToContext(article: Article, articleId: string): void {
@@ -103,6 +140,19 @@ function formatDate(dateString: string | undefined): string {
   }
 }
 
+/** Only allow http(s) URLs into an <a href>. Article/fallback URLs come from
+ *  external news feeds, and React does NOT block javascript:/data: schemes,
+ *  which would execute on click. Returns undefined for anything non-http(s). */
+function safeHttpUrl(url: string | null | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const protocol = new URL(url, window.location.origin).protocol;
+    return protocol === 'http:' || protocol === 'https:' ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Shared inner content for both mobile bottom sheet and desktop dialog */
 function NewsBody({
   article,
@@ -125,13 +175,12 @@ function NewsBody({
   onAttach?: () => void;
 }) {
   const { t: trans } = useTranslation();
-  if (loading) {
+  const safeFallbackUrl = safeHttpUrl(fallbackUrl);
+  const safeArticleUrl = safeHttpUrl(article?.article_url);
+  if (loading && !article) {
     return (
       <div className="flex items-center justify-center py-24">
-        <div
-          className="h-8 w-8 border-2 rounded-full animate-spin"
-          style={{ borderColor: 'var(--color-border-default)', borderTopColor: 'var(--color-accent-primary)' }}
-        />
+        <Loader size={32} className="text-[color:var(--color-accent-primary)]" />
       </div>
     );
   }
@@ -142,15 +191,15 @@ function NewsBody({
         <p style={{ color: 'var(--color-text-secondary)' }}>
           {fetchFailed ? 'Article details not available' : 'Article not found'}
         </p>
-        {fetchFailed && fallbackUrl && (
+        {fetchFailed && safeFallbackUrl && (
           <a
-            href={fallbackUrl}
+            href={safeFallbackUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
             style={{
-              backgroundColor: 'var(--color-accent-primary)',
-              color: '#fff',
+              backgroundColor: 'var(--color-btn-primary-bg)',
+              color: 'var(--color-btn-primary-text)',
             }}
           >
             Open article
@@ -182,7 +231,7 @@ function NewsBody({
           <div className={`absolute bottom-0 left-0 right-0 ${isMobile ? 'p-4' : 'p-6 md:p-8'}`}>
             {article.source?.name && (
               <span
-                className="inline-flex items-center gap-1.5 text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider mb-2 sm:mb-3"
+                className="inline-flex items-center gap-1.5 text-[0.625rem] font-bold px-2 py-0.5 rounded uppercase tracking-wider mb-2 sm:mb-3"
                 style={{
                   backgroundColor: 'var(--color-accent-primary)',
                   color: '#fff',
@@ -211,6 +260,39 @@ function NewsBody({
 
       {/* Body */}
       <div className={isMobile ? 'pt-4' : 'p-6 md:p-8'}>
+        {/* Title fallback — sources without a hero image (e.g. TickerTick) still
+            need the headline + source rendered, since the hero block above is
+            skipped when there's no image_url. */}
+        {!article.image_url && (
+          <div className="mb-5 sm:mb-6">
+            {article.source?.name && (
+              <span
+                className="inline-flex items-center gap-1.5 text-[0.625rem] font-bold px-2 py-0.5 rounded uppercase tracking-wider mb-2 sm:mb-3"
+                style={{
+                  backgroundColor: 'var(--color-accent-soft)',
+                  color: 'var(--color-accent-primary)',
+                }}
+              >
+                {article.source.favicon_url && (
+                  <img
+                    src={article.source.favicon_url}
+                    alt=""
+                    className="w-3.5 h-3.5 rounded-sm"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                  />
+                )}
+                {article.source.name}
+              </span>
+            )}
+            <h1
+              className={`${isMobile ? 'text-lg' : 'text-2xl md:text-3xl'} font-bold leading-tight`}
+              style={{ color: 'var(--color-text-primary)' }}
+            >
+              {article.title}
+            </h1>
+          </div>
+        )}
+
         {/* Meta */}
         <div
           className={`flex items-center ${isMobile ? 'gap-3 text-xs' : 'gap-6 text-sm'} mb-6 sm:mb-8 pb-3 sm:pb-4 border-b flex-wrap`}
@@ -234,19 +316,17 @@ function NewsBody({
               <button
                 type="button"
                 onClick={onAttach}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] sm:text-xs font-medium transition-colors"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[0.6875rem] sm:text-xs font-medium transition-colors"
                 style={{
                   backgroundColor: 'var(--color-accent-soft)',
                   borderColor: 'var(--color-accent-overlay)',
                   color: 'var(--color-accent-primary)',
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = 'var(--color-accent-primary)';
-                  e.currentTarget.style.color = '#fff';
+                  e.currentTarget.style.opacity = '0.9';
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = 'var(--color-accent-soft)';
-                  e.currentTarget.style.color = 'var(--color-accent-primary)';
+                  e.currentTarget.style.opacity = '1';
                 }}
                 title={trans('dashboard.widgets.frame.addToContext', { defaultValue: 'Attach to chat' })}
               >
@@ -254,9 +334,9 @@ function NewsBody({
                 {trans('dashboard.widgets.frame.addToContext', { defaultValue: 'Attach to chat' })}
               </button>
             )}
-            {article.article_url && (
+            {safeArticleUrl && (
               <a
-                href={article.article_url}
+                href={safeArticleUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-1.5 transition-opacity hover:opacity-80"
@@ -283,7 +363,7 @@ function NewsBody({
                 {article.keywords!.map((kw, i) => (
                   <span
                     key={i}
-                    className="px-2 py-0.5 sm:px-3 sm:py-1 rounded-full border text-[11px] sm:text-xs"
+                    className="px-2 py-0.5 sm:px-3 sm:py-1 rounded-full border text-[0.6875rem] sm:text-xs"
                     style={{
                       backgroundColor: 'var(--color-bg-hover)',
                       borderColor: 'var(--color-border-muted)',
@@ -308,7 +388,7 @@ function NewsBody({
                 Executive Summary
               </h3>
               <p
-                className="text-[13px] sm:text-sm leading-relaxed"
+                className="text-[0.8125rem] sm:text-sm leading-relaxed"
                 style={{ color: 'var(--color-text-secondary)' }}
               >
                 {article.description}
@@ -347,7 +427,7 @@ function NewsBody({
                             {insight.ticker}
                           </span>
                           <div
-                            className="flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded uppercase border"
+                            className="flex items-center gap-1 text-[0.625rem] font-bold px-1.5 py-0.5 rounded uppercase border"
                             style={sentimentStyle(insight.sentiment)}
                           >
                             {sentimentIcon(insight.sentiment)} {insight.sentiment || 'neutral'}
@@ -355,7 +435,7 @@ function NewsBody({
                         </div>
                         {insight.reasoning && (
                           <p
-                            className="text-[11px] sm:text-xs leading-relaxed line-clamp-2"
+                            className="text-[0.6875rem] sm:text-xs leading-relaxed line-clamp-2"
                             style={{ color: 'var(--color-text-secondary)' }}
                           >
                             {insight.reasoning}
@@ -452,7 +532,7 @@ function NewsBody({
   );
 }
 
-function NewsDetailModal({ newsId, onClose, fallbackUrl }: NewsDetailModalProps) {
+function NewsDetailModal({ newsId, onClose, fallbackUrl, fallback }: NewsDetailModalProps) {
   const { t } = useTranslation();
   const { toast } = useToast();
   const [article, setArticle] = useState<Article | null>(null);
@@ -460,6 +540,11 @@ function NewsDetailModal({ newsId, onClose, fallbackUrl }: NewsDetailModalProps)
   const [fetchFailed, setFetchFailed] = useState(false);
   const [expandedSentiment, setExpandedSentiment] = useState<number | null>(null);
   const isMobile = useIsMobile();
+
+  // Read the latest fallback at fetch time without re-running the effect when
+  // the parent hands us a fresh object for the same newsId.
+  const fallbackRef = useRef(fallback);
+  fallbackRef.current = fallback;
 
   const handleAttach = () => {
     if (!article || !newsId) return;
@@ -478,17 +563,31 @@ function NewsDetailModal({ newsId, onClose, fallbackUrl }: NewsDetailModalProps)
       setExpandedSentiment(null);
       return;
     }
+    // Seed with the clicked row's known fields so the modal renders instantly.
+    const seed = fallbackToArticle(fallbackRef.current);
     let cancelled = false;
-    setLoading(true);
+    setArticle(seed);
     setFetchFailed(false);
     setExpandedSentiment(null);
+
+    // The list now inlines the full article body, so when the row already
+    // carries a description we render straight from it — no by-id round-trip.
+    if (seed?.description) {
+      setLoading(false);
+      return;
+    }
+
+    // Optional enrichment: rows without an inlined body (or the Classic
+    // dashboard's URL-only path) still fetch the full article by id.
+    setLoading(true);
     getNewsArticle(newsId)
       .then((data) => {
         if (!cancelled) setArticle(data as Article);
       })
       .catch((err) => {
         console.error('[NewsDetailModal] fetch failed:', err?.message);
-        if (!cancelled) {
+        if (!cancelled && !seed) {
+          // No fallback to show → surface the empty state.
           setArticle(null);
           setFetchFailed(true);
         }

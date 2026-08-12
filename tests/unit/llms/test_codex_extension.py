@@ -1,13 +1,13 @@
 """Tests for ChatCodexOpenAI system message → instructions promotion."""
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src.llms.extension.codex import ChatCodexOpenAI
 
 
 def _make_llm(**overrides):
     defaults = {
-        "model": "gpt-5.4",
+        "model": "gpt-5.6-sol",
         "api_key": "fake",
         "output_version": "responses/v1",
         "store": False,
@@ -74,6 +74,50 @@ class TestSystemToInstructions:
         assert payload["instructions"] == "Dynamic prompt\n\nstatic placeholder"
 
 
+class TestStatelessIdContract:
+    """Pins the langchain-openai store=False behavior we depend on since
+    dropping our own reasoning-id stripping: unpersisted msg_ ids are removed
+    from replayed assistant items, while encrypted reasoning items are kept
+    with their rs_ id. A dependency bump that regresses this breaks codex
+    turn replay (400s), so it must fail here first.
+    """
+
+    def test_msg_id_dropped_encrypted_reasoning_kept(self):
+        llm = _make_llm(
+            model_kwargs={}, include=["reasoning.encrypted_content"]
+        )
+        messages = [
+            HumanMessage(content="q1"),
+            AIMessage(
+                content=[
+                    {
+                        "type": "reasoning",
+                        "id": "rs_abc123",
+                        "summary": [],
+                        "encrypted_content": "enc-blob",
+                    },
+                    {"type": "text", "text": "Answer one.", "id": "msg_abc123"},
+                ]
+            ),
+            HumanMessage(content="q2"),
+        ]
+        payload = llm._get_request_payload(messages)
+
+        items = [i for i in payload["input"] if isinstance(i, dict)]
+        reasoning = [i for i in items if i.get("type") == "reasoning"]
+        assert reasoning == [
+            {
+                "type": "reasoning",
+                "id": "rs_abc123",
+                "summary": [],
+                "encrypted_content": "enc-blob",
+            }
+        ]
+        assistant = [i for i in items if i.get("role") == "assistant"]
+        assert len(assistant) == 1
+        assert "id" not in assistant[0]
+
+
 class TestNullOutputGuard:
     """chatgpt.com Codex backend ships response.output=null on terminal stream
     frames. langchain_openai iterates it unguarded and raises
@@ -110,22 +154,3 @@ class TestNullOutputGuard:
         assert getattr(fn, "_codex_output_guarded", False) is True
         _install_responses_output_guard()  # re-running must be a no-op
         assert base._construct_lc_result_from_responses_api is fn
-
-
-class TestStatelessIdSanitization:
-    """Existing behavior: reasoning item IDs stripped for store=false."""
-
-    def test_reasoning_id_stripped(self):
-        llm = _make_llm()
-        messages = [HumanMessage(content="Hello")]
-        payload = llm._get_request_payload(messages)
-
-        # Manually inject reasoning item to test sanitization
-        payload["input"].append(
-            {"type": "reasoning", "id": "rs_abc123", "content": []}
-        )
-        from src.llms.extension.codex import _sanitize_input_for_stateless
-
-        sanitized = _sanitize_input_for_stateless(payload["input"])
-        reasoning = [i for i in sanitized if i.get("type") == "reasoning"][0]
-        assert "id" not in reasoning

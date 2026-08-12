@@ -48,7 +48,7 @@ class TestReadFileRedaction:
             f"{sandbox._work_dir}/data/env_leak.txt", content.encode()
         )
 
-        with patch("src.server.app.workspace_files.get_redactor", return_value=mock_redactor):
+        with patch("src.server.app.workspace_files.crud.get_redactor", return_value=mock_redactor):
             resp = await client.get(f"{BASE}/read", params={"path": "data/env_leak.txt"})
 
         assert resp.status_code == 200
@@ -73,7 +73,7 @@ class TestReadFileRedaction:
         empty_redactor = SecretRedactor.__new__(SecretRedactor)
         empty_redactor._secrets = []
 
-        with patch("src.server.app.workspace_files.get_redactor", return_value=empty_redactor):
+        with patch("src.server.app.workspace_files.crud.get_redactor", return_value=empty_redactor):
             resp = await client.get(f"{BASE}/read", params={"path": "data/normal.txt"})
 
         assert resp.status_code == 200
@@ -96,7 +96,7 @@ class TestDownloadFileRedaction:
             f"{sandbox._work_dir}/data/config.txt", content.encode()
         )
 
-        with patch("src.server.app.workspace_files.get_redactor", return_value=mock_redactor):
+        with patch("src.server.app.workspace_files.crud.get_redactor", return_value=mock_redactor):
             resp = await client.get(f"{BASE}/download", params={"path": "data/config.txt"})
 
         assert resp.status_code == 200
@@ -116,7 +116,7 @@ class TestDownloadFileRedaction:
             f"{sandbox._work_dir}/data/chart.png", binary_with_secret
         )
 
-        with patch("src.server.app.workspace_files.get_redactor", return_value=mock_redactor):
+        with patch("src.server.app.workspace_files.crud.get_redactor", return_value=mock_redactor):
             resp = await client.get(f"{BASE}/download", params={"path": "data/chart.png"})
 
         assert resp.status_code == 200

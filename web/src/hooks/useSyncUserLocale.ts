@@ -1,13 +1,14 @@
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useUser } from './useUser';
-
-const SUPPORTED = new Set(['en-US', 'zh-CN']);
+import { getLocaleCookie, isSupported, setLocaleCookie } from '../lib/locale';
 
 /**
- * Apply the user's DB-stored locale once, on the first user payload we see.
- * Subsequent refetches must not override the local value — otherwise a stale
- * /users/me response can clobber a locale the user just picked in Settings.
+ * Seed the locale from the user's DB value on first load — but only when there's
+ * no `locale` cookie yet (a browser-level cookie choice wins, and the cookie is
+ * what servers can read). Latched so a later /users/me refetch can't clobber a
+ * value the user just picked. Writing the cookie makes the DB preference
+ * server-readable on a fresh device.
  */
 export function useSyncUserLocale() {
   const { user } = useUser();
@@ -17,12 +18,10 @@ export function useSyncUserLocale() {
   useEffect(() => {
     if (synced.current) return;
     const stored = user?.locale as string | undefined;
-    if (!stored || !SUPPORTED.has(stored)) return;
+    if (!isSupported(stored)) return;
     synced.current = true; // latch even if no-op, so a later refetch can't trigger sync
-    if (i18n.language === stored) return;
-    i18n.changeLanguage(stored);
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('locale', stored);
-    }
+    if (getLocaleCookie()) return; // browser cookie wins; already applied at init
+    if (i18n.language !== stored) i18n.changeLanguage(stored);
+    setLocaleCookie(stored);
   }, [user?.locale, i18n]);
 }

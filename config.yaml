@@ -19,13 +19,30 @@ ptc_recursion_limit: 2000
 flash_recursion_limit: 500
 
 # Workflow Settings
-workflow_timeout: 3200  # seconds (53 minutes)
+workflow_timeout: 21600  # seconds (6 hours) — matches background_execution.abandoned_workflow_timeout
 sse_keepalive_interval: 15  # seconds
 
-# Feature Flags
+# Feature Flags (operator-only infra toggles; never exposed to users)
 result_log_db_enabled: true
 redis_warm_on_startup: true
 langsmith_tracing: false
+
+# User-facing product features. Each entry overrides the code catalog
+# (src/config/features.py) for this deployment; unset fields inherit the
+# catalog defaults.
+#   enabled:   kill switch — false turns the feature off for everyone,
+#              hides every surface, and ignores stored user overrides
+#   gate:      access model while enabled:
+#                none    — available to everyone
+#                opt_in  — off until the user opts in (Settings toggle)
+#                opt_out — on unless the user opts out (Settings toggle)
+#                plan    — requires a platform plan with access tier >=
+#                          min_tier (OSS deployments bypass plan gates)
+#   min_tier:  plan gate only — minimum platform access tier
+features:
+  market_watch:
+    enabled: true
+    gate: opt_in
 
 # SSE Event Logging
 sse_event_log_enabled: false
@@ -41,9 +58,15 @@ module_log_levels:
   group:third_party_libraries: WARNING
   group:langchain_libraries: WARNING
 
+  # yfinance logs a normal no-data soft-miss at ERROR (and never raises), but the
+  # provider chain treats an empty result as a designed fallthrough — so every
+  # symbol Yahoo can't serve (bare CN/HK codes, fund codes, ^ index aliases) spams
+  # the ERROR stream from the last-resort fallback. CRITICAL (not WARNING) is
+  # required: the "possibly delisted" line is emitted at ERROR.
+  yfinance: CRITICAL
+
   # Application modules (hierarchical - parent loggers affect all children)
   src.tools: INFO
-  src.infoflow: INFO
   src.deep_research: INFO
 
 # CORS Settings
@@ -90,8 +113,10 @@ background_execution:
   sse_drain_timeout: 30                 # Seconds to wait for per-task SSE drain before clearing events
   shutdown_timeout: 50                  # Max seconds for graceful shutdown of running workflows
   checkpoint_flush_timeout: 10          # Timeout for checkpoint state reads/writes
+  admission_compaction_wait_timeout: 180 # Max seconds a new turn waits at admission for an in-progress compaction before returning "compacting" -> 409. Summarize is a full LLM call over a large transcript and can run minutes, so this is generous to avoid spurious 409s; keep it under the governing in-request limits — the upstream nginx proxy_read_timeout and the client read timeout (the connection is held open this long while the new turn waits). NOTE: server.py timeout_keep_alive (300) is NOT the bound — it only caps idle time BETWEEN requests, not an in-flight request. Admission floors this at compaction_timeout + ~20s so a healthy compaction is never 409'd before its own call budget self-terminates
+  compaction_timeout: 180               # Wall-clock budget for a single compaction LLM call (auto Tier-2 summarize + manual /compact). Wrapped in asyncio.wait_for so a hung summarize fails naturally instead of blocking the thread forever; bounded below the httpx client timeout (600) and below admission_compaction_wait_timeout
   wait_for_persistence_timeout: 30      # Max seconds callers block waiting for persistence
-  soft_interrupt_wait_timeout: 30       # Max seconds to wait for soft-interrupted workflow to finish
+  stop_drain_timeout: 4.0               # Max seconds to drain killed-subagent events before teardown sentinel. MUST stay above redis.pool_timeout (2.0) plus a real paged XRANGE: a shorter deadline is spent queueing for a cache connection under contention, so the drain reports a timeout having issued no read at all and the run finalizes without its subagent archive
   max_workflow_retries: 3               # Max transient-error retry count
   merged_chunk_max_bytes: 16384         # Max bytes for merged SSE event chunks (16 KB)
 
@@ -103,7 +128,14 @@ background_execution:
 # Redis is used for caching and background workflow event storage
 redis:
   cache_enabled: true  # Enable/disable caching globally
-  max_connections: 150 # Connection pool size (override via REDIS_MAX_CONNECTIONS env)
+  # Three pools split by how long a connection is HELD, not by feature. Short
+  # cache ops must never queue behind a reader parked in XREAD BLOCK, and a
+  # subscriber holding a connection for 30 minutes must not sit in either.
+  # The three caps sum per worker (400 here) — keep workers x 400 under the Redis server's maxclients
+  max_connections: 150 # Cache pool: short ops only (override via REDIS_MAX_CONNECTIONS env)
+  stream_max_connections: 100 # Blocking stream readers, ~1 held per live SSE consumer (REDIS_STREAM_MAX_CONNECTIONS)
+  pubsub_max_connections: 150 # Long-lived subscriptions (REDIS_PUBSUB_MAX_CONNECTIONS)
+  pool_timeout: 2.0           # Seconds a cache op queues for a free connection (REDIS_POOL_TIMEOUT)
   socket_timeout: 5           # Redis socket read/write timeout (seconds)
   socket_connect_timeout: 5   # Redis socket connect timeout (seconds)
 
@@ -117,13 +149,13 @@ redis:
     workflow_status: 3600   # Completed/cancelled workflow status key TTL (1 hour)
     cancel_flag: 300        # Workflow cancel flag TTL (5 minutes)
     steering: 3600          # Steering message key TTL (1 hour)
+    market_watch: 21600     # Market watch list TTL (6 hours)
     memo_metadata_inflight: 300  # Cross-worker visibility of in-flight memo metadata tasks (5 minutes)
     memo_metadata_cancel: 60     # Cooperative cross-worker cancel flag for memo metadata (1 minute)
 
     # Per-interval OHLCV cache TTLs (≈ interval_seconds × 1.5)
     # SWR soft threshold stays at 50% of these values
     ohlcv:
-      "1s": 30
       "1min": 90
       "5min": 360
       "15min": 1080
@@ -147,12 +179,19 @@ redis:
 # MARKET DATA CONFIGURATION
 # =============================================================================
 # Ordered provider chain — requests try each provider in order.
-# Each provider declares which markets it covers.
-# "all" is a catch-all that matches any market.
+# Each provider declares which markets it covers, optionally overridden per
+# capability (intraday_markets / daily_markets / snapshot_markets).
+# "all" matches any market; "non-us" matches everything except us.
+# A provider may appear twice to hold different chain positions per
+# capability — its entries share one underlying client and are only tried
+# once per request.
 market_data:
   providers:
     - name: ginlix-data
       markets: [us]          # US equities only
+    - name: yfinance
+      markets: []                 # priority slot: non-US intraday only —
+      intraday_markets: [non-us]  # native session anchors incl. lunch gaps
     - name: fmp
       markets: [all]         # FMP — global coverage, catch-all fallback
     - name: yfinance
@@ -164,6 +203,55 @@ news_data:
     - name: ginlix-data
     - name: fmp
     - name: yfinance
+
+# News refresh poller — keeps the GLOBAL feeds (curated "Top" + Market general)
+# warm by fetching the latest page every interval and delta-merging new articles
+# (by id) into a rolling buffer stored in the same Redis key the /news endpoint
+# reads. Per-ticker feeds are unbounded and stay on the on-demand cache. One
+# worker polls per tick (Redis-lock leader election); the buffer self-heals via
+# the cache TTL if the poller stops.
+news_poll:
+  enabled: true
+  interval_seconds: 60     # How often to fetch the latest page
+  max_items: 100           # Rolling-buffer cap per feed
+  feeds:
+    - provider: tickertick # Curated "Top" feed (news:tickertick:general:<limit>)
+      limit: 50
+    - provider: null       # Provider-chain general feed / Market tab (news:general:<limit>)
+      limit: 50
+
+# RunWorkflow programmatic subagent orchestration
+workflow:
+  enabled: true                  # Expose the RunWorkflow tool to the PTC main agent
+  memory_limit_mb: 128           # QuickJS heap limit per workflow run (MB)
+  cpu_budget_s: 30.0             # Continuous-JS interrupt budget; host awaits excluded (seconds)
+  schema_max_bytes: 4096         # Max serialized dispatch schema size (bytes)
+  schema_max_depth: 5            # Max dispatch schema nesting depth
+  schema_max_properties: 32      # Max keys at any dispatch schema object level
+  max_dispatches_per_run: 64     # Subagent dispatches allowed per run
+  max_concurrent_children: 8     # Children running at once per run
+  child_timeout: 1800            # Per-child subagent timeout (seconds) — genuine deep work runs well past 10 min
+  run_timeout: 16200             # Whole-run wall clock (seconds) — 64 dispatches at 8 wide is 8 waves, so this clears 8x child_timeout with margin
+  max_runs_per_thread: 2         # Concurrent runs per thread
+  max_result_bytes: 1048576      # Per-child result dump cap (bytes) — what the script sees in JS
+  max_summary_bytes: 98304       # Run summary handed to the model + archived for TaskOutput (bytes); result.json keeps the rest. A clipped JSON result is unparseable, so overflow costs a re-read of the file on top of the clipped copy — sized to absorb ordinary overflow, not merely to bound it
+  max_prompt_chars: 400000       # Per-dispatch prompt length cap (~100K tokens)
+  max_script_bytes: 204800       # Workflow script size cap (bytes)
+
+
+# =============================================================================
+# MARKET WATCH CONFIGURATION
+# =============================================================================
+# Market watch mode (live price injection via <market-watch> message stamping).
+# Tuning only — the on/off switch is features.market_watch above.
+market_watch:
+  min_interval_seconds: 25
+  max_symbols: 10
+  # The stamp is ephemeral (overrides each model request only; never enters
+  # checkpoints or history), so pin a provider cache breakpoint (Anthropic
+  # cache_control / OpenAI prompt_cache_breakpoint) on the last durable
+  # message so the ephemeral stamp doesn't break incremental caching.
+  cache_breakpoint_pin: true
 
 
 # =============================================================================

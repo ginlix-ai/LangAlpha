@@ -4,7 +4,37 @@ import {
   computeAgentArtifactRouting,
   isUserProfileReadmePath,
   topicFromMemoryKey,
+  workspaceRelativePath,
 } from '../agentPaths';
+
+describe('workspaceRelativePath', () => {
+  it('strips the /home/workspace sandbox root', () => {
+    expect(workspaceRelativePath('/home/workspace/agent.md')).toBe('agent.md');
+    expect(workspaceRelativePath('/home/workspace/work/scratch/chart.png')).toBe(
+      'work/scratch/chart.png',
+    );
+  });
+
+  it('strips the /home/daytona sandbox root', () => {
+    expect(workspaceRelativePath('/home/daytona/notes.md')).toBe('notes.md');
+  });
+
+  it('collapses the bare sandbox root to empty (caller labels it)', () => {
+    expect(workspaceRelativePath('/home/workspace')).toBe('');
+    expect(workspaceRelativePath('/home/daytona')).toBe('');
+  });
+
+  it('unwraps file:/// and ./ forms like the router', () => {
+    expect(workspaceRelativePath('file:///home/workspace/a.md')).toBe('a.md');
+    expect(workspaceRelativePath('./work/out.csv')).toBe('work/out.csv');
+  });
+
+  it('leaves a path with no sandbox prefix unchanged', () => {
+    expect(workspaceRelativePath('.agents/user/memo/note.md')).toBe(
+      '.agents/user/memo/note.md',
+    );
+  });
+});
 
 describe('classifyAgentPath', () => {
   it('classifies a user memory entry', () => {

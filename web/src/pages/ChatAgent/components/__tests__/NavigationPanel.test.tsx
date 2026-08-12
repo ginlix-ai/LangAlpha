@@ -10,9 +10,14 @@
  */
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render as rtlRender, screen, within, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom';
+import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import NavigationPanel from '../NavigationPanel';
+import { resetNavPanelExpansion, forgetNavPanelExpansion, expandedWorkspaces } from '../navExpansionStore';
+import { toSidebarAgentRow } from '../../session/subagents/subagentStatus';
 
 // `t()` identity mock — we don't depend on bundled English copy here, but
 // the component reads i18n keys for some labels and we want the fallback
@@ -21,11 +26,30 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
+// The panel's self-contained workspace actions (useWorkspaceActions) need
+// router + query contexts, same as its in-app hosts provide.
+function Providers({ children }: { children: React.ReactNode }) {
+  const [client] = React.useState(
+    () => new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  );
+  return (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+function render(ui: React.ReactElement) {
+  return rtlRender(ui, { wrapper: Providers });
+}
+
 const WS_ID = 'ws-1';
 const THREAD_ID = 'thread-1';
 
 interface RenderOpts {
-  agents: React.ComponentProps<typeof NavigationPanel>['agents'];
+  /** Wire-shaped agent fixtures, projected through toSidebarAgentRow exactly
+   *  like useSubagentTabs does — so status derivation stays covered here. */
+  agents: Parameters<typeof toSidebarAgentRow>[0][];
 }
 
 function renderPanel({ agents }: RenderOpts) {
@@ -40,7 +64,7 @@ function renderPanel({ agents }: RenderOpts) {
       }}
       currentWorkspaceId={WS_ID}
       currentThreadId={THREAD_ID}
-      agents={agents}
+      agents={agents.map(toSidebarAgentRow)}
       activeAgentId={null}
       expandWorkspace={vi.fn()}
       onSelectAgent={vi.fn()}
@@ -75,10 +99,10 @@ describe('NavigationPanel — subagent description fallback', () => {
         { id: 'sub-1', name: 'Worker', description: '   ', isMainAgent: false },
         { id: 'sub-2', name: 'Worker', description: undefined, isMainAgent: false },
         // JSON wire shape: backend may emit `null` rather than omit the field.
-        // The runtime guard is `typeof agent.description === 'string'`, which
-        // correctly rejects null — pinning that contract here so a future
-        // refactor to a truthy check (`agent.description?.trim()`) doesn't
-        // silently break for `description: 0` or other falsy non-strings.
+        // The runtime guard (`typeof description === 'string'`) lives in
+        // toSidebarAgentRow — pinning it here so a future refactor to a truthy
+        // check doesn't silently break for `description: 0` or other falsy
+        // non-strings.
         { id: 'sub-3', name: 'Worker', description: null as unknown as undefined, isMainAgent: false },
       ],
     });
@@ -159,5 +183,474 @@ describe('NavigationPanel — hierarchy markers', () => {
     const glyph = Array.from(subRow.children).find((c) => c.textContent === '└─');
     expect(glyph).toBeTruthy();
     expect(glyph!.getAttribute('aria-hidden')).toBe('true');
+  });
+});
+
+describe('NavigationPanel — terminal status badges', () => {
+  // The status badge is the sidebar's only at-a-glance signal. Its icons are
+  // an implementation detail (lucide class names churn), but the SEMANTIC
+  // contract is stable: a genuinely running task spins; a terminal one never
+  // does. This is the regression lock for "an errored task keeps spinning".
+  const rowFor = (id: string): HTMLElement => {
+    const row = screen
+      .getAllByTestId('agent-row')
+      .find((r) => r.dataset.agentRole === 'sub' && r.textContent?.includes(id));
+    return row as HTMLElement;
+  };
+
+  it('spins only for a running task, never for a terminal one', () => {
+    renderPanel({
+      agents: [
+        { id: 'main', name: 'Lead Agent', isMainAgent: true },
+        // A non-terminal status WITH transcript derives to 'active' → spins.
+        { id: 's-run', name: 'Worker', description: 'running-task', status: 'running', messages: [{ role: 'assistant' }], isMainAgent: false },
+        { id: 's-err', name: 'Worker', description: 'errored-task', status: 'error', isMainAgent: false },
+        { id: 's-canc', name: 'Worker', description: 'cancelled-task', status: 'cancelled', isMainAgent: false },
+        { id: 's-done', name: 'Worker', description: 'done-task', status: 'completed', isMainAgent: false },
+      ],
+    });
+
+    // The running glyph is the shared ascii Loader (role="status"), matching
+    // the running-thread row — not a CSS animation class. Its aria-label goes
+    // through t(), which this file identity-mocks, so assert the role alone.
+    const spinner = (id: string) =>
+      rowFor(id).querySelector('[role="status"]');
+    expect(spinner('running-task')).toBeTruthy();
+    // Terminal outcomes must NOT spin — the bug was an errored task spinning forever.
+    expect(spinner('errored-task')).toBeNull();
+    expect(spinner('cancelled-task')).toBeNull();
+    expect(spinner('done-task')).toBeNull();
+    // Exceptional terminal rows render a status glyph plus the hover ✕ remove
+    // button; completed is deliberately glyph-free — its only svg is the ✕
+    // (a checkmark beside that button read as a second control).
+    expect(rowFor('errored-task').querySelectorAll('svg')).toHaveLength(2);
+    expect(rowFor('cancelled-task').querySelectorAll('svg')).toHaveLength(2);
+    expect(rowFor('done-task').querySelectorAll('svg')).toHaveLength(1);
+  });
+});
+
+describe('NavigationPanel — workspace render order', () => {
+  it('renders workspaces in prop order without hoisting the current one', () => {
+    render(
+      <NavigationPanel
+        workspaces={[
+          { workspace_id: 'ws-a', name: 'Workspace A' },
+          { workspace_id: 'ws-b', name: 'Workspace B' },
+          { workspace_id: 'ws-c', name: 'Workspace C' },
+        ]}
+        workspaceThreads={{}}
+        currentWorkspaceId="ws-c"
+        currentThreadId={null}
+        agents={[]}
+        activeAgentId={null}
+        expandWorkspace={vi.fn()}
+        onSelectAgent={vi.fn()}
+        onRemoveAgent={vi.fn()}
+        onNavigateThread={vi.fn()}
+      />,
+    );
+
+    const names = screen.getAllByText(/^Workspace [ABC]$/).map((el) => el.textContent);
+    expect(names).toEqual(['Workspace A', 'Workspace B', 'Workspace C']);
+  });
+});
+
+describe('NavigationPanel — show more threads', () => {
+  function renderWithThreads(threadsData: { threads: { thread_id: string; title: string }[]; loading: boolean; total?: number }, onLoadMoreThreads = vi.fn()) {
+    resetNavPanelExpansion();
+    render(
+      <NavigationPanel
+        workspaces={[{ workspace_id: WS_ID, name: 'Test workspace' }]}
+        workspaceThreads={{ [WS_ID]: threadsData }}
+        currentWorkspaceId={WS_ID}
+        currentThreadId={null}
+        agents={[]}
+        activeAgentId={null}
+        expandWorkspace={vi.fn()}
+        onSelectAgent={vi.fn()}
+        onRemoveAgent={vi.fn()}
+        onNavigateThread={vi.fn()}
+        onLoadMoreThreads={onLoadMoreThreads}
+      />,
+    );
+    return onLoadMoreThreads;
+  }
+
+  it('renders a show-more row when more threads exist server-side and pages on click', async () => {
+    const user = userEvent.setup();
+    const onLoadMoreThreads = renderWithThreads({
+      threads: [
+        { thread_id: 't-1', title: 'Thread one' },
+        { thread_id: 't-2', title: 'Thread two' },
+      ],
+      loading: false,
+      total: 5,
+    });
+
+    const row = screen.getByText('nav.showMore');
+    await user.click(row);
+    expect(onLoadMoreThreads).toHaveBeenCalledWith(WS_ID);
+  });
+
+  it('hides the show-more row when every thread is already shown or total is unknown', () => {
+    renderWithThreads({
+      threads: [{ thread_id: 't-1', title: 'Thread one' }],
+      loading: false,
+      total: 1,
+    });
+    expect(screen.queryByText('nav.showMore')).toBeNull();
+
+    renderWithThreads({
+      threads: [{ thread_id: 't-1', title: 'Thread one' }],
+      loading: false,
+    });
+    expect(screen.queryByText('nav.showMore')).toBeNull();
+  });
+});
+
+describe('NavigationPanel — active-thread auto-reveal', () => {
+  function renderWithActiveThread(opts: {
+    threadsData: { threads: { thread_id: string; title: string }[]; loading: boolean; total?: number };
+    currentThreadId: string | null;
+    status?: string;
+    isActive?: boolean;
+    onLoadMoreThreads?: ReturnType<typeof vi.fn>;
+  }) {
+    resetNavPanelExpansion();
+    const onLoadMoreThreads = opts.onLoadMoreThreads ?? vi.fn();
+    render(
+      <NavigationPanel
+        isActive={opts.isActive ?? true}
+        workspaces={[{ workspace_id: WS_ID, name: 'Test workspace', status: opts.status }]}
+        workspaceThreads={{ [WS_ID]: opts.threadsData }}
+        currentWorkspaceId={WS_ID}
+        currentThreadId={opts.currentThreadId}
+        agents={[]}
+        activeAgentId={null}
+        expandWorkspace={vi.fn()}
+        onSelectAgent={vi.fn()}
+        onRemoveAgent={vi.fn()}
+        onNavigateThread={vi.fn()}
+        onLoadMoreThreads={onLoadMoreThreads}
+      />,
+    );
+    return onLoadMoreThreads;
+  }
+
+  it('pages in more threads when the active thread is hidden in the collapsed tail', async () => {
+    const onLoadMoreThreads = renderWithActiveThread({
+      threadsData: {
+        threads: [
+          { thread_id: 't-1', title: 'Thread one' },
+          { thread_id: 't-2', title: 'Thread two' },
+        ],
+        loading: false,
+        total: 14,
+      },
+      currentThreadId: 't-9', // beyond the loaded page
+    });
+
+    await waitFor(() => expect(onLoadMoreThreads).toHaveBeenCalledWith(WS_ID));
+  });
+
+  it('does not auto-reveal when the panel is inactive (hidden cached instance)', async () => {
+    const onLoadMoreThreads = renderWithActiveThread({
+      threadsData: {
+        threads: [
+          { thread_id: 't-1', title: 'Thread one' },
+          { thread_id: 't-2', title: 'Thread two' },
+        ],
+        loading: false,
+        total: 14,
+      },
+      currentThreadId: 't-9', // beyond the loaded page — would page in if active
+      isActive: false,
+    });
+
+    // Give any effect a chance to (wrongly) fire before asserting it did not.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onLoadMoreThreads).not.toHaveBeenCalled();
+  });
+
+  it('does not page when the active thread is already visible', () => {
+    const onLoadMoreThreads = renderWithActiveThread({
+      threadsData: {
+        threads: [
+          { thread_id: 't-1', title: 'Thread one' },
+          { thread_id: 't-2', title: 'Thread two' },
+        ],
+        loading: false,
+        total: 14,
+      },
+      currentThreadId: 't-2', // present in the loaded set
+    });
+
+    expect(onLoadMoreThreads).not.toHaveBeenCalled();
+  });
+
+  it('does not page when every thread is already loaded', () => {
+    const onLoadMoreThreads = renderWithActiveThread({
+      threadsData: {
+        threads: [
+          { thread_id: 't-1', title: 'Thread one' },
+          { thread_id: 't-2', title: 'Thread two' },
+        ],
+        loading: false,
+        total: 2, // loaded.length >= total, nothing more to fetch
+      },
+      currentThreadId: 't-9',
+    });
+
+    expect(onLoadMoreThreads).not.toHaveBeenCalled();
+  });
+
+  it('auto-reveals in the flash workspace (pages like any other workspace)', async () => {
+    const onLoadMoreThreads = renderWithActiveThread({
+      threadsData: {
+        threads: [{ thread_id: 't-1', title: 'Thread one' }],
+        loading: false,
+        total: 14,
+      },
+      currentThreadId: 't-9',
+      status: 'flash',
+    });
+
+    await waitFor(() => expect(onLoadMoreThreads).toHaveBeenCalled());
+  });
+
+  it('does not page while a fetch is already in flight', () => {
+    const onLoadMoreThreads = renderWithActiveThread({
+      threadsData: {
+        threads: [{ thread_id: 't-1', title: 'Thread one' }],
+        loading: true, // a page is loading; wait for it before paging again
+        total: 14,
+      },
+      currentThreadId: 't-9',
+    });
+
+    expect(onLoadMoreThreads).not.toHaveBeenCalled();
+  });
+});
+
+describe('NavigationPanel — workspace drag-reorder affordances', () => {
+  function renderReorderPanel(onReorderWorkspace?: (a: string, b: string) => void) {
+    return render(
+      <NavigationPanel
+        workspaces={[
+          { workspace_id: 'ws-flash', name: 'Flash workspace', status: 'flash' },
+          { workspace_id: 'ws-a', name: 'Workspace A' },
+        ]}
+        workspaceThreads={{}}
+        currentWorkspaceId="ws-a"
+        currentThreadId={null}
+        agents={[]}
+        activeAgentId={null}
+        expandWorkspace={vi.fn()}
+        onSelectAgent={vi.fn()}
+        onRemoveAgent={vi.fn()}
+        onNavigateThread={vi.fn()}
+        onReorderWorkspace={onReorderWorkspace}
+      />,
+    );
+  }
+
+  it('marks workspace header rows sortable, including the flash workspace', () => {
+    renderReorderPanel(vi.fn());
+
+    const sortable = screen.getByText('Workspace A').closest('[aria-roledescription="sortable"]');
+    expect(sortable).not.toBeNull();
+    // Flash drags too — the pin-boundary guard keeps it inside the pinned block.
+    expect(screen.getByText('Flash workspace').closest('[aria-roledescription="sortable"]')).not.toBeNull();
+  });
+
+  it('renders plain rows when no reorder handler is provided', () => {
+    renderReorderPanel(undefined);
+
+    expect(screen.getByText('Workspace A').closest('[aria-roledescription="sortable"]')).toBeNull();
+  });
+});
+
+describe('NavigationPanel — expansion survives remounts', () => {
+  function renderOrderPanel(currentWorkspaceId: string, expandWorkspace: (wsId: string) => void = vi.fn()) {
+    return render(
+      <NavigationPanel
+        workspaces={[
+          { workspace_id: 'ws-a', name: 'Workspace A' },
+          { workspace_id: 'ws-b', name: 'Workspace B' },
+        ]}
+        workspaceThreads={{
+          'ws-a': { threads: [{ thread_id: 'ta-1', title: 'Thread A1' }], loading: false },
+          'ws-b': { threads: [{ thread_id: 'tb-1', title: 'Thread B1' }], loading: false },
+        }}
+        currentWorkspaceId={currentWorkspaceId}
+        currentThreadId={null}
+        agents={[]}
+        activeAgentId={null}
+        expandWorkspace={expandWorkspace}
+        onSelectAgent={vi.fn()}
+        onRemoveAgent={vi.fn()}
+        onNavigateThread={vi.fn()}
+      />,
+    );
+  }
+
+  it('keeps a manually opened folder expanded after the panel remounts', async () => {
+    resetNavPanelExpansion();
+    const user = userEvent.setup();
+    const first = renderOrderPanel('ws-a');
+
+    // ws-b starts collapsed; open it manually.
+    expect(screen.queryByText('Thread B1')).toBeNull();
+    await user.click(screen.getByText('Workspace B'));
+    expect(screen.getByText('Thread B1')).toBeInTheDocument();
+
+    // Thread switch remounts the panel (fresh ChatView instance) — the folder
+    // the user opened must not auto-collapse.
+    first.unmount();
+    renderOrderPanel('ws-a');
+    expect(screen.getByText('Thread B1')).toBeInTheDocument();
+  });
+
+  it('does not re-expand a forgotten (deleted) workspace on remount', async () => {
+    resetNavPanelExpansion();
+    const user = userEvent.setup();
+    const first = renderOrderPanel('ws-a');
+
+    // Open ws-b, then forget it as the delete path does.
+    await user.click(screen.getByText('Workspace B'));
+    expect(screen.getByText('Thread B1')).toBeInTheDocument();
+    forgetNavPanelExpansion('ws-b');
+
+    // On remount the mount-effect must not re-expand ws-b (no spurious 404) and
+    // its folder stays collapsed.
+    first.unmount();
+    const expandSpy = vi.fn();
+    renderOrderPanel('ws-a', expandSpy);
+    expect(screen.queryByText('Thread B1')).toBeNull();
+    expect(expandSpy).not.toHaveBeenCalledWith('ws-b');
+  });
+
+  it('lazy-loads threads only when opening a folder, not when collapsing it', async () => {
+    resetNavPanelExpansion();
+    const user = userEvent.setup();
+    const expandSpy = vi.fn();
+    renderOrderPanel('ws-a', expandSpy);
+
+    // ws-b starts collapsed — opening it expands the folder and lazy-loads threads.
+    // Assert on the store (synchronously mutated by the toggle) rather than the
+    // rendered list, which is sensitive to cross-file re-render timing.
+    await user.click(screen.getByText('Workspace B'));
+    expect(expandedWorkspaces.has('ws-b')).toBe(true);
+    expect(expandSpy).toHaveBeenCalledWith('ws-b');
+    expandSpy.mockClear();
+
+    // Collapsing must not re-fetch: the shared store is capped and may have
+    // evicted the list, so an unconditional expand would fire a needless load.
+    await user.click(screen.getByText('Workspace B'));
+    expect(expandedWorkspaces.has('ws-b')).toBe(false);
+    expect(expandSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('NavigationPanel — shared expansion across instances', () => {
+  // One panel mounts per cached ChatView, all alive at once. Folder expansion
+  // must be consistent across them: opening a folder in the active panel must
+  // be reflected by every other mounted panel, not just the one toggled. (The
+  // bug: a per-instance snapshot left a panel cached before a folder was opened
+  // showing it collapsed, so the same folder appeared open or closed depending
+  // on which thread was active.)
+  function renderInstance(currentWorkspaceId: string) {
+    return render(
+      <NavigationPanel
+        workspaces={[
+          { workspace_id: 'ws-a', name: 'Workspace A' },
+          { workspace_id: 'ws-b', name: 'Workspace B' },
+        ]}
+        workspaceThreads={{
+          'ws-a': { threads: [{ thread_id: 'ta-1', title: 'Thread A1' }], loading: false },
+          'ws-b': { threads: [{ thread_id: 'tb-1', title: 'Thread B1' }], loading: false },
+        }}
+        currentWorkspaceId={currentWorkspaceId}
+        currentThreadId={null}
+        agents={[]}
+        activeAgentId={null}
+        expandWorkspace={vi.fn()}
+        onSelectAgent={vi.fn()}
+        onRemoveAgent={vi.fn()}
+        onNavigateThread={vi.fn()}
+      />,
+    );
+  }
+
+  it('reflects a folder toggle in one panel across all mounted panels', async () => {
+    resetNavPanelExpansion();
+    const user = userEvent.setup();
+    const a = renderInstance('ws-a');
+    const b = renderInstance('ws-a');
+
+    // ws-b starts collapsed in both panels.
+    expect(within(a.container).queryByText('Thread B1')).toBeNull();
+    expect(within(b.container).queryByText('Thread B1')).toBeNull();
+
+    // Open ws-b in panel A only.
+    await user.click(within(a.container).getByText('Workspace B'));
+
+    // Both panels show it open — the store is shared and live, not snapshotted.
+    expect(within(a.container).getByText('Thread B1')).toBeInTheDocument();
+    expect(within(b.container).getByText('Thread B1')).toBeInTheDocument();
+
+    // Collapsing in panel B also propagates back to panel A. Use waitFor: the
+    // in-place collapse runs an AnimatePresence exit, so the row lingers in the
+    // DOM for a tick before it's removed.
+    await user.click(within(b.container).getByText('Workspace B'));
+    await waitFor(() => expect(within(a.container).queryByText('Thread B1')).toBeNull());
+    await waitFor(() => expect(within(b.container).queryByText('Thread B1')).toBeNull());
+  });
+
+  // Models the reported repro: expand a NON-current folder, then navigate to a
+  // thread in a DIFFERENT workspace (fresh panel, different currentWorkspaceId).
+  // The manual expansion must persist — it should not auto-collapse.
+  function renderInstanceWithThreeWorkspaces(currentWorkspaceId: string) {
+    return render(
+      <NavigationPanel
+        workspaces={[
+          { workspace_id: 'ws-a', name: 'Workspace A' },
+          { workspace_id: 'ws-b', name: 'Workspace B' },
+          { workspace_id: 'ws-c', name: 'Workspace C' },
+        ]}
+        workspaceThreads={{
+          'ws-a': { threads: [{ thread_id: 'ta-1', title: 'Thread A1' }], loading: false },
+          'ws-b': { threads: [{ thread_id: 'tb-1', title: 'Thread B1' }], loading: false },
+          'ws-c': { threads: [{ thread_id: 'tc-1', title: 'Thread C1' }], loading: false },
+        }}
+        currentWorkspaceId={currentWorkspaceId}
+        currentThreadId={null}
+        agents={[]}
+        activeAgentId={null}
+        expandWorkspace={vi.fn()}
+        onSelectAgent={vi.fn()}
+        onRemoveAgent={vi.fn()}
+        onNavigateThread={vi.fn()}
+      />,
+    );
+  }
+
+  it('keeps a manually expanded non-current folder open after navigating to another workspace', async () => {
+    resetNavPanelExpansion();
+    const user = userEvent.setup();
+
+    // On a thread in ws-a; manually expand ws-b (not the current workspace).
+    const first = renderInstanceWithThreeWorkspaces('ws-a');
+    expect(within(first.container).queryByText('Thread B1')).toBeNull();
+    await user.click(within(first.container).getByText('Workspace B'));
+    expect(within(first.container).getByText('Thread B1')).toBeInTheDocument();
+
+    // Navigate to a thread in ws-c: old ChatView's panel unmounts, a fresh panel
+    // mounts with a different currentWorkspaceId.
+    first.unmount();
+    const second = renderInstanceWithThreeWorkspaces('ws-c');
+
+    // ws-b must still be expanded — manual expansion persists across navigation.
+    expect(within(second.container).getByText('Thread B1')).toBeInTheDocument();
   });
 });

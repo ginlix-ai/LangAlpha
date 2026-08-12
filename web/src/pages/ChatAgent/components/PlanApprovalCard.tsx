@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ScrollText, Loader2, Check, X, ChevronRight } from 'lucide-react';
+import { ScrollText, Check, X, ChevronRight } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import Markdown from './Markdown';
 
 interface PlanData {
@@ -120,12 +121,14 @@ function PlanApprovalCard({ planData, onApprove, onReject, onDetailClick }: Plan
       {/* Header */}
       <div className="flex items-center gap-2 pb-3">
         <ScrollText className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-light)' }} />
-        <span className="text-[15px] font-medium" style={{ color: 'var(--color-text-primary)' }}>
+        <span className="text-[0.9375rem] font-medium" style={{ color: 'var(--color-text-primary)' }}>
           Plan Approval Required
         </span>
-        <Loader2
-          className="h-3.5 w-3.5 animate-spin ml-auto flex-shrink-0"
-          style={{ color: 'var(--color-icon-muted)' }}
+        <Loader
+         
+          size={14}
+         
+          className="ml-auto flex-shrink-0 text-[color:var(--color-icon-muted)]"
         />
       </div>
 

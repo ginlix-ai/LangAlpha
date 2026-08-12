@@ -1,9 +1,12 @@
 """Execute bash commands in the sandbox."""
 
+from typing import Any
+
 import structlog
 from langchain_core.tools import BaseTool, tool
 
 from ptc_agent.agent.backends.sandbox import SandboxBackend
+from ptc_agent.core.paths import MEMO_USER_DIR, MEMORY_USER_DIR, MEMORY_WORKSPACE_DIR
 
 logger = structlog.get_logger(__name__)
 
@@ -12,14 +15,14 @@ logger = structlog.get_logger(__name__)
 # dropping writes on the sandbox (which would also let the agent fabricate
 # fake memos invisible to the UI).
 _MEMORY_PATH_MARKERS: tuple[str, ...] = (
-    ".agents/user/memory/",
-    ".agents/workspace/memory/",
-    ".agents/user/memo/",
+    f"{MEMORY_USER_DIR}/",
+    f"{MEMORY_WORKSPACE_DIR}/",
+    f"{MEMO_USER_DIR}/",
 )
 
 _MEMORY_ROUTE_ERROR = (
-    "ERROR: Store-backed paths (.agents/user/memory/**, .agents/workspace/memory/**, "
-    ".agents/user/memo/**) are managed by the long-term memory/memo system and "
+    f"ERROR: Store-backed paths ({MEMORY_USER_DIR}/**, {MEMORY_WORKSPACE_DIR}/**, "
+    f"{MEMO_USER_DIR}/**) are managed by the long-term memory/memo system and "
     "are NOT on the workspace filesystem. Use the Write, Edit, Read, Glob, or "
     "Grep file tools for these paths so they route to the store. Memo paths are "
     "additionally read-only to the agent — ask the user to upload via the memo "
@@ -45,14 +48,14 @@ def create_execute_bash_tool(backend: SandboxBackend, thread_id: str = "") -> Ba
     # Resolve the default working directory from sandbox config at tool creation time
     _default_working_dir = backend.filesystem_config.working_directory
 
-    @tool
+    @tool("Bash", response_format="content_and_artifact")
     async def Bash(
         command: str,
         description: str | None = None,
         timeout: int | None = 120000,
         run_in_background: bool | None = False,
         working_dir: str | None = _default_working_dir,
-    ) -> str:
+    ) -> tuple[str, dict[str, Any]]:
         """Execute bash commands in a persistent shell session.
 
         Use for: git, npm, docker, system commands, directory operations,
@@ -67,7 +70,9 @@ def create_execute_bash_tool(backend: SandboxBackend, thread_id: str = "") -> Ba
             working_dir: Working directory (default: /home/workspace)
 
         Returns:
-            Command output (stdout/stderr), or ERROR message
+            Command output (stdout/stderr), or ERROR message. The artifact carries
+            ``mcp_trace`` (provenance for MCP calls made by scripts run here) and
+            never enters the LLM context.
 
         Paths: Quote paths with spaces. Use /home/workspace/ for workspace files.
         """
@@ -77,7 +82,7 @@ def create_execute_bash_tool(backend: SandboxBackend, thread_id: str = "") -> Ba
                 "Blocked bash command touching memory path",
                 command=command[:100],
             )
-            return _MEMORY_ROUTE_ERROR
+            return _MEMORY_ROUTE_ERROR, {"mcp_trace": []}
 
         try:
             logger.debug(
@@ -101,6 +106,11 @@ def create_execute_bash_tool(backend: SandboxBackend, thread_id: str = "") -> Ba
                 thread_id=thread_id or None,
             )
 
+            # Provenance for any MCP calls a script run here made (foreground
+            # only; absent/empty for plain shell commands). Stripped from the
+            # artifact by the provenance middleware before it leaves the host.
+            artifact = {"mcp_trace": list(result.get("mcp_trace") or [])}
+
             if result["success"]:
                 stdout = result.get("stdout", "")
                 stderr = result.get("stderr", "")
@@ -116,13 +126,13 @@ def create_execute_bash_tool(backend: SandboxBackend, thread_id: str = "") -> Ba
                         command=command[:50],
                         output_length=len(output),
                     )
-                    return output
+                    return output, artifact
                 # Command succeeded but no output (e.g., mkdir)
                 logger.debug(
                     "Bash command executed successfully (no output)",
                     command=command[:50],
                 )
-                return "Command completed successfully"
+                return "Command completed successfully", artifact
 
             # Command failed — Daytona returns combined stdout+stderr in "stdout"
             stdout = result.get("stdout", "")
@@ -137,7 +147,10 @@ def create_execute_bash_tool(backend: SandboxBackend, thread_id: str = "") -> Ba
                 output_length=len(error_output),
             )
 
-            return f"ERROR: Command failed (exit code {exit_code})\n{error_output}"
+            return (
+                f"ERROR: Command failed (exit code {exit_code})\n{error_output}",
+                artifact,
+            )
 
         except Exception as e:
             error_msg = f"Failed to execute bash command: {e!s}"
@@ -147,7 +160,7 @@ def create_execute_bash_tool(backend: SandboxBackend, thread_id: str = "") -> Ba
                 error=str(e),
                 exc_info=True,
             )
-            return f"ERROR: {error_msg}"
+            return f"ERROR: {error_msg}", {"mcp_trace": []}
 
     # Patch the LLM-visible description with the actual configured working directory
     if _default_working_dir != "/home/workspace":

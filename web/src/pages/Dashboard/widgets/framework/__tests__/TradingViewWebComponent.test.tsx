@@ -46,6 +46,25 @@ describe('TradingViewWebComponent', () => {
     expect(el?.getAttribute('color-theme')).toBe('dark');
   });
 
+  // Same opaque-canvas regression the iframe host guards against — the custom
+  // element builds an iframe of its own, so it needs the same reset. tvEmbed.css
+  // keys that reset on `tv-wc-container` and inheritance carries it into the
+  // iframe, so what matters here is the class and the element being inside it.
+  it('mounts the custom element inside the tv-wc-container the reset is keyed on', async () => {
+    const { container } = render(
+      <TradingViewWebComponent element="tv-ticker-tape" config={{}} />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const host = container.querySelector<HTMLElement>('.tv-wc-container');
+    expect(host).toBeTruthy();
+    const el = container.querySelector('tv-ticker-tape');
+    expect(el).not.toBeNull();
+    expect(host!.contains(el)).toBe(true);
+  });
+
   it('skips false / null / undefined attribute values (presence trap)', async () => {
     const { container } = render(
       <TradingViewWebComponent

@@ -133,6 +133,14 @@ class SubagentCompiler:
             "thread_id": self._thread_id,
             "max_iterations": defn.max_iterations,
             "user_profile": self._user_profile,
+            # Must mirror the per-user tool binding (agent.py gates watch_market
+            # out of the finance tool set) — the yaml default (true) would
+            # otherwise advertise an uncallable tool in subagent prompts.
+            "market_watch_enabled": (
+                self._config.feature_enabled("market_watch")
+                if self._config is not None
+                else False
+            ),
         }
         # Pass working_directory so workspace_paths template can use it
         if self._sandbox is not None and hasattr(self._sandbox, "config"):

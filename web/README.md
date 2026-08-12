@@ -95,7 +95,6 @@ src/
 | `/automations` | Automations |
 | `/settings` | Settings |
 | `/news/:id` | News Detail |
-| `/detail/:indexNumber` | Stock Detail |
 
 ## Environment Variables
 

@@ -142,4 +142,4 @@ Save all deliverables to `$WORK_DIR/work/{task}/`.
 - Don't change the model without asking — report issues and let the user decide how to fix
 - Save all output files to `$WORK_DIR/work/{task}/`
 
-> For Excel formatting standards and recalculation, see `skills/xlsx/SKILL.md`.
+> For Excel formatting standards and recalculation, see `.agents/skills/xlsx/SKILL.md`.

@@ -1,7 +1,8 @@
 import { useState, useCallback, useRef, useId, useEffect } from "react"
-import { Eye, EyeOff, Check, Loader2, X } from "lucide-react"
+import { Eye, EyeOff, Check, X } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { Loader } from "@/components/ui/loader"
 import { cn } from "@/lib/utils"
 
 export interface TestResult {
@@ -146,7 +147,9 @@ export function ApiKeyInput({
           >
             {testState === "loading" && (
               <>
-                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                <span aria-hidden="true" className="mr-1.5 flex-shrink-0">
+                  <Loader size={14} className="text-current" />
+                </span>
                 Testing...
               </>
             )}

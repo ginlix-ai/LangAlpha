@@ -7,10 +7,11 @@ import {
   PieChart, Pie, Cell, Legend, LabelList,
   LineChart, Line, ReferenceLine,
 } from 'recharts';
-import { fetchStockData } from '../../../MarketView/utils/api';
+import { fetchStockData } from '@/lib/bars';
 import { utcMsToChartSec } from '@/lib/utils';
 import { Sunrise, Sunset } from 'lucide-react';
 import { useTheme } from '../../../../contexts/ThemeContext';
+import { createThemeResolver, useThemeTokens } from '@/lib/themeTokens';
 import { useTranslation } from 'react-i18next';
 
 // ─── Shared Constants ───────────────────────────────────────────────
@@ -18,20 +19,50 @@ import { useTranslation } from 'react-i18next';
 // CSS-variable colors for recharts (SVG) and DOM elements
 const GRID_COLOR = 'var(--color-border-default)';
 const TEXT_COLOR = 'var(--color-text-secondary)';
-// Resolved hex colors for canvas charts (lightweight-charts cannot resolve CSS variables)
-interface CanvasTheme {
-  bg: string;
-  grid: string;
-  text: string;
-  up: string;
-  down: string;
-  upA: string;
-  downA: string;
-}
-const CANVAS_THEMES: Record<string, CanvasTheme> = {
-  dark:  { bg: '#000000', grid: '#1A1A1A', text: '#666666', up: '#0FEDBE', down: '#FF383C', upA: 'rgba(15, 237, 190, 0.3)', downA: 'rgba(255, 56, 60, 0.3)' },
-  light: { bg: '#FFFCF9', grid: '#DDD7D0', text: '#7A756F', up: '#16A34A', down: '#DC2626', upA: 'rgba(22, 163, 74, 0.3)', downA: 'rgba(220, 38, 38, 0.3)' },
+// Canvas charts (lightweight-charts) take color strings and cannot resolve CSS
+// variables, so each slot names the token it comes from and is resolved off
+// <html> at paint time. A non-`--` entry is a one-off no token carries.
+type CanvasSlot = 'bg' | 'grid' | 'text' | 'up' | 'down' | 'upA' | 'downA';
+type CanvasTheme = Record<CanvasSlot, string>;
+
+const CANVAS_SOURCES: Record<'dark' | 'light', CanvasTheme> = {
+  dark: {
+    bg: '--color-bg-tool-card',
+    grid: '--color-border-default',
+    text: '--color-text-secondary',
+    // Terminal-mint candles: an accent that exists nowhere else in the system,
+    // so there is no token to point at. Its volume tint follows it.
+    up: '#0FEDBE',
+    down: '--color-loss',
+    upA: 'rgba(15, 237, 190, 0.3)',
+    // Volume tints need 30% opacity; no *-soft/-border token carries that in
+    // both themes, so they stay literal derivations of profit/loss.
+    downA: 'rgba(248, 81, 73, 0.3)',
+  },
+  light: {
+    bg: '--color-bg-tool-card',
+    grid: '--color-border-default',
+    text: '--color-text-secondary',
+    up: '--color-profit',
+    down: '--color-loss',
+    upA: 'rgba(26, 127, 55, 0.3)',
+    downA: 'rgba(207, 34, 46, 0.3)',
+  },
 };
+
+/** Literal mirror of the tokens above — the jsdom / pre-stamp path. */
+const CANVAS_FALLBACKS: Record<'dark' | 'light', CanvasTheme> = {
+  dark: {
+    bg: '#232426', grid: '#2E3033', text: '#9B9FA6', up: '#0FEDBE', down: '#F85149',
+    upA: 'rgba(15, 237, 190, 0.3)', downA: 'rgba(248, 81, 73, 0.3)',
+  },
+  light: {
+    bg: '#F5F4F1', grid: '#E8E8E6', text: '#73726E', up: '#1A7F37', down: '#CF222E',
+    upA: 'rgba(26, 127, 55, 0.3)', downA: 'rgba(207, 34, 46, 0.3)',
+  },
+};
+
+const resolveCanvasTheme = createThemeResolver(CANVAS_SOURCES, CANVAS_FALLBACKS);
 const GREEN = 'var(--color-profit)';
 const RED = 'var(--color-loss)';
 const MA_BLUE = '#3b82f6';
@@ -118,7 +149,7 @@ function OpenInMarketLink({ symbol }: OpenInMarketLinkProps): React.ReactElement
       onClick={handleClick}
       style={{
         marginLeft: 'auto',
-        fontSize: 11,
+        fontSize: '0.6875rem',
         color: 'var(--color-accent-primary)',
         background: 'none',
         border: 'none',
@@ -147,9 +178,9 @@ const DarkTooltip = ({ active, payload, label, formatter }: DarkTooltipProps): R
   if (!active || !payload?.length) return null;
   return (
     <div style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)', borderRadius: 6, padding: '8px 12px' }}>
-      <p style={{ color: TEXT_COLOR, fontSize: 12, margin: 0 }}>{label}</p>
+      <p style={{ color: TEXT_COLOR, fontSize: '0.75rem', margin: 0 }}>{label}</p>
       {payload.map((entry, i) => (
-        <p key={i} style={{ color: entry.color || 'var(--color-text-primary)', fontSize: 12, margin: '2px 0 0' }}>
+        <p key={i} style={{ color: entry.color || 'var(--color-text-primary)', fontSize: '0.75rem', margin: '2px 0 0' }}>
           {formatter ? formatter(entry.value) : entry.value}
         </p>
       ))}
@@ -177,7 +208,7 @@ interface DataProps {
 export function StockPriceChart({ data }: DataProps): React.ReactElement {
   const { t } = useTranslation();
   const { theme } = useTheme();
-  const ct = CANVAS_THEMES[theme] || CANVAS_THEMES.dark;
+  const ct = useThemeTokens(resolveCanvasTheme, theme);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -384,11 +415,11 @@ export function StockPriceChart({ data }: DataProps): React.ReactElement {
 
   return (
     <div>
-      <div className="flex items-center gap-3 mb-2 flex-wrap" style={{ fontSize: 13, color: TEXT_COLOR }}>
+      <div className="flex items-center gap-3 mb-2 flex-wrap" style={{ fontSize: '0.8125rem', color: TEXT_COLOR }}>
         <span style={{ fontWeight: 600, color: 'var(--color-text-primary)' }}>{data.symbol as string}</span>
         {chartInterval && (
           <span style={{
-            fontSize: 11,
+            fontSize: '0.6875rem',
             padding: '1px 6px',
             borderRadius: 3,
             background: 'var(--color-bg-surface)',
@@ -453,7 +484,7 @@ function StockStatsCard({ stats }: StockStatsCardProps): React.ReactElement | nu
         background: 'var(--color-bg-surface)',
         border: '1px solid var(--color-border-default)',
         borderRadius: 6,
-        fontSize: 12,
+        fontSize: '0.75rem',
       }}
     >
       {items.map((item) => (
@@ -498,7 +529,7 @@ export function SectorPerformanceChart({ data }: DataProps): React.ReactElement 
 
   return (
     <div>
-      <h4 style={{ color: 'var(--color-text-primary)', fontSize: 14, fontWeight: 600, marginBottom: 12 }}>
+      <h4 style={{ color: 'var(--color-text-primary)', fontSize: '0.875rem', fontWeight: 600, marginBottom: 12 }}>
         {t('toolArtifact.sectorPerformance')}
       </h4>
       <ResponsiveContainer width="100%" minWidth={1} height={Math.max(chartData.length * 36, 200)}>
@@ -560,7 +591,7 @@ export const PerformanceBarChart = memo(function PerformanceBarChart({ performan
 
   return (
     <div>
-      <h4 style={{ color: 'var(--color-text-primary)', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+      <h4 style={{ color: 'var(--color-text-primary)', fontSize: '0.8125rem', fontWeight: 600, marginBottom: 8 }}>
         {t('toolArtifact.pricePerformance')}
       </h4>
       <ResponsiveContainer width="100%" minWidth={1} height={180}>
@@ -613,7 +644,7 @@ export const AnalystRatingsChart = memo(function AnalystRatingsChart({ ratings }
 
   return (
     <div>
-      <h4 style={{ color: 'var(--color-text-primary)', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+      <h4 style={{ color: 'var(--color-text-primary)', fontSize: '0.8125rem', fontWeight: 600, marginBottom: 8 }}>
         {t('toolArtifact.analystRatings')}
       </h4>
       <div style={{ position: 'relative' }}>
@@ -649,10 +680,10 @@ export const AnalystRatingsChart = memo(function AnalystRatingsChart({ ratings }
             textAlign: 'center',
           }}
         >
-          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-text-primary)', textTransform: 'uppercase' }}>
+          <div style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--color-text-primary)', textTransform: 'uppercase' }}>
             {(ratings.consensus as string) || ''}
           </div>
-          <div style={{ fontSize: 11, color: TEXT_COLOR }}>{t('toolArtifact.nRatings', { count: total })}</div>
+          <div style={{ fontSize: '0.6875rem', color: TEXT_COLOR }}>{t('toolArtifact.nRatings', { count: total })}</div>
         </div>
       </div>
     </div>
@@ -683,7 +714,7 @@ export const RevenueBreakdownChart = memo(function RevenueBreakdownChart({ reven
     const total = data.reduce((s, d) => s + d.value, 0);
     return (
       <div style={{ flex: 1, minWidth: 200 }}>
-        <h5 style={{ color: TEXT_COLOR, fontSize: 12, fontWeight: 500, marginBottom: 4 }}>
+        <h5 style={{ color: TEXT_COLOR, fontSize: '0.75rem', fontWeight: 500, marginBottom: 4 }}>
           {title}
         </h5>
         <ResponsiveContainer width="100%" minWidth={1} height={180}>
@@ -716,7 +747,7 @@ export const RevenueBreakdownChart = memo(function RevenueBreakdownChart({ reven
 
   return (
     <div>
-      <h4 style={{ color: 'var(--color-text-primary)', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+      <h4 style={{ color: 'var(--color-text-primary)', fontSize: '0.8125rem', fontWeight: 600, marginBottom: 8 }}>
         {t('toolArtifact.revenueBreakdown')}
       </h4>
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
@@ -739,7 +770,7 @@ export const QuarterlyRevenueChart = memo(function QuarterlyRevenueChart({ data 
 
   return (
     <div>
-      <h4 style={{ color: 'var(--color-text-primary)', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+      <h4 style={{ color: 'var(--color-text-primary)', fontSize: '0.8125rem', fontWeight: 600, marginBottom: 8 }}>
         {t('toolArtifact.quarterlyRevenue')}
       </h4>
       <ResponsiveContainer width="100%" minWidth={1} height={220}>
@@ -776,7 +807,7 @@ export const MarginsChart = memo(function MarginsChart({ data }: ChartArrayDataP
 
   return (
     <div>
-      <h4 style={{ color: 'var(--color-text-primary)', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+      <h4 style={{ color: 'var(--color-text-primary)', fontSize: '0.8125rem', fontWeight: 600, marginBottom: 8 }}>
         {t('toolArtifact.profitMargins')}
       </h4>
       <ResponsiveContainer width="100%" minWidth={1} height={220}>
@@ -803,7 +834,7 @@ export const EarningsSurpriseChart = memo(function EarningsSurpriseChart({ data 
 
   return (
     <div>
-      <h4 style={{ color: 'var(--color-text-primary)', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+      <h4 style={{ color: 'var(--color-text-primary)', fontSize: '0.8125rem', fontWeight: 600, marginBottom: 8 }}>
         {t('toolArtifact.epsActualVsEstimate')}
       </h4>
       <ResponsiveContainer width="100%" minWidth={1} height={220}>
@@ -829,7 +860,7 @@ export const CashFlowChart = memo(function CashFlowChart({ data }: ChartArrayDat
 
   return (
     <div>
-      <h4 style={{ color: 'var(--color-text-primary)', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+      <h4 style={{ color: 'var(--color-text-primary)', fontSize: '0.8125rem', fontWeight: 600, marginBottom: 8 }}>
         {t('toolArtifact.cashFlowQuarterly')}
       </h4>
       <ResponsiveContainer width="100%" minWidth={1} height={220}>
@@ -933,17 +964,17 @@ export const CompanyOverviewCard = memo(function CompanyOverviewCard({ data, scr
       {quoteObj && (
         <div>
           <div className="flex items-baseline gap-3 mb-3 flex-wrap">
-            <span style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+            <span style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--color-text-primary)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
               {(name as string) || (symbol as string)}
             </span>
-            <span style={{ fontSize: 14, color: TEXT_COLOR, flexShrink: 0 }}>{symbol as string}</span>
+            <span style={{ fontSize: '0.875rem', color: TEXT_COLOR, flexShrink: 0 }}>{symbol as string}</span>
             <OpenInMarketLink symbol={symbol as string} />
             {marketStatus && (() => {
               const StatusIcon = DETAIL_STATUS_ICONS[marketStatus];
               return (
                 <span style={{
                   display: 'inline-flex', alignItems: 'center', gap: 4,
-                  fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
+                  fontSize: '0.6875rem', fontWeight: 600, padding: '2px 8px', borderRadius: 4,
                   color: DETAIL_STATUS_COLORS[marketStatus] || TEXT_COLOR,
                   border: `1px solid ${DETAIL_STATUS_COLORS[marketStatus] || TEXT_COLOR}`,
                   whiteSpace: 'nowrap',
@@ -957,22 +988,22 @@ export const CompanyOverviewCard = memo(function CompanyOverviewCard({ data, scr
 
           {/* Regular close price */}
           <div className="flex items-baseline gap-3 mb-1">
-            <span style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-text-primary)' }}>
+            <span style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
               ${displayPrice?.toFixed(2) || 'N/A'}
             </span>
             {displayChange != null && (
-              <span style={{ fontSize: 14, color: changeColor }}>
+              <span style={{ fontSize: '0.875rem', color: changeColor }}>
                 {displayChange >= 0 ? '+' : ''}{displayChange?.toFixed(2)} ({displayChangePct?.toFixed(2)}%)
               </span>
             )}
             {marketStatus && hasExtPrice && (
-              <span style={{ fontSize: 11, color: TEXT_COLOR }}>Close</span>
+              <span style={{ fontSize: '0.6875rem', color: TEXT_COLOR }}>Close</span>
             )}
           </div>
 
           {/* Extended-hours price */}
           {hasExtPrice && (
-            <div className="flex items-center gap-2 mb-3" style={{ fontSize: 14 }}>
+            <div className="flex items-center gap-2 mb-3" style={{ fontSize: '0.875rem' }}>
               <span style={{ display: 'inline-flex', alignItems: 'center', color: DETAIL_STATUS_COLORS[marketStatus!] || TEXT_COLOR }}>
                 {marketStatus === 'early_trading' ? <Sunrise size={14} /> : <Sunset size={14} />}
               </span>
@@ -989,7 +1020,7 @@ export const CompanyOverviewCard = memo(function CompanyOverviewCard({ data, scr
 
           <div
             className="grid grid-cols-2 gap-x-6 gap-y-1"
-            style={{ fontSize: 12, color: TEXT_COLOR }}
+            style={{ fontSize: '0.75rem', color: TEXT_COLOR }}
           >
             {(quoteObj.open as number | undefined) != null && <QuoteStat label={t('toolArtifact.open')} value={`$${(quoteObj.open as number).toFixed(2)}`} />}
             {(quoteObj.previousClose as number | undefined) != null && <QuoteStat label={t('toolArtifact.prevClose')} value={`$${(quoteObj.previousClose as number).toFixed(2)}`} />}
@@ -1008,12 +1039,12 @@ export const CompanyOverviewCard = memo(function CompanyOverviewCard({ data, scr
       {/* Float & Short Data */}
       {(hasFloat || hasSI || hasSV) && (
         <div>
-          <h4 style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 8 }}>
+          <h4 style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 8 }}>
             {t('toolArtifact.shareStructure', 'Share Structure')}
           </h4>
           <div
             className="grid grid-cols-2 gap-x-6 gap-y-1"
-            style={{ fontSize: 12, color: TEXT_COLOR }}
+            style={{ fontSize: '0.75rem', color: TEXT_COLOR }}
           >
             {hasFloat && (
               <QuoteStat label={t('toolArtifact.float', 'Float')} value={formatNumber(floatObj!.free_float as number).replace('$', '')} />
@@ -1130,10 +1161,10 @@ export function MarketIndicesChart({ data }: DataProps): React.ReactElement {
           >
             {/* Header: name + price/change + market link */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4, gap: 8 }}>
-              <span style={{ color: 'var(--color-text-primary)', fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+              <span style={{ color: 'var(--color-text-primary)', fontWeight: 600, fontSize: '0.8125rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
                 {(indexData.name as string) || symbol}
               </span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, flexShrink: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.8125rem', flexShrink: 0 }}>
                 {lastClose != null && (
                   <span style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}>
                     {lastClose.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -1150,7 +1181,7 @@ export function MarketIndicesChart({ data }: DataProps): React.ReactElement {
 
             {/* Stats row */}
             {stats && (
-              <div style={{ display: 'flex', gap: 12, fontSize: 11, color: TEXT_COLOR, marginBottom: 6 }}>
+              <div style={{ display: 'flex', gap: 12, fontSize: '0.6875rem', color: TEXT_COLOR, marginBottom: 6 }}>
                 {(stats.ma_20 as number | undefined) != null && <span>MA20: {(stats.ma_20 as number).toFixed(2)}</span>}
                 {(stats.ma_50 as number | undefined) != null && <span>MA50: {(stats.ma_50 as number).toFixed(2)}</span>}
                 {(stats.volatility as number | undefined) != null && <span>Vol: {((stats.volatility as number) * 100).toFixed(1)}%</span>}
@@ -1233,12 +1264,12 @@ export function StockScreenerTable({ data }: DataProps): React.ReactElement {
 
   const SortArrow = ({ col }: { col: string }): React.ReactElement | null => {
     if (sortKey !== col) return null;
-    return <span style={{ marginLeft: 2, fontSize: 10 }}>{sortDir === 'asc' ? '\u25B2' : '\u25BC'}</span>;
+    return <span style={{ marginLeft: 2, fontSize: '0.625rem' }}>{sortDir === 'asc' ? '\u25B2' : '\u25BC'}</span>;
   };
 
   return (
     <div>
-      <h4 style={{ color: 'var(--color-text-primary)', fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
+      <h4 style={{ color: 'var(--color-text-primary)', fontSize: '0.875rem', fontWeight: 600, marginBottom: 8 }}>
         {t('toolArtifact.stockScreener')} — {t('toolArtifact.nResults', { count })}
       </h4>
 
@@ -1249,7 +1280,7 @@ export function StockScreenerTable({ data }: DataProps): React.ReactElement {
             <span
               key={i}
               style={{
-                fontSize: 11,
+                fontSize: '0.6875rem',
                 padding: '2px 8px',
                 borderRadius: 12,
                 backgroundColor: 'var(--color-accent-soft)',
@@ -1265,7 +1296,7 @@ export function StockScreenerTable({ data }: DataProps): React.ReactElement {
 
       {/* Scrollable table */}
       <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: '70vh' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
           <thead>
             <tr>
               {columns.map((col) => (
@@ -1339,7 +1370,7 @@ interface MiniCandlestickProps {
 
 function MiniCandlestick({ ohlcv, height = 180 }: MiniCandlestickProps): React.ReactElement | null {
   const { theme } = useTheme();
-  const ct = CANVAS_THEMES[theme] || CANVAS_THEMES.dark;
+  const ct = useThemeTokens(resolveCanvasTheme, theme);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
 
@@ -1407,7 +1438,7 @@ function MiniCandlestick({ ohlcv, height = 180 }: MiniCandlestickProps): React.R
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ohlcv, height, theme]);
+  }, [ohlcv, height, ct]);
 
   if (!ohlcv?.length) return null;
   return <div ref={containerRef} className="[&_*]:outline-none" style={{ width: '100%', height }} />;

@@ -16,6 +16,18 @@ import httpx
 _CACHE_MAX_SIZE = 512
 
 
+class FMPRequestError(Exception):
+    """FMP request failure with a sanitized message and optional HTTP status.
+
+    ``str(exc)`` is safe to surface to callers/agents: it never embeds the
+    request URL or headers; the key travels in the ``apikey`` header.
+    """
+
+    def __init__(self, message: str, *, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def _today_utc() -> date:
     """UTC equivalent of ``date.today()`` — the server runs in UTC; local-clock dates drift."""
     return datetime.now(timezone.utc).date()
@@ -100,7 +112,6 @@ class FMPClient:
         use_cache: bool = True,
     ) -> Union[Dict, List]:
         params = params or {}
-        params["apikey"] = self.api_key
 
         cache_key = f"{endpoint}:{json.dumps(params, sort_keys=True)}"
 
@@ -112,7 +123,9 @@ class FMPClient:
         client = await self._get_client()
 
         try:
-            response = await client.get(url, params=params)
+            response = await client.get(
+                url, params=params, headers={"apikey": self.api_key}
+            )
             response.raise_for_status()
             data = response.json()
 
@@ -126,11 +139,16 @@ class FMPClient:
             return data
 
         except httpx.HTTPStatusError as e:
-            raise Exception(f"FMP API request failed: {str(e)}")
-        except httpx.TimeoutException as e:
-            raise Exception(f"FMP API request timed out: {str(e)}")
-        except httpx.RequestError as e:
-            raise Exception(f"FMP API request failed: {str(e)}")
+            # Defense in depth: never stringify the httpx error. Its message
+            # embeds the request URL; auth must never depend on URL hygiene.
+            raise FMPRequestError(
+                f"FMP API request failed ({e.response.status_code})",
+                status_code=e.response.status_code,
+            )
+        except httpx.TimeoutException:
+            raise FMPRequestError("FMP API request timed out")
+        except httpx.RequestError:
+            raise FMPRequestError("FMP API request failed")
 
     # =====================================================================
     # Financial Statements

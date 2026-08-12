@@ -12,7 +12,7 @@ Actions emitted via context_window events (values preserved as wire protocol):
 - offload: complete signal after Tier 1 tool arg truncation
 """
 
-import uuid
+import asyncio
 import warnings
 import logging
 from collections.abc import Awaitable, Callable, Mapping
@@ -34,11 +34,13 @@ from langchain.agents.middleware.types import (
 )
 from langchain.chat_models import BaseChatModel, init_chat_model
 
+from src.config.settings import get_compaction_timeout
 from src.llms.content_utils import format_llm_content
 from src.llms.token_counter import extract_token_usage
 from ptc_agent.config.agent import CompactionConfig
 from src.llms import get_llm_by_type, maybe_disable_streaming
 
+from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.middleware.compaction.types import (
     CompactionEvent,
     CompactionState,
@@ -51,8 +53,8 @@ from ptc_agent.agent.middleware.compaction.types import (
 )
 from ptc_agent.agent.middleware.compaction.utils import (
     DEFAULT_SUMMARY_PROMPT,
+    build_compaction_event,
     build_summary_message,
-    compute_absolute_cutoff,
     count_tokens_tiktoken,
     get_effective_messages,
     strip_base64_from_messages,
@@ -264,7 +266,7 @@ class CompactionMiddleware(AgentMiddleware):
         cached_output_tokens: int = request.state.get("_cached_output_tokens", 0)
 
         # 2. Reconstruct effective messages
-        self._ensure_message_ids(request.messages)
+        ensure_message_ids(request.messages)
         effective_messages = self._get_effective_messages(
             request.messages, previous_event
         )
@@ -415,17 +417,19 @@ class CompactionMiddleware(AgentMiddleware):
         )
 
         # Build summary message
-        summary_message = self._build_summary_message(summary, file_path)
+        summary_message = self._build_summary_message(
+            summary, file_path, original_message_count=len(truncated_messages)
+        )
 
-        # Compute absolute cutoff for chained summarization tracking
-        state_cutoff_index = self._compute_absolute_cutoff(cutoff_index, previous_event)
-
-        # Create summarization event for state
-        new_event: CompactionEvent = {
-            "cutoff_index": state_cutoff_index,
-            "summary_message": summary_message,
-            "file_path": file_path,
-        }
+        # Create summarization event with an id anchor (cutoff grounded in raw list)
+        new_event = build_compaction_event(
+            raw_messages=request.messages,
+            preserved_messages=preserved_messages,
+            summary_message=summary_message,
+            file_path=file_path,
+            effective_cutoff=cutoff_index,
+            previous_event=previous_event,
+        )
 
         # Call handler with summarized messages
         modified_messages = [summary_message, *preserved_messages]
@@ -479,7 +483,7 @@ class CompactionMiddleware(AgentMiddleware):
         cached_input_tokens: int = request.state.get("_cached_input_tokens", 0)
         cached_output_tokens: int = request.state.get("_cached_output_tokens", 0)
 
-        self._ensure_message_ids(request.messages)
+        ensure_message_ids(request.messages)
         effective_messages = self._get_effective_messages(
             request.messages, previous_event
         )
@@ -576,20 +580,27 @@ class CompactionMiddleware(AgentMiddleware):
         cached_input_tokens = 0
         cached_output_tokens = 0
 
-        # Sync path skips backend persistence (SandboxBackend is async-only)
+        # Sync path skips backend persistence (SandboxBackend is async-only).
+        # It is not the runtime path (the agent runs async via abefore_model /
+        # _acreate_summary, which carries the compaction_timeout); a blocking
+        # invoke() can't be bounded by asyncio.wait_for, so no timeout here.
         file_path = None
 
         summary = self._create_summary(
             messages_to_summarize, original_count=len(truncated_messages)
         )
-        summary_message = self._build_summary_message(summary, file_path)
-        state_cutoff_index = self._compute_absolute_cutoff(cutoff_index, previous_event)
+        summary_message = self._build_summary_message(
+            summary, file_path, original_message_count=len(truncated_messages)
+        )
 
-        new_event: CompactionEvent = {
-            "cutoff_index": state_cutoff_index,
-            "summary_message": summary_message,
-            "file_path": file_path,
-        }
+        new_event = build_compaction_event(
+            raw_messages=request.messages,
+            preserved_messages=preserved_messages,
+            summary_message=summary_message,
+            file_path=file_path,
+            effective_cutoff=cutoff_index,
+            previous_event=previous_event,
+        )
 
         modified_messages = [summary_message, *preserved_messages]
         response = handler(request.override(messages=modified_messages))
@@ -625,14 +636,6 @@ class CompactionMiddleware(AgentMiddleware):
     ) -> list[AnyMessage]:
         """Delegate to shared utility."""
         return get_effective_messages(messages, event)
-
-    @staticmethod
-    def _compute_absolute_cutoff(
-        effective_cutoff: int,
-        previous_event: CompactionEvent | None,
-    ) -> int:
-        """Delegate to shared utility."""
-        return compute_absolute_cutoff(effective_cutoff, previous_event)
 
     # =========================================================================
     # Token cache management
@@ -870,10 +873,13 @@ class CompactionMiddleware(AgentMiddleware):
     # =========================================================================
 
     def _build_summary_message(
-        self, summary: str, file_path: str | None = None
+        self,
+        summary: str,
+        file_path: str | None = None,
+        original_message_count: int = 0,
     ) -> HumanMessage:
         """Delegate to shared utility."""
-        return build_summary_message(summary, file_path)
+        return build_summary_message(summary, file_path, original_message_count)
 
     # =========================================================================
     # Summarization trigger and cutoff logic
@@ -1084,12 +1090,6 @@ class CompactionMiddleware(AgentMiddleware):
             "_cached_output_tokens": cached_output_tokens,
         }
 
-    def _ensure_message_ids(self, messages: list[AnyMessage]) -> None:
-        """Ensure all messages have unique IDs for the add_messages reducer."""
-        for msg in messages:
-            if msg.id is None:
-                msg.id = str(uuid.uuid4())
-
     def _partition_messages(
         self,
         conversation_messages: list[AnyMessage],
@@ -1189,8 +1189,17 @@ class CompactionMiddleware(AgentMiddleware):
             # The bracketing context_window summarize start/complete/error
             # events tell the SSE handler to re-route chunks emitted between
             # them to the compaction_chunk channel.
-            response = await self.model.ainvoke(
-                _build_summary_request(self.summary_prompt, trimmed_messages)
+            #
+            # Wall-clock budget: a hung summarize raises TimeoutError, which the
+            # except below treats like any LLM failure — emits the error signal
+            # (closing the window so the admission guard releases) and returns a
+            # fallback string. The timeout lives on the call so it fails
+            # naturally instead of blocking the in-flight turn forever.
+            response = await asyncio.wait_for(
+                self.model.ainvoke(
+                    _build_summary_request(self.summary_prompt, trimmed_messages)
+                ),
+                timeout=get_compaction_timeout(),
             )
             summary = self._extract_summary_text(response)
         except BaseException as e:

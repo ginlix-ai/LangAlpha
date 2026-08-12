@@ -4,9 +4,19 @@
  */
 import { api } from '@/api/client';
 import { utcMsToETDate, utcMsToETTime } from '@/lib/utils';
+import { normalizeIndexKey } from '@/lib/marketUtils';
+import { snapshotToStockPrice } from '@/lib/quotes/quoteAdapters';
+import { getSnapshotIndexes, getSnapshotStocks } from '@/lib/quotes/snapshotApi';
+import type { SnapshotEntry, SnapshotResponse } from '@/lib/quotes/snapshotApi';
+import type { IndexData, SparklinePoint } from '@/types/market';
 import * as portfolioApi from './portfolio';
 import * as watchlistApi from './watchlist';
 import * as watchlistItemsApi from './watchlistItems';
+
+// Snapshot batch primitives moved to lib/quotes (breaking the lib→page cycle);
+// re-exported here for back-compat with existing Dashboard callers/tests.
+export { getSnapshotIndexes, getSnapshotStocks };
+export type { SnapshotEntry, SnapshotResponse };
 
 // --- Interfaces ---
 
@@ -19,48 +29,16 @@ interface IntradayPoint {
   volume?: number;
 }
 
-interface SparklinePoint {
-  time: string;
-  val: number;
-}
-
-interface IndexData {
-  symbol: string;
-  name: string;
-  price: number;
-  change: number;
-  changePercent: number;
-  isPositive: boolean;
-  sparklineData: SparklinePoint[];
-  previousClose?: number | null;
-}
-
 interface StockPrice {
   symbol: string;
   price: number;
   change: number;
   changePercent: number;
   isPositive: boolean;
+  quoteAvailable?: boolean;
   previousClose?: number | null;
   earlyTradingChangePercent?: number | null;
   lateTradingChangePercent?: number | null;
-}
-
-interface SnapshotEntry {
-  symbol: string;
-  name?: string;
-  price?: number;
-  change?: number;
-  change_percent?: number;
-  previous_close?: number;
-  early_trading_change_percent?: number;
-  late_trading_change_percent?: number;
-}
-
-interface SnapshotResponse {
-  snapshots?: SnapshotEntry[];
-  results?: SnapshotEntry[];
-  data?: SnapshotEntry[];
 }
 
 interface IndicesResult {
@@ -72,6 +50,7 @@ interface NewsParams {
   tickers?: string[];
   limit?: number;
   cursor?: string;
+  provider?: string;
 }
 
 interface NewsResponse {
@@ -90,23 +69,14 @@ interface EarningsResponse {
   count: number;
 }
 
-interface InfoFlowResponse {
-  results: Record<string, unknown>[];
-  total: number;
-  limit: number;
-  offset: number;
-  has_more: boolean;
-}
-
 // --- Market data (see docs/ptc-agent-api/market data) ---
 
 /** Index symbols: normalized (GSPC, IXIC, DJI, RUT). Index.yml / Index Batch.yml use these. */
 const INDEX_SYMBOLS: string[] = ['GSPC', 'IXIC', 'DJI', 'RUT', 'VIX'];
 const INDEX_NAMES: Record<string, string> = { GSPC: 'S&P 500', IXIC: 'NASDAQ', DJI: 'Dow Jones', RUT: 'Russell 2000', VIX: 'VIX' };
 
-function normalizeIndexSymbol(s: string): string {
-  return String(s).replace(/^\^/, '').toUpperCase();
-}
+// Trim + strip a leading '^' + uppercase — the shared symbol-key normalizer.
+const normalizeIndexSymbol = normalizeIndexKey;
 
 function fallbackIndex(norm: string): IndexData {
   return {
@@ -117,6 +87,7 @@ function fallbackIndex(norm: string): IndexData {
     changePercent: 0,
     isPositive: true,
     sparklineData: [],
+    quoteAvailable: false,
   };
 }
 
@@ -139,13 +110,21 @@ export async function getIndex(symbol: string, _opts: Record<string, unknown> = 
     // Sort ascending by time (Unix ms)
     const sorted = [...pts].sort((a: IntradayPoint, b: IntradayPoint) => a.time - b.time);
 
-    // Isolate the most recent trading day, regular hours only (9:30–16:00)
-    const latestDate = utcMsToETDate(sorted[sorted.length - 1].time);
-    const todayPoints = sorted.filter((p: IntradayPoint) => {
-      if (utcMsToETDate(p.time) !== latestDate) return false;
+    // Isolate regular-hours points (9:30–16:00 ET) first, then take the most
+    // recent date that actually has them. Some indices (e.g. VIX) carry
+    // overnight/pre-market bars, so the chronologically-last bar's date can have
+    // zero regular-hours points on a pre-open day — which would blank the
+    // sparkline. `sorted` is ascending, so the regular-hours slice is too.
+    const regularHours = sorted.filter((p: IntradayPoint) => {
       const t = utcMsToETTime(p.time);
       return t >= '09:30' && t <= '16:00';
     });
+    const latestDate = regularHours.length
+      ? utcMsToETDate(regularHours[regularHours.length - 1].time)
+      : utcMsToETDate(sorted[sorted.length - 1].time);
+    const todayPoints = regularHours.length
+      ? regularHours.filter((p: IntradayPoint) => utcMsToETDate(p.time) === latestDate)
+      : sorted.filter((p: IntradayPoint) => utcMsToETDate(p.time) === latestDate);
 
     const oldest = todayPoints[0];
     const mostRecent = todayPoints[todayPoints.length - 1];
@@ -162,6 +141,10 @@ export async function getIndex(symbol: string, _opts: Record<string, unknown> = 
       change: Math.round(change * 100) / 100,
       changePercent: Math.round(changePercent * 100) / 100,
       isPositive: change >= 0,
+      // Direct getIndex consumers get the same zero/invalid-close masking the
+      // dashboard applies via the snapshot: a non-positive close isn't a quote.
+      quoteAvailable: close > 0,
+      asOfDate: latestDate,
       sparklineData: todayPoints
         .filter((p: IntradayPoint) => Number(p.close) > 0)
         .map((p: IntradayPoint) => ({ time: utcMsToETTime(p.time), val: Number(p.close) })),
@@ -174,6 +157,48 @@ export async function getIndex(symbol: string, _opts: Record<string, unknown> = 
     const msg = err.response?.data?.detail ?? err.message;
     throw new Error(typeof msg === 'string' ? msg : String(msg));
   }
+}
+
+/** Minimal snapshot shape buildIndexData reads — satisfied by both the local
+ *  SnapshotEntry and the quote layer's QuoteRow (whose price is nullable). */
+interface IndexSnapshotLike {
+  symbol?: string;
+  name?: string;
+  price?: number | null;
+  change?: number | null;
+  change_percent?: number | null;
+  previous_close?: number | null;
+}
+
+/**
+ * Build one IndexData card from a raw index snapshot + its sparkline.
+ * Index prices are never legitimately 0; a zero/negative price means a partial
+ * provider snapshot, so it's treated as no quote (renders N/A, not a fake 0.00).
+ * Shared by getIndices and the quote-layer-driven useDashboardData.
+ */
+export function buildIndexData(
+  norm: string,
+  snap: IndexSnapshotLike | undefined,
+  sparklineData: SparklinePoint[] = [],
+  asOfDate?: string,
+): IndexData {
+  if (snap && snap.price != null && snap.price > 0) {
+    const change = snap.change ?? 0;
+    const changePct = snap.change_percent ?? (snap.previous_close ? ((change / snap.previous_close) * 100) : 0);
+    return {
+      symbol: norm,
+      name: INDEX_NAMES[norm] ?? snap.name ?? norm,
+      price: Math.round(snap.price * 100) / 100,
+      change: Math.round(change * 100) / 100,
+      changePercent: Math.round(changePct * 100) / 100,
+      isPositive: change >= 0,
+      previousClose: snap.previous_close ?? null,
+      sparklineData,
+      quoteAvailable: true,
+      asOfDate,
+    };
+  }
+  return { ...fallbackIndex(norm), sparklineData, asOfDate };
 }
 
 /**
@@ -189,14 +214,15 @@ export async function getIndices(symbols: string[] = INDEX_SYMBOLS, _opts: Recor
     Promise.all(list.map(async (norm: string) => {
       try {
         const result = await getIndex(norm);
-        return { symbol: norm, sparklineData: result.sparklineData };
+        return { symbol: norm, sparklineData: result.sparklineData, asOfDate: result.asOfDate };
       } catch {
-        return { symbol: norm, sparklineData: [] as SparklinePoint[] };
+        return { symbol: norm, sparklineData: [] as SparklinePoint[], asOfDate: undefined };
       }
     })),
   ]);
 
   const sparklineMap: Record<string, SparklinePoint[]> = Object.fromEntries(sparklineResults.map((r) => [r.symbol, r.sparklineData]));
+  const asOfMap: Record<string, string | undefined> = Object.fromEntries(sparklineResults.map((r) => [r.symbol, r.asOfDate]));
   const snapshotList: SnapshotEntry[] = snapshots?.snapshots || snapshots?.results || snapshots?.data || [];
   const snapshotMap: Record<string, SnapshotEntry> = Array.isArray(snapshotList)
     ? Object.fromEntries(snapshotList.map((s: SnapshotEntry) => [normalizeIndexSymbol(s.symbol), s]))
@@ -204,23 +230,9 @@ export async function getIndices(symbols: string[] = INDEX_SYMBOLS, _opts: Recor
 
   let failedCount = 0;
   const indices: IndexData[] = list.map((norm: string) => {
-    const snap = snapshotMap[norm];
-    if (snap && snap.price != null) {
-      const change = snap.change ?? 0;
-      const changePct = snap.change_percent ?? (snap.previous_close ? ((change / snap.previous_close) * 100) : 0);
-      return {
-        symbol: norm,
-        name: INDEX_NAMES[norm] ?? snap.name ?? norm,
-        price: Math.round(snap.price * 100) / 100,
-        change: Math.round(change * 100) / 100,
-        changePercent: Math.round(changePct * 100) / 100,
-        isPositive: change >= 0,
-        previousClose: snap.previous_close ?? null,
-        sparklineData: sparklineMap[norm] || [],
-      };
-    }
-    failedCount++;
-    return { ...fallbackIndex(norm), sparklineData: sparklineMap[norm] || [] };
+    const idx = buildIndexData(norm, snapshotMap[norm], sparklineMap[norm] || [], asOfMap[norm]);
+    if (!idx.quoteAvailable) failedCount++;
+    return idx;
   });
 
   return { indices, failedCount };
@@ -333,45 +345,6 @@ export async function deleteWatchlistItem(itemId: string, watchlistId: string = 
   return watchlistItemsApi.deleteWatchlistItem(watchlistId, itemId);
 }
 
-// --- Snapshot & market status ---
-
-/**
- * GET /api/v1/market-data/snapshots/indexes?symbols=GSPC,IXIC,...
- * Returns batch snapshot for index symbols.
- */
-export async function getSnapshotIndexes(symbols: string[] = INDEX_SYMBOLS): Promise<SnapshotResponse> {
-  const list = symbols.map((s: string) => normalizeIndexSymbol(String(s).trim()));
-  try {
-    const { data } = await api.get('/api/v1/market-data/snapshots/indexes', {
-      params: { symbols: list.join(',') },
-    });
-    return data || {};
-  } catch (e: unknown) {
-    const err = e as { message?: string };
-    console.error('[API] getSnapshotIndexes failed:', err?.message);
-    return {};
-  }
-}
-
-/**
- * GET /api/v1/market-data/snapshots/stocks?symbols=AAPL,TSLA,...
- * Returns batch snapshot for stock symbols.
- */
-export async function getSnapshotStocks(symbols: string[]): Promise<SnapshotResponse> {
-  const list = [...(symbols || [])].map((s: string) => String(s).trim().toUpperCase()).filter(Boolean);
-  if (!list.length) return {};
-  try {
-    const { data } = await api.get('/api/v1/market-data/snapshots/stocks', {
-      params: { symbols: list.join(',') },
-    });
-    return data || {};
-  } catch (e: unknown) {
-    const err = e as { message?: string };
-    console.error('[API] getSnapshotStocks failed:', err?.message);
-    return {};
-  }
-}
-
 // --- Stock prices (batch, for watchlist) ---
 
 const DEFAULT_WATCHLIST_SYMBOLS: string[] = ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'TSLA'];
@@ -405,26 +378,12 @@ export async function getStockPrices(symbols: string[]): Promise<StockPrice[]> {
       ? Object.fromEntries(snapList.map((s: SnapshotEntry) => [String(s.symbol).toUpperCase(), s]))
       : {};
 
-    return list.map((sym: string) => {
-      const snap = snapMap[sym];
-      if (snap && snap.price != null) {
-        const change = snap.change ?? 0;
-        const changePct = snap.change_percent ?? 0;
-        return {
-          symbol: sym,
-          price: Math.round(snap.price * 100) / 100,
-          change: Math.round(change * 100) / 100,
-          changePercent: Math.round(changePct * 100) / 100,
-          isPositive: change >= 0,
-          previousClose: snap.previous_close ?? null,
-          earlyTradingChangePercent: snap.early_trading_change_percent ?? null,
-          lateTradingChangePercent: snap.late_trading_change_percent ?? null,
-        };
-      }
-      return { symbol: sym, price: 0, change: 0, changePercent: 0, isPositive: true };
-    });
-  } catch {
-    return list.map((sym: string) => ({ symbol: sym, price: 0, change: 0, changePercent: 0, isPositive: true }));
+    // snapshotToStockPrice is the byte-for-byte equivalent of the old inline
+    // transform — the one source for raw-snapshot → StockPrice.
+    return list.map((sym: string) => snapshotToStockPrice(sym, snapMap[sym]));
+  } catch (e: unknown) {
+    console.error('[API] getStockPrices failed:', e instanceof Error ? e.message : String(e));
+    return list.map((sym: string) => snapshotToStockPrice(sym, null));
   }
 }
 
@@ -536,22 +495,25 @@ export async function disconnectClaudeOAuth(): Promise<Record<string, unknown>> 
 
 /**
  * Fetch news articles from the native news endpoint.
- * GET /api/v1/news?tickers=...&limit=...&cursor=...
- * @param {{ tickers?: string[], limit?: number, cursor?: string }} opts
+ * GET /api/v1/news?tickers=...&limit=...&cursor=...&provider=...
+ * @param {{ tickers?: string[], limit?: number, cursor?: string, provider?: string }} opts
  * @returns {Promise<{ results: Array, count: number, next_cursor: string|null }>}
  */
-export async function getNews({ tickers, limit = 20, cursor }: NewsParams = {}): Promise<NewsResponse> {
+export async function getNews({ tickers, limit = 20, cursor, provider }: NewsParams = {}): Promise<NewsResponse> {
   try {
     const params: Record<string, string | number> = {};
     if (tickers && tickers.length) params.tickers = tickers.join(',');
     if (limit) params.limit = limit;
     if (cursor) params.cursor = cursor;
+    if (provider) params.provider = provider;
     const { data } = await api.get('/api/v1/news', { params });
     return data || { results: [], count: 0, next_cursor: null };
   } catch (e: unknown) {
     const err = e as { message?: string };
     console.error('[API] getNews failed:', err?.message);
-    return { results: [], count: 0, next_cursor: null };
+    // Re-throw so the React Query callers retry (retry:1) and KEEP the last
+    // good list instead of overwriting a live feed with [] on a transient blip.
+    throw e;
   }
 }
 
@@ -585,40 +547,6 @@ export async function getInsightDetail(marketInsightId: string): Promise<Record<
 export async function generatePersonalizedInsight(): Promise<Record<string, unknown>> {
   const { data } = await api.post('/api/v1/insights/generate');
   return data;
-}
-
-// --- InfoFlow (content feed — kept for PopularCard) ---
-
-/**
- * Fetch InfoFlow results filtered by category.
- * GET /api/v1/infoflow/results?category={cat}&limit={limit}&offset={offset}
- */
-export async function getInfoFlowResults(category: string, limit: number = 10, offset: number = 0): Promise<InfoFlowResponse> {
-  try {
-    const params: Record<string, string | number> = { limit, offset };
-    if (category) params.category = category;
-    const { data } = await api.get('/api/v1/infoflow/results', { params });
-    return data || { results: [], total: 0, limit, offset, has_more: false };
-  } catch (e: unknown) {
-    const err = e as { message?: string };
-    console.error('[API] getInfoFlowResults failed:', err?.message);
-    return { results: [], total: 0, limit, offset, has_more: false };
-  }
-}
-
-/**
- * Fetch InfoFlow result detail by indexNumber.
- * GET /api/v1/infoflow/results/{indexNumber}
- */
-export async function getInfoFlowDetail(indexNumber: string): Promise<Record<string, unknown> | null> {
-  try {
-    const { data } = await api.get(`/api/v1/infoflow/results/${encodeURIComponent(indexNumber)}`);
-    return data;
-  } catch (e: unknown) {
-    const err = e as { message?: string };
-    console.error('[API] getInfoFlowDetail failed:', err?.message);
-    return null;
-  }
 }
 
 // --- Earnings Calendar ---

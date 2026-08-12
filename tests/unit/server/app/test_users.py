@@ -342,6 +342,133 @@ async def test_update_preferences_user_not_found(client):
     assert resp.status_code == 404
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_value", ["not-an-engine", {"engine": "serper"}, 123])
+async def test_update_preferences_invalid_search_provider_rejected(client, bad_value):
+    """Unknown engine strings and non-string values both get a clean 400."""
+    user = _user()
+    with patch(
+        f"{DB}.db_get_user",
+        new_callable=AsyncMock,
+        return_value=user,
+    ):
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={"other_preference": {"search_provider": bad_value}},
+        )
+
+    assert resp.status_code == 400
+    assert "search_provider" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["serper", None])
+async def test_update_preferences_search_provider_valid_or_none_accepted(client, value):
+    """A valid engine is accepted; None (key deletion) passes validation."""
+    user = _user()
+    prefs = _prefs()
+    with (
+        patch(
+            f"{DB}.db_get_user",
+            new_callable=AsyncMock,
+            return_value=user,
+        ),
+        patch(
+            f"{DB}.upsert_user_preferences",
+            new_callable=AsyncMock,
+            return_value=prefs,
+        ),
+        patch(
+            f"{DB}.maybe_complete_onboarding",
+            new_callable=AsyncMock,
+        ),
+    ):
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={"other_preference": {"search_provider": value}},
+        )
+
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_value", ["not-a-depth", {"level": "deep"}, 123])
+async def test_update_preferences_invalid_search_depth_rejected(client, bad_value):
+    """Unknown level names and non-string values both get a clean 400."""
+    user = _user()
+    with patch(
+        f"{DB}.db_get_user",
+        new_callable=AsyncMock,
+        return_value=user,
+    ):
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={"other_preference": {"search_depth": bad_value}},
+        )
+
+    assert resp.status_code == 400
+    assert "search_depth" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_update_preferences_depth_must_belong_to_payload_provider(client):
+    """When the payload also sets a provider, the depth must be one of THAT
+    provider's levels — 'deep' is a tavily level, not a serper one."""
+    user = _user()
+    with patch(
+        f"{DB}.db_get_user",
+        new_callable=AsyncMock,
+        return_value=user,
+    ):
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={"other_preference": {"search_provider": "serper", "search_depth": "deep"}},
+        )
+
+    assert resp.status_code == 400
+    assert "search_depth" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # Provider + matching depth.
+        {"search_provider": "tavily", "search_depth": "deep"},
+        # No provider in payload → any provider's level passes shape validation
+        # (the resolve-time gate checks it against the effective provider).
+        {"search_depth": "deep"},
+        # None = key deletion.
+        {"search_depth": None},
+    ],
+)
+async def test_update_preferences_valid_search_depth_accepted(client, payload):
+    user = _user()
+    prefs = _prefs()
+    with (
+        patch(
+            f"{DB}.db_get_user",
+            new_callable=AsyncMock,
+            return_value=user,
+        ),
+        patch(
+            f"{DB}.upsert_user_preferences",
+            new_callable=AsyncMock,
+            return_value=prefs,
+        ),
+        patch(
+            f"{DB}.maybe_complete_onboarding",
+            new_callable=AsyncMock,
+        ),
+    ):
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={"other_preference": payload},
+        )
+
+    assert resp.status_code == 200
+
+
 # ---------------------------------------------------------------------------
 # DELETE /api/v1/users/me/preferences
 # ---------------------------------------------------------------------------

@@ -211,7 +211,7 @@ function FallbackModelsPicker({
             {filteredGroups.map(({ provider, displayName, models: groupModels }) => (
               <div key={provider} className="mb-1">
                 <div
-                  className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider"
+                  className="px-2 py-1 text-[0.625rem] font-semibold uppercase tracking-wider"
                   style={{ color: "var(--color-text-tertiary)" }}
                 >
                   {displayName}
@@ -324,11 +324,11 @@ function CompactionProfilePicker({
               onClick={() => onChange(selected ? "" : name)}
               className={cn(
                 "flex flex-col items-start rounded-md p-3 text-left transition-colors",
-                "hover:border-[var(--color-border-hover,var(--color-border-default))]",
+                "hover:border-[var(--color-border-elevated)]",
               )}
               style={{
                 background: selected
-                  ? "var(--color-bg-muted, var(--color-bg-surface))"
+                  ? "var(--color-bg-tag)"
                   : "var(--color-bg-surface)",
                 border: `1px solid ${selected ? "var(--color-text-primary)" : "var(--color-border-default)"}`,
                 color: "var(--color-text-primary)",
@@ -338,13 +338,13 @@ function CompactionProfilePicker({
                 {t(`settings.compactionProfiles.${name}.label`)}
               </span>
               <span
-                className="mt-0.5 text-[11px]"
+                className="mt-0.5 text-[0.6875rem]"
                 style={{ color: "var(--color-text-tertiary)" }}
               >
                 {t(`settings.compactionProfiles.${name}.description`)}
               </span>
               <span
-                className="mt-2 text-[11px] tabular-nums"
+                className="mt-2 text-[0.6875rem] tabular-nums"
                 style={{ color: "var(--color-text-secondary, var(--color-text-tertiary))" }}
               >
                 {t("settings.compactionProfilePreset", {

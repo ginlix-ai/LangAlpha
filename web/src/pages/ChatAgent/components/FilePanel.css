@@ -10,13 +10,16 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 16px;
+    /* rem, not px: must scale with --app-font-scale exactly like the
+       ChatView header's Tailwind px-4 py-2, or the two headers misalign
+       at any non-1 scale. */
+    padding: 0.75rem 1rem;
     border-bottom: 1px solid var(--color-border-muted);
     flex-shrink: 0;
   }
 
   .file-panel-icon-btn {
-    padding: 6px;
+    padding: 0.375rem;
     border-radius: 4px;
     color: var(--color-text-tertiary);
     transition: all 0.15s;
@@ -102,7 +105,7 @@
   .file-panel-chip {
     padding: 2px 8px;
     border-radius: 10px;
-    font-size: 11px;
+    font-size: 0.6875rem;
     font-weight: 500;
     border: 1px solid var(--color-border-muted);
     background: transparent;
@@ -116,8 +119,8 @@
     color: var(--color-text-tertiary);
   }
   .file-panel-chip.active {
-    background: var(--color-accent-soft);
-    border-color: var(--color-accent-overlay);
+    background: var(--color-bg-hover);
+    border-color: var(--color-border-default);
     color: var(--color-text-primary);
   }
 
@@ -141,7 +144,7 @@
   }
   .file-panel-sort-item {
     padding: 6px 12px;
-    font-size: 12px;
+    font-size: 0.75rem;
     color: var(--color-text-tertiary);
     cursor: pointer;
     transition: background-color 0.1s;
@@ -151,7 +154,7 @@
   }
   .file-panel-sort-item.active {
     color: var(--color-text-primary);
-    background-color: var(--color-accent-soft);
+    background-color: var(--color-bg-hover);
   }
 
   /* ====== Directory Group Header ====== */
@@ -230,7 +233,7 @@
     justify-content: space-between;
     gap: 8px;
     padding: 6px 12px;
-    font-size: 12px;
+    font-size: 0.75rem;
     color: var(--color-loss);
     background-color: var(--color-loss-soft);
     flex-shrink: 0;
@@ -251,17 +254,17 @@
     border-radius: 8px;
     margin: 8px;
     color: var(--color-text-tertiary);
-    font-size: 14px;
+    font-size: 0.875rem;
     font-weight: 500;
     pointer-events: none;
   }
 
   /* ====== Selected File Row ====== */
   .file-panel-item-selected {
-    background-color: var(--color-accent-soft);
+    background-color: var(--color-bg-elevated);
   }
   .file-panel-item-selected:hover {
-    background-color: var(--color-accent-soft);
+    background-color: var(--color-bg-elevated);
   }
 
   /* ====== Indeterminate Progress Bar (delete) ====== */
@@ -288,7 +291,7 @@
   .file-panel-delete-confirm-btn {
     padding: 2px 10px;
     border-radius: 10px;
-    font-size: 11px;
+    font-size: 0.6875rem;
     font-weight: 600;
     border: 1px solid var(--color-border-loss);
     background: var(--color-loss-soft);
@@ -351,7 +354,7 @@
     justify-content: space-between;
     gap: 8px;
     padding: 6px 12px;
-    font-size: 12px;
+    font-size: 0.75rem;
     color: var(--color-profit);
     background-color: var(--color-border-muted);
     flex-shrink: 0;
@@ -378,17 +381,12 @@
     align-items: center;
     gap: 6px;
     padding: 5px 12px;
-    font-size: 11px;
+    font-size: 0.6875rem;
     font-weight: 500;
     color: var(--color-accent-primary);
-    background-color: var(--color-accent-soft);
-    border-bottom: 1px solid var(--color-accent-overlay);
+    background-color: var(--color-bg-elevated);
+    border-bottom: 1px solid var(--color-border-default);
     flex-shrink: 0;
-  }
-
-  [data-theme="light"] .file-panel-edit-hint {
-    background-color: hsl(var(--primary) / 0.06);
-    border-bottom-color: hsl(var(--primary) / 0.15);
   }
 
   /* ====== Memo banner (file in memo store, with stale/fresh verdict) ====== */
@@ -397,7 +395,7 @@
     align-items: center;
     gap: 8px;
     padding: 6px 12px;
-    font-size: 12px;
+    font-size: 0.75rem;
     line-height: 1.4;
     color: var(--color-text-secondary);
     background-color: var(--color-bg-card);
@@ -428,7 +426,7 @@
     border: 1px solid currentColor;
     border-radius: 4px;
     padding: 2px 8px;
-    font-size: 11px;
+    font-size: 0.6875rem;
     font-weight: 500;
     color: inherit;
     cursor: pointer;
@@ -447,7 +445,9 @@
      the fill is the amber accent and the label stays readable. */
   .file-panel-memo-banner-stale .file-panel-memo-banner-action-primary {
     background-color: var(--color-status-modified);
-    color: #fff;
+    /* Ink, not white — the fill is 0.7-alpha amber, and white composites to
+       ~3.1:1 against it in both themes (fails AA); ink reads at ~5.3+. */
+    color: var(--color-text-on-accent);
     border-color: var(--color-status-modified);
   }
   .file-panel-memo-banner-stale .file-panel-memo-banner-action-primary:hover:not(:disabled) {
@@ -468,7 +468,7 @@
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
     backdrop-filter: blur(12px);
     cursor: pointer;
-    font-size: 12px;
+    font-size: 0.75rem;
     font-weight: 500;
     color: var(--color-text-primary);
     white-space: nowrap;
@@ -476,8 +476,8 @@
     user-select: none;
   }
   .file-panel-selection-tooltip:hover {
-    background: var(--color-accent-soft);
-    border-color: var(--color-accent-primary);
+    background: var(--color-bg-hover);
+    border-color: var(--color-border-elevated);
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
   }
 
@@ -497,13 +497,13 @@
     align-items: center;
     gap: 8px;
     padding: 8px 12px;
-    font-size: 12px;
+    font-size: 0.75rem;
     color: var(--color-text-primary);
     cursor: pointer;
     transition: background-color 0.1s;
   }
   .file-panel-context-menu-item:hover {
-    background-color: var(--color-accent-soft);
+    background-color: var(--color-bg-hover);
   }
 
   /* Monaco editor container — fills available panel height */

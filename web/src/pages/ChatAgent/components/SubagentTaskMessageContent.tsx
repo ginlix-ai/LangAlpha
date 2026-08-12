@@ -1,10 +1,11 @@
 import React from 'react';
-import { Check, Loader2, ArrowRight, ChevronRight, RotateCw, RefreshCw } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { ArrowRight } from 'lucide-react';
 import { compactNumber } from '@/lib/format';
 import { type SubagentTokenUsage } from '../utils/tokenUsage';
 import { useSubagentTelemetry } from './SubagentTelemetryContext';
-
-const MONO_STACK = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+import TaskCardShell, { MONO_STACK } from './TaskCardShell';
+import { taskCardStatusKind, type TaskCardStatusKind } from './taskStatusUi';
 
 /**
  * Extract a short one-line summary from a full task description.
@@ -18,7 +19,7 @@ function summarize(text: string | undefined, maxLen = 100): string {
   return cleaned.slice(0, maxLen).replace(/\s+\S*$/, '') + '…';
 }
 
-interface ToolCallProcess {
+export interface ToolCallProcess {
   toolCallResult?: {
     content?: unknown;
     [key: string]: unknown;
@@ -38,7 +39,10 @@ interface SubagentTaskMessageContentProps {
   description?: string;
   type?: string;
   status?: string;
-  action?: 'init' | 'update' | 'resume';
+  /** Card verb from the task record. An unrecognized wire spelling is not
+   *  coerced — it falls through the ladder below to `unknown`, which shows the
+   *  raw status rather than inventing a state. */
+  action?: string;
   resumeTargetId?: string;
   onOpen?: (info: SubagentInfo) => void;
   onDetailOpen?: (process: ToolCallProcess) => void;
@@ -74,6 +78,7 @@ function SubagentTaskMessageContent({
   const ctxTelemetry = useSubagentTelemetry(subagentId);
   const toolCalls = toolCallsProp ?? ctxTelemetry?.toolCalls ?? 0;
   const tokenUsage = tokenUsageProp ?? ctxTelemetry?.tokenUsage;
+  const { t } = useTranslation();
 
   if (!subagentId && !description) {
     return null;
@@ -81,215 +86,101 @@ function SubagentTaskMessageContent({
 
   const isRunning = status === 'running';
   const isCompleted = status === 'completed';
-  const hasResult = isCompleted && toolCallProcess?.toolCallResult?.content;
-  const summary = summarize(description);
+  // A cancelled subagent is terminal like completed (workflow stopped) — it may
+  // still have captured partial output worth viewing.
+  const isCancelled = status === 'cancelled';
+  // The panel this opens shows the task's instructions and status, never its
+  // output — the reply it used to key on is dispatch boilerplate that exists
+  // from the moment the task starts, so it promised a result no panel had.
+  const hasDetails = (isCompleted || isCancelled) && !!toolCallProcess;
+  const hasTelemetry = toolCalls > 0 || (tokenUsage?.total ?? 0) > 0;
 
-  // Status discriminator — drives icon, label, and accent color.
-  // Updated/Resumed share the warning-amber treatment with Running because
-  // those are all "in-flight or recent change" states; Completed is success.
-  const statusKind: 'completed' | 'running' | 'updated' | 'resumed' | 'unknown' =
+  // Status discriminator — drives icon, label, and accent color via STATUS_UI.
+  const statusKind: TaskCardStatusKind =
     action === 'update' ? 'updated'
     : action === 'resume' ? 'resumed'
-    : action === 'init' && isRunning ? 'running'
-    : action === 'init' && isCompleted ? 'completed'
+    : action === 'init' ? taskCardStatusKind(status)
     : 'unknown';
 
-  const statusColor =
-    statusKind === 'completed' ? 'var(--color-success)'
-    : statusKind === 'unknown' ? 'var(--color-text-tertiary)'
-    : 'var(--color-warning)';
-
-  const statusLabel =
-    statusKind === 'completed' ? 'Completed'
-    : statusKind === 'running' ? 'Running'
-    : statusKind === 'updated' ? 'Updated'
-    : statusKind === 'resumed' ? 'Resumed'
-    : status;
-
-  const StatusIcon =
-    statusKind === 'completed' ? Check
-    : statusKind === 'running' ? Loader2
-    : statusKind === 'updated' ? RefreshCw
-    : statusKind === 'resumed' ? RotateCw
-    : null;
-
-  const handleCardClick = (): void => {
-    if (onOpen) {
-      onOpen({ subagentId: resumeTargetId || subagentId || '', description: description || '', type, status });
-    }
+  const handleOpen = (): void => {
+    onOpen?.({ subagentId: resumeTargetId || subagentId || '', description: description || '', type, status });
   };
 
-  const handleViewOutput = (e: React.MouseEvent<HTMLButtonElement>): void => {
+  const handleViewDetails = (e: React.MouseEvent<HTMLButtonElement>): void => {
     e.stopPropagation();
     if (onDetailOpen && toolCallProcess) {
       onDetailOpen(toolCallProcess);
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
-    // Ignore keystrokes that originated on a descendant control (e.g. the
-    // "View subagent output" button) — the descendant handles its own
-    // activation, and the keydown shouldn't double-fire as a card click.
-    if (e.target !== e.currentTarget) return;
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      handleCardClick();
-    }
-  };
-
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      style={{
-        background: 'var(--color-bg-tool-card)',
-        border: '1px solid var(--color-border-muted)',
-        borderRadius: 12,
-        overflow: 'hidden',
-        cursor: 'pointer',
-        fontFamily: MONO_STACK,
-        transition: 'border-color 0.15s',
-      }}
-      onClick={handleCardClick}
-      onKeyDown={handleKeyDown}
-      onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => (e.currentTarget.style.borderColor = 'var(--color-border-default)')}
-      onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
-      title={
-        action === 'update' ? 'Click to view updated subagent'
-        : action === 'resume' ? 'Click to view resumed subagent'
-        : isRunning ? 'Click to view running subagent'
-        : 'Click to view subagent details'
+    <TaskCardShell
+      eyebrow={type}
+      statusKind={statusKind}
+      rawStatus={status}
+      title={summarize(description) || t('chat.subagentCard.titleFallback')}
+      hint={
+        onOpen
+          ? t(
+              action === 'update' ? 'chat.subagentCard.openUpdated'
+              : action === 'resume' ? 'chat.subagentCard.openResumed'
+              : isRunning ? 'chat.subagentCard.openRunning'
+              : 'chat.subagentCard.openDetails'
+            )
+          : undefined
       }
-    >
-      {/* Rule: agent type · status · affordance */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          padding: '10px 12px 8px 14px',
-          borderBottom: '1px solid var(--color-border-subtle)',
-          fontSize: 12,
-        }}
-      >
-        <span
+      onOpen={onOpen ? handleOpen : undefined}
+      affordance={hasDetails && onDetailOpen ? (
+        <button
+          type="button"
+          aria-label={t('chat.subagentCard.viewDetails')}
+          onClick={handleViewDetails}
           style={{
-            color: 'var(--color-text-secondary)',
-            fontWeight: 500,
-            textTransform: 'lowercase',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            minWidth: 0,
-            flex: '0 1 auto',
-          }}
-        >
-          {type}
-        </span>
-        <span style={{ flex: 1 }} />
-        <span
-          style={{
+            background: 'transparent',
+            border: 'none',
+            padding: 0,
             display: 'inline-flex',
             alignItems: 'center',
-            gap: 5,
-            color: statusColor,
-            fontSize: 11,
-            letterSpacing: '0.04em',
-            fontWeight: 500,
-            whiteSpace: 'nowrap',
+            cursor: 'pointer',
+            color: 'var(--color-accent-primary)',
+            flexShrink: 0,
           }}
         >
-          {StatusIcon && (
-            <StatusIcon
-              style={{
-                width: 11,
-                height: 11,
-                animation: statusKind === 'running' ? 'spin 1s linear infinite' : undefined,
-              }}
-            />
-          )}
-          {statusLabel}
-        </span>
-        {hasResult ? (
-          <button
-            type="button"
-            aria-label="View subagent output"
-            onClick={handleViewOutput}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              padding: 0,
-              display: 'inline-flex',
-              alignItems: 'center',
-              cursor: 'pointer',
-              color: 'var(--color-accent-primary)',
-              flexShrink: 0,
-            }}
-          >
-            <ArrowRight style={{ width: 14, height: 14 }} />
-          </button>
-        ) : (
-          <ChevronRight
-            aria-hidden="true"
-            style={{
-              width: 14,
-              height: 14,
-              flexShrink: 0,
-              color: 'var(--color-text-quaternary)',
-            }}
-          />
-        )}
-      </div>
-
-      {/* Body: description + telemetry */}
-      <div style={{ padding: '12px 14px 14px' }}>
+          <ArrowRight style={{ width: 14, height: 14 }} />
+        </button>
+      ) : undefined}
+    >
+      {hasTelemetry && (
         <div
+          data-testid="subagent-telemetry"
           style={{
-            fontFamily:
-              "'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-            fontSize: 14,
-            fontWeight: 500,
-            color: 'var(--color-text-primary)',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            marginBottom: (toolCalls > 0 || (tokenUsage?.total ?? 0) > 0) ? 8 : 0,
+            display: 'flex',
+            gap: 8,
+            marginTop: 8,
+            fontSize: '0.6875rem',
+            color: 'var(--color-text-tertiary)',
+            fontFamily: MONO_STACK,
+            letterSpacing: '0.02em',
           }}
         >
-          {summary || 'Subagent Task'}
+          {toolCalls > 0 && (
+            <span>
+              <strong style={{ color: 'var(--color-text-secondary)', fontWeight: 600 }}>{toolCalls}</strong>
+              {' '}
+              {t('chat.subagentCard.toolUnit', { count: toolCalls })}
+            </span>
+          )}
+          {(tokenUsage?.total ?? 0) > 0 && (
+            <span title={`${tokenUsage!.input} in · ${tokenUsage!.output} out`}>
+              {toolCalls > 0 ? '· ' : ''}
+              <strong style={{ color: 'var(--color-text-secondary)', fontWeight: 600 }}>{compactNumber(tokenUsage!.total)}</strong>
+              {' '}
+              {t('chat.subagentCard.tokenUnit')}
+            </span>
+          )}
         </div>
-
-        {(toolCalls > 0 || (tokenUsage?.total ?? 0) > 0) && (
-          <div
-            data-testid="subagent-telemetry"
-            style={{
-              display: 'flex',
-              gap: 8,
-              fontSize: 11,
-              color: 'var(--color-text-tertiary)',
-              fontFamily: MONO_STACK,
-              letterSpacing: '0.02em',
-            }}
-          >
-            {toolCalls > 0 && (
-              <span>
-                <strong style={{ color: 'var(--color-text-secondary)', fontWeight: 600 }}>{toolCalls}</strong>
-                {' '}
-                {toolCalls === 1 ? 'tool' : 'tools'}
-              </span>
-            )}
-            {(tokenUsage?.total ?? 0) > 0 && (
-              <span title={`${tokenUsage!.input} in · ${tokenUsage!.output} out`}>
-                {toolCalls > 0 ? '· ' : ''}
-                <strong style={{ color: 'var(--color-text-secondary)', fontWeight: 600 }}>{compactNumber(tokenUsage!.total)}</strong>
-                {' '}
-                tokens
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
+      )}
+    </TaskCardShell>
   );
 }
 

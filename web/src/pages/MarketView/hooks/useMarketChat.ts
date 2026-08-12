@@ -12,6 +12,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { buildRateLimitError, type StructuredError } from '@/utils/rateLimitError';
 import { sendFlashChatMessage } from '../utils/api';
+import { applyAnnotationArtifact } from '../stores/chartAnnotationStore';
 
 // --- Local message types (simplified subset of ChatAgent types) ---
 
@@ -474,6 +475,12 @@ export function useMarketChat(): UseMarketChatReturn {
               assistantMessageId,
               toolCalls,
             });
+          } else if (eventType === 'artifact') {
+            // Chart annotation artifact: update the shared store.
+            applyAnnotationArtifact(
+              event.artifact_type as string | undefined,
+              (event.payload as Record<string, unknown>) || {},
+            );
           } else if (eventType === 'tool_call_result') {
             const toolCallId = event.tool_call_id as string;
             if (toolCallId) {
@@ -556,8 +563,8 @@ export function useMarketChat(): UseMarketChatReturn {
       // Handle rate limit (429) — show friendly message and remove empty assistant placeholder
       if (streamErr.status === 429) {
         const info = streamErr.rateLimitInfo || {};
-        const accountUrl = (import.meta.env.VITE_ACCOUNT_URL as string | undefined) || '/account';
-        const structured = buildRateLimitError(info as Record<string, unknown>, accountUrl);
+        const platformUrl = (import.meta.env.VITE_PLATFORM_URL as string | undefined) || '/account';
+        const structured = buildRateLimitError(info as Record<string, unknown>, platformUrl);
         setError(structured);
         // Remove the empty assistant placeholder — no content to show
         setMessages((prev) => prev.filter((msg) => msg.id !== assistantMessageId));

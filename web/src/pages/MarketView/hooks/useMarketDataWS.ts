@@ -9,8 +9,11 @@
  *   unsubscribe(symbols)  unsubscribe from symbol aggregates
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { getMarketDataWSUrl, getWSAuthToken } from '../utils/api';
-import { utcMsToChartSec, utcMsToETDate } from '@/lib/utils';
+import { writeQuoteFromWs } from '@/lib/quotes';
+import { timezoneForSymbol } from '@/lib/bars/exchanges';
+import { dateStrInTz, utcMsToChartSec } from '@/lib/utils';
 // Reconnect parameters
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30000;
@@ -64,6 +67,7 @@ interface SessionData {
 }
 
 export default function useMarketDataWS(): UseMarketDataWSReturn {
+  const queryClient = useQueryClient();
   const [prices, setPrices] = useState<Map<string, PriceUpdate>>(() => new Map());
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
   const [dataLevel, setDataLevel] = useState<DataLevel>(null);
@@ -142,10 +146,14 @@ export default function useMarketDataWS(): UseMarketDataWSReturn {
     }
 
     // Session OHLCV tracking
-    // Timestamp is Unix ms from ginlix-data; convert to Unix seconds for chart
+    // Timestamp is Unix ms from ginlix-data; convert to chart seconds in the
+    // symbol's venue wall clock — MUST match how REST bars are encoded or the
+    // chart's merge-by-time breaks. (WS feeds are US-only today, so this is
+    // ET in practice.)
     const tsMs = typeof timestamp === 'number' ? timestamp : Date.now();
-    const barTime = utcMsToChartSec(tsMs);
-    const barDate = utcMsToETDate(tsMs);
+    const venueTz = timezoneForSymbol(symbol);
+    const barTime = utcMsToChartSec(tsMs, venueTz);
+    const barDate = dateStrInTz(tsMs, venueTz);
     let session = sessionDataRef.current.get(symbol);
     if (!session || session.date !== barDate) {
       // New trading day
@@ -156,10 +164,12 @@ export default function useMarketDataWS(): UseMarketDataWSReturn {
     if (low < session.low) session.low = low;
     session.volume += volume || 0;
 
-    // Use snapshot previousClose for accurate change%; fall back to session open
+    // Use snapshot previousClose for accurate change%; fall back to session open.
+    // Truthiness (not != null): a 0 prevClose would divide to Infinity and
+    // poison the shared quote cache via the write-through.
     const prevClose = previousCloseRef.current.get(symbol);
-    const change = prevClose != null ? (close - prevClose) : (close - session.open);
-    const changePercent = prevClose != null
+    const change = prevClose ? (close - prevClose) : (close - session.open);
+    const changePercent = prevClose
       ? parseFloat(((change / prevClose) * 100).toFixed(2))
       : session.open ? parseFloat((((close - session.open) / session.open) * 100).toFixed(2)) : 0;
 
@@ -185,7 +195,16 @@ export default function useMarketDataWS(): UseMarketDataWSReturn {
       next.set(symbol, priceUpdate);
       return next;
     });
-  }, [resetStaleTimer]);
+
+    // Write-through into the shared quote cache so REST and WS agree. Only the
+    // live fields (price/change) are merged; name/previous_close/day-OHLC from
+    // the REST snapshot are preserved, and an unwatched symbol is never seeded.
+    writeQuoteFromWs(queryClient, symbol, {
+      price: priceUpdate.price,
+      change: priceUpdate.change,
+      changePercent: priceUpdate.changePercent,
+    });
+  }, [resetStaleTimer, queryClient]);
 
   /**
    * Preflight check: hit the dedicated HTTP status endpoint to see if the

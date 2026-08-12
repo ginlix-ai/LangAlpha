@@ -140,8 +140,8 @@ class DockerRuntime(SandboxRuntime):
     async def start(self, timeout: int = 120) -> None:
         await self._container.start()
 
-    async def stop(self, timeout: int = 60) -> None:
-        await self._container.stop(t=timeout)
+    async def stop(self, timeout: int = 60, *, force: bool = False) -> None:
+        await self._container.stop(t=0 if force else timeout)
 
     async def delete(self) -> None:
         try:
@@ -150,10 +150,14 @@ class DockerRuntime(SandboxRuntime):
             pass
         await self._container.delete(force=True)
 
-    async def get_state(self) -> RuntimeState:
-        info = await self._container.show()
+    @staticmethod
+    def _state_from_inspect(info: dict[str, Any]) -> RuntimeState:
+        """Shared by get_state and get_metadata so the unknown-status fallback stays one rule."""
         status = info.get("State", {}).get("Status", "unknown")
         return _DOCKER_STATE_MAP.get(status, RuntimeState.ERROR)
+
+    async def get_state(self) -> RuntimeState:
+        return self._state_from_inspect(await self._container.show())
 
     # -- Execution --
 
@@ -568,14 +572,29 @@ class DockerRuntime(SandboxRuntime):
         raise NotImplementedError("Docker provider does not support archive")
 
     async def get_metadata(self) -> dict[str, Any]:
-        state = await self.get_state()
-        return {
+        """One inspect call serves state, limits and creation time.
+
+        Limits read back as 0 on a container created outside this provider's
+        config, so report nothing rather than a bogus zero. No ``disk`` key —
+        docker sets no size quota, so there is no sandbox-scoped figure to give.
+        """
+        info = await self._container.show()
+        host_config = info.get("HostConfig") or {}
+
+        meta: dict[str, Any] = {
             "id": self._id,
             "working_dir": self._working_dir,
-            "state": state.value,
+            "state": self._state_from_inspect(info).value,
             "dev_mode": self._dev_mode,
             "provider": "docker",
         }
+        if created := info.get("Created"):
+            meta["created_at"] = created
+        if nano_cpus := host_config.get("NanoCpus"):
+            meta["cpu"] = round(nano_cpus / 1e9, 2)
+        if memory := host_config.get("Memory"):
+            meta["memory"] = round(memory / 1024**3, 2)
+        return meta
 
     # -- Internal: tar-based file I/O --
 
@@ -877,7 +896,7 @@ class DockerProvider(SandboxProvider):
                 f"Build the image manually or place {dockerfile_name} in the repo root."
             )
 
-        build_context = os.path.dirname(dockerfile_path)
+        dockerfile_basename = os.path.basename(dockerfile_path)
         image_tag = self._config.image
 
         logger.info(
@@ -886,14 +905,21 @@ class DockerProvider(SandboxProvider):
             tag=image_tag,
         )
 
-        # Use aiodocker to build
+        # Use aiodocker to build. It expects a tar stream via ``fileobj`` and
+        # the Dockerfile path via ``path_dockerfile``.
         try:
-            # aiodocker build expects a tar context or path
+            build_tar = io.BytesIO()
+            with tarfile.open(fileobj=build_tar, mode="w") as tar:
+                tar.add(dockerfile_path, arcname=dockerfile_basename)
+            build_tar.seek(0)
+
             async for log_line in client.images.build(
-                path=build_context,
-                dockerfile=os.path.basename(dockerfile_path),
+                fileobj=build_tar,
+                path_dockerfile=dockerfile_basename,
                 tag=image_tag,
                 rm=True,
+                stream=True,
+                encoding="identity",
             ):
                 if isinstance(log_line, dict) and "stream" in log_line:
                     line = log_line["stream"].strip()

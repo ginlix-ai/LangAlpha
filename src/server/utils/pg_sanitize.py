@@ -12,6 +12,8 @@ replacement for `psycopg.types.json.Json` when binding JSONB.
 from __future__ import annotations
 
 import json
+import math
+import uuid
 from typing import Any
 
 from psycopg.types.json import Json
@@ -24,14 +26,58 @@ def strip_pg_nul_str(value: str | None) -> str | None:
     return value.replace("\x00", "")
 
 
+def normalize_uuid(value: object) -> str | None:
+    """Canonical UUID string for binding to a Postgres ``uuid`` column, or None.
+
+    Postgres' ``uuid`` type rejects forms that Python's ``uuid.UUID`` accepts
+    (notably the ``urn:uuid:`` prefix), so binding the raw input risks
+    ``InvalidTextRepresentation`` (22P02), which API handlers surface as a 500.
+    Re-stringifying the parsed value yields the canonical 36-char hyphenated form
+    Postgres always accepts; a value that isn't a UUID returns None so callers
+    can short-circuit to "not found".
+    """
+    try:
+        return str(uuid.UUID(str(value)))
+    except (ValueError, TypeError):
+        return None
+
+
+def _drop_non_finite(value: Any) -> Any:
+    """Recursively replace non-finite floats (NaN/Inf) with None."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _drop_non_finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_drop_non_finite(v) for v in value]
+    return value
+
+
+def finite_json_dumps(value: Any, **kwargs: Any) -> str:
+    """json.dumps that emits valid JSON even when the tree contains NaN/Inf.
+
+    Fast path: single dumps with allow_nan=False; only on the non-finite
+    ValueError does it pay one tree walk to null out non-finite floats. Other
+    ValueErrors (circular reference) re-raise — _drop_non_finite would recurse
+    forever on them.
+    """
+    try:
+        return json.dumps(value, allow_nan=False, **kwargs)
+    except ValueError as e:
+        if "Out of range float" not in str(e):
+            raise
+        return json.dumps(_drop_non_finite(value), allow_nan=False, **kwargs)
+
+
 def _safe_dumps(value: Any) -> str:
     """JSON-serialize for psycopg JSONB bind, stripping any `\\u0000` escape.
 
     Piggybacks on the dumps psycopg already performs at bind time. The strip is a
     single C-level `str.replace` on the serialized text — no extra Python-level
-    walks of the value tree.
+    walks of the value tree. Non-finite floats (NaN/Inf) are nulled out so the
+    bind never produces invalid JSON that would lose the whole row.
     """
-    s = json.dumps(value, ensure_ascii=False)
+    s = finite_json_dumps(value, ensure_ascii=False)
     if "\\u0000" not in s:
         return s
     return s.replace("\\u0000", "")

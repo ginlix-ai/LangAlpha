@@ -1,9 +1,18 @@
-import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { Mail, Link2 } from 'lucide-react';
 import { Input } from '../../components/ui/input';
 import { useTranslation, Trans } from 'react-i18next';
 import { useAuth } from '../../contexts/AuthContext';
-import WavesBackground from './WavesBackground';
+import { authErrorMessage, type AuthErrorInfo } from '../../lib/authErrors';
+import PasswordInput from './PasswordInput';
+import PasswordStrength from './PasswordStrength';
+import { validatePasswordPair, MIN_PASSWORD_LENGTH } from './passwordRequirements';
+import CheckInbox, { type CheckInboxKind } from './CheckInbox';
+import AccountRecoveryHint from './AccountRecoveryHint';
+import EmailOnlyView from './EmailOnlyView';
+import MarketScanlines from './MarketScanlines';
+import EdgeGrain from './EdgeGrain';
 import './LoginPage.css';
 
 interface LogoIconProps {
@@ -38,108 +47,267 @@ function GitHubIcon() {
   );
 }
 
+type LoginView = 'method' | 'login' | 'signup' | 'magic-link' | 'forgot-password' | 'check-inbox';
+
+interface SwitchPromptProps {
+  i18nKey: string;
+  onSwitch: () => void;
+}
+
+/** "No account? / Have an account?" view footer — the Trans slot <1> becomes
+    the view-switch button. */
+function SwitchPrompt({ i18nKey, onSwitch }: SwitchPromptProps) {
+  return (
+    <p className="login-page__switch">
+      <Trans
+        i18nKey={i18nKey}
+        components={{
+          1: (
+            <button type="button" className="login-page__switch-link" onClick={onSwitch} />
+          ),
+        }}
+      />
+    </p>
+  );
+}
+
 /**
- * LoginPage - Full-page login and signup with email+password and OAuth providers.
- * Shown at root URL (/) when user is not logged in.
+ * LoginPage - Split-screen login: auth pane on the left (method picker first,
+ * then email/password, magic-link, and password-reset views), market-tape
+ * visual on the right. Shown at the app entry URL when the user is not
+ * logged in.
  */
 function LoginPage() {
-  const { loginWithEmail, signupWithEmail, loginWithProvider } = useAuth();
-  const [mode, setMode] = useState<'login' | 'signup'>('login');
+  const {
+    loginWithEmail,
+    signupWithEmail,
+    loginWithProvider,
+    sendMagicLink,
+    sendPasswordReset,
+    resendConfirmation,
+  } = useAuth();
+  const [searchParams] = useSearchParams();
+  const [view, setView] = useState<LoginView>(
+    searchParams.get('mode') === 'signup' ? 'signup' : 'method'
+  );
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [signupEmail, setSignupEmail] = useState('');
   const [signupPassword, setSignupPassword] = useState('');
+  const [signupConfirm, setSignupConfirm] = useState('');
   const [signupName, setSignupName] = useState('');
+  const [magicEmail, setMagicEmail] = useState('');
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [sentKind, setSentKind] = useState<CheckInboxKind>('signup');
+  const [sentEmail, setSentEmail] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [error, setError] = useState<AuthErrorInfo | null>(null);
   const { t } = useTranslation();
+  // Pane is display:none <=900px; skip mounting the rAF canvases there.
+  const [visualHidden, setVisualHidden] = useState(() => window.matchMedia('(max-width: 900px)').matches);
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 900px)');
+    const onChange = (e: MediaQueryListEvent) => setVisualHidden(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  // Bumped on every view change; a submit belongs to the epoch it started in,
+  // so a response landing after the user left the view is discarded instead of
+  // yanking them to check-inbox or painting a stale error on the new view.
+  const viewEpochRef = useRef(0);
+
+  const goToView = (next: LoginView) => {
+    viewEpochRef.current += 1;
+    setError(null);
+    setView(next);
+  };
+
+  const fail = (err: unknown, fallback: string) => {
+    const info = authErrorMessage(err, t);
+    setError({ message: info.message || fallback, code: info.code });
+  };
+
+  /**
+   * Shared submit wrapper for the auth calls: toggles the submitting flag,
+   * clears any prior error, throws on a supabase-style `{ error }` result, and
+   * routes failures through fail(). `clearError` is off for the inline resend,
+   * which fires from inside the visible error box. A response that resolves
+   * after the user navigated to another view (epoch mismatch) is dropped.
+   */
+  async function runSubmit<T>(
+    op: () => Promise<T | void>,
+    fallback: string,
+    onSuccess?: (result: T) => void,
+    clearError = true,
+  ): Promise<void> {
+    const epoch = viewEpochRef.current;
+    setIsSubmitting(true);
+    if (clearError) setError(null);
+    try {
+      const result = await op();
+      if (viewEpochRef.current !== epoch) return;
+      if (!result) return;
+      const authError = (result as { error?: unknown }).error;
+      if (authError) throw authError;
+      onSuccess?.(result);
+    } catch (err: unknown) {
+      if (viewEpochRef.current === epoch) fail(err, fallback);
+    } finally {
+      // Always release the flag: at most one submit is in flight (buttons
+      // disable while submitting), so a stale release can't race a fresh one.
+      setIsSubmitting(false);
+    }
+  }
 
   const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    setIsSubmitting(true);
-    setError(null);
-    try {
-      const result = await loginWithEmail(loginEmail, loginPassword);
-      if (!result) return;
-      const { error: authError } = result;
-      if (authError) throw authError;
-    } catch (err: unknown) {
-      setError((err as Error)?.message || 'Login failed');
-    } finally {
-      setIsSubmitting(false);
-    }
+    await runSubmit(() => loginWithEmail(loginEmail, loginPassword), 'Login failed');
   };
 
   const handleSignup = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    setIsSubmitting(true);
-    setError(null);
-    setSuccessMessage(null);
-    try {
-      const result = await signupWithEmail(signupEmail, signupPassword, signupName);
-      if (!result) return;
-      const { data, error: authError } = result;
-      if (authError) throw authError;
-      if (data?.user && !data.session) {
-        if (data.user.identities?.length === 0) {
-          setError(t('auth.signupEmailExists'));
-        } else {
-          setSuccessMessage(t('auth.signupCheckEmail'));
-        }
-      }
-    } catch (err: unknown) {
-      setError((err as Error)?.message || 'Sign up failed');
-    } finally {
-      setIsSubmitting(false);
+    const validationError = validatePasswordPair(signupPassword, signupConfirm, t);
+    if (validationError) {
+      setError({ message: validationError, code: null });
+      return;
     }
+    await runSubmit(
+      () => signupWithEmail(signupEmail, signupPassword, signupName),
+      'Sign up failed',
+      (result) => {
+        const { data } = result;
+        if (data?.user && !data.session) {
+          if (data.user.identities?.length === 0) {
+            setError({ message: t('auth.signupEmailExists'), code: 'user_already_exists' });
+          } else {
+            // Confirmation email sent — make the pending state unmistakable.
+            setSentKind('signup');
+            setSentEmail(signupEmail);
+            goToView('check-inbox');
+          }
+        }
+      },
+    );
   };
 
-  const handleOAuth = async (provider: 'google' | 'github') => {
-    setError(null);
-    try {
-      const result = await loginWithProvider(provider);
-      if (!result) return;
-      const { error: authError } = result;
-      if (authError) throw authError;
-    } catch (err: unknown) {
-      setError((err as Error)?.message || `${provider} login failed`);
-    }
+  /** Sends a magic link and routes to check-inbox. Also wired to the inline
+      error actions — it signs in password and OAuth accounts alike. */
+  const sendMagicLinkTo = async (email: string) => {
+    await runSubmit(() => sendMagicLink(email), 'Failed to send link', () => {
+      setSentKind('magic-link');
+      setSentEmail(email);
+      goToView('check-inbox');
+    });
   };
+
+  const handleMagicLink = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    await sendMagicLinkTo(magicEmail);
+  };
+
+  const handleForgotPassword = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    await runSubmit(() => sendPasswordReset(forgotEmail), 'Failed to send link', () => {
+      setSentKind('reset');
+      setSentEmail(forgotEmail);
+      goToView('check-inbox');
+    });
+  };
+
+  /** Inline recovery for "Email not confirmed" errors on the login form. */
+  const handleResendConfirmation = async () => {
+    // Fires from inside the visible error box, so keep the error on screen
+    // (clearError off) — clearing it would unmount this very button.
+    await runSubmit(
+      () => resendConfirmation(loginEmail),
+      'Failed to send email',
+      () => {
+        setSentKind('signup');
+        setSentEmail(loginEmail);
+        goToView('check-inbox');
+      },
+      false,
+    );
+  };
+
+  const handleOAuth = (provider: 'google' | 'github') =>
+    runSubmit(() => loginWithProvider(provider), `${provider} login failed`);
+
+  // kind -> { back-navigation target, resend function } for the check-inbox view.
+  const FLOWS: Record<
+    CheckInboxKind,
+    { backView: LoginView; send: (email: string) => Promise<{ error: unknown } | void> }
+  > = {
+    signup: { backView: 'signup', send: resendConfirmation },
+    'magic-link': { backView: 'magic-link', send: sendMagicLink },
+    reset: { backView: 'forgot-password', send: sendPasswordReset },
+  };
+
+  const inboxBackView: LoginView = FLOWS[sentKind].backView;
 
   return (
-    <div className="login-page">
-      <WavesBackground />
-      <div className="login-page__card">
+    <div className="login-page login-page--split">
+      <div className="login-page__frame">
+      {/* Not gated on visualHidden: the grain is a frame-level texture (visible
+          on mobile too) and only animates on ember seeds, which never spawn
+          while the tape pane is unmounted. */}
+      <EdgeGrain />
+      <div className="login-page__auth-pane">
+        <div className="login-page__auth-inner">
         <div className="login-page__card-header">
           <LogoIcon className="login-page__logo-icon" />
-          <div>
-            <h1 className="login-page__title">LangAlpha</h1>
-            <p className="login-page__subtitle">{t('auth.welcome')}</p>
+          <h1 className="login-page__title">LangAlpha</h1>
+        </div>
+
+        {view === 'method' && (
+          <div className="login-page__method">
+            {error && <div className="login-page__error">{error.message}</div>}
+            <div className="login-page__method-stack">
+              <button
+                type="button"
+                className="login-page__method-btn login-page__method-btn--primary"
+                onClick={() => goToView('login')}
+              >
+                <Mail size={18} strokeWidth={1.75} aria-hidden="true" />
+                <span>{t('auth.continueWithEmail')}</span>
+              </button>
+              <button
+                type="button"
+                className="login-page__method-btn"
+                onClick={() => handleOAuth('google')}
+                disabled={isSubmitting}
+              >
+                <GoogleIcon />
+                <span>{t('auth.continueWithGoogle')}</span>
+              </button>
+              <button
+                type="button"
+                className="login-page__method-btn"
+                onClick={() => handleOAuth('github')}
+                disabled={isSubmitting}
+              >
+                <GitHubIcon />
+                <span>{t('auth.continueWithGithub')}</span>
+              </button>
+              <button
+                type="button"
+                className="login-page__method-btn"
+                onClick={() => goToView('magic-link')}
+              >
+                <Link2 size={18} strokeWidth={1.75} aria-hidden="true" />
+                <span>{t('auth.magicLinkCta')}</span>
+              </button>
+            </div>
+            <SwitchPrompt i18nKey="auth.noAccount" onSwitch={() => goToView('signup')} />
           </div>
-        </div>
+        )}
 
-        <div className="login-page__tabs">
-          <button
-            type="button"
-            onClick={() => { setMode('login'); setError(null); setSuccessMessage(null); }}
-            className="login-page__tab"
-            data-active={mode === 'login'}
-          >
-            {t('auth.login')}
-          </button>
-          <button
-            type="button"
-            onClick={() => { setMode('signup'); setError(null); setSuccessMessage(null); }}
-            className="login-page__tab"
-            data-active={mode === 'signup'}
-          >
-            {t('auth.signup')}
-          </button>
-        </div>
-
-        {mode === 'login' && (
+        {view === 'login' && (
           <form onSubmit={handleLogin} className="login-page__form">
+            <div>
+              <h2 className="login-page__view-title">{t('auth.loginTitle')}</h2>
+            </div>
             <div className="login-page__field">
               <label className="login-page__label">{t('common.email')}</label>
               <Input
@@ -149,22 +317,65 @@ function LoginPage() {
                 placeholder={t('auth.enterEmail')}
                 className="login-page__input"
                 disabled={isSubmitting}
+                autoComplete="email"
                 required
               />
             </div>
             <div className="login-page__field">
-              <label className="login-page__label">{t('common.password')}</label>
-              <Input
-                type="password"
+              <div className="login-page__label-row">
+                <label className="login-page__label">{t('common.password')}</label>
+                <button
+                  type="button"
+                  className="login-page__forgot"
+                  onClick={() => {
+                    setForgotEmail((cur) => cur || loginEmail);
+                    goToView('forgot-password');
+                  }}
+                >
+                  {t('auth.forgotPassword')}
+                </button>
+              </div>
+              <PasswordInput
                 value={loginPassword}
                 onChange={(e) => setLoginPassword(e.target.value)}
                 placeholder={t('auth.enterPassword')}
                 className="login-page__input"
                 disabled={isSubmitting}
+                autoComplete="current-password"
                 required
               />
             </div>
-            {error && <div className="login-page__error">{error}</div>}
+            {error && (
+              <div className="login-page__error">
+                {error.message}
+                {error.code === 'email_not_confirmed' && (
+                  <button
+                    type="button"
+                    className="login-page__inline-resend"
+                    onClick={handleResendConfirmation}
+                    disabled={isSubmitting}
+                  >
+                    {t('auth.resendConfirmationCta')}
+                  </button>
+                )}
+                {error.code === 'invalid_credentials' && (
+                  /* Shown for every failed login (Supabase returns the same
+                     code whether the password is wrong or the account is
+                     OAuth-only, to prevent enumeration), so the hint must
+                     read right for both cases. */
+                  <AccountRecoveryHint
+                    i18nKey="auth.invalidCredentialsHint"
+                    onPrimary={() => goToView('method')}
+                    onMagic={() => void sendMagicLinkTo(loginEmail)}
+                    onReset={() => {
+                      setForgotEmail((cur) => cur || loginEmail);
+                      goToView('forgot-password');
+                    }}
+                    disabled={isSubmitting}
+                  />
+                )}
+              </div>
+            )}
             <button
               type="submit"
               disabled={isSubmitting}
@@ -172,13 +383,20 @@ function LoginPage() {
             >
               {isSubmitting ? t('auth.loggingIn') : t('auth.login')}
             </button>
+            <SwitchPrompt i18nKey="auth.noAccount" onSwitch={() => goToView('signup')} />
+            <button type="button" className="login-page__back" onClick={() => goToView('method')}>
+              {t('auth.backToOptions')}
+            </button>
           </form>
         )}
 
-        {mode === 'signup' && (
+        {view === 'signup' && (
           <form onSubmit={handleSignup} className="login-page__form">
+            <div>
+              <h2 className="login-page__view-title">{t('auth.signupTitle')}</h2>
+            </div>
             <div className="login-page__field">
-              <label className="login-page__label">{t('common.name')}</label>
+              <label className="login-page__label">{t('auth.name')}</label>
               <Input
                 type="text"
                 value={signupName}
@@ -198,65 +416,130 @@ function LoginPage() {
                 placeholder={t('auth.enterEmail')}
                 className="login-page__input"
                 disabled={isSubmitting}
+                autoComplete="email"
                 required
               />
             </div>
             <div className="login-page__field">
               <label className="login-page__label">{t('common.password')}</label>
-              <Input
-                type="password"
+              <PasswordInput
                 value={signupPassword}
                 onChange={(e) => setSignupPassword(e.target.value)}
                 placeholder={t('auth.choosePassword')}
                 className="login-page__input"
                 disabled={isSubmitting}
+                autoComplete="new-password"
                 required
-                minLength={6}
+                minLength={MIN_PASSWORD_LENGTH}
+              />
+              <PasswordStrength password={signupPassword} />
+            </div>
+            <div className="login-page__field">
+              <label className="login-page__label">{t('auth.confirmPassword')}</label>
+              <PasswordInput
+                value={signupConfirm}
+                onChange={(e) => setSignupConfirm(e.target.value)}
+                placeholder={t('auth.confirmPassword')}
+                className="login-page__input"
+                disabled={isSubmitting}
+                autoComplete="new-password"
+                required
+                minLength={MIN_PASSWORD_LENGTH}
               />
             </div>
-            {error && <div className="login-page__error">{error}</div>}
-            {successMessage && <div className="login-page__success">{successMessage}</div>}
+            {error && (
+              <div className="login-page__error">
+                {error.message}
+                {error.code === 'user_already_exists' && (
+                  /* The existing account may be password- or OAuth-based
+                     (Supabase hides which) — offer every route in: password
+                     sign-in, a magic link that works regardless, or a reset
+                     that also sets a first password on OAuth-only accounts. */
+                  <AccountRecoveryHint
+                    i18nKey="auth.signupEmailExistsHint"
+                    onPrimary={() => {
+                      setLoginEmail((cur) => cur || signupEmail);
+                      goToView('login');
+                    }}
+                    onMagic={() => void sendMagicLinkTo(signupEmail)}
+                    onReset={() => {
+                      setForgotEmail((cur) => cur || signupEmail);
+                      goToView('forgot-password');
+                    }}
+                    disabled={isSubmitting}
+                  />
+                )}
+              </div>
+            )}
             <button
               type="submit"
-              disabled={isSubmitting || !!successMessage}
+              disabled={isSubmitting}
               className="login-page__submit"
             >
               {isSubmitting ? t('auth.creatingAccount') : t('auth.signup')}
             </button>
+            <SwitchPrompt i18nKey="auth.haveAccount" onSwitch={() => goToView('login')} />
+            <button type="button" className="login-page__back" onClick={() => goToView('method')}>
+              {t('auth.backToOptions')}
+            </button>
           </form>
         )}
 
-        <div className="login-page__divider">
-          <span className="login-page__divider-text">{t('auth.orContinueWith')}</span>
-        </div>
+        {view === 'magic-link' && (
+          <EmailOnlyView
+            title="auth.magicTitle"
+            subtitle="auth.magicSubtitle"
+            submitLabel="auth.sendMagicLink"
+            sendingLabel="auth.sending"
+            backLabel="auth.backToOptions"
+            email={magicEmail}
+            onEmailChange={setMagicEmail}
+            onSubmit={handleMagicLink}
+            onBack={() => goToView('method')}
+            error={error?.message ?? null}
+            isSubmitting={isSubmitting}
+          />
+        )}
 
-        <div className="login-page__oauth-buttons">
-          <button
-            type="button"
-            className="login-page__oauth-btn"
-            onClick={() => handleOAuth('google')}
-            disabled={isSubmitting}
-          >
-            <GoogleIcon />
-            <span>Google</span>
-          </button>
-          <button
-            type="button"
-            className="login-page__oauth-btn"
-            onClick={() => handleOAuth('github')}
-            disabled={isSubmitting}
-          >
-            <GitHubIcon />
-            <span>GitHub</span>
-          </button>
-        </div>
+        {view === 'forgot-password' && (
+          <EmailOnlyView
+            title="auth.forgotTitle"
+            subtitle="auth.forgotSubtitle"
+            submitLabel="auth.sendResetLink"
+            sendingLabel="auth.sending"
+            email={forgotEmail}
+            onEmailChange={setForgotEmail}
+            onSubmit={handleForgotPassword}
+            onBack={() => goToView('login')}
+            error={error?.message ?? null}
+            isSubmitting={isSubmitting}
+          />
+        )}
+
+        {view === 'check-inbox' && (
+          <CheckInbox
+            kind={sentKind}
+            email={sentEmail}
+            onResend={() => FLOWS[sentKind].send(sentEmail)}
+            onBack={() => goToView(inboxBackView)}
+          />
+        )}
 
         <p className="login-page__legal">
           <Trans
-            i18nKey="auth.agreeToPrivacy"
-            components={{ 1: <Link to="/privacy" /> }}
+            i18nKey="auth.agreeToTerms"
+            components={{ 1: <Link to="/legal" />, 2: <Link to="/privacy" /> }}
           />
         </p>
+        </div>
+      </div>
+      <div className="login-page__visual-pane" aria-hidden="true">
+        {!visualHidden && <MarketScanlines />}
+        <div className="login-page__visual-copy">
+          <h2 className="login-page__visual-title">{t('auth.visualTitle')}</h2>
+          <p className="login-page__visual-subtitle">{t('auth.visualSubtitle')}</p>
+        </div>
+      </div>
       </div>
     </div>
   );

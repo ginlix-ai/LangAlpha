@@ -1,7 +1,7 @@
-import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useLayoutEffect, useMemo } from 'react';
 
 type ThemePreference = 'light' | 'dark' | 'auto';
-type ResolvedTheme = 'light' | 'dark';
+export type ResolvedTheme = 'light' | 'dark';
 
 export interface ThemeContextValue {
   theme: ResolvedTheme;
@@ -37,7 +37,11 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   // Resolved theme: what actually gets applied
   const theme: ResolvedTheme = preference === 'auto' ? systemTheme : preference;
 
-  useEffect(() => {
+  // Layout phase, not passive: effects run child-before-parent, so a passive
+  // stamp here lands AFTER every descendant's effect. Canvas painters that
+  // resolve tokens off the stamped `data-theme` (lib/themeTokens) would read
+  // the previous theme for one frame on every flip.
+  useLayoutEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('theme', preference);
     const favicon = document.querySelector('link[rel="icon"]') as HTMLLinkElement | null;

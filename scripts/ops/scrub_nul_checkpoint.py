@@ -67,7 +67,15 @@ def _strip_nul(value: Any) -> tuple[Any, int]:
         return out_list, n
     if isinstance(value, tuple):
         cleaned = [_strip_nul(item) for item in value]
-        return tuple(c for c, _ in cleaned), sum(n for _, n in cleaned)
+        fields = [c for c, _ in cleaned]
+        total = sum(n for _, n in cleaned)
+        # NamedTuple (e.g. langgraph's `_DeltaSnapshot`): reconstruct with the
+        # SAME type so the serializer still emits its dedicated ext code.
+        # Flattening to a plain tuple would make `DeltaChannel.from_checkpoint`
+        # stop recognizing the snapshot, corrupting the channel on resume.
+        if hasattr(value, "_fields"):
+            return type(value)(*fields), total
+        return tuple(fields), total
     # Pydantic/LangChain message objects: walk attributes that look textual.
     # `content` is the dominant carrier. Other str attributes get same treatment.
     if hasattr(value, "__dict__"):
@@ -91,7 +99,10 @@ def _build_db_uri() -> str:
     db_name = os.getenv("MEMORY_DB_NAME", "postgres")
     db_user = os.getenv("MEMORY_DB_USER", "postgres")
     db_password = os.getenv("MEMORY_DB_PASSWORD", "postgres")
-    sslmode = "require" if "supabase.com" in db_host else "disable"
+    # Read directly rather than importing src.config: that would pull in the app's
+    # load_dotenv() and silently retarget this script at whatever .env names —
+    # unacceptable for a tool that mutates rows under --apply.
+    sslmode = os.getenv("DB_SSLMODE", "prefer")
     return (
         f"postgresql://{quote_plus(db_user)}:{quote_plus(db_password)}"
         f"@{db_host}:{db_port}/{db_name}?sslmode={sslmode}"

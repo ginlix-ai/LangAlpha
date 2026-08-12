@@ -22,6 +22,7 @@ import { usePortfolioData, type PortfolioRow } from './hooks/usePortfolioData';
 import { useTickerNews } from './hooks/useTickerNews';
 import { useDashboardData } from './hooks/useDashboardData';
 import { useOnboarding, snoozePersonalization } from './hooks/useOnboarding';
+import { useScrollMemory } from '@/lib/scrollMemory';
 import './Dashboard.css';
 
 interface DeleteConfirmState {
@@ -42,6 +43,7 @@ function Dashboard({ layoutToggle }: DashboardProps = {}) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const mainRef = useRef<HTMLElement>(null);
+  useScrollMemory(mainRef, 'page:dashboard');
   const handleScrollToTop = useCallback(() => {
     mainRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
@@ -166,7 +168,7 @@ function Dashboard({ layoutToggle }: DashboardProps = {}) {
                 }}
                 disabled={isCreatingWorkspace}
                 className="shrink-0 px-3 py-1.5 rounded-md text-xs font-medium transition-colors hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
+                style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
               >
                 {isCreatingWorkspace ? t('dashboard.settingUp') : t('dashboard.personalize')}
               </button>
@@ -296,7 +298,7 @@ function Dashboard({ layoutToggle }: DashboardProps = {}) {
             <button type="button" onClick={() => portfolio.openEdit(null)} className="px-3 py-1.5 rounded text-sm border hover:bg-foreground/10" style={{ color: 'var(--color-text-primary)', borderColor: 'var(--color-border-default)' }}>
               {t('dashboard.classic.cancel')}
             </button>
-            <button type="button" onClick={portfolio.handleUpdate} className="px-3 py-1.5 rounded text-sm font-medium hover:opacity-90" style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}>
+            <button type="button" onClick={portfolio.handleUpdate} className="px-3 py-1.5 rounded text-sm font-medium hover:opacity-90" style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}>
               {t('dashboard.classic.save')}
             </button>
           </div>
