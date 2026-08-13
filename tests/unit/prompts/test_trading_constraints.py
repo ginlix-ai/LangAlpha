@@ -44,3 +44,16 @@ def test_subagent_base_prompt_includes_a_share_lot_rule() -> None:
     )
 
     _assert_a_share_lot_rule(prompt)
+
+
+def test_flash_subagent_sections_omit_a_share_lot_rule() -> None:
+    prompt = _loader().get_subagent_base_prompt(
+        identity_line="You are a test subagent.",
+        current_time="2026-06-07 09:00",
+        user_profile=None,
+        sections={"trading_constraints": False},
+    )
+
+    assert "Mainland China A-shares" not in prompt
+    assert "multiple of 100 shares" not in prompt
+    assert "<trading_constraints>" not in prompt

@@ -51,10 +51,12 @@
 {% include 'components/visualizations.md.j2' %}
 </visualizations>
 {% endif %}
+{% if section_trading_constraints | default(true) %}
 
 <trading_constraints>
 {% include 'components/trading_constraints.md.j2' %}
 </trading_constraints>
+{% endif %}
 {% if section_output_guidelines | default(false) %}
 
 <output_guidelines>
