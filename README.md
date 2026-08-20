@@ -110,6 +110,8 @@ LangAlpha runs on a provider-agnostic model layer that abstracts across multiple
 
 **Bring your own model** — Use your existing AI subscriptions and API keys directly. Connect ChatGPT or Claude subscriptions via OAuth (OpenAI Codex OAuth, Claude Code OAuth), use coding plans from Kimi (Moonshot), GLM (Zhipu), MiniMax, or Doubao (Volcengine), or supply your own API keys for any supported provider via BYOK. All keys are encrypted at rest via PostgreSQL pgcrypto (see [Security](#security)).
 
+**OrcaRouter gateway** — [OrcaRouter](https://www.orcarouter.ai) is supported as a named provider: set `ORCAROUTER_API_KEY` and pick one of the gateway models (`orcarouter/auto`, `orcarouter/fusion`, `orcarouter/fusion-flash`, `orcarouter/fusion-mini`) to route every request through OrcaRouter's smart-routing gateway. It also runs gateway-level, zero-trust security for AI agents on the same endpoint — screening every prompt/response and governing every tool call on a default-deny basis, with no application code changes.
+
 **Model resilience** — automatic retries on transient errors, then failover to a configured fallback model. Reasoning effort (`low`/`medium`/`high`) is normalized across providers automatically.
 
 ### Programmatic Tool Calling (PTC) and Workspace Architecture

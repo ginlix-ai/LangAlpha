@@ -363,6 +363,64 @@
     ],
     "lm-studio": [],
     "openrouter": [],
+    "orcarouter": [
+      {
+        "id": "orcarouter/auto",
+        "name": "OrcaRouter Auto",
+        "is_reasoning": false,
+        "description": "OrcaRouter smart-routing gateway model — picks the best upstream for each request",
+        "context_window": 1000000,
+        "max_output": 128000,
+        "pricing": {
+          "input": 0.44,
+          "cached_input": 0.014,
+          "output": 1.32,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "orcarouter/fusion",
+        "name": "OrcaRouter Fusion",
+        "is_reasoning": false,
+        "description": "OrcaRouter gateway model with 1M context",
+        "context_window": 1000000,
+        "max_output": 128000,
+        "pricing": {
+          "input": 0.44,
+          "cached_input": 0.014,
+          "output": 1.32,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "orcarouter/fusion-flash",
+        "name": "OrcaRouter Fusion Flash",
+        "is_reasoning": false,
+        "description": "OrcaRouter gateway model with 200K context",
+        "context_window": 200000,
+        "max_output": 128000,
+        "pricing": {
+          "input": 0.44,
+          "cached_input": 0.014,
+          "output": 1.32,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "orcarouter/fusion-mini",
+        "name": "OrcaRouter Fusion Mini",
+        "is_reasoning": false,
+        "description": "OrcaRouter gateway model with 1M context",
+        "context_window": 1000000,
+        "max_output": 128000,
+        "pricing": {
+          "input": 0.44,
+          "cached_input": 0.014,
+          "output": 1.32,
+          "unit": "per_1m_tokens"
+        }
+      }
+    ],
     "deepseek": [
       {
         "id": "deepseek-v4-pro",
@@ -1227,6 +1285,14 @@
           "comment": "DeepInfra models accessed via OpenRouter with provider routing"
         }
       }
+    },
+    "orcarouter": {
+      "sdk": "openai",
+      "base_url": "https://api.orcarouter.ai/v1",
+      "env_key": "ORCAROUTER_API_KEY",
+      "access_type": "api_key",
+      "byok_eligible": true,
+      "display_name": "OrcaRouter"
     },
     "deepseek": {
       "sdk": "anthropic",

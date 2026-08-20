@@ -380,6 +380,66 @@
       "text"
     ]
   },
+  "orcarouter/auto": {
+    "model_id": "orcarouter/auto",
+    "provider": "orcarouter",
+    "display_name": "OrcaRouter Auto",
+    "visible": true,
+    "speed": 3,
+    "intelligence": 5,
+    "context": 1000000,
+    "input_modalities": [
+      "text"
+    ],
+    "parameters": {
+      "max_tokens": 128000
+    }
+  },
+  "orcarouter/fusion": {
+    "model_id": "orcarouter/fusion",
+    "provider": "orcarouter",
+    "display_name": "OrcaRouter Fusion",
+    "visible": true,
+    "speed": 2,
+    "intelligence": 5,
+    "context": 1000000,
+    "input_modalities": [
+      "text"
+    ],
+    "parameters": {
+      "max_tokens": 128000
+    }
+  },
+  "orcarouter/fusion-flash": {
+    "model_id": "orcarouter/fusion-flash",
+    "provider": "orcarouter",
+    "display_name": "OrcaRouter Fusion Flash",
+    "visible": true,
+    "speed": 4,
+    "intelligence": 4,
+    "context": 200000,
+    "input_modalities": [
+      "text"
+    ],
+    "parameters": {
+      "max_tokens": 128000
+    }
+  },
+  "orcarouter/fusion-mini": {
+    "model_id": "orcarouter/fusion-mini",
+    "provider": "orcarouter",
+    "display_name": "OrcaRouter Fusion Mini",
+    "visible": true,
+    "speed": 4,
+    "intelligence": 3,
+    "context": 1000000,
+    "input_modalities": [
+      "text"
+    ],
+    "parameters": {
+      "max_tokens": 128000
+    }
+  },
   "deepseek-v4-pro": {
     "model_id": "deepseek-v4-pro",
     "provider": "deepseek",

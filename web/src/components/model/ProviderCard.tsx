@@ -55,6 +55,7 @@ const PROVIDER_COLORS: Record<string, string> = {
   "claude-oauth": "#D4A574",
   gemini: "#4285F4",
   openrouter: "#6366F1",
+  orcarouter: "#0284C7",
   "z-ai": "#3B82F6",
   "z-ai-coding": "#3B82F6",
   "z-ai-cn": "#3B82F6",
