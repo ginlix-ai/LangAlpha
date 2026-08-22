@@ -13,14 +13,24 @@ import { Loader } from '@/components/ui/loader';
  */
 
 // Matches the spring used across the chat UI (ActivityBlock) so motion feels
-// consistent. SNAPPY for the toggle knob; row layout/enter reuse it.
+// consistent. SNAPPY for the toggle knob and the row's own fade-in.
 export const SPRING_SNAPPY = { type: 'spring' as const, stiffness: 200, damping: 22 };
 
-// Exits tween instead: a spring's settle tail makes a batch of leaving rows
-// hold phantom height for ~350ms and then vanish in one frame (the presence
+// House entrance curve (DESIGN.md § Motion): ease-out, no overshoot.
+const EASE_OUT = [0.16, 1, 0.3, 1] as const;
+
+// Reflow tweens. That spring is underdamped (damping ratio ~0.78), which is
+// fine over the toggle knob's few px but rings visibly over a row's travel:
+// filtering a long list slid every surviving row hundreds of px, past its
+// resting place and back. Distance-proportional overshoot is the one thing a
+// list reflow must not have — the rows are the page's ground truth.
+const LAYOUT_TWEEN = { duration: 0.26, ease: EASE_OUT };
+
+// Exits tween too: a spring's settle tail makes a batch of leaving rows hold
+// phantom height for ~350ms and then vanish in one frame (the presence
 // wrapper waits for every spring to rest). A short deterministic tween ends
 // all exits together, so a filter swap reads as one clean motion.
-const EXIT_TWEEN = { duration: 0.15, ease: [0.16, 1, 0.3, 1] as const };
+const EXIT_TWEEN = { duration: 0.15, ease: EASE_OUT };
 
 /** Row container: identity tile + content column left, actions column right.
  *  In select mode (`selecting`) the whole row becomes the checkbox — a leading
@@ -63,7 +73,7 @@ export function ServerRowShell({
         paddingBottom: 0,
         transition: EXIT_TWEEN,
       }}
-      transition={SPRING_SNAPPY}
+      transition={{ ...SPRING_SNAPPY, layout: LAYOUT_TWEEN }}
       className={`flex items-start justify-between gap-3 py-2.5 px-3 rounded-lg overflow-hidden bg-[var(--color-bg-card)] ${
         selectable ? 'cursor-pointer' : ''
       }${
