@@ -13,23 +13,25 @@ import { Loader } from '@/components/ui/loader';
  */
 
 // Matches the spring used across the chat UI (ActivityBlock) so motion feels
-// consistent. SNAPPY for the toggle knob and the row's own fade-in.
+// consistent. The toggle knob's travel IS the state change, so it springs.
 export const SPRING_SNAPPY = { type: 'spring' as const, stiffness: 200, damping: 22 };
 
 // House entrance curve (DESIGN.md § Motion): ease-out, no overshoot.
 const EASE_OUT = [0.16, 1, 0.3, 1] as const;
 
-// Reflow tweens. That spring is underdamped (damping ratio ~0.78), which is
-// fine over the toggle knob's few px but rings visibly over a row's travel:
-// filtering a long list slid every surviving row hundreds of px, past its
-// resting place and back. Distance-proportional overshoot is the one thing a
-// list reflow must not have — the rows are the page's ground truth.
-const LAYOUT_TWEEN = { duration: 0.26, ease: EASE_OUT };
+// Rows never travel. A filter answers a question — which servers match — and
+// the answer is the list, not a journey to it; sliding a card in from a
+// position it never occupied narrates a move the user did not make. So no
+// `layout` prop and no y-offset: membership changes read as fade in, close
+// up. The one vertical motion left is a leaving row collapsing its own
+// height, which is the list closing the gap it just made, in place.
+const FADE_IN = { duration: 0.15, ease: EASE_OUT };
 
-// Exits tween too: a spring's settle tail makes a batch of leaving rows hold
-// phantom height for ~350ms and then vanish in one frame (the presence
-// wrapper waits for every spring to rest). A short deterministic tween ends
-// all exits together, so a filter swap reads as one clean motion.
+// Exits tween rather than spring: a spring's settle tail makes a batch of
+// leaving rows hold phantom height for ~350ms and then vanish in one frame
+// (the presence wrapper waits for every spring to rest). A short
+// deterministic tween ends all exits together, so a filter swap reads as one
+// clean motion.
 const EXIT_TWEEN = { duration: 0.15, ease: EASE_OUT };
 
 /** Row container: identity tile + content column left, actions column right.
@@ -62,9 +64,8 @@ export function ServerRowShell({
   const openable = !!onOpen && !selectable;
   return (
     <motion.div
-      layout
-      initial={{ opacity: 0, y: -4 }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
       exit={{
         opacity: 0,
         height: 0,
@@ -73,7 +74,7 @@ export function ServerRowShell({
         paddingBottom: 0,
         transition: EXIT_TWEEN,
       }}
-      transition={{ ...SPRING_SNAPPY, layout: LAYOUT_TWEEN }}
+      transition={FADE_IN}
       className={`flex items-start justify-between gap-3 py-2.5 px-3 rounded-lg overflow-hidden bg-[var(--color-bg-card)] ${
         selectable ? 'cursor-pointer' : ''
       }${
