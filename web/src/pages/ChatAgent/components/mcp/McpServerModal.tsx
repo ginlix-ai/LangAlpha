@@ -23,13 +23,14 @@ import {
  * Create/edit modal for a workspace (or catalog) MCP server.
  *
  * Transport selector drives conditional fields:
+ *   - http/sse → url, headers key/value editor
  *   - stdio → command (allowlist), args, env key/value editor
- *   - sse/http → url, headers key/value editor
  *
  * env/header values use `VaultSecretPicker` (emits `${vault:NAME}`).
- * `description` + `instruction` carry helper text marking them as untrusted,
- * user-provided context shown to the agent. An exposure-mode toggle picks
- * summary/detailed. "Test connection" runs the discovery probe.
+ * `description` + `instruction` both reach the agent's server manifest, so
+ * their helper text says what each one buys the user there rather than how the
+ * prompt layer treats it. An exposure-mode toggle picks summary/detailed.
+ * "Test connection" runs the discovery probe.
  */
 
 type Exposure = (typeof EXPOSURE_MODES)[number];
@@ -416,7 +417,7 @@ export function McpServerModal({
           {/* Description + instruction */}
           <Field
             label="Description"
-            hint="Shown to the agent as untrusted, user-provided context."
+            hint="Helps the agent decide when to reach for this server."
           >
             <textarea
               value={description}
@@ -432,7 +433,7 @@ export function McpServerModal({
 
           <Field
             label="Instruction"
-            hint="Shown to the agent as untrusted, user-provided context."
+            hint="Extra guidance the agent reads before it calls this server's tools."
           >
             <textarea
               value={instruction}

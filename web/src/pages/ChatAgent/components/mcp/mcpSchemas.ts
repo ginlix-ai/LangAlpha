@@ -28,7 +28,9 @@ export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,127}$/;
 export const ALLOWED_COMMANDS = ['npx', 'uvx', 'uv', 'python', 'python3', 'node'] as const;
 export type AllowedCommand = (typeof ALLOWED_COMMANDS)[number];
 
-export const TRANSPORTS = ['stdio', 'sse', 'http'] as const;
+// Ordered for the transport picker: http leads because a remote service is the
+// common case, and sse sits beside it as the legacy form of the same thing.
+export const TRANSPORTS = ['http', 'sse', 'stdio'] as const;
 export const EXPOSURE_MODES = ['summary', 'detailed'] as const;
 
 export const DESCRIPTION_MAX = 512;
