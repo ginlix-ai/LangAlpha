@@ -1060,6 +1060,7 @@ from src.server.app.workflows import include_workflow_router
 from src.server.app.egress_relay import router as egress_relay_router
 from src.server.app.mcp_catalog import router as mcp_catalog_router
 from src.server.app.mcp_oauth import router as mcp_oauth_router
+from src.server.app.plugins import router as plugins_router
 from src.server.app.user_vault import router as user_vault_router
 from src.server.app.mcp_servers import router as mcp_servers_router
 
@@ -1151,6 +1152,9 @@ app.include_router(
 app.include_router(
     user_vault_router
 )  # /api/v1/mcp/vault/secrets - User-level vault (merged into sandbox pushes)
+app.include_router(
+    plugins_router
+)  # /api/v1/plugins/* - Agent Plugins packages (install/manage/export)
 app.include_router(
     egress_relay_router
 )  # /v1/egress/{grant_id} - Sandbox egress relay (relay-JWT auth, not user auth)

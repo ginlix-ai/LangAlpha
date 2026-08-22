@@ -122,6 +122,10 @@ class ResolvedServer:
     # the enums are locked and both disables render the same, only the copy
     # (and which toggle can undo it) differs.
     disabled_scope: Literal["workspace", "user"] | None = None
+    # USER-origin rows installed by a plugin: the owning plugin's name,
+    # display only. Rides here rather than MCPServerConfig — provenance must
+    # never enter the config blob round-trip.
+    plugin_name: str | None = None
 
     @property
     def name(self) -> str:
@@ -455,12 +459,19 @@ async def resolve_mcp_config(
     local_servers.sort(key=lambda s: s.name)
     disabled_local_servers.sort(key=lambda s: s.name)
 
+    plugin_name_by_server = {
+        row["name"]: row["plugin_name"]
+        for row in user_rows
+        if row.get("plugin_name")
+    }
+
     def _user_entry(cfg: MCPServerConfig, state: State) -> ResolvedServer:
         return ResolvedServer(
             config=cfg,
             origin=Origin.USER,
             state=state,
             oauth_status=oauth_status_by_name.get(cfg.name),
+            plugin_name=plugin_name_by_server.get(cfg.name),
         )
 
     # Entry order IS the API's row order: the running set first (built-ins,

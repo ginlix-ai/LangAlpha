@@ -51,6 +51,7 @@ html {
      | bg-page      | the app ground: chat page, settings, auth               |
      | bg-canvas    | ground behind a card grid (dashboard); = page in dark   |
      | bg-card      | a card/panel sitting on page or canvas                  |
+     | bg-card-hover| hover fill of a clickable card row (solid twin of card) |
      | bg-tool-card | agent tool/artifact cards inside the transcript         |
      | bg-elevated  | raised chrome over a card: menus, tooltips, hover sheets |
      | bg-input     | text inputs, textareas, field-shaped readouts           |
@@ -69,6 +70,7 @@ html {
   --color-bg-page: hsl(var(--background));
   --color-bg-canvas: var(--color-bg-page);
   --color-bg-card: hsl(var(--card));
+  --color-bg-card-hover: hsl(220 4% 17%);
   --color-bg-tool-card: #232426;
   --color-bg-elevated: #2A2B2E;
   --color-bg-input: hsl(var(--input));
@@ -153,6 +155,28 @@ html {
 
   /* Dot-grid retired from work surfaces — kept barely-visible for empty states. */
   --color-dot-grid: rgba(255, 255, 255, 0.05);
+
+  /* Identity tiles (Plugins rows): a name hashes to one of these eight muted
+     tints, so every server/skill/plugin keeps a recognizable mark across
+     surfaces. Identity is meaning — the one sanctioned hue system outside
+     accent + semantic colors; fills stay translucent so the tiles annotate
+     rather than brand. */
+  --color-identity-0-bg: hsla(212, 55%, 60%, 0.16);
+  --color-identity-0-fg: hsl(212, 62%, 72%);
+  --color-identity-1-bg: hsla(175, 55%, 52%, 0.16);
+  --color-identity-1-fg: hsl(175, 45%, 60%);
+  --color-identity-2-bg: hsla(132, 50%, 55%, 0.16);
+  --color-identity-2-fg: hsl(132, 40%, 64%);
+  --color-identity-3-bg: hsla(95, 45%, 55%, 0.16);
+  --color-identity-3-fg: hsl(95, 38%, 62%);
+  --color-identity-4-bg: hsla(45, 60%, 55%, 0.16);
+  --color-identity-4-fg: hsl(45, 55%, 64%);
+  --color-identity-5-bg: hsla(15, 60%, 58%, 0.16);
+  --color-identity-5-fg: hsl(15, 60%, 71%);
+  --color-identity-6-bg: hsla(275, 55%, 62%, 0.16);
+  --color-identity-6-fg: hsl(275, 55%, 76%);
+  --color-identity-7-bg: hsla(322, 55%, 60%, 0.16);
+  --color-identity-7-fg: hsl(322, 50%, 72%);
   --color-bg-card-gradient: rgba(255, 255, 255, 0.04);
   --color-bg-card-border: rgba(255, 255, 255, 0.10);
 
@@ -218,6 +242,7 @@ html {
      read this token (MarketDataCharts CANVAS_SOURCES) instead of mirroring
      it, so they cannot seam. */
   --color-bg-tool-card: #F5F4F1;
+  --color-bg-card-hover: #FAFAF8;
   --color-bg-elevated: #F7F7F6;
   --color-bg-tag: #EFEFED;
   --color-bg-code: #F4F4F2;
@@ -294,6 +319,25 @@ html {
   --color-status-modified-glow: rgba(180, 83, 9, 0.15);
 
   --color-dot-grid: rgba(31, 31, 30, 0.05);
+
+  /* Identity tiles — same hues as dark, tuned for the white page: slightly
+     denser fills, darker monograms. */
+  --color-identity-0-bg: hsla(212, 60%, 45%, 0.12);
+  --color-identity-0-fg: hsl(212, 60%, 38%);
+  --color-identity-1-bg: hsla(175, 55%, 40%, 0.12);
+  --color-identity-1-fg: hsl(175, 60%, 26%);
+  --color-identity-2-bg: hsla(132, 50%, 40%, 0.12);
+  --color-identity-2-fg: hsl(132, 50%, 28%);
+  --color-identity-3-bg: hsla(95, 45%, 40%, 0.12);
+  --color-identity-3-fg: hsl(95, 48%, 27%);
+  --color-identity-4-bg: hsla(45, 70%, 45%, 0.14);
+  --color-identity-4-fg: hsl(45, 80%, 27%);
+  --color-identity-5-bg: hsla(15, 65%, 48%, 0.12);
+  --color-identity-5-fg: hsl(15, 65%, 36%);
+  --color-identity-6-bg: hsla(275, 50%, 50%, 0.12);
+  --color-identity-6-fg: hsl(275, 45%, 40%);
+  --color-identity-7-bg: hsla(322, 55%, 48%, 0.12);
+  --color-identity-7-fg: hsl(322, 55%, 36%);
 
   /* Solid white tile + crisp system hairline — the 75%-white wash the dark
      theme uses for glass is invisible against the white page. */

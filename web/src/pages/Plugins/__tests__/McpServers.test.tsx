@@ -66,13 +66,41 @@ vi.mock('@/hooks/useUserVault', () => ({
 
 vi.mock('@/components/ui/use-toast', () => ({ toast: vi.fn() }));
 
-// `startMcpOauth` is the only direct API call the page makes; everything else
-// arrives through the mocked hooks. Keep `formatApiErrorDetail` real — the
-// error copy the toasts render is exactly what's under test.
+// The page reaches the API directly on two paths: the OAuth connect flow, and
+// every bulk action (each target calls a raw API function rather than a
+// mutation hook, so one fan-out invalidates once instead of N times). Both are
+// stubbed here. A `...actual` spread alone leaves everything it doesn't name
+// pointing at real axios, so the bulk calls have to be listed explicitly or
+// the first bulk test written against this file goes to the network.
+// `formatApiErrorDetail` stays real — the error copy the toasts render is
+// exactly what's under test.
 const mockStartMcpOauth = vi.fn();
+const mockBulkApi = {
+  setBuiltinMcpServerEnabled: vi.fn(),
+  setMcpCatalogServerEnabled: vi.fn(),
+  setWorkspaceMcpServerEnabled: vi.fn(),
+  promoteWorkspaceMcpServerToTemplate: vi.fn(),
+  adoptMcpServerToWorkspace: vi.fn(),
+  deleteMcpCatalogServer: vi.fn(),
+};
 vi.mock('@/pages/ChatAgent/utils/api', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
-  return { ...actual, startMcpOauth: (...args: unknown[]) => mockStartMcpOauth(...args) };
+  return {
+    ...actual,
+    startMcpOauth: (...args: unknown[]) => mockStartMcpOauth(...args),
+    setBuiltinMcpServerEnabled: (...args: unknown[]) =>
+      mockBulkApi.setBuiltinMcpServerEnabled(...args),
+    setMcpCatalogServerEnabled: (...args: unknown[]) =>
+      mockBulkApi.setMcpCatalogServerEnabled(...args),
+    setWorkspaceMcpServerEnabled: (...args: unknown[]) =>
+      mockBulkApi.setWorkspaceMcpServerEnabled(...args),
+    promoteWorkspaceMcpServerToTemplate: (...args: unknown[]) =>
+      mockBulkApi.promoteWorkspaceMcpServerToTemplate(...args),
+    adoptMcpServerToWorkspace: (...args: unknown[]) =>
+      mockBulkApi.adoptMcpServerToWorkspace(...args),
+    deleteMcpCatalogServer: (...args: unknown[]) =>
+      mockBulkApi.deleteMcpCatalogServer(...args),
+  };
 });
 
 // Render the Radix dropdown inline — the real one needs portal/pointer
@@ -209,11 +237,11 @@ describe('McpServers — list rendering', () => {
     expect(screen.queryByText(/No servers yet/i)).not.toBeInTheDocument();
   });
 
-  it('gates Add/Import at the server cap', () => {
+  it('shows the cap counter (the add path moved to the page-level Add menu)', () => {
     catalogData = makeCatalog([makeCatalogServer({ name: 'a_server' })], 1);
     renderWithProviders(<McpServers />);
-    expect(screen.getByRole('button', { name: /add server/i })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /import json/i })).toBeDisabled();
+    expect(screen.getByText('1 / 1')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /import json/i })).not.toBeInTheDocument();
   });
 });
 
@@ -646,9 +674,9 @@ describe('McpServers — import', () => {
       secrets_created: ['PLACEHOLDER_TOKEN'],
       config_version: 2,
     });
-    renderWithProviders(<McpServers />);
+    // The import modal opens via the page-level Add menu's URL intent.
+    renderWithProviders(<McpServers />, { route: '/plugins?tab=mcp&add=import' });
 
-    fireEvent.click(screen.getByRole('button', { name: /import json/i }));
     fireEvent.change(screen.getByRole('textbox'), { target: { value: BLOB } });
     fireEvent.click(await screen.findByRole('button', { name: /^import 1$/i }));
 
@@ -669,9 +697,8 @@ describe('McpServers — import', () => {
       secrets_created: [],
       config_version: 2,
     });
-    renderWithProviders(<McpServers />);
+    renderWithProviders(<McpServers />, { route: '/plugins?tab=mcp&add=import' });
 
-    fireEvent.click(screen.getByRole('button', { name: /import json/i }));
     fireEvent.change(screen.getByRole('textbox'), { target: { value: BLOB } });
     fireEvent.click(await screen.findByRole('button', { name: /^import 1$/i }));
 
@@ -681,12 +708,79 @@ describe('McpServers — import', () => {
 
   it('surfaces a rejected import inside the modal', async () => {
     mutateAsync.import.mockRejectedValue({ response: { data: { detail: 'catalog at cap' } } });
-    renderWithProviders(<McpServers />);
+    renderWithProviders(<McpServers />, { route: '/plugins?tab=mcp&add=import' });
 
-    fireEvent.click(screen.getByRole('button', { name: /import json/i }));
     fireEvent.change(screen.getByRole('textbox'), { target: { value: BLOB } });
     fireEvent.click(await screen.findByRole('button', { name: /^import 1$/i }));
 
     await waitFor(() => expect(screen.getByText('catalog at cap')).toBeInTheDocument());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Narrowing verdicts
+// ---------------------------------------------------------------------------
+
+/**
+ * The tab renders several independently-filtered sections, so "is anything
+ * left?" is a question about the whole visible population, not about one
+ * section. Both directions were wrong at once: a filter matching only a
+ * plugin's rows printed the notice directly above the deck that had matched,
+ * and a user whose servers are all plugin-owned got a bare header over nothing.
+ */
+describe('McpServers — filtered and empty', () => {
+  it('keeps the no-matches notice out of the way of a plugin deck that matched', async () => {
+    catalogData = makeCatalog([
+      makeCatalogServer({ name: 'owned_one', plugin_name: 'acme-pack', plugin_enabled: true }),
+      makeCatalogServer({ name: 'hand_made' }),
+    ]);
+    renderWithProviders(<McpServers />);
+
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'acme-pack' } });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('server-row-owned_one')).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('No matches')).not.toBeInTheDocument();
+  });
+
+  it('shows the notice exactly once when nothing anywhere matches', async () => {
+    catalogData = makeCatalog([
+      makeCatalogServer({ name: 'owned_one', plugin_name: 'acme-pack', plugin_enabled: true }),
+    ]);
+    renderWithProviders(<McpServers />);
+
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'zzzz' } });
+
+    await waitFor(() => expect(screen.getAllByText('No matches')).toHaveLength(1));
+  });
+
+  it('still invites a first server when every catalog row is plugin-owned', () => {
+    catalogData = makeCatalog([
+      makeCatalogServer({ name: 'owned_one', plugin_name: 'acme-pack', plugin_enabled: true }),
+    ]);
+    renderWithProviders(<McpServers />);
+
+    expect(screen.getByTestId('server-row-owned_one')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /add server/i })).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Add intent
+// ---------------------------------------------------------------------------
+
+describe('McpServers — add intent', () => {
+  it('consumes the intent so a remount does not re-open the modal', async () => {
+    // Tab bodies are conditionally rendered: switching away and back remounts
+    // this list, and an intent left in the URL would open the modal again.
+    const { unmount } = renderWithProviders(<McpServers />, {
+      route: '/plugins?tab=mcp&add=import',
+    });
+    await waitFor(() => expect(screen.getByRole('textbox')).toBeInTheDocument());
+    unmount();
+
+    renderWithProviders(<McpServers />, { route: '/plugins?tab=mcp' });
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
   });
 });

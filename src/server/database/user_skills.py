@@ -17,10 +17,12 @@ row in the workspace scope to flag.
 — it is up to half a megabyte per row, and the hot paths (listing, agent build)
 need only the metadata.
 
-``plugin_id``/``plugin_skill_dir`` mark a row as owned by an installed plugin.
-Nothing writes them yet; they are carried so the column exists when the
-plugin installer lands, since a name that is already un-owned is what tells a
-later plugin update to skip a row rather than overwrite it.
+``plugin_id``/``plugin_skill_dir`` mark a row as owned by an installed plugin
+(written only by the plugin install/update path, always at the user tier).
+Every user edit clears them in place — re-upload, move, and the reconciler's
+content write-back — which is the fork-on-edit semantic: a name that is
+un-owned tells a later plugin update to skip the row rather than overwrite
+the customization.
 """
 
 import logging
@@ -33,6 +35,24 @@ from psycopg.types.json import Json
 from src.server.database.pool import get_db_connection
 
 logger = logging.getLogger(__name__)
+
+
+class SkillNameTaken(ValueError):
+    """An ``overwrite=False`` upsert found the scope+name already occupied.
+
+    A ValueError so every existing caller's per-skill isolation still catches
+    it; a distinct type so the plugin fan-out can report "exists" rather than
+    the trigger-conflict its other ValueErrors mean.
+    """
+
+
+class SkillNotOwned(ValueError):
+    """An ``owned_by_plugin`` upsert found the row detached under it.
+
+    The write-side counterpart of the delete's ``owned_by_plugin`` predicate.
+    A ValueError for the same reason as its sibling, and distinct so an update
+    can report the fork it declined to touch rather than an error.
+    """
 
 # Namespace for the per-workspace skill-sync advisory lock (two-arg form).
 # The reconciler holds the session-level variant across a whole pass;
@@ -105,12 +125,53 @@ MAX_SKILL_TOTAL_BYTES_PER_USER = 32 * 1024 * 1024
 
 # Every column except archive_blob. `has_inline_archive` lets a caller tell
 # which storage backs the row without paying for the bytes.
-_SKILL_COLUMNS = """
-    user_skill_id, user_id, workspace_id, name, command, description, license,
-    frontmatter, allowed_tools, enabled, confirmed, plugin_id,
-    plugin_skill_dir, content_hash, archive_key, archive_bytes, file_count,
-    created_at, updated_at, (archive_blob IS NOT NULL) AS has_inline_archive
-"""
+_SKILL_COLUMN_NAMES = (
+    "user_skill_id", "user_id", "workspace_id", "name", "command",
+    "description", "license", "frontmatter", "allowed_tools", "enabled",
+    "confirmed", "plugin_id", "plugin_skill_dir", "content_hash",
+    "archive_key", "archive_bytes", "file_count", "created_at", "updated_at",
+)
+
+
+def _skill_columns(prefix: str = "") -> str:
+    """Render the projection, optionally table-qualified.
+
+    One list, two renderings: a bare RETURNING for writers, and a fully
+    qualified one for the reads that JOIN. Deriving the second from the first
+    makes a new column one edit instead of two that can drift apart.
+    """
+    return ", ".join(
+        [f"{prefix}{col}" for col in _SKILL_COLUMN_NAMES]
+        + [f"({prefix}archive_blob IS NOT NULL) AS has_inline_archive"]
+    )
+
+
+# RETURNING cannot JOIN, but it can carry a correlated subquery, so a writer
+# hands back the owner's display fields too rather than a row on which
+# plugin_name is None means either "no owner" or "this row came from a
+# writer". One shape for every row this module returns is what lets
+# _user_row_to_info read the three provenance fields the same way whatever
+# produced the row; the alternative was a re-read per writer, which the two
+# DELETE writers cannot do at all. Correlated on the target table by name,
+# which is why no writer here may alias it.
+_PLUGIN_DISPLAY_RETURNING = (
+    ", (SELECT p.name FROM user_plugins p "
+    "WHERE p.user_plugin_id = user_skills.plugin_id) AS plugin_name"
+    ", (SELECT p.enabled FROM user_plugins p "
+    "WHERE p.user_plugin_id = user_skills.plugin_id) AS plugin_enabled"
+)
+_SKILL_COLUMNS = _skill_columns() + _PLUGIN_DISPLAY_RETURNING
+
+# The same list qualified for the plugin LEFT JOIN (full table name, so
+# _LIVE_SCOPE's own qualification keeps working). Reads take the owner's
+# fields off the join they already pay for; only the writers subselect.
+_SKILL_COLUMNS_JOINED = (
+    _skill_columns("user_skills.")
+    + ", p.name AS plugin_name, p.enabled AS plugin_enabled"
+)
+_PLUGIN_JOIN = (
+    "LEFT JOIN user_plugins p ON p.user_plugin_id = user_skills.plugin_id"
+)
 
 
 def _row_to_dict(row: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -137,9 +198,10 @@ async def list_user_skills(
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                f"SELECT {_SKILL_COLUMNS} FROM user_skills "
-                "WHERE user_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
-                "ORDER BY name",
+                f"SELECT {_SKILL_COLUMNS_JOINED} FROM user_skills {_PLUGIN_JOIN} "
+                "WHERE user_skills.user_id = %s "
+                "AND user_skills.workspace_id IS NOT DISTINCT FROM %s "
+                "ORDER BY user_skills.name",
                 (user_id, workspace_id),
             )
             return [_row_to_dict(r) for r in await cur.fetchall()]
@@ -155,8 +217,9 @@ async def list_all_user_skills(user_id: str) -> list[dict[str, Any]]:
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                f"SELECT {_SKILL_COLUMNS} FROM user_skills "
-                f"WHERE user_id = %s AND {_LIVE_SCOPE} ORDER BY name",
+                f"SELECT {_SKILL_COLUMNS_JOINED} FROM user_skills {_PLUGIN_JOIN} "
+                f"WHERE user_skills.user_id = %s AND {_LIVE_SCOPE} "
+                "ORDER BY user_skills.name",
                 (user_id,),
             )
             return [_row_to_dict(r) for r in await cur.fetchall()]
@@ -191,22 +254,24 @@ async def list_enabled_user_skills(
 
     With a ``workspace_id`` this is the two-scope union (user tier plus that
     workspace's rows) — the caller resolves name shadowing; without one it is
-    the user tier alone. When the plugin entity lands, this query (and only
-    this one) additionally gains the plugin-disable join predicate
-    ``AND (plugin_id IS NULL OR plugin.enabled)`` — plugin-level disable
-    reaches skills exclusively through this delivery chokepoint.
+    the user tier alone. This query, and only this one, carries the
+    plugin-disable join predicate: plugin-level disable reaches skills
+    exclusively through this delivery chokepoint, while the management reads
+    keep returning the rows (with the owner's state projected for display).
     """
     scope = (
-        "workspace_id IS NULL"
+        "user_skills.workspace_id IS NULL"
         if workspace_id is None
-        else "(workspace_id IS NULL OR workspace_id = %s)"
+        else "(user_skills.workspace_id IS NULL OR user_skills.workspace_id = %s)"
     )
     params = (user_id,) if workspace_id is None else (user_id, workspace_id)
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                f"SELECT {_SKILL_COLUMNS} FROM user_skills "
-                f"WHERE user_id = %s AND enabled AND {scope} ORDER BY name",
+                f"SELECT {_SKILL_COLUMNS_JOINED} FROM user_skills {_PLUGIN_JOIN} "
+                f"WHERE user_skills.user_id = %s AND user_skills.enabled "
+                f"AND (user_skills.plugin_id IS NULL OR p.enabled) "
+                f"AND {scope} ORDER BY user_skills.name",
                 params,
             )
             return [_row_to_dict(r) for r in await cur.fetchall()]
@@ -219,9 +284,9 @@ async def get_user_skill(
     async with get_db_connection(conn) as db:
         async with db.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                f"SELECT {_SKILL_COLUMNS} FROM user_skills "
-                "WHERE user_id = %s AND name = %s "
-                "AND workspace_id IS NOT DISTINCT FROM %s",
+                f"SELECT {_SKILL_COLUMNS_JOINED} FROM user_skills {_PLUGIN_JOIN} "
+                "WHERE user_skills.user_id = %s AND user_skills.name = %s "
+                "AND user_skills.workspace_id IS NOT DISTINCT FROM %s",
                 (user_id, name, workspace_id),
             )
             return _row_to_dict(await cur.fetchone())
@@ -404,9 +469,16 @@ async def upsert_user_skill(
     plugin_id: str | None = None,
     plugin_skill_dir: str | None = None,
     command: str | None = None,
+    overwrite: bool = True,
+    owned_by_plugin: str | None = None,
     conn=None,
 ) -> tuple[dict[str, Any], str | None]:
     """Insert or replace a skill by scope and name.
+
+    ``overwrite=False`` makes an existing row in the same scope a
+    :class:`SkillNameTaken` refusal instead of a replacement — the plugin
+    fan-out's collision check, moved under this function's lock where it is
+    atomic.
 
     Returns ``(row, superseded_archive_key)`` — the caller deletes the
     superseded object after the write commits, so a failed upsert can never
@@ -420,7 +492,24 @@ async def upsert_user_skill(
     On replace, ``enabled`` is preserved (a disabled skill re-uploaded stays
     disabled) while the plugin provenance columns take the caller's values —
     a direct re-upload of a plugin-owned name therefore detaches it, which is
-    the fork-on-edit semantic. ``command`` seeds only on insert: the column is
+    the fork-on-edit semantic. A detach off a DISABLED plugin additionally
+    carries the OFF state onto the row: suppression lived in the delivery
+    query's ``plugin_id IS NULL OR p.enabled`` predicate, so clearing the
+    provenance would turn a skill the user had switched off at the plugin into
+    an unconditionally delivered one. Re-uploading your own copy is not consent
+    to start running it. The catalog's fork-on-edit already owes this
+    (``services/mcp_catalog.apply_catalog_edit``); this is the same rule on
+    the skill half.
+
+    ``owned_by_plugin`` narrows the replace to a row that plugin still owns,
+    the write-side counterpart of the delete's predicate. A plugin update
+    decides to replace by reading ownership first, then spends a zip
+    validation and an object PUT before writing; a Customize landing in that
+    window would otherwise be re-adopted under the package's content AND have
+    its archive dropped as superseded, which is the one destruction here that
+    nothing can undo. Raises ``SkillNotOwned`` instead.
+
+    ``command`` seeds only on insert: the column is
     authoritative after creation, so a re-upload never resets a user's alias.
     The seed is re-checked here under the lock, since the caller chose it
     before spending the object PUT.
@@ -450,14 +539,56 @@ async def upsert_user_skill(
 
                 # The row being replaced is excluded from the aggregate above,
                 # so read its archive_key separately to hand back for cleanup.
+                # p.enabled rides along so a detach can carry the plugin's OFF
+                # state onto the row. FOR UPDATE OF s: the outer join's
+                # nullable side cannot be locked, and this only needs the skill.
                 await cur.execute(
-                    "SELECT archive_key FROM user_skills "
-                    "WHERE user_id = %s AND name = %s "
-                    "AND workspace_id IS NOT DISTINCT FROM %s FOR UPDATE",
+                    "SELECT s.archive_key, s.plugin_id, p.enabled AS plugin_enabled "
+                    "FROM user_skills s "
+                    "LEFT JOIN user_plugins p "
+                    "  ON p.user_id = s.user_id AND p.user_plugin_id = s.plugin_id "
+                    "WHERE s.user_id = %s AND s.name = %s "
+                    "AND s.workspace_id IS NOT DISTINCT FROM %s FOR UPDATE OF s",
                     (user_id, name, workspace_id),
                 )
                 prior = await cur.fetchone()
                 prior_key = prior["archive_key"] if prior else None
+                if (
+                    owned_by_plugin is not None
+                    and prior is not None
+                    and str(prior["plugin_id"] or "") != owned_by_plugin
+                ):
+                    raise SkillNotOwned(
+                        f"skill {name!r} is no longer owned by this plugin"
+                    )
+                if not overwrite and prior is not None:
+                    # The caller checked this name was free before spending the
+                    # object PUT; here, under the lock and on a locked row, is
+                    # the only place that check can be true when it is acted on.
+                    # Without it a plugin install races a self-upload of the
+                    # same name and the ON CONFLICT arm replaces the user's own
+                    # skill with the package's, stamped plugin-owned — so a
+                    # later uninstall deletes work the plugin never created.
+                    raise SkillNameTaken(
+                        f"a skill named {name!r} already exists"
+                    )
+
+                if (
+                    plugin_id is None
+                    and prior is not None
+                    and prior["plugin_id"] is not None
+                    and prior["plugin_enabled"] is False
+                ):
+                    # Detaching off a disabled plugin. `enabled` is outside the
+                    # DO UPDATE SET list below, so writing it here survives the
+                    # upsert — and the row is already locked, so this and the
+                    # replace are one atomic step.
+                    await cur.execute(
+                        "UPDATE user_skills SET enabled = FALSE "
+                        "WHERE user_id = %s AND name = %s "
+                        "AND workspace_id IS NOT DISTINCT FROM %s",
+                        (user_id, name, workspace_id),
+                    )
 
                 # Uniqueness is a partial index per scope, so ON CONFLICT must
                 # name the matching index's columns + predicate to infer it.
@@ -528,6 +659,16 @@ async def move_user_skill(
     two workspaces involved is cleared: the move is an explicit statement
     that the skill is wanted where it now lives (and it was live where it
     just left).
+
+    A plugin-owned row cannot move INTO a workspace; that raises ValueError
+    and the route turns it into a 409. Detaching it on the way down was the
+    gentler-looking answer and is the wrong one: it drops the row out of the
+    plugin's owned set while the manifest still declares the component, so
+    the next plugin update re-creates it at the user tier and the plugin's
+    copy goes live in every OTHER workspace under the very name the user had
+    just scoped down. Refusing also keeps owned rows out of the workspace
+    tier — the tier the sandbox reconciler writes back to — by construction,
+    which is strictly stronger than clearing a column on the way in.
     """
     async with get_db_connection() as conn:
         async with conn.transaction():
@@ -539,6 +680,27 @@ async def move_user_skill(
                 await cur.execute(
                     "SELECT pg_advisory_xact_lock(hashtext(%s::text))", (user_id,)
                 )
+                if to_workspace_id is not None:
+                    # The JOIN makes this return a row only for an owned one,
+                    # so there is no plugin_id null-check to get wrong.
+                    await cur.execute(
+                        "SELECT p.name FROM user_skills "
+                        "JOIN user_plugins p "
+                        "ON p.user_plugin_id = user_skills.plugin_id "
+                        "WHERE user_skills.user_id = %s "
+                        "AND user_skills.name = %s "
+                        "AND user_skills.workspace_id IS NOT DISTINCT FROM %s",
+                        (user_id, name, from_workspace_id),
+                    )
+                    owner = await cur.fetchone()
+                    if owner is not None:
+                        raise ValueError(
+                            f"This skill is installed by the plugin "
+                            f"{owner['name']!r}, which manages it at the "
+                            "account level. Upload your own copy of the skill "
+                            "to detach it from the plugin first, then move it. "
+                            "Uninstalling the plugin removes the skill instead."
+                        )
                 await cur.execute(
                     "SELECT 1 FROM user_skills WHERE user_id = %s AND name = %s "
                     "AND workspace_id IS NOT DISTINCT FROM %s",
@@ -578,7 +740,14 @@ async def move_user_skill(
                         "destination scope"
                     )
                 await cur.execute(
-                    f"UPDATE user_skills SET workspace_id = %s, updated_at = NOW() "
+                    # Only rows moving UP reach the clear now: the guard
+                    # above refuses the other direction, and fan-out only ever
+                    # writes owned rows at the user tier. Kept for the legacy
+                    # rows that predate the guard, which belong to whoever
+                    # moved them down.
+                    f"UPDATE user_skills SET workspace_id = %s, "
+                    "plugin_id = NULL, plugin_skill_dir = NULL, "
+                    "updated_at = NOW() "
                     "WHERE user_id = %s AND name = %s "
                     "AND workspace_id IS NOT DISTINCT FROM %s "
                     f"RETURNING {_SKILL_COLUMNS}",
@@ -694,10 +863,20 @@ async def set_user_skill_command(
 
 
 async def delete_user_skill(
-    user_id: str, name: str, *, workspace_id: str | None = None, conn=None
+    user_id: str,
+    name: str,
+    *,
+    workspace_id: str | None = None,
+    owned_by_plugin: str | None = None,
+    conn=None,
 ) -> dict[str, Any] | None:
     """Delete a skill row in one scope, returning it so the caller can drop
-    its archive object. Returns None when there was nothing to delete."""
+    its archive object. Returns None when there was nothing to delete.
+
+    ``owned_by_plugin`` narrows the delete to a row that plugin still owns, so
+    a Customize that detaches it after the caller read ownership is not
+    silently overridden. Same predicate as the catalog's delete.
+    """
     async with get_db_connection(conn) as db:
         async with db.transaction():
             async with db.cursor(row_factory=dict_row) as cur:
@@ -706,8 +885,12 @@ async def delete_user_skill(
                 await cur.execute(
                     f"DELETE FROM user_skills WHERE user_id = %s AND name = %s "
                     f"AND workspace_id IS NOT DISTINCT FROM %s "
+                    f"AND (%s::uuid IS NULL OR plugin_id = %s::uuid) "
                     f"RETURNING {_SKILL_COLUMNS}",
-                    (user_id, name, workspace_id),
+                    (
+                        user_id, name, workspace_id,
+                        owned_by_plugin, owned_by_plugin,
+                    ),
                 )
                 row = _row_to_dict(await cur.fetchone())
                 if row:
@@ -829,7 +1012,15 @@ async def update_user_skill_content_cas(
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Pull-up write: replace a row's content only if it still carries the
     hash the reconciler observed. Returns ``(row, superseded_archive_key)``;
-    ``(None, None)`` = CAS lost, the caller re-decides next pass."""
+    ``(None, None)`` = CAS lost, the caller re-decides next pass.
+
+    A content write-back DETACHES a plugin-owned row: a sandbox edit is an
+    edit like any other, and leaving plugin_id in place would let the next
+    plugin update overwrite the agent's work while the content had silently
+    diverged from the plugin. Plugin skills install at the user tier, which
+    the reconciler never links, so this is a belt-and-braces guard rather
+    than a hot path.
+    """
     async with get_db_connection() as conn:
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -854,6 +1045,7 @@ async def update_user_skill_content_cas(
                         description = %s, license = %s, frontmatter = %s,
                         allowed_tools = %s, content_hash = %s, archive_key = %s,
                         archive_blob = %s, archive_bytes = %s, file_count = %s,
+                        plugin_id = NULL, plugin_skill_dir = NULL,
                         updated_at = NOW()
                     WHERE user_id = %s AND user_skill_id = %s
                     RETURNING {_SKILL_COLUMNS}

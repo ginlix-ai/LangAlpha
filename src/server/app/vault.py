@@ -38,6 +38,44 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/workspaces", tags=["Vault Secrets"])
 
 
+def _collect_config_blueprints() -> dict[str, dict]:
+    """Vault blueprints declared by the enabled builtin MCP servers, by name.
+
+    First-declaration wins on metadata; duplicate blueprint names across
+    servers are treated as aliases: the second server's description/docs_url/
+    regex are discarded, but its name is appended to `sources` so the UI can
+    show which integrations share the credential.
+
+    Shared with the user tier, which layers each enabled plugin's declared
+    secrets on top of this same dict.
+    """
+    # Lazy import to avoid circular dependency between `setup` module and router
+    # registration. `setup.agent_config` is populated in `lifespan()` at startup.
+    from src.server.app import setup
+
+    collected: dict[str, dict] = {}
+    if setup.agent_config is None:
+        # Startup race: request landed before lifespan completed.
+        return collected
+    for server in setup.agent_config.mcp.servers:
+        if not server.enabled:
+            continue
+        for bp in server.vault_blueprints:
+            entry = collected.get(bp.name)
+            if entry is None:
+                collected[bp.name] = {
+                    "name": bp.name,
+                    "label": bp.label,
+                    "description": bp.description,
+                    "docs_url": bp.docs_url,
+                    "regex": bp.regex,
+                    "sources": [server.name],
+                }
+            else:
+                entry["sources"].append(server.name)
+    return collected
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -137,38 +175,9 @@ async def list_blueprints(workspace_id: str, user_id: CurrentUserId):
     workspace = await db_get_workspace(workspace_id)
     require_workspace_owner(workspace, user_id=user_id)
 
-    # Lazy import to avoid circular dependency between `setup` module and router
-    # registration. `setup.agent_config` is populated in `lifespan()` at startup.
-    from src.server.app import setup
-
     existing_names = await get_workspace_secret_names(workspace_id)
     remaining_slots = max(0, MAX_SECRETS_PER_WORKSPACE - len(existing_names))
-
-    if setup.agent_config is None:
-        # Startup race: request landed before lifespan completed.
-        return {"blueprints": [], "remaining_slots": remaining_slots}
-
-    # First-declaration wins on metadata; duplicate blueprint names across
-    # servers are treated as aliases: the second server's description/docs_url/
-    # regex are discarded, but its name is appended to `sources` so the UI can
-    # show which integrations share the credential.
-    collected: dict[str, dict] = {}
-    for server in setup.agent_config.mcp.servers:
-        if not server.enabled:
-            continue
-        for bp in server.vault_blueprints:
-            existing = collected.get(bp.name)
-            if existing is None:
-                collected[bp.name] = {
-                    "name": bp.name,
-                    "label": bp.label,
-                    "description": bp.description,
-                    "docs_url": bp.docs_url,
-                    "regex": bp.regex,
-                    "sources": [server.name],
-                }
-            else:
-                existing["sources"].append(server.name)
+    collected = _collect_config_blueprints()
 
     blueprints = [bp for name, bp in collected.items() if name not in existing_names]
     return {"blueprints": blueprints, "remaining_slots": remaining_slots}

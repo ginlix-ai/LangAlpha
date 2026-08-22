@@ -21,6 +21,10 @@ export interface SkillInfo {
   deletable: boolean;
   confirmed: boolean;
   plugin_id: string | null;
+  /** Set when the skill was installed by an Agent Plugins package. */
+  plugin_name?: string | null;
+  /** The owning plugin's enabled state; false = suppressed everywhere. */
+  plugin_enabled?: boolean | null;
   size_bytes: number;
   updated_at: string | null;
   disabled_scope: 'user' | 'workspace' | null;
@@ -111,6 +115,18 @@ export async function setSkillCommand(
 
 export async function deleteSkill(name: string): Promise<void> {
   await api.delete(`/api/v1/skills/${encodeURIComponent(name)}`);
+}
+
+/** The SKILL.md text, most specific tier first (workspace → user → platform). */
+export async function getSkillContent(
+  name: string,
+  workspaceId: string | null = null,
+): Promise<{ name: string; content: string }> {
+  const { data } = await api.get(
+    `/api/v1/skills/${encodeURIComponent(name)}/content`,
+    { params: workspaceId ? { workspace_id: workspaceId } : {} },
+  );
+  return data;
 }
 
 export async function uploadWorkspaceSkill(

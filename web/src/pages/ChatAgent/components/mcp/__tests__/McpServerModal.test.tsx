@@ -66,10 +66,12 @@ describe('McpServerModal — conditional fields per transport', () => {
     expect(screen.getByText('Headers')).toBeInTheDocument();
   });
 
-  it('renders the untrusted-context helper text on description + instruction', () => {
+  // Each hint has to say something the other doesn't. They used to be one
+  // string repeated, which told the user nothing about which field to fill in.
+  it('gives description and instruction their own helper text', () => {
     render(<McpServerModal {...baseProps} />);
-    const hints = screen.getAllByText(/shown to the agent as untrusted, user-provided context/i);
-    expect(hints.length).toBe(2);
+    expect(screen.getByText(/decide when to reach for this server/i)).toBeInTheDocument();
+    expect(screen.getByText(/before it calls this server's tools/i)).toBeInTheDocument();
   });
 
   it('exposes the summary/detailed exposure toggle', () => {

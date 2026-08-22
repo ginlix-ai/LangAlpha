@@ -32,3 +32,9 @@ MAX_SKILL_DESCRIPTION_CHARS = 1024
 # under MAX_SKILL_ARCHIVE_BYTES on purpose — a 2 MB blob per row would make
 # every metadata read expensive if it ever leaked into the default column set.
 MAX_SKILL_INLINE_BLOB_BYTES = 512 * 1024
+
+# Archive round trips in flight for one fan-out. The right ceiling is a
+# property of the object storage, not of how many skills a package ships or an
+# account holds, so anything iterating skills gates on this rather than
+# running the set serially and growing with the per-user cap.
+MAX_CONCURRENT_ARCHIVE_OPS = 8

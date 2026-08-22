@@ -84,6 +84,8 @@ export const queryKeys = {
     builtins:  () => [...queryKeys.mcp.all, 'builtins'],
     // Effective per-workspace server list (builtins + workspace servers).
     workspace: (wsId: string) => [...queryKeys.mcp.all, 'workspace', wsId],
+    // Discovered tool snapshot for one catalog server (the detail view).
+    serverTools: (name: string) => [...queryKeys.mcp.all, 'serverTools', name],
   },
   // Skills are per-user and mutable; the mode variant is what the slash menu
   // reads, the manage variant is the full list including disabled rows. A
@@ -103,10 +105,21 @@ export const queryKeys = {
         ...queryKeys.skills.all, 'list', mode ?? 'all', includeDisabled,
         allScopes ? 'all-scopes' : (workspaceId ?? 'user'),
       ],
+    // One skill's SKILL.md text (the detail view).
+    content: (name: string, workspaceId: string | null = null) =>
+      [...queryKeys.skills.all, 'content', name, workspaceId ?? 'user'],
   },
   userVault: {
-    all:     ['userVault'],
-    secrets: () => [...queryKeys.userVault.all, 'secrets'],
+    all:        ['userVault'],
+    secrets:    () => [...queryKeys.userVault.all, 'secrets'],
+    blueprints: () => [...queryKeys.userVault.all, 'blueprints'],
+  },
+  // Installed Agent Plugins packages. Their components live in the mcp and
+  // skills caches; mutations here invalidate the whole fan-out.
+  plugins: {
+    all:    ['plugins'],
+    list:   () => [...queryKeys.plugins.all, 'list'],
+    detail: (name: string) => [...queryKeys.plugins.all, 'detail', name],
   },
   // Workspace-tier vault. Scoped under the workspace id so a mutation
   // invalidates that workspace's secrets AND blueprints (the recommended-

@@ -1,8 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { QueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../lib/queryKeys';
 import {
   deleteSkill,
   deleteWorkspaceSkill,
+  getSkillContent,
   getSkills,
   moveSkill,
   setSkillCommand,
@@ -22,6 +24,20 @@ import {
  * and vice versa, so per-scope invalidation would leave stale menus.
  */
 
+/**
+ * The one blast radius above, named: `queryKeys.skills.all`.
+ *
+ * Exported so a caller outside this module (a bulk skill action on the Plugins
+ * page) takes this radius rather than the plugin-wide fan-out, which would also
+ * drop the MCP and vault caches a skill change cannot have altered.
+ */
+export function invalidateSkillFanout(qc: QueryClient) {
+  qc.invalidateQueries({ queryKey: queryKeys.skills.all });
+  // Same reason as the MCP fanout: a plugin card's component chips are these
+  // rows, so a delete or a customize here changes what the Plugins tab shows.
+  qc.invalidateQueries({ queryKey: queryKeys.plugins.all });
+}
+
 export function useSkills(
   mode: string | null,
   opts: {
@@ -40,6 +56,19 @@ export function useSkills(
 
 /** Re-scope a skill (user tier ↔ one workspace). Whole-prefix invalidation:
  * a move changes the slash menu, the workspace views, and shadowing at once. */
+/** One skill's SKILL.md text — powers the detail overlay's source preview. */
+export function useSkillContent(
+  name: string | null,
+  workspaceId: string | null = null,
+) {
+  return useQuery({
+    queryKey: queryKeys.skills.content(name ?? '', workspaceId),
+    queryFn: () => getSkillContent(name!, workspaceId),
+    enabled: !!name,
+    staleTime: 60_000,
+  });
+}
+
 export function useMoveSkill() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -53,7 +82,7 @@ export function useMoveSkill() {
       toWorkspaceId: string | null;
     }) => moveSkill(name, fromWorkspaceId, toWorkspaceId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.skills.all });
+      invalidateSkillFanout(queryClient);
     },
   });
 }
@@ -74,7 +103,7 @@ export function useToggleWorkspaceSkill() {
       enabled: boolean;
     }) => setWorkspaceSkillEnabled(workspaceId, name, enabled),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.skills.all });
+      invalidateSkillFanout(queryClient);
     },
   });
 }
@@ -85,7 +114,7 @@ export function useDeleteWorkspaceSkill() {
     mutationFn: ({ workspaceId, name }: { workspaceId: string; name: string }) =>
       deleteWorkspaceSkill(workspaceId, name),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.skills.all });
+      invalidateSkillFanout(queryClient);
     },
   });
 }
@@ -101,7 +130,7 @@ export function useUploadSkill() {
       onProgress?: (percent: number) => void;
     }) => uploadSkill(file, onProgress ?? null),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.skills.all });
+      invalidateSkillFanout(queryClient);
     },
   });
 }
@@ -112,7 +141,7 @@ export function useToggleSkill() {
     mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) =>
       setSkillEnabled(name, enabled),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.skills.all });
+      invalidateSkillFanout(queryClient);
     },
   });
 }
@@ -136,7 +165,7 @@ export function useSetSkillCommand() {
         ? setWorkspaceSkillCommand(workspaceId, name, command)
         : setSkillCommand(name, command),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.skills.all });
+      invalidateSkillFanout(queryClient);
     },
   });
 }
@@ -146,7 +175,7 @@ export function useDeleteSkill() {
   return useMutation({
     mutationFn: (name: string) => deleteSkill(name),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.skills.all });
+      invalidateSkillFanout(queryClient);
     },
   });
 }
@@ -162,7 +191,7 @@ export function useUploadWorkspaceSkill(workspaceId: string) {
       onProgress?: (percent: number) => void;
     }) => uploadWorkspaceSkill(workspaceId, file, onProgress ?? null),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.skills.all });
+      invalidateSkillFanout(queryClient);
     },
   });
 }

@@ -63,6 +63,7 @@ _ALL_TABLES = [
     "user_mcp_builtin_disables",
     "workspace_skill_disables",
     "user_skills",
+    "user_plugins",
     "workspace_files",
     "watchlist_items",
     "watchlists",

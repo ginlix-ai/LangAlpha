@@ -25,6 +25,31 @@ export async function getUserVaultSecrets(): Promise<UserVaultSecretList> {
   return { secrets: data.secrets ?? [], remaining_slots: data.remaining_slots ?? 0 };
 }
 
+/** A user-tier blueprint; plugin-declared entries carry the plugin's name. */
+export interface UserVaultBlueprint {
+  name: string;
+  label: string;
+  description: string;
+  docs_url: string | null;
+  regex: string | null;
+  sources: string[];
+  plugin_name?: string | null;
+}
+
+export interface UserVaultBlueprintsResponse {
+  blueprints: UserVaultBlueprint[];
+  remaining_slots: number;
+}
+
+/** Credentials builtin servers and enabled plugins declare but the user
+ * vault doesn't hold yet — the install wizard's bindings data source. */
+export async function getUserVaultBlueprints(): Promise<UserVaultBlueprintsResponse> {
+  const { data } = await api.get<UserVaultBlueprintsResponse>(
+    '/api/v1/mcp/vault/blueprints',
+  );
+  return { blueprints: data.blueprints ?? [], remaining_slots: data.remaining_slots ?? 0 };
+}
+
 export async function createUserVaultSecret(body: {
   name: string;
   value: string;

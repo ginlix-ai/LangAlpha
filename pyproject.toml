@@ -101,6 +101,9 @@ dependencies = [
     "exchange-calendars>=4.13.2",
     "quickjs-rs>=0.2.4,<0.3.0",
     "jsonschema>=4.0",
+    # Imported directly (empty Registry = the no-remote-refs discipline), not
+    # just as jsonschema's transitive.
+    "referencing>=0.30",
 ]
 
 [tool.uv.sources]

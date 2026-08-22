@@ -2596,7 +2596,7 @@
   },
   "mcp": {
     "list": {
-      "title": "MCP 服务器",
+      "title": "连接器",
       "addServer": "添加服务器",
       "importJson": "导入 JSON",
       "importHint": "粘贴标准 mcpServers JSON 配置",
@@ -2645,7 +2645,7 @@
       "pending": "待检查",
       "disabled": "已禁用",
       "unknown": "未知",
-      "pendingHint": "等待发现 — 启动工作区或测试连接"
+      "pendingHint": "等待发现。请启动工作区，或测试连接。"
     },
     "lifecycle": {
       "verifying": "验证中…",
@@ -2654,6 +2654,11 @@
       "applying": "应用到智能体…",
       "appliesOnStart": "工作区启动后生效",
       "ready": "就绪"
+    },
+    "discover": {
+      "failed": "发现失败",
+      "noTools": "已连接，未报告工具",
+      "toolCount_other": "已连接，{{count}} 个工具"
     }
   },
   "vault": {
@@ -2697,9 +2702,10 @@
     "title": "插件",
     "description": "在所有工作区中可供智能体使用的 MCP 服务器、技能与凭据。",
     "tabs": {
-      "mcp": "MCP 服务器",
+      "mcp": "连接器",
       "skills": "技能",
-      "secrets": "密钥"
+      "secrets": "密钥",
+      "plugins": "插件"
     },
     "servers": {
       "inheritHint": "在此开启的服务器对你的所有工作区生效；如需在单个工作区关闭，请前往该工作区的 MCP 标签页。关闭状态的服务器仅作为模板保留。",
@@ -2793,7 +2799,163 @@
       "moveFailed": "移动失败",
       "inWorkspace": "工作区：{{name}}",
       "unknownWorkspace": "未知工作区",
-      "triggerAria": "范围：{{scope}}"
+      "triggerAria": "范围：{{scope}}",
+      "movePluginBlocked": "由 {{plugin}} 安装；插件组件保留在账户层级"
+    },
+    "list": {
+      "title": "已安装插件",
+      "install": "安装插件",
+      "hint": "插件是 MCP 服务器和技能的组合包。其组件会带着插件名出现在 MCP 和技能标签页中；此处的开关会同时切换全部组件。",
+      "empty": "尚未安装插件。可以从 zip 文件或公开 git 地址安装。",
+      "atCap": "已达插件数量上限（{{max}}）"
+    },
+    "card": {
+      "serverCount_other": "{{count}} 个服务器",
+      "skillCount_other": "{{count}} 个技能",
+      "componentCount": "{{servers}}，{{skills}}",
+      "sourceZip": "zip",
+      "sourceRemote": "远程",
+      "disabledState": "已关闭，所有工作区中的组件均被停用",
+      "update": "更新",
+      "export": "导出",
+      "uninstall": "卸载",
+      "toggleFailed": "无法更新插件",
+      "updatedTitle": "{{plugin}} 已更新",
+      "updateFailed": "更新失败",
+      "exportFailed": "导出失败",
+      "uninstalledTitle": "{{plugin}} 已卸载",
+      "uninstalledDesc": "移除了 {{servers}} 和 {{skills}}。已自定义的组件被保留。",
+      "uninstallFailed": "卸载失败",
+      "uninstallConfirm": "卸载 {{plugin}}？其服务器和技能将从所有工作区移除。已自定义的组件会被保留。",
+      "uninstallConfirmYes": "卸载",
+      "uninstallConfirmNo": "保留"
+    },
+    "component": {
+      "fromPlugin": "由 {{plugin}} 提供",
+      "customize": "自定义",
+      "customizeHint": "将其从 {{plugin}} 分离以便编辑。此后插件更新将跳过它。",
+      "suppressed": "已停用：{{plugin}} 处于关闭状态",
+      "suppressedBadge": "插件已关闭"
+    },
+    "install": {
+      "title": "安装插件",
+      "stepSource": "选择来源",
+      "stepChoose": "选择插件",
+      "stepInstalling": "安装中",
+      "stepReport": "安装报告",
+      "stepBindings": "凭据",
+      "sourceZip": "上传 zip 文件",
+      "sourceGit": "从公开 git 地址安装",
+      "or": "或",
+      "installConfirm": "安装",
+      "notZip": "请选择 .zip 文件",
+      "chooseHint_other": "该来源包含 {{count}} 个插件，请选择要安装的插件。",
+      "tooLarge": "zip 超过 64 MB 限制",
+      "urlRequired": "请输入 git 地址或选择 zip 文件",
+      "notHttps": "git 地址必须以 https:// 开头",
+      "hasPlaceholder": "git 地址不能包含占位符或密钥",
+      "hasUserinfo": "请从 git 地址中移除用户名和密码",
+      "badHost": "无法访问该主机，请使用 github.com 等公开的 git 托管地址",
+      "badUrl": "git 地址格式无效",
+      "fetching": "正在获取插件",
+      "uploading": "上传中 {{percent}}%",
+      "reportInstalled": "已安装",
+      "reportSkipped": "已跳过",
+      "reportUpgradable": "需要确认",
+      "reportErrors": "错误",
+      "reportWarnings": "警告",
+      "reportNoChanges": "没有变化，该插件已是最新版本。",
+      "sseUpgradeHint": "这些服务器声明了旧版 SSE 传输。它们通过了 streamable HTTP 探测，可以用现代传输方式安装。",
+      "sseUpgradeConfirm": "以 streamable HTTP 安装",
+      "sseUpgradeFailed": "升级失败",
+      "droppedFiles": "未导入：{{files}}",
+      "continueToBindings": "继续",
+      "bindingsHint": "该插件声明了所需凭据。值会保存到你的保险库，不会以明文展示给智能体。也可以跳过，稍后在密钥标签页中设置。",
+      "bindingsSkip": "暂时跳过",
+      "bindingsSave": "保存 {{count}} 项",
+      "bindingPlaceholder": "粘贴值",
+      "bindingDocs": "获取方式",
+      "boundTitle": "凭据已保存",
+      "boundDesc": "已保存 {{count}} 项到保险库"
+    },
+    "groups": {
+      "tally": "{{enabled}} 个启用 · {{disabled}} 个停用",
+      "expandAria": "展开 {{title}}",
+      "collapseAria": "收起 {{title}}",
+      "selectAllAria": "全选 {{title}}",
+      "uploaded": "本地上传",
+      "openPlugin": "查看插件"
+    },
+    "bulk": {
+      "select": "选择",
+      "selected": "已选 {{count}} 项",
+      "enable": "启用 {{count}}",
+      "disable": "停用 {{count}}",
+      "delete": "删除 {{count}}",
+      "uninstall": "卸载 {{count}}",
+      "confirmDelete_other": "删除 {{count}} 项？此操作无法撤销。",
+      "confirmUninstall_other": "卸载 {{count}} 个插件？其服务器和技能将被移除。",
+      "progress": "正在处理 {{done}} / {{total}}",
+      "resultTitle": "批量操作完成",
+      "okPart": "{{count}} 项成功",
+      "failPart": "{{count}} 项失败",
+      "scope": "范围",
+      "scopeAria": "设置所选项的范围",
+      "scopeEverywhere": "全部工作区 ({{count}})",
+      "scopeOnlyIn": "仅限所选工作区 ({{count}})",
+      "scopeMoveTo": "移入工作区 ({{count}})",
+      "scopeApply": "应用到 {{count}} 项",
+      "noChanges": "所选项无需更改"
+    },
+    "filter": {
+      "placeholder": "筛选",
+      "clear": "清除筛选",
+      "noMatches": "无匹配项"
+    },
+    "addMenu": {
+      "add": "添加",
+      "installPlugin": "安装插件",
+      "addServer": "添加 MCP 服务器",
+      "importServers": "导入服务器",
+      "uploadSkill": "上传技能"
+    },
+    "stateFilter": {
+      "all": "全部",
+      "on": "开启",
+      "off": "关闭",
+      "attention": "需要处理"
+    },
+    "detail": {
+      "kindServer": "MCP 服务器",
+      "kindSkill": "技能",
+      "kindPlugin": "插件",
+      "tools": "工具",
+      "toolsEmpty": "尚未发现工具。服务器首次连接后即会显示。",
+      "discovered": "发现于 {{date}}",
+      "config": "配置",
+      "transport": "传输方式",
+      "url": "URL",
+      "command": "命令",
+      "envVars": "环境变量",
+      "headers": "请求头",
+      "info": "详情",
+      "origin": "来源",
+      "originPlatform": "平台",
+      "originUser": "自有",
+      "originWorkspace": "工作区",
+      "size": "大小",
+      "updated": "更新于",
+      "created": "添加于",
+      "skillSource": "SKILL.md",
+      "sourceLoadFailed": "无法加载技能源文件。",
+      "components": "组件",
+      "version": "版本",
+      "author": "作者",
+      "homepage": "主页",
+      "sourceLabel": "来源",
+      "installed": "安装于",
+      "openComponentAria": "打开 {{name}}",
+      "toolsFailed": "无法加载工具。请求失败，请重试。"
     }
   }
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { QueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../lib/queryKeys';
 import { needsDiscoveryProbe } from '../pages/ChatAgent/components/mcp/mcpState';
 import {
@@ -13,6 +14,7 @@ import {
   importWorkspaceMcpServers,
   promoteWorkspaceMcpServerToTemplate,
   getMcpCatalog,
+  getMcpCatalogServerTools,
   getBuiltinMcpServers,
   setBuiltinMcpServerEnabled,
   createMcpCatalogServer,
@@ -38,6 +40,34 @@ import {
  * The enabled toggle is OPTIMISTIC with rollback on error (plan requirement):
  * the row flips instantly, and reverts if the PATCH fails.
  */
+
+// ---------------------------------------------------------------------------
+// Invalidation
+// ---------------------------------------------------------------------------
+
+/**
+ * One blast radius for every mutation that changes what an MCP row looks like:
+ * `queryKeys.mcp.all`.
+ *
+ * A catalog row that is enabled is inherited by EVERY workspace of the user, so
+ * creating, editing, deleting or disconnecting one changes each workspace's
+ * effective list exactly as toggling it does. Invalidating only the catalog
+ * leaves an open workspace panel showing the pre-edit definition, which is the
+ * drift these three different radii had already produced.
+ *
+ * Exported because callers outside this module need the same radius without
+ * re-deciding it: a bulk MCP action on the Plugins page reaching for the
+ * plugin-wide fan-out instead would drop the skills and vault caches too, which
+ * an MCP change cannot have altered.
+ */
+export function invalidateMcpFanout(qc: QueryClient) {
+  qc.invalidateQueries({ queryKey: queryKeys.mcp.all });
+  // Plugin cards list their still-owned components as chips, so deleting or
+  // customizing a server changes what the Plugins tab should show. The
+  // dependency runs one way only — the plugin fanout already invalidates this
+  // key — so naming it here is what keeps the two tabs from disagreeing.
+  qc.invalidateQueries({ queryKey: queryKeys.plugins.all });
+}
 
 // ---------------------------------------------------------------------------
 // Anti-flicker
@@ -160,6 +190,16 @@ export function useMcpCatalog(enabled = true) {
   });
 }
 
+/** Discovered tools for one catalog server — powers the detail overlay. */
+export function useMcpCatalogServerTools(name: string | null) {
+  return useQuery({
+    queryKey: queryKeys.mcp.serverTools(name ?? ''),
+    queryFn: () => getMcpCatalogServerTools(name!),
+    enabled: !!name,
+    staleTime: 60_000,
+  });
+}
+
 /** Process-global builtin servers with the user's account-wide toggles. */
 export function useBuiltinMcpServers() {
   return useQuery({
@@ -176,7 +216,7 @@ export function useToggleBuiltinMcpServer() {
       setBuiltinMcpServerEnabled(name, enabled),
     onSuccess: () => {
       // The toggle changes every workspace's effective list, not just this page.
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.all });
+      invalidateMcpFanout(queryClient);
     },
   });
 }
@@ -324,7 +364,7 @@ export function useAdoptMcpServerToWorkspace() {
     mutationFn: ({ workspaceId, name }: { workspaceId: string; name: string }) =>
       adoptMcpServerToWorkspace(workspaceId, name),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.all });
+      invalidateMcpFanout(queryClient);
     },
   });
 }
@@ -347,7 +387,7 @@ export function useSetMcpServerEnabledInWorkspace() {
       enabled: boolean;
     }) => setWorkspaceMcpServerEnabled(workspaceId, name, enabled),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.all });
+      invalidateMcpFanout(queryClient);
     },
   });
 }
@@ -371,21 +411,13 @@ export function useDiscoverWorkspaceMcpServer(workspaceId: string) {
 // Catalog mutations
 // ---------------------------------------------------------------------------
 
-/**
- * One blast radius for every catalog mutation: `queryKeys.mcp.all`.
- *
- * A catalog row that is enabled is inherited by EVERY workspace of the user, so
- * creating, editing, deleting or disconnecting one changes each workspace's
- * effective list exactly as toggling it does. Invalidating only the catalog
- * leaves an open workspace panel showing the pre-edit definition, which is the
- * drift these three different radii had already produced.
- */
+/** Catalog mutations all take the shared radius (`invalidateMcpFanout`). */
 export function useCreateMcpCatalogServer() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: McpServerInput) => createMcpCatalogServer(body),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.all });
+      invalidateMcpFanout(queryClient);
     },
   });
 }
@@ -396,7 +428,7 @@ export function useUpdateMcpCatalogServer() {
     mutationFn: ({ name, body }: { name: string; body: McpServerInput }) =>
       updateMcpCatalogServer(name, body),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.all });
+      invalidateMcpFanout(queryClient);
     },
   });
 }
@@ -406,7 +438,7 @@ export function useDeleteMcpCatalogServer() {
   return useMutation({
     mutationFn: (name: string) => deleteMcpCatalogServer(name),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.all });
+      invalidateMcpFanout(queryClient);
     },
   });
 }
@@ -435,7 +467,7 @@ export function useToggleMcpCatalogServer() {
       if (context?.previous) queryClient.setQueryData(key, context.previous);
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.all });
+      invalidateMcpFanout(queryClient);
     },
   });
 }
@@ -452,7 +484,7 @@ export function useImportMcpCatalogServers() {
   return useMutation({
     mutationFn: (payload: unknown) => importMcpCatalogServers(payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.all });
+      invalidateMcpFanout(queryClient);
       queryClient.invalidateQueries({ queryKey: queryKeys.userVault.all });
     },
   });
@@ -464,7 +496,7 @@ export function useDisconnectMcpOauth() {
   return useMutation({
     mutationFn: (name: string) => disconnectMcpOauth(name),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.all });
+      invalidateMcpFanout(queryClient);
     },
   });
 }
@@ -475,7 +507,7 @@ export function useRefreshMcpOauthSchemas() {
   return useMutation({
     mutationFn: (name: string) => refreshMcpOauthSchemas(name),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.all });
+      invalidateMcpFanout(queryClient);
     },
   });
 }

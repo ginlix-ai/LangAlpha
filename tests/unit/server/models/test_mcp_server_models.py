@@ -262,6 +262,8 @@ def test_discovery_uses_secrets_defaults_off_and_round_trips():
 
 def test_catalog_row_discovery_uses_secrets_in_response():
     row = {
+        "plugin_name": None,
+        "plugin_enabled": None,
         "name": "remote_server",
         "transport": "http",
         "command": None,
@@ -341,6 +343,10 @@ def test_collect_vault_refs_dedupes_and_sorts():
 
 def _catalog_row(**overrides):
     row = {
+        # The plugin LEFT JOIN is part of every catalog SELECT, so a real row
+        # always carries these two, NULL when it has no plugin owner.
+        "plugin_name": None,
+        "plugin_enabled": None,
         "name": "remote_server",
         "transport": "http",
         "command": None,

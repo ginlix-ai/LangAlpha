@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -440,6 +442,50 @@ async def disconnect_server(user_id: str, server_name: str) -> bool:
         user_id, server_name, row.connection_id,
     )
     return True
+
+
+@asynccontextmanager
+async def oauth_fence(user_id: str, names: Sequence[str]):
+    """Disconnect ``names`` on both sides of a catalog-row drop.
+
+    Deleting a catalog row on its own orphans the server's OAuth connection:
+    there is no catalog FK, so the refresh sweeper keeps renewing the token
+    forever and a same-name recreate silently reuses it. Disconnecting only
+    beforehand is not enough either — the drop is a separate transaction, so a
+    callback landing in the gap leaves a live connection behind a row that no
+    longer exists. Closing the fence on exit is what makes the second pass
+    impossible to forget. Idempotent throughout: no connection is a no-op, and
+    revoked-on-revoked is an accepted write.
+    """
+    for name in names:
+        await disconnect_server(user_id, name)
+    try:
+        yield
+    finally:
+        # Also on the failure path: a drop that half happened is exactly when
+        # an orphaned live token can be left behind.
+        for name in names:
+            await disconnect_server(user_id, name)
+
+
+async def revoke_live_grants(user_id: str, names: Sequence[str]) -> None:
+    """Cut egress for servers that just went inert, without disconnecting them.
+
+    Taking a server out of delivery has to bite now, not at next acquire: an
+    idle sandbox holds its grant_id and a relay JWT for hours, and the relay
+    checks the grant and the connection but never the catalog row. Weaker than
+    ``oauth_fence`` on purpose — the connection survives, so re-enabling
+    self-heals when the next acquire's grant sync re-activates via its upsert
+    arm. Safe against a concurrent re-mint: the caller's version bump fails the
+    sync's CAS.
+    """
+    from src.server.database.egress_grants import revoke_grants_for_connection
+    from src.server.database.mcp_oauth import get_connection
+
+    for name in names:
+        connection = await get_connection(user_id, name)
+        if connection is not None:
+            await revoke_grants_for_connection(connection.connection_id)
 
 
 async def revoke_if_consent_moved(

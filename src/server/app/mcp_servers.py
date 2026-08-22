@@ -39,7 +39,6 @@ from src.server.database.mcp_servers import (
     list_workspace_servers,
     set_catalog_server_enabled,
     set_workspace_server_enabled,
-    update_catalog_server,
     upsert_workspace_server,
 )
 from src.server.database.mcp_tool_schemas import get_tool_schemas, get_user_tool_schemas
@@ -49,6 +48,7 @@ from src.server.database.vault_secrets import (
     get_workspace_secret_names,
 )
 from src.server.database.workspace import get_workspace as db_get_workspace
+from src.server.services.mcp_catalog import apply_catalog_edit, detach_warning
 from src.server.services.mcp_config import (
     Origin,
     ResolvedServer,
@@ -200,6 +200,7 @@ def _effective_server(
     return EffectiveServer(
         oauth_status=entry.oauth_status,
         disabled_scope=entry.disabled_scope,
+        plugin_name=entry.plugin_name,
         name=srv.name,
         origin=origin,
         transport=srv.transport,
@@ -465,42 +466,24 @@ async def promote_server(
         return catalog_row_to_response(row)
 
     if overwrite:
-        # Pre-update read: the rediscovery decision below needs the OLD
-        # fingerprint, and the update returns only the new row.
-        prior = await get_catalog_server(user_id, server.name)
-        row = await update_catalog_server(user_id, server.name, updates=fields)
-        if row is not None:
-            # Same consent rule as the catalog PUT: overwriting a template can
-            # move a connected server off its consented endpoint (or onto stdio,
-            # which has no relay path at all). The two writes are not atomic — a
-            # refresh racing the gap is caught by the consent re-check in
-            # refresh_user_tool_schemas.
-            from src.server.services.mcp_oauth.discovery import (
-                schedule_post_edit_rediscovery,
-            )
-            from src.server.services.mcp_oauth.lifecycle import (
-                revoke_if_consent_moved,
-            )
-
-            # Fresh read, not the values we just wrote: this check is its own
-            # transaction, so a concurrent edit that already moved the row back
-            # onto the consented endpoint must not be revoked on stale values.
-            # A row deleted underneath us needs neither the revoke nor the
-            # rediscovery — DELETE revokes on both sides of its own drop.
-            committed = await get_catalog_server(user_id, server.name)
-            if committed is not None and not await revoke_if_consent_moved(
-                user_id,
-                server.name,
-                transport=committed["transport"],
-                url=committed.get("url"),
-            ):
-                # Consent survived the overwrite, so the connection lives on
-                # against a config whose discovery fingerprint may have moved —
-                # its cached snapshot serves only under the old one.
-                schedule_post_edit_rediscovery(
-                    user_id, server.name, prior=prior, updated=row
-                )
-            return await _finish(row)
+        # An overwrite is a catalog edit like the PUT, so it owes the same
+        # policy: it can move a connected server off its consented endpoint (or
+        # onto stdio, which has no relay path at all), and it forks a
+        # plugin-owned template the same way a hand edit does. The write and
+        # the revoke are not atomic — a refresh racing the gap is caught by the
+        # consent re-check in refresh_user_tool_schemas.
+        edit = await apply_catalog_edit(
+            user_id, server.name, fields, detach_plugin=True
+        )
+        if edit is not None:
+            response = await _finish(edit.row)
+            # Same forking as the PUT, so it says the same thing: a detach the
+            # user is not told about reads as one the plugin sanctioned.
+            if plugin := edit.detached_from_plugin:
+                response.warnings = (response.warnings or []) + [
+                    detach_warning(plugin)
+                ]
+            return response
         # Nothing to overwrite (raced delete / never existed) ⇒ fall through.
 
     if await get_catalog_server(user_id, server.name) is not None:
@@ -533,17 +516,36 @@ async def adopt_server(
     workspace-local fork here, then the catalog row is deleted (which also
     clears the name's tombstones everywhere). OAuth-connected servers refuse
     the move — connections exist only at the user tier, so moving would sever
-    the login. The fork lands enabled regardless of the catalog flag: scoping
-    a server to one workspace is a statement of intent to use it here.
+    the login. Plugin-owned servers refuse it too (see below). The fork lands
+    enabled regardless of the catalog flag: scoping a server to one workspace
+    is a statement of intent to use it here.
     """
     from src.server.database.mcp_oauth import ConnectionStatus, get_connection
-    from src.server.services.mcp_oauth.lifecycle import disconnect_server
+    from src.server.services.mcp_oauth.lifecycle import oauth_fence
 
     await _require_owned_workspace(workspace_id, user_id)
 
     row = await get_catalog_server(user_id, name)
     if row is None:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    if row["plugin_id"] is not None:
+        # Plugin-level disable acts through ONE predicate, on
+        # list_enabled_user_servers, and that predicate only reaches the user
+        # tier. A component moved down here would keep serving after its
+        # plugin was disabled, with nothing left at the user tier to suppress:
+        # this move is the one way out of the chokepoint the whole design
+        # rests on. The manifest still declares the component too, so the next
+        # plugin update re-creates the catalog row and the workspace fork
+        # starts shadowing it. Refuse, the same way an OAuth connection does,
+        # and leave detaching to the edit path that says so out loud.
+        owner = row["plugin_name"] or "a plugin"
+        raise HTTPException(
+            status_code=409,
+            detail=f"This server is installed by the plugin {owner!r}, which "
+            "manages it at the account level. Edit the server to detach it "
+            "from the plugin first, then move it. Uninstalling the plugin "
+            "removes the server instead.",
+        )
     connection = await get_connection(user_id, name)
     if connection is not None and connection.status is not ConnectionStatus.REVOKED:
         raise HTTPException(
@@ -581,12 +583,11 @@ async def adopt_server(
     # Fork first, catalog delete second: a crash in between leaves the shadow
     # state the resolver already renders. The delete also purges the name's
     # tombstones across every workspace and the user-tier discovery cache.
-    # Same double-disconnect fencing as the catalog DELETE — only a REVOKED
-    # connection can exist here, but a callback landing in the gap must not
-    # leave a live token behind a server that no longer exists.
-    await disconnect_server(user_id, name)
-    await delete_catalog_server(user_id, name)
-    await disconnect_server(user_id, name)
+    # Only a REVOKED connection can exist here, but the drop still takes the
+    # fence: a callback landing in the gap must not leave a live token behind a
+    # server that no longer exists.
+    async with oauth_fence(user_id, [name]):
+        await delete_catalog_server(user_id, name)
     _schedule_proactive_apply(workspace_id, user_id)
     return {
         "name": ws_row["name"],

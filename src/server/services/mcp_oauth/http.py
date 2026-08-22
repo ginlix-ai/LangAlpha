@@ -216,15 +216,29 @@ class _CappedByteStream(httpx2.AsyncByteStream):
         await self._inner.aclose()
 
 
-def pinned_discovery_client(
-    target: PinnedTarget, *, headers: dict[str, str] | None = None
+def pinned_stream_client(
+    target: PinnedTarget,
+    *,
+    max_bytes: int,
+    headers: dict[str, str] | None = None,
 ) -> httpx2.AsyncClient:
-    """SDK-compatible client for host-side discovery: pinned, bounded, no
-    redirects, no env proxies (a proxy would re-resolve past the pin)."""
+    """A pinned, byte-bounded client: no redirects, no env proxies (a proxy
+    would re-resolve past the pin). The general form behind discovery and the
+    plugin archive fetch — callers pick the byte budget for their payload."""
     return httpx2.AsyncClient(
-        transport=PinnedSessionTransport(target, max_bytes=DISCOVERY_MAX_BYTES),
+        transport=PinnedSessionTransport(target, max_bytes=max_bytes),
         follow_redirects=False,
         trust_env=False,
         timeout=DEFAULT_TIMEOUT,
         headers={"User-Agent": USER_AGENT, **(headers or {})},
+    )
+
+
+def pinned_discovery_client(
+    target: PinnedTarget, *, headers: dict[str, str] | None = None
+) -> httpx2.AsyncClient:
+    """SDK-compatible client for host-side discovery: the stream client at
+    the discovery byte budget."""
+    return pinned_stream_client(
+        target, max_bytes=DISCOVERY_MAX_BYTES, headers=headers
     )

@@ -110,6 +110,11 @@ class SkillInfo(BaseModel):
     deletable: bool = False
     confirmed: bool = True
     plugin_id: str | None = None
+    # Display-only provenance: the owning plugin's name and its enable state
+    # (None on hand-made or detached rows). plugin_enabled=False explains a
+    # row the delivery predicate is suppressing.
+    plugin_name: str | None = None
+    plugin_enabled: bool | None = None
     size_bytes: int = 0
     updated_at: str | None = None
     # Which tier switched an inherited skill off (workspace views only).
@@ -168,7 +173,17 @@ def _user_row_to_info(
         editable=editable,
         deletable=deletable,
         confirmed=bool(row["confirmed"]),
-        plugin_id=row.get("plugin_id"),
+        # Indexed, not .get(): every read joins these and every writer
+        # subselects them, so an absent key means a new writer skipped the
+        # projection. A .get() default would answer "no plugin" to that and
+        # quietly drop the badge and the suppressed state instead of failing.
+        plugin_id=row["plugin_id"],
+        plugin_name=row["plugin_name"],
+        plugin_enabled=(
+            bool(row["plugin_enabled"])
+            if row["plugin_enabled"] is not None
+            else None
+        ),
         size_bytes=int(row.get("archive_bytes") or 0),
         updated_at=row.get("updated_at"),
         workspace_id=row.get("workspace_id"),
@@ -600,10 +615,13 @@ class SkillMoveInput(BaseModel):
 async def move_skill(name: str, body: SkillMoveInput, user_id: CurrentUserId):
     """Re-scope a skill: user tier (every workspace) ↔ one workspace.
 
-    The row moves in place — archive, enabled flag, and provenance travel
-    with it. 409 when the destination scope already has the name (shadowing
-    is created by uploading a workspace copy, never implicitly by a move).
-    Platform skills have no row and cannot move.
+    The row moves in place, carrying its archive and enabled flag. Plugin
+    provenance does not travel: a plugin-owned row cannot move into a
+    workspace at all (409 — the plugin manages it at the account level), and
+    one moving back up is detached. 409 too when the destination scope
+    already has the name, since shadowing is created by uploading a workspace
+    copy, never implicitly by a move. Platform skills have no row and cannot
+    move.
     """
     _validate_name_param(name)
     if body.from_workspace_id == body.to_workspace_id:

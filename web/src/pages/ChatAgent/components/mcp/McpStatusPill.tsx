@@ -113,6 +113,16 @@ const OAUTH_META: Record<McpOauthStatus, PillMeta> = {
   },
 };
 
+/**
+ * The i18n key naming an OAuth status, or null when there is no connection (or
+ * a status this build doesn't know). Reading it off `OAUTH_META` is the point:
+ * that record is exhaustive over `McpOauthStatus`, so a new status is a compile
+ * error here instead of a surface that quietly labels it nothing.
+ */
+export function oauthLabelKey(status: McpOauthStatus | null | undefined): string | null {
+  return (status && OAUTH_META[status]?.labelKey) || null;
+}
+
 export function McpOauthPill({ status }: { status: McpOauthStatus }) {
   const { t } = useTranslation();
   const meta = OAUTH_META[status];

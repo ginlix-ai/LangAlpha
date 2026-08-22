@@ -8,6 +8,7 @@ workspace tier runs, entered with the user tier's descriptor.
 
 Endpoints:
 - GET    /api/v1/mcp/vault/secrets
+- GET    /api/v1/mcp/vault/blueprints
 - POST   /api/v1/mcp/vault/secrets
 - PUT    /api/v1/mcp/vault/secrets/{name}
 - GET    /api/v1/mcp/vault/secrets/{name}/reveal
@@ -45,6 +46,60 @@ async def list_secrets(user_id: CurrentUserId):
         "secrets": secrets,
         "remaining_slots": max(0, MAX_SECRETS_PER_USER - len(secrets)),
     }
+
+
+@router.get("/vault/blueprints")
+@handle_api_exceptions("list user vault blueprints", logger)
+async def list_blueprints(user_id: CurrentUserId):
+    """The user-tier 'recommended but not yet set' credential list.
+
+    Config blueprints (builtin MCP servers) plus every enabled plugin's
+    declared ``ai.langalpha`` secrets, minus what the user vault already
+    holds. First declaration wins on metadata; later declarers just extend
+    ``sources``. Mirrors the workspace blueprints endpoint.
+    """
+    from src.server.app.vault import _collect_config_blueprints
+    from src.server.database.plugins import list_plugins
+    from src.server.database.user_vault_secrets import get_user_secret_names
+    from src.server.services.plugins.errors import PluginFatal
+    from src.server.services.plugins.extension import NAMESPACE, parse_extension
+    from src.server.services.plugins.manifest import manifest_extension
+
+    existing_names = await get_user_secret_names(user_id)
+    remaining_slots = max(0, MAX_SECRETS_PER_USER - len(existing_names))
+
+    collected = _collect_config_blueprints()
+    for plugin in await list_plugins(user_id):
+        if not plugin["enabled"]:
+            continue
+        try:
+            extension = parse_extension(
+                manifest_extension(plugin.get("manifest") or {}, NAMESPACE)
+            )
+        except PluginFatal:
+            # Stored manifests were validated at install; a parse failure
+            # here is corrupt data, not a reason to 500 the vault tab.
+            continue
+        for secret in extension.secrets:
+            sources = sorted({b.server for b in secret.bind}) or [plugin["name"]]
+            entry = collected.get(secret.name)
+            if entry is None:
+                collected[secret.name] = {
+                    "name": secret.name,
+                    "label": secret.label,
+                    "description": secret.description,
+                    "docs_url": secret.docs_url,
+                    "regex": secret.regex,
+                    "sources": sources,
+                    "plugin_name": plugin["name"],
+                }
+            else:
+                entry["sources"] = sorted(set(entry["sources"]) | set(sources))
+
+    blueprints = [
+        bp for name, bp in collected.items() if name not in existing_names
+    ]
+    return {"blueprints": blueprints, "remaining_slots": remaining_slots}
 
 
 @router.post("/vault/secrets", status_code=201)
