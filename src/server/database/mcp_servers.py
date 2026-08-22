@@ -202,6 +202,7 @@ async def update_catalog_server(
     name: str,
     *,
     updates: Mapping[str, Any],
+    owned_by_plugin: str | None = None,
     conn=None,
 ) -> dict[str, Any] | None:
     """Partial update of a catalog template. Returns the row, or None if absent.
@@ -212,6 +213,12 @@ async def update_catalog_server(
     is a policy decision and lives in ``services/mcp_catalog.apply_catalog_edit``.
     A writer that detached by default would strip a user's plugin provenance
     for any caller that merely forgot to opt out.
+
+    ``owned_by_plugin`` narrows the write to a row that plugin still owns, the
+    same predicate and for the same reason as ``delete_catalog_server``: a
+    plugin path decides to write by reading ownership earlier, and a Customize
+    landing in that window makes the row the user's. Without it the fork is
+    overwritten by the very update that was supposed to skip it.
 
     Raises ValueError on a key outside ``_WRITABLE_CATALOG_COLUMNS``: a caller
     that misspells a column must not have the write silently dropped.
@@ -228,7 +235,7 @@ async def update_catalog_server(
         for col, val in updates.items()
     ]
     parts.append("updated_at = NOW()")
-    params.extend([user_id, name])
+    params.extend([user_id, name, owned_by_plugin, owned_by_plugin])
 
     async with get_db_connection(conn) as conn:
         async with conn.transaction():
@@ -236,6 +243,7 @@ async def update_catalog_server(
                 await cur.execute(
                     f"UPDATE user_mcp_servers SET {', '.join(parts)} "
                     "WHERE user_id = %s AND name = %s "
+                    "AND (%s::uuid IS NULL OR plugin_id = %s::uuid) "
                     "RETURNING user_mcp_server_id",
                     params,
                 )

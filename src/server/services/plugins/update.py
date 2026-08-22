@@ -48,7 +48,12 @@ from src.server.services.mcp_catalog import apply_catalog_edit
 from src.server.services.mcp_import import plan_vault_extraction
 from src.server.services.mcp_oauth.lifecycle import oauth_fence
 from src.server.services.plugins.extension import materialize_binds
-from src.server.services.plugins.grants import resolve_bind_grants
+from src.server.services.plugins.grants import (
+    resolve_bind_grants,
+    secret_names_in,
+    strip_refs,
+    strip_ungranted_refs,
+)
 from src.server.services.plugins.package import (
     ValidatedPackage,
     pending_secret_declarations,
@@ -71,14 +76,42 @@ from src.server.services.vault_invalidation import (
 
 logger = logging.getLogger(__name__)
 
+# A row this update owned when it read it, and does not own when it writes.
+# Both the pre-write check and the write's own ownership predicate report it,
+# because a reader must not be able to read a wording difference as a
+# difference in what happened to their fork.
+_CUSTOMIZED_MID_RUN = "this server was customized while the update ran; left untouched"
+
+
+def _execution_identity(config: dict[str, Any]) -> tuple[Any, ...]:
+    """What a credential on this entry was consented to: where it runs.
+
+    For a remote server that is the transport and the url. For stdio it is the
+    command and its arguments, because a stdio entry moves by changing the
+    package it executes rather than a hostname, and comparing only url would
+    call ``npx -y good-pkg`` and ``npx -y evil-pkg`` the same endpoint.
+
+    Reference text is masked before comparing so that re-pointing a credential
+    at a different vault name does not read as a move on its own; the identity
+    is meant to be about the destination, not about which key goes there.
+    """
+    args = config.get("args")
+    return (
+        config.get("transport") or "",
+        config.get("url") or "",
+        config.get("command") or "",
+        tuple(
+            VAULT_REF_RE.sub("<ref>", a) if isinstance(a, str) else a
+            for a in (args if isinstance(args, list) else ())
+        ),
+    )
+
 
 def _endpoint_moved(
     incoming: dict[str, Any], existing_row: dict[str, Any]
 ) -> bool:
     """True when the new version points the entry somewhere else."""
-    if incoming.get("transport") != existing_row.get("transport"):
-        return True
-    return (incoming.get("url") or "") != (existing_row.get("url") or "")
+    return _execution_identity(incoming) != _execution_identity(existing_row)
 
 
 def _preserve_vault_refs(
@@ -92,17 +125,18 @@ def _preserve_vault_refs(
     package would otherwise only have to ship v1 honestly, then move the host
     in v2 and receive the key. The row is left needing the secret again, which
     is visible, instead of authenticating to a new host silently.
+
+    On a move the incoming config is scrubbed, not merely reported on. Refusing
+    to COPY the row's refs is not enough, because the incoming plan can already
+    carry the same reference on its own: ``materialize_binds`` runs before this
+    and writes every carried-forward grant, and the package can put the ref in
+    the portable document besides. Reporting a name as dropped while leaving it
+    in the config is exactly the silent authentication this is here to stop.
     """
     if _endpoint_moved(incoming, existing_row):
-        return sorted(
-            {
-                name
-                for section in ("env", "headers")
-                for value in (existing_row.get(section) or {}).values()
-                if isinstance(value, str)
-                for name in VAULT_REF_RE.findall(value)
-            }
-        )
+        dropped = secret_names_in(existing_row) | secret_names_in(incoming)
+        strip_refs(incoming, frozenset(dropped))
+        return sorted(dropped)
     for section in ("env", "headers"):
         stored = existing_row.get(section) or {}
         target = incoming.get(section)
@@ -191,11 +225,7 @@ async def _update_servers(
             # mid-run, and owes the same promise: never overwrite a fork.
             report.components.append(
                 ComponentResult.of(
-                    plan, "detached", name=row_name,
-                    reason=(
-                        "this server was customized while the update ran; "
-                        "left untouched"
-                    ),
+                    plan, "detached", name=row_name, reason=_CUSTOMIZED_MID_RUN,
                 )
             )
             return
@@ -263,12 +293,26 @@ async def _update_servers(
         # Through the catalog edit policy, not the DB writer: an update that
         # repoints a server owes the same consent revoke and rediscovery as a
         # hand edit. detach_plugin=False — the plugin is editing its own row.
+        # expect_plugin closes the window the ownership check above opens: the
+        # secret writes between them are awaits a Customize can land inside,
+        # and the check is worth nothing if the write that follows it is
+        # unconditional.
         edit = await apply_catalog_edit(
-            user_id, row_name, server.to_catalog_fields(), detach_plugin=False
+            user_id, row_name, server.to_catalog_fields(),
+            detach_plugin=False, expect_plugin=plugin_id,
         )
         if edit is None:
-            # The row went out from under us; the create arm of a later update
-            # reinstates it, and claiming an update here would be a lie.
+            # Either the row went out from under us — the create arm of a later
+            # update reinstates it, and claiming an update here would be a lie —
+            # or it was customized mid-write and the predicate refused. Only the
+            # second leaves something behind to tell the user about.
+            if await get_catalog_server(user_id, row_name) is not None:
+                report.components.append(
+                    ComponentResult.of(
+                        plan, "detached", name=row_name,
+                        reason=_CUSTOMIZED_MID_RUN,
+                    )
+                )
             return
         changed = True
         allocated.update(entry_plan.refs)
@@ -519,6 +563,7 @@ async def update_plugin_package(
         user_id, package.extension, plugin_id=plugin_id
     )
     materialize_binds(package.extension, package.entry_plans, grants.granted)
+    strip_ungranted_refs(package.entry_plans, grants)
     if grants.refused:
         report.diagnostics.append(
             Diagnostic(

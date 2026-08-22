@@ -48,6 +48,7 @@ async def apply_catalog_edit(
     fields: Mapping[str, Any],
     *,
     detach_plugin: bool,
+    expect_plugin: str | None = None,
     conn=None,
 ) -> CatalogEdit | None:
     """Edit a catalog row and settle everything the edit moved. None if absent.
@@ -56,6 +57,12 @@ async def apply_catalog_edit(
     row's provenance so a later plugin update sees the name un-owned and skips
     it instead of overwriting the customization, while the plugin update path
     itself passes False to edit its own row in place.
+
+    ``expect_plugin`` is what makes that skip hold under a race. A plugin
+    update decides to write by reading ownership first, and a Customize landing
+    between that read and this write hands the row to the user; the predicate
+    turns the write into a no-op (None) instead of an overwrite of the fork.
+    None means the write is unconditional, which is what a user edit wants.
 
     ``conn`` lets a caller batch the catalog reads and the write onto its own
     connection. The OAuth teardown always runs on a separate one, so a caller
@@ -81,7 +88,9 @@ async def apply_catalog_edit(
             # Before the write below, so the row it returns is already honest.
             await set_catalog_server_enabled(user_id, name, False)
     # The row write and its version fan-out are one transaction in the DB layer.
-    row = await update_catalog_server(user_id, name, updates=updates, conn=conn)
+    row = await update_catalog_server(
+        user_id, name, updates=updates, owned_by_plugin=expect_plugin, conn=conn
+    )
     if row is None:
         return None
 

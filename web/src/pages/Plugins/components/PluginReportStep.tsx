@@ -102,11 +102,16 @@ export function PluginReportStep({
     (c) => !LANDED.has(c.status) && c.status !== 'upgradable',
   );
   const warnings = report.diagnostics.filter((d) => d.level === 'warning');
+  // Errors get their own group rather than riding with the warnings. Filtering
+  // the list to one level used to drop them outright, which mattered most for
+  // the one finding the reader cannot afford to miss: a credential the entry
+  // asked for and did not get.
+  const errors = report.diagnostics.filter((d) => d.level === 'error');
   // An update that found nothing to do reports nothing: say so, rather than
   // showing a panel that is empty for a reason the reader has to guess.
   const empty =
     report.components.length === 0 &&
-    warnings.length === 0 &&
+    report.diagnostics.length === 0 &&
     report.dropped_files.length === 0;
 
   return (
@@ -184,6 +189,20 @@ export function PluginReportStep({
         <Group title={t('plugins.install.reportSkipped')}>
           {skipped.map((c) => (
             <ComponentLine key={`${c.kind}:${c.key}`} result={c} />
+          ))}
+        </Group>
+      )}
+
+      {errors.length > 0 && (
+        <Group title={t('plugins.install.reportErrors')}>
+          {errors.map((d, i) => (
+            <p
+              key={`${d.code}-${i}`}
+              className="text-[0.6875rem] py-1"
+              style={{ color: 'var(--color-loss)' }}
+            >
+              {d.target ? `${d.target}: ${d.message}` : d.message}
+            </p>
           ))}
         </Group>
       )}

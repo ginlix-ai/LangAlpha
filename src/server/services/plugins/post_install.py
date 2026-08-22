@@ -26,7 +26,10 @@ from src.server.services.plugins.extension import (
     materialize_binds,
     parse_extension,
 )
-from src.server.services.plugins.grants import resolve_bind_grants
+from src.server.services.plugins.grants import (
+    resolve_bind_grants,
+    strip_ungranted_refs,
+)
 from src.server.services.plugins.manifest import manifest_extension
 from src.server.services.plugins.mcp import McpEntryPlan, validate_mcp_document
 from src.server.services.plugins.server_fanout import fan_out_servers
@@ -60,6 +63,7 @@ async def _stored_entry_plans(
         user_id, extension, plugin_id=plugin["user_plugin_id"]
     )
     materialize_binds(extension, plans, grants.granted)
+    strip_ungranted_refs(plans, grants)
     return plans
 
 

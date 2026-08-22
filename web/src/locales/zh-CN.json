@@ -2862,6 +2862,7 @@
       "reportInstalled": "已安装",
       "reportSkipped": "已跳过",
       "reportUpgradable": "需要确认",
+      "reportErrors": "错误",
       "reportWarnings": "警告",
       "reportNoChanges": "没有变化，该插件已是最新版本。",
       "sseUpgradeHint": "这些服务器声明了旧版 SSE 传输。它们通过了 streamable HTTP 探测，可以用现代传输方式安装。",

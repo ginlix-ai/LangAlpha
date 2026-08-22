@@ -37,7 +37,10 @@ from src.server.models.plugin import (
 )
 from src.server.services.mcp_oauth.lifecycle import oauth_fence
 from src.server.services.plugins.extension import materialize_binds
-from src.server.services.plugins.grants import resolve_bind_grants
+from src.server.services.plugins.grants import (
+    resolve_bind_grants,
+    strip_ungranted_refs,
+)
 from src.server.services.plugins.package import (
     ValidatedPackage,
     pending_secret_declarations,
@@ -112,6 +115,7 @@ async def install_plugin_package(
     # which declared names this package is allowed to reference.
     grants = await resolve_bind_grants(user_id, package.extension, plugin_id=None)
     materialize_binds(package.extension, package.entry_plans, grants.granted)
+    strip_ungranted_refs(package.entry_plans, grants)
     if grants.refused:
         report.diagnostics.append(
             Diagnostic(

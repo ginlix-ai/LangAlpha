@@ -2887,6 +2887,7 @@
       "reportInstalled": "Installed",
       "reportSkipped": "Skipped",
       "reportUpgradable": "Needs consent",
+      "reportErrors": "Errors",
       "reportWarnings": "Warnings",
       "reportNoChanges": "Nothing changed. This plugin is already up to date.",
       "sseUpgradeHint": "These servers declare the legacy SSE transport. They responded to a streamable HTTP probe, so you can install them with the modern transport.",
