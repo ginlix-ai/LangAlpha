@@ -12,6 +12,7 @@ Endpoints (user-scoped):
 - GET    /api/v1/mcp/servers
 - POST   /api/v1/mcp/servers
 - GET    /api/v1/mcp/servers/{name}
+- GET    /api/v1/mcp/servers/{name}/tools
 - PUT    /api/v1/mcp/servers/{name}
 - PATCH  /api/v1/mcp/servers/{name}/enabled
 - DELETE /api/v1/mcp/servers/{name}
@@ -26,7 +27,6 @@ import logging
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import ValidationError
 
-from src.server.database.egress_grants import revoke_grants_for_connection
 from src.server.database.mcp_oauth import (
     ConnectionStatus,
     get_connection,
@@ -44,7 +44,6 @@ from src.server.database.mcp_servers import (
     list_user_builtin_disables,
     set_catalog_server_enabled,
     set_user_builtin_disable,
-    update_catalog_server,
 )
 from src.server.database.mcp_tool_schemas import get_user_tool_schemas
 from src.server.database.user_vault_secrets import (
@@ -64,6 +63,7 @@ from src.server.models.mcp_server import (
     isolation_warnings,
     parse_mcp_servers_payload,
 )
+from src.server.services.mcp_catalog import apply_catalog_edit, detach_warning
 from src.server.services.mcp_import import ImportScope, run_mcp_import
 from src.server.services.vault_invalidation import USER_TIER, after_secret_change
 from src.server.utils.api import CurrentUserId, handle_api_exceptions
@@ -241,6 +241,44 @@ async def get_server(name: str, user_id: CurrentUserId) -> CatalogServer:
     return catalog_row_to_response(row, oauth_status=oauth.get(name))
 
 
+@router.get("/servers/{name}/tools")
+@handle_api_exceptions("list MCP catalog server tools", logger)
+async def get_server_tools(name: str, user_id: CurrentUserId) -> dict:
+    """The discovered tool snapshot for one catalog server, hash-gated to its
+    CURRENT config (``ToolSnapshotIndex`` owns the acceptance rule) — the
+    detail view must never show tools a workspace would not serve. Rows are
+    sanitized at cache-write time, so this is a plain projection."""
+    from src.server.services.mcp_config import user_row_to_server_config
+    from src.server.services.mcp_discovery import ToolSnapshotIndex
+
+    row = await get_catalog_server(user_id, name)
+    if not row:
+        raise HTTPException(status_code=404, detail="MCP server not found")
+    snapshot = None
+    try:
+        schema_rows = await get_user_tool_schemas(user_id)
+        snapshot = ToolSnapshotIndex(user_rows=schema_rows).ok(
+            user_row_to_server_config(row)
+        )
+    except Exception:
+        logger.warning(
+            "[mcp_catalog] tool-schema lookup failed for %s", user_id, exc_info=True
+        )
+    tools = (snapshot or {}).get("tools") or []
+    return {
+        "server_name": name,
+        "tools": [
+            {
+                "name": t.get("name", ""),
+                "description": t.get("description", ""),
+                "input_schema": t.get("input_schema") or {},
+            }
+            for t in tools
+        ],
+        "discovered_at": (snapshot or {}).get("discovered_at"),
+    }
+
+
 @router.put("/servers/{name}")
 @handle_api_exceptions("update MCP catalog server", logger)
 async def update_server(
@@ -256,45 +294,19 @@ async def update_server(
         raise HTTPException(
             status_code=409, detail="name in body must match the path name"
         )
-    # Pre-update read: the rediscovery decision below needs the OLD fingerprint,
-    # and the update returns only the new row.
-    prior = await get_catalog_server(user_id, name)
-    # The row write and its version fan-out are one transaction in the DB layer.
-    row = await update_catalog_server(
-        user_id, name, updates=server.to_catalog_fields()
+    # A hand edit forks the row off its plugin; the service owns that decision
+    # along with the consent revoke and the rediscovery kick.
+    edit = await apply_catalog_edit(
+        user_id, name, server.to_catalog_fields(), detach_plugin=True
     )
-    if not row:
+    if edit is None:
         raise HTTPException(status_code=404, detail="MCP server not found")
-
-    # Force reconnect when the edit moves an OAuth-connected server off its
-    # consented endpoint: the stored token was issued for the old host, so it
-    # must not carry to the new one. The grant already pins to the connection's
-    # server_url, so no token can leak in the meantime — this revokes the now-
-    # stale connection so the UI shows a clean reconnect. The revoke writes only
-    # OAuth state, never this catalog row, so the response is built from the row
-    # we already hold.
-    from src.server.services.mcp_oauth.discovery import (
-        schedule_post_edit_rediscovery,
-    )
-    from src.server.services.mcp_oauth.lifecycle import revoke_if_consent_moved
-
-    # The consent check runs against a fresh read, never this request's own
-    # values: the write above and the revoke below are separate transactions,
-    # so a concurrent edit that already moved the row back onto the consented
-    # endpoint would otherwise be revoked on values no row still holds. A row
-    # deleted underneath us needs neither — DELETE revokes on both sides of its
-    # own drop.
-    committed = await get_catalog_server(user_id, name)
-    if committed is not None and not await revoke_if_consent_moved(
-        user_id, name, transport=committed["transport"], url=committed.get("url")
-    ):
-        # Consent survived the edit; if the discovery fingerprint moved, the
-        # connection's cached snapshot just went stale under it.
-        schedule_post_edit_rediscovery(user_id, name, prior=prior, updated=row)
-    response = catalog_row_to_response(row)
-    # After the revoke above, so an edit that just severed the connection does
-    # not warn about headers it has now made effective.
+    response = catalog_row_to_response(edit.row)
+    # After the revoke inside the edit, so one that just severed the connection
+    # does not warn about headers it has now made effective.
     response.warnings = await _write_warnings(user_id, server)
+    if plugin := edit.detached_from_plugin:
+        response.warnings = (response.warnings or []) + [detach_warning(plugin)]
     return response
 
 
@@ -397,6 +409,8 @@ async def set_enabled(
 ) -> dict:
     """Flip a user server live/inert. The DB layer bumps every workspace's
     ``mcp_config_version`` in the same transaction (next-acquire convergence)."""
+    from src.server.services.mcp_oauth.lifecycle import revoke_live_grants
+
     found = await set_catalog_server_enabled(user_id, name, body.enabled)
     if not found:
         raise HTTPException(status_code=404, detail="MCP server not found")
@@ -406,38 +420,21 @@ async def set_enabled(
         if warning:
             out["warnings"] = [warning]
     else:
-        # Disable must bite now, not at next acquire: an idle sandbox holds its
-        # grant_id and a relay JWT for hours, and the relay checks grant and
-        # connection status but never the catalog row. Safe against a
-        # concurrent re-mint — the toggle's version bump above fails the
-        # sync's CAS — and re-enable self-heals: the next acquire's grant sync
-        # re-activates via its upsert arm.
-        connection = await get_connection(user_id, name)
-        if connection is not None:
-            await revoke_grants_for_connection(connection.connection_id)
+        await revoke_live_grants(user_id, [name])
     return out
 
 
 @router.delete("/servers/{name}")
 @handle_api_exceptions("delete MCP catalog server", logger)
 async def delete_server(name: str, user_id: CurrentUserId) -> dict:
-    from src.server.services.mcp_oauth.lifecycle import disconnect_server
+    from src.server.services.mcp_oauth.lifecycle import oauth_fence
 
-    # Revoke any OAuth connection + its grants before dropping the catalog row.
-    # Deleting the row alone orphans the connection (no catalog FK): the refresh
-    # sweeper keeps the token alive, and a same-name recreate silently reuses
-    # it. disconnect_server is a no-op when no connection exists.
-    await disconnect_server(user_id, name)
-    found = await delete_catalog_server(user_id, name)
+    # The drop takes the OAuth fence: a catalog row has no FK to its connection,
+    # so dropping it unfenced orphans a live token. oauth_fence carries the why.
+    async with oauth_fence(user_id, [name]):
+        found = await delete_catalog_server(user_id, name)
     if not found:
         raise HTTPException(status_code=404, detail="MCP server not found")
-    # Fence the gap between those two writes — they are separate transactions,
-    # so an OAuth callback landing in between leaves a connected row behind a
-    # catalog entry that no longer exists: referenced by nothing, yet serviced
-    # by the refresh sweeper forever (it has no catalog join). Revoking again
-    # closes it, idempotently — no connection is a no-op, and revoked-on-revoked
-    # is an accepted write.
-    await disconnect_server(user_id, name)
     return {"ok": True}
 
 

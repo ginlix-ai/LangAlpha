@@ -556,6 +556,10 @@ class EffectiveServer(BaseModel):
     # row or the account-wide user disable — the latter renders read-only here
     # ("disabled for your account", managed in Plugins).
     disabled_scope: Optional[Literal["workspace", "user"]] = None
+    # Inherited rows installed by a plugin: the owning plugin's name, display
+    # only. Deliberately never on MCPServerConfig — provenance must not enter
+    # the config blob round-trip.
+    plugin_name: Optional[str] = None
 
 
 class EffectiveServerList(BaseModel):
@@ -617,6 +621,12 @@ class CatalogServer(BaseModel):
     # Workspaces holding a tombstone for this name (deny-list) — populated in
     # the all-scopes view only, for the "active in" checklist.
     disabled_workspace_ids: list[str] = Field(default_factory=list)
+    # Plugin provenance (display + row-policy only): the owning plugin's name
+    # and its enable state, both None on a hand-made or detached row. The
+    # workspace list has no plugins query to join against, so the row carries
+    # what the UI needs to badge and to explain a suppressed server.
+    plugin_name: Optional[str] = None
+    plugin_enabled: Optional[bool] = None
 
 
 class WorkspaceScopedServer(BaseModel):
@@ -706,4 +716,14 @@ def catalog_row_to_response(
         discovery_uses_secrets=bool(row.get("discovery_uses_secrets", False)),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
+        # Indexed, not .get(): the plugin LEFT JOIN is part of every catalog
+        # SELECT, so a missing key is a projection bug and should say so here
+        # rather than silently reading as an unowned row. Matches the skills
+        # projection, which makes the same argument.
+        plugin_name=row["plugin_name"],
+        plugin_enabled=(
+            bool(row["plugin_enabled"])
+            if row["plugin_enabled"] is not None
+            else None
+        ),
     )

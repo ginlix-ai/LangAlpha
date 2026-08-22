@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "ctx": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "${CTX_API_KEY:-}"
+      }
+    },
+    "local": {
+      "command": "npx",
+      "args": ["-y", "ctx-local"],
+      "env": {
+        "CTX_TOKEN": "${CTX_TOKEN}",
+        "MODE": "fast"
+      }
+    }
+  }
+}

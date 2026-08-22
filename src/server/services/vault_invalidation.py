@@ -16,7 +16,7 @@ fires blindly rather than being skipped.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 
 from ptc_agent.config.core import MCPServerConfig
@@ -215,6 +215,48 @@ async def after_secret_change(
     """
     if value_changed:
         await _invalidate_mcp(tier, owner_id, secret_name, user_id)
+    await _push_secrets(tier, owner_id, user_id)
+
+
+async def after_secrets_changed(
+    tier: VaultTier,
+    owner_id: str,
+    secret_names: Iterable[str],
+    *,
+    user_id: str,
+) -> None:
+    """``after_secret_change`` for a set of names written in one operation.
+
+    The purge stays per name — it is scoped to the servers that reference that
+    one credential, and collapsing it would leave the others' discovery
+    snapshots stale. The two expensive halves do not: scheduling applies and
+    pushing to live sandboxes both act on the owner's whole secret set, so
+    running them once per name multiplies seconds of sandbox I/O by however
+    many credentials a plugin happens to declare, for no additional effect.
+    """
+    names = list(dict.fromkeys(secret_names))
+    if not names:
+        return
+    for name in names:
+        try:
+            await _purge_and_bump(tier, owner_id, name, user_id)
+        except Exception:
+            logger.warning(
+                f"{tier.log_prefix} MCP invalidation failed for {tier.label} "
+                f"{owner_id}; falling back to a bare config bump",
+                exc_info=True,
+            )
+            try:
+                await tier.bump(owner_id)
+            except Exception:
+                logger.error(
+                    f"{tier.log_prefix} {tier.label} {owner_id} is UNCONVERGED "
+                    f"after secret {name!r} changed: the fallback config bump "
+                    f"failed too, so live sandboxes keep serving the retired "
+                    f"value until the next config write for this {tier.label}",
+                    exc_info=True,
+                )
+    await _schedule_applies(tier, owner_id, user_id)
     await _push_secrets(tier, owner_id, user_id)
 
 

@@ -99,12 +99,22 @@ async def upload_seed(
     )
 
 
-async def ensure_free_of_platform(user_id: str, command: str) -> None:
+async def ensure_free_of_platform(
+    user_id: str,
+    command: str,
+    *,
+    overrides: Mapping[str, str] | None = None,
+) -> None:
     """Row aliases must stay clear of the platform tier: builtin names and
-    default commands (reserved), plus any alias the user gave a builtin."""
+    default commands (reserved), plus any alias the user gave a builtin.
+
+    A caller checking a set of names passes the override map it already read,
+    so a fan-out costs one preferences read rather than one per skill.
+    """
     if command in reserved_skill_names():
         raise ValueError(f"/{command} is reserved by a built-in skill or command")
-    overrides = await get_skill_command_overrides(user_id)
+    if overrides is None:
+        overrides = await get_skill_command_overrides(user_id)
     if command in set(overrides.values()):
         raise ValueError(f"/{command} is already in use by another skill")
 
