@@ -2836,6 +2836,7 @@
     "install": {
       "title": "安装插件",
       "stepSource": "选择来源",
+      "stepChoose": "选择插件",
       "stepInstalling": "安装中",
       "stepReport": "安装报告",
       "stepBindings": "凭据",
@@ -2844,7 +2845,8 @@
       "or": "或",
       "installConfirm": "安装",
       "notZip": "请选择 .zip 文件",
-      "tooLarge": "zip 超过 20 MB 限制",
+      "chooseHint": "该来源包含 {{count}} 个插件，请选择要安装的插件。",
+      "tooLarge": "zip 超过 64 MB 限制",
       "fetching": "正在获取插件",
       "uploading": "上传中 {{percent}}%",
       "reportInstalled": "已安装",

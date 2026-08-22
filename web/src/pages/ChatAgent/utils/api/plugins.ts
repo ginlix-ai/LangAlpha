@@ -88,6 +88,42 @@ export interface PluginInstallResponse {
   report: PluginInstallReport;
 }
 
+/** One plugin discovered inside a multi-plugin archive (a marketplace repo). */
+export interface PluginCandidate {
+  /** Subtree root inside the archive; re-request the install with this. */
+  path: string;
+  /** canonical, the vendor layout it was found in (claude/codex/cursor), or
+   * 'external' for a marketplace entry living in another repo. */
+  dialect: string;
+  name: string | null;
+  description: string | null;
+  version: string | null;
+  /** Set for external marketplace entries: install via this URL, not via
+   * subdir. */
+  source_url: string | null;
+}
+
+/**
+ * The chooser payload from a 422 whose detail carries
+ * `code: "multiple_plugins"` — the source holds several plugins and the
+ * caller must pick one. Null for every other error.
+ */
+export function multiplePluginCandidates(
+  err: unknown,
+): PluginCandidate[] | null {
+  const detail = (err as { response?: { data?: { detail?: unknown } } })
+    ?.response?.data?.detail;
+  if (
+    typeof detail === 'object' &&
+    detail !== null &&
+    (detail as { code?: unknown }).code === 'multiple_plugins' &&
+    Array.isArray((detail as { discovered?: unknown }).discovered)
+  ) {
+    return (detail as { discovered: PluginCandidate[] }).discovered;
+  }
+  return null;
+}
+
 function uploadConfig(onProgress: ((percent: number) => void) | null) {
   return {
     headers: { 'Content-Type': 'multipart/form-data' },
@@ -113,9 +149,11 @@ export async function getPlugin(name: string): Promise<PluginInfo> {
 
 export async function installPluginFromUrl(
   sourceUrl: string,
+  subdir: string | null = null,
 ): Promise<PluginInstallResponse> {
   const { data } = await api.post<PluginInstallResponse>('/api/v1/plugins', {
     source_url: sourceUrl,
+    ...(subdir !== null ? { subdir } : {}),
   });
   return data;
 }
@@ -123,9 +161,11 @@ export async function installPluginFromUrl(
 export async function installPluginFromZip(
   file: File,
   onProgress: ((percent: number) => void) | null = null,
+  subdir: string | null = null,
 ): Promise<PluginInstallResponse> {
   const form = new FormData();
   form.append('file', file);
+  if (subdir !== null) form.append('subdir', subdir);
   const { data } = await api.post<PluginInstallResponse>(
     '/api/v1/plugins/upload',
     form,

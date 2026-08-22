@@ -6,7 +6,7 @@
 import { validateRemoteUrl } from '@/pages/ChatAgent/components/mcp/mcpSchemas';
 
 /** Mirrors MAX_PACKAGE_BYTES (services/plugins/fetch.py). */
-export const MAX_PLUGIN_ZIP_BYTES = 20 * 1024 * 1024;
+export const MAX_PLUGIN_ZIP_BYTES = 64 * 1024 * 1024;
 
 /** Zips arrive as application/zip, application/x-zip-compressed, or an empty
  * MIME depending on browser, so extension is the fallback check. */

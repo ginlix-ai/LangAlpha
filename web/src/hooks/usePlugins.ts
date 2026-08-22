@@ -39,7 +39,13 @@ export function usePlugins(enabled = true) {
 export function useInstallPluginFromUrl() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (sourceUrl: string) => installPluginFromUrl(sourceUrl),
+    mutationFn: ({
+      sourceUrl,
+      subdir,
+    }: {
+      sourceUrl: string;
+      subdir?: string;
+    }) => installPluginFromUrl(sourceUrl, subdir ?? null),
     onSuccess: () => invalidatePluginFanout(queryClient),
   });
 }
@@ -50,10 +56,12 @@ export function useInstallPluginFromZip() {
     mutationFn: ({
       file,
       onProgress,
+      subdir,
     }: {
       file: File;
       onProgress?: (percent: number) => void;
-    }) => installPluginFromZip(file, onProgress ?? null),
+      subdir?: string;
+    }) => installPluginFromZip(file, onProgress ?? null, subdir ?? null),
     onSuccess: () => invalidatePluginFanout(queryClient),
   });
 }

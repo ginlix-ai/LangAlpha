@@ -2860,6 +2860,7 @@
     "install": {
       "title": "Install plugin",
       "stepSource": "Choose a source",
+      "stepChoose": "Choose a plugin",
       "stepInstalling": "Installing",
       "stepReport": "Install report",
       "stepBindings": "Credentials",
@@ -2868,7 +2869,8 @@
       "or": "or",
       "installConfirm": "Install",
       "notZip": "Choose a .zip file",
-      "tooLarge": "The zip exceeds the 20 MB limit",
+      "chooseHint": "This source contains {{count}} plugins. Pick the one to install.",
+      "tooLarge": "The zip exceeds the 64 MB limit",
       "fetching": "Fetching plugin",
       "uploading": "Uploading {{percent}}%",
       "reportInstalled": "Installed",

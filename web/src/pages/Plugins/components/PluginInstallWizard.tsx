@@ -13,24 +13,31 @@ import {
 import { useUserVaultBlueprints } from '@/hooks/useUserVault';
 import {
   formatApiErrorDetail,
+  multiplePluginCandidates,
+  type PluginCandidate,
   type PluginDiagnostic,
   type PluginInstallReport,
   type PluginInstallResponse,
 } from '@/pages/ChatAgent/utils/api';
 import { PluginSourceStep } from './PluginSourceStep';
+import { PluginChooseStep } from './PluginChooseStep';
 import { PluginReportStep } from './PluginReportStep';
 import { PluginBindingsStep } from './PluginBindingsStep';
 
 /**
- * The install wizard: source → installing → report → bindings. A fatal
- * package error (422) returns to the source step with the backend's
- * diagnostics verbatim; everything survivable lands in the report step. The
- * bindings step appears only when the plugin declares secrets the user
- * vault doesn't hold.
+ * The install wizard: source → (choose →) installing → report → bindings. A
+ * fatal package error (422) returns to the source step with the backend's
+ * diagnostics verbatim; a multiple_plugins 422 (a marketplace repo) becomes
+ * the chooser, which re-requests with the picked subdirectory; everything
+ * survivable lands in the report step. The bindings step appears only when
+ * the plugin declares secrets the user vault doesn't hold.
  */
+
+type WizardSource = { file: File } | { url: string };
 
 type WizardStep =
   | { kind: 'source' }
+  | { kind: 'choose'; source: WizardSource; candidates: PluginCandidate[] }
   | { kind: 'installing'; pct: number | null } // null = git (indeterminate)
   | { kind: 'report'; result: PluginInstallResponse }
   | { kind: 'bindings'; result: PluginInstallResponse };
@@ -57,7 +64,7 @@ export function PluginInstallWizard({ onClose }: { onClose: () => void }) {
   const bindSecrets = useBindPluginSecrets();
   const { data: blueprintData } = useUserVaultBlueprints();
 
-  async function install(source: { file: File } | { url: string }) {
+  async function install(source: WizardSource, subdir?: string) {
     setError(null);
     setDiagnostics([]);
     setStep({ kind: 'installing', pct: 'file' in source ? 0 : null });
@@ -66,17 +73,35 @@ export function PluginInstallWizard({ onClose }: { onClose: () => void }) {
         'file' in source
           ? await installZip.mutateAsync({
               file: source.file,
+              subdir,
               onProgress: (pct) =>
                 setStep((s) =>
                   s.kind === 'installing' ? { kind: 'installing', pct } : s,
                 ),
             })
-          : await installUrl.mutateAsync(source.url);
+          : await installUrl.mutateAsync({ sourceUrl: source.url, subdir });
       setStep({ kind: 'report', result });
     } catch (err) {
+      const candidates = multiplePluginCandidates(err);
+      if (candidates) {
+        setStep({ kind: 'choose', source, candidates });
+        return;
+      }
       setError(formatApiErrorDetail(err));
       setDiagnostics(fatalDiagnostics(err));
       setStep({ kind: 'source' });
+    }
+  }
+
+  function handlePick(candidate: PluginCandidate) {
+    if (step.kind !== 'choose') return;
+    // An external marketplace entry lives in another repo: install it from
+    // its own source URL. In-repo candidates re-run the original source
+    // with the picked subdirectory.
+    if (candidate.source_url) {
+      void install({ url: candidate.source_url });
+    } else {
+      void install(step.source, candidate.path);
     }
   }
 
@@ -147,6 +172,7 @@ export function PluginInstallWizard({ onClose }: { onClose: () => void }) {
 
   const stepTitles: Record<WizardStep['kind'], string> = {
     source: t('plugins.install.stepSource'),
+    choose: t('plugins.install.stepChoose'),
     installing: t('plugins.install.stepInstalling'),
     report: t('plugins.install.stepReport'),
     bindings: t('plugins.install.stepBindings'),
@@ -211,6 +237,14 @@ export function PluginInstallWizard({ onClose }: { onClose: () => void }) {
               </div>
             )}
           </>
+        )}
+
+        {step.kind === 'choose' && (
+          <PluginChooseStep
+            candidates={step.candidates}
+            onPick={handlePick}
+            busy={false}
+          />
         )}
 
         {step.kind === 'installing' && (
