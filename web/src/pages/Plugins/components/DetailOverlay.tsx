@@ -2,7 +2,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { motion, useReducedMotion } from 'framer-motion';
 import { X } from 'lucide-react';
-import { useDialogA11y } from '@/hooks/useDialogA11y';
+import { useBackdropDismiss, useDialogA11y } from '@/hooks/useDialogA11y';
 import { IdentityTile } from '@/pages/ChatAgent/components/mcp/IdentityTile';
 
 /**
@@ -33,6 +33,7 @@ export function DetailOverlay({
 }) {
   const { t } = useTranslation();
   const dialogRef = useDialogA11y<HTMLDivElement>(onClose);
+  const backdrop = useBackdropDismiss<HTMLDivElement>(onClose);
   const reducedMotion = useReducedMotion();
   return (
     <motion.div
@@ -42,7 +43,7 @@ export function DetailOverlay({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0, transition: { duration: 0.12 } }}
       transition={{ duration: 0.15 }}
-      onClick={onClose}
+      {...backdrop}
     >
       <motion.div
         ref={dialogRef}
@@ -66,7 +67,6 @@ export function DetailOverlay({
             : { opacity: 0, y: 8, scale: 0.98, transition: { duration: 0.14 } }
         }
         transition={{ duration: 0.32, ease: EASE_OUT }}
-        onClick={(e) => e.stopPropagation()}
       >
         <button
           type="button"

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader } from '@/components/ui/loader';
-import type { UserVaultBlueprint } from '@/pages/ChatAgent/utils/api';
+import type { PluginSecretRequest } from '@/pages/ChatAgent/utils/api';
 
 /**
  * Step 4 of the install wizard: the credentials the plugin declared and the
@@ -9,20 +9,23 @@ import type { UserVaultBlueprint } from '@/pages/ChatAgent/utils/api';
  * bindings endpoint. Skipping is always allowed — an unfilled binding leaves
  * the server at needs_secret, which the MCP list already renders with its
  * own "set up" affordance.
+ *
+ * The label and description come with the request, not from the vault's
+ * blueprint catalog. That catalog is keyed by name and holds one entry per
+ * credential, so on a name this plugin shares with a builtin or with another
+ * plugin it would describe somebody else's request on this plugin's consent
+ * screen.
  */
 
 export function PluginBindingsStep({
   required,
-  blueprints,
   onBind,
   binding,
   error,
   onSkip,
 }: {
-  /** Declared secret names still missing from the vault. */
-  required: string[];
-  /** Blueprint metadata for those names, when the blueprints query has it. */
-  blueprints: UserVaultBlueprint[];
+  /** What this package declared, minus what the vault already holds. */
+  required: PluginSecretRequest[];
   onBind: (secrets: Record<string, string>) => void;
   binding: boolean;
   error: string | null;
@@ -31,7 +34,6 @@ export function PluginBindingsStep({
   const { t } = useTranslation();
   const [values, setValues] = useState<Record<string, string>>({});
 
-  const byName = new Map(blueprints.map((b) => [b.name, b]));
   const filled = Object.fromEntries(
     Object.entries(values).filter(([, v]) => v.trim().length > 0),
   );
@@ -43,8 +45,7 @@ export function PluginBindingsStep({
         {t('plugins.install.bindingsHint')}
       </p>
 
-      {required.map((name) => {
-        const bp = byName.get(name);
+      {required.map(({ name, label, description, docs_url }) => {
         return (
           <div key={name} className="flex flex-col gap-1">
             <label
@@ -53,7 +54,7 @@ export function PluginBindingsStep({
               htmlFor={`plugin-binding-${name}`}
             >
               <span className="font-medium" style={{ color: 'var(--color-text-primary)' }}>
-                {bp?.label || name}
+                {label}
               </span>
               <span
                 className="font-mono px-1.5 py-0.5 rounded text-[0.6875rem]"
@@ -65,9 +66,9 @@ export function PluginBindingsStep({
                 {name}
               </span>
             </label>
-            {bp?.description && (
+            {description && (
               <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-                {bp.description}
+                {description}
               </p>
             )}
             <input
@@ -84,9 +85,9 @@ export function PluginBindingsStep({
                 border: '1px solid var(--color-border-muted)',
               }}
             />
-            {bp?.docs_url && (
+            {docs_url && (
               <a
-                href={bp.docs_url}
+                href={docs_url}
                 target="_blank"
                 rel="noreferrer"
                 className="text-[0.6875rem] underline"

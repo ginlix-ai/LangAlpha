@@ -14,6 +14,7 @@ import {
   DetailOverlay,
   DetailSection,
 } from './DetailOverlay';
+import { PluginOriginBadge, PluginSuppressedBadge } from './PluginBadges';
 
 /**
  * A skill's detail overlay: the SKILL.md source is the centerpiece — the
@@ -65,11 +66,8 @@ export function SkillDetail({
             <>
               {skill.command && <TagBadge>/{skill.command}</TagBadge>}
               <span>{originLabel}</span>
-              {skill.plugin_name && (
-                <span>
-                  {t('plugins.component.fromPlugin', { plugin: skill.plugin_name })}
-                </span>
-              )}
+              <PluginOriginBadge plugin={skill.plugin_name} variant="prose" />
+              <PluginSuppressedBadge row={skill} variant="prose" />
               {lockedByUserTier && (
                 <span>{t('plugins.skills.userDisabledBadge')}</span>
               )}
@@ -77,6 +75,13 @@ export function SkillDetail({
           }
           controls={
             onToggle && (
+              // Stays live while the plugin is off, unlike the user-tier lock
+              // beside it. A suppressed row still owns its own `enabled`, and
+              // that flag is what decides whether it comes back when the
+              // plugin does — so the switch is the one way to exclude a single
+              // component before re-enabling its plugin. The badge above says
+              // why the row is not delivered right now; the switch is not
+              // claiming otherwise.
               <EnabledToggle
                 enabled={skill.enabled}
                 name={skill.name}

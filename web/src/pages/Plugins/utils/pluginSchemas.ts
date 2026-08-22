@@ -30,11 +30,33 @@ export function validatePluginZip(file: File): string | null {
 }
 
 /**
- * Returns null when the URL can be submitted, else a reason. Reuses the MCP
- * remote-URL SSRF ladder; the backend additionally normalizes forge repo
- * pages (github/gitlab/codeberg/bitbucket) to their archive endpoints, so a
- * plain repository URL is fine here.
+ * The remote-URL policy's refusals, restated as reason key suffixes. The
+ * policy stays `validateRemoteUrl`'s to decide; what it returns is an English
+ * sentence written for the MCP server form, and an install dialog must not
+ * speak another surface's vocabulary or another user's language. Prefixes,
+ * because two of the host refusals differ only in their tail.
+ */
+const URL_REASON_KEYS: ReadonlyArray<readonly [string, string]> = [
+  ['url is required', 'urlRequired'],
+  ['url must not contain secrets', 'hasPlaceholder'],
+  ['url must use https', 'notHttps'],
+  ['url must not contain userinfo', 'hasUserinfo'],
+  ['url must include a host', 'badHost'],
+  ['url host', 'badHost'],
+];
+
+/**
+ * Returns null when the URL can be submitted, else a reason key suffix (as
+ * `validatePluginZip` does, so both branches of the source step translate the
+ * same way). Reuses the MCP remote-URL SSRF ladder; the backend additionally
+ * normalizes forge repo pages (github/gitlab/codeberg/bitbucket) to their
+ * archive endpoints, so a plain repository URL is fine here.
  */
 export function validatePluginSourceUrl(raw: string): string | null {
-  return validateRemoteUrl(raw.trim());
+  const reason = validateRemoteUrl(raw.trim());
+  if (!reason) return null;
+  const matched = URL_REASON_KEYS.find(([prefix]) => reason.startsWith(prefix));
+  // An unrecognized refusal is still a refusal: fall back to the generic key
+  // rather than leaking the policy's own sentence into this dialog.
+  return matched ? matched[1] : 'badUrl';
 }

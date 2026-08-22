@@ -16,6 +16,7 @@ import {
   TagBadge,
 } from '@/pages/ChatAgent/components/mcp/McpPrimitives';
 import type { SkillInfo } from '@/pages/ChatAgent/utils/api';
+import { PluginOriginBadge, PluginSuppressedBadge } from './PluginBadges';
 
 /**
  * One skill on the shared row shell. Platform rows carry only the account-wide
@@ -136,32 +137,14 @@ export function SkillRow({
             {!inDeck && skill.origin === 'platform' && (
               <TagBadge soft>{t('plugins.skills.platformBadge')}</TagBadge>
             )}
-            {!inDeck && skill.plugin_name && (
-              <TagBadge
-                soft
-                title={t('plugins.component.fromPlugin', {
-                  plugin: skill.plugin_name,
-                })}
-              >
-                {skill.plugin_name}
-              </TagBadge>
-            )}
+            {!inDeck && <PluginOriginBadge plugin={skill.plugin_name} />}
             {skill.shadows_inherited && (
               <TagBadge soft>{t('plugins.skills.shadowsBadge')}</TagBadge>
             )}
             {lockedByUserTier && (
               <TagBadge soft>{t('plugins.skills.userDisabledBadge')}</TagBadge>
             )}
-            {skill.plugin_name && skill.plugin_enabled === false && (
-              <TagBadge
-                soft
-                title={t('plugins.component.suppressed', {
-                  plugin: skill.plugin_name,
-                })}
-              >
-                {t('plugins.component.suppressedBadge')}
-              </TagBadge>
-            )}
+            <PluginSuppressedBadge row={skill} />
           </ServerNameLine>
           {skill.description && (
             <p

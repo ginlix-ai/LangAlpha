@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../lib/queryKeys';
+import { invalidateMcpFanout } from './useMcpServers';
+import { invalidateSkillFanout } from './useSkills';
 import {
   bindPluginSecrets,
   deletePlugin,
@@ -19,13 +21,20 @@ import {
  * One blast radius for every plugin mutation. Install fans components into
  * the MCP catalog and the skill tier and can create vault secrets, and each
  * of those feeds a query that has already stopped polling.
+ *
+ * This is the widest of the three and belongs only to a mutation that really
+ * is plugin-wide. An action confined to one tier takes that tier's fan-out
+ * instead; both are re-exported here so the choice is visible in one place,
+ * and each is defined beside the mutations that share its reasoning.
  */
 export function invalidatePluginFanout(qc: QueryClient) {
   qc.invalidateQueries({ queryKey: queryKeys.plugins.all });
-  qc.invalidateQueries({ queryKey: queryKeys.mcp.all });
-  qc.invalidateQueries({ queryKey: queryKeys.skills.all });
+  invalidateMcpFanout(qc);
+  invalidateSkillFanout(qc);
   qc.invalidateQueries({ queryKey: queryKeys.userVault.all });
 }
+
+export { invalidateMcpFanout, invalidateSkillFanout };
 
 export function usePlugins(enabled = true) {
   return useQuery({
@@ -103,6 +112,11 @@ export function useBindPluginSecrets() {
       secrets: Record<string, string>;
     }) => bindPluginSecrets(name, secrets),
     onSuccess: () => invalidatePluginFanout(queryClient),
+    // The mutation's variables ARE the plaintext credentials, and React Query
+    // keeps them in the MutationCache for gcTime after settling — five minutes
+    // by default, and unaffected by the wizard closing. Nothing reads them
+    // again, so drop them the moment the request settles.
+    gcTime: 0,
   });
 }
 

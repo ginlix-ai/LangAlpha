@@ -2596,7 +2596,7 @@
   },
   "mcp": {
     "list": {
-      "title": "MCP 服务器",
+      "title": "连接器",
       "addServer": "添加服务器",
       "importJson": "导入 JSON",
       "importHint": "粘贴标准 mcpServers JSON 配置",
@@ -2645,7 +2645,7 @@
       "pending": "待检查",
       "disabled": "已禁用",
       "unknown": "未知",
-      "pendingHint": "等待发现 — 启动工作区或测试连接"
+      "pendingHint": "等待发现。请启动工作区，或测试连接。"
     },
     "lifecycle": {
       "verifying": "验证中…",
@@ -2654,6 +2654,11 @@
       "applying": "应用到智能体…",
       "appliesOnStart": "工作区启动后生效",
       "ready": "就绪"
+    },
+    "discover": {
+      "failed": "发现失败",
+      "noTools": "已连接，未报告工具",
+      "toolCount_other": "已连接，{{count}} 个工具"
     }
   },
   "vault": {
@@ -2816,7 +2821,6 @@
       "uninstall": "卸载",
       "toggleFailed": "无法更新插件",
       "updatedTitle": "{{plugin}} 已更新",
-      "updatedNoChanges": "已是最新版本",
       "updateFailed": "更新失败",
       "exportFailed": "导出失败",
       "uninstalledTitle": "{{plugin}} 已卸载",
@@ -2847,12 +2851,19 @@
       "notZip": "请选择 .zip 文件",
       "chooseHint": "该来源包含 {{count}} 个插件，请选择要安装的插件。",
       "tooLarge": "zip 超过 64 MB 限制",
+      "urlRequired": "请输入 git 地址或选择 zip 文件",
+      "notHttps": "git 地址必须以 https:// 开头",
+      "hasPlaceholder": "git 地址不能包含占位符或密钥",
+      "hasUserinfo": "请从 git 地址中移除用户名和密码",
+      "badHost": "无法访问该主机，请使用 github.com 等公开的 git 托管地址",
+      "badUrl": "git 地址格式无效",
       "fetching": "正在获取插件",
       "uploading": "上传中 {{percent}}%",
       "reportInstalled": "已安装",
       "reportSkipped": "已跳过",
       "reportUpgradable": "需要确认",
       "reportWarnings": "警告",
+      "reportNoChanges": "没有变化，该插件已是最新版本。",
       "sseUpgradeHint": "这些服务器声明了旧版 SSE 传输。它们通过了 streamable HTTP 探测，可以用现代传输方式安装。",
       "sseUpgradeConfirm": "以 streamable HTTP 安装",
       "sseUpgradeFailed": "升级失败",
@@ -2942,7 +2953,8 @@
       "homepage": "主页",
       "sourceLabel": "来源",
       "installed": "安装于",
-      "openComponentAria": "打开 {{name}}"
+      "openComponentAria": "打开 {{name}}",
+      "toolsFailed": "无法加载工具。请求失败，请重试。"
     }
   }
 }

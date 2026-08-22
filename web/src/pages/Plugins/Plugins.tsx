@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { motion, useReducedMotion } from 'framer-motion';
@@ -15,7 +15,7 @@ import { McpServers } from './components/McpServers';
 import { SkillsList } from './components/SkillsList';
 import { PluginSecrets } from './components/PluginSecrets';
 import { PluginsList } from './components/PluginsList';
-import type { AddAction, AddSignal } from './utils/addSignal';
+import { ADD_INTENT_TAB, ADD_PARAM, type AddIntent } from './utils/addParam';
 import './Plugins.css';
 
 /**
@@ -52,39 +52,24 @@ function Plugins() {
   const { t } = useTranslation();
   const reducedMotion = useReducedMotion();
 
-  const [activeTab, setActiveTab] = useState<Tab>(
-    resolveTab(searchParams.get('tab')) ?? 'plugins',
-  );
-  const [addSignal, setAddSignal] = useState<AddSignal | null>(null);
+  // The URL is the tab state, not a mirror of it: derived, so back/forward
+  // needs no sync effect and cannot briefly disagree with the address bar.
+  const activeTab: Tab = resolveTab(searchParams.get('tab')) ?? 'plugins';
   const pageRef = useRef<HTMLDivElement>(null);
   useScrollMemory(pageRef, 'page:plugins');
 
   const handleTabChange = (tab: Tab) => {
-    setActiveTab(tab);
     setSearchParams({ tab }, { replace: true });
   };
 
-  // The one Add entry point for the whole page: switch to the action's tab,
-  // then signal that tab's list to open its own modal.
-  const requestAdd = (action: AddAction) => {
-    const tab: Tab =
-      action === 'install-plugin'
-        ? 'plugins'
-        : action === 'upload-skill'
-          ? 'skills'
-          : 'mcp';
-    if (tab !== activeTab) handleTabChange(tab);
-    setAddSignal({ action, nonce: Date.now() });
+  // The one Add entry point for the whole page: name the tab and the intent in
+  // one navigation, and let that tab's list act on the intent and strip it.
+  const requestAdd = (intent: AddIntent) => {
+    setSearchParams(
+      { tab: ADD_INTENT_TAB[intent], [ADD_PARAM]: intent },
+      { replace: true },
+    );
   };
-
-  // Sync from URL on back/forward navigation
-  useEffect(() => {
-    const urlTab = resolveTab(searchParams.get('tab'));
-    if (urlTab && urlTab !== activeTab) {
-      setActiveTab(urlTab);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
 
   // OAuth callback landing: toast the outcome once, then strip the params so a
   // refresh doesn't re-announce it.
@@ -144,16 +129,16 @@ function Plugins() {
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => requestAdd('install-plugin')}>
+              <DropdownMenuItem onSelect={() => requestAdd('plugin')}>
                 {t('plugins.addMenu.installPlugin')}
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => requestAdd('add-server')}>
+              <DropdownMenuItem onSelect={() => requestAdd('server')}>
                 {t('plugins.addMenu.addServer')}
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => requestAdd('import-servers')}>
+              <DropdownMenuItem onSelect={() => requestAdd('import')}>
                 {t('plugins.addMenu.importServers')}
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => requestAdd('upload-skill')}>
+              <DropdownMenuItem onSelect={() => requestAdd('skill')}>
                 {t('plugins.addMenu.uploadSkill')}
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -189,9 +174,9 @@ function Plugins() {
         </div>
 
         <div className="plugins-content">
-          {activeTab === 'plugins' && <PluginsList addSignal={addSignal} />}
-          {activeTab === 'mcp' && <McpServers addSignal={addSignal} />}
-          {activeTab === 'skills' && <SkillsList addSignal={addSignal} />}
+          {activeTab === 'plugins' && <PluginsList />}
+          {activeTab === 'mcp' && <McpServers />}
+          {activeTab === 'skills' && <SkillsList />}
           {activeTab === 'secrets' && <PluginSecrets />}
         </div>
       </div>

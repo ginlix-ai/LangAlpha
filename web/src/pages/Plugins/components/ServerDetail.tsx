@@ -5,6 +5,7 @@ import {
   EnabledToggle,
   TagBadge,
 } from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+import { oauthLabelKey } from '@/pages/ChatAgent/components/mcp/McpStatusPill';
 import { useMcpCatalogServerTools } from '@/hooks/useMcpServers';
 import { createDateFormatter } from '@/lib/format';
 import type {
@@ -18,6 +19,7 @@ import {
   DetailOverlay,
   DetailSection,
 } from './DetailOverlay';
+import { PluginOriginBadge, PluginSuppressedBadge } from './PluginBadges';
 
 /**
  * An MCP server's detail overlay, for all three origins the Plugins page
@@ -56,17 +58,9 @@ export function ServerDetail({
   const toolsQuery = useMcpCatalogServerTools(origin === 'user' ? server.name : null);
 
   const catalog = origin === 'user' ? (data.server as CatalogServer) : null;
-  const oauthStatus = catalog?.oauth_status ?? null;
-  const oauthLabel =
-    oauthStatus === 'connected'
-      ? t('plugins.oauth.connected')
-      : oauthStatus === 'needs_reauth'
-        ? t('plugins.oauth.needsReauth')
-        : oauthStatus === 'refresh_ambiguous'
-          ? t('plugins.oauth.refreshAmbiguous')
-          : oauthStatus === 'revoked'
-            ? t('plugins.oauth.revoked')
-            : null;
+  // Off the pill's own exhaustive table: a status added later is a compile
+  // error there rather than a label that silently goes missing here.
+  const oauthLabel = oauthLabelKey(catalog?.oauth_status);
 
   return (
     <DetailOverlay
@@ -88,16 +82,19 @@ export function ServerDetail({
                   })}
                 </span>
               )}
-              {catalog?.plugin_name && (
-                <span>
-                  {t('plugins.component.fromPlugin', { plugin: catalog.plugin_name })}
-                </span>
-              )}
-              {oauthLabel && <span>{oauthLabel}</span>}
+              <PluginOriginBadge plugin={catalog?.plugin_name} variant="prose" />
+              <PluginSuppressedBadge row={catalog} variant="prose" />
+              {oauthLabel && <span>{t(oauthLabel)}</span>}
             </>
           }
           controls={
             onToggle && (
+              // Stays live while the owning plugin is off: the row keeps its
+              // own `enabled`, and that flag decides whether it comes back
+              // when the plugin does. The badge above says why it is not
+              // delivered right now; disabling the switch would strand the
+              // user with no way to exclude one component of a plugin they
+              // are about to turn back on.
               <EnabledToggle
                 enabled={server.enabled ?? false}
                 name={server.name}
@@ -127,6 +124,13 @@ export function ServerDetail({
                 {t('common.loading')}
               </span>
             </div>
+          ) : toolsQuery.isError ? (
+            // Distinct from the empty case below. Both used to read
+            // "no tools discovered yet", which tells the user to wait when
+            // the truth is that the request failed and wants a retry.
+            <p className="text-xs" style={{ color: 'var(--color-loss)' }}>
+              {t('plugins.detail.toolsFailed')}
+            </p>
           ) : !toolsQuery.data || toolsQuery.data.tools.length === 0 ? (
             <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
               {t('plugins.detail.toolsEmpty')}

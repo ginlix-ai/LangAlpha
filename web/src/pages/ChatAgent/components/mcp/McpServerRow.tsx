@@ -16,6 +16,7 @@ import {
   ServerRowShell,
   TagBadge,
 } from './McpPrimitives';
+import { PluginOriginBadge } from '@/pages/Plugins/components/PluginBadges';
 import { isHostDiscovered, isOauthBroken, showsWorkspaceDetail } from './mcpState';
 import type { EffectiveServer } from '../../utils/api';
 
@@ -125,14 +126,7 @@ function McpServerRowImpl({
                 {t('mcp.row.overridesInherited')}
               </TagBadge>
             )}
-            {server.plugin_name && (
-              <TagBadge
-                soft
-                title={t('plugins.component.fromPlugin', { plugin: server.plugin_name })}
-              >
-                {server.plugin_name}
-              </TagBadge>
-            )}
+            <PluginOriginBadge plugin={server.plugin_name} />
             {lockedByUserTier && <TagBadge soft>{t('mcp.row.userDisabled')}</TagBadge>}
           </ServerNameLine>
 

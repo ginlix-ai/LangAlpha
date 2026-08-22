@@ -1,15 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { AnimatePresence } from 'framer-motion';
-import { Blocks, Folder, Link2, Link2Off, Pencil, Plus, RefreshCw, Server, Trash2 } from 'lucide-react';
-import { Loader } from '@/components/ui/loader';
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-} from '@/components/ui/dropdown-menu';
+import { Blocks, Folder, Plus, Server } from 'lucide-react';
 import { toast } from '@/components/ui/use-toast';
 import {
   useMcpCatalog,
@@ -20,71 +13,46 @@ import {
   useDeleteMcpCatalogServer,
   useToggleMcpCatalogServer,
   useImportMcpCatalogServers,
-  useDisconnectMcpOauth,
-  useRefreshMcpOauthSchemas,
   useSetMcpServerEnabledInWorkspace,
   useAdoptMcpServerToWorkspace,
   usePromoteMcpServerToTemplate,
 } from '@/hooks/useMcpServers';
-import { useWorkspaces } from '@/hooks/useWorkspaces';
+import { invalidateMcpFanout } from '@/hooks/usePlugins';
 import { useUserVaultSecrets, useCreateUserVaultSecret } from '@/hooks/useUserVault';
 import { McpServerModal } from '@/pages/ChatAgent/components/mcp/McpServerModal';
 import { McpImportModal } from '@/pages/ChatAgent/components/mcp/McpImportModal';
-import { McpOauthPill } from '@/pages/ChatAgent/components/mcp/McpStatusPill';
-import {
-  canDisconnectOauth,
-  isOauthBroken,
-  isPluginOwned,
-  isPluginSuppressed,
-  needsOauthConnect,
-} from '@/pages/ChatAgent/components/mcp/mcpState';
+import { isOauthBroken } from '@/pages/ChatAgent/components/mcp/mcpState';
 import { useMcpServerList } from '@/pages/ChatAgent/components/mcp/useMcpServerList';
-import { BuiltinMcpSection } from './BuiltinMcpSection';
-import { ScopeControl } from './ScopeControl';
-import type { ScopeWorkspace } from './ScopeControl';
-import { IdentityTile } from '@/pages/ChatAgent/components/mcp/IdentityTile';
 import {
   ConfirmStrip,
-  EnabledToggle,
   HeaderButton,
-  KebabTrigger,
   ListEmpty,
   ListError,
   ListHeader,
   ListSkeleton,
-  MetaText,
-  ServerNameLine,
-  ServerRowShell,
-  TagBadge,
 } from '@/pages/ChatAgent/components/mcp/McpPrimitives';
 import {
-  adoptMcpServerToWorkspace,
-  deleteMcpCatalogServer,
   formatApiErrorDetail,
-  promoteWorkspaceMcpServerToTemplate,
-  setBuiltinMcpServerEnabled,
-  setMcpCatalogServerEnabled,
-  setWorkspaceMcpServerEnabled,
-  startMcpOauth,
   type CatalogServer,
-  type WorkspaceScopedMcpServer,
 } from '@/pages/ChatAgent/utils/api';
-import { matchesFilter } from '../utils/groupOrigins';
-import type { AddSignal } from '../utils/addSignal';
-import { parseDetail, withDetail } from '../utils/detailParam';
-import { clearDenyPlan, onlyInPlan } from '../utils/scopeTargets';
-import { BulkActionBar, type BulkAction } from './BulkActionBar';
+import { groupBy, matchesFilter } from '../utils/groupOrigins';
+import { isPluginSuppressed } from '../utils/provenance';
+import { withDetail } from '../utils/detailParam';
+import { useAddIntent } from '../hooks/useAddIntent';
+import { useDetailParam } from '../hooks/useDetailParam';
+import { useMcpBulkActions } from '../hooks/useMcpBulkActions';
+import { useMcpOauthActions } from '../hooks/useMcpOauthActions';
+import { usePluginListSurface } from '../hooks/usePluginListSurface';
+import { useWorkspaceOptions } from '../hooks/useWorkspaceOptions';
+import { BuiltinMcpSection } from './BuiltinMcpSection';
+import { BulkActionBar } from './BulkActionBar';
 import { EmptyState } from './EmptyState';
-import { ServerDetail, type ServerDetailData } from './ServerDetail';
-import type { BulkScopeSpec } from './BulkScopeMenu';
 import { GroupDeck } from './GroupDeck';
-import { ListControls, matchesStateFilter, type StateFilter } from './ListControls';
-import {
-  rowSelection,
-  useBulkRunner,
-  useBulkSelection,
-  type BulkTarget,
-} from './useBulkSelection';
+import { ListControls } from './ListControls';
+import { McpCatalogRow } from './McpCatalogRow';
+import { McpWorkspaceRow } from './McpWorkspaceRow';
+import { PluginSuppressedBadge } from './PluginBadges';
+import { ServerDetail, type ServerDetailData } from './ServerDetail';
 
 /**
  * The Plugins → MCP tab, grouped by origin: the Platform deck (builtins),
@@ -94,14 +62,12 @@ import {
  * servers carry the OAuth connect lifecycle — the vendor bearer never leaves
  * the host, so "Connect" here is all a sandbox needs for the server to work.
  *
- * Row anatomy mirrors the workspace MCP tab (`McpServerRow`): identity line
- * (icon + name + transport badge), then the status line (OAuth pill + scope
- * text), then the description — same primitives, same rhythm. The list
- * mechanics (modals, toggle, delete) are the shared `useMcpServerList`; what
- * lives here is the OAuth lifecycle, which the workspace tab has no version of.
+ * This file owns the tab's composition and the workspace-tier writes; the row
+ * bodies, the OAuth lifecycle and the bulk actions each live beside their own
+ * reasoning.
  */
 
-export function McpServers({ addSignal }: { addSignal?: AddSignal | null }) {
+export function McpServers() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
   const { data: catalog, isLoading, error } = useMcpCatalog();
@@ -113,13 +79,11 @@ export function McpServers({ addSignal }: { addSignal?: AddSignal | null }) {
   const deleteMutation = useDeleteMcpCatalogServer();
   const toggleMutation = useToggleMcpCatalogServer();
   const importMutation = useImportMcpCatalogServers();
-  const disconnectMutation = useDisconnectMcpOauth();
-  const refreshMutation = useRefreshMcpOauthSchemas();
   const createSecretMutation = useCreateUserVaultSecret();
   const wsEnableMutation = useSetMcpServerEnabledInWorkspace();
   const adoptMutation = useAdoptMcpServerToWorkspace();
   const moveUpMutation = usePromoteMcpServerToTemplate();
-  const { data: wsData } = useWorkspaces({ limit: 100 });
+  const { workspaces: wsOptions, nameById: wsNameById } = useWorkspaceOptions();
 
   const {
     modalOpen,
@@ -164,113 +128,94 @@ export function McpServers({ addSignal }: { addSignal?: AddSignal | null }) {
       }),
   });
 
-  const [connectingName, setConnectingName] = useState<string | null>(null);
-  const [refreshingName, setRefreshingName] = useState<string | null>(null);
+  const oauth = useMcpOauthActions();
   const [movingName, setMovingName] = useState<string | null>(null);
+  const [builtinTogglingName, setBuiltinTogglingName] = useState<string | null>(null);
+  // Two busy identities for the same endpoint, because two different rows can
+  // be the one the user touched: a user-tier deny checklist marks the user-tier
+  // row (by name), a workspace row's own toggle marks that row (by workspace +
+  // name). One key for both lights up an unrelated sibling whenever a
+  // workspace row shadows an inherited name.
+  const [denyBusyName, setDenyBusyName] = useState<string | null>(null);
   const [wsTogglingKey, setWsTogglingKey] = useState<string | null>(null);
-  const [filter, setFilter] = useState('');
-  const [stateFilter, setStateFilter] = useState<StateFilter>('all');
-  const selection = useBulkSelection();
-  const { progress, run } = useBulkRunner(selection);
+  // Bulk delete already excludes plugin-owned rows and the rest of the actions
+  // are enable/disable/scope, so no bulk run here can change plugin identity.
+  const surface = usePluginListSurface({ invalidate: invalidateMcpFanout });
+  const { selection } = surface;
 
-  useEffect(() => {
-    if (addSignal?.action === 'add-server') openAdd();
-    else if (addSignal?.action === 'import-servers') openImport();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addSignal]);
+  useAddIntent({ server: openAdd, import: openImport });
 
   const secretNames = (vault?.secrets ?? []).map((s) => s.name);
   const servers = catalog?.servers ?? [];
   const builtinServers = builtinData?.servers ?? [];
+  const allWorkspaceServers = catalog?.workspace_servers ?? [];
   const maxServers = catalog?.max_servers ?? 0;
-  const forceExpanded =
-    selection.selecting || !!filter.trim() || stateFilter !== 'all';
 
+  const visibleBuiltins = builtinServers.filter(
+    (s) =>
+      matchesFilter(surface.filter, s.name, s.description) &&
+      surface.matchesState(s.enabled),
+  );
   const visibleServers = servers.filter(
     (s) =>
-      matchesFilter(filter, s.name, s.description, s.plugin_name) &&
-      matchesStateFilter(
-        stateFilter,
+      matchesFilter(surface.filter, s.name, s.description, s.plugin_name) &&
+      surface.matchesState(
         !!s.enabled,
         isOauthBroken(s.oauth_status) || isPluginSuppressed(s),
       ),
   );
-  const ownServers = visibleServers.filter((s) => !s.plugin_name);
-  const pluginServers = visibleServers.filter((s) => s.plugin_name);
-  const byPlugin = new Map<string, CatalogServer[]>();
-  for (const s of pluginServers) {
-    const plugin = s.plugin_name!;
-    byPlugin.set(plugin, [...(byPlugin.get(plugin) ?? []), s]);
-  }
-  const pluginSections = [...byPlugin.entries()].sort(([a], [b]) => a.localeCompare(b));
-
-  const workspaces = (
-    (wsData as { workspaces?: { workspace_id: string; name?: string }[] })
-      ?.workspaces ?? []
-  );
-  const wsOptions: ScopeWorkspace[] = workspaces.map((w) => ({
-    id: w.workspace_id,
-    name: w.name || t('plugins.scope.unknownWorkspace'),
-  }));
-  const wsNameById = new Map(wsOptions.map((w) => [w.id, w.name]));
-
-  const workspaceServers = (catalog?.workspace_servers ?? []).filter(
+  const visibleWorkspaceServers = allWorkspaceServers.filter(
     (s) =>
-      matchesFilter(filter, s.name, s.description) &&
-      matchesStateFilter(stateFilter, s.enabled),
+      matchesFilter(surface.filter, s.name, s.description) &&
+      surface.matchesState(s.enabled),
   );
-  const byWorkspace = new Map<string, WorkspaceScopedMcpServer[]>();
-  for (const s of workspaceServers) {
-    byWorkspace.set(s.workspace_id, [...(byWorkspace.get(s.workspace_id) ?? []), s]);
-  }
-  const workspaceSections = [...byWorkspace.entries()].sort(([a], [b]) =>
-    (wsNameById.get(a) ?? '').localeCompare(wsNameById.get(b) ?? ''),
-  );
+  // Every row the tab can show, across every section — the one population the
+  // "No matches" notice is allowed to be keyed on.
+  const visibleTotal =
+    visibleBuiltins.length + visibleServers.length + visibleWorkspaceServers.length;
+
+  const ownServers = visibleServers.filter((s) => !s.plugin_name);
+  const pluginSections = [
+    ...groupBy(
+      visibleServers.filter((s) => s.plugin_name),
+      (s) => s.plugin_name as string,
+    ).entries(),
+  ].sort(([a], [b]) => a.localeCompare(b));
+  const workspaceSections = [
+    ...groupBy(visibleWorkspaceServers, (s) => s.workspace_id).entries(),
+  ].sort(([a], [b]) => (wsNameById.get(a) ?? '').localeCompare(wsNameById.get(b) ?? ''));
 
   // --- Detail overlay (?detail=server:NAME [&dws=wsid]) ---
   // Builtin names are reserved against catalog names, so a bare name lookup
   // is unambiguous; a `dws` selects the workspace-local row instead.
-  const detailRef = parseDetail(searchParams);
-  const detailData: ServerDetailData | null = (() => {
-    if (detailRef?.kind !== 'server') return null;
-    if (detailRef.workspaceId) {
-      const row = (catalog?.workspace_servers ?? []).find(
-        (s) => s.workspace_id === detailRef.workspaceId && s.name === detailRef.name,
-      );
-      return row ? { origin: 'workspace' as const, server: row } : null;
-    }
-    const builtin = builtinServers.find((s) => s.name === detailRef.name);
-    if (builtin) return { origin: 'builtin' as const, server: builtin };
-    const cat = servers.find((s) => s.name === detailRef.name);
-    return cat ? { origin: 'user' as const, server: cat } : null;
-  })();
+  const detail = useDetailParam<ServerDetailData>(
+    'server',
+    (ref) => {
+      if (ref.workspaceId) {
+        const row = allWorkspaceServers.find(
+          (s) => s.workspace_id === ref.workspaceId && s.name === ref.name,
+        );
+        return row ? { origin: 'workspace' as const, server: row } : null;
+      }
+      const builtin = builtinServers.find((s) => s.name === ref.name);
+      if (builtin) return { origin: 'builtin' as const, server: builtin };
+      const cat = servers.find((s) => s.name === ref.name);
+      return cat ? { origin: 'user' as const, server: cat } : null;
+    },
+    !isLoading && catalog !== undefined && builtinData !== undefined,
+  );
+  const detailData = detail.target;
 
-  function openDetail(name: string, workspaceId: string | null = null) {
-    setSearchParams(
-      withDetail(searchParams, { kind: 'server', name, workspaceId }),
-      { replace: true },
-    );
-  }
-  function closeDetail() {
-    setSearchParams(withDetail(searchParams, null), { replace: true });
-  }
-
-  // A deep link to a row that no longer exists (deleted, renamed) parks a
-  // dead overlay param in the URL — clear it once both lists have answered.
-  const detailStale =
-    detailRef?.kind === 'server' &&
-    !detailData &&
-    !isLoading &&
-    catalog !== undefined &&
-    builtinData !== undefined;
-  useEffect(() => {
-    if (detailStale) {
-      setSearchParams(withDetail(searchParams, null), { replace: true });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detailStale]);
+  const bulk = useMcpBulkActions({
+    builtins: builtinServers,
+    catalog: servers,
+    workspaceServers: allWorkspaceServers,
+    surface,
+    workspaces: wsOptions,
+  });
 
   async function handleToggleBuiltin(name: string, enabled: boolean) {
+    setBuiltinTogglingName(name);
     try {
       await builtinToggleMutation.mutateAsync({ name, enabled });
     } catch (err) {
@@ -279,24 +224,51 @@ export function McpServers({ addSignal }: { addSignal?: AddSignal | null }) {
         title: t('plugins.servers.toggleFailed'),
         description: formatApiErrorDetail(err),
       });
+    } finally {
+      setBuiltinTogglingName(null);
     }
   }
 
-  async function handleSetWorkspaceDisabled(
-    name: string,
+  async function setWorkspaceEnabled(
     workspaceId: string,
-    disabled: boolean,
+    name: string,
+    enabled: boolean,
   ) {
-    // Keyed by row so one row's in-flight toggle doesn't lock its siblings.
-    setWsTogglingKey(`${workspaceId}:${name}`);
     try {
-      await wsEnableMutation.mutateAsync({ workspaceId, name, enabled: !disabled });
+      await wsEnableMutation.mutateAsync({ workspaceId, name, enabled });
     } catch (err) {
       toast({
         variant: 'destructive',
         title: t('plugins.servers.toggleFailed'),
         description: formatApiErrorDetail(err),
       });
+    }
+  }
+
+  /** The per-workspace deny checklist on a user-tier row (builtin or catalog). */
+  async function handleSetWorkspaceDisabled(
+    name: string,
+    workspaceId: string,
+    disabled: boolean,
+  ) {
+    setDenyBusyName(name);
+    try {
+      await setWorkspaceEnabled(workspaceId, name, !disabled);
+    } finally {
+      setDenyBusyName(null);
+    }
+  }
+
+  /** A workspace row's own enabled toggle, from the row or its detail overlay. */
+  async function handleSetWorkspaceRowEnabled(
+    workspaceId: string,
+    name: string,
+    enabled: boolean,
+  ) {
+    // Keyed by row so one row's in-flight toggle doesn't lock its siblings.
+    setWsTogglingKey(`${workspaceId}:${name}`);
+    try {
+      await setWorkspaceEnabled(workspaceId, name, enabled);
     } finally {
       setWsTogglingKey(null);
     }
@@ -332,447 +304,107 @@ export function McpServers({ addSignal }: { addSignal?: AddSignal | null }) {
     }
   }
 
-  async function handleConnect(name: string) {
-    setConnectingName(name);
-    try {
-      const { authorize_url } = await startMcpOauth(name, '/plugins?tab=mcp');
-      // Full-page navigation into the vendor's consent screen; the backend
-      // callback lands back on /plugins with ?mcp_connected / ?mcp_error.
-      window.location.assign(authorize_url);
-    } catch (err) {
-      setConnectingName(null);
-      toast({
-        variant: 'destructive',
-        title: t('plugins.oauth.connectFailed'),
-        description: formatApiErrorDetail(err),
-      });
-    }
-  }
-
-  async function handleDisconnect(name: string) {
-    try {
-      await disconnectMutation.mutateAsync(name);
-      toast({
-        title: t('plugins.oauth.disconnectedTitle'),
-        description: t('plugins.oauth.disconnectedDesc', { server: name }),
-      });
-    } catch (err) {
-      toast({
-        variant: 'destructive',
-        title: t('plugins.oauth.disconnectFailed'),
-        description: formatApiErrorDetail(err),
-      });
-    }
-  }
-
-  async function handleRefreshSchemas(name: string) {
-    setRefreshingName(name);
-    try {
-      const result = await refreshMutation.mutateAsync(name);
-      if (result.status === 'ok' && !result.error) {
-        toast({
-          title: t('plugins.oauth.refreshedTitle'),
-          description: t('plugins.oauth.refreshedDesc', {
-            server: name,
-            count: result.tool_count,
-          }),
-        });
-      } else if (result.status === 'ok') {
-        // The cache keeps `status`/`tools` from the last good snapshot on a
-        // failed re-discovery but always overwrites `error` — so an ok status
-        // carrying error text means this attempt failed and the count below is
-        // stale. Claiming success here would be a lie. The error string itself
-        // stays out of the copy: it can be a raw connection error against a
-        // user-chosen address, i.e. an internal-reachability oracle.
-        toast({
-          title: t('plugins.oauth.refreshFailedStaleTitle'),
-          description: t('plugins.oauth.refreshFailedStaleDesc', {
-            server: name,
-            count: result.tool_count,
-          }),
-        });
-      } else {
-        toast({
-          variant: 'destructive',
-          title: t('plugins.oauth.refreshFailed'),
-          description: result.error || result.status,
-        });
-      }
-    } catch (err) {
-      toast({
-        variant: 'destructive',
-        title: t('plugins.oauth.refreshFailed'),
-        description: formatApiErrorDetail(err),
-      });
-    } finally {
-      setRefreshingName(null);
-    }
-  }
-
-  // Bulk actions: keys are tab-namespaced so one selection spans builtins,
-  // catalog rows and workspace rows.
-  const selectedBuiltins = builtinServers.filter((s) =>
-    selection.selected.has(`builtin:${s.name}`),
-  );
-  const selectedCatalog = servers.filter((s) =>
-    selection.selected.has(`catalog:${s.name}`),
-  );
-  const selectedWs = (catalog?.workspace_servers ?? []).filter((s) =>
-    selection.selected.has(`ws:${s.workspace_id}:${s.name}`),
-  );
-
-  function toggleTargets(enabled: boolean): BulkTarget[] {
-    return [
-      ...selectedBuiltins
-        .filter((s) => s.enabled !== enabled)
-        .map((s) => ({
-          key: `builtin:${s.name}`,
-          run: () => setBuiltinMcpServerEnabled(s.name, enabled),
-        })),
-      ...selectedCatalog
-        .filter((s) => !!s.enabled !== enabled)
-        .map((s) => ({
-          key: `catalog:${s.name}`,
-          run: () => setMcpCatalogServerEnabled(s.name, enabled),
-        })),
-      ...selectedWs
-        .filter((s) => s.enabled !== enabled)
-        .map((s) => ({
-          key: `ws:${s.workspace_id}:${s.name}`,
-          run: () => setWorkspaceMcpServerEnabled(s.workspace_id, s.name, enabled),
-        })),
-    ];
-  }
-
-  // --- Bulk scope ---
-  // Same eligibility as each row's ScopeControl: the deny-list checklist
-  // exists on enabled user-tier rows (builtin + catalog); moving into a
-  // workspace exists for catalog rows that are neither plugin-owned nor
-  // OAuth-connected (connections live only at the user tier); a workspace
-  // row's only destination is up, blocked while it shadows an inherited name.
-  const liveWsIds = wsOptions.map((w) => w.id);
-  const denyEligible: { key: string; name: string; disabledIds?: string[] }[] = [
-    ...selectedBuiltins
-      .filter((s) => s.enabled)
-      .map((s) => ({
-        key: `builtin:${s.name}`,
-        name: s.name,
-        disabledIds: s.disabled_workspace_ids,
-      })),
-    ...selectedCatalog
-      .filter((s) => !!s.enabled)
-      .map((s) => ({
-        key: `catalog:${s.name}`,
-        name: s.name,
-        disabledIds: s.disabled_workspace_ids,
-      })),
-  ];
-  const upMovable = selectedWs.filter((s) => !s.shadows_inherited);
-  const movableCatalog = selectedCatalog.filter(
-    (s) =>
-      !isPluginOwned(s) && !(s.oauth_status && s.oauth_status !== 'revoked'),
-  );
-
-  function denyTarget(
-    row: { key: string; name: string; disabledIds?: string[] },
-    chosen: ReadonlySet<string> | null,
-  ): BulkTarget | null {
-    const plan = chosen
-      ? onlyInPlan(row.disabledIds, liveWsIds, chosen)
-      : clearDenyPlan(row.disabledIds, liveWsIds);
-    if (plan.length === 0) return null;
-    return {
-      key: row.key,
-      run: async () => {
-        for (const step of plan) {
-          await setWorkspaceMcpServerEnabled(step.workspaceId, row.name, step.enabled);
-        }
-      },
-    };
-  }
-
-  function runScope(targets: BulkTarget[]) {
-    if (targets.length === 0) {
-      toast({ title: t('plugins.bulk.noChanges') });
-      return;
-    }
-    run(targets);
-  }
-
-  const clearTargets = denyEligible
-    .map((r) => denyTarget(r, null))
-    .filter((x): x is BulkTarget => x !== null);
-  const scope: BulkScopeSpec = {
-    workspaces: wsOptions,
-    everywhereCount: upMovable.length + clearTargets.length,
-    onEverywhere: () =>
-      runScope([
-        ...upMovable.map((s) => ({
-          key: `ws:${s.workspace_id}:${s.name}`,
-          run: () =>
-            promoteWorkspaceMcpServerToTemplate(s.workspace_id, s.name, false, true),
-        })),
-        ...clearTargets,
-      ]),
-    onlyInCount: denyEligible.length,
-    onOnlyIn: (workspaceIds) => {
-      const chosen = new Set(workspaceIds);
-      runScope(
-        denyEligible
-          .map((r) => denyTarget(r, chosen))
-          .filter((x): x is BulkTarget => x !== null),
-      );
-    },
-    moveCount: movableCatalog.length,
-    onMoveTo: (workspaceId) =>
-      runScope(
-        movableCatalog.map((s) => ({
-          key: `catalog:${s.name}`,
-          run: () => adoptMcpServerToWorkspace(workspaceId, s.name),
-        })),
-      ),
-  };
-
-  // Builtins have no delete, and plugin-owned rows uninstall through their
-  // plugin — bulk delete covers only the user's own catalog rows.
-  const deleteTargets = selectedCatalog.filter((s) => !s.plugin_name);
-  const enableCount = toggleTargets(true).length;
-  const disableCount = toggleTargets(false).length;
-  const actions: BulkAction[] = [
-    {
-      id: 'enable',
-      label: t('plugins.bulk.enable', { count: enableCount }),
-      disabled: enableCount === 0,
-      run: () => run(toggleTargets(true)),
-    },
-    {
-      id: 'disable',
-      label: t('plugins.bulk.disable', { count: disableCount }),
-      disabled: disableCount === 0,
-      run: () => run(toggleTargets(false)),
-    },
-    {
-      id: 'delete',
-      label: t('plugins.bulk.delete', { count: deleteTargets.length }),
-      destructive: true,
-      disabled: deleteTargets.length === 0,
-      confirmMessage: t('plugins.bulk.confirmDelete', { count: deleteTargets.length }),
-      run: () =>
-        run(
-          deleteTargets.map((s) => ({
-            key: `catalog:${s.name}`,
-            run: () => deleteMcpCatalogServer(s.name),
-          })),
-        ),
-    },
-  ];
-
   function renderCatalogRow(server: CatalogServer) {
-    const oauthEligible = server.transport === 'http';
-    const status = server.oauth_status ?? null;
     return (
-      <ServerRowShell
+      <McpCatalogRow
         key={server.name}
-        testid={`server-row-${server.name}`}
-        {...rowSelection(selection, `catalog:${server.name}`)}
-        tile={<IdentityTile name={server.name} />}
-        onOpen={() => openDetail(server.name)}
-        main={
-          <>
-            <ServerNameLine name={server.name} onOpen={() => openDetail(server.name)} />
-
-            {/* Status line: OAuth pill (state needing attention), then quiet
-                metadata — scope, tool count, transport. */}
-            <div className="flex items-center gap-2 flex-wrap">
-              {status && <McpOauthPill status={status} />}
-              <MetaText>
-                {server.enabled
-                  ? t('plugins.servers.enabledState')
-                  : t('plugins.servers.disabledState')}
-              </MetaText>
-              {status === 'connected' && typeof server.tool_count === 'number' && server.tool_count > 0 && (
-                <MetaText>{t('mcp.row.toolCount', { count: server.tool_count })}</MetaText>
-              )}
-              <MetaText>{server.transport}</MetaText>
-              {isPluginSuppressed(server) && (
-                <MetaText>
-                  {t('plugins.component.suppressed', {
-                    plugin: server.plugin_name,
-                  })}
-                </MetaText>
-              )}
-            </div>
-
-            {server.description && (
-              <p className="text-[0.6875rem] line-clamp-2" style={{ color: 'var(--color-text-tertiary)' }}>
-                {server.description}
-              </p>
-            )}
-          </>
+        server={server}
+        workspaces={wsOptions}
+        selection={selection}
+        connecting={oauth.connectingName === server.name}
+        refreshing={oauth.refreshingName === server.name}
+        toggling={togglingName === server.name}
+        scopeBusy={movingName === server.name || denyBusyName === server.name}
+        onOpen={() => detail.open(server.name)}
+        onConnect={() => oauth.connect(server.name)}
+        onDisconnect={() => oauth.disconnect(server.name)}
+        onRefreshSchemas={() => oauth.refreshSchemas(server.name)}
+        onEdit={() => openEdit(server)}
+        onRequestDelete={() => requestDelete(server)}
+        onToggle={(enabled) => toggle(server, enabled)}
+        onSetWorkspaceDisabled={(wsId, disabled) =>
+          handleSetWorkspaceDisabled(server.name, wsId, disabled)
         }
-        actions={
-          <>
-            {oauthEligible && needsOauthConnect(status) && (
-              <button
-                type="button"
-                onClick={() => handleConnect(server.name)}
-                disabled={connectingName === server.name}
-                className="inline-flex items-center gap-1 px-2 py-1 text-[0.6875rem] rounded-md transition-colors disabled:opacity-50"
-                style={{ color: 'var(--color-text-primary)', border: '1px solid var(--color-border-muted)' }}
-              >
-                {connectingName === server.name
-                  ? <Loader size={12} className="text-current" />
-                  : <Link2 className="h-3 w-3" />}
-                {status ? t('plugins.oauth.reconnect') : t('plugins.oauth.connect')}
-              </button>
-            )}
-
-            <ScopeControl
-              workspaces={wsOptions}
-              scopeWorkspaceId={null}
-              disabledWorkspaceIds={server.disabled_workspace_ids ?? []}
-              checklistLocked={!server.enabled}
-              busy={
-                movingName === server.name ||
-                // Names cannot contain ':', so the suffix match is
-                // exact per row.
-                !!wsTogglingKey?.endsWith(`:${server.name}`)
-              }
-              moveBlockedReason={
-                // OAuth connections exist only at the user tier, so a
-                // connected server cannot move into a workspace. A
-                // plugin-owned row stays put too: moving it would
-                // orphan the plugin's ownership row.
-                isPluginOwned(server)
-                  ? t('plugins.scope.movePluginBlocked', {
-                      plugin: server.plugin_name,
-                    })
-                  : status && status !== 'revoked'
-                    ? t('plugins.scope.moveOauthBlocked')
-                    : null
-              }
-              onSetWorkspaceDisabled={(wsId, disabled) =>
-                handleSetWorkspaceDisabled(server.name, wsId, disabled)
-              }
-              onMove={(toWorkspaceId) => {
-                if (toWorkspaceId) handleAdopt(server.name, toWorkspaceId);
-              }}
-            />
-
-            {/* Enabled toggle — fans out to every workspace */}
-            <EnabledToggle
-              enabled={!!server.enabled}
-              name={server.name}
-              disabled={togglingName === server.name}
-              onToggle={() => toggle(server, !server.enabled)}
-            />
-
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <KebabTrigger
-                  busy={refreshingName === server.name}
-                  aria-label={t('mcp.row.actionsAria', { name: server.name })}
-                />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {/* Editing a plugin-owned row detaches it from the
-                    plugin, so the item says Customize and carries the
-                    consequence in its tooltip. The save path is the
-                    same PUT; the backend clears ownership and returns
-                    the detach warning, surfaced by onSaveWarnings. */}
-                <DropdownMenuItem
-                  onSelect={() => openEdit(server)}
-                  title={
-                    isPluginOwned(server)
-                      ? t('plugins.component.customizeHint', {
-                          plugin: server.plugin_name,
-                        })
-                      : undefined
-                  }
-                >
-                  <Pencil className="h-3.5 w-3.5 mr-2" />
-                  {isPluginOwned(server)
-                    ? t('plugins.component.customize')
-                    : t('mcp.row.edit')}
-                </DropdownMenuItem>
-                {oauthEligible && status === 'connected' && (
-                  <DropdownMenuItem onSelect={() => handleRefreshSchemas(server.name)}>
-                    <RefreshCw className="h-3.5 w-3.5 mr-2" />
-                    {t('plugins.oauth.refreshSchemas')}
-                  </DropdownMenuItem>
-                )}
-                {oauthEligible && canDisconnectOauth(status) && (
-                  <DropdownMenuItem onSelect={() => handleDisconnect(server.name)}>
-                    <Link2Off className="h-3.5 w-3.5 mr-2" />
-                    {t('plugins.oauth.disconnect')}
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuItem onSelect={() => requestDelete(server)} variant="destructive">
-                  <Trash2 className="h-3.5 w-3.5 mr-2" />
-                  {t('mcp.row.delete')}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </>
-        }
+        onMove={(toWorkspaceId) => handleAdopt(server.name, toWorkspaceId)}
       />
     );
+  }
+
+  /** Jump to the plugin's card. The overlay open here belongs to this tab, so
+   *  it goes; every other param travels. */
+  function openPluginsTab() {
+    const next = withDetail(searchParams, null);
+    next.set('tab', 'plugins');
+    setSearchParams(next, { replace: true });
   }
 
   return (
     <div className="flex flex-col gap-3">
       <ListControls
-        filter={filter}
-        onFilterChange={setFilter}
-        stateFilter={stateFilter}
-        onStateFilterChange={setStateFilter}
+        filter={surface.filter}
+        onFilterChange={surface.setFilter}
+        stateFilter={surface.stateFilter}
+        onStateFilterChange={surface.setStateFilter}
         showAttention
         selecting={selection.selecting}
         onStartSelect={selection.start}
         selectDisabled={servers.length === 0 && builtinServers.length === 0}
       />
 
-      <BuiltinMcpSection
-        filter={filter}
-        stateFilter={stateFilter}
-        selection={selection}
-        onOpen={(server) => openDetail(server.name)}
-      />
-
-      <ListHeader
-        icon={Server}
-        title={t('plugins.mcp.yours')}
-        count={servers.length}
-        max={maxServers}
-      />
-
-      <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-        {t('plugins.servers.inheritHint')}
-      </p>
-
-      {error ? (
-        <ListError>
-          {(error as { message?: string })?.message || t('mcp.list.loadFailed')}
-        </ListError>
-      ) : isLoading ? (
-        <ListSkeleton />
-      ) : servers.length === 0 ? (
-        <EmptyState
-          message={t('plugins.servers.empty')}
-          action={
-            <HeaderButton variant="primary" icon={Plus} onClick={openAdd}>
-              {t('mcp.list.addServer')}
-            </HeaderButton>
-          }
-        />
-      ) : ownServers.length === 0 && (filter.trim() || stateFilter !== 'all') ? (
+      {surface.noMatches(visibleTotal) && (
         <ListEmpty>{t('plugins.filter.noMatches')}</ListEmpty>
-      ) : (
-        <div className="flex flex-col [&>*+*]:mt-1.5">
-          <AnimatePresence initial={false}>
-            {ownServers.map(renderCatalogRow)}
-          </AnimatePresence>
-        </div>
+      )}
+
+      <BuiltinMcpSection
+        servers={visibleBuiltins}
+        workspaces={wsOptions}
+        busyName={builtinTogglingName ?? denyBusyName}
+        forceExpanded={surface.forceExpanded}
+        selection={selection}
+        onOpen={(server) => detail.open(server.name)}
+        onToggle={handleToggleBuiltin}
+        onSetWorkspaceDisabled={handleSetWorkspaceDisabled}
+      />
+
+      {/* Filtered-empty drops the whole section: the notice above already says
+          why, and a bare header over nothing reads as a glitch. Loading and
+          error keep theirs, so the list doesn't vanish while still arriving. */}
+      {(isLoading || !!error || surface.keepsSection(ownServers.length)) && (
+        <>
+          <ListHeader
+            icon={Server}
+            title={t('plugins.mcp.yours')}
+            count={servers.length}
+            max={maxServers}
+          />
+
+          <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
+            {t('plugins.servers.inheritHint')}
+          </p>
+
+          {error ? (
+            <ListError>
+              {(error as { message?: string })?.message || t('mcp.list.loadFailed')}
+            </ListError>
+          ) : isLoading ? (
+            <ListSkeleton />
+          ) : ownServers.length === 0 ? (
+            <EmptyState
+              message={t('plugins.servers.empty')}
+              action={
+                <HeaderButton variant="primary" icon={Plus} onClick={openAdd}>
+                  {t('mcp.list.addServer')}
+                </HeaderButton>
+              }
+            />
+          ) : (
+            <div className="flex flex-col [&>*+*]:mt-1.5">
+              <AnimatePresence initial={false}>
+                {ownServers.map(renderCatalogRow)}
+              </AnimatePresence>
+            </div>
+          )}
+        </>
       )}
 
       {pluginSections.map(([pluginName, rows]) => (
@@ -783,26 +415,20 @@ export function McpServers({ addSignal }: { addSignal?: AddSignal | null }) {
           icon={Blocks}
           count={rows.length}
           enabledCount={rows.filter((s) => !!s.enabled).length}
-          badge={
-            rows[0]?.plugin_enabled === false ? (
-              <TagBadge soft title={t('plugins.component.suppressed', { plugin: pluginName })}>
-                {t('plugins.component.suppressedBadge')}
-              </TagBadge>
-            ) : undefined
-          }
+          badge={<PluginSuppressedBadge row={rows[0]} />}
           action={
             <button
               type="button"
               title={t('plugins.groups.openPlugin')}
               aria-label={t('plugins.groups.openPlugin')}
-              onClick={() => setSearchParams({ tab: 'plugins' }, { replace: true })}
+              onClick={openPluginsTab}
               className="p-1 rounded transition-colors hover:bg-foreground/10"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               <Blocks className="h-3.5 w-3.5" />
             </button>
           }
-          forceExpanded={forceExpanded}
+          forceExpanded={surface.forceExpanded}
           selection={selection}
           selectionKeys={rows.map((s) => `catalog:${s.name}`)}
         >
@@ -822,71 +448,24 @@ export function McpServers({ addSignal }: { addSignal?: AddSignal | null }) {
           icon={Folder}
           count={wsServers.length}
           enabledCount={wsServers.filter((s) => s.enabled).length}
-          forceExpanded={forceExpanded}
+          forceExpanded={surface.forceExpanded}
           selection={selection}
           selectionKeys={wsServers.map((s) => `ws:${wsId}:${s.name}`)}
         >
           <AnimatePresence initial={false}>
             {wsServers.map((server) => (
-              <ServerRowShell
+              <McpWorkspaceRow
                 key={`${wsId}:${server.name}`}
-                testid={`ws-server-row-${server.name}`}
-                {...rowSelection(selection, `ws:${wsId}:${server.name}`)}
-                tile={<IdentityTile name={server.name} />}
-                onOpen={() => openDetail(server.name, wsId)}
-                main={
-                  <>
-                    <ServerNameLine
-                      name={server.name}
-                      onOpen={() => openDetail(server.name, wsId)}
-                    >
-                      <MetaText>{server.transport}</MetaText>
-                      {server.shadows_inherited && (
-                        <TagBadge soft title={t('mcp.row.overridesInheritedHint')}>
-                          {t('mcp.row.overridesInherited')}
-                        </TagBadge>
-                      )}
-                    </ServerNameLine>
-                    {server.description && (
-                      <p
-                        className="text-[0.6875rem] line-clamp-2"
-                        style={{ color: 'var(--color-text-tertiary)' }}
-                      >
-                        {server.description}
-                      </p>
-                    )}
-                  </>
-                }
-                actions={
-                  <>
-                    <ScopeControl
-                      workspaces={wsOptions}
-                      scopeWorkspaceId={wsId}
-                      // No cross-workspace move endpoint for MCP servers: the
-                      // only destination is the user tier.
-                      allowWorkspaceTargets={false}
-                      busy={movingName === server.name}
-                      moveToAllBlockedReason={
-                        // The promote endpoint 409s when the name already
-                        // exists at the user tier, so don't advertise a move
-                        // that is known to fail for a shadowing row.
-                        server.shadows_inherited
-                          ? t('plugins.scope.moveShadowBlocked')
-                          : null
-                      }
-                      onMove={(toWorkspaceId) => {
-                        if (toWorkspaceId === null) handleMoveUp(wsId, server.name);
-                      }}
-                    />
-                    <EnabledToggle
-                      enabled={server.enabled}
-                      name={server.name}
-                      disabled={wsTogglingKey === `${wsId}:${server.name}`}
-                      onToggle={() =>
-                        handleSetWorkspaceDisabled(server.name, wsId, server.enabled)
-                      }
-                    />
-                  </>
+                server={server}
+                workspaceId={wsId}
+                workspaces={wsOptions}
+                selection={selection}
+                moving={movingName === server.name}
+                toggling={wsTogglingKey === `${wsId}:${server.name}`}
+                onOpen={() => detail.open(server.name, wsId)}
+                onMoveUp={() => handleMoveUp(wsId, server.name)}
+                onSetEnabled={(enabled) =>
+                  handleSetWorkspaceRowEnabled(wsId, server.name, enabled)
                 }
               />
             ))}
@@ -908,9 +487,9 @@ export function McpServers({ addSignal }: { addSignal?: AddSignal | null }) {
       {selection.selecting && (
         <BulkActionBar
           count={selection.selected.size}
-          actions={actions}
-          scope={scope}
-          progress={progress}
+          actions={bulk.actions}
+          scope={bulk.scope}
+          progress={surface.progress}
           onExit={selection.exit}
         />
       )}
@@ -948,7 +527,7 @@ export function McpServers({ addSignal }: { addSignal?: AddSignal | null }) {
         <ServerDetail
           key={`${detailData.origin}:${detailData.server.name}`}
           data={detailData}
-          onClose={closeDetail}
+          onClose={detail.close}
           workspaceName={
             detailData.origin === 'workspace'
               ? wsNameById.get(detailData.server.workspace_id)
@@ -956,7 +535,7 @@ export function McpServers({ addSignal }: { addSignal?: AddSignal | null }) {
           }
           toggling={
             detailData.origin === 'builtin'
-              ? builtinToggleMutation.isPending
+              ? builtinTogglingName === detailData.server.name
               : detailData.origin === 'user'
                 ? togglingName === detailData.server.name
                 : wsTogglingKey ===
@@ -968,10 +547,10 @@ export function McpServers({ addSignal }: { addSignal?: AddSignal | null }) {
             } else if (detailData.origin === 'user') {
               toggle(detailData.server, enabled);
             } else {
-              handleSetWorkspaceDisabled(
-                detailData.server.name,
+              handleSetWorkspaceRowEnabled(
                 detailData.server.workspace_id,
-                !enabled,
+                detailData.server.name,
+                enabled,
               );
             }
           }}

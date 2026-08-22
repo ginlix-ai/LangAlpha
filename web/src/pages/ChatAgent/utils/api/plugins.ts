@@ -8,6 +8,7 @@
  * own only identity and lifecycle (install, update, toggle, export, remove).
  */
 import { api } from '@/api/client';
+import { apiErrorDetail } from './errors';
 
 export interface PluginDiagnostic {
   level: 'warning' | 'error';
@@ -44,13 +45,29 @@ export interface PluginComponentResult {
   warnings: string[];
 }
 
+/**
+ * One credential this package asked for and the vault doesn't hold yet.
+ *
+ * Deliberately not a `UserVaultBlueprint`: that one is the merged catalog,
+ * where a name several packages declare collapses to a single card. This is
+ * one package's request in its own words, which is what a consent screen has
+ * to show.
+ */
+export interface PluginSecretRequest {
+  name: string;
+  label: string;
+  description: string;
+  docs_url: string | null;
+  regex: string | null;
+}
+
 export interface PluginInstallReport {
   components: PluginComponentResult[];
   diagnostics: PluginDiagnostic[];
   /** Vault secrets auto-extracted from embedded literals. */
   secrets_created: string[];
-  /** Declared blueprint names the user still has to fill in the vault. */
-  secrets_required: string[];
+  /** Blueprints the package declared that the user still has to fill in. */
+  secrets_required: PluginSecretRequest[];
   /** Package entries not modelled (README, LICENSE, extension dirs). */
   dropped_files: string[];
   servers_created: number;
@@ -111,8 +128,7 @@ export interface PluginCandidate {
 export function multiplePluginCandidates(
   err: unknown,
 ): PluginCandidate[] | null {
-  const detail = (err as { response?: { data?: { detail?: unknown } } })
-    ?.response?.data?.detail;
+  const detail = apiErrorDetail(err);
   if (
     typeof detail === 'object' &&
     detail !== null &&
@@ -122,6 +138,16 @@ export function multiplePluginCandidates(
     return (detail as { discovered: PluginCandidate[] }).discovered;
   }
   return null;
+}
+
+/**
+ * The diagnostics riding on an install/update failure — the per-component
+ * findings the wizard renders beside the error. Empty for a failure that
+ * carries none.
+ */
+export function fatalDiagnostics(err: unknown): PluginDiagnostic[] {
+  const diags = (apiErrorDetail(err) as { diagnostics?: unknown })?.diagnostics;
+  return Array.isArray(diags) ? (diags as PluginDiagnostic[]) : [];
 }
 
 function uploadConfig(onProgress: ((percent: number) => void) | null) {
@@ -247,4 +273,21 @@ export async function exportPluginBlobUrl(name: string): Promise<string> {
     { responseType: 'blob' },
   );
   return URL.createObjectURL(response.data as Blob);
+}
+
+/**
+ * Trigger a browser download of the exported package. Same blob + anchor
+ * pattern as `triggerUserMemoDownload`: the anchor is attached before the
+ * click and the URL revoked only after it, because a detached anchor and a
+ * same-tick revoke each drop the download in some browsers.
+ */
+export async function triggerPluginExportDownload(name: string): Promise<void> {
+  const blobUrl = await exportPluginBlobUrl(name);
+  const a = document.createElement('a');
+  a.href = blobUrl;
+  a.download = `${name}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(blobUrl);
 }

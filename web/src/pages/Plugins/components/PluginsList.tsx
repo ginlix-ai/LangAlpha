@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { AnimatePresence } from 'framer-motion';
@@ -17,20 +17,23 @@ import {
   type PluginInfo,
 } from '@/pages/ChatAgent/utils/api';
 import {
+  groupBy,
   matchesFilter,
   pluginSourceOrigin,
   UPLOADED_ORIGIN,
 } from '../utils/groupOrigins';
-import type { AddSignal } from '../utils/addSignal';
-import { parseDetail, withDetail } from '../utils/detailParam';
+import { withDetail } from '../utils/detailParam';
+import { useAddIntent } from '../hooks/useAddIntent';
+import { useDetailParam } from '../hooks/useDetailParam';
+import { usePluginListSurface } from '../hooks/usePluginListSurface';
 import { BulkActionBar, type BulkAction } from './BulkActionBar';
 import { EmptyState } from './EmptyState';
 import { GroupDeck } from './GroupDeck';
-import { ListControls, matchesStateFilter, type StateFilter } from './ListControls';
+import { ListControls } from './ListControls';
 import { PluginCard } from './PluginCard';
 import { PluginDetail } from './PluginDetail';
 import { PluginInstallWizard } from './PluginInstallWizard';
-import { rowSelection, useBulkRunner, useBulkSelection } from './useBulkSelection';
+import { rowSelection } from './useBulkSelection';
 
 /**
  * The Plugins tab body: installed Agent Plugins packages, grouped by install
@@ -42,65 +45,37 @@ import { rowSelection, useBulkRunner, useBulkSelection } from './useBulkSelectio
 
 const pluginKey = (p: PluginInfo) => `plugin:${p.name}`;
 
-export function PluginsList({ addSignal }: { addSignal?: AddSignal | null }) {
+export function PluginsList() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
   const { data, isLoading, error } = usePlugins();
   const [wizardOpen, setWizardOpen] = useState(false);
-  const [filter, setFilter] = useState('');
-  const [stateFilter, setStateFilter] = useState<StateFilter>('all');
-  const selection = useBulkSelection();
-  const { progress, run } = useBulkRunner(selection);
+  // The plugin list is the one surface whose bulk actions really are
+  // plugin-wide (uninstall), so it keeps the full fan-out.
+  const surface = usePluginListSurface();
+  const { selection } = surface;
 
-  useEffect(() => {
-    if (addSignal?.action === 'install-plugin') setWizardOpen(true);
-  }, [addSignal]);
+  useAddIntent({ plugin: () => setWizardOpen(true) });
 
   const plugins = data?.plugins ?? [];
   const maxPlugins = data?.max_plugins ?? 0;
   const atCap = maxPlugins > 0 && plugins.length >= maxPlugins;
-  const forceExpanded =
-    selection.selecting || !!filter.trim() || stateFilter !== 'all';
 
   const visible = plugins.filter(
     (p) =>
-      matchesFilter(filter, p.name, p.description, pluginSourceOrigin(p)) &&
-      matchesStateFilter(stateFilter, p.enabled),
+      matchesFilter(surface.filter, p.name, p.description, pluginSourceOrigin(p)) &&
+      surface.matchesState(p.enabled),
   );
 
   // --- Detail overlay (?detail=plugin:NAME) ---
-  const detailRef = parseDetail(searchParams);
-  const detailPlugin =
-    detailRef?.kind === 'plugin'
-      ? (plugins.find((p) => p.name === detailRef.name) ?? null)
-      : null;
+  const detail = useDetailParam<PluginInfo>(
+    'plugin',
+    (ref) => plugins.find((p) => p.name === ref.name) ?? null,
+    !isLoading && data !== undefined,
+  );
+  const detailPlugin = detail.target;
 
-  function openDetail(name: string) {
-    setSearchParams(
-      withDetail(searchParams, { kind: 'plugin', name }),
-      { replace: true },
-    );
-  }
-  function closeDetail() {
-    setSearchParams(withDetail(searchParams, null), { replace: true });
-  }
-
-  // A deep link to a plugin that no longer exists parks a dead overlay param
-  // in the URL — clear it once the list has answered.
-  const detailStale =
-    detailRef?.kind === 'plugin' && !detailPlugin && !isLoading && data !== undefined;
-  useEffect(() => {
-    if (detailStale) {
-      setSearchParams(withDetail(searchParams, null), { replace: true });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detailStale]);
-  const byOrigin = new Map<string, PluginInfo[]>();
-  for (const p of visible) {
-    const origin = pluginSourceOrigin(p);
-    byOrigin.set(origin, [...(byOrigin.get(origin) ?? []), p]);
-  }
-  const groups = [...byOrigin.entries()].sort(([a], [b]) => {
+  const groups = [...groupBy(visible, pluginSourceOrigin).entries()].sort(([a], [b]) => {
     if (a === UPLOADED_ORIGIN) return 1;
     if (b === UPLOADED_ORIGIN) return -1;
     return a.localeCompare(b);
@@ -115,7 +90,7 @@ export function PluginsList({ addSignal }: { addSignal?: AddSignal | null }) {
       label: t('plugins.bulk.enable', { count: enableTargets.length }),
       disabled: enableTargets.length === 0,
       run: () =>
-        run(
+        surface.run(
           enableTargets.map((p) => ({
             key: p.name,
             run: () => setPluginEnabled(p.name, true),
@@ -127,7 +102,7 @@ export function PluginsList({ addSignal }: { addSignal?: AddSignal | null }) {
       label: t('plugins.bulk.disable', { count: disableTargets.length }),
       disabled: disableTargets.length === 0,
       run: () =>
-        run(
+        surface.run(
           disableTargets.map((p) => ({
             key: p.name,
             run: () => setPluginEnabled(p.name, false),
@@ -141,7 +116,7 @@ export function PluginsList({ addSignal }: { addSignal?: AddSignal | null }) {
       disabled: selectedPlugins.length === 0,
       confirmMessage: t('plugins.bulk.confirmUninstall', { count: selectedPlugins.length }),
       run: () =>
-        run(
+        surface.run(
           selectedPlugins.map((p) => ({
             key: p.name,
             run: () => deletePlugin(p.name),
@@ -162,10 +137,10 @@ export function PluginsList({ addSignal }: { addSignal?: AddSignal | null }) {
   return (
     <div className="flex flex-col gap-3">
       <ListControls
-        filter={filter}
-        onFilterChange={setFilter}
-        stateFilter={stateFilter}
-        onStateFilterChange={setStateFilter}
+        filter={surface.filter}
+        onFilterChange={surface.setFilter}
+        stateFilter={surface.stateFilter}
+        onStateFilterChange={surface.setStateFilter}
         selecting={selection.selecting}
         onStartSelect={selection.start}
         selectDisabled={plugins.length === 0}
@@ -203,7 +178,7 @@ export function PluginsList({ addSignal }: { addSignal?: AddSignal | null }) {
             </HeaderButton>
           }
         />
-      ) : visible.length === 0 ? (
+      ) : surface.noMatches(visible.length) ? (
         <ListEmpty>{t('plugins.filter.noMatches')}</ListEmpty>
       ) : (
         groups.map(([origin, groupPlugins]) => {
@@ -217,7 +192,7 @@ export function PluginsList({ addSignal }: { addSignal?: AddSignal | null }) {
                 <PluginCard
                   key={plugin.name}
                   plugin={plugin}
-                  onOpen={() => openDetail(plugin.name)}
+                  onOpen={() => detail.open(plugin.name)}
                   selection={rowSelection(selection, pluginKey(plugin))}
                 />
               ))}
@@ -240,7 +215,7 @@ export function PluginsList({ addSignal }: { addSignal?: AddSignal | null }) {
               icon={origin === UPLOADED_ORIGIN ? Package : FolderGit2}
               count={groupPlugins.length}
               enabledCount={groupPlugins.filter((p) => p.enabled).length}
-              forceExpanded={forceExpanded}
+              forceExpanded={surface.forceExpanded}
               selection={selection}
               selectionKeys={keys}
             >
@@ -254,7 +229,7 @@ export function PluginsList({ addSignal }: { addSignal?: AddSignal | null }) {
         <BulkActionBar
           count={selection.selected.size}
           actions={actions}
-          progress={progress}
+          progress={surface.progress}
           onExit={selection.exit}
         />
       )}
@@ -266,7 +241,7 @@ export function PluginsList({ addSignal }: { addSignal?: AddSignal | null }) {
           <PluginDetail
             key={detailPlugin.name}
             plugin={detailPlugin}
-            onClose={closeDetail}
+            onClose={detail.close}
             onOpenComponent={openComponent}
           />
         )}

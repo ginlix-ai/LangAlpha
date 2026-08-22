@@ -1,14 +1,6 @@
-import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AnimatePresence } from 'framer-motion';
 import { Server } from 'lucide-react';
-import { toast } from '@/components/ui/use-toast';
-import {
-  useBuiltinMcpServers,
-  useToggleBuiltinMcpServer,
-  useSetMcpServerEnabledInWorkspace,
-} from '@/hooks/useMcpServers';
-import { useWorkspaces } from '@/hooks/useWorkspaces';
 import { IdentityTile } from '@/pages/ChatAgent/components/mcp/IdentityTile';
 import {
   EnabledToggle,
@@ -16,12 +8,9 @@ import {
   ServerNameLine,
   ServerRowShell,
 } from '@/pages/ChatAgent/components/mcp/McpPrimitives';
-import { formatApiErrorDetail, type BuiltinMcpServer } from '@/pages/ChatAgent/utils/api';
-import { matchesFilter } from '../utils/groupOrigins';
+import type { BuiltinMcpServer } from '@/pages/ChatAgent/utils/api';
 import { GroupDeck } from './GroupDeck';
-import { matchesStateFilter, type StateFilter } from './ListControls';
-import { ScopeControl } from './ScopeControl';
-import type { ScopeWorkspace } from './ScopeControl';
+import { ScopeControl, type ScopeWorkspace } from './ScopeControl';
 import { rowSelection, type BulkSelection } from './useBulkSelection';
 
 /**
@@ -29,83 +18,41 @@ import { rowSelection, type BulkSelection } from './useBulkSelection';
  * with two affordances — the account-wide disable, and a per-workspace
  * "active in" checklist (deny-list markers). A workspace cannot re-enable a
  * server disabled account-wide, so the checklist locks while the row is off.
- * Filter and selection state live in the parent tab (McpServers), which
- * reads the same builtin query for its bulk actions.
+ *
+ * Purely presentational. It used to re-instantiate the query, the two
+ * mutations and its own busy key, all of which the parent tab already held for
+ * its bulk actions and its detail overlay: React Query dedupes the fetch but
+ * not `isPending`, so one builtin row ended up with two independent busy
+ * states and toggling from the overlay left the row behind it looking idle.
  */
 
 export function BuiltinMcpSection({
-  filter = '',
-  stateFilter = 'all',
+  servers,
+  workspaces,
+  busyName,
+  forceExpanded = false,
   selection,
   onOpen,
+  onToggle,
+  onSetWorkspaceDisabled,
 }: {
-  filter?: string;
-  stateFilter?: StateFilter;
+  /** Already filtered by the parent's search + state pills. */
+  servers: BuiltinMcpServer[];
+  workspaces: ScopeWorkspace[];
+  /** The one row with a write in flight, whichever surface started it. */
+  busyName?: string | null;
+  forceExpanded?: boolean;
   selection?: BulkSelection;
   /** Open a builtin's detail view (name button + row-body click). */
   onOpen?: (server: BuiltinMcpServer) => void;
+  onToggle: (name: string, enabled: boolean) => void;
+  onSetWorkspaceDisabled: (name: string, workspaceId: string, disabled: boolean) => void;
 }) {
   const { t } = useTranslation();
-  const { data, isLoading } = useBuiltinMcpServers();
-  const toggleMutation = useToggleBuiltinMcpServer();
-  const wsEnableMutation = useSetMcpServerEnabledInWorkspace();
-  const { data: wsData } = useWorkspaces({ limit: 100 });
-  // Keyed by row so one row's in-flight toggle doesn't lock its siblings.
-  const [busyName, setBusyName] = useState<string | null>(null);
 
-  const servers = (data?.servers ?? []).filter(
-    (s) =>
-      matchesFilter(filter, s.name, s.description) &&
-      matchesStateFilter(stateFilter, s.enabled),
-  );
-  const workspaces = (
-    (wsData as { workspaces?: { workspace_id: string; name?: string }[] })
-      ?.workspaces ?? []
-  );
-  const wsOptions: ScopeWorkspace[] = workspaces.map((w) => ({
-    id: w.workspace_id,
-    name: w.name || t('plugins.scope.unknownWorkspace'),
-  }));
-
-  // Loading and empty render nothing: builtins are ambient platform furniture,
-  // not the user's own list — a skeleton here would imply their data is late.
-  if (isLoading || servers.length === 0) return null;
-
-  async function handleToggle(name: string, enabled: boolean) {
-    setBusyName(name);
-    try {
-      await toggleMutation.mutateAsync({ name, enabled });
-    } catch (err) {
-      toast({
-        variant: 'destructive',
-        title: t('plugins.servers.toggleFailed'),
-        description: formatApiErrorDetail(err),
-      });
-    } finally {
-      setBusyName(null);
-    }
-  }
-
-  async function handleSetWorkspaceDisabled(
-    name: string,
-    workspaceId: string,
-    disabled: boolean,
-  ) {
-    setBusyName(name);
-    try {
-      await wsEnableMutation.mutateAsync({ workspaceId, name, enabled: !disabled });
-    } catch (err) {
-      toast({
-        variant: 'destructive',
-        title: t('plugins.servers.toggleFailed'),
-        description: formatApiErrorDetail(err),
-      });
-    } finally {
-      setBusyName(null);
-    }
-  }
-
-  const selecting = !!selection?.selecting;
+  // Empty renders nothing: builtins are ambient platform furniture, not the
+  // user's own list — a skeleton here would imply their data is late.
+  if (servers.length === 0) return null;
 
   return (
     <GroupDeck
@@ -114,7 +61,7 @@ export function BuiltinMcpSection({
       icon={Server}
       count={servers.length}
       enabledCount={servers.filter((s) => s.enabled).length}
-      forceExpanded={selecting || !!filter.trim() || stateFilter !== 'all'}
+      forceExpanded={forceExpanded}
       selection={selection}
       selectionKeys={servers.map((s) => `builtin:${s.name}`)}
     >
@@ -147,20 +94,20 @@ export function BuiltinMcpSection({
             actions={
               <>
                 <ScopeControl
-                  workspaces={wsOptions}
+                  workspaces={workspaces}
                   scopeWorkspaceId={null}
                   disabledWorkspaceIds={server.disabled_workspace_ids ?? []}
                   checklistLocked={!server.enabled}
                   busy={busyName === server.name}
                   onSetWorkspaceDisabled={(wsId, disabled) =>
-                    handleSetWorkspaceDisabled(server.name, wsId, disabled)
+                    onSetWorkspaceDisabled(server.name, wsId, disabled)
                   }
                 />
                 <EnabledToggle
                   enabled={server.enabled}
                   name={server.name}
                   disabled={busyName === server.name}
-                  onToggle={() => handleToggle(server.name, !server.enabled)}
+                  onToggle={() => onToggle(server.name, !server.enabled)}
                 />
               </>
             }

@@ -1,38 +1,64 @@
 import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Upload } from 'lucide-react';
+import type { PluginDiagnostic } from '@/pages/ChatAgent/utils/api';
 import {
   validatePluginSourceUrl,
   validatePluginZip,
 } from '../utils/pluginSchemas';
+import { StepError } from './StepError';
+
+/** What this step produces: an uploaded package, or a URL to fetch one from. */
+export type PluginSource = { file: File } | { url: string };
 
 /**
  * Step 1 of the install wizard: a zip dropzone or a public git https URL.
  * Whichever was touched last wins; submit is gated on one being valid. Deep
  * validation is server-side — this step refuses only what is certain to fail
  * (wrong extension, over the size cap, a URL the SSRF policy will reject).
+ *
+ * A refusal here goes up to the wizard rather than into local state, so this
+ * step's own errors and the ones the install attempt came back with are one
+ * message in one place instead of two that can both be on screen. `initial`
+ * closes the same loop for the input itself: this step is unmounted while the
+ * install runs, so a failed attempt hands its source back for the retry rather
+ * than leaving an error above an empty field.
  */
 
 export function PluginSourceStep({
+  initial,
   onSubmit,
-  busy,
+  onError,
+  error,
+  diagnostics,
 }: {
-  onSubmit: (source: { file: File } | { url: string }) => void;
-  busy: boolean;
+  /** The source to open with, normally the one that just failed. */
+  initial: PluginSource | null;
+  onSubmit: (source: PluginSource) => void;
+  /** Report a refusal (or null to clear the step's error). */
+  onError: (message: string | null) => void;
+  error: string | null;
+  /** Per-component findings riding a fatal package error. */
+  diagnostics: PluginDiagnostic[];
 }) {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [file, setFile] = useState<File | null>(null);
-  const [url, setUrl] = useState('');
+  const [file, setFile] = useState<File | null>(
+    initial && 'file' in initial ? initial.file : null,
+  );
+  const [url, setUrl] = useState(initial && 'url' in initial ? initial.url : '');
   const [dragOver, setDragOver] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   function pick(f: File | null | undefined) {
-    setError(null);
+    onError(null);
     if (!f) return;
     const reason = validatePluginZip(f);
     if (reason) {
-      setError(t(`plugins.install.${reason}`));
+      // Drop the previous pick too. Keeping it leaves the dropzone naming a
+      // file the user believes they just replaced, under an error describing
+      // a different one, with Install still armed on the old file.
+      setFile(null);
+      onError(t(`plugins.install.${reason}`));
       return;
     }
     setFile(f);
@@ -40,7 +66,7 @@ export function PluginSourceStep({
   }
 
   const trimmedUrl = url.trim();
-  const canSubmit = !busy && (!!file || !!trimmedUrl);
+  const canSubmit = !!file || !!trimmedUrl;
 
   function submit() {
     if (!canSubmit) return;
@@ -50,7 +76,7 @@ export function PluginSourceStep({
     }
     const reason = validatePluginSourceUrl(trimmedUrl);
     if (reason) {
-      setError(reason);
+      onError(t(`plugins.install.${reason}`));
       return;
     }
     onSubmit({ url: trimmedUrl });
@@ -118,7 +144,7 @@ export function PluginSourceStep({
           id="plugin-source-url"
           value={url}
           onChange={(e) => {
-            setError(null);
+            onError(null);
             setUrl(e.target.value);
             if (e.target.value.trim()) setFile(null);
           }}
@@ -136,11 +162,7 @@ export function PluginSourceStep({
         />
       </div>
 
-      {error && (
-        <p className="text-xs" style={{ color: 'var(--color-loss)' }}>
-          {error}
-        </p>
-      )}
+      <StepError error={error} diagnostics={diagnostics} />
 
       <div className="flex justify-end">
         <button

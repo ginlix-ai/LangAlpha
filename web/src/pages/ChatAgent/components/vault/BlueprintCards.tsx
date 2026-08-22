@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { Plus, Sparkles } from 'lucide-react';
+import { PluginOriginBadge } from '@/pages/Plugins/components/PluginBadges';
 import type { VaultBlueprint } from '../../utils/api';
 
 /**
@@ -46,15 +47,7 @@ export function BlueprintCards({ blueprints, atCap, maxSecrets, onSelect }: Blue
               <span className="text-xs font-mono px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-bg-tag)' }}>
                 {bp.name}
               </span>
-              {bp.plugin_name && (
-                <span
-                  className="text-xs px-1.5 py-0.5 rounded flex-shrink-0"
-                  style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-bg-tag)' }}
-                  title={t('plugins.component.fromPlugin', { plugin: bp.plugin_name })}
-                >
-                  {bp.plugin_name}
-                </span>
-              )}
+              <PluginOriginBadge plugin={bp.plugin_name} />
             </div>
             <span className="text-xs flex items-center gap-1 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }}>
               <Plus className="h-3 w-3" />

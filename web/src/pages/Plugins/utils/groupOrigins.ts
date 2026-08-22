@@ -1,7 +1,9 @@
 /**
- * Origin grouping for the Plugins page lists. A plugin's origin is the repo
- * it was installed from (host + owner/repo), so several picks out of one
- * marketplace stack under one deck; zip installs group under "uploaded".
+ * Origin grouping for the Plugins page lists: what an origin is, how to group
+ * rows by one, and the search predicate that decides which rows are grouped at
+ * all. A plugin's origin is the repo it was installed from (host + owner/repo),
+ * so several picks out of one marketplace stack under one deck; zip installs
+ * group under "uploaded".
  */
 
 export const UPLOADED_ORIGIN = 'uploaded';
@@ -35,4 +37,22 @@ export function matchesFilter(
   const needle = filter.trim().toLowerCase();
   if (!needle) return true;
   return fields.some((f) => !!f && f.toLowerCase().includes(needle));
+}
+
+/**
+ * Group rows by a derived key, input order preserved inside each group.
+ *
+ * Replaces the `m.set(k, [...(m.get(k) ?? []), row])` spread that had grown a
+ * copy in each of the five grouping sites: it rebuilds a group's whole array
+ * per row, so grouping N rows into one deck costs O(N^2).
+ */
+export function groupBy<T, K>(items: readonly T[], keyOf: (item: T) => K): Map<K, T[]> {
+  const groups = new Map<K, T[]>();
+  for (const item of items) {
+    const key = keyOf(item);
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(item);
+    else groups.set(key, [item]);
+  }
+  return groups;
 }

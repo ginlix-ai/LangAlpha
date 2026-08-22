@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/use-toast';
 import { invalidatePluginFanout } from '@/hooks/usePlugins';
@@ -69,12 +69,20 @@ export interface BulkTarget {
 }
 
 /**
- * Runs a bulk fan-out with progress, then invalidates the plugin blast
- * radius ONCE (each target hits a raw API function, not a mutation hook, so
- * N ops don't trigger N invalidation storms), toasts the outcome, and drops
- * select mode.
+ * Runs a bulk fan-out with progress, then invalidates ONCE (each target hits a
+ * raw API function, not a mutation hook, so N ops don't trigger N invalidation
+ * storms), toasts the outcome, and drops select mode.
+ *
+ * The radius is the caller's to name because this runs on three tabs: a tab
+ * whose bulk actions cannot change plugin identity — MCP and Skills both keep
+ * plugin-owned rows out of bulk delete, and enable/disable/scope leave
+ * ownership alone — has no reason to refetch the plugin list. The full radius
+ * stays the default, so a new caller is over-invalidated rather than stale.
  */
-export function useBulkRunner(selection: BulkSelection) {
+export function useBulkRunner(
+  selection: BulkSelection,
+  invalidate: (qc: QueryClient) => void = invalidatePluginFanout,
+) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
@@ -98,11 +106,11 @@ export function useBulkRunner(selection: BulkSelection) {
         });
       } finally {
         setProgress(null);
-        invalidatePluginFanout(queryClient);
+        invalidate(queryClient);
       }
       selection.exit();
     },
-    [queryClient, selection, t],
+    [invalidate, queryClient, selection, t],
   );
 
   return { progress, run };

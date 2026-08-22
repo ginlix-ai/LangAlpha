@@ -102,9 +102,21 @@ export function PluginReportStep({
     (c) => !LANDED.has(c.status) && c.status !== 'upgradable',
   );
   const warnings = report.diagnostics.filter((d) => d.level === 'warning');
+  // An update that found nothing to do reports nothing: say so, rather than
+  // showing a panel that is empty for a reason the reader has to guess.
+  const empty =
+    report.components.length === 0 &&
+    warnings.length === 0 &&
+    report.dropped_files.length === 0;
 
   return (
     <div className="flex flex-col gap-3 max-h-[60vh] overflow-y-auto pr-1">
+      {empty && (
+        <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+          {t('plugins.install.reportNoChanges')}
+        </p>
+      )}
+
       {landed.length > 0 && (
         <Group title={t('plugins.install.reportInstalled')}>
           {landed.map((c) => (
@@ -145,7 +157,14 @@ export function PluginReportStep({
             <div className="flex justify-end py-1">
               <button
                 type="button"
-                onClick={() => onUpgradeSse([...checkedKeys])}
+                onClick={() => {
+                  // Clear before handing off: the list re-renders from the new
+                  // report, and keys that just landed would otherwise stay
+                  // ticked and be re-submitted by a second confirm.
+                  const keys = [...checkedKeys];
+                  setCheckedKeys(new Set());
+                  onUpgradeSse(keys);
+                }}
                 disabled={checkedKeys.size === 0 || upgrading}
                 className="inline-flex items-center gap-1.5 px-2 py-1 text-[0.6875rem] rounded-md disabled:opacity-50"
                 style={{
@@ -192,10 +211,14 @@ export function PluginReportStep({
       )}
 
       <div className="flex justify-end">
+        {/* Guarded like its sibling Confirm: leaving mid-upgrade unmounts the
+            step that is going to report what landed, so the user closes the
+            wizard on a request whose outcome they never see. */}
         <button
           type="button"
           onClick={onContinue}
-          className="px-3 py-1.5 text-xs rounded-md"
+          disabled={upgrading}
+          className="px-3 py-1.5 text-xs rounded-md disabled:opacity-50"
           style={{
             color: 'var(--color-btn-primary-text)',
             backgroundColor: 'var(--color-btn-primary-bg)',

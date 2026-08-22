@@ -1,22 +1,29 @@
 import { useTranslation } from 'react-i18next';
-import { ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { TagBadge } from '@/pages/ChatAgent/components/mcp/McpPrimitives';
 import type { PluginCandidate } from '@/pages/ChatAgent/utils/api';
+import { StepError } from './StepError';
 
 /**
  * The chooser between source and installing: shown when the source turned
  * out to be a marketplace repo holding several plugins. Picking one re-runs
  * the install with its subdirectory.
+ *
+ * A pick that fails comes back here rather than to the source step: the repo
+ * is already resolved, and the sibling candidates are still installable.
  */
 
 export function PluginChooseStep({
   candidates,
   onPick,
-  busy,
+  onBack,
+  error,
 }: {
   candidates: PluginCandidate[];
   onPick: (candidate: PluginCandidate) => void;
-  busy: boolean;
+  /** Return to the source step, carrying the repo that produced this list. */
+  onBack: () => void;
+  error: string | null;
 }) {
   const { t } = useTranslation();
 
@@ -25,6 +32,19 @@ export function PluginChooseStep({
   function location(candidate: PluginCandidate): string {
     if (!candidate.source_url) return candidate.path || './';
     return candidate.source_url.replace(/^https:\/\//, '');
+  }
+
+  /**
+   * A manifest need not carry a name, and `path` is empty for a repo-root
+   * plugin and for any external entry (`discover.py:180` writes `""`), so
+   * name-or-last-path-segment can still come out blank and leave a row with
+   * no title at all. Falling through to the location keeps every row named by
+   * something the user can actually recognise.
+   */
+  function title(candidate: PluginCandidate): string {
+    return (
+      candidate.name || candidate.path.split('/').pop() || location(candidate)
+    );
   }
 
   return (
@@ -38,9 +58,8 @@ export function PluginChooseStep({
           <button
             key={candidate.source_url ?? candidate.path}
             type="button"
-            disabled={busy}
             onClick={() => onPick(candidate)}
-            className="flex items-center gap-2 px-3 py-2 rounded-md text-left transition-colors hover:bg-foreground/5 disabled:opacity-50"
+            className="flex items-center gap-2 px-3 py-2 rounded-md text-left transition-colors hover:bg-foreground/5"
             style={{ border: '1px solid var(--color-border-muted)' }}
             data-testid={`plugin-candidate-${candidate.path}`}
           >
@@ -50,7 +69,7 @@ export function PluginChooseStep({
                   className="text-xs font-medium truncate"
                   style={{ color: 'var(--color-text-primary)' }}
                 >
-                  {candidate.name || candidate.path.split('/').pop()}
+                  {title(candidate)}
                 </span>
                 {candidate.version && (
                   <TagBadge>v{candidate.version}</TagBadge>
@@ -77,6 +96,20 @@ export function PluginChooseStep({
             />
           </button>
         ))}
+      </div>
+
+      <StepError error={error} />
+
+      <div className="flex justify-start">
+        <button
+          type="button"
+          onClick={onBack}
+          className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md transition-colors hover:bg-foreground/5"
+          style={{ color: 'var(--color-text-secondary)' }}
+        >
+          <ChevronLeft className="h-3.5 w-3.5" />
+          {t('common.back')}
+        </button>
       </div>
     </div>
   );
