@@ -2865,6 +2865,33 @@
       "bindingDocs": "获取方式",
       "boundTitle": "凭据已保存",
       "boundDesc": "已保存 {{count}} 项到保险库"
+    },
+    "groups": {
+      "tally": "{{enabled}} 个启用 · {{disabled}} 个停用",
+      "expandAria": "展开 {{title}}",
+      "collapseAria": "收起 {{title}}",
+      "selectAllAria": "全选 {{title}}",
+      "uploaded": "本地上传",
+      "openPlugin": "查看插件"
+    },
+    "bulk": {
+      "select": "选择",
+      "selected": "已选 {{count}} 项",
+      "enable": "启用 {{count}}",
+      "disable": "停用 {{count}}",
+      "delete": "删除 {{count}}",
+      "uninstall": "卸载 {{count}}",
+      "confirmDelete": "删除 {{count}} 项？此操作无法撤销。",
+      "confirmUninstall": "卸载 {{count}} 个插件？其服务器和技能将被移除。",
+      "progress": "正在处理 {{done}} / {{total}}",
+      "resultTitle": "批量操作完成",
+      "okPart": "{{count}} 项成功",
+      "failPart": "{{count}} 项失败"
+    },
+    "filter": {
+      "placeholder": "筛选",
+      "clear": "清除筛选",
+      "noMatches": "无匹配项"
     }
   }
 }

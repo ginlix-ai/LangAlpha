@@ -46,7 +46,14 @@ function summarizeUpdate(report: PluginInstallReport): string {
   return [...counts.entries()].map(([s, n]) => `${n} ${s}`).join(', ');
 }
 
-export function PluginCard({ plugin }: { plugin: PluginInfo }) {
+export function PluginCard({
+  plugin,
+  selection,
+}: {
+  plugin: PluginInfo;
+  /** ServerRowShell select-mode props, spread through untouched. */
+  selection?: { selecting?: boolean; selected?: boolean; onSelectToggle?: () => void };
+}) {
   const { t } = useTranslation();
   const toggleMutation = useTogglePlugin();
   const deleteMutation = useDeletePlugin();
@@ -166,6 +173,7 @@ export function PluginCard({ plugin }: { plugin: PluginInfo }) {
     <>
       <ServerRowShell
         testid={`plugin-card-${plugin.name}`}
+        {...(selection ?? {})}
         main={
           <>
             <ServerNameLine icon={Blocks} name={plugin.name}>

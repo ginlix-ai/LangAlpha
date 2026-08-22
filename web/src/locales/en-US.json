@@ -2889,6 +2889,33 @@
       "bindingDocs": "Where to get this",
       "boundTitle": "Credentials saved",
       "boundDesc": "{{count}} saved to your vault"
+    },
+    "groups": {
+      "tally": "{{enabled}} on · {{disabled}} off",
+      "expandAria": "Expand {{title}}",
+      "collapseAria": "Collapse {{title}}",
+      "selectAllAria": "Select all in {{title}}",
+      "uploaded": "Uploaded",
+      "openPlugin": "View plugin"
+    },
+    "bulk": {
+      "select": "Select",
+      "selected": "{{count}} selected",
+      "enable": "Enable {{count}}",
+      "disable": "Disable {{count}}",
+      "delete": "Delete {{count}}",
+      "uninstall": "Uninstall {{count}}",
+      "confirmDelete": "Delete {{count}} items? This cannot be undone.",
+      "confirmUninstall": "Uninstall {{count}} plugins? Their servers and skills are removed.",
+      "progress": "Working on {{done}} of {{total}}",
+      "resultTitle": "Bulk action finished",
+      "okPart": "{{count}} succeeded",
+      "failPart": "{{count}} failed"
+    },
+    "filter": {
+      "placeholder": "Filter",
+      "clear": "Clear filter",
+      "noMatches": "No matches"
     }
   }
 }

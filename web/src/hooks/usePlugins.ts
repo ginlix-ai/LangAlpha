@@ -20,7 +20,7 @@ import {
  * the MCP catalog and the skill tier and can create vault secrets, and each
  * of those feeds a query that has already stopped polling.
  */
-function invalidatePluginFanout(qc: QueryClient) {
+export function invalidatePluginFanout(qc: QueryClient) {
   qc.invalidateQueries({ queryKey: queryKeys.plugins.all });
   qc.invalidateQueries({ queryKey: queryKeys.mcp.all });
   qc.invalidateQueries({ queryKey: queryKeys.skills.all });

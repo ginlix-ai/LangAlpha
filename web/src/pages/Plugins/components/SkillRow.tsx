@@ -91,6 +91,7 @@ export function SkillRow({
   onDelete,
   onCommandSave,
   scopeControl,
+  selection,
 }: {
   skill: SkillInfo;
   toggling: boolean;
@@ -100,12 +101,15 @@ export function SkillRow({
    * cancels, empty clears back to the name). Absent = read-only chip. */
   onCommandSave?: (command: string | null) => void;
   scopeControl?: React.ReactNode;
+  /** ServerRowShell select-mode props, spread through untouched. */
+  selection?: { selecting?: boolean; selected?: boolean; onSelectToggle?: () => void };
 }) {
   const { t } = useTranslation();
   const lockedByUserTier = skill.disabled_scope === 'user';
   return (
     <ServerRowShell
       testid={`skill-row-${skill.name}`}
+      {...(selection ?? {})}
       main={
         <>
           <ServerNameLine icon={BookOpen} name={skill.name}>

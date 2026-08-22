@@ -1,7 +1,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { motion } from 'framer-motion';
-import { Download, MoreVertical, Plus } from 'lucide-react';
+import { Check, Download, MoreVertical, Plus } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
 
 /**
@@ -16,16 +16,26 @@ import { Loader } from '@/components/ui/loader';
 // consistent. SNAPPY for the toggle knob; row layout/enter/exit reuse it.
 export const SPRING_SNAPPY = { type: 'spring' as const, stiffness: 200, damping: 22 };
 
-/** Row container: left content column + right actions column. */
+/** Row container: left content column + right actions column. In select mode
+ *  (`selecting`) the whole row becomes the checkbox — a leading box reflects
+ *  `selected`, the row's own controls go inert so a click anywhere toggles
+ *  selection instead of firing a toggle or menu. */
 export function ServerRowShell({
   testid,
   main,
   actions,
+  selecting = false,
+  selected = false,
+  onSelectToggle,
 }: {
   testid: string;
   main: React.ReactNode;
   actions: React.ReactNode;
+  selecting?: boolean;
+  selected?: boolean;
+  onSelectToggle?: () => void;
 }) {
+  const selectable = selecting && !!onSelectToggle;
   return (
     <motion.div
       layout
@@ -33,12 +43,60 @@ export function ServerRowShell({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, height: 0, marginTop: 0, paddingTop: 0, paddingBottom: 0 }}
       transition={SPRING_SNAPPY}
-      className="flex items-start justify-between gap-3 py-2.5 px-3 rounded-lg overflow-hidden"
-      style={{ backgroundColor: 'var(--color-bg-card)' }}
+      className={`flex items-start justify-between gap-3 py-2.5 px-3 rounded-lg overflow-hidden ${
+        selectable ? 'cursor-pointer' : ''
+      }`}
+      style={{
+        backgroundColor: 'var(--color-bg-card)',
+        // Always set (never conditionally spread): motion.div applies style
+        // imperatively and leaves a vanished key painted on the element.
+        boxShadow:
+          selectable && selected ? 'inset 0 0 0 1px var(--color-accent-primary)' : 'none',
+      }}
       data-testid={testid}
+      {...(selectable
+        ? {
+            role: 'checkbox' as const,
+            'aria-checked': selected,
+            tabIndex: 0,
+            onClick: onSelectToggle,
+            onKeyDown: (e: React.KeyboardEvent) => {
+              if (e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault();
+                onSelectToggle?.();
+              }
+            },
+          }
+        : {})}
     >
-      <div className="min-w-0 flex flex-col gap-1">{main}</div>
-      <div className="flex items-center gap-2 flex-shrink-0">{actions}</div>
+      {selectable && (
+        <span
+          aria-hidden
+          className="flex-shrink-0 mt-1 inline-flex h-4 w-4 items-center justify-center rounded"
+          style={{
+            border: selected ? 'none' : '1px solid var(--color-border-muted)',
+            backgroundColor: selected ? 'var(--color-accent-primary)' : 'transparent',
+          }}
+        >
+          {selected && (
+            <Check className="h-3 w-3" style={{ color: 'var(--color-btn-primary-text)' }} />
+          )}
+        </span>
+      )}
+      <div
+        className={`min-w-0 flex flex-col gap-1 flex-1 ${
+          selectable ? 'pointer-events-none select-none' : ''
+        }`}
+      >
+        {main}
+      </div>
+      <div
+        className={`flex items-center gap-2 flex-shrink-0 ${
+          selectable ? 'pointer-events-none opacity-40' : ''
+        }`}
+      >
+        {actions}
+      </div>
     </motion.div>
   );
 }

@@ -11,23 +11,33 @@ import {
 import { useWorkspaces } from '@/hooks/useWorkspaces';
 import {
   EnabledToggle,
-  SectionHeader,
   ServerNameLine,
   ServerRowShell,
   TagBadge,
 } from '@/pages/ChatAgent/components/mcp/McpPrimitives';
 import { formatApiErrorDetail } from '@/pages/ChatAgent/utils/api';
+import { matchesFilter } from '../utils/groupOrigins';
+import { GroupDeck } from './GroupDeck';
 import { ScopeControl } from './ScopeControl';
 import type { ScopeWorkspace } from './ScopeControl';
+import { rowSelection, type BulkSelection } from './useBulkSelection';
 
 /**
- * The `Platform servers` section: process-global builtins presented read-only,
+ * The `Platform servers` deck: process-global builtins presented read-only,
  * with two affordances — the account-wide disable, and a per-workspace
  * "active in" checklist (deny-list markers). A workspace cannot re-enable a
  * server disabled account-wide, so the checklist locks while the row is off.
+ * Filter and selection state live in the parent tab (McpServers), which
+ * reads the same builtin query for its bulk actions.
  */
 
-export function BuiltinMcpSection() {
+export function BuiltinMcpSection({
+  filter = '',
+  selection,
+}: {
+  filter?: string;
+  selection?: BulkSelection;
+}) {
   const { t } = useTranslation();
   const { data, isLoading } = useBuiltinMcpServers();
   const toggleMutation = useToggleBuiltinMcpServer();
@@ -36,7 +46,9 @@ export function BuiltinMcpSection() {
   // Keyed by row so one row's in-flight toggle doesn't lock its siblings.
   const [busyName, setBusyName] = useState<string | null>(null);
 
-  const servers = data?.servers ?? [];
+  const servers = (data?.servers ?? []).filter((s) =>
+    matchesFilter(filter, s.name, s.description),
+  );
   const workspaces = (
     (wsData as { workspaces?: { workspace_id: string; name?: string }[] })
       ?.workspaces ?? []
@@ -84,14 +96,25 @@ export function BuiltinMcpSection() {
     }
   }
 
+  const selecting = !!selection?.selecting;
+
   return (
-    <div className="flex flex-col gap-1.5">
-      <SectionHeader>{t('plugins.mcp.platform')}</SectionHeader>
+    <GroupDeck
+      id="mcp:platform"
+      title={t('plugins.mcp.platform')}
+      icon={Server}
+      count={servers.length}
+      enabledCount={servers.filter((s) => s.enabled).length}
+      forceExpanded={selecting || !!filter.trim()}
+      selection={selection}
+      selectionKeys={servers.map((s) => `builtin:${s.name}`)}
+    >
       <AnimatePresence initial={false}>
         {servers.map((server) => (
           <ServerRowShell
             key={server.name}
             testid={`builtin-row-${server.name}`}
+            {...(selection ? rowSelection(selection, `builtin:${server.name}`) : {})}
             main={
               <>
                 <ServerNameLine icon={Server} name={server.name}>
@@ -131,6 +154,6 @@ export function BuiltinMcpSection() {
           />
         ))}
       </AnimatePresence>
-    </div>
+    </GroupDeck>
   );
 }
