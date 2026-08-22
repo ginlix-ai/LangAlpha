@@ -7,6 +7,7 @@ live here rather than in the router because that invalidation is a step a
 second write path can silently omit, and one already had.
 """
 
+import asyncio
 import json
 import logging
 from collections.abc import Mapping, Sequence
@@ -18,7 +19,11 @@ from src.server.database.user_vault_secrets import (
     get_user_secret_names,
     update_user_secret,
 )
-from src.server.models.plugin import ComponentResult, InstallReport
+from src.server.models.plugin import (
+    ComponentResult,
+    Diagnostic,
+    InstallReport,
+)
 from src.server.services.plugins.errors import PluginRejected
 from src.server.services.plugins.extension import (
     NAMESPACE,
@@ -27,6 +32,7 @@ from src.server.services.plugins.extension import (
     parse_extension,
 )
 from src.server.services.plugins.grants import (
+    BindGrants,
     resolve_bind_grants,
     strip_ungranted_refs,
 )
@@ -52,11 +58,22 @@ def stored_extension(plugin: Mapping[str, Any]) -> LangalphaExtension:
 
 async def _stored_entry_plans(
     user_id: str, plugin: Mapping[str, Any]
-) -> list[McpEntryPlan]:
-    """Re-derive the entry plans, binds included, from what was installed."""
-    _doc, plans, _diags = validate_mcp_document(
-        json.dumps(plugin.get("mcp_document")).encode(),
-        plugin_schema=(plugin.get("manifest") or {}).get("$schema"),
+) -> tuple[list[McpEntryPlan], BindGrants]:
+    """Re-derive the entry plans, binds included, from what was installed.
+
+    The grants come back with them because a refusal decided here is otherwise
+    invisible: this path builds its own report, and an entry that installs
+    without the credential it declared looks identical to one that installed
+    with it until the first tool call fails.
+    """
+    # Off the loop for the same reason install hops: serializing the stored
+    # document and running it back through the schema is GIL-held work whose
+    # size is the package's, not ours, and this path re-does all of it.
+    _doc, plans, _diags = await asyncio.to_thread(
+        lambda: validate_mcp_document(
+            json.dumps(plugin.get("mcp_document")).encode(),
+            plugin_schema=(plugin.get("manifest") or {}).get("$schema"),
+        )
     )
     extension = stored_extension(plugin)
     grants = await resolve_bind_grants(
@@ -64,7 +81,7 @@ async def _stored_entry_plans(
     )
     materialize_binds(extension, plans, grants.granted)
     strip_ungranted_refs(plans, grants)
-    return plans
+    return plans, grants
 
 
 async def apply_sse_upgrades(
@@ -75,12 +92,22 @@ async def apply_sse_upgrades(
     The plans are re-derived from the stored manifests, so an upgrade months
     after install still lands the declared configuration.
     """
+    plans, grants = await _stored_entry_plans(user_id, plugin)
     sse_by_key = {
         p.key: p
-        for p in await _stored_entry_plans(user_id, plugin)
+        for p in plans
         if p.skip_code is None and p.transport == "sse"
     }
     report = InstallReport()
+    if grants.refused:
+        # Install and update both say this; an upgrade that quietly landed the
+        # entry unbound would be the one path where the user is not told.
+        report.diagnostics.append(
+            Diagnostic(
+                level="warning", scope="plugin", code="secret_not_granted",
+                message=grants.refusal_reason(),
+            )
+        )
     consented = []
     for key in keys:
         plan = sse_by_key.get(key)

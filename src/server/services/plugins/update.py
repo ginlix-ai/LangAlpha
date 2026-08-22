@@ -30,6 +30,7 @@ from src.server.database.plugins import (
     update_plugin_row,
 )
 from src.server.database.user_skills import (
+    SkillNotOwned,
     delete_user_skill,
     get_user_skill,
     upsert_user_skill,
@@ -76,11 +77,15 @@ from src.server.services.vault_invalidation import (
 
 logger = logging.getLogger(__name__)
 
-# A row this update owned when it read it, and does not own when it writes.
-# Both the pre-write check and the write's own ownership predicate report it,
-# because a reader must not be able to read a wording difference as a
-# difference in what happened to their fork.
-_CUSTOMIZED_MID_RUN = "this server was customized while the update ran; left untouched"
+
+def _customized_mid_run(noun: str) -> str:
+    """A row this update owned when it read it, and not when it writes.
+
+    Both the pre-write ownership check and the write's own predicate report
+    through this: a reader must not be able to read a wording difference as a
+    difference in what happened to their fork.
+    """
+    return f"this {noun} was customized while the update ran; left untouched"
 
 
 def _execution_identity(config: dict[str, Any]) -> tuple[Any, ...]:
@@ -182,10 +187,29 @@ async def _update_servers(
         # Delete through the helper that owns the purges, inside the same
         # OAuth fence the catalog DELETE endpoint uses.
         nonlocal changed
+        # Ownership first, because entering the fence is itself destructive:
+        # it disconnects the server's OAuth connection and drops its schema
+        # snapshots. The predicate below would then correctly refuse to delete
+        # a row the user forked, but their login for it would already be gone,
+        # and silently — the refusal path reports nothing. Narrowing to this
+        # read leaves the same residual race the predicate handles, minus the
+        # half that cannot be undone.
+        existing = await get_catalog_server(user_id, row_name)
+        if existing is None:
+            return
+        if str(existing.get("plugin_id") or "") != plugin_id:
+            report.components.append(
+                ComponentResult(
+                    kind="mcp", key=key, name=row_name,
+                    renamed=coerce_mcp_name(key)[1], status="detached",
+                    reason=_customized_mid_run("server"),
+                )
+            )
+            return
         async with oauth_fence(user_id, [row_name]):
-            # Only if still owned: the enumeration above and this write are
-            # separate transactions, and a Customize in between makes the row
-            # the user's, not the package's, to remove.
+            # Only if still owned: the read above and this write are separate
+            # transactions, and a Customize in between makes the row the
+            # user's, not the package's, to remove.
             if not await delete_catalog_server(
                 user_id, row_name, owned_by_plugin=plugin_id
             ):
@@ -225,7 +249,7 @@ async def _update_servers(
             # mid-run, and owes the same promise: never overwrite a fork.
             report.components.append(
                 ComponentResult.of(
-                    plan, "detached", name=row_name, reason=_CUSTOMIZED_MID_RUN,
+                    plan, "detached", name=row_name, reason=_customized_mid_run("server"),
                 )
             )
             return
@@ -310,7 +334,7 @@ async def _update_servers(
                 report.components.append(
                     ComponentResult.of(
                         plan, "detached", name=row_name,
-                        reason=_CUSTOMIZED_MID_RUN,
+                        reason=_customized_mid_run("server"),
                     )
                 )
             return
@@ -392,7 +416,21 @@ async def _replace_skill(
             workspace_id=None,
             plugin_id=plugin_id,
             plugin_skill_dir=plan.dir,
+            # The caller's ownership read is separated from this write by a zip
+            # validation and an object PUT. Without the predicate a Customize
+            # landing in between is re-adopted here and its archive dropped as
+            # superseded, which no later step can put back.
+            owned_by_plugin=plugin_id,
         )
+    except SkillNotOwned:
+        await drop_archive_if_unused(user_id, archive_key)
+        report.components.append(
+            ComponentResult.of(
+                plan, "detached", name=row["name"],
+                reason=_customized_mid_run("skill"),
+            )
+        )
+        return
     except ValueError as e:
         await drop_archive_if_unused(user_id, archive_key)
         report.components.append(

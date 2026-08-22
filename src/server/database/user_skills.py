@@ -45,6 +45,15 @@ class SkillNameTaken(ValueError):
     the trigger-conflict its other ValueErrors mean.
     """
 
+
+class SkillNotOwned(ValueError):
+    """An ``owned_by_plugin`` upsert found the row detached under it.
+
+    The write-side counterpart of the delete's ``owned_by_plugin`` predicate.
+    A ValueError for the same reason as its sibling, and distinct so an update
+    can report the fork it declined to touch rather than an error.
+    """
+
 # Namespace for the per-workspace skill-sync advisory lock (two-arg form).
 # The reconciler holds the session-level variant across a whole pass;
 # workspace-scoped content mutations (upsert/move/delete) take the xact-level
@@ -461,6 +470,7 @@ async def upsert_user_skill(
     plugin_skill_dir: str | None = None,
     command: str | None = None,
     overwrite: bool = True,
+    owned_by_plugin: str | None = None,
     conn=None,
 ) -> tuple[dict[str, Any], str | None]:
     """Insert or replace a skill by scope and name.
@@ -482,7 +492,24 @@ async def upsert_user_skill(
     On replace, ``enabled`` is preserved (a disabled skill re-uploaded stays
     disabled) while the plugin provenance columns take the caller's values —
     a direct re-upload of a plugin-owned name therefore detaches it, which is
-    the fork-on-edit semantic. ``command`` seeds only on insert: the column is
+    the fork-on-edit semantic. A detach off a DISABLED plugin additionally
+    carries the OFF state onto the row: suppression lived in the delivery
+    query's ``plugin_id IS NULL OR p.enabled`` predicate, so clearing the
+    provenance would turn a skill the user had switched off at the plugin into
+    an unconditionally delivered one. Re-uploading your own copy is not consent
+    to start running it. The catalog's fork-on-edit already owes this
+    (``services/mcp_catalog.apply_catalog_edit``); this is the same rule on
+    the skill half.
+
+    ``owned_by_plugin`` narrows the replace to a row that plugin still owns,
+    the write-side counterpart of the delete's predicate. A plugin update
+    decides to replace by reading ownership first, then spends a zip
+    validation and an object PUT before writing; a Customize landing in that
+    window would otherwise be re-adopted under the package's content AND have
+    its archive dropped as superseded, which is the one destruction here that
+    nothing can undo. Raises ``SkillNotOwned`` instead.
+
+    ``command`` seeds only on insert: the column is
     authoritative after creation, so a re-upload never resets a user's alias.
     The seed is re-checked here under the lock, since the caller chose it
     before spending the object PUT.
@@ -512,14 +539,28 @@ async def upsert_user_skill(
 
                 # The row being replaced is excluded from the aggregate above,
                 # so read its archive_key separately to hand back for cleanup.
+                # p.enabled rides along so a detach can carry the plugin's OFF
+                # state onto the row. FOR UPDATE OF s: the outer join's
+                # nullable side cannot be locked, and this only needs the skill.
                 await cur.execute(
-                    "SELECT archive_key, plugin_id FROM user_skills "
-                    "WHERE user_id = %s AND name = %s "
-                    "AND workspace_id IS NOT DISTINCT FROM %s FOR UPDATE",
+                    "SELECT s.archive_key, s.plugin_id, p.enabled AS plugin_enabled "
+                    "FROM user_skills s "
+                    "LEFT JOIN user_plugins p "
+                    "  ON p.user_id = s.user_id AND p.user_plugin_id = s.plugin_id "
+                    "WHERE s.user_id = %s AND s.name = %s "
+                    "AND s.workspace_id IS NOT DISTINCT FROM %s FOR UPDATE OF s",
                     (user_id, name, workspace_id),
                 )
                 prior = await cur.fetchone()
                 prior_key = prior["archive_key"] if prior else None
+                if (
+                    owned_by_plugin is not None
+                    and prior is not None
+                    and str(prior["plugin_id"] or "") != owned_by_plugin
+                ):
+                    raise SkillNotOwned(
+                        f"skill {name!r} is no longer owned by this plugin"
+                    )
                 if not overwrite and prior is not None:
                     # The caller checked this name was free before spending the
                     # object PUT; here, under the lock and on a locked row, is
@@ -530,6 +571,23 @@ async def upsert_user_skill(
                     # later uninstall deletes work the plugin never created.
                     raise SkillNameTaken(
                         f"a skill named {name!r} already exists"
+                    )
+
+                if (
+                    plugin_id is None
+                    and prior is not None
+                    and prior["plugin_id"] is not None
+                    and prior["plugin_enabled"] is False
+                ):
+                    # Detaching off a disabled plugin. `enabled` is outside the
+                    # DO UPDATE SET list below, so writing it here survives the
+                    # upsert — and the row is already locked, so this and the
+                    # replace are one atomic step.
+                    await cur.execute(
+                        "UPDATE user_skills SET enabled = FALSE "
+                        "WHERE user_id = %s AND name = %s "
+                        "AND workspace_id IS NOT DISTINCT FROM %s",
+                        (user_id, name, workspace_id),
                     )
 
                 # Uniqueness is a partial index per scope, so ON CONFLICT must

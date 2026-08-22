@@ -219,15 +219,25 @@ def discover_plugin_roots(files: dict[str, bytes]) -> list[PluginCandidate]:
         by_root = {(): by_root[()]}
 
     kept: list[tuple[str, ...]] = []
+    kept_set: set[tuple[str, ...]] = set()
     for root in sorted(by_root):
-        if any(root[: len(k)] == k for k in kept):
+        # sorted() puts an ancestor ahead of its descendants, so containment
+        # only has to ask about this root's own prefix chain — at most
+        # MAX_ROOT_DEPTH entries — rather than rescanning everything kept so
+        # far. The archive that makes the difference is the one where no root
+        # contains another, which is also the cheapest one to build.
+        if any(root[:i] in kept_set for i in range(len(root))):
             continue
+        if len(kept) >= MAX_CANDIDATES:
+            # Inside the walk rather than after it: the refusal is the same
+            # either way, and an archive that trips it should not first pay for
+            # the rest of the scan.
+            raise PluginFatal(
+                f"the archive contains more than {MAX_CANDIDATES} plugin "
+                "candidates"
+            )
         kept.append(root)
-    if len(kept) > MAX_CANDIDATES:
-        raise PluginFatal(
-            f"the archive contains more than {MAX_CANDIDATES} plugin "
-            "candidates"
-        )
+        kept_set.add(root)
 
     candidates = []
     for root in kept:
