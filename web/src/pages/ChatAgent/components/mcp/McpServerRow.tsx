@@ -123,6 +123,14 @@ function McpServerRowImpl({
                 {t('mcp.row.overridesInherited')}
               </TagBadge>
             )}
+            {server.plugin_name && (
+              <TagBadge
+                soft
+                title={t('plugins.component.fromPlugin', { plugin: server.plugin_name })}
+              >
+                {server.plugin_name}
+              </TagBadge>
+            )}
             {lockedByUserTier && <TagBadge soft>{t('mcp.row.userDisabled')}</TagBadge>}
           </ServerNameLine>
 

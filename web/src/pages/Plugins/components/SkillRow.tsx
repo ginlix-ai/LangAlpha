@@ -119,11 +119,31 @@ export function SkillRow({
             {skill.origin === 'platform' && (
               <TagBadge soft>{t('plugins.skills.platformBadge')}</TagBadge>
             )}
+            {skill.plugin_name && (
+              <TagBadge
+                soft
+                title={t('plugins.component.fromPlugin', {
+                  plugin: skill.plugin_name,
+                })}
+              >
+                {skill.plugin_name}
+              </TagBadge>
+            )}
             {skill.shadows_inherited && (
               <TagBadge soft>{t('plugins.skills.shadowsBadge')}</TagBadge>
             )}
             {lockedByUserTier && (
               <TagBadge soft>{t('plugins.skills.userDisabledBadge')}</TagBadge>
+            )}
+            {skill.plugin_name && skill.plugin_enabled === false && (
+              <TagBadge
+                soft
+                title={t('plugins.component.suppressed', {
+                  plugin: skill.plugin_name,
+                })}
+              >
+                {t('plugins.component.suppressedBadge')}
+              </TagBadge>
             )}
           </ServerNameLine>
           {skill.description && (

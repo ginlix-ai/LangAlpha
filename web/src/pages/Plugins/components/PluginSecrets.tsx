@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import {
   useUserVaultSecrets,
+  useUserVaultBlueprints,
   useCreateUserVaultSecret,
   useUpdateUserVaultSecret,
   useDeleteUserVaultSecret,
@@ -18,6 +19,7 @@ import { revealUserVaultSecret } from '@/pages/ChatAgent/utils/api';
 export function PluginSecrets() {
   const { t } = useTranslation();
   const { data, isLoading, error: loadError } = useUserVaultSecrets();
+  const { data: blueprintData } = useUserVaultBlueprints();
   const createMutation = useCreateUserVaultSecret();
   const updateMutation = useUpdateUserVaultSecret();
   const deleteMutation = useDeleteUserVaultSecret();
@@ -28,6 +30,7 @@ export function PluginSecrets() {
   return (
     <SecretsManager
       title={t('plugins.secrets.title')}
+      blueprints={blueprintData?.blueprints ?? []}
       secrets={secrets.map((s) => ({
         id: s.user_vault_secret_id,
         name: s.name,

@@ -263,6 +263,16 @@ export function SkillsList() {
                     disabledWorkspaceIds={skill.disabled_workspace_ids ?? []}
                     checklistLocked={!skill.enabled}
                     busy={togglingName === rowKey(skill) || movingName === rowKey(skill)}
+                    moveBlockedReason={
+                      // Plugin-installed skills live at the account tier
+                      // (moving one into a workspace would detach it as a
+                      // side effect of a scope change).
+                      skill.plugin_name
+                        ? t('plugins.scope.movePluginBlocked', {
+                            plugin: skill.plugin_name,
+                          })
+                        : null
+                    }
                     onSetWorkspaceDisabled={(wsId, disabled) =>
                       handleSetWorkspaceDisabled(skill, wsId, disabled)
                     }

@@ -86,6 +86,33 @@ export function needsDiscoveryProbe(server: EffectiveServer): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Plugin provenance
+// ---------------------------------------------------------------------------
+
+/** The row came from an installed plugin. Its config is the plugin's to
+ * define; the in-place actions are enable/disable and secret bindings, and
+ * an edit detaches it. */
+export function isPluginOwned(row: { plugin_name?: string | null }): boolean {
+  return !!row.plugin_name;
+}
+
+/** Editable in place is the negation: everything not owned by a plugin.
+ * Stated this way so a new provenance can't be forgotten here. */
+export function canEditInPlace(row: { plugin_name?: string | null }): boolean {
+  return !isPluginOwned(row);
+}
+
+/** Suppressed by its plugin being switched off, so the row's own `enabled`
+ * is not the truth the agent sees. Undefined plugin state means "not
+ * suppressed" — a row we can't prove is held down is shown as it is. */
+export function isPluginSuppressed(row: {
+  plugin_name?: string | null;
+  plugin_enabled?: boolean | null;
+}): boolean {
+  return isPluginOwned(row) && row.plugin_enabled === false;
+}
+
+// ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 

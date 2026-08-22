@@ -95,6 +95,9 @@ export interface EffectiveServer {
    * read-only here and points at Plugins.
    */
   disabled_scope?: 'workspace' | 'user' | null;
+  /** Set when the row was installed by an Agent Plugins package (badge only;
+   * the row is managed at /plugins). */
+  plugin_name?: string | null;
 }
 
 /**
@@ -175,6 +178,12 @@ export interface CatalogServer {
   /** Workspaces holding a tombstone for this name (deny-list); populated in
    * the all-scopes view only. */
   disabled_workspace_ids?: string[];
+  /** Set when the row was installed by an Agent Plugins package. Editing a
+   * plugin-owned row detaches it (the badge clears; updates skip it). */
+  plugin_name?: string | null;
+  /** The owning plugin's enabled state; false = the row is suppressed from
+   * every workspace regardless of its own `enabled`. */
+  plugin_enabled?: boolean | null;
 }
 
 /** A workspace-local server surfaced in the all-scopes catalog view — a

@@ -6,6 +6,7 @@ import { toast } from '@/components/ui/use-toast';
 import { McpServers } from './components/McpServers';
 import { SkillsList } from './components/SkillsList';
 import { PluginSecrets } from './components/PluginSecrets';
+import { PluginsList } from './components/PluginsList';
 import './Plugins.css';
 
 /**
@@ -19,12 +20,13 @@ import './Plugins.css';
  * — surfaced as a toast, then stripped from the URL.
  */
 
-const TABS = ['mcp', 'skills', 'secrets'] as const;
+const TABS = ['plugins', 'mcp', 'skills', 'secrets'] as const;
 type Tab = (typeof TABS)[number];
 
 // Explicit key map (not a template literal) so the i18n parity test can see
 // every tab label.
 const TAB_LABEL_KEYS: Record<Tab, string> = {
+  plugins: 'plugins.tabs.plugins',
   mcp: 'plugins.tabs.mcp',
   skills: 'plugins.tabs.skills',
   secrets: 'plugins.tabs.secrets',
@@ -41,7 +43,7 @@ function Plugins() {
   const { t } = useTranslation();
 
   const [activeTab, setActiveTab] = useState<Tab>(
-    resolveTab(searchParams.get('tab')) ?? 'mcp',
+    resolveTab(searchParams.get('tab')) ?? 'plugins',
   );
   const pageRef = useRef<HTMLDivElement>(null);
   useScrollMemory(pageRef, 'page:plugins');
@@ -117,6 +119,7 @@ function Plugins() {
         </div>
 
         <div className="plugins-content">
+          {activeTab === 'plugins' && <PluginsList />}
           {activeTab === 'mcp' && <McpServers />}
           {activeTab === 'skills' && <SkillsList />}
           {activeTab === 'secrets' && <PluginSecrets />}

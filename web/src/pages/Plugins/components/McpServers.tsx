@@ -30,6 +30,8 @@ import { McpImportModal } from '@/pages/ChatAgent/components/mcp/McpImportModal'
 import { McpOauthPill } from '@/pages/ChatAgent/components/mcp/McpStatusPill';
 import {
   canDisconnectOauth,
+  isPluginOwned,
+  isPluginSuppressed,
   needsOauthConnect,
 } from '@/pages/ChatAgent/components/mcp/mcpState';
 import { useMcpServerList } from '@/pages/ChatAgent/components/mcp/useMcpServerList';
@@ -326,6 +328,16 @@ export function McpServers() {
                     <>
                       <ServerNameLine icon={Server} name={server.name}>
                         <TagBadge>{server.transport}</TagBadge>
+                        {server.plugin_name && (
+                          <TagBadge
+                            soft
+                            title={t('plugins.component.fromPlugin', {
+                              plugin: server.plugin_name,
+                            })}
+                          >
+                            {server.plugin_name}
+                          </TagBadge>
+                        )}
                       </ServerNameLine>
 
                       {/* Status line: OAuth pill + tool count + inheritance scope */}
@@ -347,6 +359,16 @@ export function McpServers() {
                             ? t('plugins.servers.enabledState')
                             : t('plugins.servers.disabledState')}
                         </span>
+                        {isPluginSuppressed(server) && (
+                          <span
+                            className="text-[0.6875rem]"
+                            style={{ color: 'var(--color-text-tertiary)' }}
+                          >
+                            {t('plugins.component.suppressed', {
+                              plugin: server.plugin_name,
+                            })}
+                          </span>
+                        )}
                       </div>
 
                       {server.description && (
@@ -386,10 +408,16 @@ export function McpServers() {
                         }
                         moveBlockedReason={
                           // OAuth connections exist only at the user tier, so a
-                          // connected server cannot move into a workspace.
-                          status && status !== 'revoked'
-                            ? t('plugins.scope.moveOauthBlocked')
-                            : null
+                          // connected server cannot move into a workspace. A
+                          // plugin-owned row stays put too: moving it would
+                          // orphan the plugin's ownership row.
+                          isPluginOwned(server)
+                            ? t('plugins.scope.movePluginBlocked', {
+                                plugin: server.plugin_name,
+                              })
+                            : status && status !== 'revoked'
+                              ? t('plugins.scope.moveOauthBlocked')
+                              : null
                         }
                         onSetWorkspaceDisabled={(wsId, disabled) =>
                           handleSetWorkspaceDisabled(server.name, wsId, disabled)
@@ -415,9 +443,25 @@ export function McpServers() {
                           />
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem onSelect={() => openEdit(server)}>
+                          {/* Editing a plugin-owned row detaches it from the
+                              plugin, so the item says Customize and carries the
+                              consequence in its tooltip. The save path is the
+                              same PUT; the backend clears ownership and returns
+                              the detach warning, surfaced by onSaveWarnings. */}
+                          <DropdownMenuItem
+                            onSelect={() => openEdit(server)}
+                            title={
+                              isPluginOwned(server)
+                                ? t('plugins.component.customizeHint', {
+                                    plugin: server.plugin_name,
+                                  })
+                                : undefined
+                            }
+                          >
                             <Pencil className="h-3.5 w-3.5 mr-2" />
-                            {t('mcp.row.edit')}
+                            {isPluginOwned(server)
+                              ? t('plugins.component.customize')
+                              : t('mcp.row.edit')}
                           </DropdownMenuItem>
                           {oauthEligible && status === 'connected' && (
                             <DropdownMenuItem onSelect={() => handleRefreshSchemas(server.name)}>

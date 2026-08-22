@@ -21,6 +21,10 @@ export interface SkillInfo {
   deletable: boolean;
   confirmed: boolean;
   plugin_id: string | null;
+  /** Set when the skill was installed by an Agent Plugins package. */
+  plugin_name?: string | null;
+  /** The owning plugin's enabled state; false = suppressed everywhere. */
+  plugin_enabled?: boolean | null;
   size_bytes: number;
   updated_at: string | null;
   disabled_scope: 'user' | 'workspace' | null;

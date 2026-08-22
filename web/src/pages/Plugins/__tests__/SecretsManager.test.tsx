@@ -47,6 +47,7 @@ let userVaultLoading = false;
 
 vi.mock('@/hooks/useUserVault', () => ({
   useUserVaultSecrets: () => ({ data: userVaultData, isLoading: userVaultLoading, error: userVaultError }),
+  useUserVaultBlueprints: () => ({ data: { blueprints: [], remaining_slots: 0 } }),
   useCreateUserVaultSecret: () => ({ mutateAsync: userVault.create, isPending: false }),
   useUpdateUserVaultSecret: () => ({ mutateAsync: userVault.update, isPending: false }),
   useDeleteUserVaultSecret: () => ({ mutateAsync: userVault.del, isPending: false }),

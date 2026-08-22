@@ -105,8 +105,16 @@ export const queryKeys = {
       ],
   },
   userVault: {
-    all:     ['userVault'],
-    secrets: () => [...queryKeys.userVault.all, 'secrets'],
+    all:        ['userVault'],
+    secrets:    () => [...queryKeys.userVault.all, 'secrets'],
+    blueprints: () => [...queryKeys.userVault.all, 'blueprints'],
+  },
+  // Installed Agent Plugins packages. Their components live in the mcp and
+  // skills caches; mutations here invalidate the whole fan-out.
+  plugins: {
+    all:    ['plugins'],
+    list:   () => [...queryKeys.plugins.all, 'list'],
+    detail: (name: string) => [...queryKeys.plugins.all, 'detail', name],
   },
   // Workspace-tier vault. Scoped under the workspace id so a mutation
   // invalidates that workspace's secrets AND blueprints (the recommended-

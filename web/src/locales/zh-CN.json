@@ -2699,7 +2699,8 @@
     "tabs": {
       "mcp": "MCP 服务器",
       "skills": "技能",
-      "secrets": "密钥"
+      "secrets": "密钥",
+      "plugins": "插件"
     },
     "servers": {
       "inheritHint": "在此开启的服务器对你的所有工作区生效；如需在单个工作区关闭，请前往该工作区的 MCP 标签页。关闭状态的服务器仅作为模板保留。",
@@ -2793,7 +2794,75 @@
       "moveFailed": "移动失败",
       "inWorkspace": "工作区：{{name}}",
       "unknownWorkspace": "未知工作区",
-      "triggerAria": "范围：{{scope}}"
+      "triggerAria": "范围：{{scope}}",
+      "movePluginBlocked": "由 {{plugin}} 安装；插件组件保留在账户层级"
+    },
+    "list": {
+      "title": "已安装插件",
+      "install": "安装插件",
+      "hint": "插件是 MCP 服务器和技能的组合包。其组件会带着插件名出现在 MCP 和技能标签页中；此处的开关会同时切换全部组件。",
+      "empty": "尚未安装插件。可以从 zip 文件或公开 git 地址安装。",
+      "atCap": "已达插件数量上限（{{max}}）"
+    },
+    "card": {
+      "serverCount_other": "{{count}} 个服务器",
+      "skillCount_other": "{{count}} 个技能",
+      "componentCount": "{{servers}}，{{skills}}",
+      "sourceZip": "zip",
+      "sourceRemote": "远程",
+      "disabledState": "已关闭，所有工作区中的组件均被停用",
+      "update": "更新",
+      "export": "导出",
+      "uninstall": "卸载",
+      "toggleFailed": "无法更新插件",
+      "updatedTitle": "{{plugin}} 已更新",
+      "updatedNoChanges": "已是最新版本",
+      "updateFailed": "更新失败",
+      "exportFailed": "导出失败",
+      "uninstalledTitle": "{{plugin}} 已卸载",
+      "uninstalledDesc": "移除了 {{servers}} 和 {{skills}}。已自定义的组件被保留。",
+      "uninstallFailed": "卸载失败",
+      "uninstallConfirm": "卸载 {{plugin}}？其服务器和技能将从所有工作区移除。已自定义的组件会被保留。",
+      "uninstallConfirmYes": "卸载",
+      "uninstallConfirmNo": "保留"
+    },
+    "component": {
+      "fromPlugin": "由 {{plugin}} 提供",
+      "customize": "自定义",
+      "customizeHint": "将其从 {{plugin}} 分离以便编辑。此后插件更新将跳过它。",
+      "suppressed": "已停用：{{plugin}} 处于关闭状态",
+      "suppressedBadge": "插件已关闭"
+    },
+    "install": {
+      "title": "安装插件",
+      "stepSource": "选择来源",
+      "stepInstalling": "安装中",
+      "stepReport": "安装报告",
+      "stepBindings": "凭据",
+      "sourceZip": "上传 zip 文件",
+      "sourceGit": "从公开 git 地址安装",
+      "or": "或",
+      "installConfirm": "安装",
+      "notZip": "请选择 .zip 文件",
+      "tooLarge": "zip 超过 20 MB 限制",
+      "fetching": "正在获取插件",
+      "uploading": "上传中 {{percent}}%",
+      "reportInstalled": "已安装",
+      "reportSkipped": "已跳过",
+      "reportUpgradable": "需要确认",
+      "reportWarnings": "警告",
+      "sseUpgradeHint": "这些服务器声明了旧版 SSE 传输。它们通过了 streamable HTTP 探测，可以用现代传输方式安装。",
+      "sseUpgradeConfirm": "以 streamable HTTP 安装",
+      "sseUpgradeFailed": "升级失败",
+      "droppedFiles": "未导入：{{files}}",
+      "continueToBindings": "继续",
+      "bindingsHint": "该插件声明了所需凭据。值会保存到你的保险库，不会以明文展示给智能体。也可以跳过，稍后在密钥标签页中设置。",
+      "bindingsSkip": "暂时跳过",
+      "bindingsSave": "保存 {{count}} 项",
+      "bindingPlaceholder": "粘贴值",
+      "bindingDocs": "获取方式",
+      "boundTitle": "凭据已保存",
+      "boundDesc": "已保存 {{count}} 项到保险库"
     }
   }
 }

@@ -3,6 +3,7 @@ import { queryKeys } from '../lib/queryKeys';
 import {
   createUserVaultSecret,
   deleteUserVaultSecret,
+  getUserVaultBlueprints,
   getUserVaultSecrets,
   updateUserVaultSecret,
 } from '../pages/ChatAgent/utils/api';
@@ -13,6 +14,17 @@ export function useUserVaultSecrets(enabled = true) {
   return useQuery({
     queryKey: queryKeys.userVault.secrets(),
     queryFn: getUserVaultSecrets,
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+/** Credentials builtin servers and enabled plugins declare but the vault
+ * doesn't hold yet; any secret/plugin mutation invalidates it by prefix. */
+export function useUserVaultBlueprints(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.userVault.blueprints(),
+    queryFn: getUserVaultBlueprints,
     enabled,
     staleTime: 30_000,
   });

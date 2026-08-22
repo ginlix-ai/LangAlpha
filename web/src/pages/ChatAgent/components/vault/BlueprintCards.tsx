@@ -9,7 +9,8 @@ import type { VaultBlueprint } from '../../utils/api';
  */
 
 interface BlueprintCardsProps {
-  blueprints: VaultBlueprint[];
+  /** User-tier blueprints additionally carry the declaring plugin's name. */
+  blueprints: (VaultBlueprint & { plugin_name?: string | null })[];
   /** At the secret cap: cards stay visible but explain why they're inert. */
   atCap: boolean;
   maxSecrets: number;
@@ -45,6 +46,15 @@ export function BlueprintCards({ blueprints, atCap, maxSecrets, onSelect }: Blue
               <span className="text-xs font-mono px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-bg-tag)' }}>
                 {bp.name}
               </span>
+              {bp.plugin_name && (
+                <span
+                  className="text-xs px-1.5 py-0.5 rounded flex-shrink-0"
+                  style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-bg-tag)' }}
+                  title={t('plugins.component.fromPlugin', { plugin: bp.plugin_name })}
+                >
+                  {bp.plugin_name}
+                </span>
+              )}
             </div>
             <span className="text-xs flex items-center gap-1 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }}>
               <Plus className="h-3 w-3" />
