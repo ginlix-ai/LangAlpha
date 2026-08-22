@@ -10,6 +10,12 @@ import { runBulk } from '../utils/bulkRun';
  * tab-namespaced row identifiers (`catalog:<name>`, `<wsid>:<name>`, …); the
  * tab that owns the hook maps keys back to rows when it assembles the bulk
  * actions, so the hook itself never learns row semantics.
+ *
+ * Keys survive a filter change, but every tab resolves them against the rows
+ * it is currently SHOWING, so a bulk action reaches exactly what is on screen
+ * and the bar counts the same set. That split is deliberate: pruning the keys
+ * instead would break select-some-then-search-for-the-next, while resolving
+ * against the whole account would act on rows the filter is hiding.
  */
 
 export interface BulkSelection {

@@ -50,7 +50,13 @@ def _remote_plan() -> McpEntryPlan:
     )
 
 
-def _vault(held: list[str], referenced: set[str] | None = None):
+def _vault(
+    held: list[str],
+    referenced: set[str] | None = None,
+    owned: set[str] | None = None,
+):
+    """The three vault facts a grant is decided from: what the user holds, what
+    this plugin's rows reference, and what this plugin introduced."""
     return (
         patch(
             "src.server.services.plugins.grants.get_user_secret_names",
@@ -60,13 +66,17 @@ def _vault(held: list[str], referenced: set[str] | None = None):
             "src.server.services.plugins.grants.list_plugin_referenced_secrets",
             new=AsyncMock(return_value=referenced or set()),
         ),
+        patch(
+            "src.server.services.plugins.grants.list_plugin_owned_secrets",
+            new=AsyncMock(return_value=owned or set()),
+        ),
     )
 
 
 @pytest.mark.asyncio
 async def test_a_name_the_plugin_introduces_is_granted():
-    held, refs = _vault([])
-    with held, refs:
+    held, refs, owned = _vault([])
+    with held, refs, owned:
         grants = await resolve_bind_grants(
             USER, _extension(), plugin_id=None
         )
@@ -78,8 +88,8 @@ async def test_a_name_the_plugin_introduces_is_granted():
 async def test_a_credential_the_user_already_holds_is_refused():
     # The whole finding: without this the plugin's own endpoint receives a key
     # the user set up for something else, and no surface ever says so.
-    held, refs = _vault(["POLYGON_API_KEY"])
-    with held, refs:
+    held, refs, owned = _vault(["POLYGON_API_KEY"])
+    with held, refs, owned:
         grants = await resolve_bind_grants(
             USER, _extension(), plugin_id=None
         )
@@ -92,12 +102,43 @@ async def test_a_grant_carries_forward_through_an_update():
     # By install time the plugin created the secret, so on update the vault
     # holds it. What distinguishes that from the attack is that the plugin's
     # own row already references it.
-    held, refs = _vault(["POLYGON_API_KEY"], {"POLYGON_API_KEY"})
-    with held, refs:
+    held, refs, owned = _vault(["POLYGON_API_KEY"], {"POLYGON_API_KEY"})
+    with held, refs, owned:
         grants = await resolve_bind_grants(
             USER, _extension(), plugin_id=PLUGIN_ID
         )
     assert grants.granted == frozenset({"POLYGON_API_KEY"})
+
+
+@pytest.mark.asyncio
+async def test_a_grant_survives_having_reached_no_row():
+    # The rows are not the only record. A plugin whose every entry was held
+    # back at install has none of them, so the key its own wizard collected
+    # would read afterwards as the user's key for something else, and the
+    # plugin would be refused it on the upgrade that finally installs the
+    # entry. The claim on the secret is what carries the grant instead.
+    held, refs, owned = _vault(
+        ["POLYGON_API_KEY"], set(), {"POLYGON_API_KEY"}
+    )
+    with held, refs, owned:
+        grants = await resolve_bind_grants(
+            USER, _extension(), plugin_id=PLUGIN_ID
+        )
+    assert grants.granted == frozenset({"POLYGON_API_KEY"})
+    assert grants.refused == ()
+
+
+@pytest.mark.asyncio
+async def test_another_plugin_s_claim_grants_nothing():
+    # The claim is per-plugin, so this plugin's queries return nothing for a
+    # name a sibling introduced, and the refusal stands.
+    held, refs, owned = _vault(["POLYGON_API_KEY"], set(), set())
+    with held, refs, owned:
+        grants = await resolve_bind_grants(
+            USER, _extension(), plugin_id=PLUGIN_ID
+        )
+    assert grants.granted == frozenset()
+    assert grants.refused == ("POLYGON_API_KEY",)
 
 
 def test_validation_records_the_bind_without_writing_it():

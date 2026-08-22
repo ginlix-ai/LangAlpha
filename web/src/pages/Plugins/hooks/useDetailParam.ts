@@ -31,10 +31,11 @@ export function useDetailParam<T>(
   const ref = parseDetail(searchParams);
   const target = ref?.kind === kind ? resolve(ref) : null;
 
+  // Opening pushes: an overlay is a place, and Back is the gesture that closes
+  // one, on a phone especially. Closing replaces, so the entry the open pushed
+  // is spent rather than left behind for Back to reopen.
   function open(name: string, workspaceId: string | null = null) {
-    setSearchParams(withDetail(searchParams, { kind, name, workspaceId }), {
-      replace: true,
-    });
+    setSearchParams(withDetail(searchParams, { kind, name, workspaceId }));
   }
   function close() {
     setSearchParams(withDetail(searchParams, null), { replace: true });

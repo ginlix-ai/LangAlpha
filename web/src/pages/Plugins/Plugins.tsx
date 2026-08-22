@@ -16,6 +16,7 @@ import { SkillsList } from './components/SkillsList';
 import { PluginSecrets } from './components/PluginSecrets';
 import { PluginsList } from './components/PluginsList';
 import { ADD_INTENT_TAB, ADD_PARAM, type AddIntent } from './utils/addParam';
+import { DETAIL_KIND_TAB, parseDetail } from './utils/detailParam';
 import './Plugins.css';
 
 /**
@@ -42,7 +43,7 @@ const TAB_LABEL_KEYS: Record<Tab, string> = {
 };
 
 /** Old deep links: /connectors?tab=servers → the mcp tab. */
-function resolveTab(param: string | null): Tab | null {
+function resolveTab(param: string | null | undefined): Tab | null {
   if (param === 'servers') return 'mcp';
   return TABS.includes(param as Tab) ? (param as Tab) : null;
 }
@@ -54,7 +55,12 @@ function Plugins() {
 
   // The URL is the tab state, not a mirror of it: derived, so back/forward
   // needs no sync effect and cannot briefly disagree with the address bar.
-  const activeTab: Tab = resolveTab(searchParams.get('tab')) ?? 'plugins';
+  // A `?detail=` with no tab names its tab through its kind.
+  const detailRef = parseDetail(searchParams);
+  const activeTab: Tab =
+    resolveTab(searchParams.get('tab')) ??
+    resolveTab(detailRef && DETAIL_KIND_TAB[detailRef.kind]) ??
+    'plugins';
   const pageRef = useRef<HTMLDivElement>(null);
   useScrollMemory(pageRef, 'page:plugins');
 

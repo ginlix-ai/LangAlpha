@@ -49,6 +49,12 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # The provenance FKs below take ACCESS EXCLUSIVE on user_mcp_servers and
+    # user_skills, both of which the request path reads on every turn. Fail
+    # loudly rather than queue: without a bound, the ALTER waits behind any
+    # long transaction and every reader waits behind the ALTER.
+    op.execute("SET lock_timeout = '5s'")
+
     op.execute("""
         CREATE TABLE IF NOT EXISTS user_plugins (
             user_plugin_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

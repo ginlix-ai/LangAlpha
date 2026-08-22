@@ -18,12 +18,13 @@ import { isPluginOwned } from '../utils/provenance';
 
 /** The select-mode actions for the Skills tab: enable, disable, delete, scope. */
 export function useSkillBulkActions(
-  allSkills: readonly SkillInfo[],
+  /** The rows on screen, not the whole account: see useBulkSelection. */
+  visibleSkills: readonly SkillInfo[],
   surface: PluginListSurface,
   workspaces: ScopeWorkspace[],
-): { actions: BulkAction[]; scope: BulkScopeSpec } {
+): { actions: BulkAction[]; scope: BulkScopeSpec; count: number } {
   const { t } = useTranslation();
-  const selected = allSkills.filter((s) =>
+  const selected = visibleSkills.filter((s) =>
     surface.selection.selected.has(skillRowKey(s)),
   );
 
@@ -109,5 +110,5 @@ export function useSkillBulkActions(
     },
   ];
 
-  return { actions, scope };
+  return { actions, scope, count: selected.length };
 }

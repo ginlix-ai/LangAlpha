@@ -19,6 +19,7 @@ import logging
 from dataclasses import dataclass
 
 from src.server.database.user_skills import (
+    MAX_SKILLS_PER_USER,
     SkillNameTaken,
     list_user_skills,
     upsert_user_skill,
@@ -96,6 +97,10 @@ async def store_skill_archive(
 
 
 _EXISTS_REASON = "a skill with this name already exists; left untouched"
+_CAP_REASON = (
+    f"you already have {MAX_SKILLS_PER_USER} skills, the per-account limit; "
+    "delete one and update the plugin to install the rest"
+)
 
 
 async def _prepare(
@@ -182,6 +187,27 @@ async def fan_out_skills(
             Diagnostic(scope="skill", target=plan.dir, code=code, message=reason)
         )
 
+    def _over_cap(plan: SkillPlan, *, name: str = "") -> None:
+        report.components.append(
+            ComponentResult.of(plan, "error", name=name, reason=_CAP_REASON)
+        )
+        report.diagnostics.append(
+            Diagnostic(
+                level="error", scope="skill", target=plan.dir,
+                code="cap_reached", message=_CAP_REASON,
+            )
+        )
+
+    # An account already at the cap has no slot any plan could take, so the
+    # whole prepare phase below would validate and store archives only to
+    # delete them again. The per-plan check in the write loop is the one that
+    # decides; this only declines to do the work first.
+    if len(account_rows) >= MAX_SKILLS_PER_USER:
+        for plan in plans:
+            report.diagnostics.extend(plan.diagnostics)
+            _over_cap(plan)
+        return
+
     gate = asyncio.Semaphore(MAX_CONCURRENT_ARCHIVE_OPS)
     outcomes = await asyncio.gather(
         *(
@@ -224,6 +250,16 @@ async def fan_out_skills(
             continue
 
         validated = outcome.validated
+        # account_rows grows with every create below, so this counts the
+        # budget this install has actually spent rather than the plans it
+        # started with: a plan the prepare phase rejected never took a slot.
+        # Same shape as run_mcp_import's cap check, and it keeps the ValueError
+        # below meaning what its name says instead of doubling as the cap's
+        # messenger.
+        if len(account_rows) >= MAX_SKILLS_PER_USER:
+            await drop_archive_if_unused(user_id, outcome.archive_key)
+            _over_cap(plan, name=validated.name)
+            continue
         command_seed = free_seed(validated, account_rows, overrides)
         try:
             row, superseded = await upsert_user_skill(
@@ -256,7 +292,8 @@ async def fan_out_skills(
             )
             continue
         except ValueError as e:
-            # Cap or a raced trigger conflict — either way this skill only.
+            # A raced trigger conflict, or the cap taken by a concurrent write
+            # between the check above and this one. Either way, this skill only.
             await drop_archive_if_unused(user_id, outcome.archive_key)
             _skip(plan, "trigger_conflict", str(e), name=validated.name)
             continue

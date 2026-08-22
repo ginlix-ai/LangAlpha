@@ -206,10 +206,12 @@ export function McpServers() {
   );
   const detailData = detail.target;
 
+  // The visible lists, not the full ones: a bulk action reaches exactly the
+  // rows on screen. See the selection-scope note in useBulkSelection.
   const bulk = useMcpBulkActions({
-    builtins: builtinServers,
-    catalog: servers,
-    workspaceServers: allWorkspaceServers,
+    builtins: visibleBuiltins,
+    catalog: visibleServers,
+    workspaceServers: visibleWorkspaceServers,
     surface,
     workspaces: wsOptions,
   });
@@ -486,7 +488,7 @@ export function McpServers() {
 
       {selection.selecting && (
         <BulkActionBar
-          count={selection.selected.size}
+          count={bulk.count}
           actions={bulk.actions}
           scope={bulk.scope}
           progress={surface.progress}

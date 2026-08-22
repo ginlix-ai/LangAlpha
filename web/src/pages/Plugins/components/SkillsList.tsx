@@ -97,7 +97,7 @@ export function SkillsList() {
   );
   const detailSkill = detail.target;
 
-  const bulk = useSkillBulkActions(allSkills, surface, wsOptions);
+  const bulk = useSkillBulkActions(visible, surface, wsOptions);
 
   function renderRow(
     skill: SkillInfo,
@@ -357,7 +357,7 @@ export function SkillsList() {
 
       {selection.selecting && (
         <BulkActionBar
-          count={selection.selected.size}
+          count={bulk.count}
           actions={bulk.actions}
           scope={bulk.scope}
           progress={surface.progress}

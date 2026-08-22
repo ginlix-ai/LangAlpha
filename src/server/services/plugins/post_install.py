@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from src.server.database.mcp_servers import bump_user_workspaces_mcp_version
+from src.server.database.plugins import claim_plugin_secrets
 from src.server.database.user_vault_secrets import (
     create_user_secret,
     get_user_secret_names,
@@ -179,6 +180,7 @@ async def apply_bindings(
 
     existing = await get_user_secret_names(user_id)
     written: list[str] = []
+    introduced: list[str] = []
     for name, value in secrets.items():
         blueprint = declared[name]
         if name in existing:
@@ -192,7 +194,14 @@ async def apply_bindings(
                 value,
                 blueprint.description or f"Required by plugin {plugin['name']}",
             )
+            introduced.append(name)
         written.append(name)
+    # Only the creates are claimed. Writing a new value into a name that was
+    # already there says nothing about whose it is, and a name that survived
+    # the grant test was this plugin's already. Without this, a plugin whose
+    # entries were all held back at install has no record of the grant at all
+    # and is refused the key its own wizard just collected.
+    await claim_plugin_secrets(user_id, plugin["user_plugin_id"], introduced)
     # A filled blueprint is what makes a dangling ${vault:NAME} on an
     # already-enabled server resolve; the caches must not keep the old view.
     await after_secrets_changed(USER_TIER, user_id, written, user_id=user_id)

@@ -31,6 +31,15 @@ _VALIDATOR = _validator_cls(MCP_SCHEMA, registry=_NO_REMOTE_REFS)
 
 _PLUGIN_VARS = ("${PLUGIN_ROOT}", "${PLUGIN_DATA}")
 
+# The archive caps bound the package, not this one file inside it, and both of
+# the costs here scale with the document rather than the archive: schema
+# validation walks it whole, and every surviving key becomes an entry plan the
+# install then works through. A real package declares a handful of servers, so
+# these sit far above anything legitimate and only catch a document whose size
+# is the point.
+MAX_DOCUMENT_BYTES = 1024 * 1024
+MAX_ENTRIES = 100
+
 
 @dataclass
 class McpEntryPlan:
@@ -185,12 +194,24 @@ def validate_mcp_document(
             )
         ]
 
+    if len(raw) > MAX_DOCUMENT_BYTES:
+        return _component_error(
+            "document_too_large",
+            f"mcp.json is limited to {MAX_DOCUMENT_BYTES} bytes",
+        )
     try:
         doc = loads(raw.decode("utf-8"))
     except (JSONDecodeError, UnicodeDecodeError) as e:
         return _component_error("invalid_json", f"mcp.json is not valid JSON: {e}")
     if not isinstance(doc, dict):
         return _component_error("invalid_json", "mcp.json must be a JSON object")
+    entries = doc.get("mcpServers")
+    if isinstance(entries, dict) and len(entries) > MAX_ENTRIES:
+        return _component_error(
+            "too_many_entries",
+            f"mcp.json declares {len(entries)} servers; the limit is "
+            f"{MAX_ENTRIES}",
+        )
 
     version = check_schema_version(doc.get("$schema"), kind="mcp")
     if version is not None:

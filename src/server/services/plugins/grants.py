@@ -14,11 +14,13 @@ plugin's own text rather than the row's, and the entry's diagnostics are
 computed before any bind lands. So the grant has to be decided here, from
 the vault, rather than inferred from the manifest.
 
-The carry-forward test is the components themselves. A row this plugin owns
+The carry-forward test is two records of the same fact. A row this plugin owns
 that already holds ``${vault:NAME}`` is the durable record that the name was
-granted to this plugin at some earlier install, which is what lets an update
-keep working without re-asking. Nothing else re-grants: a name the user holds
-for another reason stays refused however many versions declare it.
+granted at some earlier install, which is what lets an update keep working
+without re-asking; and a vault secret stamped with this plugin is the record
+for a grant that never reached a row, because every entry that would have
+carried it was held back at install. Nothing else re-grants: a name the user
+holds for another reason stays refused however many versions declare it.
 
 A declaration is not the only way an entry can name a credential. The portable
 mcp.json can write ``${vault:NAME}`` straight into a header, and it needs no
@@ -37,7 +39,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from ptc_agent.core.mcp_sanitize import VAULT_REF_RE
-from src.server.database.plugins import list_plugin_referenced_secrets
+from src.server.database.plugins import (
+    list_plugin_owned_secrets,
+    list_plugin_referenced_secrets,
+)
 from src.server.database.user_vault_secrets import get_user_secret_names
 from src.server.models.plugin import Diagnostic
 from src.server.services.plugins.extension import LangalphaExtension
@@ -101,11 +106,12 @@ async def resolve_bind_grants(
     need no declaration to exist.
     """
     held = frozenset(await get_user_secret_names(user_id))
-    already = frozenset(
-        await list_plugin_referenced_secrets(user_id, plugin_id)
-        if plugin_id is not None
-        else set()
-    )
+    already: frozenset[str] = frozenset()
+    if plugin_id is not None:
+        already = frozenset(
+            await list_plugin_referenced_secrets(user_id, plugin_id)
+            | await list_plugin_owned_secrets(user_id, plugin_id)
+        )
     declared = [s.name for s in extension.secrets]
     granted = {n for n in declared if n not in held or n in already}
     return BindGrants(

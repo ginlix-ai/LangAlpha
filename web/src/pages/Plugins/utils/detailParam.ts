@@ -17,6 +17,18 @@ export interface DetailRef {
 
 const KINDS: ReadonlySet<string> = new Set(['server', 'skill', 'plugin']);
 
+/**
+ * The tab that renders each kind. A `?detail=` link that names no tab is
+ * still unambiguous about which one it needs, and only that tab is mounted to
+ * resolve it, so the page reads the tab out of the kind rather than opening
+ * on its default and leaving the ref unanswered.
+ */
+export const DETAIL_KIND_TAB: Record<DetailKind, string> = {
+  server: 'mcp',
+  skill: 'skills',
+  plugin: 'plugins',
+};
+
 export function parseDetail(params: URLSearchParams): DetailRef | null {
   const raw = params.get('detail');
   if (!raw) return null;

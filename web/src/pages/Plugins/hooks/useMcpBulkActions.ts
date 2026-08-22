@@ -47,7 +47,7 @@ export function useMcpBulkActions({
   workspaceServers: readonly WorkspaceScopedMcpServer[];
   surface: PluginListSurface;
   workspaces: ScopeWorkspace[];
-}): { actions: BulkAction[]; scope: BulkScopeSpec } {
+}): { actions: BulkAction[]; scope: BulkScopeSpec; count: number } {
   const { t } = useTranslation();
   const { selected } = surface.selection;
 
@@ -145,5 +145,5 @@ export function useMcpBulkActions({
     },
   ];
 
-  return { actions, scope };
+  return { actions, scope, count: rows.length };
 }

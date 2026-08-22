@@ -266,12 +266,17 @@ async def lock_plugin_row(
 ) -> dict[str, Any] | None:
     """Take the plugin row's write lock. None if it is already gone.
 
-    Every lifecycle operation that touches a plugin's components takes this
-    first, which is what gives them a single lock order. Uninstall otherwise
-    reaches ``workspaces`` (through each component delete's version fan-out)
-    before ``user_plugins``, while the enable toggle takes them the other way
-    round — the classic pair that deadlocks under concurrency. Locking the
-    plugin row up front puts ``user_plugins`` first on both paths.
+    Uninstall's, and taken before it touches anything else, which is what puts
+    it in the same lock order as the enable toggle. Uninstall otherwise reaches
+    ``workspaces`` (through each component delete's version fan-out) before
+    ``user_plugins``, while the toggle takes them the other way round — the
+    classic pair that deadlocks under concurrency. Locking the plugin row up
+    front puts ``user_plugins`` first on both paths.
+
+    Install and update do not take it. They hold no second lock to order this
+    one against, and each component write carries its own ``owned_by_plugin``
+    predicate, so a row that changed hands underneath them is refused at the
+    write rather than held still around it.
 
     It also makes the enumerate-then-delete in uninstall safe: a concurrent
     update cannot insert a new component behind the enumeration and leave the
@@ -293,9 +298,11 @@ async def list_plugin_referenced_secrets(
 ) -> set[str]:
     """Vault names the plugin's own server rows already reference.
 
-    The durable record of which secrets this plugin was granted: a ref only
-    reaches a row through a grant, so the rows are the grant ledger and no
-    extra column has to be kept honest alongside them.
+    Half of the grant record: a ref only reaches a row through a grant, so the
+    rows say what was granted without a column to keep honest alongside them.
+    The other half is ``list_plugin_owned_secrets``, for the grants that never
+    reached a row because every entry that would have carried one was held
+    back at install.
     """
     from src.server.services.plugins.grants import secret_names_in
 
@@ -310,6 +317,41 @@ async def list_plugin_referenced_secrets(
             for row in await cur.fetchall():
                 found |= secret_names_in(dict(row))
             return found
+
+
+async def list_plugin_owned_secrets(
+    user_id: str, user_plugin_id: str, *, conn=None
+) -> set[str]:
+    """Vault names this plugin introduced, whether or not a row uses them yet."""
+    async with get_db_connection(conn) as db:
+        async with db.cursor() as cur:
+            await cur.execute(
+                "SELECT name FROM user_vault_secrets "
+                "WHERE user_id = %s AND plugin_id = %s",
+                (user_id, user_plugin_id),
+            )
+            return {row[0] for row in await cur.fetchall()}
+
+
+async def claim_plugin_secrets(
+    user_id: str, user_plugin_id: str, names: list[str], *, conn=None
+) -> None:
+    """Record that this plugin introduced these vault names.
+
+    ``plugin_id IS NULL`` in the predicate, so a claim is only ever made on an
+    unclaimed secret. Callers stamp the names they created, but a create can
+    race a create, and a stamp that could overwrite an existing claim would
+    hand one plugin the grant on another's credential.
+    """
+    if not names:
+        return
+    async with get_db_connection(conn) as db:
+        async with db.cursor() as cur:
+            await cur.execute(
+                "UPDATE user_vault_secrets SET plugin_id = %s "
+                "WHERE user_id = %s AND name = ANY(%s) AND plugin_id IS NULL",
+                (user_plugin_id, user_id, names),
+            )
 
 
 async def list_plugin_server_names(

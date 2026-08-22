@@ -22,7 +22,7 @@ import {
   pluginSourceOrigin,
   UPLOADED_ORIGIN,
 } from '../utils/groupOrigins';
-import { withDetail } from '../utils/detailParam';
+import { DETAIL_KIND_TAB, withDetail } from '../utils/detailParam';
 import { useAddIntent } from '../hooks/useAddIntent';
 import { useDetailParam } from '../hooks/useDetailParam';
 import { usePluginListSurface } from '../hooks/usePluginListSurface';
@@ -81,7 +81,8 @@ export function PluginsList() {
     return a.localeCompare(b);
   });
 
-  const selectedPlugins = plugins.filter((p) => selection.selected.has(pluginKey(p)));
+  // Visible rows only: a bulk action reaches exactly what is on screen.
+  const selectedPlugins = visible.filter((p) => selection.selected.has(pluginKey(p)));
   const enableTargets = selectedPlugins.filter((p) => !p.enabled);
   const disableTargets = selectedPlugins.filter((p) => p.enabled);
   const actions: BulkAction[] = [
@@ -126,12 +127,12 @@ export function PluginsList() {
   ];
 
   function openComponent(kind: 'mcp' | 'skill', name: string) {
-    const next = withDetail(searchParams, {
-      kind: kind === 'mcp' ? 'server' : 'skill',
-      name,
-    });
-    next.set('tab', kind === 'mcp' ? 'mcp' : 'skills');
-    setSearchParams(next, { replace: true });
+    const detailKind = kind === 'mcp' ? 'server' : 'skill';
+    const next = withDetail(searchParams, { kind: detailKind, name });
+    next.set('tab', DETAIL_KIND_TAB[detailKind]);
+    // Pushed, like every other overlay open: Back returns to the card the
+    // chip was on rather than leaving the page.
+    setSearchParams(next);
   }
 
   return (
@@ -227,7 +228,7 @@ export function PluginsList() {
 
       {selection.selecting && (
         <BulkActionBar
-          count={selection.selected.size}
+          count={selectedPlugins.length}
           actions={actions}
           progress={surface.progress}
           onExit={selection.exit}
