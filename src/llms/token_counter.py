@@ -447,7 +447,7 @@ class TokenUsageTracker:
 
                 for model in self.model_totals.keys():
                     # Try to find the model in config across all providers
-                    for provider in ['openai', 'anthropic', 'gemini', 'volcengine', 'openrouter', 'vllm']:
+                    for provider in ['openai', 'anthropic', 'gemini', 'volcengine', 'openrouter', 'orcarouter', 'vllm']:
                         model_info = config.get_model_info(provider, model)
                         if model_info and 'pricing' in model_info:
                             model_pricing_map[model] = model_info['pricing']
