@@ -337,7 +337,7 @@ export function McpTab({ workspaceId, onOpenVaultTab }: McpTabProps) {
           ) : servers.length === 0 ? (
             <ListEmpty>{t('mcp.list.empty')}</ListEmpty>
           ) : (
-            <div className="flex flex-col gap-1.5">
+            <div className="flex flex-col [&>*+*]:mt-1.5">
               <AnimatePresence initial={false}>
                 {orderedServers.map((server) => (
                   <McpServerRow

@@ -3,6 +3,7 @@ import { queryKeys } from '../lib/queryKeys';
 import {
   deleteSkill,
   deleteWorkspaceSkill,
+  getSkillContent,
   getSkills,
   moveSkill,
   setSkillCommand,
@@ -40,6 +41,19 @@ export function useSkills(
 
 /** Re-scope a skill (user tier ↔ one workspace). Whole-prefix invalidation:
  * a move changes the slash menu, the workspace views, and shadowing at once. */
+/** One skill's SKILL.md text — powers the detail overlay's source preview. */
+export function useSkillContent(
+  name: string | null,
+  workspaceId: string | null = null,
+) {
+  return useQuery({
+    queryKey: queryKeys.skills.content(name ?? '', workspaceId),
+    queryFn: () => getSkillContent(name!, workspaceId),
+    enabled: !!name,
+    staleTime: 60_000,
+  });
+}
+
 export function useMoveSkill() {
   const queryClient = useQueryClient();
   return useMutation({

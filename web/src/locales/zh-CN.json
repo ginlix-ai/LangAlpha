@@ -2697,7 +2697,7 @@
     "title": "插件",
     "description": "在所有工作区中可供智能体使用的 MCP 服务器、技能与凭据。",
     "tabs": {
-      "mcp": "MCP 服务器",
+      "mcp": "连接器",
       "skills": "技能",
       "secrets": "密钥",
       "plugins": "插件"
@@ -2899,6 +2899,50 @@
       "placeholder": "筛选",
       "clear": "清除筛选",
       "noMatches": "无匹配项"
+    },
+    "addMenu": {
+      "add": "添加",
+      "installPlugin": "安装插件",
+      "addServer": "添加 MCP 服务器",
+      "importServers": "导入服务器",
+      "uploadSkill": "上传技能"
+    },
+    "stateFilter": {
+      "all": "全部",
+      "on": "开启",
+      "off": "关闭",
+      "attention": "需要处理"
+    },
+    "detail": {
+      "kindServer": "MCP 服务器",
+      "kindSkill": "技能",
+      "kindPlugin": "插件",
+      "tools": "工具",
+      "toolsEmpty": "尚未发现工具。服务器首次连接后即会显示。",
+      "discovered": "发现于 {{date}}",
+      "config": "配置",
+      "transport": "传输方式",
+      "url": "URL",
+      "command": "命令",
+      "envVars": "环境变量",
+      "headers": "请求头",
+      "info": "详情",
+      "origin": "来源",
+      "originPlatform": "平台",
+      "originUser": "自有",
+      "originWorkspace": "工作区",
+      "size": "大小",
+      "updated": "更新于",
+      "created": "添加于",
+      "skillSource": "SKILL.md",
+      "sourceLoadFailed": "无法加载技能源文件。",
+      "components": "组件",
+      "version": "版本",
+      "author": "作者",
+      "homepage": "主页",
+      "sourceLabel": "来源",
+      "installed": "安装于",
+      "openComponentAria": "打开 {{name}}"
     }
   }
 }

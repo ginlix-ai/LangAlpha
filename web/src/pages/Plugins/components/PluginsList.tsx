@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { AnimatePresence } from 'framer-motion';
 import { Blocks, FolderGit2, Package, Plus } from 'lucide-react';
@@ -20,10 +21,14 @@ import {
   pluginSourceOrigin,
   UPLOADED_ORIGIN,
 } from '../utils/groupOrigins';
+import type { AddSignal } from '../utils/addSignal';
+import { parseDetail, withDetail } from '../utils/detailParam';
 import { BulkActionBar, type BulkAction } from './BulkActionBar';
+import { EmptyState } from './EmptyState';
 import { GroupDeck } from './GroupDeck';
-import { ListControls } from './ListControls';
+import { ListControls, matchesStateFilter, type StateFilter } from './ListControls';
 import { PluginCard } from './PluginCard';
+import { PluginDetail } from './PluginDetail';
 import { PluginInstallWizard } from './PluginInstallWizard';
 import { rowSelection, useBulkRunner, useBulkSelection } from './useBulkSelection';
 
@@ -37,22 +42,59 @@ import { rowSelection, useBulkRunner, useBulkSelection } from './useBulkSelectio
 
 const pluginKey = (p: PluginInfo) => `plugin:${p.name}`;
 
-export function PluginsList() {
+export function PluginsList({ addSignal }: { addSignal?: AddSignal | null }) {
   const { t } = useTranslation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { data, isLoading, error } = usePlugins();
   const [wizardOpen, setWizardOpen] = useState(false);
   const [filter, setFilter] = useState('');
+  const [stateFilter, setStateFilter] = useState<StateFilter>('all');
   const selection = useBulkSelection();
   const { progress, run } = useBulkRunner(selection);
+
+  useEffect(() => {
+    if (addSignal?.action === 'install-plugin') setWizardOpen(true);
+  }, [addSignal]);
 
   const plugins = data?.plugins ?? [];
   const maxPlugins = data?.max_plugins ?? 0;
   const atCap = maxPlugins > 0 && plugins.length >= maxPlugins;
-  const forceExpanded = selection.selecting || !!filter.trim();
+  const forceExpanded =
+    selection.selecting || !!filter.trim() || stateFilter !== 'all';
 
-  const visible = plugins.filter((p) =>
-    matchesFilter(filter, p.name, p.description, pluginSourceOrigin(p)),
+  const visible = plugins.filter(
+    (p) =>
+      matchesFilter(filter, p.name, p.description, pluginSourceOrigin(p)) &&
+      matchesStateFilter(stateFilter, p.enabled),
   );
+
+  // --- Detail overlay (?detail=plugin:NAME) ---
+  const detailRef = parseDetail(searchParams);
+  const detailPlugin =
+    detailRef?.kind === 'plugin'
+      ? (plugins.find((p) => p.name === detailRef.name) ?? null)
+      : null;
+
+  function openDetail(name: string) {
+    setSearchParams(
+      withDetail(searchParams, { kind: 'plugin', name }),
+      { replace: true },
+    );
+  }
+  function closeDetail() {
+    setSearchParams(withDetail(searchParams, null), { replace: true });
+  }
+
+  // A deep link to a plugin that no longer exists parks a dead overlay param
+  // in the URL — clear it once the list has answered.
+  const detailStale =
+    detailRef?.kind === 'plugin' && !detailPlugin && !isLoading && data !== undefined;
+  useEffect(() => {
+    if (detailStale) {
+      setSearchParams(withDetail(searchParams, null), { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailStale]);
   const byOrigin = new Map<string, PluginInfo[]>();
   for (const p of visible) {
     const origin = pluginSourceOrigin(p);
@@ -108,31 +150,33 @@ export function PluginsList() {
     },
   ];
 
+  function openComponent(kind: 'mcp' | 'skill', name: string) {
+    const next = withDetail(searchParams, {
+      kind: kind === 'mcp' ? 'server' : 'skill',
+      name,
+    });
+    next.set('tab', kind === 'mcp' ? 'mcp' : 'skills');
+    setSearchParams(next, { replace: true });
+  }
+
   return (
     <div className="flex flex-col gap-3">
+      <ListControls
+        filter={filter}
+        onFilterChange={setFilter}
+        stateFilter={stateFilter}
+        onStateFilterChange={setStateFilter}
+        selecting={selection.selecting}
+        onStartSelect={selection.start}
+        selectDisabled={plugins.length === 0}
+      />
+
       <ListHeader
         icon={Blocks}
         title={t('plugins.list.title')}
         count={plugins.length}
         max={maxPlugins}
-      >
-        <ListControls
-          filter={filter}
-          onFilterChange={setFilter}
-          selecting={selection.selecting}
-          onStartSelect={selection.start}
-          selectDisabled={plugins.length === 0}
-        />
-        <HeaderButton
-          variant="primary"
-          icon={Plus}
-          onClick={() => setWizardOpen(true)}
-          disabled={atCap}
-          title={atCap ? t('plugins.list.atCap', { max: maxPlugins }) : undefined}
-        >
-          {t('plugins.list.install')}
-        </HeaderButton>
-      </ListHeader>
+      />
 
       <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
         {t('plugins.list.hint')}
@@ -145,29 +189,48 @@ export function PluginsList() {
       ) : isLoading ? (
         <ListSkeleton />
       ) : plugins.length === 0 ? (
-        <ListEmpty>{t('plugins.list.empty')}</ListEmpty>
+        <EmptyState
+          message={t('plugins.list.empty')}
+          action={
+            <HeaderButton
+              variant="primary"
+              icon={Plus}
+              onClick={() => setWizardOpen(true)}
+              disabled={atCap}
+              title={atCap ? t('plugins.list.atCap', { max: maxPlugins }) : undefined}
+            >
+              {t('plugins.list.install')}
+            </HeaderButton>
+          }
+        />
       ) : visible.length === 0 ? (
         <ListEmpty>{t('plugins.filter.noMatches')}</ListEmpty>
       ) : (
         groups.map(([origin, groupPlugins]) => {
           const keys = groupPlugins.map(pluginKey);
+          // Bare rows (no wrapper div): a deck must see the first card as its
+          // first child to clip the collapsed cover, and it provides its own
+          // spaced container. The flat path wraps them itself.
           const cards = (
-            <div className="flex flex-col gap-1.5">
-              <AnimatePresence initial={false}>
-                {groupPlugins.map((plugin) => (
-                  <PluginCard
-                    key={plugin.name}
-                    plugin={plugin}
-                    selection={rowSelection(selection, pluginKey(plugin))}
-                  />
-                ))}
-              </AnimatePresence>
-            </div>
+            <AnimatePresence initial={false}>
+              {groupPlugins.map((plugin) => (
+                <PluginCard
+                  key={plugin.name}
+                  plugin={plugin}
+                  onOpen={() => openDetail(plugin.name)}
+                  selection={rowSelection(selection, pluginKey(plugin))}
+                />
+              ))}
+            </AnimatePresence>
           );
           // A lone zip-only group would just re-label the whole list; skip
           // the header and keep today's flat look.
           if (groups.length === 1 && origin === UPLOADED_ORIGIN && !selection.selecting) {
-            return <div key={origin}>{cards}</div>;
+            return (
+              <div key={origin} className="flex flex-col [&>*+*]:mt-1.5">
+                {cards}
+              </div>
+            );
           }
           return (
             <GroupDeck
@@ -197,6 +260,17 @@ export function PluginsList() {
       )}
 
       {wizardOpen && <PluginInstallWizard onClose={() => setWizardOpen(false)} />}
+
+      <AnimatePresence>
+        {detailPlugin && (
+          <PluginDetail
+            key={detailPlugin.name}
+            plugin={detailPlugin}
+            onClose={closeDetail}
+            onOpenComponent={openComponent}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

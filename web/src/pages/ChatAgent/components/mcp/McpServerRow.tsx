@@ -1,12 +1,13 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Pencil, Zap, Trash2, Server, KeyRound, BookmarkPlus, Blocks } from 'lucide-react';
+import { Pencil, Zap, Trash2, KeyRound, BookmarkPlus, Blocks } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
 } from '@/components/ui/dropdown-menu';
+import { IdentityTile } from './IdentityTile';
 import { McpLifecycle } from './McpLifecycle';
 import {
   EnabledToggle,
@@ -112,9 +113,10 @@ function McpServerRowImpl({
   return (
     <ServerRowShell
       testid={`mcp-row-${server.name}`}
+      tile={<IdentityTile name={server.name} />}
       main={
         <>
-          <ServerNameLine icon={Server} name={server.name}>
+          <ServerNameLine name={server.name}>
             <TagBadge title={isInherited ? t('mcp.row.inheritedHint') : undefined}>
               {isBuiltin ? t('mcp.row.builtin') : isInherited ? t('mcp.row.inherited') : t('mcp.row.workspace')}
             </TagBadge>

@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { motion, useReducedMotion } from 'framer-motion';
 import { Check, ChevronDown, ChevronUp, Minus } from 'lucide-react';
 import { STACK_THRESHOLD } from '../utils/groupOrigins';
 import type { BulkSelection } from './useBulkSelection';
@@ -11,10 +12,15 @@ import type { BulkSelection } from './useBulkSelection';
  * header into a card. A collapsed group that rendered as a card read as a
  * row of the previous group, since cards are this page's row idiom. The
  * stack's cover is the group's real first row (inert), with sliver layers
- * peeking below to imply the rest. Groups under STACK_THRESHOLD rows render
- * as a plain header — a two-row stack hides more than it tidies. Expansion
+ * peeking below to imply the rest. Every row stays mounted in both states —
+ * toggling animates a clipped region's height (the sources deck's motion),
+ * never remounts subtrees. Groups under STACK_THRESHOLD rows render as a
+ * plain header — a two-row stack hides more than it tidies. Expansion
  * persists per group id.
  */
+
+// House curve, matching the sources deck's 260ms fold (SourcesPanel.css).
+const EASE_OUT = [0.16, 1, 0.3, 1] as const;
 
 const STORE_KEY = 'plugins.deckExpanded';
 
@@ -100,12 +106,50 @@ export function GroupDeck({
   children: React.ReactNode;
 }) {
   const { t } = useTranslation();
+  const reducedMotion = useReducedMotion();
   const [stored, setStored] = useState<boolean | null>(() => readStore()[id] ?? null);
-
-  if (count === 0) return null;
 
   const collapsible = count >= STACK_THRESHOLD;
   const expanded = forceExpanded || !collapsible || (stored ?? defaultExpanded);
+
+  // Collapsed height = the first row's measured height, so the clip cuts
+  // exactly at the cover row's bottom border. Measured (not styled): rows
+  // wrap freely, and the observer tracks resizes and row churn.
+  const rowsRef = useRef<HTMLDivElement>(null);
+  const [coverH, setCoverH] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const rows = rowsRef.current;
+    if (!rows) return;
+    const measure = () => {
+      const first = rows.firstElementChild;
+      if (first instanceof HTMLElement) setCoverH(first.offsetHeight);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(rows);
+    return () => observer.disconnect();
+  }, [count]);
+
+  // Animate only the user's own expand/collapse gesture. A forceExpanded
+  // flip (filter, select mode) snaps: the filter's motion is the row set
+  // changing, and a fold racing exiting rows animates toward a stale height
+  // and pops at the end. Re-measures (window resize, row churn while
+  // collapsed) snap for the same reason.
+  const prevExpandedRef = useRef(expanded);
+  const prevForceRef = useRef(forceExpanded);
+  const toggled = prevExpandedRef.current !== expanded;
+  const forceFlip = prevForceRef.current !== forceExpanded;
+  useEffect(() => {
+    prevExpandedRef.current = expanded;
+    prevForceRef.current = forceExpanded;
+  });
+  const bodyTransition =
+    toggled && !forceFlip && !reducedMotion
+      ? { duration: 0.26, ease: EASE_OUT }
+      : { duration: 0 };
+
+  if (count === 0) return null;
+
   const setExpanded = (next: boolean) => {
     setStored(next);
     writeStore(id, next);
@@ -198,40 +242,63 @@ export function GroupDeck({
         </div>
         {action && <div className="flex items-center flex-shrink-0">{action}</div>}
       </div>
-      {expanded ? (
-        children
-      ) : (
-        // The collapsed body: the group's real first row as the stack's
-        // cover, with sliver layers peeking below to imply the rest. The
-        // rows stay mounted — CSS hides all but the first, and `inert`
-        // makes the cover decorative (no focus, no clicks) so the whole
-        // body is one expand target. Slivers keep their border at full
-        // strength: the card fill alone is invisible on the light page.
-        <div
-          aria-hidden
-          data-testid={`deck-cover-${id}`}
-          className="cursor-pointer"
-          onClick={() => setExpanded(true)}
+      {/* The body: every row stays mounted in one list (so a caller's
+          AnimatePresence keeps working) inside a clip whose height animates
+          between the first row's measured height and auto — the toggle is
+          one continuous unfold, never a remount, with the sliver layers
+          folding away in the same motion. Collapsed, `inert` makes the rows
+          decorative (no focus, no clicks) and the whole body is one expand
+          target. Slivers keep their border at full strength: the card fill
+          alone is invisible on the light page. The clip is safe to keep
+          permanently — row selection rings are inset shadows. */}
+      <div
+        aria-hidden={expanded ? undefined : true}
+        data-testid={expanded ? undefined : `deck-cover-${id}`}
+        className={expanded ? undefined : 'cursor-pointer'}
+        onClick={expanded ? undefined : () => setExpanded(true)}
+      >
+        <motion.div
+          className="overflow-hidden"
+          initial={false}
+          animate={{ height: expanded ? 'auto' : (coverH ?? 0) }}
+          transition={bodyTransition}
         >
-          <div inert className="pointer-events-none [&>*:not(:first-child)]:hidden">
+          <div
+            ref={rowsRef}
+            inert={!expanded}
+            // Margins, not gap: each row owns the space above it, so a
+            // presence exit collapses row + spacing together. A container
+            // gap survives until unmount and snaps away in one frame.
+            className={`flex flex-col [&>*+*]:mt-1.5${expanded ? '' : ' pointer-events-none'}`}
+          >
             {children}
           </div>
-          {[8, 16].map((inset) => (
-            <div
-              key={inset}
-              className="rounded-b-lg"
-              style={{
-                height: 6,
-                marginLeft: inset,
-                marginRight: inset,
-                backgroundColor: 'var(--color-bg-card)',
-                border: '1px solid var(--color-border-muted)',
-                borderTop: 'none',
-              }}
-            />
-          ))}
-        </div>
-      )}
+        </motion.div>
+        {collapsible && (
+          <motion.div
+            aria-hidden
+            className="overflow-hidden"
+            initial={false}
+            animate={expanded ? { height: 0, opacity: 0 } : { height: 'auto', opacity: 1 }}
+            transition={bodyTransition}
+          >
+            {[8, 16].map((inset) => (
+              <div
+                key={inset}
+                className="rounded-b-lg"
+                style={{
+                  height: 6,
+                  marginLeft: inset,
+                  marginRight: inset,
+                  backgroundColor: 'var(--color-bg-card)',
+                  border: '1px solid var(--color-border-muted)',
+                  borderTop: 'none',
+                }}
+              />
+            ))}
+          </motion.div>
+        )}
+      </div>
     </div>
   );
 }

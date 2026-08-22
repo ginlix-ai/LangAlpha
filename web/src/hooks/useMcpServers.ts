@@ -13,6 +13,7 @@ import {
   importWorkspaceMcpServers,
   promoteWorkspaceMcpServerToTemplate,
   getMcpCatalog,
+  getMcpCatalogServerTools,
   getBuiltinMcpServers,
   setBuiltinMcpServerEnabled,
   createMcpCatalogServer,
@@ -156,6 +157,16 @@ export function useMcpCatalog(enabled = true) {
     queryKey: queryKeys.mcp.catalog(),
     queryFn: getMcpCatalog,
     enabled,
+    staleTime: 60_000,
+  });
+}
+
+/** Discovered tools for one catalog server — powers the detail overlay. */
+export function useMcpCatalogServerTools(name: string | null) {
+  return useQuery({
+    queryKey: queryKeys.mcp.serverTools(name ?? ''),
+    queryFn: () => getMcpCatalogServerTools(name!),
+    enabled: !!name,
     staleTime: 60_000,
   });
 }

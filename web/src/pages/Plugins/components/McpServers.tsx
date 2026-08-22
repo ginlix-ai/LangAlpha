@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { AnimatePresence } from 'framer-motion';
-import { Blocks, Folder, Link2, Link2Off, Pencil, RefreshCw, Server, Trash2 } from 'lucide-react';
+import { Blocks, Folder, Link2, Link2Off, Pencil, Plus, RefreshCw, Server, Trash2 } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
 import {
   DropdownMenu,
@@ -14,6 +14,7 @@ import { toast } from '@/components/ui/use-toast';
 import {
   useMcpCatalog,
   useBuiltinMcpServers,
+  useToggleBuiltinMcpServer,
   useCreateMcpCatalogServer,
   useUpdateMcpCatalogServer,
   useDeleteMcpCatalogServer,
@@ -32,6 +33,7 @@ import { McpImportModal } from '@/pages/ChatAgent/components/mcp/McpImportModal'
 import { McpOauthPill } from '@/pages/ChatAgent/components/mcp/McpStatusPill';
 import {
   canDisconnectOauth,
+  isOauthBroken,
   isPluginOwned,
   isPluginSuppressed,
   needsOauthConnect,
@@ -40,14 +42,17 @@ import { useMcpServerList } from '@/pages/ChatAgent/components/mcp/useMcpServerL
 import { BuiltinMcpSection } from './BuiltinMcpSection';
 import { ScopeControl } from './ScopeControl';
 import type { ScopeWorkspace } from './ScopeControl';
+import { IdentityTile } from '@/pages/ChatAgent/components/mcp/IdentityTile';
 import {
   ConfirmStrip,
   EnabledToggle,
+  HeaderButton,
   KebabTrigger,
   ListEmpty,
   ListError,
+  ListHeader,
   ListSkeleton,
-  ListToolbar,
+  MetaText,
   ServerNameLine,
   ServerRowShell,
   TagBadge,
@@ -65,11 +70,15 @@ import {
   type WorkspaceScopedMcpServer,
 } from '@/pages/ChatAgent/utils/api';
 import { matchesFilter } from '../utils/groupOrigins';
+import type { AddSignal } from '../utils/addSignal';
+import { parseDetail, withDetail } from '../utils/detailParam';
 import { clearDenyPlan, onlyInPlan } from '../utils/scopeTargets';
 import { BulkActionBar, type BulkAction } from './BulkActionBar';
+import { EmptyState } from './EmptyState';
+import { ServerDetail, type ServerDetailData } from './ServerDetail';
 import type { BulkScopeSpec } from './BulkScopeMenu';
 import { GroupDeck } from './GroupDeck';
-import { ListControls } from './ListControls';
+import { ListControls, matchesStateFilter, type StateFilter } from './ListControls';
 import {
   rowSelection,
   useBulkRunner,
@@ -92,11 +101,12 @@ import {
  * lives here is the OAuth lifecycle, which the workspace tab has no version of.
  */
 
-export function McpServers() {
+export function McpServers({ addSignal }: { addSignal?: AddSignal | null }) {
   const { t } = useTranslation();
-  const [, setSearchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { data: catalog, isLoading, error } = useMcpCatalog();
   const { data: builtinData } = useBuiltinMcpServers();
+  const builtinToggleMutation = useToggleBuiltinMcpServer();
   const { data: vault } = useUserVaultSecrets();
   const createMutation = useCreateMcpCatalogServer();
   const updateMutation = useUpdateMcpCatalogServer();
@@ -159,18 +169,31 @@ export function McpServers() {
   const [movingName, setMovingName] = useState<string | null>(null);
   const [wsTogglingKey, setWsTogglingKey] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
+  const [stateFilter, setStateFilter] = useState<StateFilter>('all');
   const selection = useBulkSelection();
   const { progress, run } = useBulkRunner(selection);
+
+  useEffect(() => {
+    if (addSignal?.action === 'add-server') openAdd();
+    else if (addSignal?.action === 'import-servers') openImport();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addSignal]);
 
   const secretNames = (vault?.secrets ?? []).map((s) => s.name);
   const servers = catalog?.servers ?? [];
   const builtinServers = builtinData?.servers ?? [];
   const maxServers = catalog?.max_servers ?? 0;
-  const atCap = maxServers > 0 && servers.length >= maxServers;
-  const forceExpanded = selection.selecting || !!filter.trim();
+  const forceExpanded =
+    selection.selecting || !!filter.trim() || stateFilter !== 'all';
 
-  const visibleServers = servers.filter((s) =>
-    matchesFilter(filter, s.name, s.description, s.plugin_name),
+  const visibleServers = servers.filter(
+    (s) =>
+      matchesFilter(filter, s.name, s.description, s.plugin_name) &&
+      matchesStateFilter(
+        stateFilter,
+        !!s.enabled,
+        isOauthBroken(s.oauth_status) || isPluginSuppressed(s),
+      ),
   );
   const ownServers = visibleServers.filter((s) => !s.plugin_name);
   const pluginServers = visibleServers.filter((s) => s.plugin_name);
@@ -191,8 +214,10 @@ export function McpServers() {
   }));
   const wsNameById = new Map(wsOptions.map((w) => [w.id, w.name]));
 
-  const workspaceServers = (catalog?.workspace_servers ?? []).filter((s) =>
-    matchesFilter(filter, s.name, s.description),
+  const workspaceServers = (catalog?.workspace_servers ?? []).filter(
+    (s) =>
+      matchesFilter(filter, s.name, s.description) &&
+      matchesStateFilter(stateFilter, s.enabled),
   );
   const byWorkspace = new Map<string, WorkspaceScopedMcpServer[]>();
   for (const s of workspaceServers) {
@@ -201,6 +226,61 @@ export function McpServers() {
   const workspaceSections = [...byWorkspace.entries()].sort(([a], [b]) =>
     (wsNameById.get(a) ?? '').localeCompare(wsNameById.get(b) ?? ''),
   );
+
+  // --- Detail overlay (?detail=server:NAME [&dws=wsid]) ---
+  // Builtin names are reserved against catalog names, so a bare name lookup
+  // is unambiguous; a `dws` selects the workspace-local row instead.
+  const detailRef = parseDetail(searchParams);
+  const detailData: ServerDetailData | null = (() => {
+    if (detailRef?.kind !== 'server') return null;
+    if (detailRef.workspaceId) {
+      const row = (catalog?.workspace_servers ?? []).find(
+        (s) => s.workspace_id === detailRef.workspaceId && s.name === detailRef.name,
+      );
+      return row ? { origin: 'workspace' as const, server: row } : null;
+    }
+    const builtin = builtinServers.find((s) => s.name === detailRef.name);
+    if (builtin) return { origin: 'builtin' as const, server: builtin };
+    const cat = servers.find((s) => s.name === detailRef.name);
+    return cat ? { origin: 'user' as const, server: cat } : null;
+  })();
+
+  function openDetail(name: string, workspaceId: string | null = null) {
+    setSearchParams(
+      withDetail(searchParams, { kind: 'server', name, workspaceId }),
+      { replace: true },
+    );
+  }
+  function closeDetail() {
+    setSearchParams(withDetail(searchParams, null), { replace: true });
+  }
+
+  // A deep link to a row that no longer exists (deleted, renamed) parks a
+  // dead overlay param in the URL — clear it once both lists have answered.
+  const detailStale =
+    detailRef?.kind === 'server' &&
+    !detailData &&
+    !isLoading &&
+    catalog !== undefined &&
+    builtinData !== undefined;
+  useEffect(() => {
+    if (detailStale) {
+      setSearchParams(withDetail(searchParams, null), { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailStale]);
+
+  async function handleToggleBuiltin(name: string, enabled: boolean) {
+    try {
+      await builtinToggleMutation.mutateAsync({ name, enabled });
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: t('plugins.servers.toggleFailed'),
+        description: formatApiErrorDetail(err),
+      });
+    }
+  }
 
   async function handleSetWorkspaceDisabled(
     name: string,
@@ -495,50 +575,31 @@ export function McpServers() {
         key={server.name}
         testid={`server-row-${server.name}`}
         {...rowSelection(selection, `catalog:${server.name}`)}
+        tile={<IdentityTile name={server.name} />}
+        onOpen={() => openDetail(server.name)}
         main={
           <>
-            <ServerNameLine icon={Server} name={server.name}>
-              <TagBadge>{server.transport}</TagBadge>
-              {server.plugin_name && (
-                <TagBadge
-                  soft
-                  title={t('plugins.component.fromPlugin', {
-                    plugin: server.plugin_name,
-                  })}
-                >
-                  {server.plugin_name}
-                </TagBadge>
-              )}
-            </ServerNameLine>
+            <ServerNameLine name={server.name} onOpen={() => openDetail(server.name)} />
 
-            {/* Status line: OAuth pill + tool count + inheritance scope */}
+            {/* Status line: OAuth pill (state needing attention), then quiet
+                metadata — scope, tool count, transport. */}
             <div className="flex items-center gap-2 flex-wrap">
               {status && <McpOauthPill status={status} />}
-              {status === 'connected' && typeof server.tool_count === 'number' && server.tool_count > 0 && (
-                <span
-                  className="text-[0.6875rem]"
-                  style={{ color: 'var(--color-text-tertiary)' }}
-                >
-                  {t('mcp.row.toolCount', { count: server.tool_count })}
-                </span>
-              )}
-              <span
-                className="text-[0.6875rem]"
-                style={{ color: server.enabled ? 'var(--color-text-secondary)' : 'var(--color-text-tertiary)' }}
-              >
+              <MetaText>
                 {server.enabled
                   ? t('plugins.servers.enabledState')
                   : t('plugins.servers.disabledState')}
-              </span>
+              </MetaText>
+              {status === 'connected' && typeof server.tool_count === 'number' && server.tool_count > 0 && (
+                <MetaText>{t('mcp.row.toolCount', { count: server.tool_count })}</MetaText>
+              )}
+              <MetaText>{server.transport}</MetaText>
               {isPluginSuppressed(server) && (
-                <span
-                  className="text-[0.6875rem]"
-                  style={{ color: 'var(--color-text-tertiary)' }}
-                >
+                <MetaText>
                   {t('plugins.component.suppressed', {
                     plugin: server.plugin_name,
                   })}
-                </span>
+                </MetaText>
               )}
             </div>
 
@@ -663,21 +724,26 @@ export function McpServers() {
       <ListControls
         filter={filter}
         onFilterChange={setFilter}
+        stateFilter={stateFilter}
+        onStateFilterChange={setStateFilter}
+        showAttention
         selecting={selection.selecting}
         onStartSelect={selection.start}
         selectDisabled={servers.length === 0 && builtinServers.length === 0}
       />
 
-      <BuiltinMcpSection filter={filter} selection={selection} />
+      <BuiltinMcpSection
+        filter={filter}
+        stateFilter={stateFilter}
+        selection={selection}
+        onOpen={(server) => openDetail(server.name)}
+      />
 
-      <ListToolbar
+      <ListHeader
         icon={Server}
         title={t('plugins.mcp.yours')}
         count={servers.length}
         max={maxServers}
-        atCap={atCap}
-        onImport={openImport}
-        onAdd={openAdd}
       />
 
       <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
@@ -691,11 +757,18 @@ export function McpServers() {
       ) : isLoading ? (
         <ListSkeleton />
       ) : servers.length === 0 ? (
-        <ListEmpty>{t('plugins.servers.empty')}</ListEmpty>
-      ) : ownServers.length === 0 && filter.trim() ? (
+        <EmptyState
+          message={t('plugins.servers.empty')}
+          action={
+            <HeaderButton variant="primary" icon={Plus} onClick={openAdd}>
+              {t('mcp.list.addServer')}
+            </HeaderButton>
+          }
+        />
+      ) : ownServers.length === 0 && (filter.trim() || stateFilter !== 'all') ? (
         <ListEmpty>{t('plugins.filter.noMatches')}</ListEmpty>
       ) : (
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col [&>*+*]:mt-1.5">
           <AnimatePresence initial={false}>
             {ownServers.map(renderCatalogRow)}
           </AnimatePresence>
@@ -759,10 +832,15 @@ export function McpServers() {
                 key={`${wsId}:${server.name}`}
                 testid={`ws-server-row-${server.name}`}
                 {...rowSelection(selection, `ws:${wsId}:${server.name}`)}
+                tile={<IdentityTile name={server.name} />}
+                onOpen={() => openDetail(server.name, wsId)}
                 main={
                   <>
-                    <ServerNameLine icon={Server} name={server.name}>
-                      <TagBadge>{server.transport}</TagBadge>
+                    <ServerNameLine
+                      name={server.name}
+                      onOpen={() => openDetail(server.name, wsId)}
+                    >
+                      <MetaText>{server.transport}</MetaText>
                       {server.shadows_inherited && (
                         <TagBadge soft title={t('mcp.row.overridesInheritedHint')}>
                           {t('mcp.row.overridesInherited')}
@@ -864,6 +942,42 @@ export function McpServers() {
           }}
         />
       )}
+
+      <AnimatePresence>
+      {detailData && (
+        <ServerDetail
+          key={`${detailData.origin}:${detailData.server.name}`}
+          data={detailData}
+          onClose={closeDetail}
+          workspaceName={
+            detailData.origin === 'workspace'
+              ? wsNameById.get(detailData.server.workspace_id)
+              : undefined
+          }
+          toggling={
+            detailData.origin === 'builtin'
+              ? builtinToggleMutation.isPending
+              : detailData.origin === 'user'
+                ? togglingName === detailData.server.name
+                : wsTogglingKey ===
+                  `${detailData.server.workspace_id}:${detailData.server.name}`
+          }
+          onToggle={(enabled) => {
+            if (detailData.origin === 'builtin') {
+              handleToggleBuiltin(detailData.server.name, enabled);
+            } else if (detailData.origin === 'user') {
+              toggle(detailData.server, enabled);
+            } else {
+              handleSetWorkspaceDisabled(
+                detailData.server.name,
+                detailData.server.workspace_id,
+                !enabled,
+              );
+            }
+          }}
+        />
+      )}
+      </AnimatePresence>
     </div>
   );
 }

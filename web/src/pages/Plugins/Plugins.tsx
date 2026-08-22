@@ -1,12 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { motion, useReducedMotion } from 'framer-motion';
+import { ChevronDown, Plus } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '@/components/ui/dropdown-menu';
 import { useScrollMemory } from '@/lib/scrollMemory';
 import { toast } from '@/components/ui/use-toast';
 import { McpServers } from './components/McpServers';
 import { SkillsList } from './components/SkillsList';
 import { PluginSecrets } from './components/PluginSecrets';
 import { PluginsList } from './components/PluginsList';
+import type { AddAction, AddSignal } from './utils/addSignal';
 import './Plugins.css';
 
 /**
@@ -41,16 +50,31 @@ function resolveTab(param: string | null): Tab | null {
 function Plugins() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { t } = useTranslation();
+  const reducedMotion = useReducedMotion();
 
   const [activeTab, setActiveTab] = useState<Tab>(
     resolveTab(searchParams.get('tab')) ?? 'plugins',
   );
+  const [addSignal, setAddSignal] = useState<AddSignal | null>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   useScrollMemory(pageRef, 'page:plugins');
 
   const handleTabChange = (tab: Tab) => {
     setActiveTab(tab);
     setSearchParams({ tab }, { replace: true });
+  };
+
+  // The one Add entry point for the whole page: switch to the action's tab,
+  // then signal that tab's list to open its own modal.
+  const requestAdd = (action: AddAction) => {
+    const tab: Tab =
+      action === 'install-plugin'
+        ? 'plugins'
+        : action === 'upload-skill'
+          ? 'skills'
+          : 'mcp';
+    if (tab !== activeTab) handleTabChange(tab);
+    setAddSignal({ action, nonce: Date.now() });
   };
 
   // Sync from URL on back/forward navigation
@@ -95,33 +119,79 @@ function Plugins() {
   return (
     <div ref={pageRef} className="plugins-page">
       <div className="plugins-container">
-        <h2 className="text-xl font-semibold mb-1" style={{ color: 'var(--color-text-primary)' }}>
-          {t('plugins.title')}
-        </h2>
-        <p className="text-sm mb-6" style={{ color: 'var(--color-text-tertiary)' }}>
-          {t('plugins.description')}
-        </p>
+        <div className="flex items-start justify-between gap-3 mb-6">
+          <div className="min-w-0">
+            <h2 className="text-xl font-semibold mb-1" style={{ color: 'var(--color-text-primary)' }}>
+              {t('plugins.title')}
+            </h2>
+            <p className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
+              {t('plugins.description')}
+            </p>
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-opacity hover:opacity-90 flex-shrink-0"
+                style={{
+                  color: 'var(--color-btn-primary-text)',
+                  backgroundColor: 'var(--color-btn-primary-bg)',
+                }}
+              >
+                <Plus className="h-3 w-3" />
+                {t('plugins.addMenu.add')}
+                <ChevronDown className="h-3 w-3" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => requestAdd('install-plugin')}>
+                {t('plugins.addMenu.installPlugin')}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => requestAdd('add-server')}>
+                {t('plugins.addMenu.addServer')}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => requestAdd('import-servers')}>
+                {t('plugins.addMenu.importServers')}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => requestAdd('upload-skill')}>
+                {t('plugins.addMenu.uploadSkill')}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
         <div className="flex gap-2 mb-6 border-b overflow-x-auto plugins-tab-bar" style={{ borderColor: 'var(--color-border-muted)' }}>
           {TABS.map((tab) => (
             <button
               key={tab}
               type="button"
               onClick={() => handleTabChange(tab)}
-              className="px-4 py-2 text-sm font-medium whitespace-nowrap flex-shrink-0"
+              className="relative px-4 py-2 text-sm font-medium whitespace-nowrap flex-shrink-0 transition-colors"
               style={{
                 color: activeTab === tab ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
-                borderBottom: activeTab === tab ? '2px solid var(--color-accent-primary)' : '2px solid transparent',
               }}
             >
               {t(TAB_LABEL_KEYS[tab])}
+              {activeTab === tab && (
+                <motion.span
+                  layoutId="plugins-tab-underline"
+                  aria-hidden
+                  className="absolute inset-x-1 bottom-0 h-0.5 rounded-full"
+                  style={{ backgroundColor: 'var(--color-accent-primary)' }}
+                  transition={
+                    reducedMotion
+                      ? { duration: 0 }
+                      : { type: 'spring', stiffness: 500, damping: 40 }
+                  }
+                />
+              )}
             </button>
           ))}
         </div>
 
         <div className="plugins-content">
-          {activeTab === 'plugins' && <PluginsList />}
-          {activeTab === 'mcp' && <McpServers />}
-          {activeTab === 'skills' && <SkillsList />}
+          {activeTab === 'plugins' && <PluginsList addSignal={addSignal} />}
+          {activeTab === 'mcp' && <McpServers addSignal={addSignal} />}
+          {activeTab === 'skills' && <SkillsList addSignal={addSignal} />}
           {activeTab === 'secrets' && <PluginSecrets />}
         </div>
       </div>

@@ -357,6 +357,23 @@ export async function getMcpCatalog(): Promise<CatalogServerList> {
   };
 }
 
+/** The discovered tool snapshot for one catalog server (hash-gated server
+ * side to the row's current config — empty until a discovery has run). */
+export async function getMcpCatalogServerTools(name: string): Promise<{
+  server_name: string;
+  tools: McpToolSummary[];
+  discovered_at: string | null;
+}> {
+  const { data } = await api.get(
+    `/api/v1/mcp/servers/${encodeURIComponent(name)}/tools`,
+  );
+  return {
+    server_name: data.server_name ?? name,
+    tools: data.tools ?? [],
+    discovered_at: data.discovered_at ?? null,
+  };
+}
+
 export async function createMcpCatalogServer(body: McpServerInput): Promise<CatalogServer> {
   const { data } = await api.post<CatalogServer>('/api/v1/mcp/servers', body);
   return data;

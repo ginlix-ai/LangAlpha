@@ -117,6 +117,18 @@ export async function deleteSkill(name: string): Promise<void> {
   await api.delete(`/api/v1/skills/${encodeURIComponent(name)}`);
 }
 
+/** The SKILL.md text, most specific tier first (workspace → user → platform). */
+export async function getSkillContent(
+  name: string,
+  workspaceId: string | null = null,
+): Promise<{ name: string; content: string }> {
+  const { data } = await api.get(
+    `/api/v1/skills/${encodeURIComponent(name)}/content`,
+    { params: workspaceId ? { workspace_id: workspaceId } : {} },
+  );
+  return data;
+}
+
 export async function uploadWorkspaceSkill(
   workspaceId: string,
   file: File,

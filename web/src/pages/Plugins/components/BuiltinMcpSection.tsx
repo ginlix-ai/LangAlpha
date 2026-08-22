@@ -9,15 +9,17 @@ import {
   useSetMcpServerEnabledInWorkspace,
 } from '@/hooks/useMcpServers';
 import { useWorkspaces } from '@/hooks/useWorkspaces';
+import { IdentityTile } from '@/pages/ChatAgent/components/mcp/IdentityTile';
 import {
   EnabledToggle,
+  MetaText,
   ServerNameLine,
   ServerRowShell,
-  TagBadge,
 } from '@/pages/ChatAgent/components/mcp/McpPrimitives';
-import { formatApiErrorDetail } from '@/pages/ChatAgent/utils/api';
+import { formatApiErrorDetail, type BuiltinMcpServer } from '@/pages/ChatAgent/utils/api';
 import { matchesFilter } from '../utils/groupOrigins';
 import { GroupDeck } from './GroupDeck';
+import { matchesStateFilter, type StateFilter } from './ListControls';
 import { ScopeControl } from './ScopeControl';
 import type { ScopeWorkspace } from './ScopeControl';
 import { rowSelection, type BulkSelection } from './useBulkSelection';
@@ -33,10 +35,15 @@ import { rowSelection, type BulkSelection } from './useBulkSelection';
 
 export function BuiltinMcpSection({
   filter = '',
+  stateFilter = 'all',
   selection,
+  onOpen,
 }: {
   filter?: string;
+  stateFilter?: StateFilter;
   selection?: BulkSelection;
+  /** Open a builtin's detail view (name button + row-body click). */
+  onOpen?: (server: BuiltinMcpServer) => void;
 }) {
   const { t } = useTranslation();
   const { data, isLoading } = useBuiltinMcpServers();
@@ -46,8 +53,10 @@ export function BuiltinMcpSection({
   // Keyed by row so one row's in-flight toggle doesn't lock its siblings.
   const [busyName, setBusyName] = useState<string | null>(null);
 
-  const servers = (data?.servers ?? []).filter((s) =>
-    matchesFilter(filter, s.name, s.description),
+  const servers = (data?.servers ?? []).filter(
+    (s) =>
+      matchesFilter(filter, s.name, s.description) &&
+      matchesStateFilter(stateFilter, s.enabled),
   );
   const workspaces = (
     (wsData as { workspaces?: { workspace_id: string; name?: string }[] })
@@ -105,7 +114,7 @@ export function BuiltinMcpSection({
       icon={Server}
       count={servers.length}
       enabledCount={servers.filter((s) => s.enabled).length}
-      forceExpanded={selecting || !!filter.trim()}
+      forceExpanded={selecting || !!filter.trim() || stateFilter !== 'all'}
       selection={selection}
       selectionKeys={servers.map((s) => `builtin:${s.name}`)}
     >
@@ -115,11 +124,15 @@ export function BuiltinMcpSection({
             key={server.name}
             testid={`builtin-row-${server.name}`}
             {...(selection ? rowSelection(selection, `builtin:${server.name}`) : {})}
+            tile={<IdentityTile name={server.name} />}
+            onOpen={onOpen ? () => onOpen(server) : undefined}
             main={
               <>
-                <ServerNameLine icon={Server} name={server.name}>
-                  <TagBadge>{server.transport}</TagBadge>
-                  <TagBadge soft>{t('plugins.mcp.platformBadge')}</TagBadge>
+                <ServerNameLine
+                  name={server.name}
+                  onOpen={onOpen ? () => onOpen(server) : undefined}
+                >
+                  <MetaText>{server.transport}</MetaText>
                 </ServerNameLine>
                 {server.description && (
                   <p

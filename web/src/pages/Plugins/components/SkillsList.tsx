@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { AnimatePresence } from 'framer-motion';
@@ -34,13 +34,17 @@ import {
 } from '@/pages/ChatAgent/utils/api';
 import type { SkillInfo } from '@/pages/ChatAgent/utils/api';
 import { matchesFilter } from '../utils/groupOrigins';
+import type { AddSignal } from '../utils/addSignal';
+import { parseDetail, withDetail } from '../utils/detailParam';
 import { clearDenyPlan, onlyInPlan } from '../utils/scopeTargets';
 import { BulkActionBar, type BulkAction } from './BulkActionBar';
 import type { BulkScopeSpec } from './BulkScopeMenu';
+import { EmptyState } from './EmptyState';
 import { GroupDeck } from './GroupDeck';
-import { ListControls } from './ListControls';
+import { ListControls, matchesStateFilter, type StateFilter } from './ListControls';
 import { ScopeControl } from './ScopeControl';
 import type { ScopeWorkspace } from './ScopeControl';
+import { SkillDetail } from './SkillDetail';
 import { SkillRow } from './SkillRow';
 import { SkillUploadModal } from './SkillUploadModal';
 import {
@@ -59,9 +63,9 @@ import {
  * there, not here.
  */
 
-export function SkillsList() {
+export function SkillsList({ addSignal }: { addSignal?: AddSignal | null }) {
   const { t } = useTranslation();
-  const [, setSearchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { data: skills, isLoading, error } = useSkills(null, {
     includeDisabled: true,
     allScopes: true,
@@ -77,6 +81,7 @@ export function SkillsList() {
 
   const [uploadOpen, setUploadOpen] = useState(false);
   const [filter, setFilter] = useState('');
+  const [stateFilter, setStateFilter] = useState<StateFilter>('all');
   const [togglingName, setTogglingName] = useState<string | null>(null);
   const [movingName, setMovingName] = useState<string | null>(null);
   const selection = useBulkSelection();
@@ -99,11 +104,18 @@ export function SkillsList() {
   }));
   const wsNameById = new Map(wsOptions.map((w) => [w.id, w.name]));
 
+  useEffect(() => {
+    if (addSignal?.action === 'upload-skill') setUploadOpen(true);
+  }, [addSignal]);
+
   const allSkills = skills ?? [];
-  const visible = allSkills.filter((s) =>
-    matchesFilter(filter, s.name, s.description, s.plugin_name),
+  const visible = allSkills.filter(
+    (s) =>
+      matchesFilter(filter, s.name, s.description, s.plugin_name) &&
+      matchesStateFilter(stateFilter, s.enabled),
   );
-  const forceExpanded = selection.selecting || !!filter.trim();
+  const forceExpanded =
+    selection.selecting || !!filter.trim() || stateFilter !== 'all';
 
   const platformSkills = visible.filter((s) => s.origin === 'platform');
   const ownSkills = visible.filter((s) => s.origin === 'user' && !s.plugin_name);
@@ -124,6 +136,44 @@ export function SkillsList() {
   const workspaceSections = [...byWorkspace.entries()].sort(([a], [b]) =>
     (wsNameById.get(a) ?? '').localeCompare(wsNameById.get(b) ?? ''),
   );
+
+  // --- Detail overlay (?detail=skill:NAME [&dws=wsid]) ---
+  // Names are unique within a scope; `dws` picks the workspace-tier row when
+  // one shadows a same-named user skill.
+  const detailRef = parseDetail(searchParams);
+  const detailSkill =
+    detailRef?.kind === 'skill'
+      ? (allSkills.find(
+          (s) =>
+            s.name === detailRef.name &&
+            (s.workspace_id ?? null) === detailRef.workspaceId,
+        ) ?? null)
+      : null;
+
+  function openDetail(skill: SkillInfo) {
+    setSearchParams(
+      withDetail(searchParams, {
+        kind: 'skill',
+        name: skill.name,
+        workspaceId: skill.workspace_id ?? null,
+      }),
+      { replace: true },
+    );
+  }
+  function closeDetail() {
+    setSearchParams(withDetail(searchParams, null), { replace: true });
+  }
+
+  // A deep link to a row that no longer exists parks a dead overlay param in
+  // the URL — clear it once the list has answered.
+  const detailStale =
+    detailRef?.kind === 'skill' && !detailSkill && !isLoading && skills !== undefined;
+  useEffect(() => {
+    if (detailStale) {
+      setSearchParams(withDetail(searchParams, null), { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailStale]);
 
   async function handleToggle(skill: SkillInfo, enabled: boolean) {
     setTogglingName(rowKey(skill));
@@ -363,7 +413,12 @@ export function SkillsList() {
     },
   ];
 
-  function renderRow(skill: SkillInfo, scopeControl: ReactNode, onDelete?: () => void) {
+  function renderRow(
+    skill: SkillInfo,
+    scopeControl: ReactNode,
+    onDelete?: () => void,
+    inDeck = false,
+  ) {
     return (
       <SkillRow
         key={rowKey(skill)}
@@ -372,6 +427,8 @@ export function SkillsList() {
         onToggle={(enabled) => handleToggle(skill, enabled)}
         onCommandSave={(command) => handleCommandSave(skill, command)}
         onDelete={onDelete}
+        onOpen={() => openDetail(skill)}
+        inDeck={inDeck}
         scopeControl={scopeControl}
         selection={rowSelection(selection, rowKey(skill))}
       />
@@ -394,12 +451,14 @@ export function SkillsList() {
       <ListControls
         filter={filter}
         onFilterChange={setFilter}
+        stateFilter={stateFilter}
+        onStateFilterChange={setStateFilter}
         selecting={selection.selecting}
         onStartSelect={selection.start}
         selectDisabled={allSkills.length === 0}
       />
 
-      {filter.trim() && visible.length === 0 && (
+      {(filter.trim() || stateFilter !== 'all') && visible.length === 0 && (
         <ListEmpty>{t('plugins.filter.noMatches')}</ListEmpty>
       )}
 
@@ -427,23 +486,34 @@ export function SkillsList() {
                   handleSetWorkspaceDisabled(skill, wsId, disabled)
                 }
               />,
+              undefined,
+              true,
             ),
           )}
         </AnimatePresence>
       </GroupDeck>
 
-      <div className="flex flex-col gap-1.5">
-        <div className="flex items-center justify-between">
-          <SectionHeader>{t('plugins.skills.yours')}</SectionHeader>
-          <HeaderButton variant="primary" icon={Upload} onClick={() => setUploadOpen(true)}>
-            {t('plugins.skills.upload')}
-          </HeaderButton>
-        </div>
+      {/* Filtered-empty hides the whole section: the top-level noMatches
+          notice already covers it, and a bare header reads as a glitch. */}
+      {(ownSkills.length > 0 || (!filter.trim() && stateFilter === 'all')) && (
+      <div className="flex flex-col [&>*+*]:mt-1.5">
+        <SectionHeader>{t('plugins.skills.yours')}</SectionHeader>
         <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
           {t('plugins.skills.inheritHint')}
         </p>
         {ownSkills.length === 0 ? (
-          !filter.trim() && <ListEmpty>{t('plugins.skills.empty')}</ListEmpty>
+          <EmptyState
+            message={t('plugins.skills.empty')}
+            action={
+              <HeaderButton
+                variant="primary"
+                icon={Upload}
+                onClick={() => setUploadOpen(true)}
+              >
+                {t('plugins.skills.upload')}
+              </HeaderButton>
+            }
+          />
         ) : (
           <AnimatePresence initial={false}>
             {ownSkills.map((skill) =>
@@ -466,6 +536,7 @@ export function SkillsList() {
           </AnimatePresence>
         )}
       </div>
+      )}
 
       {pluginSections.map(([pluginName, rows]) => (
         <GroupDeck
@@ -521,6 +592,7 @@ export function SkillsList() {
                 skill.deletable
                   ? () => setDeleting({ name: skill.name, workspaceId: null })
                   : undefined,
+                true,
               ),
             )}
           </AnimatePresence>
@@ -560,6 +632,7 @@ export function SkillsList() {
                   onMove={(toWorkspaceId) => handleMove(skill, toWorkspaceId)}
                 />,
                 () => setDeleting({ name: skill.name, workspaceId: wsId }),
+                true,
               ),
             )}
           </AnimatePresence>
@@ -595,6 +668,18 @@ export function SkillsList() {
           onUpload={(file, onProgress) => uploadMutation.mutateAsync({ file, onProgress })}
         />
       )}
+
+      <AnimatePresence>
+        {detailSkill && (
+          <SkillDetail
+            key={rowKey(detailSkill)}
+            skill={detailSkill}
+            onClose={closeDetail}
+            toggling={togglingName === rowKey(detailSkill)}
+            onToggle={(enabled) => handleToggle(detailSkill, enabled)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

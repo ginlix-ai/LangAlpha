@@ -2719,7 +2719,7 @@
     "title": "Plugins",
     "description": "MCP servers, skills, and credentials available to your agent in every workspace.",
     "tabs": {
-      "mcp": "MCP servers",
+      "mcp": "Connectors",
       "skills": "Skills",
       "secrets": "Secrets",
       "plugins": "Plugins"
@@ -2923,6 +2923,50 @@
       "placeholder": "Filter",
       "clear": "Clear filter",
       "noMatches": "No matches"
+    },
+    "addMenu": {
+      "add": "Add",
+      "installPlugin": "Install plugin",
+      "addServer": "Add MCP server",
+      "importServers": "Import servers",
+      "uploadSkill": "Upload skill"
+    },
+    "stateFilter": {
+      "all": "All",
+      "on": "On",
+      "off": "Off",
+      "attention": "Needs attention"
+    },
+    "detail": {
+      "kindServer": "MCP server",
+      "kindSkill": "Skill",
+      "kindPlugin": "Plugin",
+      "tools": "Tools",
+      "toolsEmpty": "No tools discovered yet. They appear after the server first connects.",
+      "discovered": "Discovered {{date}}",
+      "config": "Configuration",
+      "transport": "Transport",
+      "url": "URL",
+      "command": "Command",
+      "envVars": "Env vars",
+      "headers": "Headers",
+      "info": "Details",
+      "origin": "Origin",
+      "originPlatform": "Platform",
+      "originUser": "Yours",
+      "originWorkspace": "Workspace",
+      "size": "Size",
+      "updated": "Updated",
+      "created": "Added",
+      "skillSource": "SKILL.md",
+      "sourceLoadFailed": "Could not load the skill's source.",
+      "components": "Components",
+      "version": "Version",
+      "author": "Author",
+      "homepage": "Homepage",
+      "sourceLabel": "Source",
+      "installed": "Installed",
+      "openComponentAria": "Open {{name}}"
     }
   }
 }

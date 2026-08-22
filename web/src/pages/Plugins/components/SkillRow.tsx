@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { BookOpen, Trash2 } from 'lucide-react';
+import { Trash2 } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
 } from '@/components/ui/dropdown-menu';
+import { IdentityTile } from '@/pages/ChatAgent/components/mcp/IdentityTile';
 import {
   EnabledToggle,
   KebabTrigger,
@@ -45,7 +46,9 @@ function CommandChip({
     return (
       <button
         type="button"
-        onClick={() => {
+        onClick={(e) => {
+          // Inside the row's open-detail click surface.
+          e.stopPropagation();
           setValue(command);
           setEditing(true);
         }}
@@ -61,6 +64,7 @@ function CommandChip({
     <input
       autoFocus
       value={value}
+      onClick={(e) => e.stopPropagation()}
       onChange={(e) => setValue(e.target.value)}
       onKeyDown={(e) => {
         if (e.key === 'Enter') {
@@ -90,6 +94,8 @@ export function SkillRow({
   onToggle,
   onDelete,
   onCommandSave,
+  onOpen,
+  inDeck = false,
   scopeControl,
   selection,
 }: {
@@ -100,6 +106,11 @@ export function SkillRow({
   /** Present = the `/command` chip becomes click-to-edit (Enter saves, Esc
    * cancels, empty clears back to the name). Absent = read-only chip. */
   onCommandSave?: (command: string | null) => void;
+  /** Open this skill's detail view (name button + row-body click). */
+  onOpen?: () => void;
+  /** Rendered under an origin deck whose header already names the origin or
+   * plugin — drop the badges that would restate it. */
+  inDeck?: boolean;
   scopeControl?: React.ReactNode;
   /** ServerRowShell select-mode props, spread through untouched. */
   selection?: { selecting?: boolean; selected?: boolean; onSelectToggle?: () => void };
@@ -110,9 +121,11 @@ export function SkillRow({
     <ServerRowShell
       testid={`skill-row-${skill.name}`}
       {...(selection ?? {})}
+      tile={<IdentityTile name={skill.name} />}
+      onOpen={onOpen}
       main={
         <>
-          <ServerNameLine icon={BookOpen} name={skill.name}>
+          <ServerNameLine name={skill.name} onOpen={onOpen}>
             {skill.command && (
               <CommandChip
                 command={skill.command}
@@ -120,10 +133,10 @@ export function SkillRow({
                 saving={toggling}
               />
             )}
-            {skill.origin === 'platform' && (
+            {!inDeck && skill.origin === 'platform' && (
               <TagBadge soft>{t('plugins.skills.platformBadge')}</TagBadge>
             )}
-            {skill.plugin_name && (
+            {!inDeck && skill.plugin_name && (
               <TagBadge
                 soft
                 title={t('plugins.component.fromPlugin', {

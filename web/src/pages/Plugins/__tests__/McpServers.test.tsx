@@ -209,11 +209,11 @@ describe('McpServers — list rendering', () => {
     expect(screen.queryByText(/No servers yet/i)).not.toBeInTheDocument();
   });
 
-  it('gates Add/Import at the server cap', () => {
+  it('shows the cap counter (the add path moved to the page-level Add menu)', () => {
     catalogData = makeCatalog([makeCatalogServer({ name: 'a_server' })], 1);
     renderWithProviders(<McpServers />);
-    expect(screen.getByRole('button', { name: /add server/i })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /import json/i })).toBeDisabled();
+    expect(screen.getByText('1 / 1')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /import json/i })).not.toBeInTheDocument();
   });
 });
 
@@ -646,9 +646,9 @@ describe('McpServers — import', () => {
       secrets_created: ['PLACEHOLDER_TOKEN'],
       config_version: 2,
     });
-    renderWithProviders(<McpServers />);
+    // The import modal opens via the page-level Add menu's signal.
+    renderWithProviders(<McpServers addSignal={{ action: 'import-servers', nonce: 1 }} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /import json/i }));
     fireEvent.change(screen.getByRole('textbox'), { target: { value: BLOB } });
     fireEvent.click(await screen.findByRole('button', { name: /^import 1$/i }));
 
@@ -669,9 +669,8 @@ describe('McpServers — import', () => {
       secrets_created: [],
       config_version: 2,
     });
-    renderWithProviders(<McpServers />);
+    renderWithProviders(<McpServers addSignal={{ action: 'import-servers', nonce: 1 }} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /import json/i }));
     fireEvent.change(screen.getByRole('textbox'), { target: { value: BLOB } });
     fireEvent.click(await screen.findByRole('button', { name: /^import 1$/i }));
 
@@ -681,9 +680,8 @@ describe('McpServers — import', () => {
 
   it('surfaces a rejected import inside the modal', async () => {
     mutateAsync.import.mockRejectedValue({ response: { data: { detail: 'catalog at cap' } } });
-    renderWithProviders(<McpServers />);
+    renderWithProviders(<McpServers addSignal={{ action: 'import-servers', nonce: 1 }} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /import json/i }));
     fireEvent.change(screen.getByRole('textbox'), { target: { value: BLOB } });
     fireEvent.click(await screen.findByRole('button', { name: /^import 1$/i }));
 

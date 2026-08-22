@@ -84,6 +84,8 @@ export const queryKeys = {
     builtins:  () => [...queryKeys.mcp.all, 'builtins'],
     // Effective per-workspace server list (builtins + workspace servers).
     workspace: (wsId: string) => [...queryKeys.mcp.all, 'workspace', wsId],
+    // Discovered tool snapshot for one catalog server (the detail view).
+    serverTools: (name: string) => [...queryKeys.mcp.all, 'serverTools', name],
   },
   // Skills are per-user and mutable; the mode variant is what the slash menu
   // reads, the manage variant is the full list including disabled rows. A
@@ -103,6 +105,9 @@ export const queryKeys = {
         ...queryKeys.skills.all, 'list', mode ?? 'all', includeDisabled,
         allScopes ? 'all-scopes' : (workspaceId ?? 'user'),
       ],
+    // One skill's SKILL.md text (the detail view).
+    content: (name: string, workspaceId: string | null = null) =>
+      [...queryKeys.skills.all, 'content', name, workspaceId ?? 'user'],
   },
   userVault: {
     all:        ['userVault'],

@@ -13,41 +13,65 @@ import { Loader } from '@/components/ui/loader';
  */
 
 // Matches the spring used across the chat UI (ActivityBlock) so motion feels
-// consistent. SNAPPY for the toggle knob; row layout/enter/exit reuse it.
+// consistent. SNAPPY for the toggle knob; row layout/enter reuse it.
 export const SPRING_SNAPPY = { type: 'spring' as const, stiffness: 200, damping: 22 };
 
-/** Row container: left content column + right actions column. In select mode
- *  (`selecting`) the whole row becomes the checkbox — a leading box reflects
- *  `selected`, the row's own controls go inert so a click anywhere toggles
- *  selection instead of firing a toggle or menu. */
+// Exits tween instead: a spring's settle tail makes a batch of leaving rows
+// hold phantom height for ~350ms and then vanish in one frame (the presence
+// wrapper waits for every spring to rest). A short deterministic tween ends
+// all exits together, so a filter swap reads as one clean motion.
+const EXIT_TWEEN = { duration: 0.15, ease: [0.16, 1, 0.3, 1] as const };
+
+/** Row container: identity tile + content column left, actions column right.
+ *  In select mode (`selecting`) the whole row becomes the checkbox — a leading
+ *  box reflects `selected`, the row's own controls go inert so a click
+ *  anywhere toggles selection instead of firing a toggle or menu. `onOpen`
+ *  makes the content column a pointer target for the row's detail view; the
+ *  keyboard path is the name button inside `ServerNameLine`, so this click
+ *  surface stays out of the accessibility tree. */
 export function ServerRowShell({
   testid,
+  tile,
   main,
   actions,
   selecting = false,
   selected = false,
   onSelectToggle,
+  onOpen,
 }: {
   testid: string;
+  tile?: React.ReactNode;
   main: React.ReactNode;
   actions: React.ReactNode;
   selecting?: boolean;
   selected?: boolean;
   onSelectToggle?: () => void;
+  onOpen?: () => void;
 }) {
   const selectable = selecting && !!onSelectToggle;
+  const openable = !!onOpen && !selectable;
   return (
     <motion.div
       layout
       initial={{ opacity: 0, y: -4 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, height: 0, marginTop: 0, paddingTop: 0, paddingBottom: 0 }}
+      exit={{
+        opacity: 0,
+        height: 0,
+        marginTop: 0,
+        paddingTop: 0,
+        paddingBottom: 0,
+        transition: EXIT_TWEEN,
+      }}
       transition={SPRING_SNAPPY}
-      className={`flex items-start justify-between gap-3 py-2.5 px-3 rounded-lg overflow-hidden ${
+      className={`flex items-start justify-between gap-3 py-2.5 px-3 rounded-lg overflow-hidden bg-[var(--color-bg-card)] ${
         selectable ? 'cursor-pointer' : ''
+      }${
+        // The fill lives in the class (not style) so the hover twin can win;
+        // only rows that open a detail view invite the pointer.
+        openable ? ' transition-colors duration-150 hover:bg-[var(--color-bg-card-hover)]' : ''
       }`}
       style={{
-        backgroundColor: 'var(--color-bg-card)',
         // Always set (never conditionally spread): motion.div applies style
         // imperatively and leaves a vanished key painted on the element.
         boxShadow:
@@ -72,7 +96,7 @@ export function ServerRowShell({
       {selectable && (
         <span
           aria-hidden
-          className="flex-shrink-0 mt-1 inline-flex h-4 w-4 items-center justify-center rounded"
+          className="flex-shrink-0 mt-2 inline-flex h-4 w-4 items-center justify-center rounded"
           style={{
             border: selected ? 'none' : '1px solid var(--color-border-muted)',
             backgroundColor: selected ? 'var(--color-accent-primary)' : 'transparent',
@@ -83,10 +107,12 @@ export function ServerRowShell({
           )}
         </span>
       )}
+      {tile && <div className="flex-shrink-0 mt-0.5">{tile}</div>}
       <div
         className={`min-w-0 flex flex-col gap-1 flex-1 ${
           selectable ? 'pointer-events-none select-none' : ''
-        }`}
+        }${openable ? ' cursor-pointer' : ''}`}
+        {...(openable ? { onClick: onOpen } : {})}
       >
         {main}
       </div>
@@ -101,22 +127,40 @@ export function ServerRowShell({
   );
 }
 
-/** Identity line: icon + name + badges. */
+/** Identity line: name + state badges. The visual identity mark is the
+ *  row's `IdentityTile` (via `ServerRowShell`'s tile slot), not an icon here.
+ *  With `onOpen` the name renders as a real button — the keyboard/AT path to
+ *  the row's detail view (the row body is only a pointer convenience). */
 export function ServerNameLine({
-  icon: Icon,
   name,
+  onOpen,
   children,
 }: {
-  icon: React.ComponentType<{ className?: string; style?: React.CSSProperties }>;
   name: string;
+  onOpen?: () => void;
   children?: React.ReactNode;
 }) {
+  const nameEl = onOpen ? (
+    <button
+      type="button"
+      onClick={(e) => {
+        // The row body is its own click-through to the same detail view.
+        e.stopPropagation();
+        onOpen();
+      }}
+      className="text-sm font-medium truncate text-left hover:underline underline-offset-2"
+      style={{ color: 'var(--color-text-primary)' }}
+    >
+      {name}
+    </button>
+  ) : (
+    <span className="text-sm font-medium truncate" style={{ color: 'var(--color-text-primary)' }}>
+      {name}
+    </span>
+  );
   return (
     <div className="flex items-center gap-2 flex-wrap">
-      <Icon className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
-      <span className="text-sm font-medium truncate" style={{ color: 'var(--color-text-primary)' }}>
-        {name}
-      </span>
+      {nameEl}
       {children}
     </div>
   );
@@ -145,6 +189,27 @@ export function TagBadge({
         backgroundColor: 'var(--color-bg-tag)',
         ...(soft ? {} : { border: '1px solid var(--color-border-muted)' }),
       }}
+      title={title}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** Quiet metadata on a row's second line (transport, version, counts,
+ *  provenance) — plain tertiary text, deliberately not a badge: badges are
+ *  reserved for state that needs attention. */
+export function MetaText({
+  title,
+  children,
+}: {
+  title?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <span
+      className="text-[0.6875rem]"
+      style={{ color: 'var(--color-text-tertiary)' }}
       title={title}
     >
       {children}
