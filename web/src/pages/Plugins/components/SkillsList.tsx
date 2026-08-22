@@ -28,12 +28,15 @@ import {
   deleteSkill,
   deleteWorkspaceSkill,
   formatApiErrorDetail,
+  moveSkill,
   setSkillEnabled,
   setWorkspaceSkillEnabled,
 } from '@/pages/ChatAgent/utils/api';
 import type { SkillInfo } from '@/pages/ChatAgent/utils/api';
 import { matchesFilter } from '../utils/groupOrigins';
+import { clearDenyPlan, onlyInPlan } from '../utils/scopeTargets';
 import { BulkActionBar, type BulkAction } from './BulkActionBar';
+import type { BulkScopeSpec } from './BulkScopeMenu';
 import { GroupDeck } from './GroupDeck';
 import { ListControls } from './ListControls';
 import { ScopeControl } from './ScopeControl';
@@ -239,6 +242,88 @@ export function SkillsList() {
   }
 
   const selectedSkills = allSkills.filter((s) => selection.selected.has(rowKey(s)));
+
+  // --- Bulk scope ---
+  // Same eligibility as each row's own ScopeControl: the deny-list checklist
+  // exists on enabled user-tier rows; tier moves exist for the user's own
+  // uploads and workspace rows (plugin skills stay put, a shadowing workspace
+  // row can't surface to a tier where its name is taken).
+  const liveWsIds = wsOptions.map((w) => w.id);
+  const denyEligible = selectedSkills.filter(
+    (s) => s.origin !== 'workspace' && s.enabled,
+  );
+  const upMovable = selectedSkills.filter(
+    (s) => s.origin === 'workspace' && s.workspace_id && !s.shadows_inherited,
+  );
+  const movableUser = selectedSkills.filter(
+    (s) => s.origin === 'user' && !s.plugin_name,
+  );
+  const movableWs = selectedSkills.filter(
+    (s) => s.origin === 'workspace' && s.workspace_id,
+  );
+
+  function denyTarget(skill: SkillInfo, chosen: ReadonlySet<string> | null): BulkTarget | null {
+    const plan = chosen
+      ? onlyInPlan(skill.disabled_workspace_ids, liveWsIds, chosen)
+      : clearDenyPlan(skill.disabled_workspace_ids, liveWsIds);
+    if (plan.length === 0) return null;
+    return {
+      key: rowKey(skill),
+      run: async () => {
+        for (const step of plan) {
+          await setWorkspaceSkillEnabled(step.workspaceId, skill.name, step.enabled);
+        }
+      },
+    };
+  }
+
+  function runScope(targets: BulkTarget[]) {
+    if (targets.length === 0) {
+      toast({ title: t('plugins.bulk.noChanges') });
+      return;
+    }
+    run(targets);
+  }
+
+  const clearTargets = denyEligible
+    .map((s) => denyTarget(s, null))
+    .filter((x): x is BulkTarget => x !== null);
+  const scope: BulkScopeSpec = {
+    workspaces: wsOptions,
+    everywhereCount: upMovable.length + clearTargets.length,
+    onEverywhere: () =>
+      runScope([
+        ...upMovable.map((s) => ({
+          key: rowKey(s),
+          run: () => moveSkill(s.name, s.workspace_id!, null),
+        })),
+        ...clearTargets,
+      ]),
+    onlyInCount: denyEligible.length,
+    onOnlyIn: (workspaceIds) => {
+      const chosen = new Set(workspaceIds);
+      runScope(
+        denyEligible
+          .map((s) => denyTarget(s, chosen))
+          .filter((x): x is BulkTarget => x !== null),
+      );
+    },
+    moveCount: movableUser.length + movableWs.length,
+    onMoveTo: (workspaceId) =>
+      runScope([
+        ...movableUser.map((s) => ({
+          key: rowKey(s),
+          run: () => moveSkill(s.name, null, workspaceId),
+        })),
+        ...movableWs
+          .filter((s) => s.workspace_id !== workspaceId)
+          .map((s) => ({
+            key: rowKey(s),
+            run: () => moveSkill(s.name, s.workspace_id!, workspaceId),
+          })),
+      ]),
+  };
+
   // Mirrors the row toggle's lock: a workspace row disabled at the user tier
   // cannot be flipped from this surface.
   const enableTargets = selectedSkills.filter(
@@ -498,6 +583,7 @@ export function SkillsList() {
         <BulkActionBar
           count={selection.selected.size}
           actions={actions}
+          scope={scope}
           progress={progress}
           onExit={selection.exit}
         />

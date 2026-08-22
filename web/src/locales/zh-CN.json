@@ -2886,7 +2886,14 @@
       "progress": "正在处理 {{done}} / {{total}}",
       "resultTitle": "批量操作完成",
       "okPart": "{{count}} 项成功",
-      "failPart": "{{count}} 项失败"
+      "failPart": "{{count}} 项失败",
+      "scope": "范围",
+      "scopeAria": "设置所选项的范围",
+      "scopeEverywhere": "全部工作区 ({{count}})",
+      "scopeOnlyIn": "仅限所选工作区 ({{count}})",
+      "scopeMoveTo": "移入工作区 ({{count}})",
+      "scopeApply": "应用到 {{count}} 项",
+      "noChanges": "所选项无需更改"
     },
     "filter": {
       "placeholder": "筛选",

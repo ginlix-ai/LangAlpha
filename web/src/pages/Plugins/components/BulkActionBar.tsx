@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
+import { BulkScopeMenu, type BulkScopeSpec } from './BulkScopeMenu';
 
 /**
  * The floating action bar of select mode: selected count, per-action buttons
@@ -25,28 +26,34 @@ export interface BulkAction {
 export function BulkActionBar({
   count,
   actions,
+  scope,
   progress,
   onExit,
 }: {
   count: number;
   actions: BulkAction[];
+  /** Present = the bar offers the bulk scope menu (Skills and MCP tabs). */
+  scope?: BulkScopeSpec;
   progress: { done: number; total: number } | null;
   onExit: () => void;
 }) {
   const { t } = useTranslation();
   const [confirming, setConfirming] = useState<BulkAction | null>(null);
+  const running = progress !== null;
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== 'Escape') return;
       if (confirming) setConfirming(null);
-      else onExit();
+      // Escape dismisses the bar, and the bar is what renders the progress
+      // readout — leaving mid-run means the rest of the fan-out completes with
+      // nothing on screen saying so. The run is not cancellable, so the honest
+      // answer is to ignore Escape until it finishes.
+      else if (!running) onExit();
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [confirming, onExit]);
-
-  const running = progress !== null;
+  }, [confirming, onExit, running]);
 
   return (
     <div
@@ -116,6 +123,7 @@ export function BulkActionBar({
               {action.label}
             </button>
           ))}
+          {scope && <BulkScopeMenu {...scope} />}
           <button
             type="button"
             aria-label={t('common.cancel')}

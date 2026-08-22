@@ -53,8 +53,10 @@ import {
   TagBadge,
 } from '@/pages/ChatAgent/components/mcp/McpPrimitives';
 import {
+  adoptMcpServerToWorkspace,
   deleteMcpCatalogServer,
   formatApiErrorDetail,
+  promoteWorkspaceMcpServerToTemplate,
   setBuiltinMcpServerEnabled,
   setMcpCatalogServerEnabled,
   setWorkspaceMcpServerEnabled,
@@ -63,7 +65,9 @@ import {
   type WorkspaceScopedMcpServer,
 } from '@/pages/ChatAgent/utils/api';
 import { matchesFilter } from '../utils/groupOrigins';
+import { clearDenyPlan, onlyInPlan } from '../utils/scopeTargets';
 import { BulkActionBar, type BulkAction } from './BulkActionBar';
+import type { BulkScopeSpec } from './BulkScopeMenu';
 import { GroupDeck } from './GroupDeck';
 import { ListControls } from './ListControls';
 import {
@@ -359,6 +363,95 @@ export function McpServers() {
         })),
     ];
   }
+
+  // --- Bulk scope ---
+  // Same eligibility as each row's ScopeControl: the deny-list checklist
+  // exists on enabled user-tier rows (builtin + catalog); moving into a
+  // workspace exists for catalog rows that are neither plugin-owned nor
+  // OAuth-connected (connections live only at the user tier); a workspace
+  // row's only destination is up, blocked while it shadows an inherited name.
+  const liveWsIds = wsOptions.map((w) => w.id);
+  const denyEligible: { key: string; name: string; disabledIds?: string[] }[] = [
+    ...selectedBuiltins
+      .filter((s) => s.enabled)
+      .map((s) => ({
+        key: `builtin:${s.name}`,
+        name: s.name,
+        disabledIds: s.disabled_workspace_ids,
+      })),
+    ...selectedCatalog
+      .filter((s) => !!s.enabled)
+      .map((s) => ({
+        key: `catalog:${s.name}`,
+        name: s.name,
+        disabledIds: s.disabled_workspace_ids,
+      })),
+  ];
+  const upMovable = selectedWs.filter((s) => !s.shadows_inherited);
+  const movableCatalog = selectedCatalog.filter(
+    (s) =>
+      !isPluginOwned(s) && !(s.oauth_status && s.oauth_status !== 'revoked'),
+  );
+
+  function denyTarget(
+    row: { key: string; name: string; disabledIds?: string[] },
+    chosen: ReadonlySet<string> | null,
+  ): BulkTarget | null {
+    const plan = chosen
+      ? onlyInPlan(row.disabledIds, liveWsIds, chosen)
+      : clearDenyPlan(row.disabledIds, liveWsIds);
+    if (plan.length === 0) return null;
+    return {
+      key: row.key,
+      run: async () => {
+        for (const step of plan) {
+          await setWorkspaceMcpServerEnabled(step.workspaceId, row.name, step.enabled);
+        }
+      },
+    };
+  }
+
+  function runScope(targets: BulkTarget[]) {
+    if (targets.length === 0) {
+      toast({ title: t('plugins.bulk.noChanges') });
+      return;
+    }
+    run(targets);
+  }
+
+  const clearTargets = denyEligible
+    .map((r) => denyTarget(r, null))
+    .filter((x): x is BulkTarget => x !== null);
+  const scope: BulkScopeSpec = {
+    workspaces: wsOptions,
+    everywhereCount: upMovable.length + clearTargets.length,
+    onEverywhere: () =>
+      runScope([
+        ...upMovable.map((s) => ({
+          key: `ws:${s.workspace_id}:${s.name}`,
+          run: () =>
+            promoteWorkspaceMcpServerToTemplate(s.workspace_id, s.name, false, true),
+        })),
+        ...clearTargets,
+      ]),
+    onlyInCount: denyEligible.length,
+    onOnlyIn: (workspaceIds) => {
+      const chosen = new Set(workspaceIds);
+      runScope(
+        denyEligible
+          .map((r) => denyTarget(r, chosen))
+          .filter((x): x is BulkTarget => x !== null),
+      );
+    },
+    moveCount: movableCatalog.length,
+    onMoveTo: (workspaceId) =>
+      runScope(
+        movableCatalog.map((s) => ({
+          key: `catalog:${s.name}`,
+          run: () => adoptMcpServerToWorkspace(workspaceId, s.name),
+        })),
+      ),
+  };
 
   // Builtins have no delete, and plugin-owned rows uninstall through their
   // plugin — bulk delete covers only the user's own catalog rows.
@@ -738,6 +831,7 @@ export function McpServers() {
         <BulkActionBar
           count={selection.selected.size}
           actions={actions}
+          scope={scope}
           progress={progress}
           onExit={selection.exit}
         />

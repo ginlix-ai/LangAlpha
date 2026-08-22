@@ -2910,7 +2910,14 @@
       "progress": "Working on {{done}} of {{total}}",
       "resultTitle": "Bulk action finished",
       "okPart": "{{count}} succeeded",
-      "failPart": "{{count}} failed"
+      "failPart": "{{count}} failed",
+      "scope": "Scope",
+      "scopeAria": "Set scope for selected items",
+      "scopeEverywhere": "All workspaces ({{count}})",
+      "scopeOnlyIn": "Only in workspaces ({{count}})",
+      "scopeMoveTo": "Move into workspace ({{count}})",
+      "scopeApply": "Apply to {{count}}",
+      "noChanges": "Nothing to change for this selection"
     },
     "filter": {
       "placeholder": "Filter",
