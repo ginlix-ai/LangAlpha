@@ -7,9 +7,10 @@ import { GroupDeck } from '../components/GroupDeck';
 import type { BulkSelection } from '../components/useBulkSelection';
 
 /**
- * The origin-deck contract: small groups render flat, larger groups stack
- * into a summary card until expanded, and filter/select mode force every row
- * visible. Expansion persists per deck id in localStorage.
+ * The origin-deck contract: small groups render flat, larger groups fold
+ * into a card stack until expanded — the cover is the real first row, kept
+ * mounted but inert — and filter/select mode force every row visible.
+ * Expansion persists per deck id in localStorage.
  */
 
 function rows(n: number) {
@@ -62,13 +63,15 @@ describe('GroupDeck', () => {
         {rows(5)}
       </GroupDeck>,
     );
-    // Collapsed: summary card with tally, rows hidden.
-    expect(screen.queryByTestId('row-0')).not.toBeInTheDocument();
+    // Collapsed: the stack cover (an inert copy of the rows, CSS-clipped to
+    // the first) with the tally in the header.
+    expect(screen.getByTestId('deck-cover-t:big')).toBeInTheDocument();
     expect(screen.getByText('2 on · 3 off')).toBeInTheDocument();
     expect(screen.getByTestId('deck-count-t:big')).toHaveTextContent('5');
 
     fireEvent.click(screen.getByRole('button', { name: /expand big group/i }));
 
+    expect(screen.queryByTestId('deck-cover-t:big')).not.toBeInTheDocument();
     expect(screen.getByTestId('row-0')).toBeInTheDocument();
     expect(screen.getByTestId('row-4')).toBeInTheDocument();
     // The choice persists per deck id.
@@ -77,15 +80,29 @@ describe('GroupDeck', () => {
     });
   });
 
+  it('uses the real first row as the collapsed cover, decoratively', () => {
+    renderWithProviders(
+      <GroupDeck id="t:cover" title="Cover" icon={Server} count={4}>
+        {rows(4)}
+      </GroupDeck>,
+    );
+    const cover = screen.getByTestId('deck-cover-t:cover');
+    expect(cover).toHaveAttribute('aria-hidden');
+    // The rows live inside the cover (first visible, rest CSS-hidden).
+    expect(cover.contains(screen.getByTestId('row-0'))).toBe(true);
+    fireEvent.click(cover);
+    expect(screen.queryByTestId('deck-cover-t:cover')).not.toBeInTheDocument();
+  });
+
   it('collapses back from the expanded header', () => {
     renderWithProviders(
       <GroupDeck id="t:big" title="Big group" icon={Server} count={4} defaultExpanded>
         {rows(4)}
       </GroupDeck>,
     );
-    expect(screen.getByTestId('row-0')).toBeInTheDocument();
+    expect(screen.queryByTestId('deck-cover-t:big')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /collapse big group/i }));
-    expect(screen.queryByTestId('row-0')).not.toBeInTheDocument();
+    expect(screen.getByTestId('deck-cover-t:big')).toBeInTheDocument();
   });
 
   it('forceExpanded overrides a stored collapse and locks the header open', () => {
@@ -96,6 +113,7 @@ describe('GroupDeck', () => {
       </GroupDeck>,
     );
     expect(screen.getByTestId('row-5')).toBeInTheDocument();
+    expect(screen.queryByTestId('deck-cover-t:big')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /collapse big group/i })).toBeDisabled();
   });
 

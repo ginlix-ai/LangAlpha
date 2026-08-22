@@ -6,12 +6,14 @@ import type { BulkSelection } from './useBulkSelection';
 
 /**
  * One origin group of rows, stackable like the sources panel's card decks.
- * Collapsed = a summary card (origin identity + count + on/off tally) over
- * two decorative peek layers; expanded = a header line + the rows in normal
- * flow. Rows here are variable-height, so the stack is a summary-card
- * illusion rather than the fixed-height card fan the sources panel animates.
- * Groups under STACK_THRESHOLD rows render as a plain header — a two-row
- * stack hides more than it tidies. Expansion persists per group id.
+ * The uppercase header line (title + count + on/off tally) anchors the group
+ * in BOTH states — collapsing folds the rows into a card stack, never the
+ * header into a card. A collapsed group that rendered as a card read as a
+ * row of the previous group, since cards are this page's row idiom. The
+ * stack's cover is the group's real first row (inert), with sliver layers
+ * peeking below to imply the rest. Groups under STACK_THRESHOLD rows render
+ * as a plain header — a two-row stack hides more than it tidies. Expansion
+ * persists per group id.
  */
 
 const STORE_KEY = 'plugins.deckExpanded';
@@ -131,57 +133,22 @@ export function GroupDeck({
     </span>
   );
 
-  if (!expanded) {
-    return (
-      <div className="flex flex-col" data-testid={`deck-${id}`}>
-        <button
-          type="button"
-          aria-expanded={false}
-          aria-label={t('plugins.groups.expandAria', { title })}
-          onClick={() => setExpanded(true)}
-          className="flex items-start justify-between gap-3 py-2.5 px-3 rounded-lg text-left w-full transition-colors hover:bg-foreground/5"
-          style={{ backgroundColor: 'var(--color-bg-card)' }}
-        >
-          <div className="min-w-0 flex flex-col gap-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <Icon
-                className="h-4 w-4 flex-shrink-0"
-                style={{ color: 'var(--color-accent-primary)' }}
-              />
-              <span
-                className="text-sm font-medium truncate"
-                style={{ color: 'var(--color-text-primary)' }}
-              >
-                {title}
-              </span>
-              {countPill}
-              {badge}
-            </div>
-            {tally && (
-              <span className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-                {tally}
-              </span>
-            )}
-          </div>
-          <ChevronDown
-            className="h-4 w-4 flex-shrink-0 mt-0.5"
-            style={{ color: 'var(--color-text-tertiary)' }}
-          />
-        </button>
-        {/* Decorative peek layers: the stacked-deck affordance. */}
-        <div
-          aria-hidden
-          className="mx-2 rounded-b-lg"
-          style={{ height: 5, marginTop: 2, backgroundColor: 'var(--color-bg-card)', opacity: 0.55 }}
-        />
-        <div
-          aria-hidden
-          className="mx-4 rounded-b-lg"
-          style={{ height: 5, marginTop: 2, backgroundColor: 'var(--color-bg-card)', opacity: 0.3 }}
-        />
-      </div>
-    );
-  }
+  const heading = (
+    <>
+      <Icon
+        className="h-3.5 w-3.5 flex-shrink-0"
+        style={{ color: 'var(--color-text-tertiary)' }}
+      />
+      <h3
+        className="text-[0.6875rem] font-medium uppercase tracking-wide truncate"
+        style={{ color: 'var(--color-text-tertiary)' }}
+      >
+        {title}
+      </h3>
+      {countPill}
+    </>
+  );
+  const Chevron = expanded ? ChevronUp : ChevronDown;
 
   return (
     <div className="flex flex-col gap-1.5" data-testid={`deck-${id}`}>
@@ -199,36 +166,25 @@ export function GroupDeck({
           {collapsible ? (
             <button
               type="button"
-              aria-expanded={true}
-              aria-label={t('plugins.groups.collapseAria', { title })}
-              onClick={() => setExpanded(false)}
+              aria-expanded={expanded}
+              aria-label={t(
+                expanded ? 'plugins.groups.collapseAria' : 'plugins.groups.expandAria',
+                { title },
+              )}
+              onClick={() => setExpanded(!expanded)}
               disabled={forceExpanded}
               className="flex items-center gap-2 min-w-0 disabled:cursor-default"
             >
-              <h3
-                className="text-[0.6875rem] font-medium uppercase tracking-wide truncate"
-                style={{ color: 'var(--color-text-tertiary)' }}
-              >
-                {title}
-              </h3>
-              {countPill}
+              {heading}
               {!forceExpanded && (
-                <ChevronUp
+                <Chevron
                   className="h-3 w-3 flex-shrink-0"
                   style={{ color: 'var(--color-text-tertiary)' }}
                 />
               )}
             </button>
           ) : (
-            <div className="flex items-center gap-2 min-w-0">
-              <h3
-                className="text-[0.6875rem] font-medium uppercase tracking-wide truncate"
-                style={{ color: 'var(--color-text-tertiary)' }}
-              >
-                {title}
-              </h3>
-              {countPill}
-            </div>
+            <div className="flex items-center gap-2 min-w-0">{heading}</div>
           )}
           {badge}
           {tally && (
@@ -242,7 +198,40 @@ export function GroupDeck({
         </div>
         {action && <div className="flex items-center flex-shrink-0">{action}</div>}
       </div>
-      {children}
+      {expanded ? (
+        children
+      ) : (
+        // The collapsed body: the group's real first row as the stack's
+        // cover, with sliver layers peeking below to imply the rest. The
+        // rows stay mounted — CSS hides all but the first, and `inert`
+        // makes the cover decorative (no focus, no clicks) so the whole
+        // body is one expand target. Slivers keep their border at full
+        // strength: the card fill alone is invisible on the light page.
+        <div
+          aria-hidden
+          data-testid={`deck-cover-${id}`}
+          className="cursor-pointer"
+          onClick={() => setExpanded(true)}
+        >
+          <div inert className="pointer-events-none [&>*:not(:first-child)]:hidden">
+            {children}
+          </div>
+          {[8, 16].map((inset) => (
+            <div
+              key={inset}
+              className="rounded-b-lg"
+              style={{
+                height: 6,
+                marginLeft: inset,
+                marginRight: inset,
+                backgroundColor: 'var(--color-bg-card)',
+                border: '1px solid var(--color-border-muted)',
+                borderTop: 'none',
+              }}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
