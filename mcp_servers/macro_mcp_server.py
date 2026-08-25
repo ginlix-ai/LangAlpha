@@ -59,6 +59,15 @@ _OUT_GET_ECONOMIC_INDICATOR = output_model(
 )
 
 
+def _mark_truncated_if_provider_cap_reached(result: dict, data: object) -> None:
+    if isinstance(data, list) and len(data) >= 4000:
+        result["truncated"] = True
+        result["note"] = (
+            "Results capped at 4000 records by the FMP provider. "
+            "Narrow the date range to ensure complete data."
+        )
+
+
 @mcp.tool()
 async def get_economic_indicator(
     name: str,
@@ -141,14 +150,16 @@ async def get_economic_calendar(
     try:
         data = await client.get_economic_calendar(from_date=from_date, to_date=to_date)
 
-        return make_response(
+        result = make_response(
             data or [],
             source=_SOURCE,
             data_type="economic_calendar",
             from_date=from_date,
             to_date=to_date,
         )
+        _mark_truncated_if_provider_cap_reached(result, data)
 
+        return result
     except Exception as e:  # noqa: BLE001
         return error_from_exception(e, _UPSTREAM_FAILED)
 
@@ -282,14 +293,16 @@ async def get_earnings_calendar(
     try:
         data = await client.get_earnings_calendar_by_date(from_date=from_date, to_date=to_date)
 
-        return make_response(
+        result = make_response(
             data or [],
             source=_SOURCE,
             data_type="earnings_calendar",
             from_date=from_date,
             to_date=to_date,
         )
+        _mark_truncated_if_provider_cap_reached(result, data)
 
+        return result
     except Exception as e:  # noqa: BLE001
         return error_from_exception(e, _UPSTREAM_FAILED)
 
