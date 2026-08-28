@@ -20,6 +20,7 @@ from httpx import ASGITransport, AsyncClient
 from ptc_agent.config.core import MCPServerConfig
 from src.server.app.mcp_servers import _derive_status
 from src.server.database.account_disables import AccountDisables
+from src.server.database.mcp_servers import MAX_MCP_SERVERS_PER_WORKSPACE
 from src.server.services.mcp_config import Origin
 from src.server.services.plugins.bundled import ComponentOwners
 from src.server.services.mcp_discovery import mcp_discovery_fingerprint
@@ -222,7 +223,7 @@ async def test_list_effective_servers_masks_and_decorates(client):
     body = resp.json()
     assert body["sandbox_running"] is True
     assert body["sandbox_warming"] is False  # already running ⇒ not warming
-    assert body["max_servers"] == 20
+    assert body["max_servers"] == MAX_MCP_SERVERS_PER_WORKSPACE
     assert body["config_version"] == 3
     by_name = {s["name"]: s for s in body["servers"]}
 

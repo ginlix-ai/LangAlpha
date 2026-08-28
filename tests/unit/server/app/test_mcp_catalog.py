@@ -15,6 +15,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from src.server.database.mcp_servers import MAX_CATALOG_SERVERS_PER_USER
 from src.server.services.vault_invalidation import USER_TIER
 from tests.conftest import create_test_app
 
@@ -69,7 +70,9 @@ async def test_list_echoes_stored_maps_and_reports_max(client):
     body = resp.json()
     assert body["servers"][0]["headers"] == STORED_HEADERS
     assert body["servers"][0]["header_refs"] == ["API_KEY"]
-    assert body["max_servers"] == 50
+    # Bound to the constant, not its value: this asserts the cap reaches the
+    # wire, which is what the page needs, and stays true when the cap moves.
+    assert body["max_servers"] == MAX_CATALOG_SERVERS_PER_USER
 
 
 @pytest.mark.asyncio
