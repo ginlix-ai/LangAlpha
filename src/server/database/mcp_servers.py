@@ -37,10 +37,12 @@ MAX_MCP_SERVERS_PER_WORKSPACE = 30
 
 # Hard cap on catalog templates per user.
 #
-# Roomier than the workspace cap because a catalog row is inert: it is an
-# address and a description until some workspace enables it, so the cost is a
-# row and a line on the settings page. A user collecting servers they have not
-# switched on is not costing a sandbox anything.
+# Roomier than the workspace cap because a catalog row costs a row and a line
+# on the settings page until it is switched on. Enabling is what makes it live,
+# and it is not a per-workspace act: ``list_enabled_user_servers`` inherits
+# every enabled row into every one of the user's workspaces, where it pays for
+# discovery and, on stdio, a subprocess. So this bounds what may be COLLECTED,
+# and the ceiling on what runs is however many of them the user switches on.
 MAX_CATALOG_SERVERS_PER_USER = 100
 
 # Mutable catalog columns, split by how a value binds. Anything outside the
