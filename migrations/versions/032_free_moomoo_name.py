@@ -34,9 +34,19 @@ depends_on = None
 # a user-tier row under exactly this name, and renaming it would break the thing
 # being shipped. A row at the vendor's own host is the connector and stays; a
 # plugin-owned row is never it, whatever it points at.
-_SHIPPED = """(VALUES
-    ('moomoo', 'https://mcp.moomoo.com/')
-) AS shipped(name, vendor_url)"""
+#
+# "The vendor's own host" is asked as a host test rather than 030's textual
+# prefix, because that is the question ``brokerage_for_url`` answers and the two
+# have to agree: whatever this leaves under the name is drawn as that vendor by
+# a page that joined on it. Parsing lowercases the host and drops the port, so
+# ``HTTPS://MCP.MOOMOO.COM:443/mcp`` is the connector, while a prefix reads it as
+# somebody else's server and renames it out from under a live connection. The
+# trailing anchor is what keeps this a host test rather than a longer prefix: an
+# address matches only where the host ends, so ``mcp.moomoo.com.evil.com`` is
+# still somebody else.
+_SHIPPED = r"""(VALUES
+    ('moomoo', '^https?://mcp\.moomoo\.com(:[0-9]+)?([/?#]|$)')
+) AS shipped(name, vendor_host)"""
 _RESERVED = "('moomoo')"
 
 
@@ -80,7 +90,7 @@ def upgrade() -> None:
           JOIN {_SHIPPED} ON shipped.name = u.name
          WHERE u.plugin_id IS NOT NULL
             OR u.url IS NULL
-            OR u.url NOT LIKE shipped.vendor_url || '%'
+            OR u.url !~* shipped.vendor_host
     """)
 
     op.execute("""
