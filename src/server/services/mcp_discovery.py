@@ -30,8 +30,19 @@ logger = logging.getLogger(__name__)
 
 # Discovery-boundary caps for hostile/buggy servers (plan §6). The prompt-side
 # detailed-mode caps live in the formatter; these bound what we cache at all.
-MAX_TOOLS_PER_SERVER = 64
-MAX_SCHEMA_CHARS_PER_SERVER = 200_000
+#
+# So neither bounds prompt cost, which is what makes them cheap to raise: a
+# server over the formatter's caps renders as a summary either way, and what
+# these actually size is the cached JSON and the wrapper module a sandbox gets.
+#
+# Sized against what brokers and data vendors really ship, not a round number.
+# Going over is not graceful degradation -- the cut is by list position, so a
+# server one tool past the cap loses whichever capability it happened to
+# enumerate last. moomoo publishes 88 tools, and the old cap of 64 silently
+# took its entire paper-trading suite along with news, insider and short
+# interest data, none of which anything on screen could explain.
+MAX_TOOLS_PER_SERVER = 128
+MAX_SCHEMA_CHARS_PER_SERVER = 400_000
 
 
 def mcp_discovery_fingerprint(server: MCPServerConfig) -> str:

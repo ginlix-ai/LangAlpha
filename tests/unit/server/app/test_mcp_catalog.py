@@ -15,6 +15,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from src.server.database.mcp_servers import MAX_CATALOG_SERVERS_PER_USER
 from src.server.services.vault_invalidation import USER_TIER
 from tests.conftest import create_test_app
 
@@ -69,7 +70,9 @@ async def test_list_echoes_stored_maps_and_reports_max(client):
     body = resp.json()
     assert body["servers"][0]["headers"] == STORED_HEADERS
     assert body["servers"][0]["header_refs"] == ["API_KEY"]
-    assert body["max_servers"] == 50
+    # Bound to the constant, not its value: this asserts the cap reaches the
+    # wire, which is what the page needs, and stays true when the cap moves.
+    assert body["max_servers"] == MAX_CATALOG_SERVERS_PER_USER
 
 
 @pytest.mark.asyncio
@@ -984,7 +987,7 @@ async def test_brokerages_are_offered_without_touching_the_database(client):
     resp = await client.get("/api/v1/mcp/brokerages")
     assert resp.status_code == 200
     by_name = {b["name"]: b for b in resp.json()["brokerages"]}
-    assert set(by_name) == {"robinhood", "ibkr"}
+    assert set(by_name) == {"robinhood", "ibkr", "moomoo"}
     assert by_name["robinhood"]["native_callback_only"] is True
     assert by_name["ibkr"]["exclusive_connection"] is True
     assert by_name["ibkr"]["label"] == "Interactive Brokers"
@@ -993,6 +996,12 @@ async def test_brokerages_are_offered_without_touching_the_database(client):
     # whole story, and because dropping this one silently costs the confirm
     # that stands between a connect here and the user's other AI platform.
     assert by_name["robinhood"]["exclusive_connection"] is True
+    # A vendor whose authorization server takes the spec as written needs
+    # neither quirk, so the flags stay off and every surface treats it as the
+    # ordinary case. Asserted rather than left implicit: both defaults are
+    # False, so a flag set here by mistake would otherwise read as intent.
+    assert by_name["moomoo"]["native_callback_only"] is False
+    assert by_name["moomoo"]["exclusive_connection"] is False
 
 
 @pytest.mark.asyncio

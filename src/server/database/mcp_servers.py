@@ -28,10 +28,22 @@ from src.server.database.pool import get_db_connection
 logger = logging.getLogger(__name__)
 
 # Hard cap on user-configured (source='workspace') servers per workspace.
-MAX_MCP_SERVERS_PER_WORKSPACE = 20
+#
+# The stingier of the two on purpose, because this one is the expensive one:
+# every row here is a server the agent actually runs, which is a discovery
+# round trip on each config change and, for stdio, a subprocess inside the
+# sandbox. Raising it spends startup latency, not storage.
+MAX_MCP_SERVERS_PER_WORKSPACE = 30
 
 # Hard cap on catalog templates per user.
-MAX_CATALOG_SERVERS_PER_USER = 50
+#
+# Roomier than the workspace cap because a catalog row costs a row and a line
+# on the settings page until it is switched on. Enabling is what makes it live,
+# and it is not a per-workspace act: ``list_enabled_user_servers`` inherits
+# every enabled row into every one of the user's workspaces, where it pays for
+# discovery and, on stdio, a subprocess. So this bounds what may be COLLECTED,
+# and the ceiling on what runs is however many of them the user switches on.
+MAX_CATALOG_SERVERS_PER_USER = 100
 
 # Mutable catalog columns, split by how a value binds. Anything outside the
 # union is rejected by ``update_catalog_server`` rather than silently dropped.

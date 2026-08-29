@@ -78,6 +78,19 @@ BROKERAGES: tuple[Brokerage, ...] = (
         ),
         exclusive_connection=True,
     ),
+    Brokerage(
+        name="moomoo",
+        label="moomoo",
+        url="https://mcp.moomoo.com/mcp",
+        site="moomoo.com",
+        description=(
+            "moomoo brokerage account: balances, positions, and order history, "
+            "real-time quotes and order book, option chains and volatility, "
+            "company fundamentals and analyst research, stock and IPO "
+            "screeners, and order placement. Covers US, Greater China, Japan "
+            "and Southeast Asia."
+        ),
+    ),
 )
 
 _BY_NAME: dict[str, Brokerage] = {b.name: b for b in BROKERAGES}

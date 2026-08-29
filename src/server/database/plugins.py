@@ -23,9 +23,14 @@ from src.server.database.pool import get_db_connection
 
 logger = logging.getLogger(__name__)
 
-# Hard cap on installed plugins per user. Components additionally count
-# against their own per-user caps (50 servers, 50 skills).
-MAX_PLUGINS_PER_USER = 20
+# Hard cap on installed plugins per user. Components additionally count against
+# their own per-user caps (``MAX_CATALOG_SERVERS_PER_USER``,
+# ``MAX_SKILLS_PER_USER``), which are the caps that bound real resource use --
+# this one only bounds how many packages a user may hold.
+#
+# Named rather than restated, because the numbers here drifted out of date once
+# already: this comment claimed 50 skills long after that limit became 200.
+MAX_PLUGINS_PER_USER = 50
 
 _PLUGIN_COLUMNS = """
     user_plugin_id, user_id, name, version, source_type, source_ref,
