@@ -2139,3 +2139,29 @@ describe('rendering a page to a PDF', () => {
     })
   })
 })
+
+// Signing and notarization are two separate switches, and the committed config
+// has both off: a contributor with neither credential has to be able to run
+// `dist`. scripts/build.mjs turns each on by replacing the exact line it finds,
+// and it does exit loudly when that line is gone — but only on a build that had
+// credentials, which is never a local one. So the pairing is asserted here,
+// where a drifted marker fails on every run rather than in the release that
+// first needed it.
+describe('the committed package is unsigned and un-notarized', () => {
+  const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8')
+
+  test('both switches are committed in the off position', () => {
+    const yml = read('electron-builder.yml')
+    assert.match(yml, /^ {2}identity: null$/m, 'signing is not disabled by default')
+    // The one that is easy to lose: electron-builder signs whenever a
+    // certificate is present but submits to Apple only when told, so a config
+    // without this line ships a signed build Gatekeeper still refuses.
+    assert.match(yml, /^ {2}notarize: false$/m, 'notarization is not stated at all')
+  })
+
+  test('build.mjs targets exactly those two lines', () => {
+    const build = read('scripts/build.mjs')
+    assert.ok(build.includes('/^ {2}identity: null\\r?$/m'), 'the identity marker moved')
+    assert.ok(build.includes('/^ {2}notarize: false\\r?$/m'), 'the notarize marker moved')
+  })
+})

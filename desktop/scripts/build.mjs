@@ -32,6 +32,24 @@ const feed = (process.env.DESKTOP_UPDATE_FEED || '').trim()
 // blob (CSC_LINK, what CI uses) or a keychain identity by name (CSC_NAME, what a
 // developer has locally). Either one has to take `identity: null` back out.
 const signing = !!((process.env.CSC_LINK || '').trim() || (process.env.CSC_NAME || '').trim())
+// Notarization is a second switch, not a consequence of the first. A signed,
+// un-notarized build is refused by Gatekeeper on first launch the same way an
+// unsigned one is, so getting a certificate without turning this on buys
+// nothing a user can see.
+//
+// electron-builder reads the credentials itself; what has to be decided here is
+// whether a complete set exists, because asking it to notarize with none is a
+// twenty-minute package that fails at the submission. Three ways to authenticate
+// notarytool, and a partial set is not one of them.
+const env = (name) => (process.env[name] || '').trim()
+const notarizeAuth =
+  (env('APPLE_ID') && env('APPLE_APP_SPECIFIC_PASSWORD') && env('APPLE_TEAM_ID') && 'APPLE_ID') ||
+  (env('APPLE_API_KEY') && env('APPLE_API_KEY_ID') && env('APPLE_API_ISSUER') && 'APPLE_API_KEY') ||
+  (env('APPLE_KEYCHAIN_PROFILE') && 'APPLE_KEYCHAIN_PROFILE') ||
+  null
+// Only on macOS: notarytool ships with Xcode, and the mac block is not read on
+// the runners that build the other two platforms anyway.
+const notarizing = signing && !!notarizeAuth && process.platform === 'darwin'
 // Matches write-build-config.mjs, which treats an unset edition as oss.
 const edition = (process.env.DESKTOP_EDITION || 'oss').trim()
 // `pnpm run dist -- --dir` puts a literal `--` in argv, and electron-builder's
@@ -79,6 +97,15 @@ if (feed) {
 if (signing) {
   replace(/^ {2}identity: null\r?$/m, '  # identity resolved from CSC_LINK by scripts/build.mjs', 'identity: null')
   console.log(`[build] signing enabled (${process.env.CSC_LINK ? 'CSC_LINK' : 'CSC_NAME'})`)
+}
+
+if (notarizing) {
+  replace(/^ {2}notarize: false\r?$/m, '  notarize: true', 'notarize: false')
+  console.log(`[build] notarization enabled (${notarizeAuth})`)
+} else if (signing && process.platform === 'darwin') {
+  // Loud, because this is the shape of a release that looks finished in every
+  // log line and is still refused on the machine it lands on.
+  console.warn('[build] WARNING: signing without notarization credentials. Gatekeeper refuses this build on first launch.')
 }
 
 // The two editions must be installable side by side, and on macOS that is
@@ -233,6 +260,29 @@ if (signing && process.platform === 'darwin') {
       process.exit(1)
     }
     console.log(`[build] signed and verified: ${rel}`)
+
+    // `codesign --verify` answers a different question: it says the bundle is
+    // intact and signed, and it says exactly that about a build Apple has never
+    // seen. The staple is the half that decides whether the app opens on a
+    // machine that has not been told to trust us, so a notarized build that
+    // shipped without one is the failure this whole block exists to catch.
+    //
+    // Skipped for --dir, like the manifest guard: an unpacked build never
+    // reaches the target that submits it, and `pnpm run build` is meant to stay
+    // the fast way to check packaging.
+    if (notarizing && !passthrough.includes('--dir')) {
+      const stapled = spawnSync('xcrun', ['stapler', 'validate', app], { encoding: 'utf8' })
+      if (stapled.status !== 0) {
+        console.error(`[build] ${rel} carries no notarization ticket`)
+        console.error(((stapled.stdout || '') + (stapled.stderr || '')).trim())
+        process.exit(1)
+      }
+      // The verdict a user's machine reaches, recorded rather than gated: it
+      // needs Gatekeeper's own assessment and that can be turned off locally,
+      // so a machine with it disabled would fail a build that is perfectly fine.
+      const verdict = spawnSync('spctl', ['-a', '-vvv', '-t', 'exec', app], { encoding: 'utf8' })
+      console.log(`[build] notarized: ${rel} (${((verdict.stderr || '').trim().split('\n').pop() || 'no spctl verdict')})`)
+    }
   }
 }
 

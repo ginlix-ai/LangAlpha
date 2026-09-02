@@ -358,9 +358,40 @@ the same source, so a change here reaches both, and `scripts/` is shared: nothin
 under it is dead code merely because this repository's own workflow does not call
 it.
 
-Applying a macOS update needs a Developer ID signature, which does not exist yet.
-Everything up to that point is verified: the packaged app fetches its baked-in
-feed, recognises a newer version, downloads it and verifies the sha512.
+Applying a macOS update needs a Developer ID signature, and Squirrel.Mac checks
+the incoming build's against the running one's: a Team ID that differs is
+refused. So an unsigned install can never be updated into a signed one, and
+changing enrollment type later strands every install already out there.
+Everything up to the signature is verified: the packaged app fetches its
+baked-in feed, recognises a newer version, downloads it and verifies the sha512.
+
+**Signing and notarization are two switches and a release needs both.** The
+certificate is what makes `codesign --verify` pass, and it says nothing about
+whether Apple has ever seen the bundle; the notarization ticket is what
+Gatekeeper asks for on first launch, so a signed build without one is refused
+exactly like an unsigned one. `electron-builder.yml` commits `identity: null`
+and `notarize: false`, because someone with neither credential still has to be
+able to run `dist`, and `scripts/build.mjs` replaces each line when the
+credentials for it arrive: a certificate in `CSC_LINK` or `CSC_NAME` for the
+first, and a complete notarytool authentication for the second (an Apple ID with
+an app-specific password, an App Store Connect API key, or a keychain profile).
+A partial set counts as none, since `notarize: true` with nothing to authenticate
+with packages for twenty minutes and then fails at the submission.
+
+`CSC_NAME` takes the certificate's name **without** the `Developer ID
+Application:` prefix that `security find-identity` prints, which is the whole
+string a person naturally copies. electron-builder picks the type itself and
+rejects the prefixed form, and it does so after unpacking Electron rather than
+at startup, so the mistake costs a few minutes each time:
+
+```bash
+CSC_NAME="Your Company (TEAMID)" pnpm run dist
+```
+
+The check after the build splits the same way. `codesign --verify` passes on a
+bundle Apple has never seen, so a notarized build is also put through
+`xcrun stapler validate`, and the missing staple is the failure that otherwise
+reaches a user as an app that will not open.
 
 ## Conventions
 
@@ -387,6 +418,10 @@ feed, recognises a newer version, downloads it and verifies the sha512.
 macOS is built and verified, including the outage page and the update path up to
 the signature check. Windows and Linux targets are declared in
 `electron-builder.yml` and run in CI, but have not been exercised by hand.
+
+The signing and notarization switches above are wired and unit-tested against
+the config they rewrite, but no signed build has been produced yet, so the
+staple check has never run against a real submission.
 
 Nothing has shipped a feed yet, so no released build can update itself until
 `DESKTOP_UPDATE_FEED` is set and the artifacts are uploaded there.

@@ -73,6 +73,16 @@ mac:
   # Do not "simplify" by deleting it here: an unsigned local build would then
   # fail instead of building, and every dev needs a cert to run `dist`.
   identity: null
+  # Signing and notarization are separate switches, and a build that has only
+  # the first is refused by Gatekeeper on first launch exactly like an unsigned
+  # one: the certificate proves who built it, the notarization ticket is what
+  # says Apple has seen it. electron-builder submits only when this says so.
+  #
+  # Committed false and flipped by scripts/build.mjs when a set of Apple
+  # credentials is actually present. `true` with none is a build that packages
+  # for twenty minutes and then fails at the submission, which is the wrong
+  # thing to hand a contributor who only wanted to check that packaging works.
+  notarize: false
 
 dmg:
   contents:
