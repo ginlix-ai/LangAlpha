@@ -281,7 +281,13 @@ if (signing && process.platform === 'darwin') {
       // needs Gatekeeper's own assessment and that can be turned off locally,
       // so a machine with it disabled would fail a build that is perfectly fine.
       const verdict = spawnSync('spctl', ['-a', '-vvv', '-t', 'exec', app], { encoding: 'utf8' })
-      console.log(`[build] notarized: ${rel} (${((verdict.stderr || '').trim().split('\n').pop() || 'no spctl verdict')})`)
+      // `source=` and not the last line, which is `origin=`: the certificate
+      // named there is on an un-notarized build too, so logging it records the
+      // one half of the verdict that cannot tell the two apart. `source=` is
+      // where "Notarized Developer ID" and "Unnotarized Developer ID" differ.
+      const lines = (verdict.stderr || '').trim().split('\n')
+      const source = lines.find((l) => l.startsWith('source=')) || lines.pop() || 'no spctl verdict'
+      console.log(`[build] notarized: ${rel} (${source})`)
     }
   }
 }
