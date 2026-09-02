@@ -85,6 +85,16 @@ mac:
   notarize: false
 
 dmg:
+  # Off by default in electron-builder, and on here because Gatekeeper assesses a
+  # downloaded disk image on its own signature, not on the app inside it. An
+  # unsigned DMG is refused on open however well notarized its contents are, and
+  # the DMG is what the download page serves.
+  #
+  # Necessary but not sufficient: a signed, un-notarized DMG is still refused,
+  # with the same `source=Unnotarized Developer ID` an unsigned app gets. The
+  # submission that fixes that is in scripts/build.mjs, which cannot run until
+  # this target exists to be submitted.
+  sign: true
   contents:
     - x: 140
       y: 220

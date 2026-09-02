@@ -2164,4 +2164,22 @@ describe('the committed package is unsigned and un-notarized', () => {
     assert.ok(build.includes('/^ {2}identity: null\\r?$/m'), 'the identity marker moved')
     assert.ok(build.includes('/^ {2}notarize: false\\r?$/m'), 'the notarize marker moved')
   })
+
+  // Not a switch build.mjs flips: unlike the two above, this one is committed on.
+  // It costs nothing without a certificate, because electron-builder only signs
+  // when it has one, and losing it produces a DMG that Gatekeeper refuses on open
+  // no matter how well notarized the app inside it is.
+  test('the disk image is signed', () => {
+    assert.match(read('electron-builder.yml'), /^ {2}sign: true$/m, 'dmg signing is off')
+  })
+
+  // The DMG is a separate submission from the .app, and the failure it prevents
+  // is silent: the app staples fine, the build goes green, and the file people
+  // actually download is the one that is refused.
+  test('the disk image is submitted and stapled', () => {
+    const build = read('scripts/build.mjs')
+    assert.ok(build.includes("'notarytool', 'submit'"), 'disk images are never submitted')
+    assert.ok(build.includes("'stapler', 'staple'"), 'disk images are never stapled')
+    assert.ok(build.includes("context:primary-signature"), 'the DMG is assessed with the wrong Gatekeeper context')
+  })
 })

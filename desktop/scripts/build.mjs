@@ -15,7 +15,7 @@
  *     package. Without it there is simply no update metadata, which is a quiet
  *     way to ship a build that can never update itself.
  */
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -280,16 +280,99 @@ if (signing && process.platform === 'darwin') {
       // The verdict a user's machine reaches, recorded rather than gated: it
       // needs Gatekeeper's own assessment and that can be turned off locally,
       // so a machine with it disabled would fail a build that is perfectly fine.
-      const verdict = spawnSync('spctl', ['-a', '-vvv', '-t', 'exec', app], { encoding: 'utf8' })
-      // `source=` and not the last line, which is `origin=`: the certificate
-      // named there is on an un-notarized build too, so logging it records the
-      // one half of the verdict that cannot tell the two apart. `source=` is
-      // where "Notarized Developer ID" and "Unnotarized Developer ID" differ.
-      const lines = (verdict.stderr || '').trim().split('\n')
-      const source = lines.find((l) => l.startsWith('source=')) || lines.pop() || 'no spctl verdict'
-      console.log(`[build] notarized: ${rel} (${source})`)
+      console.log(`[build] notarized: ${rel} (${spctlSource(app, 'exec')})`)
     }
   }
+}
+
+// electron-builder notarizes the .app and then builds the DMG around it, so the
+// disk image itself is never submitted. Gatekeeper assesses a downloaded image on
+// its own signature and ticket rather than on the app inside, so an unstapled DMG
+// is refused on open however well notarized its contents are. That is the file
+// the download page serves, which makes it the one that has to pass.
+//
+// Deliberately after the .app loop: `stapler staple` on the image needs a ticket
+// Apple only issues for what was submitted, and submitting a DMG built around an
+// unsigned app just fails later and more expensively.
+if (notarizing && !passthrough.includes('--dir')) {
+  const dmgs = existsSync(dist)
+    ? readdirSync(dist).filter((f) => f.endsWith('.dmg')).map((f) => path.join(dist, f))
+    : []
+  if (dmgs.length === 0) {
+    console.log('[build] no disk images to notarize')
+  } else {
+    // Submitted together rather than one after another. Each is an independent
+    // wait on Apple's queue, which ran about half an hour per artifact the first
+    // time this was measured, and serialising them adds that to every release
+    // for every architecture.
+    console.log(`[build] submitting ${dmgs.length} disk image(s) to Apple; this waits on their queue`)
+    const submissions = await Promise.all(dmgs.map(submitForNotarization))
+    let failed = false
+    for (const { artifact, code, output } of submissions) {
+      const rel = path.relative(root, artifact)
+      if (code !== 0) {
+        console.error(`[build] notarization failed for ${rel}`)
+        console.error(output.trim())
+        failed = true
+        continue
+      }
+      const staple = spawnSync('xcrun', ['stapler', 'staple', artifact], { encoding: 'utf8' })
+      if (staple.status !== 0) {
+        console.error(`[build] could not staple ${rel}`)
+        console.error(((staple.stdout || '') + (staple.stderr || '')).trim())
+        failed = true
+        continue
+      }
+      // `-t open` with the primary-signature context, not `-t exec`: that is the
+      // assessment Gatekeeper runs against a quarantined disk image, and the one
+      // that returned `rejected` on every DMG built before this block existed.
+      console.log(`[build] notarized: ${rel} (${spctlSource(artifact, 'open')})`)
+    }
+    if (failed) process.exit(1)
+  }
+}
+
+/** Resolves rather than rejects, so one bad artifact still reports the others. */
+function submitForNotarization(artifact) {
+  return new Promise((resolve) => {
+    const child = spawn('xcrun', ['notarytool', 'submit', artifact, ...notarytoolAuth(), '--wait'])
+    let output = ''
+    child.stdout.on('data', (d) => { output += d })
+    child.stderr.on('data', (d) => { output += d })
+    child.on('error', (err) => resolve({ artifact, code: 1, output: err.message }))
+    child.on('close', (code) => resolve({ artifact, code, output }))
+  })
+}
+
+/**
+ * notarytool takes the same three credential shapes detected above and spells
+ * each differently. Derived from `notarizeAuth` so the image is submitted with
+ * whatever authenticated the app, rather than a second, independent guess.
+ */
+function notarytoolAuth() {
+  if (notarizeAuth === 'APPLE_API_KEY') {
+    return ['--key', env('APPLE_API_KEY'), '--key-id', env('APPLE_API_KEY_ID'), '--issuer', env('APPLE_API_ISSUER')]
+  }
+  if (notarizeAuth === 'APPLE_ID') {
+    // notarytool offers no way to pass this off the command line, so it is
+    // visible to `ps` for the length of the submission. The API key path has no
+    // such exposure, which is one more reason CI uses it.
+    return ['--apple-id', env('APPLE_ID'), '--password', env('APPLE_APP_SPECIFIC_PASSWORD'), '--team-id', env('APPLE_TEAM_ID')]
+  }
+  return ['--keychain-profile', env('APPLE_KEYCHAIN_PROFILE')]
+}
+
+/**
+ * `source=`, never the last line. The last line is `origin=`, which names the
+ * signing certificate on an un-notarized artifact just the same; `source=` is
+ * where "Notarized Developer ID" and "Unnotarized Developer ID" differ.
+ */
+function spctlSource(target, type) {
+  const args = type === 'open'
+    ? ['-a', '-vvv', '-t', 'open', '--context', 'context:primary-signature', target]
+    : ['-a', '-vvv', '-t', 'exec', target]
+  const lines = (spawnSync('spctl', args, { encoding: 'utf8' }).stderr || '').trim().split('\n')
+  return lines.find((l) => l.startsWith('source=')) || lines.pop() || 'no spctl verdict'
 }
 
 function findApps(dir, depth = 0) {
