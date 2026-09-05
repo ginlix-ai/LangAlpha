@@ -6,7 +6,6 @@ import { queryKeys } from '@/lib/queryKeys';
 import type { UserPreferences } from '@/types/api';
 import Dashboard from './Dashboard';
 import DashboardCustom from './DashboardCustom';
-import NetworkBanner from './components/NetworkBanner';
 import { useDashboardPrefsWriter } from './widgets/framework/dashboardPrefsWriter';
 import { migrateDashboardPrefs } from './widgets/framework/migrations';
 import { getPreset } from './widgets/presets';
@@ -72,31 +71,10 @@ export default function DashboardRouter() {
     [writeDashboardPrefs, parsed, preferences, rawOther, isLoading, queryClient]
   );
 
-  if (isMobile) {
-    // Mobile: Classic always. Toggle is not surfaced. Banner still mounts so
-    // tablet/phone users get the offline warning too — TV iframes silently
-    // serve stale data on mobile just like desktop.
-    return (
-      <>
-        <NetworkBanner />
-        <Dashboard />
-      </>
-    );
-  }
+  // Mobile: Classic always. Toggle is not surfaced.
+  if (isMobile) return <Dashboard />;
 
-  if (mode === 'custom') {
-    return (
-      <>
-        <NetworkBanner />
-        <DashboardCustom mode={mode} onModeChange={onModeChange} />
-      </>
-    );
-  }
+  if (mode === 'custom') return <DashboardCustom mode={mode} onModeChange={onModeChange} />;
 
-  return (
-    <>
-      <NetworkBanner />
-      <Dashboard layoutToggle={{ mode, onModeChange }} />
-    </>
-  );
+  return <Dashboard layoutToggle={{ mode, onModeChange }} />;
 }

@@ -1,8 +1,11 @@
-"""Canonical workspace path constants shared across server, CLI, and sandbox.
+"""Canonical workspace paths shared across server, CLI, and sandbox.
 
 All Python consumers (server, CLI, sandbox) import from here and derive their
 own format (trailing ``/``, bare names, etc.).  The frontend (JS) keeps its own
 copy in ``FilePanel.jsx`` with a comment pointing back to this file.
+
+Pure string constants and folding — no sandbox handle, no I/O — so both the
+agent library and the server can import it without pulling either in.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ BACKUP_EXCLUDE_DIRS: frozenset[str] = frozenset({
 BACKUP_EXCLUDE_AGENT_SUBDIRS: tuple[str, ...] = (
     ".agents/threads",
     ".agents/user",
+    ".agents/workflows",
     ".agents/large_tool_results",
 )
 
@@ -53,6 +57,11 @@ MEMORY_INDEX_FILENAME: str = "memory.md"
 # the agent. Server API writes; agent reads via filesystem tools.
 MEMO_USER_DIR: str = ".agents/user/memo"
 MEMO_INDEX_FILENAME: str = "memo.md"
+
+# Reusable JavaScript workflows — one overlay mount. Repo-shipped scripts are
+# visible here; a write forks the script into the user's store-backed tier,
+# which shadows the shipped copy exactly as name resolution does.
+WORKFLOW_DIR: str = ".agents/workflows"
 
 # User-profile data (portfolio + watchlist + preferences) — backed by DB tables
 # (user_portfolios, watchlists, watchlist_items, user_preferences). Agent reads
@@ -101,3 +110,26 @@ ALWAYS_HIDDEN_BASENAMES: tuple[str, ...] = (
     ".profile",
 )
 ALWAYS_HIDDEN_SUFFIXES: tuple[str, ...] = (".pyc",)
+
+
+# ---------------------------------------------------------------------------
+# Path folding
+# ---------------------------------------------------------------------------
+
+
+def workspace_relative_path(path: str | None, work_dir: str) -> str:
+    """Fold the many spellings of a workspace file into one comparable form.
+
+    The agent is shown these files at the workspace root and writes them as
+    "/agent.md" as readily as "agent.md" or the fully-qualified sandbox path.
+    All three name the same file, so any caller keying off the result must see
+    them as equal.
+
+    ``removeprefix``, never ``lstrip``: lstrip would eat the leading dot that
+    makes ".agents/user/memory/memory.md" a hidden directory.
+    """
+    normalized = path or ""
+    prefix = work_dir.rstrip("/") + "/"
+    if normalized.startswith(prefix):
+        normalized = normalized[len(prefix) :]
+    return normalized.removeprefix("./").removeprefix("/")

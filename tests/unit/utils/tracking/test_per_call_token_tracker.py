@@ -141,9 +141,9 @@ class TestPerCallTokenTrackerBillingType:
         assert len(records) == 1
         assert records[0]["billing_type"] == "platform"
 
-    # -- on_llm_error cleans up _run_billing_type --
+    # -- on_llm_error cleans up the per-run attribution --
 
-    def test_on_llm_error_cleans_up_run_billing_type(self):
+    def test_on_llm_error_cleans_up_run_attribution(self):
         tracker = self._make_tracker()
         run_id = uuid4()
 
@@ -154,18 +154,18 @@ class TestPerCallTokenTrackerBillingType:
             metadata={"billing_type": "byok"},
         )
 
-        assert run_id in tracker._run_billing_type
+        assert run_id in tracker._run_attribution
 
         tracker.on_llm_error(
             error=RuntimeError("test error"),
             run_id=run_id,
         )
 
-        assert run_id not in tracker._run_billing_type
+        assert run_id not in tracker._run_attribution
 
-    # -- reset() clears _run_billing_type --
+    # -- reset() clears the per-run attribution --
 
-    def test_reset_clears_run_billing_type(self):
+    def test_reset_clears_run_attribution(self):
         tracker = self._make_tracker()
         run_id = uuid4()
 
@@ -176,11 +176,11 @@ class TestPerCallTokenTrackerBillingType:
             metadata={"billing_type": "byok"},
         )
 
-        assert len(tracker._run_billing_type) == 1
+        assert len(tracker._run_attribution) == 1
 
         tracker.reset()
 
-        assert len(tracker._run_billing_type) == 0
+        assert len(tracker._run_attribution) == 0
         assert len(tracker.per_call_records) == 0
         assert len(tracker.usage_metadata) == 0
 
@@ -226,8 +226,8 @@ class TestPerCallTokenTrackerBillingType:
         assert by_run[str(run_id_3)]["billing_type"] == "oauth"
         assert by_run[str(run_id_3)]["model_name"] == "model-c"
 
-        # All billing_type entries consumed
-        assert len(tracker._run_billing_type) == 0
+        # All attribution entries consumed
+        assert len(tracker._run_attribution) == 0
 
 
 # ===================================================================
@@ -245,7 +245,7 @@ class TestCalculateCostPlatformCost:
         with patch(
             f"{PRICING_MODULE}.find_model_pricing", return_value=_STUB_PRICING
         ), patch(
-            f"{PRICING_MODULE}.detect_provider_for_model", return_value="test"
+            f"{PRICING_MODULE}.resolve_pricing_identity", return_value=("test", "test-model")
         ), patch(
             f"{PRICING_MODULE}.calculate_total_cost",
             side_effect=lambda **kw: {

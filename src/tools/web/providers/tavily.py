@@ -468,6 +468,9 @@ def build_web_search_tool(
             end_date: End date for results (YYYY-MM-DD format).
                 Takes priority over time_range.
             topic: Search topic - 'general' (default), 'news', or 'finance'
+
+        Returns:
+            Ranked results as titles, snippets and URLs — not full page text.
         """
         try:
             # Validate date formats

@@ -97,8 +97,8 @@ async def read_thread_runtime_status(
             logger.debug(f"Could not fetch checkpoint info for {thread_id}: {e}")
 
         # The ledger decides (v4 2.4): ONE read of the latest attempt. The
-        # in_progress slot ALWAYS sorts latest (turn_index DESC, attempt_no
-        # DESC — a live run is the newest attempt of the newest turn), so a
+        # in_progress slot ALWAYS sorts latest (run_seq DESC — a live run is
+        # the newest insert on the thread), so a
         # single row answers live and settled alike; a get_active_run +
         # get_latest_attempt pair reads two snapshots and a START committing
         # between them yields status="running" with run_id=None and reconnect
@@ -189,6 +189,4 @@ async def read_thread_runtime_status(
 
     except Exception as e:
         logger.exception(f"Error checking workflow status for {thread_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to check workflow status: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail="Failed to check turn status")

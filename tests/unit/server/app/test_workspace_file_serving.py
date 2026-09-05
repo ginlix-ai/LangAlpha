@@ -33,7 +33,6 @@ _VAULT_PATCH = "src.server.app.workspace_files.serve.get_vault_secrets_for_redac
 _DBWS_PATCH = "src.server.app.workspace_files.serve.db_get_workspace"
 _FP_PATCH = "src.server.app.workspace_files.serve.FilePersistenceService"
 _WD_PATCH = "src.server.app.workspace_files.serve._get_work_dir"
-_SANDBOX_PATCH = "src.server.app.workspace_files.serve._acquire_sandbox"
 _WSMGR_PATCH = "src.server.app.workspace_files.serve.WorkspaceManager"
 _RENDER_PATCH = "src.server.services.pdf_render.render_workspace_pdf"
 _PDF_INTERNAL_BASE = "http://127.0.0.1:8000"
@@ -44,7 +43,9 @@ def _assert_report_csp(csp: str) -> None:
 
     Checks shape, not the exact string, so directive ordering can change freely.
     """
-    assert csp.startswith("sandbox allow-scripts;")
+    assert csp.startswith(
+        "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox;"
+    )
     assert "default-src 'none'" in csp
     assert "connect-src 'none'" in csp  # the load-bearing exfiltration block
     # Google Fonts stays allowed for the CJK web-font path.
@@ -52,11 +53,17 @@ def _assert_report_csp(csp: str) -> None:
     assert "https://fonts.gstatic.com" in csp
 
 
-def _warm_manager() -> MagicMock:
-    """A WorkspaceManager whose cached session reports ready (live-read path)."""
-    mgr = MagicMock()
-    mgr.get_instance.return_value.has_ready_session.return_value = True
-    return mgr
+def _warm(mock_mgr: MagicMock, sandbox: object | None) -> MagicMock:
+    """Point a patched WorkspaceManager's fenced lookup at *sandbox*.
+
+    ``None`` stands for every reason the route must not read live: no cached
+    session, one that isn't ready, or one bound to a sandbox the row has since
+    replaced. The route can't tell them apart and shouldn't — all three mean
+    "serve from the DB, wake nothing".
+    """
+    session = MagicMock(sandbox=sandbox) if sandbox is not None else None
+    mock_mgr.get_instance.return_value.get_session_if_ready.return_value = session
+    return mock_mgr
 
 
 def _workspace(status: str) -> dict:
@@ -275,75 +282,78 @@ async def test_db_fallback_unknown_extension_uses_db_mime(mock_ws, mock_fp, _wd,
 
 
 @pytest.mark.asyncio
-@patch(_WSMGR_PATCH, new=_warm_manager())
 @patch(_VAULT_PATCH, new_callable=AsyncMock, return_value={})
 @patch(_WD_PATCH, return_value="/home/workspace")
-@patch(_SANDBOX_PATCH, new_callable=AsyncMock)
+@patch(_WSMGR_PATCH)
 @patch(_DBWS_PATCH, new_callable=AsyncMock)
-async def test_running_workspace_serves_live_bytes(mock_ws, mock_sb, _wd, _vault):
+async def test_running_workspace_serves_live_bytes(mock_ws, mock_mgr, _wd, _vault):
     mock_ws.return_value = _workspace("running")
-    mock_sb.return_value = _running_sandbox(b"<html><body>live</body></html>")
+    _warm(mock_mgr, _running_sandbox(b"<html><body>live</body></html>"))
     resp = await serve_workspace_file(WS_ID, "results/x.html", inject_theme=False)
     assert resp.status_code == 200
     assert b"live" in resp.body
 
 
 @pytest.mark.asyncio
-@patch(_WSMGR_PATCH, new=_warm_manager())
 @patch(_VAULT_PATCH, new_callable=AsyncMock, return_value={})
 @patch(_WD_PATCH, return_value="/home/workspace")
-@patch(_SANDBOX_PATCH, new_callable=AsyncMock)
+@patch(_WSMGR_PATCH)
 @patch(_DBWS_PATCH, new_callable=AsyncMock)
-async def test_running_workspace_missing_file_returns_404(mock_ws, mock_sb, _wd, _vault):
+async def test_running_workspace_missing_file_returns_404(
+    mock_ws, mock_mgr, _wd, _vault
+):
     mock_ws.return_value = _workspace("running")
-    mock_sb.return_value = _running_sandbox(None)
+    _warm(mock_mgr, _running_sandbox(None))
     with pytest.raises(HTTPException) as exc:
         await serve_workspace_file(WS_ID, "results/x.html", inject_theme=False)
     assert exc.value.status_code == 404
 
 
 @pytest.mark.asyncio
-@patch(_WSMGR_PATCH)
 @patch(_FP_PATCH)
 @patch(_VAULT_PATCH, new_callable=AsyncMock, return_value={})
 @patch(_WD_PATCH, return_value="/home/workspace")
-@patch(_SANDBOX_PATCH, new_callable=AsyncMock)
+@patch(_WSMGR_PATCH)
 @patch(_DBWS_PATCH, new_callable=AsyncMock)
 async def test_running_db_row_but_cold_sandbox_uses_db_not_wake(
-    mock_ws, mock_sb, _wd, _vault, mock_fp, mock_mgr
+    mock_ws, mock_mgr, _wd, _vault, mock_fp
 ):
     # DB says 'running' but no warm session (Daytona auto-stopped). The serve
-    # route must read from the DB and never call _acquire_sandbox (which would
-    # trigger a paid Daytona start) — denial-of-wallet guard.
+    # route must read from the DB and never acquire a session, which would
+    # trigger a paid Daytona start — denial-of-wallet guard.
     mock_ws.return_value = _workspace("running")
-    mock_mgr.get_instance.return_value.has_ready_session.return_value = False
+    _warm(mock_mgr, None)
     mock_fp.get_file_content = AsyncMock(return_value=_db_text_record("from-db"))
     resp = await serve_workspace_file(WS_ID, "results/x.html", inject_theme=False)
     assert resp.status_code == 200
     assert b"from-db" in resp.body
-    mock_sb.assert_not_called()
+    mock_mgr.get_instance.return_value.get_session_for_workspace.assert_not_called()
 
 
 @pytest.mark.asyncio
-@patch(_WSMGR_PATCH, new=_warm_manager())
 @patch(_FP_PATCH)
 @patch(_VAULT_PATCH, new_callable=AsyncMock, return_value={})
 @patch(_WD_PATCH, return_value="/home/workspace")
-@patch(_SANDBOX_PATCH, new_callable=AsyncMock)
+@patch(_WSMGR_PATCH)
 @patch(_DBWS_PATCH, new_callable=AsyncMock)
-async def test_warm_session_dies_falls_back_to_db_not_503(
-    mock_ws, mock_sb, _wd, _vault, mock_fp
+async def test_superseded_handle_uses_db_and_never_wakes_a_sandbox(
+    mock_ws, mock_mgr, _wd, _vault, mock_fp
 ):
-    # TOCTOU: has_ready_session() reported warm, but the session died before
-    # _acquire_sandbox(), which then raises HTTPException(503). The serve route
-    # must absorb that and fall back to the DB record — never leak a 503, which
-    # would break the uniform-404 contract and confirm the UUID is valid.
+    # This worker holds a ready session, but for a sandbox the row has since
+    # replaced. The fenced lookup declines it, so the route serves the DB copy.
+    # Acquiring instead would retire the stale handle and re-attach — correct
+    # for an authenticated caller, and a paid sandbox start for a UUID-only one.
     mock_ws.return_value = _workspace("running")
-    mock_sb.side_effect = HTTPException(status_code=503, detail="Sandbox not ready")
+    mgr = mock_mgr.get_instance.return_value
+    mgr.get_session_if_ready.return_value = None
     mock_fp.get_file_content = AsyncMock(return_value=_db_text_record("from-db"))
     resp = await serve_workspace_file(WS_ID, "results/x.html", inject_theme=False)
     assert resp.status_code == 200
     assert b"from-db" in resp.body
+    mgr.get_session_if_ready.assert_called_once_with(
+        WS_ID, expected_sandbox_id="sb-existing"
+    )
+    mgr.get_session_for_workspace.assert_not_called()
 
 
 # --- CSP + cache headers present on every response ------------------------

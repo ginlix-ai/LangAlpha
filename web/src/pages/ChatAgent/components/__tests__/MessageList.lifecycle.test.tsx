@@ -1,6 +1,6 @@
 /**
  * Partition-timing coverage for the live → accordion lifecycle in
- * MessageContentSegments (textOnly mode).
+ * MessageContentSegments.
  *
  * The partition memo in MessageList.tsx decides whether each reasoning /
  * tool-call item renders in the live zone (`active` / `completing` /
@@ -129,7 +129,6 @@ const baseProps = {
   subagentTasks: {},
   hasError: false,
   isAssistant: true,
-  textOnly: true,
 } satisfies Partial<SegmentsProps>;
 
 const SUMMARY_BUTTON_RE = /toolArtifact/i;

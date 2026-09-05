@@ -1,7 +1,8 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Loader2, Check, Plus, X, KeyRound, Info } from 'lucide-react';
+import { Check, Plus, X, KeyRound, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Loader } from '@/components/ui/loader';
 import { Input } from '@/components/ui/input';
 import { useAllModels } from '@/hooks/useAllModels';
 import { useConfiguredProviders } from '@/hooks/useConfiguredProviders';
@@ -10,6 +11,8 @@ import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
 import { useTranslation } from 'react-i18next';
 import { slugifyModelName } from './slugifyModelName';
 import { computeSlotCleanup } from './modelSlotCleanup';
+import { modelPrefs, splitPreferenceWrite } from '@/lib/modelPreferences';
+import type { CustomModelEntry } from '@/components/model/types';
 
 // ---------------------------------------------------------------------------
 // ModelPickStep — Step 4: Choose which models to add to the configured model list.
@@ -107,9 +110,7 @@ export default function ModelPickStep() {
   // ``model_id`` (the default when the user types both via the new form).
   const existingCustomModels = useMemo<string[]>(() => {
     if (!preferences) return [];
-    const prefs = preferences as Record<string, unknown>;
-    const otherPref = (prefs.other_preference ?? {}) as Record<string, unknown>;
-    const customModels = (otherPref.custom_models ?? []) as Array<{ name?: string; model_id: string; provider: string }>;
+    const customModels = modelPrefs(preferences).custom_models ?? [];
     return customModels
       .filter((cm) => cm.provider === provider || cm.provider === brandKey)
       .map((cm) => cm.name ?? cm.model_id);
@@ -131,6 +132,8 @@ export default function ModelPickStep() {
   const existingStarred = useMemo<string[]>(() => {
     if (!preferences) return [];
     const prefs = preferences as Record<string, unknown>;
+    // starred_models did not move to the model column — it is a UI favorites
+    // list, not model routing.
     const otherPref = (prefs.other_preference ?? {}) as Record<string, unknown>;
     return (otherPref.starred_models ?? []) as string[];
   }, [preferences]);
@@ -254,9 +257,8 @@ export default function ModelPickStep() {
       const selectedFromOtherProviders = existingStarred.filter((m) => !allModels.includes(m) && !selected.has(m));
       const mergedConfigured = [...selectedFromOtherProviders, ...selected];
 
-      const prefs = (preferences as Record<string, unknown>) ?? {};
-      const otherPref = ((prefs.other_preference ?? {}) as Record<string, unknown>);
-      const existingCustomModelList = ((otherPref.custom_models ?? []) as Array<{ name?: string; model_id: string; provider: string }>);
+      const modelPref = modelPrefs(preferences);
+      const existingCustomModelList = modelPref.custom_models ?? [];
 
       // Only entries whose ``provider`` equals the current slug are treated
       // as owned by this view. Parent-brand entries (``cm.provider ===
@@ -290,7 +292,7 @@ export default function ModelPickStep() {
         })
         .map((m) => {
           const pending = pendingCustomEntries.get(m);
-          const entry: Record<string, unknown> = {
+          const entry: CustomModelEntry = {
             name: m,
             model_id: pending?.modelId ?? m,
             provider: providerSlug,
@@ -308,27 +310,26 @@ export default function ModelPickStep() {
       // model keeps appearing as the current selection in the chat dropdown
       // (since chat-input seeds selectedModel from preferred_model).
       const slotCleanup = computeSlotCleanup({
-        otherPref: otherPref as Parameters<typeof computeSlotCleanup>[0]['otherPref'],
+        otherPref: modelPref as Parameters<typeof computeSlotCleanup>[0]['otherPref'],
         allModels,
         mergedConfigured,
       });
 
-      await updatePreferences.mutateAsync({
-        other_preference: {
-          // ``starred_models`` is the preference key that backs the
-          // configured-list UX in DefaultsStep and Settings. Keep writing
-          // to it — the key name is a historical artifact, the semantics
-          // the user sees is "configured models".
-          starred_models: mergedConfigured,
-          ...(allCustomModels.length > 0
-            ? { custom_models: allCustomModels }
-            : { custom_models: otherProviderCustomModels.length > 0 ? otherProviderCustomModels : null }),
-          ...slotCleanup.nulls,
-          ...(slotCleanup.fallback_models !== undefined
-            ? { fallback_models: slotCleanup.fallback_models }
-            : {}),
-        },
-      });
+      await updatePreferences.mutateAsync(splitPreferenceWrite({
+        // ``starred_models`` is the preference key that backs the
+        // configured-list UX in DefaultsStep and Settings. Keep writing to it:
+        // the key name is a historical artifact, the semantics the user sees is
+        // "configured models". splitPreferenceWrite knows it stayed in the
+        // legacy column while the model keys beside it moved.
+        starred_models: mergedConfigured,
+        ...(allCustomModels.length > 0
+          ? { custom_models: allCustomModels }
+          : { custom_models: otherProviderCustomModels.length > 0 ? otherProviderCustomModels : null }),
+        ...slotCleanup.nulls,
+        ...(slotCleanup.fallback_models !== undefined
+          ? { fallback_models: slotCleanup.fallback_models }
+          : {}),
+      }));
 
       navigate('/setup/defaults');
     } catch (e: unknown) {
@@ -354,7 +355,7 @@ export default function ModelPickStep() {
   if (modelsLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-5 w-5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
+        <Loader size={20} className="text-[color:var(--color-text-tertiary)]" />
       </div>
     );
   }
@@ -469,7 +470,7 @@ export default function ModelPickStep() {
               if (!trimmed || slug === trimmed) return null;
               return (
                 <span
-                  className="text-[11px]"
+                  className="text-[0.6875rem]"
                   style={{ color: 'var(--color-text-tertiary)' }}
                 >
                   {slug
@@ -498,7 +499,7 @@ export default function ModelPickStep() {
               }}
             />
             <span
-              className="text-[11px]"
+              className="text-[0.6875rem]"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               {t('setup.customModelIdHint')}
@@ -512,7 +513,7 @@ export default function ModelPickStep() {
               {t('setup.capabilities', { defaultValue: 'Capabilities' })}:
             </span>
             <span
-              className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
+              className="inline-flex items-center rounded-full px-2 py-0.5 text-[0.625rem] font-medium"
               style={{ background: 'var(--color-accent-soft)', color: 'var(--color-accent-primary)', opacity: 0.6 }}
             >
               Text
@@ -524,7 +525,7 @@ export default function ModelPickStep() {
                   key={mod}
                   type="button"
                   onClick={() => toggleCustomModality(mod)}
-                  className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors"
+                  className="inline-flex items-center rounded-full px-2 py-0.5 text-[0.625rem] font-medium transition-colors"
                   style={{
                     background: active ? 'var(--color-accent-soft)' : 'transparent',
                     color: active ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
@@ -613,7 +614,7 @@ export default function ModelPickStep() {
                   </span>
                   {isCustom && (
                     <span
-                      className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                      className="text-[0.625rem] px-1.5 py-0.5 rounded font-medium"
                       style={{
                         background: 'var(--color-bg-page)',
                         color: 'var(--color-text-tertiary)',
@@ -687,7 +688,9 @@ export default function ModelPickStep() {
         >
           {saving ? (
             <>
-              <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+              <span aria-hidden="true" className="mr-1.5 flex-shrink-0">
+                <Loader size={16} className="text-current" />
+              </span>
               {t('setup.saving')}
             </>
           ) : (

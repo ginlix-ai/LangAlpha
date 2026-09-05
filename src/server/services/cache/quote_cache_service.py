@@ -206,18 +206,18 @@ class QuoteCacheService:
 
         cache = get_cache_client()
         out: Dict[str, Dict[str, Any]] = {}
-        writes = []
+        writes: list[tuple[str, Any, int]] = []
         for sym, ref, key in to_fetch:
             # Read back via the ref-derived legacy spelling so every alias of
             # one instrument (e.g. ^IXIC / ^COMP) finds its row.
             row = rows_by_legacy.get(_normalize(to_legacy_api(ref)))
             if row is None:
-                writes.append(cache.set(key, _NO_DATA, ttl=_TTL_NEGATIVE))
+                writes.append((key, _NO_DATA, _TTL_NEGATIVE))
                 continue
             out[sym] = row
-            writes.append(cache.set(key, row, ttl=_quote_ttl(ref)))
-        if writes:
-            # Concurrent write-through — a 250-symbol fill must not pay N
-            # serial Redis round-trips inside the leader's critical section.
-            await asyncio.gather(*writes)
+            writes.append((key, row, _quote_ttl(ref)))
+        # One pipelined round trip on one connection. The former gather of
+        # per-key set() took a connection each, so a 250-symbol fill — the
+        # batch cap — could exhaust a 150-slot pool from a single request.
+        await cache.set_many(writes)
         return out

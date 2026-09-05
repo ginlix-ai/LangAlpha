@@ -6,6 +6,23 @@ admission-authoritative from day one — a unique violation here rejects the
 spawn/resume; a ledger that tolerates conflicting writers is worse than none.
 Constraint names map 1:1 to admission semantics: active slot, duplicate
 launch call (checkpoint re-execution), claimed predecessor (resume race).
+
+**Terminal vs billing-settled.** Two separate states, and no terminal implies
+the other. A run stays countable until the turn collector inserts its usage row
+and stamps ``usage_settled_at`` in that same transaction, whatever status it
+finalized on; rows no collector ever claims are settled by the abandoned sweep
+instead.
+
+Settling at finalize would be the shorter path, and it is wrong in the one
+direction this gate cannot afford. The collector selects on ownership rather
+than status, so an error/cancelled run that accrued usage is billed later, and
+between an early stamp and that insert its spend counts in neither the in-flight
+aggregate nor ``conversation_usages``. A turn admitted in that window is
+measured against an understated balance -- and a credit stop lands in it by
+construction, which is exactly when a resume is about to be admitted. Waiting
+for the insert instead over-reserves an abandoned row for at most the sweep's
+grace, which costs a user headroom they get back rather than money they did not
+have.
 """
 
 import logging
@@ -16,7 +33,10 @@ import psycopg
 from psycopg.rows import dict_row
 
 from src.server.database import pool
-from src.server.contracts.status import TERMINAL_STATUSES
+from src.server.contracts.status import (
+    REPORT_BACK_STATUSES,
+    TERMINAL_STATUSES,
+)
 from src.server.utils.pg_sanitize import SafeJson
 
 logger = logging.getLogger(__name__)
@@ -143,9 +163,19 @@ async def start_task_run(
                         INSERT INTO subagent_runs (
                             task_run_id, thread_id, task_id, parent_run_id,
                             launch_tool_call_id, predecessor_run_id, cause,
-                            start_checkpoint_id
+                            start_checkpoint_id, user_id
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
+                            -- Denormalized owner for the in-flight spend
+                            -- aggregate. Derived here rather than threaded
+                            -- through the agent-side ledger port: the port's
+                            -- callers don't carry user identity, and the
+                            -- thread's owner is one indexed hop away.
+                            (SELECT w.user_id
+                             FROM conversation_threads t
+                             JOIN workspaces w ON w.workspace_id = t.workspace_id
+                             WHERE t.conversation_thread_id = %s)
+                        )
                         RETURNING *
                         """,
                         (
@@ -157,6 +187,7 @@ async def start_task_run(
                             predecessor_run_id,
                             cause,
                             start_checkpoint_id,
+                            thread_id,
                         ),
                     )
                     run_row = dict(await cur.fetchone())
@@ -247,6 +278,7 @@ async def _enqueue_report_back_job(conn, run_row: Dict[str, Any]) -> None:
             "subagent_type": str(task_row.get("subagent_type") or "subagent"),
             "description": str(task_row.get("description") or "")[:500],
             "style": "pointer",
+            "final_status": str(run_row["status"]),
             "final_checkpoint_id": str(final_pin) if final_pin else None,
         },
         ordering_key=str(run_row["thread_id"]),
@@ -294,6 +326,9 @@ async def finalize_task_run(
                         failure = COALESCE(%s::jsonb, failure),
                         final_checkpoint_id = COALESCE(%s, final_checkpoint_id),
                         finalized_at = NOW()
+                        -- usage_settled_at is deliberately not stamped here:
+                        -- terminating is not being billed. See "Terminal vs
+                        -- billing-settled" in the module docstring.
                     WHERE task_run_id = %s AND status = 'in_progress'
                     RETURNING *
                     """,
@@ -306,13 +341,14 @@ async def finalize_task_run(
                     ),
                 )
                 run_row = await cur.fetchone()
-            if run_row is not None and run_row["status"] == "completed":
-                # Report-back owed ⟺ run completed: the outbox row commits
-                # with the terminal CAS, so no crash window can lose the
-                # notification or record it against a run that never
-                # terminalized. Eligibility (already delivered, parent
-                # still live/interrupted) is the executor's call at claim
-                # time, against the ledger — not decided here.
+            if run_row is not None and run_row["status"] in REPORT_BACK_STATUSES:
+                # Report-back owed ⟺ the run reached a reportable outcome
+                # (REPORT_BACK_STATUSES carries the policy rationale): the
+                # outbox row commits with the terminal CAS, so no crash
+                # window can lose the notification or record it against a run
+                # that never terminalized. Eligibility (already delivered,
+                # parent still live/interrupted) is the executor's call at
+                # claim time, against the ledger — not decided here.
                 await _enqueue_report_back_job(conn, dict(run_row))
 
     if run_row is None:
@@ -517,6 +553,27 @@ async def list_open_runs_for_thread(thread_id: str) -> List[Dict[str, Any]]:
             return [dict(r) for r in rows]
 
 
+async def list_open_workflow_runs_for_thread(thread_id: str) -> List[Dict[str, Any]]:
+    """Open workflow-kind runs — the cross-worker authority for RunWorkflow's
+    per-thread cap (the in-process registry only sees this worker's runs)."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT r.* FROM subagent_runs r
+                JOIN subagent_tasks t
+                  ON t.thread_id = r.thread_id AND t.task_id = r.task_id
+                WHERE r.thread_id = %s
+                  AND r.status = 'in_progress'
+                  AND t.subagent_type = 'workflow'
+                ORDER BY r.started_at
+                """,
+                (thread_id,),
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+
 async def list_recently_finalized_runs_for_thread(
     thread_id: str, *, within_seconds: int
 ) -> List[Dict[str, Any]]:
@@ -598,14 +655,40 @@ async def get_latest_run_statuses(
             return {str(r["task_id"]): str(r["status"]) for r in rows}
 
 
+async def get_task_run_statuses(task_run_ids: List[str]) -> Dict[str, str]:
+    """task_run_id -> status, for the ids that HAVE a row.
+
+    Absence means the row does not exist — load-bearing for the retention
+    sweeper, which treats a missing v2 run as garbage. That inference is only
+    sound because the row is inserted before the run's first XADD.
+    """
+    if not task_run_ids:
+        return {}
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT task_run_id, status
+                FROM subagent_runs
+                WHERE task_run_id = ANY(%s)
+                """,
+                (list(task_run_ids),),
+            )
+            rows = await cur.fetchall()
+            return {str(r["task_run_id"]): str(r["status"]) for r in rows}
+
+
 async def get_latest_run_details(
     thread_id: str, task_ids: List[str]
 ) -> Dict[str, Dict[str, Any]]:
-    """task_id -> {status, error} for tasks that HAVE a ledgered run.
+    """task_id -> {status, error, error_type} for tasks that HAVE a ledgered run.
 
-    ``error`` is the human-readable ``failure->>'error'`` message (None for
-    non-errored runs). Same anchoring as :func:`get_latest_run_statuses`;
-    absent task_ids are pre-ledger / shadow-damaged and left to the caller.
+    ``error`` is the human-readable ``failure->>'error'`` message, present for
+    any terminal that settled with a failure payload; ``error_type`` is the
+    machine spelling stored beside it, and it is what separates a stop the
+    user can act on from one they cannot. Same anchoring as
+    :func:`get_latest_run_statuses`; absent task_ids are pre-ledger /
+    shadow-damaged and left to the caller.
     """
     if not task_ids:
         return {}
@@ -613,7 +696,10 @@ async def get_latest_run_details(
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                SELECT t.task_id, r.status, r.failure->>'error' AS error
+                SELECT t.task_id,
+                       r.status,
+                       r.failure->>'error' AS error,
+                       r.failure->>'error_type' AS error_type
                 FROM subagent_tasks t
                 JOIN subagent_runs r ON r.task_run_id = t.latest_run_id
                 WHERE t.thread_id = %s AND t.task_id = ANY(%s)
@@ -625,6 +711,7 @@ async def get_latest_run_details(
                 str(r["task_id"]): {
                     "status": str(r["status"]),
                     "error": r["error"],
+                    "error_type": r["error_type"],
                 }
                 for r in rows
             }

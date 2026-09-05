@@ -275,6 +275,41 @@ describe('useChatMessages — interrupt card de-dup by interrupt_id', () => {
     expect(countSegments(result.current.messages, 'ptc_agent')).toBe(1);
   });
 
+  it('thread switch clears the pending interrupt, so it cannot act on the next thread', async () => {
+    // `pendingInterrupt` disables the composer outright (ChatView), and its only
+    // other clears are answering and rejecting — neither of which a thread
+    // switch takes. Left behind, thread A's unanswered interrupt locks thread
+    // B's input with nothing on screen to explain it. A credit pause is how
+    // this stops being exotic: answering one means leaving to buy credits.
+    const planInterrupt = {
+      event: 'interrupt',
+      interrupt_id: 'plan-A',
+      action_requests: [{ name: 'SubmitPlan', description: 'Step 1. Do the thing.' }],
+    };
+    mockSend.mockImplementation(async (...args: unknown[]) => {
+      const onEvent = args[5] as (e: Record<string, unknown>) => void;
+      onEvent(planInterrupt);
+      return { disconnected: false };
+    });
+
+    let tid = 'th-A';
+    const { result, rerender } = renderHookWithProviders(() => useChatMessages('ws-x', tid));
+    await waitFor(() => expect(mockReplay).toHaveBeenCalled());
+    await settleMountEffect();
+
+    await act(async () => {
+      await result.current.handleSendMessage('make a plan', false);
+    });
+    await waitFor(() => expect(result.current.pendingInterrupt?.interruptId).toBe('plan-A'));
+
+    tid = 'th-B';
+    rerender();
+    await waitFor(() => expect(mockReplay).toHaveBeenCalledTimes(2));
+    await settleMountEffect();
+
+    expect(result.current.pendingInterrupt).toBeNull();
+  });
+
   it('thread switch clears the rendered set so the next thread renders its own cards', async () => {
     // Interrupt ids are only unique per thread. After switching threads, the
     // prior thread's rendered set must not suppress the new thread's replay.

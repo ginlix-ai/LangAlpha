@@ -67,13 +67,13 @@ export default function AutomationTemplateCards({
               />
             </div>
             <div
-              className="text-[13px] font-semibold leading-tight"
+              className="text-[0.8125rem] font-semibold leading-tight"
               style={{ color: 'var(--color-text-primary)' }}
             >
               {t(template.nameKey)}
             </div>
             <div
-              className="text-[11px] mt-1.5 leading-snug"
+              className="text-[0.6875rem] mt-1.5 leading-snug"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               {t(template.descriptionKey)}

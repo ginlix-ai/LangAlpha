@@ -51,21 +51,18 @@ async def thread_id():
 async def _produce(cache, thread_id: str, n: int, stream_key: str = None):
     """Write n events to the workflow stream with explicit IDs `<i>-0`.
 
-    Mirrors the main-workflow caller: no List, just meta hash + XADD.
+    Mirrors the main-workflow caller: one bare XADD per event.
     """
     stream_key = stream_key or f"workflow:stream:{thread_id}"
-    meta_key = f"workflow:events:meta:{thread_id}"
     for i in range(1, n + 1):
         sse = f"id: {i}\nevent: token\ndata: {{\"i\": {i}}}\n\n"
-        ok, _ = await cache.pipelined_event_buffer(
-            meta_key=meta_key,
-            event=sse,
+        await cache.pipelined_event_buffer(
+            stream_key,
+            event_id=i,
             max_size=1000,
+            stream_event=sse,
             ttl=60,
-            last_event_id=i,
-            stream_key=stream_key,
         )
-        assert ok
 
 
 async def _drain_until_empty(gen, max_events: int = 100, timeout: float = 5.0):
@@ -109,10 +106,9 @@ async def test_unified_consumer_paths_against_real_redis(real_cache, thread_id, 
         return workflow_done.is_set()
 
     stream_key = f"workflow:stream:{thread_id}"
-    meta_key = f"workflow:events:meta:{thread_id}"
 
     # Pre-clean.
-    await real_cache.client.delete(stream_key, meta_key)
+    await real_cache.client.delete(stream_key)
 
     # Produce 5 events.
     await _produce(real_cache, thread_id, n=5)
@@ -146,10 +142,10 @@ async def test_unified_consumer_paths_against_real_redis(real_cache, thread_id, 
     # ``_stream_from_redis_log`` calls this out: "$" is intentionally NOT
     # exposed because chat clients want history first, then live updates.
     # ``_produce(n=7)`` triggers the dirty-resume DEL inside the producer's
-    # MULTI/EXEC (the ``last_event_id == 1`` branch in
-    # ``redis_cache.pipelined_event_buffer``), then writes entries 1-0
-    # through 7-0 atomically. The second-tab consumer, attaching after that
-    # rewrite, replays the full 1-7 range.
+    # MULTI/EXEC (the epoch-reset branch ``pipelined_event_buffer`` derives
+    # from ``event_id == 1``), then writes entries 1-0
+    # through 7-0. The second-tab consumer, attaching after that rewrite,
+    # replays the full 1-7 range.
     workflow_done.clear()
 
     second_tab_gen = sfl_mod._stream_from_redis_log(
@@ -164,7 +160,7 @@ async def test_unified_consumer_paths_against_real_redis(real_cache, thread_id, 
 
     # Scenario D: LATE SUBSCRIBER after stream is DEL'd. XREAD on a non-
     # existent stream returns empty; with terminal=True we exit cleanly.
-    await real_cache.client.delete(stream_key, meta_key)
+    await real_cache.client.delete(stream_key)
     d = sfl_mod._stream_from_redis_log(
         stream_key=stream_key,
         terminal_check=terminal,

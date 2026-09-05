@@ -253,50 +253,19 @@ async def list_workspaces_behind_platform_secret(
             return [dict(row) for row in await cur.fetchall()]
 
 
-async def certify_new_workspace_sandbox(
-    config: Any,
-    *,
-    workspace_id: str,
-    expected_previous_sandbox_id: str | None,
-    sandbox_id: str,
-    runtime: Any,
-) -> dict[str, Any] | None:
-    """Verify and atomically attach one newly created hosted sandbox."""
+async def certify_platform_secrets(config: Any, *, runtime: Any) -> int:
+    """Verify the placeholders landed in this sandbox; return the generation to stamp.
 
+    Returns 0 — the "never certified, may hold plaintext env" sentinel from
+    migration 021 — when no catalog is configured. A pure contributor: it writes
+    nothing and decides no control flow, so the workspace binding stays owned by
+    the caller that owns the sandbox.
+    """
     if not platform_secrets_active(config):
-        return None
+        return 0
     rollout_set = await get_platform_secret_rollouts()
-    await verify_runtime_platform_secrets(
-        runtime, expected=rollout_set.placeholders
-    )
-
-    async with get_db_connection() as conn:
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                """
-                UPDATE workspaces
-                SET status = 'running',
-                    sandbox_id = %s,
-                    platform_secret_version = %s,
-                    updated_at = NOW()
-                WHERE workspace_id = %s
-                  AND status != 'deleted'
-                  AND sandbox_id IS NOT DISTINCT FROM %s
-                RETURNING workspace_id
-                """,
-                (
-                    sandbox_id,
-                    rollout_set.generation,
-                    workspace_id,
-                    expected_previous_sandbox_id,
-                ),
-            )
-            row = await cur.fetchone()
-    if row is None:
-        raise RuntimeError("Workspace changed before platform Secret certification")
-    from src.server.database.workspace import get_workspace
-
-    return await get_workspace(workspace_id)
+    await verify_runtime_platform_secrets(runtime, expected=rollout_set.placeholders)
+    return rollout_set.generation
 
 
 async def stamp_workspace_platform_secret_version(

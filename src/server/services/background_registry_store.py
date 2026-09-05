@@ -11,6 +11,9 @@ import logging
 from typing import Dict, Optional
 
 from ptc_agent.agent.middleware.background_subagent.registry import BackgroundTaskRegistry
+from ptc_agent.agent.middleware.background_subagent.workflow.ui_snapshot import (
+    read_task_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,17 +33,51 @@ def _message_text(msg) -> str:
     return ""
 
 
-async def resolve_task_result_text(thread_id: str, task_id: str) -> str | None:
-    """Durable result derivation: the subagent's final answer, read from its
-    ``task:{task_id}`` checkpoint namespace. This is the primary delivery
-    source for TaskOutput — it survives registry eviction, user stops,
-    restarts, and other-worker reads, all of which lose the in-memory entry.
-    """
+async def _task_history(thread_id: str, task_id: str):
     from src.server.services.history.reader import CheckpointHistoryReader
 
-    reader = CheckpointHistoryReader.get_instance()
-    messages = await reader.aget_task_messages(thread_id, task_id)
-    for msg in reversed(messages):
+    return await CheckpointHistoryReader.get_instance().aget_task_history(
+        thread_id, task_id
+    )
+
+
+async def resolve_archived_result_text(
+    thread_id: str, task_id: str, task_run_id: str
+) -> str | None:
+    """An explicitly archived result for exactly this run, or None — never
+    transcript-derived.
+
+    The source for callers that must not fabricate. A run that failed still
+    left a transcript, so deriving from one would present mid-work text as
+    the answer; an archive is only ever written by a run that got far enough
+    to produce a result, which is what makes its presence trustworthy where
+    the ledger's verdict is not.
+    """
+    history = await _task_history(thread_id, task_id)
+    return read_task_result(history.new_ui_records, task_run_id)
+
+
+async def resolve_task_result_text(
+    thread_id: str, task_id: str, task_run_id: str | None = None
+) -> str | None:
+    """Durable result derivation from a task's ``task:{task_id}`` namespace.
+    The primary delivery source for TaskOutput — it survives registry
+    eviction, user stops, restarts, and other-worker reads, all of which lose
+    the in-memory entry.
+
+    An explicitly archived result answers for the run that wrote it; otherwise
+    the answer is derived from the transcript, which is how a subagent (whose
+    final AI message *is* its answer) has always been read. Presence decides,
+    not task kind, so a kind that later starts archiving needs no change here.
+    Only sound once the run is known to have finished — a caller holding a
+    failed/unknown verdict wants ``resolve_archived_result_text`` instead.
+    """
+    history = await _task_history(thread_id, task_id)
+    if task_run_id:
+        archived = read_task_result(history.new_ui_records, task_run_id)
+        if archived:
+            return archived
+    for msg in reversed(history.messages):
         if getattr(msg, "type", None) != "ai":
             continue
         text = _message_text(msg)
@@ -72,6 +109,7 @@ class BackgroundRegistryStore:
 
                 registry = BackgroundTaskRegistry(thread_id=thread_id)
                 registry.result_resolver = resolve_task_result_text
+                registry.archived_result_resolver = resolve_archived_result_text
                 registry.run_ledger = SubagentRunCoordinator(thread_id)
                 self._registries[thread_id] = registry
                 logger.debug(
@@ -83,6 +121,19 @@ class BackgroundRegistryStore:
     async def get_registry(self, thread_id: str) -> BackgroundTaskRegistry | None:
         async with self._lock:
             return self._registries.get(thread_id)
+
+    async def cancel_task(self, thread_id: str, task_id: str) -> bool:
+        """Cancel one task if this worker owns its live writer; False otherwise.
+
+        force=True: a user-targeted stop must interrupt the handler itself —
+        a plain wrapper cancel is absorbed by the writer shield and the task
+        would run on to completion.
+        """
+        async with self._lock:
+            registry = self._registries.get(thread_id)
+        if registry is None:
+            return False
+        return await registry.cancel_task(task_id, force=True)
 
     async def cancel_run_tasks(
         self, thread_id: str, run_id: str, *, force: bool = False

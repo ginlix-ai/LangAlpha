@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Electron's V8 needs both under the hardened runtime, or the app fails to
+       launch once it is signed and notarized. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <!-- The shell binds a loopback listener for the OAuth callback and fetches
+       every page over the network. -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <key>com.apple.security.network.server</key>
+  <true/>
+</dict>
+</plist>

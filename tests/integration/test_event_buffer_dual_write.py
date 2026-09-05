@@ -46,10 +46,8 @@ async def real_cache():
 @pytest.mark.asyncio
 async def test_subagent_xadd_carries_event_and_record_fields(real_cache):
     """Each XADD entry carries both fields; XRANGE recovers ordered records."""
-    meta_key = "test:dual:events:meta"
     stream_key = "test:dual:stream"
 
-    await real_cache.client.delete(meta_key)
     await real_cache.client.delete(stream_key)
 
     n = 25
@@ -58,18 +56,19 @@ async def test_subagent_xadd_carries_event_and_record_fields(real_cache):
         record_payload = json.dumps(
             {"seq": i, "event": "token", "data": {"i": i}, "agent_id": "x"}
         )
-        success, seq = await real_cache.pipelined_event_buffer(
-            meta_key=meta_key,
-            event=sse,
+        await real_cache.pipelined_event_buffer(
+            stream_key,
+            event_id=i,
             max_size=1000,
-            ttl=60,
-            last_event_id=i,
-            stream_key=stream_key,
             stream_event=sse,
             stream_record=record_payload,
+            ttl=60,
         )
-        assert success is True
-        assert seq == i
+        assert await real_cache.stream_tail(stream_key) == (
+            i,
+            sse.encode("utf-8"),
+            record_payload.encode("utf-8"),
+        )
 
     stream_len = await real_cache.client.xlen(stream_key)
     assert stream_len == n
@@ -85,5 +84,4 @@ async def test_subagent_xadd_carries_event_and_record_fields(real_cache):
         assert record["seq"] == idx
         assert record["event"] == "token"
 
-    await real_cache.client.delete(meta_key)
     await real_cache.client.delete(stream_key)

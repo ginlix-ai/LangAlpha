@@ -19,3 +19,4 @@ export {
   handleHistoryTodoUpdate,
   handleHistoryHtmlWidget,
 } from '../../session/history/historyHandlers';
+export type { PairState } from '../../session/types';

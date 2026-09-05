@@ -107,3 +107,48 @@ describe('resolveSubagentTelemetry', () => {
     expect(JSON.stringify(history)).toBe(historySnap);
   });
 });
+
+/**
+ * The stop reason has its own precedence, deliberately unlike the numbers.
+ * Only one of the two writers ever holds a reason for a given task — the live
+ * error frame stamps the card, replay stamps history from the ledger — so
+ * reading it from whichever source won the count would blank it on exactly
+ * the permutation the other one covers.
+ */
+describe('resolveSubagentTelemetry — stop reason', () => {
+  const REASON = 'Monthly credit limit reached (50/50 credits)';
+
+  it('takes the reason from history while the numbers come from the card', () => {
+    const card: SubagentDataLike = { messages: [msgWith(2)], tokenUsage: ZERO_USAGE };
+    const history: SubagentHistoryLike = { error: REASON, errorType: 'credit_stop' };
+    expect(resolveSubagentTelemetry(card, history)).toEqual({
+      toolCalls: 2,
+      tokenUsage: ZERO_USAGE,
+      stopReason: REASON,
+      stopReasonType: 'credit_stop',
+    });
+  });
+
+  it('takes the reason from the card when history is the source of the numbers', () => {
+    const card: SubagentDataLike = { error: REASON, errorType: 'credit_stop' };
+    const history: SubagentHistoryLike = { toolCalls: 13, tokenUsage: ZERO_USAGE };
+    expect(resolveSubagentTelemetry(card, history)).toEqual({
+      toolCalls: 13,
+      tokenUsage: ZERO_USAGE,
+      stopReason: REASON,
+      stopReasonType: 'credit_stop',
+    });
+  });
+
+  it('omits both keys entirely when neither source has a reason', () => {
+    const result = resolveSubagentTelemetry({ messages: [msgWith(1)] }, undefined);
+    expect(result).not.toHaveProperty('stopReason');
+    expect(result).not.toHaveProperty('stopReasonType');
+  });
+
+  it('keeps a reason that arrived without a type — it is still worth stating', () => {
+    const result = resolveSubagentTelemetry(undefined, { error: 'run ended: cancelled' });
+    expect(result?.stopReason).toBe('run ended: cancelled');
+    expect(result).not.toHaveProperty('stopReasonType');
+  });
+});

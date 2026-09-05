@@ -240,12 +240,12 @@ class TestFlattenProviders:
                 f"{model_name} (z-ai) should not have requires_own_key"
             )
 
-        # doubao-anthropic models should NOT have requires_own_key (inherits volcengine env_key)
-        da_models = {k: v for k, v in metadata.items() if v.get("provider") == "doubao-anthropic"}
-        assert da_models, "Expected at least one doubao-anthropic model in manifest"
-        for model_name, entry in da_models.items():
+        # moonshot-coding models should NOT have requires_own_key (inherits moonshot env_key)
+        mc_models = {k: v for k, v in metadata.items() if v.get("provider") == "moonshot-coding"}
+        assert mc_models, "Expected at least one moonshot-coding model in manifest"
+        for model_name, entry in mc_models.items():
             assert "requires_own_key" not in entry, (
-                f"{model_name} (doubao-anthropic) should not have requires_own_key"
+                f"{model_name} (moonshot-coding) should not have requires_own_key"
             )
 
     def test_get_display_name_prefers_own_over_parent(self):

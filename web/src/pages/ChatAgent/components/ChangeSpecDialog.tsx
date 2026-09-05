@@ -28,7 +28,8 @@ export function tierLabel(t: Translate, tier: ResourceTier): string {
 }
 
 interface ChangeSpecDialogProps {
-  target: Workspace | null;
+  /** Only the tier is read — narrowed so nav-tree rows open this without a cast. */
+  target: Pick<Workspace, 'resource_tier'> | null;
   onClose: () => void;
   onSubmit: (tier: ResourceTier) => void;
   busy: boolean;
@@ -119,8 +120,8 @@ function ChangeSpecDialog({ target, onClose, onSubmit, busy, quota }: ChangeSpec
                 onClick={() => { if (!disabled) setTier(id); }}
                 className="flex items-start gap-3 rounded-lg border p-3 text-left transition-colors"
                 style={{
-                  borderColor: selected ? 'var(--color-accent-primary)' : 'var(--color-border-muted)',
-                  backgroundColor: selected ? 'var(--color-accent-soft)' : 'transparent',
+                  borderColor: selected ? 'var(--color-border-elevated)' : 'var(--color-border-muted)',
+                  backgroundColor: selected ? 'var(--color-bg-elevated)' : 'transparent',
                   opacity: disabled ? 0.5 : 1,
                   cursor: disabled ? 'not-allowed' : 'pointer',
                 }}

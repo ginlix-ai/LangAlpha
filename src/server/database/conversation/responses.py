@@ -135,10 +135,11 @@ async def append_sse_event(
     """Atomically append one SSE event to the thread's latest response blob.
 
     A server-side ``sse_events || event`` JSONB concat scoped to the most-recent
-    response (by turn_index). Avoids reading the whole blob into Python and
-    rewriting it, and is race-free against concurrent appenders (the
-    read-modify-write it replaces is not). Returns True when a row was updated,
-    False when the thread has no response row yet.
+    response (by run_seq — the one monotonic run ordering; turn_index is reused
+    by retries and lowered by branch rewinds). Avoids reading the whole blob
+    into Python and rewriting it, and is race-free against concurrent appenders
+    (the read-modify-write it replaces is not). Returns True when a row was
+    updated, False when the thread has no response row yet.
     """
     sql = """
         UPDATE conversation_responses
@@ -147,7 +148,7 @@ async def append_sse_event(
             SELECT conversation_response_id
             FROM conversation_responses
             WHERE conversation_thread_id = %s
-            ORDER BY turn_index DESC, attempt_no DESC
+            ORDER BY run_seq DESC
             LIMIT 1
         )
     """

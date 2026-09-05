@@ -97,7 +97,7 @@ export function SymbolListField({
         {label}
       </span>
       <div
-        className="flex flex-wrap gap-1.5 p-1.5 rounded border"
+        className="rings-within flex flex-wrap gap-1.5 p-1.5 rounded border"
         style={{
           backgroundColor: 'var(--color-bg-card)',
           borderColor: 'var(--color-border-default)',
@@ -106,7 +106,7 @@ export function SymbolListField({
         {value.map((sym) => (
           <span
             key={sym}
-            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] dashboard-mono"
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[0.6875rem] dashboard-mono"
             style={{
               backgroundColor: 'var(--color-bg-subtle)',
               color: 'var(--color-text-primary)',
@@ -137,7 +137,7 @@ export function SymbolListField({
                 ? placeholder ?? t('dashboard.widgets.settings.symbolListPlaceholder')
                 : ''
           }
-          className="flex-1 min-w-[100px] border-0 !p-0 !h-6 text-xs bg-transparent shadow-none focus-visible:ring-0 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex-1 min-w-[100px] border-0 !p-0 !h-6 text-xs bg-transparent shadow-none disabled:opacity-50 disabled:cursor-not-allowed"
           style={{
             color: 'var(--color-text-primary)',
             textTransform: 'uppercase',
@@ -145,12 +145,12 @@ export function SymbolListField({
         />
       </div>
       {helper && (
-        <span className="text-[11px] mt-1 block" style={{ color: 'var(--color-text-tertiary)' }}>
+        <span className="text-[0.6875rem] mt-1 block" style={{ color: 'var(--color-text-tertiary)' }}>
           {helper}
         </span>
       )}
       {atCap && (
-        <span className="text-[11px] mt-1 block" style={{ color: 'var(--color-text-tertiary)' }}>
+        <span className="text-[0.6875rem] mt-1 block" style={{ color: 'var(--color-text-tertiary)' }}>
           {t('dashboard.widgets.settings.symbolListHelperAtCap', { max })}
         </span>
       )}

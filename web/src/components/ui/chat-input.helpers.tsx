@@ -12,11 +12,44 @@ export function getSlashCommandIcon(cmd: SlashCommand, className: string) {
 /* --- CONSTANTS --- */
 export const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 export const MAX_FILES = 5;
+export const PASTE_PILL_MIN_CHARS = 1500;
+export const PASTE_PILL_MIN_LINES = 15;
+
+/**
+ * A paste this large would flood the draft — the composer stages it as a
+ * removable pill instead and flattens it back into the message on send.
+ */
+export function isLargePaste(text: string): boolean {
+  if (text.length >= PASTE_PILL_MIN_CHARS) return true;
+  let lines = 1;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\n' && ++lines >= PASTE_PILL_MIN_LINES) return true;
+  }
+  return false;
+}
 export const BUILTIN_SLASH_COMMANDS = [
   { type: 'subagent', name: 'subagent' },
   { type: 'action', name: 'compact', aliases: ['compaction', 'summarize'] },
   { type: 'action', name: 'offload', aliases: ['truncate'] },
 ];
+
+/**
+ * Index of the `@`/`/` token the cursor is currently inside, or -1.
+ *
+ * Scans left from the cursor and stops at the first whitespace: the trigger
+ * only counts at a word start (beginning of the draft or after whitespace), so
+ * `foo@bar` and a URL's slashes never open a menu.
+ */
+export function findTriggerIndex(value: string, cursorPos: number, trigger: '@' | '/'): number {
+  for (let i = cursorPos - 1; i >= 0; i--) {
+    const ch = value[i];
+    if (ch === trigger) {
+      return i === 0 || /\s/.test(value[i - 1]) ? i : -1;
+    }
+    if (/\s/.test(ch)) return -1;
+  }
+  return -1;
+}
 
 /**
  * Slash-menu sort key (lower sorts first). Prefix matches (name/alias starts

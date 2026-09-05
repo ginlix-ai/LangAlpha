@@ -50,9 +50,6 @@ def create_preview_url_tool(
             title: Optional display title for the preview (default: "Port {port}")
             path: Optional URL path suffix appended to the preview URL
                   (e.g. "/timeline.html" to open a specific file instead of the default index)
-
-        Returns:
-            The signed preview URL that can be used to access the service
         """
         try:
             from langgraph.config import get_stream_writer

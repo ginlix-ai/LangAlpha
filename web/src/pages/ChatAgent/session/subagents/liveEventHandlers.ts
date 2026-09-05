@@ -5,16 +5,20 @@
  */
 
 import { isToolResultFailure } from './subagentStatus';
+import {
+  WORKFLOW_TASK_TYPE, applyWorkflowLifecycle, isWorkflowRunTerminal, workflowRunDisplayStatus,
+  workflowRunStatusFromLedger,
+  type WorkflowLifecycleFrame, type WorkflowRunState,
+} from './workflowRunState';
 import type { MessageRecord, ToolCallRecord, ToolCallResultRecord } from '../../hooks/utils/types';
-import { getOrCreateTaskRefs, extractLastReasoningTitle } from '../streamRefs';
-import type { StreamRefs, ToolCallChunkRecord, UpdateSubagentCard } from '../streamRefs';
+import { getOrCreateTaskRefs, extractLastReasoningTitle, nextArrivalSeq } from '../streamRefs';
+import { isTaskAgentId } from '../../utils/agentId';
+import type {
+  StreamRefs, TaskRefs, ToolCallChunkRecord, UpdateSubagentCard,
+} from '../streamRefs';
 
 export function isSubagentEvent(event: Record<string, unknown> | null | undefined): boolean {
-  const agent = event?.agent;
-  if (!agent || typeof agent !== 'string') {
-    return false;
-  }
-  return agent.startsWith('task:');
+  return isTaskAgentId(event?.agent);
 }
 
 /**
@@ -205,6 +209,7 @@ export function handleSubagentMessageChunk({
       ...prev,
       contentSegments: nextContentSegments,
       reasoningProcesses,
+      arrivalSeq: nextArrivalSeq(prev),
     };
     taskRefs.messages = updatedMessages;
     updateSubagentCard(taskId, { messages: updatedMessages });
@@ -245,6 +250,7 @@ export function handleSubagentMessageChunk({
       content: ((prev.content as string) || '') + content,
       contentType: 'text',
       isStreaming: true,
+      arrivalSeq: nextArrivalSeq(prev),
     };
 
     taskRefs.messages = updatedMessages;
@@ -310,6 +316,7 @@ export function handleSubagentToolCallChunks({ taskId, assistantMessageId, chunk
   });
 
   msg.pendingToolCallChunks = pending;
+  msg.arrivalSeq = nextArrivalSeq(msg);
   updatedMessages[messageIndex] = msg;
   taskRefs.messages = updatedMessages;
 
@@ -620,6 +627,123 @@ export function handleSubagentToolCallResult({ taskId, assistantMessageId, toolC
     messages: updatedMessages,
     currentTool: finalCurrentTool, // Explicitly pass empty string to clear when failed or no tools in progress
   });
+  return true;
+}
+
+/**
+ * Reduces one `workflow_lifecycle` frame into the run task's card state, which
+ * the inline WorkflowRunCard and the detail view both read.
+ *
+ * `run_started` is the lane epoch: a full-lane (re)delivery rebuilds from
+ * scratch instead of double-appending onto carried state.
+ */
+/** Reduce one lifecycle frame into the run's state and stamp its card.
+ *
+ *  Split out so ledger-driven settlement shares it: `applyWorkflowLifecycle`
+ *  must stay the only writer of `workflowRun.status`, or a second writer and
+ *  the card's `run?.status ?? status` read can disagree about whether the run
+ *  ended. */
+function reduceWorkflowRunFrame(
+  taskId: string,
+  taskRefs: TaskRefs,
+  prev: WorkflowRunState | undefined,
+  event: WorkflowLifecycleFrame,
+  updateSubagentCard: UpdateSubagentCard,
+): void {
+  const next = applyWorkflowLifecycle(prev, event);
+  taskRefs.workflowRun = next;
+
+  const terminal = isWorkflowRunTerminal(next.status);
+  updateSubagentCard(taskId, {
+    type: WORKFLOW_TASK_TYPE,
+    workflowRun: next,
+    status: terminal ? workflowRunDisplayStatus(next.status) : 'active',
+    ...(terminal ? { isActive: false, ...(next.error ? { error: next.error } : {}) } : {}),
+  });
+}
+
+/**
+ * Settle a workflow run against the ledger outcome its lane closed with.
+ *
+ * Two cases, one rule — the ledger row is the status authority and the
+ * snapshot the detail authority, which is exactly what `workflow_run_items`
+ * does on replay:
+ *
+ *  - No terminal frame at all (a worker that died mid-run emits none, since
+ *    the driver mints `workflow_lifecycle`). Recovery appends only `run_end`,
+ *    which lands on the card's own status where `workflowRun.status` shadows
+ *    it, so the card spins until a reload — and reconnecting does not help,
+ *    because the client replays the same frames.
+ *  - A terminal frame the ledger then contradicted. The driver stamps its
+ *    frame BEFORE the ledger CAS, so a raced cancel or a downgraded event
+ *    stream can leave the card reading "completed" against a `cancelled` row.
+ *
+ * Reconciling means replacing the status, never the frame: the reducer keeps
+ * result, totals and duration (`?? state`), so the richer local truth
+ * survives while the verdict comes from the ledger.
+ */
+export function settleWorkflowRunFromClosure({
+  taskId, outcome, subagentStateRefs, updateSubagentCard,
+}: {
+  taskId: string;
+  outcome: string | null | undefined;
+  subagentStateRefs: Record<string, TaskRefs>;
+  updateSubagentCard: UpdateSubagentCard | null;
+}): boolean {
+  if (!taskId || !updateSubagentCard) return false;
+  const taskRefs = subagentStateRefs[taskId];
+  const prev = taskRefs?.workflowRun;
+  if (!prev) return false;
+  const status = workflowRunStatusFromLedger(outcome);
+  // Agreement is the common case and needs no write; a non-terminal outcome
+  // resolves to nothing to adopt.
+  if (!status || prev.status === status) return false;
+  // `run_completed` assigns `error` outright rather than defaulting it, so a
+  // reconcile has to carry the frame's own detail across or it would erase it.
+  // `run_end` carries none of its own — hence the projector's fallback text.
+  const error = prev.error ?? (status === 'completed' ? undefined : `run ended: ${outcome}`);
+  reduceWorkflowRunFrame(
+    taskId,
+    taskRefs,
+    prev,
+    {
+      phase: 'run_completed',
+      status,
+      ...(error ? { error } : {}),
+    } as WorkflowLifecycleFrame,
+    updateSubagentCard,
+  );
+  return true;
+}
+
+export function handleWorkflowLifecycle({ taskId, event, refs, updateSubagentCard }: {
+  taskId: string;
+  event: WorkflowLifecycleFrame;
+  refs: StreamRefs;
+  updateSubagentCard: UpdateSubagentCard;
+}): boolean {
+  if (!taskId || !updateSubagentCard) {
+    return false;
+  }
+
+  const taskRefs = getOrCreateTaskRefs(refs, taskId);
+  const prev = event.phase === 'run_started' ? undefined : taskRefs.workflowRun;
+  reduceWorkflowRunFrame(taskId, taskRefs, prev, event, updateSubagentCard);
+
+  // Stamp identity + ownership on the child's floating card as it is
+  // dispatched, before its own lane streams anonymous content — the sidebar
+  // hides owner-children, and the label names the drill-in.
+  if (event.phase === 'child_started' && typeof event.child_task_id === 'string') {
+    const childAgentId = `task:${event.child_task_id}`;
+    updateSubagentCard(childAgentId, {
+      agentId: childAgentId,
+      displayId: `Task-${event.child_task_id}`,
+      taskId: childAgentId,
+      description: (event.label as string) || '',
+      type: (event.subagent_type as string) || 'general-purpose',
+      ownerTaskId: taskId,
+    });
+  }
   return true;
 }
 

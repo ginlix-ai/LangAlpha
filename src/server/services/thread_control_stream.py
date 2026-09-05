@@ -58,8 +58,13 @@ async def _append(thread_id: str, fields: dict) -> None:
         if not (getattr(cache, "enabled", False) and cache.client):
             return
         key = control_stream_key(thread_id)
-        await cache.client.xadd(key, fields, maxlen=_CONTROL_MAXLEN)
-        await cache.client.expire(key, get_redis_ttl_workflow_events())
+        # One connection, one round trip — and the TTL can no longer be
+        # skipped by a failure between two separate awaits, which left the
+        # control stream immortal.
+        async with cache.client.pipeline(transaction=False) as pipe:
+            pipe.xadd(key, fields, maxlen=_CONTROL_MAXLEN)
+            pipe.expire(key, get_redis_ttl_workflow_events())
+            await pipe.execute()
     except Exception:
         logger.warning(
             f"[control_stream] announce failed for thread={thread_id}",

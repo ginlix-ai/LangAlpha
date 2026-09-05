@@ -10,11 +10,14 @@
  */
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, within, waitFor } from '@testing-library/react';
+import { render as rtlRender, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom';
+import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import NavigationPanel from '../NavigationPanel';
 import { resetNavPanelExpansion, forgetNavPanelExpansion, expandedWorkspaces } from '../navExpansionStore';
+import { toSidebarAgentRow } from '../../session/subagents/subagentStatus';
 
 // `t()` identity mock — we don't depend on bundled English copy here, but
 // the component reads i18n keys for some labels and we want the fallback
@@ -23,11 +26,30 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
+// The panel's self-contained workspace actions (useWorkspaceActions) need
+// router + query contexts, same as its in-app hosts provide.
+function Providers({ children }: { children: React.ReactNode }) {
+  const [client] = React.useState(
+    () => new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  );
+  return (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+function render(ui: React.ReactElement) {
+  return rtlRender(ui, { wrapper: Providers });
+}
+
 const WS_ID = 'ws-1';
 const THREAD_ID = 'thread-1';
 
 interface RenderOpts {
-  agents: React.ComponentProps<typeof NavigationPanel>['agents'];
+  /** Wire-shaped agent fixtures, projected through toSidebarAgentRow exactly
+   *  like useSubagentTabs does — so status derivation stays covered here. */
+  agents: Parameters<typeof toSidebarAgentRow>[0][];
 }
 
 function renderPanel({ agents }: RenderOpts) {
@@ -42,7 +64,7 @@ function renderPanel({ agents }: RenderOpts) {
       }}
       currentWorkspaceId={WS_ID}
       currentThreadId={THREAD_ID}
-      agents={agents}
+      agents={agents.map(toSidebarAgentRow)}
       activeAgentId={null}
       expandWorkspace={vi.fn()}
       onSelectAgent={vi.fn()}
@@ -77,10 +99,10 @@ describe('NavigationPanel — subagent description fallback', () => {
         { id: 'sub-1', name: 'Worker', description: '   ', isMainAgent: false },
         { id: 'sub-2', name: 'Worker', description: undefined, isMainAgent: false },
         // JSON wire shape: backend may emit `null` rather than omit the field.
-        // The runtime guard is `typeof agent.description === 'string'`, which
-        // correctly rejects null — pinning that contract here so a future
-        // refactor to a truthy check (`agent.description?.trim()`) doesn't
-        // silently break for `description: 0` or other falsy non-strings.
+        // The runtime guard (`typeof description === 'string'`) lives in
+        // toSidebarAgentRow — pinning it here so a future refactor to a truthy
+        // check doesn't silently break for `description: 0` or other falsy
+        // non-strings.
         { id: 'sub-3', name: 'Worker', description: null as unknown as undefined, isMainAgent: false },
       ],
     });
@@ -188,13 +210,22 @@ describe('NavigationPanel — terminal status badges', () => {
       ],
     });
 
-    expect(rowFor('running-task').querySelector('.animate-spin')).toBeTruthy();
+    // The running glyph is the shared ascii Loader (role="status"), matching
+    // the running-thread row — not a CSS animation class. Its aria-label goes
+    // through t(), which this file identity-mocks, so assert the role alone.
+    const spinner = (id: string) =>
+      rowFor(id).querySelector('[role="status"]');
+    expect(spinner('running-task')).toBeTruthy();
     // Terminal outcomes must NOT spin — the bug was an errored task spinning forever.
-    expect(rowFor('errored-task').querySelector('.animate-spin')).toBeNull();
-    expect(rowFor('cancelled-task').querySelector('.animate-spin')).toBeNull();
-    expect(rowFor('done-task').querySelector('.animate-spin')).toBeNull();
-    // Every terminal row still renders a status glyph (an svg badge).
-    expect(rowFor('errored-task').querySelector('svg')).toBeTruthy();
+    expect(spinner('errored-task')).toBeNull();
+    expect(spinner('cancelled-task')).toBeNull();
+    expect(spinner('done-task')).toBeNull();
+    // Exceptional terminal rows render a status glyph plus the hover ✕ remove
+    // button; completed is deliberately glyph-free — its only svg is the ✕
+    // (a checkmark beside that button read as a second control).
+    expect(rowFor('errored-task').querySelectorAll('svg')).toHaveLength(2);
+    expect(rowFor('cancelled-task').querySelectorAll('svg')).toHaveLength(2);
+    expect(rowFor('done-task').querySelectorAll('svg')).toHaveLength(1);
   });
 });
 
@@ -373,7 +404,7 @@ describe('NavigationPanel — active-thread auto-reveal', () => {
     expect(onLoadMoreThreads).not.toHaveBeenCalled();
   });
 
-  it('does not auto-reveal in the flash workspace (capped at 3, no show-more)', () => {
+  it('auto-reveals in the flash workspace (pages like any other workspace)', async () => {
     const onLoadMoreThreads = renderWithActiveThread({
       threadsData: {
         threads: [{ thread_id: 't-1', title: 'Thread one' }],
@@ -384,7 +415,7 @@ describe('NavigationPanel — active-thread auto-reveal', () => {
       status: 'flash',
     });
 
-    expect(onLoadMoreThreads).not.toHaveBeenCalled();
+    await waitFor(() => expect(onLoadMoreThreads).toHaveBeenCalled());
   });
 
   it('does not page while a fetch is already in flight', () => {
@@ -423,12 +454,13 @@ describe('NavigationPanel — workspace drag-reorder affordances', () => {
     );
   }
 
-  it('marks workspace header rows sortable, but never the flash workspace', () => {
+  it('marks workspace header rows sortable, including the flash workspace', () => {
     renderReorderPanel(vi.fn());
 
     const sortable = screen.getByText('Workspace A').closest('[aria-roledescription="sortable"]');
     expect(sortable).not.toBeNull();
-    expect(screen.getByText('Flash workspace').closest('[aria-roledescription="sortable"]')).toBeNull();
+    // Flash drags too — the pin-boundary guard keeps it inside the pinned block.
+    expect(screen.getByText('Flash workspace').closest('[aria-roledescription="sortable"]')).not.toBeNull();
   });
 
   it('renders plain rows when no reorder handler is provided', () => {

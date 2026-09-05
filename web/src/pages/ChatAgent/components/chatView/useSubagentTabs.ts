@@ -2,15 +2,28 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useStableHandler } from '@/hooks/useStableHandler';
+import { useStableArray } from '@/hooks/useStableArray';
 import { countToolCalls } from '../../session/subagents/subagentMetrics';
-import { deriveSubagentStatus, isTerminalStatus, normalizeWireStatus } from '../../session/subagents/subagentStatus';
+import {
+  deriveSubagentStatus,
+  isTerminalStatus,
+  normalizeWireStatus,
+  sidebarAgentRowsEqual,
+  toSidebarAgentRow,
+} from '../../session/subagents/subagentStatus';
 import { type SubagentTokenUsage, ZERO_USAGE } from '../../utils/tokenUsage';
 import {
   resolveSubagentTelemetry as resolveSubagentTelemetryPure,
   type SubagentDataLike,
   type SubagentHistoryLike,
 } from '../../session/subagents/resolveSubagentTelemetry';
+import {
+  resolveWorkflowRun as resolveWorkflowRunPure,
+  type WorkflowRunState,
+} from '../../session/subagents/workflowRunState';
 import { getSubagentTaskStatus } from '../../utils/api';
+import { taskIdFromAgentId } from '../../utils/agentId';
 import type { useCardState } from '../../hooks/useCardState';
 import type { useChatMessages } from '../../hooks/useChatMessages';
 import { MAIN_AGENT } from './mainAgent';
@@ -33,6 +46,7 @@ export function useSubagentTabs({
   updateSubagentCard,
   getSubagentHistory,
   resolveSubagentIdToAgentId,
+  hydrateTaskTranscript,
   saveScrollPosition,
   scrollPositionsRef,
   skipSubagentAutoScrollRef,
@@ -49,6 +63,7 @@ export function useSubagentTabs({
   updateSubagentCard: CardStateAPI['updateSubagentCard'];
   getSubagentHistory: ChatMessagesAPI['getSubagentHistory'];
   resolveSubagentIdToAgentId: ChatMessagesAPI['resolveSubagentIdToAgentId'];
+  hydrateTaskTranscript: ChatMessagesAPI['hydrateTaskTranscript'];
   saveScrollPosition: () => void;
   scrollPositionsRef: { current: Record<string, number> };
   skipSubagentAutoScrollRef: { current: boolean };
@@ -62,7 +77,7 @@ export function useSubagentTabs({
   const [hiddenAgentIds, setHiddenAgentIds] = useState<Set<string>>(new Set());
 
   // Switch agent tab with scroll position preservation
-  const switchAgent = useCallback((newAgentId: string) => {
+  const switchAgent = useCallback((newAgentId: string, opts?: { push?: boolean }) => {
     if (newAgentId === activeAgentIdRef.current) return;
     const wasMain = activeAgentIdRef.current === 'main';
     saveScrollPosition();
@@ -78,10 +93,12 @@ export function useSubagentTabs({
       // Replace: removes the subagent entry so browser back goes to thread gallery
       navigate(`/chat/t/${tid}`, { replace: true, state: { workspaceId } });
     } else {
-      const taskSlug = newAgentId.replace('task:', '');
+      const taskSlug = taskIdFromAgentId(newAgentId) ?? newAgentId;
       // Push from main → subagent (back returns to main)
-      // Replace from subagent → subagent (back still returns to main)
-      navigate(`/chat/t/${tid}/${taskSlug}`, { replace: !wasMain, state: { workspaceId } });
+      // Replace from subagent → subagent (back still returns to main),
+      // EXCEPT drill-downs (opts.push — e.g. workflow → its child), where
+      // browser back should return to the parent view just left.
+      navigate(`/chat/t/${tid}/${taskSlug}`, { replace: !wasMain && !opts?.push, state: { workspaceId } });
     }
   }, [saveScrollPosition, threadId, workspaceId, navigate, activeAgentIdRef, scrollPositionsRef, skipSubagentAutoScrollRef, resolvedThreadIdRef, setActiveAgentId]);
 
@@ -106,35 +123,43 @@ export function useSubagentTabs({
   }, [cards]);
 
   // Convert cards to agents array for sidebar (memoized to avoid re-renders)
-  const { subagentAgents, excessSubagents } = useMemo(() => {
+  const { allSubagents, subagentAgents, excessSubagents } = useMemo(() => {
     const maxSubagents = 11;
     const all = Object.entries(cards)
       .filter(([cardId]) => cardId.startsWith('subagent-'))
       .map(([cardId, card]): AgentInfo => {
-        const sd = card.subagentData as Record<string, unknown> | undefined;
+        const sd = card.subagentData;
         return {
           id: cardId.replace('subagent-', ''),
-          name: (sd?.displayId as string) || t('chat.worker'),
-          taskId: (sd?.taskId as string) || (sd?.agentId as string) || '',
-          description: (sd?.description as string) || '',
-          prompt: (sd?.prompt as string) || '',
-          type: (sd?.type as string) || 'general-purpose',
+          name: sd?.displayId || t('chat.worker'),
+          taskId: sd?.taskId || sd?.agentId || '',
+          description: sd?.description || '',
+          prompt: sd?.prompt || '',
+          type: sd?.type || 'general-purpose',
           // Missing status = not-yet-known → 'initializing' (deriveSubagentStatus
           // promotes it to running once messages exist); never default to a live
           // 'active' that would paint a status-less card as Running.
-          status: (sd?.status as string) || 'initializing',
-          error: sd?.error as string | undefined,
-          toolCalls: countToolCalls(sd?.messages as SubagentMessage[] | undefined),
-          tokenUsage: (sd?.tokenUsage as SubagentTokenUsage | undefined) ?? ZERO_USAGE,
-          currentTool: (sd?.currentTool as string) || '',
-          messages: (sd?.messages as SubagentMessage[]) || [],
+          status: sd?.status || 'initializing',
+          error: sd?.error,
+          toolCalls: countToolCalls(sd?.messages),
+          tokenUsage: sd?.tokenUsage ?? ZERO_USAGE,
+          currentTool: sd?.currentTool || '',
+          messages: sd?.messages || [],
           isActive: sd?.isActive !== false,
           isMainAgent: false,
+          ownerTaskId: sd?.ownerTaskId,
+          workflowRun: sd?.workflowRun,
         };
       })
       .reverse();
-    const visible = all.filter(agent => !hiddenAgentIds.has(agent.id));
+    // Workflow-owned children stay out of the sidebar — the run's card is
+    // their surface; they open via its drill-in (activeAgent falls back to
+    // the unfiltered list so a hidden child can still be the active tab).
+    const visible = all.filter(
+      agent => !hiddenAgentIds.has(agent.id) && !agent.ownerTaskId
+    );
     return {
+      allSubagents: all,
       subagentAgents: visible.slice(0, maxSubagents),
       excessSubagents: visible.slice(maxSubagents),
     };
@@ -155,6 +180,15 @@ export function useSubagentTabs({
     return resolveSubagentTelemetryPure(sd, history);
   }, [cards, resolveSubagentIdToAgentId, getSubagentHistory]);
 
+  // Same closure shape for workflow-run progress: the inline WorkflowRunCard
+  // subscribes at the leaf and reads the live card's reduced state, falling
+  // back to the history projection after a refresh.
+  const resolveWorkflowRun = useCallback((subagentId: string) => {
+    const card = cards[`subagent-${resolveSubagentIdToAgentId(subagentId)}`];
+    const history = getSubagentHistory?.(subagentId) as { workflowRun?: WorkflowRunState } | null;
+    return resolveWorkflowRunPure(card?.subagentData?.workflowRun, history?.workflowRun);
+  }, [cards, resolveSubagentIdToAgentId, getSubagentHistory]);
+
   // Auto-hide excess agents (beyond 11 subagents)
   const excessIds = useMemo(() => excessSubagents.map(a => a.id).join(','), [excessSubagents]);
   useEffect(() => {
@@ -172,9 +206,23 @@ export function useSubagentTabs({
   // Combine: main agent first, then visible subagents (limited to 11)
   const agents = useMemo((): AgentInfo[] => [MAIN_AGENT, ...subagentAgents], [subagentAgents]);
 
-  // Find the active agent object for subagent view
+  // Nav-tree row projection. `agents` takes a fresh identity on every cards
+  // update (i.e. every streamed subagent chunk), but the tree renders only the
+  // row fields — keep the previous array identity whenever none of them
+  // changed so the sidebar bridge publish and the panels stay quiet while a
+  // subagent streams.
+  const sidebarAgentRows = useStableArray(
+    useMemo(() => agents.map(toSidebarAgentRow), [agents]),
+    sidebarAgentRowsEqual,
+  );
+
+  // Find the active agent object for subagent view. Falls back to the
+  // unfiltered card list so sidebar-hidden agents (workflow children,
+  // auto-hidden excess) can still be opened in the detail view.
   const activeAgent: AgentInfo | null = activeAgentId !== 'main'
-    ? agents.find(a => a.id === activeAgentId) || null
+    ? agents.find(a => a.id === activeAgentId)
+      || allSubagents.find(a => a.id === activeAgentId)
+      || null
     : null;
 
   // Callback: user sent an instruction to the active subagent via the status bar.
@@ -220,9 +268,14 @@ export function useSubagentTabs({
     const existingPrompt = cards[cardId]?.subagentData?.prompt;
     const existingType = cards[cardId]?.subagentData?.type;
     const existingStatus = cards[cardId]?.subagentData?.status;
+    const existingOwner = cards[cardId]?.subagentData?.ownerTaskId;
     const finalDescription = history?.description || existingDescription || overrides.description || '';
     const finalPrompt = history?.prompt || existingPrompt || overrides.prompt || '';
     const finalType = history?.type || existingType || overrides.type || 'general-purpose';
+    // Workflow ownership: history is authoritative, but the drill-in click
+    // (overrides) covers replayed threads whose child lanes have no history
+    // entry — the owner drives back-navigation and sidebar hiding.
+    const finalOwner = history?.ownerTaskId || existingOwner || overrides.ownerTaskId;
     // A card that already settled terminal is authoritative: never downgrade it to
     // a stale non-terminal history value (a history entry can still read 'running'
     // when the ledger hasn't refreshed locally yet). A genuine resume — a separate
@@ -231,10 +284,13 @@ export function useSubagentTabs({
       ? existingStatus!
       : (history?.status || overrides.status || 'completed');
     const finalError = history?.error || overrides.error;
+    const finalErrorType = history?.errorType || overrides.errorType;
 
-    // Check if card is currently live (active with an open stream)
+    // Check if card is currently live (active with an open stream). A card
+    // whose own status already settled is not live however its flag reads.
     const existingCard = cards[cardId]?.subagentData;
-    const isLive = existingCard?.isActive && !history;
+    const isLive =
+      existingCard?.isActive === true && !history && !isTerminalStatus(existingStatus);
 
     const updateData: SubagentUpdateData = {
       agentId,
@@ -243,11 +299,14 @@ export function useSubagentTabs({
       prompt: finalPrompt,
       type: finalType,
       isHistory: !!history,
-      // isActive: true bypasses the inactive-card guard so stale fields get cleared.
-      // For history cards this will be immediately overridden to false by the
-      // isHistory check inside updateSubagentCard.
-      isActive: !history,
+      // Liveness is a fact here, never a write-permission flag: a settled task
+      // whose card claims isActive makes updateSubagentCard reject the NEXT
+      // write from this very function — the lazily hydrated transcript, which
+      // carries isHistory — as "stale history over a live card". Clearing stale
+      // fields on a settled card rides the terminal-write exemption instead.
+      isActive: !history && (isLive || !isTerminalStatus(finalStatus)),
     };
+    if (finalOwner) updateData.ownerTaskId = finalOwner;
     if (isLive) {
       // Card is actively streaming — preserve its current status and currentTool.
       // Overwriting these causes a brief "completed" flash in the SubagentStatusBar.
@@ -255,6 +314,7 @@ export function useSubagentTabs({
       updateData.status = finalStatus;
       updateData.currentTool = '';
       if (finalError) updateData.error = finalError;
+      if (finalErrorType) updateData.errorType = finalErrorType;
     }
     if (history) {
       updateData.messages = (history.messages || []) as SubagentMessage[];
@@ -278,7 +338,7 @@ export function useSubagentTabs({
   // just because the card already settled non-terminally.
   const hydrateTaskStatusIfStale = useCallback(async (agentId: string) => {
     if (agentId === 'main' || !threadId || threadId === '__default__') return;
-    const shortId = agentId.startsWith('task:') ? agentId.slice(5) : agentId;
+    const shortId = taskIdFromAgentId(agentId) ?? agentId;
     if (!shortId) return;
     const history = getSubagentHistory ? getSubagentHistory(agentId) : null;
     const card = cards[`subagent-${agentId}`]?.subagentData;
@@ -314,18 +374,42 @@ export function useSubagentTabs({
     }
   }, [threadId, getSubagentHistory, cards, updateSubagentCard]);
 
-  // Handle sidebar agent selection — refresh card data, then switch tab
-  const handleSelectAgent = useCallback((agentId: string) => {
+  // Lazy transcript hydration for tasks replay never projects as lanes
+  // (workflow children have no Task-tool launch artifact in the main
+  // transcript): fetch the checkpoint transcript on demand, then re-refresh
+  // the card so the landed history entry populates it.
+  const hydrateTranscriptThenRefresh = useCallback(
+    (agentId: string, overrides: Partial<SubagentInfo> = {}) => {
+      if (!hydrateTaskTranscript) return;
+      const existing = getSubagentHistory?.(agentId) as SubagentHistoryLike | null;
+      if (existing?.messages?.length) return;
+      void hydrateTaskTranscript(agentId, {
+        description: overrides.description,
+        type: overrides.type,
+        status: overrides.status,
+      }).then((landed) => {
+        if (landed) refreshSubagentCard(agentId, overrides);
+      });
+    },
+    [hydrateTaskTranscript, getSubagentHistory, refreshSubagentCard],
+  );
+
+  // Handle sidebar agent selection — refresh card data, then switch tab.
+  // useStableHandler (not useCallback): this crosses the sidebar bridge, and
+  // hydrateTaskStatusIfStale's deps include `cards` — a useCallback here would
+  // take a fresh identity on every streamed card update and re-publish the
+  // bridge slice, re-rendering the whole AppSidebar per chunk.
+  const handleSelectAgent = useStableHandler((agentId: string) => {
     if (agentId !== 'main') {
       refreshSubagentCard(agentId);
       void hydrateTaskStatusIfStale(agentId);
     }
     switchAgent(agentId);
-  }, [refreshSubagentCard, hydrateTaskStatusIfStale, switchAgent]);
+  });
 
   // Open subagent task (navigate to subagent tab) - shared between MessageList and DetailPanel
   const handleOpenSubagentTask = useCallback((subagentInfo: SubagentInfo) => {
-    const { subagentId, description, prompt, type, status } = subagentInfo;
+    const { subagentId, description, prompt, type, status, ownerTaskId } = subagentInfo;
     // Resolve subagentId (may be toolCallId from segment) to stable agent_id for card operations
     const agentId = resolveSubagentIdToAgentId
       ? resolveSubagentIdToAgentId(subagentId)
@@ -336,14 +420,19 @@ export function useSubagentTabs({
       return;
     }
 
-    refreshSubagentCard(agentId, { description, prompt, type, status });
+    refreshSubagentCard(agentId, { description, prompt, type, status, ownerTaskId });
     void hydrateTaskStatusIfStale(agentId);
+    hydrateTranscriptThenRefresh(agentId, { description, prompt, type, status, ownerTaskId });
 
-    switchAgent(agentId);
-  }, [resolveSubagentIdToAgentId, updateSubagentCard, refreshSubagentCard, hydrateTaskStatusIfStale, switchAgent]);
+    // Drill-down from the owning workflow's tab pushes history so browser
+    // back returns to the workflow view, not the main chat.
+    const isDrillDown = !!ownerTaskId && ownerTaskId === activeAgentIdRef.current;
+    switchAgent(agentId, { push: isDrillDown });
+  }, [resolveSubagentIdToAgentId, updateSubagentCard, refreshSubagentCard, hydrateTaskStatusIfStale, hydrateTranscriptThenRefresh, switchAgent, activeAgentIdRef]);
 
-  // Handle removing an agent from sidebar (just hide from display, don't affect state)
-  const handleRemoveAgent = useCallback((agentId: string) => {
+  // Handle removing an agent from sidebar (just hide from display, don't
+  // affect state). Stable for the same bridge reason as handleSelectAgent.
+  const handleRemoveAgent = useStableHandler((agentId: string) => {
     // Add to hidden set
     setHiddenAgentIds((prev) => {
       const newSet = new Set(prev);
@@ -355,7 +444,7 @@ export function useSubagentTabs({
     if (activeAgentIdRef.current === agentId) {
       switchAgent('main');
     }
-  }, [switchAgent, activeAgentIdRef]);
+  });
 
   // Sync activeAgentId with URL-derived initialTaskId (browser back/forward)
   useEffect(() => {
@@ -379,10 +468,17 @@ export function useSubagentTabs({
     if (lastRefreshedTaskRef.current === initialTaskId) return;
     lastRefreshedTaskRef.current = initialTaskId;
     refreshSubagentCard(`task:${initialTaskId}`);
-  }, [initialTaskId, isLoadingHistory, refreshSubagentCard]);
+    // Deep link straight to a workflow child: its lane was never projected,
+    // so the transcript must hydrate on demand like the drill-in path — and
+    // so must the status. With no lane and no click-through override, the
+    // card's status falls back to 'completed', which is a guess the ledger
+    // can settle: without this a child that failed reads as finished work.
+    void hydrateTaskStatusIfStale(`task:${initialTaskId}`);
+    hydrateTranscriptThenRefresh(`task:${initialTaskId}`);
+  }, [initialTaskId, isLoadingHistory, refreshSubagentCard, hydrateTaskStatusIfStale, hydrateTranscriptThenRefresh]);
 
   return {
-    agents,
+    sidebarAgentRows,
     activeAgent,
     switchAgent,
     handleSelectAgent,
@@ -390,5 +486,6 @@ export function useSubagentTabs({
     handleRemoveAgent,
     handleSubagentInstruction,
     resolveSubagentTelemetry,
+    resolveWorkflowRun,
   };
 }

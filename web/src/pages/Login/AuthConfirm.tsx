@@ -6,6 +6,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { isPlatformMode, APP_ENTRY_PATH } from '../../config/hostMode';
 import { AUTH_BROADCAST_CHANNEL, type AuthBroadcastMessage } from '../../lib/oauthPopup';
 import { authErrorMessage } from '../../lib/authErrors';
+import { useShellHandoff } from './useShellHandoff';
+import ShellHandoff from './ShellHandoff';
 import WavesBackground from './WavesBackground';
 import './LoginPage.css';
 
@@ -41,10 +43,15 @@ function AuthConfirm() {
   const [status, setStatus] = useState<'verifying' | 'confirmed' | 'error'>('verifying');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [pkceFallback, setPkceFallback] = useState(false);
+  const { handingOff, continueHere } = useShellHandoff();
   const ranRef = useRef(false);
 
   useEffect(() => {
     if (!isPlatformMode) return;
+    // The app is redeeming this one. Bail BEFORE claiming the run, so pressing
+    // "continue in this browser" can still take it back -- a token consumed
+    // here is a token the app can no longer use.
+    if (handingOff) return;
     // verifyOtp consumes the single-use token — never run it twice (StrictMode).
     if (ranRef.current) return;
     ranRef.current = true;
@@ -119,7 +126,7 @@ function AuthConfirm() {
     return () => {
       if (redirectTimer) clearTimeout(redirectTimer);
     };
-  }, [verifyEmailOtp, navigate, t]);
+  }, [verifyEmailOtp, navigate, t, handingOff]);
 
   // PKCE fallback: succeed as soon as the auto-exchanged session lands; if it
   // never does (link opened in a different browser, expired code), fail after
@@ -144,7 +151,9 @@ function AuthConfirm() {
     <div className="login-page">
       <WavesBackground />
       <div className="login-page__card">
-        {status === 'error' ? (
+        {handingOff ? (
+          <ShellHandoff onContinueHere={continueHere} />
+        ) : status === 'error' ? (
           <div className="login-page__status">
             <div className="login-page__error">{errorMessage || t('auth.confirmError')}</div>
             <button

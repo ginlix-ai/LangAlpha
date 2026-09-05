@@ -38,6 +38,19 @@ def _make_workspace(status="running", **overrides):
     return ws
 
 
+@pytest.fixture(autouse=True)
+def _no_connector_literal_lookup(monkeypatch):
+    """The redaction path reads connector configs from the DB, and unlike the
+    vault lookup it has no cannot-exist short-circuit — with no pool open here
+    it would fail closed. The collector's behavior is owned by the unit tier
+    (test_secret_redactor.py); this suite exercises the sandbox-to-HTTP path.
+    """
+    monkeypatch.setattr(
+        "src.server.utils.secret_redactor._connector_secret_literals",
+        AsyncMock(return_value={}),
+    )
+
+
 @pytest.fixture
 def sandbox_base_dir(tmp_path):
     d = tmp_path / "sandboxes"

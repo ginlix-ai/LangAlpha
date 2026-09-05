@@ -23,17 +23,11 @@ export {
 } from '@/lib/bars/chartConstants';
 export type { IntervalConfig } from '@/lib/bars/chartConstants';
 export { FOREIGN_EXCHANGES, isUSEquity } from '@/lib/bars/exchanges';
+import { createThemeResolver } from '@/lib/themeTokens';
 import { getExtendedHoursType } from '@/lib/bars/marketSession';
 import type { ExtendedHoursType } from '@/lib/bars/marketSession';
 
 // --- Chart theme constants ---
-/** @deprecated Use getChartTheme(theme).bg instead */
-export const CHART_BG = '#000000';
-/** @deprecated Use getChartTheme(theme).text instead */
-export const CHART_TEXT = '#666666';
-/** @deprecated Use getChartTheme(theme).grid instead */
-export const CHART_GRID = '#1A1A1A';
-
 export interface ChartThemeColors {
   bg: string;
   text: string;
@@ -58,58 +52,113 @@ export interface ChartThemeColors {
   baselineDownFill2: string;
 }
 
-// Light theme overrides
-export const CHART_THEME: Record<'dark' | 'light', ChartThemeColors> = {
+// Canvas config can't read CSS custom properties, so each solid slot names the
+// token it comes from and is resolved off <html> at paint time. A non-`--`
+// entry is a one-off: the pre/post-market washes have no token, and the
+// alpha derivations need opacities no *-soft/-border token carries.
+const CHART_SOURCES: Record<'dark' | 'light', ChartThemeColors> = {
   dark: {
-    bg: '#000000',
-    text: '#666666',
-    grid: '#1A1A1A',
-    upColor: '#10b981',
-    downColor: '#ef4444',
-    volumeUp: 'rgba(16,185,129,0.3)',
-    volumeDown: 'rgba(239,68,68,0.3)',
+    bg: '--color-bg-card',
+    text: '--color-text-secondary',
+    grid: '--color-border-default',
+    upColor: '--color-profit',
+    downColor: '--color-loss',
+    volumeUp: 'rgba(63,185,80,0.3)',
+    volumeDown: 'rgba(248,81,73,0.3)',
     extBgPre: 'rgba(251,191,36,0.08)',       // amber/yellow pre-market
     extBgPost: 'rgba(59,130,246,0.10)',      // dark blue after-hours
-    extVolumeUp: 'rgba(16,185,129,0.15)',
-    extVolumeDown: 'rgba(239,68,68,0.15)',
-    watermark: 'rgba(102,102,102,0.06)',
-    rsiLine: '#667eea',
-    rsiTop: 'rgba(102,126,234,0.3)',
-    rsiBottom: 'rgba(102,126,234,0.02)',
-    baselineUp: '#10b981',
-    baselineUpFill1: 'rgba(16,185,129,0.2)',
-    baselineUpFill2: 'rgba(16,185,129,0.02)',
-    baselineDown: '#ef4444',
-    baselineDownFill1: 'rgba(239,68,68,0.02)',
-    baselineDownFill2: 'rgba(239,68,68,0.2)',
+    extVolumeUp: 'rgba(63,185,80,0.15)',
+    extVolumeDown: 'rgba(248,81,73,0.15)',
+    watermark: 'rgba(230,230,228,0.05)',
+    rsiLine: '--color-accent-primary',
+    rsiTop: 'rgba(233,149,74,0.2)',
+    rsiBottom: 'rgba(233,149,74,0.02)',
+    baselineUp: '--color-profit',
+    baselineUpFill1: 'rgba(63,185,80,0.2)',
+    baselineUpFill2: 'rgba(63,185,80,0.02)',
+    baselineDown: '--color-loss',
+    baselineDownFill1: 'rgba(248,81,73,0.02)',
+    baselineDownFill2: 'rgba(248,81,73,0.2)',
   },
   light: {
-    bg: '#FFFCF9',
-    text: '#7A756F',
-    grid: '#E8E2DB',
-    upColor: '#16A34A',
-    downColor: '#DC2626',
-    volumeUp: 'rgba(22,163,74,0.25)',
-    volumeDown: 'rgba(220,38,38,0.25)',
+    bg: '--color-bg-card',
+    text: '--color-text-secondary',
+    grid: '--color-border-default',
+    upColor: '--color-profit',
+    downColor: '--color-loss',
+    volumeUp: 'rgba(26,127,55,0.25)',
+    volumeDown: 'rgba(207,34,46,0.25)',
     extBgPre: 'rgba(217,119,6,0.05)',        // amber/yellow pre-market
     extBgPost: 'rgba(30,64,175,0.06)',       // dark blue after-hours
-    extVolumeUp: 'rgba(22,163,74,0.12)',
-    extVolumeDown: 'rgba(220,38,38,0.12)',
-    watermark: 'rgba(45,43,40,0.04)',
-    rsiLine: '#37528B',
-    rsiTop: 'rgba(55,82,139,0.2)',
-    rsiBottom: 'rgba(55,82,139,0.02)',
-    baselineUp: '#16A34A',
-    baselineUpFill1: 'rgba(22,163,74,0.15)',
-    baselineUpFill2: 'rgba(22,163,74,0.02)',
-    baselineDown: '#DC2626',
-    baselineDownFill1: 'rgba(220,38,38,0.02)',
-    baselineDownFill2: 'rgba(220,38,38,0.15)',
+    extVolumeUp: 'rgba(26,127,55,0.12)',
+    extVolumeDown: 'rgba(207,34,46,0.12)',
+    watermark: 'rgba(31,31,30,0.04)',
+    rsiLine: '--color-accent-primary',
+    rsiTop: 'rgba(208,125,51,0.2)',
+    rsiBottom: 'rgba(208,125,51,0.02)',
+    baselineUp: '--color-profit',
+    baselineUpFill1: 'rgba(26,127,55,0.15)',
+    baselineUpFill2: 'rgba(26,127,55,0.02)',
+    baselineDown: '--color-loss',
+    baselineDownFill1: 'rgba(207,34,46,0.02)',
+    baselineDownFill2: 'rgba(207,34,46,0.15)',
   },
 };
 
+/** Literal mirror of CHART_SOURCES — the jsdom / pre-stamp path. */
+export const CHART_THEME: Record<'dark' | 'light', ChartThemeColors> = {
+  dark: {
+    bg: '#232426',
+    text: '#9B9FA6',
+    grid: '#2E3033',
+    upColor: '#3FB950',
+    downColor: '#F85149',
+    volumeUp: 'rgba(63,185,80,0.3)',
+    volumeDown: 'rgba(248,81,73,0.3)',
+    extBgPre: 'rgba(251,191,36,0.08)',       // amber/yellow pre-market
+    extBgPost: 'rgba(59,130,246,0.10)',      // dark blue after-hours
+    extVolumeUp: 'rgba(63,185,80,0.15)',
+    extVolumeDown: 'rgba(248,81,73,0.15)',
+    watermark: 'rgba(230,230,228,0.05)',
+    rsiLine: '#E9954A',
+    rsiTop: 'rgba(233,149,74,0.2)',
+    rsiBottom: 'rgba(233,149,74,0.02)',
+    baselineUp: '#3FB950',
+    baselineUpFill1: 'rgba(63,185,80,0.2)',
+    baselineUpFill2: 'rgba(63,185,80,0.02)',
+    baselineDown: '#F85149',
+    baselineDownFill1: 'rgba(248,81,73,0.02)',
+    baselineDownFill2: 'rgba(248,81,73,0.2)',
+  },
+  light: {
+    bg: '#FFFFFF',
+    text: '#73726E',
+    grid: '#E8E8E6',
+    upColor: '#1A7F37',
+    downColor: '#CF222E',
+    volumeUp: 'rgba(26,127,55,0.25)',
+    volumeDown: 'rgba(207,34,46,0.25)',
+    extBgPre: 'rgba(217,119,6,0.05)',        // amber/yellow pre-market
+    extBgPost: 'rgba(30,64,175,0.06)',       // dark blue after-hours
+    extVolumeUp: 'rgba(26,127,55,0.12)',
+    extVolumeDown: 'rgba(207,34,46,0.12)',
+    watermark: 'rgba(31,31,30,0.04)',
+    rsiLine: '#D07D33',
+    rsiTop: 'rgba(208,125,51,0.2)',
+    rsiBottom: 'rgba(208,125,51,0.02)',
+    baselineUp: '#1A7F37',
+    baselineUpFill1: 'rgba(26,127,55,0.15)',
+    baselineUpFill2: 'rgba(26,127,55,0.02)',
+    baselineDown: '#CF222E',
+    baselineDownFill1: 'rgba(207,34,46,0.02)',
+    baselineDownFill2: 'rgba(207,34,46,0.15)',
+  },
+};
+
+const resolveChartTheme = createThemeResolver(CHART_SOURCES, CHART_THEME);
+
 export function getChartTheme(theme: 'dark' | 'light'): ChartThemeColors {
-  return CHART_THEME[theme] || CHART_THEME.dark;
+  return resolveChartTheme(theme === 'light' ? 'light' : 'dark');
 }
 
 // Intervals shown as direct buttons in the toolbar
@@ -163,7 +212,7 @@ export const TARGET_BAR_SPACING: Record<string, number> = {
 
 // --- Overlay constants ---
 export const OVERLAY_COLORS: Record<string, string> = {
-  earnings: '#10b981',
+  earnings: '#3FB950',
   grades: '#22d3ee',
   priceTargets: '#a78bfa',
 };

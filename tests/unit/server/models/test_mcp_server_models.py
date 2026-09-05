@@ -1,9 +1,9 @@
-"""Validation + masking unit tests for the MCP server Pydantic models.
+"""Validation + response-shaping unit tests for the MCP server Pydantic models.
 
 Covers the API security boundary: name regex, transport coherence, command
 allowlist (no bash), URL policy (incl. metadata IP / userinfo / private ranges),
 vault-ref vs bare host-env values, length caps, forbidden keys, and the
-env/header masking that keeps literal secret values out of all responses.
+owner-scoped echo of the stored env/header maps (never a resolved secret).
 """
 
 from __future__ import annotations
@@ -12,11 +12,11 @@ import pytest
 from pydantic import ValidationError
 
 from src.server.models.mcp_server import (
-    ALLOWED_COMMANDS,
     McpServerInput,
     catalog_row_to_response,
     coerce_mcp_name,
     collect_vault_refs,
+    isolation_warnings,
     normalize_transport,
     parse_mcp_servers_payload,
     validate_remote_url,
@@ -96,19 +96,24 @@ def test_sse_requires_url():
 
 
 # ---------------------------------------------------------------------------
-# Command allowlist — no bash / no shells
+# Command — not filtered
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("cmd", sorted(ALLOWED_COMMANDS))
-def test_command_allowlist_accepts(cmd):
+# Every one of these is how some published MCP server documents its own launch.
+# The list is not a contract about what we run, it is the evidence that a
+# closed one would have made these uninstallable.
+@pytest.mark.parametrize(
+    "cmd",
+    ["npx", "uvx", "docker", "deno", "bun", "go", "java", "/usr/local/bin/srv", "./srv"],
+)
+def test_any_command_is_accepted(cmd):
     assert McpServerInput(**_stdio(command=cmd)).command == cmd
 
 
-@pytest.mark.parametrize("cmd", ["bash", "sh", "zsh", "/bin/bash", "curl", "rm"])
-def test_command_allowlist_rejects(cmd):
+def test_stdio_still_requires_a_command():
     with pytest.raises(ValidationError):
-        McpServerInput(**_stdio(command=cmd))
+        McpServerInput(**_stdio(command=""))
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +150,8 @@ def test_url_accepts_public_https():
         "https://api.example.com/${vault:TOK}",  # secret in url
         "https://api.example.com/${VAR}/mcp",  # brace env placeholder
         "https://api.example.com/${vault:TOK",  # unclosed brace form
+        "https://api.example.com:99999/mcp",  # port out of range
+        "https://api.example.com:notaport/mcp",  # non-numeric port
     ],
 )
 def test_url_policy_rejects(url):
@@ -193,6 +200,31 @@ def test_env_rejects_bare_host_env_values(value):
 def test_header_accepts_vault_ref():
     srv = McpServerInput(**_http(headers={"Authorization": "${vault:API_KEY}"}))
     assert srv.headers["Authorization"] == "${vault:API_KEY}"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Bearer ${vault:API_KEY}",
+        "token ${vault:API_KEY}",
+        "${vault:USER}:${vault:PASS}",
+        "${vault:API_KEY} suffix",
+    ],
+)
+def test_header_accepts_a_ref_embedded_in_a_larger_value(value):
+    # `Bearer <token>` is how nearly every MCP server wants its Authorization
+    # header, and the sandbox substitutes refs in place rather than replacing
+    # the field. Requiring the whole value to be the reference meant the scheme
+    # word had to live inside the secret.
+    srv = McpServerInput(**_http(headers={"Authorization": value}))
+    assert srv.headers["Authorization"] == value
+
+
+def test_an_embedded_ref_does_not_excuse_the_rest_of_the_value():
+    with pytest.raises(ValidationError):
+        McpServerInput(
+            **_http(headers={"Authorization": "Bearer ${vault:OK} ${HOME}"})
+        )
 
 
 def test_header_rejects_bare_host_env_value():
@@ -259,6 +291,8 @@ def test_discovery_uses_secrets_defaults_off_and_round_trips():
 
 def test_catalog_row_discovery_uses_secrets_in_response():
     row = {
+        "plugin_name": None,
+        "plugin_enabled": None,
         "name": "remote_server",
         "transport": "http",
         "command": None,
@@ -277,6 +311,33 @@ def test_catalog_row_discovery_uses_secrets_in_response():
     # A row missing the field defaults to off.
     del row["discovery_uses_secrets"]
     assert catalog_row_to_response(row).discovery_uses_secrets is False
+
+
+# ---------------------------------------------------------------------------
+# Isolation warnings — non-blocking nudges on an otherwise valid definition
+# ---------------------------------------------------------------------------
+
+
+def test_sse_transport_warns_it_is_not_executable():
+    # The sandbox client refuses legacy sse outright, so a silently-accepted
+    # sse server saves looking healthy and fails on every tool call.
+    server = McpServerInput(**_http(transport="sse"))
+    [warning] = isolation_warnings(server)
+    assert "sse" in warning
+    assert "http" in warning
+    # A warning, never a rejection — legacy imports must keep landing.
+    assert server.transport == "sse"
+
+
+def test_http_and_isolated_stdio_gain_no_warning():
+    assert isolation_warnings(McpServerInput(**_http())) == []
+    assert isolation_warnings(McpServerInput(**_stdio(command="npx"))) == []
+    assert isolation_warnings(McpServerInput(**_stdio(command="uvx"))) == []
+
+
+def test_shared_env_stdio_command_still_warns():
+    [warning] = isolation_warnings(McpServerInput(**_stdio(command="python")))
+    assert "shared sandbox" in warning
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +361,7 @@ def test_unknown_extra_key_rejected():
 
 
 # ---------------------------------------------------------------------------
-# Masking — vault refs surfaced, literal values never echoed
+# Reference maps — echoed to the owner, with vault refs as a projection
 # ---------------------------------------------------------------------------
 
 
@@ -309,8 +370,12 @@ def test_collect_vault_refs_dedupes_and_sorts():
     assert refs == ["A", "Z"]
 
 
-def test_catalog_row_response_masks_literals():
+def _catalog_row(**overrides):
     row = {
+        # The plugin LEFT JOIN is part of every catalog SELECT, so a real row
+        # always carries these two, NULL when it has no plugin owner.
+        "plugin_name": None,
+        "plugin_enabled": None,
         "name": "remote_server",
         "transport": "http",
         "command": None,
@@ -324,10 +389,46 @@ def test_catalog_row_response_masks_literals():
         "created_at": "2026-01-01T00:00:00+00:00",
         "updated_at": "2026-01-01T00:00:00+00:00",
     }
-    resp = catalog_row_to_response(row)
-    dumped = resp.model_dump_json()
-    assert "literal-value" not in dumped
+    row.update(overrides)
+    return row
+
+
+def test_catalog_row_response_echoes_maps_verbatim():
+    """The owner's stored values round-trip, mixed refs and literals alike.
+
+    A PUT replaces the whole row and the edit form hydrates from these maps, so
+    a response that surfaced only ``header_refs`` would turn every unrelated
+    edit into a silent wipe of the literal entries.
+    """
+    resp = catalog_row_to_response(_catalog_row())
+    assert resp.headers == {
+        "Authorization": "${vault:API_KEY}",
+        "X-Trace": "literal-value",
+    }
+    # …and the refs stay a projection over the same map, not a replacement.
     assert resp.header_refs == ["API_KEY"]
+    assert resp.env == {} and resp.env_refs == []
+
+
+def test_catalog_row_response_echoes_stdio_env():
+    resp = catalog_row_to_response(
+        _catalog_row(
+            transport="stdio",
+            command="npx",
+            url=None,
+            headers={},
+            env={"API_TOKEN": "${vault:API_KEY}", "REGION": "us-east-1"},
+        )
+    )
+    assert resp.env == {"API_TOKEN": "${vault:API_KEY}", "REGION": "us-east-1"}
+    assert resp.env_refs == ["API_KEY"]
+    assert resp.headers == {} and resp.header_refs == []
+
+
+def test_catalog_row_response_tolerates_null_maps():
+    resp = catalog_row_to_response(_catalog_row(env=None, headers=None))
+    assert resp.env == {} and resp.headers == {}
+    assert resp.env_refs == [] and resp.header_refs == []
 
 
 # ---------------------------------------------------------------------------

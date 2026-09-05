@@ -153,6 +153,20 @@ describe('ThreadStreamMux (v2 contract client)', () => {
     mux.detach();
   }, 15000);
 
+  it('marks frames as replay until the channel reports caught up', async () => {
+    const tid = freshThread();
+    const { sink, events } = makeSink();
+    const mux = getThreadMux(tid);
+    mux.attach(sink);
+    const c1 = await connected(1);
+    c1.push(chanOpen('r1', 'task:t1'));
+    c1.push(taskFrame('r1', 'task:t1', '1-0', 1, 'a'));
+    c1.push(`event: chan_caught_up\ndata: ${JSON.stringify({ chan: 'run:r1' })}\n\n`);
+    c1.push(taskFrame('r1', 'task:t1', '2-0', 2, 'b'));
+    expect(events.map((e) => [e.content, e._replay])).toEqual([['a', true], ['b', undefined]]);
+    mux.detach();
+  }, 15000);
+
   it('drain-closing a predecessor run is not task-terminal while the successor is open', async () => {
     const tid = freshThread();
     const { sink, events, closures } = makeSink();

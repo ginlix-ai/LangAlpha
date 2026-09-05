@@ -343,3 +343,81 @@ class TestBackgroundBashTrace:
         assert stopped is True
         # A stopped command yields no output, so nothing to attest — drop the map.
         assert "cmd-1" not in sandbox._bg_trace_paths
+
+
+class TestEgressRelayCredentialPush:
+    """The egress credential file is published atomically and fail-closed.
+
+    The in-sandbox client reads it on every relay call, so a torn or missing
+    write breaks the connector. The write stages to a temp and atomically
+    renames; a nonzero sandbox exit is a failure the caller must see (it gates
+    whether the JWT expiry is recorded), because ``exec`` returns a nonzero
+    ``ExecResult`` rather than raising.
+    """
+
+    def _sandbox(self, mock_create_provider, mock_provider, mock_runtime):
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
+        mock_create_provider.return_value = mock_provider
+        sandbox = PTCSandbox(config=_make_config())
+        sandbox.runtime = mock_runtime
+        sandbox._work_dir = "/home/workspace"
+        return sandbox
+
+    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
+    @pytest.mark.asyncio
+    async def test_publish_stages_to_temp_then_atomically_replaces(
+        self, mock_create_provider, mock_provider, mock_runtime
+    ):
+        sandbox = self._sandbox(mock_create_provider, mock_provider, mock_runtime)
+        mock_runtime.exec = AsyncMock(return_value=ExecResult("", "", 0))
+
+        ok = await sandbox.upload_egress_relay_credentials(
+            {"relay_base_url": "https://relay.test", "token": "jwt", "grants": {}}
+        )
+
+        assert ok is True
+        # Upload landed on a temp, never the live path.
+        (_content, dest), _ = mock_runtime.upload_file.call_args
+        assert dest.endswith(".tmp")
+        assert dest.startswith("/home/workspace/_internal/.egress_relay.json.")
+        # Publish is chmod-then-atomic-rename via os.replace (not `mv`), and the
+        # temp is the one just uploaded.
+        publish_cmd = mock_runtime.exec.call_args_list[0].args[0]
+        assert "os.replace" in publish_cmd
+        assert "chmod 600" in publish_cmd
+        # The temp path (no shell-special chars → quoted verbatim) is the source.
+        assert dest in publish_cmd
+
+    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_fails_closed_and_scavenges_temp(
+        self, mock_create_provider, mock_provider, mock_runtime
+    ):
+        sandbox = self._sandbox(mock_create_provider, mock_provider, mock_runtime)
+        # The rename exec reports failure via exit code, not an exception.
+        mock_runtime.exec = AsyncMock(return_value=ExecResult("", "boom", 1))
+
+        ok = await sandbox.upload_egress_relay_credentials(
+            {"relay_base_url": "https://relay.test", "token": "jwt", "grants": {}}
+        )
+
+        assert ok is False
+        # A failed publish scavenges its orphaned temp (the last exec is the rm).
+        assert any(
+            "rm -f" in c.args[0] for c in mock_runtime.exec.call_args_list
+        )
+
+    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
+    @pytest.mark.asyncio
+    async def test_removal_reports_confirmed_success(
+        self, mock_create_provider, mock_provider, mock_runtime
+    ):
+        sandbox = self._sandbox(mock_create_provider, mock_provider, mock_runtime)
+        mock_runtime.exec = AsyncMock(return_value=ExecResult("", "", 0))
+
+        ok = await sandbox.upload_egress_relay_credentials(None)
+
+        assert ok is True
+        mock_runtime.upload_file.assert_not_called()
+        assert "rm -f" in mock_runtime.exec.call_args_list[0].args[0]

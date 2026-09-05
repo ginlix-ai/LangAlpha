@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Newspaper, Clock, Search, X } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
 import { NewsFeedConfigSchema } from '../framework/configSchemas';
@@ -124,7 +125,7 @@ function NewsRow({
           ) : null}
           {item.source ? (
             <span
-              className="text-[9.5px] font-semibold uppercase tracking-wide truncate"
+              className="text-[0.5938rem] font-semibold uppercase tracking-wide truncate"
               style={{ color: 'var(--color-accent-light)' }}
             >
               {item.source}
@@ -132,7 +133,7 @@ function NewsRow({
           ) : null}
           {item.time ? (
             <span
-              className="text-[10px] flex items-center gap-0.5 flex-shrink-0"
+              className="text-[0.625rem] flex items-center gap-0.5 flex-shrink-0"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               <Clock size={9} /> {item.time}
@@ -140,7 +141,7 @@ function NewsRow({
           ) : null}
         </div>
         <h3
-          className="text-[13px] font-medium leading-snug line-clamp-2"
+          className="text-[0.8125rem] font-medium leading-snug line-clamp-2"
           style={{ color: 'var(--color-text-primary)' }}
           title={item.title}
         >
@@ -151,7 +152,7 @@ function NewsRow({
             {tickers.slice(0, 4).map((t) => (
               <span
                 key={t}
-                className="text-[9.5px] font-bold px-1.5 py-0.5 rounded"
+                className="text-[0.5938rem] font-bold px-1.5 py-0.5 rounded"
                 style={{
                   backgroundColor: 'var(--color-accent-soft)',
                   color: 'var(--color-accent-light)',
@@ -161,7 +162,7 @@ function NewsRow({
               </span>
             ))}
             {tickers.length > 4 ? (
-              <span className="text-[9.5px]" style={{ color: 'var(--color-text-tertiary)' }}>
+              <span className="text-[0.5938rem]" style={{ color: 'var(--color-text-tertiary)' }}>
                 +{tickers.length - 4}
               </span>
             ) : null}
@@ -318,7 +319,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
             style={{ color: 'var(--color-text-tertiary)' }}
           />
           <span
-            className="text-[10px] font-semibold uppercase tracking-[0.14em]"
+            className="text-[0.625rem] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
             {t('dashboard.widgets.newsFeed.header', { label: t(SOURCE_KEY[activeTab]) })}
@@ -341,7 +342,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
                 key={key}
                 type="button"
                 onClick={() => switchTab(key)}
-                className="px-2.5 py-[3px] text-[10.5px] uppercase tracking-wider rounded-full transition-colors"
+                className="px-2.5 py-[3px] text-[0.6563rem] uppercase tracking-wider rounded-full transition-colors"
                 style={{
                   backgroundColor: isActive ? 'var(--color-bg-card)' : 'transparent',
                   color: isActive ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
@@ -357,7 +358,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
 
       <div className="flex items-center gap-2 mb-3 flex-wrap">
         <div
-          className="flex items-center gap-1.5 h-7 px-2 rounded-md border"
+          className="rings-within flex items-center gap-1.5 h-7 px-2 rounded-md border"
           style={{
             backgroundColor: 'var(--color-bg-subtle)',
             borderColor: 'var(--color-border-muted)',
@@ -371,7 +372,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
             placeholder={t('dashboard.widgets.newsFeed.tickerPlaceholder')}
             value={tickerFilter}
             onChange={(e) => setTickerFilter(e.target.value)}
-            className="flex-1 text-[11px] bg-transparent border-none outline-none min-w-0"
+            className="flex-1 text-[0.6875rem] bg-transparent border-none min-w-0"
             style={{ color: 'var(--color-text-primary)' }}
           />
           {tickerFilter ? (
@@ -398,7 +399,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
                 key={dr.key}
                 type="button"
                 onClick={() => setDateRange(dr.key)}
-                className="px-1.5 py-[3px] rounded text-[10px] uppercase tracking-wider transition-colors"
+                className="px-1.5 py-[3px] rounded text-[0.625rem] uppercase tracking-wider transition-colors"
                 style={{
                   backgroundColor: isActive ? 'var(--color-bg-card)' : 'transparent',
                   color: isActive ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
@@ -416,7 +417,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
             value={sourceFilter}
             onChange={(e) => setSourceFilter(e.target.value)}
             aria-label={t('dashboard.widgets.newsFeed.sourceLabel')}
-            className="h-7 px-2 rounded-md border text-[11px] outline-none cursor-pointer max-w-[140px]"
+            className="h-7 px-2 rounded-md border text-[0.6875rem] cursor-pointer max-w-[140px]"
             style={{
               backgroundColor: 'var(--color-bg-subtle)',
               borderColor: 'var(--color-border-muted)',
@@ -440,7 +441,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
               setDateRange('all');
               setSourceFilter('all');
             }}
-            className="text-[10px] uppercase tracking-wider transition-colors"
+            className="text-[0.625rem] uppercase tracking-wider transition-colors"
             style={{ color: 'var(--color-text-tertiary)' }}
             onMouseEnter={(e) => {
               e.currentTarget.style.color = 'var(--color-text-primary)';
@@ -548,10 +549,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
         <div ref={sentinelRef} aria-hidden className="h-px w-full" />
         {isFetchingNextPage ? (
           <div className="flex justify-center py-3">
-            <div
-              className="h-5 w-5 border-2 rounded-full animate-spin"
-              style={{ borderColor: 'var(--color-border-default)', borderTopColor: 'var(--color-accent-primary)' }}
-            />
+            <Loader size={20} className="text-[color:var(--color-accent-primary)]" />
           </div>
         ) : null}
       </div>

@@ -5,23 +5,41 @@
  * testable without pulling in the full `chat-input` component graph.
  */
 
-export type ModelMetadata = Record<string, { sdk?: string; provider?: string }>;
+/**
+ * Whether the user can still reach *model*.
+ *
+ * Stays open while the model list is empty so a slow or failed fetch degrades to
+ * showing everything rather than blanking the menu.
+ */
+export function isModelAvailable(model: string, validModelNames: Set<string>): boolean {
+  return validModelNames.size === 0 || validModelNames.has(model);
+}
+
+export interface PrimaryModelsParams {
+  selectedModel: string | null;
+  /** Models this thread has already used, from replayed turn metadata. */
+  threadModels: string[];
+  validModelNames: Set<string>;
+}
 
 /**
- * Check if two models are compatible for mid-session switching.
- * - Different SDKs → incompatible
- * - openai/codex SDK → must be same provider (sub-provider)
- * - Other SDKs (anthropic, gemini, etc.) → compatible if same SDK
+ * Models listed in the menu's primary section: the ones this thread already used,
+ * then the current selection.
+ *
+ * Thread history is gated on availability because a model can be revoked long
+ * after a turn used it, and an unreachable row only fails once the user sends.
+ * The selection itself is never gated — the trigger displays it, so dropping it
+ * would leave the menu unable to show what is currently selected.
  */
-export function areModelsCompatible(modelA: string | null, modelB: string | null, metadata: ModelMetadata): boolean {
-  if (!modelA || !modelB) return true;
-  const a = metadata[modelA], b = metadata[modelB];
-  if (!a || !b) return true; // allow unknown models (no metadata on either side)
-  if (a.sdk !== b.sdk) return false;
-  if (a.sdk === 'openai' || a.sdk === 'codex') {
-    return a.provider === b.provider;
-  }
-  return true;
+export function derivePrimaryModels({
+  selectedModel,
+  threadModels,
+  validModelNames,
+}: PrimaryModelsParams): string[] {
+  const reachable = threadModels.filter(
+    (m) => typeof m === 'string' && m.length > 0 && isModelAvailable(m, validModelNames),
+  );
+  return [...new Set([...reachable, selectedModel].filter((m): m is string => !!m))];
 }
 
 export interface QuickAccessParams {
@@ -29,9 +47,6 @@ export interface QuickAccessParams {
   preferredFlashModel: string | null;
   starredModels: string[];
   validModelNames: Set<string>;
-  initialModel: string | null;
-  selectedModel: string | null;
-  modelMetadata: ModelMetadata;
   /** Models already shown in the menu's primary section; excluded to avoid duplicate rows. */
   excludeModels?: string[];
 }
@@ -39,17 +54,14 @@ export interface QuickAccessParams {
 /**
  * Quick-access models for the chat model menu — the current primary + flash
  * defaults unioned with the user's manual stars, gated by availability (drops
- * removed/revoked models) and, mid-thread, by SDK compatibility. Derived
- * per-render so switching a default never leaves a stale pin behind.
+ * removed/revoked models). Derived per-render so switching a default never
+ * leaves a stale pin behind.
  */
 export function deriveQuickAccessModels({
   preferredModel,
   preferredFlashModel,
   starredModels,
   validModelNames,
-  initialModel,
-  selectedModel,
-  modelMetadata,
   excludeModels = [],
 }: QuickAccessParams): string[] {
   const exclude = new Set(excludeModels);
@@ -63,10 +75,6 @@ export function deriveQuickAccessModels({
   return union.filter((m) => {
     // Already rendered in the primary section (selected + thread models).
     if (exclude.has(m)) return false;
-    // Skip the availability gate while the model list is still loading (empty
-    // set) so a slow/failed fetch can't blank the menu.
-    if (validModelNames.size > 0 && !validModelNames.has(m)) return false;
-    // Mid-thread, only offer models compatible with the thread's model.
-    return !initialModel || areModelsCompatible(selectedModel, m, modelMetadata);
+    return isModelAvailable(m, validModelNames);
   });
 }

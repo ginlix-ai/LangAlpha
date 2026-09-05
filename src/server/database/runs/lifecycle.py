@@ -140,6 +140,7 @@ async def start_run(
     fork: Optional[ForkSpec] = None,
     metadata: Optional[Dict[str, Any]] = None,
     created_at: Optional[datetime] = None,
+    user_id: Optional[str] = None,
     conn=None,
 ) -> Dict[str, Any]:
     """The START transaction: fork cleanup + query row + in_progress run row +
@@ -248,9 +249,9 @@ async def start_run(
                         INSERT INTO conversation_responses (
                             conversation_response_id, conversation_thread_id,
                             turn_index, status, metadata, created_at,
-                            attempt_no, retry_of_run_id, request_key
+                            attempt_no, retry_of_run_id, request_key, user_id
                         )
-                        VALUES (%s, %s, %s, 'in_progress', %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, 'in_progress', %s, %s, %s, %s, %s, %s)
                         RETURNING *
                         """,
                         (
@@ -262,6 +263,7 @@ async def start_run(
                             attempt_no,
                             retry_of_run_id,
                             request_key,
+                            user_id,
                         ),
                     )
                     run_row = dict(await cur.fetchone())
@@ -380,6 +382,15 @@ async def finalize_run(
                             warnings = %s,
                             errors = %s,
                             execution_time = %s,
+                            -- The turn's own usage (when any) is inserted by
+                            -- usage_writer inside this same transaction, so the
+                            -- terminal CAS is also the billing settle for the
+                            -- row: its heartbeated in-flight spend stops
+                            -- counting the instant the real usage row exists.
+                            -- Subagent spend settles on subagent_runs rows,
+                            -- never here — a tail-draining child keeps counting
+                            -- on its own row after this parent settles.
+                            usage_settled_at = NOW(),
                             -- Merge, never replace: mid-run appenders
                             -- (append_sse_event, e.g. manual compact/offload
                             -- context_window persists) may have durably written
@@ -458,10 +469,15 @@ async def finalize_run(
                     )
 
                 # Deferred task report-backs wait for exactly this event: a
-                # completed finalize proves no pending HITL checkpoint can
-                # collide with their synthetic POST. Same transaction as the
-                # terminal CAS, so release and successor hooks commit together.
-                if final_status == "completed":
+                # dead-turn finalize (completed, error, or cancelled) proves
+                # no pending HITL checkpoint can collide with their synthetic
+                # POST. Interrupted keeps them parked — the checkpoint is
+                # live and a POST would collide with it; an interrupted
+                # parent that later errors or cancels releases here, so a
+                # parked job can never be stranded. Same transaction as the
+                # terminal CAS, so release and successor hooks commit
+                # together.
+                if final_status in ("completed", "error", "cancelled"):
                     released = await release_deferred_jobs(
                         conn, thread_id, "task_report_back"
                     )
@@ -590,14 +606,19 @@ async def workspace_has_active_run(workspace_id: str) -> bool:
 
 
 async def get_latest_attempt(thread_id: str) -> Optional[Dict[str, Any]]:
-    """The thread's most recent attempt row — /retry's validation target."""
+    """The thread's most recent attempt row — /retry's validation target.
+
+    Ordered by ``run_seq`` — the one monotonic run ordering. turn_index is
+    reused by retries and lowered by branch rewinds, so it cannot define
+    "latest" (two coexisting definitions of latest is a drift bug).
+    """
     async with pool.get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
                 SELECT * FROM conversation_responses
                 WHERE conversation_thread_id = %s
-                ORDER BY turn_index DESC, attempt_no DESC
+                ORDER BY run_seq DESC
                 LIMIT 1
                 """,
                 (thread_id,),
@@ -653,7 +674,7 @@ async def heal_stale_thread_projections() -> int:
                             SELECT cr.status FROM conversation_responses cr
                             WHERE cr.conversation_thread_id
                                 = ct.conversation_thread_id
-                            ORDER BY cr.turn_index DESC, cr.attempt_no DESC
+                            ORDER BY cr.run_seq DESC
                             LIMIT 1
                         ),
                         'completed'
@@ -690,20 +711,48 @@ async def get_latest_attempts_for_threads(
                 """
                 SELECT DISTINCT ON (cr.conversation_thread_id)
                     cr.conversation_thread_id, cr.conversation_response_id,
-                    cr.status, cr.cancel_requested_at
+                    cr.status, cr.cancel_requested_at,
+                    cr.interrupt_reason, cr.run_seq
                 FROM conversation_responses cr
                 JOIN conversation_threads ct
                     ON ct.conversation_thread_id = cr.conversation_thread_id
                 JOIN workspaces w ON w.workspace_id = ct.workspace_id
                 WHERE cr.conversation_thread_id = ANY(%s)
                   AND w.user_id = %s
-                ORDER BY cr.conversation_thread_id,
-                         cr.turn_index DESC, cr.attempt_no DESC
+                ORDER BY cr.conversation_thread_id, cr.run_seq DESC
                 """,
                 (normalized, user_id),
             )
             rows = await cur.fetchall()
             return {str(r["conversation_thread_id"]): dict(r) for r in rows}
+
+
+async def get_run_statuses(run_ids: List[str]) -> Dict[str, str]:
+    """run_id -> status, for the ids that HAVE a row.
+
+    Absence means the row does not exist — load-bearing for the retention
+    sweeper, which treats a missing root run as garbage. That inference is
+    only sound because the row is inserted before the run's first XADD.
+    Non-UUID ids are dropped pre-bind so one malformed key can't 22P02 the
+    whole batch.
+    """
+    normalized = [nid for nid in (normalize_uuid(r) for r in run_ids) if nid]
+    if not normalized:
+        return {}
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT conversation_response_id, status
+                FROM conversation_responses
+                WHERE conversation_response_id = ANY(%s)
+                """,
+                (normalized,),
+            )
+            rows = await cur.fetchall()
+            return {
+                str(r["conversation_response_id"]): str(r["status"]) for r in rows
+            }
 
 
 async def find_run_by_request_key(request_key: str) -> Optional[Dict[str, Any]]:

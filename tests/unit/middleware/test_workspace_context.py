@@ -1,10 +1,10 @@
 """Tests for the WorkspaceContextMiddleware.
 
-Covers YAML front matter parsing, content block appending, agent.md
-injection into system messages, and truncation of large agent.md content.
+Covers the workspace block, agent.md injection into the system message, and
+truncation of large agent.md content.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.messages import SystemMessage
@@ -13,52 +13,7 @@ from ptc_agent.agent.middleware.workspace_context import (
     MAX_AGENT_MD_SIZE,
     WorkspaceContextMiddleware,
     _append_content_block,
-    _parse_yaml_front_matter,
 )
-
-
-# ---------------------------------------------------------------------------
-# Tests for _parse_yaml_front_matter
-# ---------------------------------------------------------------------------
-
-
-class TestParseYamlFrontMatter:
-    """Tests for _parse_yaml_front_matter."""
-
-    def test_valid_front_matter(self):
-        content = "---\nworkspace_name: My Workspace\ndescription: A test\n---\n# Body"
-        result = _parse_yaml_front_matter(content)
-        assert result is not None
-        assert result["workspace_name"] == "My Workspace"
-        assert result["description"] == "A test"
-
-    def test_no_front_matter(self):
-        content = "# Just a heading\nSome text"
-        result = _parse_yaml_front_matter(content)
-        assert result is None
-
-    def test_missing_closing_delimiter(self):
-        content = "---\nkey: value\nno closing"
-        result = _parse_yaml_front_matter(content)
-        assert result is None
-
-    def test_empty_front_matter(self):
-        content = "---\n---\n# Body"
-        result = _parse_yaml_front_matter(content)
-        assert result is not None
-        assert result == {}
-
-    def test_front_matter_with_empty_lines(self):
-        content = "---\nkey: value\n\nanother: data\n---\n# Body"
-        result = _parse_yaml_front_matter(content)
-        assert result is not None
-        assert result["key"] == "value"
-        assert result["another"] == "data"
-
-
-# ---------------------------------------------------------------------------
-# Tests for _append_content_block
-# ---------------------------------------------------------------------------
 
 
 class TestAppendContentBlock:
@@ -72,9 +27,12 @@ class TestAppendContentBlock:
         existing = SystemMessage(content="initial")
         result = _append_content_block(existing, "appended")
         assert isinstance(result, SystemMessage)
-        # Content blocks should contain the appended text
         blocks = result.content
-        assert any("appended" in str(b) for b in blocks) if isinstance(blocks, list) else "appended" in str(blocks)
+        assert (
+            any("appended" in str(b) for b in blocks)
+            if isinstance(blocks, list)
+            else "appended" in str(blocks)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -84,20 +42,65 @@ class TestAppendContentBlock:
 
 def _make_session(agent_md: str | None = None, conversation_id: str = "ws-123") -> MagicMock:
     """Create a mock Session object."""
-    session = MagicMock()
+    session = MagicMock(spec_set=["get_agent_md", "invalidate_agent_md", "conversation_id"])
     session.get_agent_md = AsyncMock(return_value=agent_md)
     session.conversation_id = conversation_id
     return session
 
 
-class TestGetWorkspaceContextBlock:
-    """Tests for _get_workspace_context_block."""
+class TestTheWorkspaceBlock:
+    """The row is the only place the workspace's name lives.
+
+    agent.md used to carry a copy in front matter, which meant a rename had two
+    places to reach and a whole reconcile to get it there. The name now arrives
+    from the row when the turn's agent is built, so the prompt is right by
+    construction.
+    """
+
+    def test_the_name_and_description_are_what_the_caller_was_given(self):
+        mw = WorkspaceContextMiddleware(
+            session=_make_session(), name="Q3 Semis", description="Chip supply chain."
+        )
+        assert mw._workspace_block() == (
+            "<workspace>\nName: Q3 Semis\nDescription: Chip supply chain.\n</workspace>"
+        )
+
+    def test_a_workspace_with_no_description_still_gets_its_name(self):
+        mw = WorkspaceContextMiddleware(session=_make_session(), name="Scratch", description="")
+        assert mw._workspace_block() == "<workspace>\nName: Scratch\n</workspace>"
+
+    def test_markup_in_the_name_cannot_read_as_a_tag(self):
+        mw = WorkspaceContextMiddleware(
+            session=_make_session(), name="A <b> & C", description="</workspace>"
+        )
+        block = mw._workspace_block()
+        assert block == (
+            "<workspace>\nName: A &lt;b&gt; &amp; C\n"
+            "Description: &lt;/workspace&gt;\n</workspace>"
+        )
+
+    def test_an_apostrophe_survives_as_an_apostrophe(self):
+        # html.escape's quote=True would render this "O&#x27;Brien" at the
+        # model. Nothing here is quoted, so nothing needs that.
+        mw = WorkspaceContextMiddleware(session=_make_session(), name="O'Brien Desk")
+        assert "Name: O'Brien Desk" in mw._workspace_block()
+
+    def test_surrounding_whitespace_is_dropped(self):
+        mw = WorkspaceContextMiddleware(session=_make_session(), name="  Scratch  ")
+        assert mw._workspace_block() == "<workspace>\nName: Scratch\n</workspace>"
+
+    def test_a_workspace_with_no_name_produces_no_block(self):
+        assert WorkspaceContextMiddleware(session=_make_session())._workspace_block() == ""
+
+
+class TestTheAgentMdBlock:
+    """Tests for _get_agent_md_block."""
 
     @pytest.mark.asyncio
     async def test_returns_agentmd_content(self):
         session = _make_session(agent_md="# My workspace\nSome notes")
         mw = WorkspaceContextMiddleware(session=session)
-        block = await mw._get_workspace_context_block()
+        block = await mw._get_agent_md_block()
         assert "<agentmd" in block
         assert "My workspace" in block
 
@@ -105,7 +108,7 @@ class TestGetWorkspaceContextBlock:
     async def test_returns_placeholder_when_no_agentmd(self):
         session = _make_session(agent_md=None)
         mw = WorkspaceContextMiddleware(session=session)
-        block = await mw._get_workspace_context_block()
+        block = await mw._get_agent_md_block()
         assert "No agent.md exists yet" in block
 
     @pytest.mark.asyncio
@@ -113,73 +116,59 @@ class TestGetWorkspaceContextBlock:
         large_content = "x" * (MAX_AGENT_MD_SIZE + 1000)
         session = _make_session(agent_md=large_content)
         mw = WorkspaceContextMiddleware(session=session)
-        block = await mw._get_workspace_context_block()
+        block = await mw._get_agent_md_block()
         assert "[... truncated ...]" in block
 
     @pytest.mark.asyncio
-    async def test_front_matter_change_triggers_sync(self):
-        agent_md = "---\nworkspace_name: Updated\n---\n# Content"
+    async def test_a_legacy_front_matter_block_is_passed_through_untouched(self):
+        # Nothing parses or rewrites it any more. The prompt tells the model
+        # the <workspace> block is authoritative, so a stale copy in an old
+        # notebook is text, not a second source of truth.
+        agent_md = "---\nworkspace_name: Old Name\n---\n\n# Old Name\n"
         session = _make_session(agent_md=agent_md)
         mw = WorkspaceContextMiddleware(session=session)
-
-        def _close_coro(coro):
-            """Prevent 'coroutine was never awaited' by closing it."""
-            coro.close()
-            return MagicMock()
-
-        with patch(
-            "ptc_agent.agent.middleware.workspace_context.asyncio.create_task",
-            side_effect=_close_coro,
-        ) as mock_task:
-            await mw._get_workspace_context_block()
-            mock_task.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_same_front_matter_does_not_retrigger_sync(self):
-        agent_md = "---\nworkspace_name: Same\n---\n# Content"
-        session = _make_session(agent_md=agent_md)
-        mw = WorkspaceContextMiddleware(session=session)
-
-        def _close_coro(coro):
-            """Prevent 'coroutine was never awaited' by closing it."""
-            coro.close()
-            return MagicMock()
-
-        with patch(
-            "ptc_agent.agent.middleware.workspace_context.asyncio.create_task",
-            side_effect=_close_coro,
-        ) as mock_task:
-            # First call triggers sync
-            await mw._get_workspace_context_block()
-            assert mock_task.call_count == 1
-            # Second call with same content should not trigger
-            await mw._get_workspace_context_block()
-            assert mock_task.call_count == 1
+        assert agent_md in await mw._get_agent_md_block()
 
 
 class TestAwrapModelCall:
     """Tests for awrap_model_call system message injection."""
 
     @pytest.mark.asyncio
-    async def test_injects_context_into_system_message(self):
+    async def test_injects_both_blocks_into_the_system_message(self):
         session = _make_session(agent_md="# Workspace notes")
-        mw = WorkspaceContextMiddleware(session=session)
+        mw = WorkspaceContextMiddleware(session=session, name="Q3 Semis")
 
-        # Create a mock request with override method
         mock_request = MagicMock()
         modified_request = MagicMock()
         mock_request.override = MagicMock(return_value=modified_request)
         mock_request.system_message = None
 
         handler = AsyncMock(return_value="model_response")
-        result = await mw.awrap_model_call(mock_request, handler)
+        await mw.awrap_model_call(mock_request, handler)
 
-        # override should have been called with a new system message
         mock_request.override.assert_called_once()
-        call_kwargs = mock_request.override.call_args
-        assert "system_message" in call_kwargs.kwargs
-        new_sys = call_kwargs.kwargs["system_message"]
+        new_sys = mock_request.override.call_args.kwargs["system_message"]
         assert isinstance(new_sys, SystemMessage)
 
-        # handler should have been called with modified request
+        text = str(new_sys.content)
+        assert "Q3 Semis" in text
+        # The workspace block first, so the name labels the notes after it.
+        assert text.index("<workspace") < text.index("<agentmd")
+
         handler.assert_called_once_with(modified_request)
+
+    @pytest.mark.asyncio
+    async def test_a_workspace_with_no_name_still_gets_its_notes(self):
+        session = _make_session(agent_md="# Workspace notes")
+        mw = WorkspaceContextMiddleware(session=session)
+
+        mock_request = MagicMock()
+        mock_request.override = MagicMock(return_value=MagicMock())
+        mock_request.system_message = None
+
+        await mw.awrap_model_call(mock_request, AsyncMock())
+
+        text = str(mock_request.override.call_args.kwargs["system_message"].content)
+        assert "<agentmd" in text
+        # No empty tag left behind where the identity block would have been.
+        assert "<workspace" not in text

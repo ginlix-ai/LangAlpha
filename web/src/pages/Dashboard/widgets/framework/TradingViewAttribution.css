@@ -2,7 +2,7 @@
   display: inline-flex;
   align-items: center;
   align-self: flex-end;
-  font-size: 10px;
+  font-size: 0.625rem;
   line-height: 1;
   padding: 4px 6px;
   color: var(--color-text-quaternary, var(--color-text-tertiary));
@@ -18,6 +18,6 @@
 }
 
 .tv-attribution:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
+  outline: 2px solid var(--color-focus-ring);
   outline-offset: 1px;
 }

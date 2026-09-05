@@ -13,7 +13,7 @@ import pytest
 
 from .conftest import assert_error, assert_ok_envelope
 
-_MOD = "mcp_servers.price_data_mcp_server"
+_MOD = "plugins.langalpha_market_data.price_data_mcp_server"
 
 # ---------------------------------------------------------------------------
 # Canned data
@@ -66,7 +66,7 @@ def _force_fmp_path(mod):
 class TestGetStockData:
     @pytest.mark.asyncio
     async def test_daily_fmp_envelope(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         client = _fmp_client()
         with _force_fmp_path(mod), patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -84,7 +84,7 @@ class TestGetStockData:
 
     @pytest.mark.asyncio
     async def test_ginlix_source_flipped_to_ascending(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         client = _fmp_client()
         with patch.object(mod._ginlix, "fetch_stock_data",
@@ -101,7 +101,7 @@ class TestGetStockData:
 
     @pytest.mark.asyncio
     async def test_intraday_fmp(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         client = _fmp_client()
         with _force_fmp_path(mod), patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -114,7 +114,7 @@ class TestGetStockData:
 
     @pytest.mark.asyncio
     async def test_interval_alias_normalized(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         client = _fmp_client()
         with _force_fmp_path(mod), patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -125,7 +125,7 @@ class TestGetStockData:
     @pytest.mark.asyncio
     async def test_gbx_converted_to_pounds(self):
         """VOD.L quotes arrive in pence (GBX) → returned in pounds with GBP."""
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         raw = [{"date": "2025-01-02", "open": 10000, "high": 10500,
                 "low": 9900, "close": 10300, "volume": 5000}]
@@ -148,7 +148,7 @@ class TestGetStockData:
 
     @pytest.mark.asyncio
     async def test_unsupported_interval(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         result = await mod.get_stock_data("AAPL", interval="2min")
         assert_error(result, "unsupported_interval")
@@ -158,7 +158,7 @@ class TestGetStockData:
     @pytest.mark.asyncio
     async def test_one_second_falls_through_to_unsupported(self):
         """The dead 1s branch is gone; 1s is now a plain unsupported interval."""
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         result = await mod.get_stock_data(
             "AAPL", interval="1s", start_date="2025-01-01", end_date="2025-01-02",
@@ -167,21 +167,21 @@ class TestGetStockData:
 
     @pytest.mark.asyncio
     async def test_weekly_unsupported_for_stock(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         result = await mod.get_stock_data("AAPL", interval="1week")
         assert_error(result, "unsupported_interval")
 
     @pytest.mark.asyncio
     async def test_intraday_missing_dates(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         result = await mod.get_stock_data("AAPL", interval="5min")
         assert_error(result, "invalid_argument")
 
     @pytest.mark.asyncio
     async def test_fmp_init_error(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         with _force_fmp_path(mod), \
              patch(f"{_MOD}.get_fmp_client", side_effect=RuntimeError("no key")):
@@ -191,7 +191,7 @@ class TestGetStockData:
 
     @pytest.mark.asyncio
     async def test_api_error(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         client = _fmp_client()
         client.get_stock_price = AsyncMock(side_effect=Exception("timeout"))
@@ -202,7 +202,7 @@ class TestGetStockData:
 
     @pytest.mark.asyncio
     async def test_ginlix_404_maps_to_not_found(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         err = {"error": "ginlix-data error (404): symbol not found"}
         with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=err)):
@@ -214,7 +214,7 @@ class TestGetStockData:
 
     @pytest.mark.asyncio
     async def test_empty_rows(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         client = _fmp_client(stock_price=[])
         with _force_fmp_path(mod), patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -224,7 +224,7 @@ class TestGetStockData:
 
     @pytest.mark.asyncio
     async def test_ohlcv_normalization(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         raw = [{"date": "2025-01-01", "open": "10", "high": None, "low": 9, "close": 10, "volume": 100}]
         client = _fmp_client(stock_price=raw)
@@ -244,7 +244,7 @@ class TestGetStockData:
 class TestGetAssetData:
     @pytest.mark.asyncio
     async def test_commodity_daily(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         client = _fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -257,7 +257,7 @@ class TestGetAssetData:
 
     @pytest.mark.asyncio
     async def test_crypto_intraday_canonical_symbol(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         client = _fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -273,7 +273,7 @@ class TestGetAssetData:
 
     @pytest.mark.asyncio
     async def test_forex_daily(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         client = _fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -284,7 +284,7 @@ class TestGetAssetData:
 
     @pytest.mark.asyncio
     async def test_stock_routes_through_stock_path(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         client = _fmp_client()
         with _force_fmp_path(mod), patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -296,7 +296,7 @@ class TestGetAssetData:
 
     @pytest.mark.asyncio
     async def test_invalid_asset_type(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         result = await mod.get_asset_data("X", asset_type="bond")
         assert_error(result, "invalid_argument")
@@ -304,7 +304,7 @@ class TestGetAssetData:
 
     @pytest.mark.asyncio
     async def test_unsupported_intraday_for_commodity(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         client = _fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -314,7 +314,7 @@ class TestGetAssetData:
 
     @pytest.mark.asyncio
     async def test_intraday_missing_dates(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         result = await mod.get_asset_data("BTCUSD", asset_type="crypto", interval="5min")
         assert_error(result, "invalid_argument")
@@ -327,7 +327,7 @@ class TestGetAssetData:
 class TestGetShortData:
     @pytest.mark.asyncio
     async def test_no_ginlix_client(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         with patch.object(mod._ginlix, "ensure", new=AsyncMock(return_value=False)):
             result = await mod.get_short_data("AAPL")
@@ -336,7 +336,7 @@ class TestGetShortData:
 
     @pytest.mark.asyncio
     async def test_both_sections(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         canned = {
             "symbol": "AAPL", "source": "ginlix-data",
@@ -358,7 +358,7 @@ class TestGetShortData:
 
     @pytest.mark.asyncio
     async def test_short_interest_only_forwarded(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         canned = {"symbol": "AAPL", "source": "ginlix-data", "short_interest": [_SHORT_INTEREST_ROW]}
         fetch = AsyncMock(return_value=canned)
@@ -372,7 +372,7 @@ class TestGetShortData:
 
     @pytest.mark.asyncio
     async def test_partial_error_is_annotated_not_fatal(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         canned = {
             "symbol": "AAPL", "source": "ginlix-data",
@@ -389,7 +389,7 @@ class TestGetShortData:
 
     @pytest.mark.asyncio
     async def test_all_sections_failed(self):
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         canned = {
             "symbol": "AAPL", "source": "ginlix-data",

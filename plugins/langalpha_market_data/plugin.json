@@ -1,0 +1,47 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "langalpha-market-data",
+  "version": "1.0.0",
+  "description": "Prices, fundamentals, macro and options from LangAlpha's own data layer. OHLCV and short interest, multi-year statements and ownership, treasury rates and the earnings calendar, and the full options chain.",
+  "author": {
+    "name": "LangAlpha",
+    "url": "https://langalpha.ai"
+  },
+  "homepage": "https://langalpha.ai",
+  "repository": "https://github.com/ginlix/langalpha",
+  "license": "Apache-2.0",
+  "keywords": [
+    "market-data",
+    "fundamentals",
+    "macro",
+    "options",
+    "ohlcv",
+    "earnings-calendar"
+  ],
+  "extensions": {
+    "ai.langalpha": {
+      "servers": {
+        "price_data": {
+          "description": "OHLCV price data and short sale analytics for stocks, commodities, crypto, forex",
+          "instruction": "Use for raw OHLCV time series data (get_stock_data/get_asset_data) and short interest/volume data (get_short_data). Supports daily and intraday intervals. Short data supports date range filters.",
+          "tool_exposure_mode": "detailed"
+        },
+        "fundamentals": {
+          "description": "Raw fundamental data, ownership, and technical indicators for multi-year analysis",
+          "instruction": "Use for financial statements, ratios, growth metrics, valuation data, insider trades, dividends/splits, shares float, key executives, and technical indicators. Returns raw JSON for programmatic analysis, charting, and model building.",
+          "tool_exposure_mode": "summary"
+        },
+        "macro": {
+          "description": "Economic indicators, treasury rates, earnings calendar, and macro events",
+          "instruction": "Use for macro-economic data: GDP, CPI, unemployment, treasury yield curve, risk-free rate for DCF, earnings calendar by date range, and economic event calendar. Returns raw JSON.",
+          "tool_exposure_mode": "summary"
+        },
+        "options": {
+          "description": "Options contracts chain, historical OHLCV, and real-time snapshots",
+          "instruction": "Use for in-depth options analysis: list contracts/chain (get_options_chain), historical OHLCV bars (get_options_prices), and real-time bid/ask snapshots (get_options_snapshot). Returns raw JSON for programmatic analysis, charting, and strategy modeling. Options tickers use format O:AAPL251219C00150000.",
+          "tool_exposure_mode": "summary"
+        }
+      }
+    }
+  }
+}

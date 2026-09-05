@@ -96,10 +96,14 @@ async def _get_news_data(
             await _cache.release_lock(lock_key, token)
 
     # Another worker is fetching — wait for it to fill the cache.
-    waited = 0.0
-    while waited < _FOLLOWER_MAX_WAIT:
+    #
+    # A wall-clock deadline, not a sum of sleeps: the poll read itself can now
+    # queue for a cache connection, and counting only the sleeps let a 3s bound
+    # run for minutes on a request that still has the fetch ahead of it.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _FOLLOWER_MAX_WAIT
+    while loop.time() < deadline:
         await asyncio.sleep(_FOLLOWER_POLL_INTERVAL)
-        waited += _FOLLOWER_POLL_INTERVAL
         cached = await _cache.get(tickers=ticker_list, limit=limit, provider=provider)
         if cached is not None:
             return cached

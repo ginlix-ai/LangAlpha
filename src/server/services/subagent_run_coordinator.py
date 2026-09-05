@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 
 from ptc_agent.agent.middleware.background_subagent.registry import TaskRunRejected
 
+from src.server.contracts.status import REPORT_BACK_STATUSES
 from src.server.database.runs import subagent_runs as sr_db
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,15 @@ class SubagentRunCoordinator:
                     f"after lane_open failure; scanner will reap it",
                     exc_info=True,
                 )
+            else:
+                # That error settle enqueued a report-back, but the rejection
+                # below becomes the launching call's own reply — and a reply
+                # handing the agent a run's terminal fate IS the delivery
+                # (background_subagent.tools holds the same contract).
+                # Unstamped, the executor still believes a notification is
+                # owed and opens a synthetic turn to re-announce a launch
+                # failure the agent was handed synchronously.
+                await self._mark_delivered_quietly(task_run_id)
             raise TaskRunRejected(
                 "subagent event transport unavailable (lane_open failed)"
             ) from e
@@ -160,6 +170,21 @@ class SubagentRunCoordinator:
             parent_run_id=parent_run_id,
         )
         return str(run_row["task_run_id"])
+
+    async def _mark_delivered_quietly(self, task_run_id: str) -> None:
+        """Stamp the delivery, never failing the caller for it.
+
+        A missed stamp costs one redundant notification; raising here would
+        cost the launch failure its own reply.
+        """
+        try:
+            await sr_db.mark_result_delivered(task_run_id)
+        except Exception:
+            logger.warning(
+                f"[subagent_coordinator] could not stamp delivery for run "
+                f"{task_run_id}; a redundant report-back may follow",
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------- finalize
 
@@ -199,7 +224,7 @@ class SubagentRunCoordinator:
                     payload={"outcome": run["status"]},
                     terminal=True,
                 )
-            if run["status"] == "completed" and run.get("parent_run_id"):
+            if run["status"] in REPORT_BACK_STATUSES and run.get("parent_run_id"):
                 # The report-back job committed with the CAS; wake the
                 # drainer so a tail completion notifies promptly instead of
                 # riding the poll interval. Best-effort — the job is durable.
@@ -262,6 +287,13 @@ class SubagentRunCoordinator:
         if latest is None:
             return None
         return await sr_db.get_task_run(str(latest))
+
+    async def list_open_workflow_runs(self) -> list[Dict[str, Any]]:
+        """This thread's open workflow-kind runs across ALL workers — the
+        admission authority for RunWorkflow's per-thread cap (boundary
+        adapter for the injected port; the local registry is a per-process
+        view and undercounts)."""
+        return await sr_db.list_open_workflow_runs_for_thread(self.thread_id)
 
     async def request_task_run_cancel(self, task_run_id: str) -> Dict[str, Any]:
         """Durable cancel intent, thread-scoped (boundary adapter — binds

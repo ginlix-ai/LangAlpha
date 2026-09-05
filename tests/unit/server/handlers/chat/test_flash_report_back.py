@@ -11,6 +11,7 @@ and the hold-until-terminal contract.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -1696,115 +1697,97 @@ async def test_resolve_restores_memberships_when_foreign_start_raced(
 
 
 # ---------------------------------------------------------------------------
-# watch_wakes: subscribe ack drained before the snapshot read
+# watch_wakes: registration proven before the snapshot read
+#
+# The wire contract is unchanged by the move to a per-worker demux — snapshot
+# first, then deltas, and an unproven registration closes rather than serving
+# a snapshot it cannot keep current. Only the mechanism moved.
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def wake_listener():
+    from src.server.services.report_back.flash.wake_listener import ThreadWakeListener
+
+    ThreadWakeListener._instance = None
+    inst = ThreadWakeListener.get_instance()
+    yield inst
+    ThreadWakeListener._instance = None
+
+
+_WAKE_CACHE = SimpleNamespace(enabled=True, client=SimpleNamespace())
+
+
 @pytest.mark.asyncio
-async def test_watch_wakes_drains_subscribe_ack_before_snapshot():
-    # redis-py's subscribe() only WRITES the command. The generator must drain
-    # the server's confirmation before reading the slice, or a wake published
-    # in the registration window could miss both the buffer and the snapshot.
+async def test_watch_wakes_snapshots_only_after_registration_is_proven(
+    wake_listener,
+):
+    # The slice must not be read against a pattern the server hasn't
+    # registered: a wake published in that window would miss both the queue
+    # and the snapshot.
     calls: list[str] = []
-
-    class _PubSub:
-        async def subscribe(self, ch):
-            calls.append("subscribe")
-
-        async def get_message(self, ignore_subscribe_messages=True, timeout=None):
-            calls.append("ack" if not ignore_subscribe_messages else "loop")
-            return (
-                {"type": "subscribe"}
-                if not ignore_subscribe_messages
-                else None
-            )
-
-        async def unsubscribe(self, ch):
-            pass
-
-        async def aclose(self):
-            pass
-
-    cache = SimpleNamespace(
-        enabled=True, client=SimpleNamespace(pubsub=lambda: _PubSub())
-    )
 
     async def _slice(tid):
         calls.append("slice")
         return {"thread_id": tid}
 
+    async def _go_live():
+        await asyncio.sleep(0.05)
+        calls.append("live")
+        wake_listener._go_live()
+
     with patch.object(
         status, "read_report_back_slice", new=AsyncMock(side_effect=_slice)
     ):
-        gen = core.watch_wakes(cache, "th-ack")
+        # Hold the handle: the loop only weak-references tasks, so a discarded
+        # one can be collected before it runs and wait_live would time out.
+        go_live = asyncio.create_task(_go_live())
+        gen = core.watch_wakes(_WAKE_CACHE, "th-ack")
         first = await gen.__anext__()
         await gen.aclose()
+        await go_live
 
     assert first.startswith(f"event: {wake.SNAPSHOT_EVENT}")
-    assert calls[:3] == ["subscribe", "ack", "slice"]
+    assert calls == ["live", "slice"]
+    assert "th-ack" not in wake_listener._subs  # detached on close
 
 
 @pytest.mark.asyncio
-async def test_watch_wakes_closes_when_subscribe_unconfirmed():
-    # No frame back within the ack window = registration unproven (Redis
-    # stalled). Serving a snapshot anyway would recreate the registration
-    # window; the stream must CLOSE and let the paced client retry.
-    class _PubSub:
-        async def subscribe(self, ch):
-            pass
-
-        async def get_message(self, ignore_subscribe_messages=True, timeout=None):
-            return None
-
-        async def unsubscribe(self, ch):
-            pass
-
-        async def aclose(self):
-            pass
-
-    cache = SimpleNamespace(
-        enabled=True, client=SimpleNamespace(pubsub=lambda: _PubSub())
-    )
-
-    with patch.object(
-        status, "read_report_back_slice", new=AsyncMock()
-    ) as sl:
-        gen = core.watch_wakes(cache, "th-stall")
+async def test_watch_wakes_closes_when_listener_never_registers(wake_listener):
+    # Registration unproven (Redis stalled, or the listener is down). Serving
+    # a snapshot anyway leaves the client believing it is being watched; the
+    # stream must CLOSE and let the paced client retry.
+    with (
+        patch.object(wake, "_LIVE_TIMEOUT_S", 0.05),
+        patch.object(status, "read_report_back_slice", new=AsyncMock()) as sl,
+    ):
+        gen = core.watch_wakes(_WAKE_CACHE, "th-stall")
         with pytest.raises(StopAsyncIteration):
             await gen.__anext__()
     sl.assert_not_awaited()
+    assert "th-stall" not in wake_listener._subs
 
 
 @pytest.mark.asyncio
-async def test_watch_wakes_reemits_wake_that_raced_the_ack():
-    # A message on the ack read proves registration (only registered
-    # subscribers receive one) but must NOT be swallowed: it is held and
-    # delivered right behind the snapshot — state first, then the delta.
-    class _PubSub:
-        async def subscribe(self, ch):
-            pass
+async def test_watch_wakes_delivers_a_wake_that_raced_the_snapshot(wake_listener):
+    # Attach is await-free, so a wake published while the slice is being read
+    # is already queued. It must NOT be swallowed: state first, then the delta.
+    async def _slice(tid):
+        # Publish mid-read, exactly as a racing report-back would.
+        wake_listener._dispatch(
+            {
+                "type": "pmessage",
+                "channel": b"thread:wake:th-race",
+                "data": b'{"run_id": "rb-early"}',
+            }
+        )
+        return {"thread_id": tid}
 
-        async def get_message(self, ignore_subscribe_messages=True, timeout=None):
-            if not ignore_subscribe_messages:
-                return {"type": "message", "data": '{"run_id": "rb-early"}'}
-            return None
-
-        async def unsubscribe(self, ch):
-            pass
-
-        async def aclose(self):
-            pass
-
-    cache = SimpleNamespace(
-        enabled=True, client=SimpleNamespace(pubsub=lambda: _PubSub())
-    )
-
+    wake_listener._go_live()
     with patch.object(
-        status,
-        "read_report_back_slice",
-        new=AsyncMock(return_value={"thread_id": "th-race"}),
+        status, "read_report_back_slice", new=AsyncMock(side_effect=_slice)
     ):
-        gen = core.watch_wakes(cache, "th-race")
+        gen = core.watch_wakes(_WAKE_CACHE, "th-race")
         first = await gen.__anext__()
         second = await gen.__anext__()
         await gen.aclose()
@@ -1812,3 +1795,57 @@ async def test_watch_wakes_reemits_wake_that_raced_the_ack():
     assert first.startswith(f"event: {wake.SNAPSHOT_EVENT}")
     assert second.startswith(f"event: {wake.WAKE_EVENT}")
     assert "rb-early" in second
+
+
+@pytest.mark.asyncio
+async def test_watch_wakes_resnapshots_after_a_listener_reconnect(wake_listener):
+    # A reconnect means deltas were lost — pub/sub has no replay — so the
+    # viewer re-reads state instead of resuming.
+    wake_listener._go_live()
+    with (
+        patch.object(wake, "_RESYNC_JITTER_S", 0.0),
+        patch.object(wake, "WAKE_KEEPALIVE_INTERVAL", 0.05),
+        patch.object(
+            status,
+            "read_report_back_slice",
+            new=AsyncMock(return_value={"thread_id": "th-rs"}),
+        ),
+    ):
+        gen = core.watch_wakes(_WAKE_CACHE, "th-rs")
+        first = await gen.__anext__()
+        wake_listener._go_dark()
+        wake_listener._go_live()
+        second = await gen.__anext__()
+        await gen.aclose()
+
+    assert first.startswith(f"event: {wake.SNAPSHOT_EVENT}")
+    assert second.startswith(f"event: {wake.SNAPSHOT_EVENT}")
+
+
+@pytest.mark.asyncio
+async def test_watch_wakes_closes_when_a_resync_snapshot_fails(wake_listener):
+    # Deltas were lost AND the state meant to replace them didn't arrive.
+    # Resuming here leaves the client silently stale, so close instead.
+    reads = [{"thread_id": "th-fail"}, RuntimeError("slice down")]
+
+    async def _slice(_tid):
+        item = reads.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    wake_listener._go_live()
+    with (
+        patch.object(wake, "_RESYNC_JITTER_S", 0.0),
+        patch.object(wake, "WAKE_KEEPALIVE_INTERVAL", 0.05),
+        patch.object(
+            status, "read_report_back_slice", new=AsyncMock(side_effect=_slice)
+        ),
+    ):
+        gen = core.watch_wakes(_WAKE_CACHE, "th-fail")
+        assert (await gen.__anext__()).startswith(f"event: {wake.SNAPSHOT_EVENT}")
+        wake_listener._go_dark()
+        wake_listener._go_live()
+        with pytest.raises(StopAsyncIteration):
+            await gen.__anext__()
+    assert "th-fail" not in wake_listener._subs

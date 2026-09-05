@@ -8,6 +8,7 @@ import {
   MemoStaleBanner,
   MemoDiffModal,
 } from './FilePanelMemo';
+import { Loader } from '@/components/ui/loader';
 import { useWorkspace } from '@/hooks/useWorkspace';
 import { SandboxSettingsContent } from './SandboxSettingsPanel';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -549,7 +550,9 @@ function FilePanel({
                   className="file-panel-icon-btn"
                   title={t('filePanel.refresh')}
                 >
-                  <RefreshCw className={`h-4 w-4 ${filesLoading ? 'animate-spin' : ''}`} />
+                  {filesLoading
+                    ? <Loader size={16} className="text-current" />
+                    : <RefreshCw className="h-4 w-4" />}
                 </button>
               )}
             </>
@@ -562,7 +565,7 @@ function FilePanel({
               <button
                 onClick={toggleSelectAll}
                 className="file-panel-chip"
-                style={{ marginLeft: 2, fontSize: 10, padding: '1px 6px' }}
+                style={{ marginLeft: 2, fontSize: '0.625rem', padding: '1px 6px' }}
               >
                 {selectedPaths.size === filteredSortedFiles.length ? 'Deselect All' : 'Select All'}
               </button>
@@ -754,7 +757,9 @@ function FilePanel({
           </div>
         )}
 
-        <div className="file-panel-content" ref={contentWrapperRef}>
+        {/* font-content only while viewing a file: the reading surface gets the
+            content face, the file tree stays on the UI font. */}
+        <div className={`file-panel-content${selectedFile ? ' font-content' : ''}`} ref={contentWrapperRef}>
           {selectionTooltip && onAddContext && (
             <div
               className="file-panel-selection-tooltip"
@@ -818,7 +823,7 @@ function FilePanel({
               {fileLoading ? (
               <div className="p-4">
                 <div className="flex items-center justify-center py-12">
-                  <RefreshCw className="h-5 w-5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
+                  <Loader size={20} className="text-[color:var(--color-text-tertiary)]" />
                 </div>
               </div>
             ) : fileError ? (
@@ -892,10 +897,10 @@ function FilePanel({
                   <SyntaxHighlighter
                     language={EXT_TO_LANG[getFileExtension(selectedFile)] || 'text'}
                     style={typeof window !== 'undefined' && document.documentElement.getAttribute('data-theme') === 'light' ? oneLight : oneDark}
-                    customStyle={{ margin: 0, padding: 0, backgroundColor: 'transparent', fontSize: '12px', lineHeight: '1.6' }}
+                    customStyle={{ margin: 0, padding: 0, backgroundColor: 'transparent', fontSize: '0.75rem', lineHeight: '1.6' }}
                     codeTagProps={{ style: { backgroundColor: 'transparent' } }}
                     showLineNumbers
-                    lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1em', color: 'var(--color-text-tertiary)', userSelect: 'none', fontSize: '11px', opacity: 0.5 }}
+                    lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1em', color: 'var(--color-text-tertiary)', userSelect: 'none', fontSize: '0.6875rem', opacity: 0.5 }}
                     wrapLines
                     lineProps={(lineNumber: number) => ({ 'data-line': lineNumber } as React.HTMLProps<HTMLElement>)}
                     wrapLongLines

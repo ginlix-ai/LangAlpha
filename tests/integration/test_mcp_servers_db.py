@@ -331,7 +331,7 @@ class TestSchemaCache:
         """Each server's snapshot is keyed by its own config_hash; get returns
         one row per server (the most recent), with the hash surfaced so the
         caller can match it against the current config."""
-        from src.server.database.mcp_servers import (
+        from src.server.database.mcp_tool_schemas import (
             get_tool_schemas,
             upsert_tool_schemas,
         )
@@ -355,7 +355,7 @@ class TestSchemaCache:
         """A config change (new hash) replaces the server's snapshot AND
         garbage-collects rows at older hashes, so config iteration doesn't
         accumulate dead rows."""
-        from src.server.database.mcp_servers import (
+        from src.server.database.mcp_tool_schemas import (
             get_tool_schemas,
             upsert_tool_schemas,
         )
@@ -375,8 +375,10 @@ class TestSchemaCache:
         """Deleting a workspace server removes its discovery snapshots too."""
         from src.server.database.mcp_servers import (
             delete_workspace_server,
-            get_tool_schemas,
             insert_workspace_server,
+        )
+        from src.server.database.mcp_tool_schemas import (
+            get_tool_schemas,
             upsert_tool_schemas,
         )
 
@@ -393,7 +395,7 @@ class TestSchemaCache:
         assert await _schema_raw_count(wid, "acme") == 0
 
     async def test_upsert_replaces_same_key(self, seed_workspace, patched_get_db_connection):
-        from src.server.database.mcp_servers import (
+        from src.server.database.mcp_tool_schemas import (
             get_tool_schemas,
             upsert_tool_schemas,
         )
@@ -414,7 +416,7 @@ class TestSchemaCache:
         """A flaky probe (same config hash) must not erase a known-good
         snapshot: tools/status/discovered_at are preserved, only the error
         text is recorded for debugging."""
-        from src.server.database.mcp_servers import (
+        from src.server.database.mcp_tool_schemas import (
             get_tool_schemas,
             upsert_tool_schemas,
         )
@@ -439,7 +441,7 @@ class TestSchemaCache:
     ):
         """Probing a stopped workspace marks servers pending — that must not
         wipe a working server's cached tools either."""
-        from src.server.database.mcp_servers import upsert_tool_schemas
+        from src.server.database.mcp_tool_schemas import upsert_tool_schemas
 
         wid = seed_workspace["workspace_id"]
         tools = [{"name": "t1", "description": "d", "input_schema": {}}]
@@ -455,7 +457,7 @@ class TestSchemaCache:
     ):
         """The no-downgrade guard is same-hash only: a config CHANGE that then
         fails discovery legitimately replaces the old config's snapshot."""
-        from src.server.database.mcp_servers import (
+        from src.server.database.mcp_tool_schemas import (
             get_tool_schemas,
             upsert_tool_schemas,
         )
@@ -478,8 +480,8 @@ class TestSchemaCache:
     ):
         """Vault-mutation invalidation primitives: purge one server's snapshots
         (any hash) and bump the version outside a row mutation."""
-        from src.server.database.mcp_servers import (
-            bump_workspace_mcp_version,
+        from src.server.database.mcp_servers import bump_workspace_mcp_version
+        from src.server.database.mcp_tool_schemas import (
             delete_tool_schemas,
             upsert_tool_schemas,
         )

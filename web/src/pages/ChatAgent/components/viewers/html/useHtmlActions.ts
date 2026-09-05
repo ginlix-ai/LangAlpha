@@ -1,7 +1,10 @@
-import { useCallback, useRef } from 'react';
+import { useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/use-toast';
+import { useStableHandler } from '@/hooks/useStableHandler';
+import { desktop } from '@/lib/desktop';
 import { buildWsfilesUrl, pdfQuery } from './wsfilesUrl';
+import { saveWidgetPdf } from './widgetPdf';
 
 interface WidgetModeOptions {
   mode: 'widget';
@@ -24,7 +27,16 @@ interface FileModeOptions {
 export type UseHtmlActionsOptions = WidgetModeOptions | FileModeOptions;
 
 export interface HtmlActions {
-  openInNewTab: () => void;
+  /**
+   * Absent where a second surface cannot be opened at all: a widget inside the
+   * desktop shell opens a `blob:` URL, and the shell answers every
+   * `window.open` by handing the URL to the OS browser instead, which takes
+   * http/https/mailto and nothing else. There is no fallback to offer — a blob
+   * belongs to the renderer that made it — so the action is withheld rather
+   * than left as a button that does nothing. A file surface is unaffected: its
+   * URL is served over http and opens in the real browser.
+   */
+  openInNewTab?: () => void;
   downloadHtml: () => void;
   exportPdf: () => void | Promise<void>;
 }
@@ -146,7 +158,11 @@ export function useHtmlActions(opts: UseHtmlActionsOptions): HtmlActions {
   // Server PDF renders take seconds; ignore re-entry while one is in flight.
   const pdfInFlight = useRef(false);
 
-  const openInNewTab = useCallback(() => {
+  // `useStableHandler`, not `useCallback`: every call site builds `opts` as a
+  // fresh object literal, so listing it as a dependency memoizes nothing. These
+  // are click handlers and never run during render, which is the hook's one
+  // precondition.
+  const openInNewTab = useStableHandler(() => {
     if (opts.mode === 'widget') {
       const blob = new Blob([opts.srcDoc], { type: 'text/html' });
       const url = URL.createObjectURL(blob);
@@ -157,9 +173,9 @@ export function useHtmlActions(opts: UseHtmlActionsOptions): HtmlActions {
       const url = opts.servedUrl ?? buildWsfilesUrl(opts.workspaceId, opts.filePath);
       window.open(url, '_blank', 'noopener,noreferrer');
     }
-  }, [opts]);
+  });
 
-  const downloadHtml = useCallback(() => {
+  const downloadHtml = useStableHandler(() => {
     if (opts.mode === 'widget') {
       const blob = new Blob([opts.srcDoc], { type: 'text/html' });
       const url = URL.createObjectURL(blob);
@@ -176,32 +192,60 @@ export function useHtmlActions(opts: UseHtmlActionsOptions): HtmlActions {
         console.error('[useHtmlActions] Download failed:', err),
       );
     }
-  }, [opts]);
+  });
 
-  const exportPdf = useCallback(async () => {
-    if (opts.mode === 'widget') {
-      const blob = new Blob([opts.srcDoc], { type: 'text/html' });
-      const url = URL.createObjectURL(blob);
-      // Same-origin blob tab: keep the handle (no noopener) so auto-print fires.
-      const win = window.open(url, '_blank');
-      if (win) {
-        const triggerPrint = () => {
-          try {
-            win.print();
-          } catch {
-            /* user can print manually */
-          }
-        };
-        win.addEventListener?.('load', triggerPrint);
-        setTimeout(triggerPrint, 800);
-      }
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-      return;
-    }
-
+  const exportPdf = useStableHandler(async () => {
     if (pdfInFlight.current) return;
     pdfInFlight.current = true;
     try {
+      if (opts.mode === 'widget') {
+        // Measuring the widget and rendering it takes seconds, same as a server
+        // render, so it gets the same dismissible toast rather than a button
+        // that looks broken until a file dialog appears.
+        const pending = toast({ description: t('filePanel.pdfGenerating') });
+        let result;
+        try {
+          // The shell renders it directly. Not merely nicer than the blob tab
+          // below — that tab is one the shell refuses to open, so this is the
+          // only route a widget has there. A null answer means no shell at all,
+          // which is the only case that falls through.
+          result = await saveWidgetPdf(opts.srcDoc, opts.fileName || 'widget');
+        } finally {
+          pending.dismiss();
+        }
+        if (result) {
+          if ('error' in result) toast({ description: t('filePanel.pdfFailed') });
+          return;
+        }
+        // Null inside the shell does not mean "print in the browser instead", it
+        // means this shell is too old to know the channel. The fallback below is
+        // a blob: tab, which the shell hands to the OS browser and the OS browser
+        // will not open, so falling through here is a button that does nothing at
+        // all and says nothing either. Every install older than the one that
+        // added savePdf lands on exactly this line.
+        if (desktop) {
+          toast({ description: t('filePanel.pdfFailed') });
+          return;
+        }
+        const blob = new Blob([opts.srcDoc], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        // Same-origin blob tab: keep the handle (no noopener) so auto-print fires.
+        const win = window.open(url, '_blank');
+        if (win) {
+          const triggerPrint = () => {
+            try {
+              win.print();
+            } catch {
+              /* user can print manually */
+            }
+          };
+          win.addEventListener?.('load', triggerPrint);
+          setTimeout(triggerPrint, 800);
+        }
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        return;
+      }
+
       await exportServedPdf({
         workspaceId: opts.workspaceId,
         filePath: opts.filePath,
@@ -212,7 +256,11 @@ export function useHtmlActions(opts: UseHtmlActionsOptions): HtmlActions {
     } finally {
       pdfInFlight.current = false;
     }
-  }, [opts, t]);
+  });
 
-  return { openInNewTab, downloadHtml, exportPdf };
+  return {
+    openInNewTab: opts.mode === 'widget' && desktop ? undefined : openInNewTab,
+    downloadHtml,
+    exportPdf,
+  };
 }

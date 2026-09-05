@@ -355,6 +355,9 @@ def build_web_search_tool(
                 Returns results from this date onwards.
             end_date: End date for filtering results (YYYY-MM-DD format).
                 Returns results up to this date.
+
+        Returns:
+            Ranked results as titles, snippets and URLs — not full page text.
         """
         try:
             # Validate date formats

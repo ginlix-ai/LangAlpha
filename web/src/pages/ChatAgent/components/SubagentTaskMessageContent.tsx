@@ -1,10 +1,15 @@
 import React from 'react';
-import { AlertCircle, Check, Loader2, ArrowRight, ChevronRight, RotateCw, RefreshCw, StopCircle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { ArrowRight, PauseCircle } from 'lucide-react';
 import { compactNumber } from '@/lib/format';
+import { ErrorLink } from '@/components/ui/error-banner';
+import { CREDIT_STOP_ERROR_TYPE } from '@/types/sse';
+import { buildRateLimitError } from '@/utils/rateLimitError';
 import { type SubagentTokenUsage } from '../utils/tokenUsage';
+import { useCreditPausePending } from './CreditPausePendingContext';
 import { useSubagentTelemetry } from './SubagentTelemetryContext';
-
-const MONO_STACK = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+import TaskCardShell, { MONO_STACK } from './TaskCardShell';
+import { taskCardStatusKind, type TaskCardStatusKind } from './taskStatusUi';
 
 /**
  * Extract a short one-line summary from a full task description.
@@ -18,7 +23,98 @@ function summarize(text: string | undefined, maxLen = 100): string {
   return cleaned.slice(0, maxLen).replace(/\s+\S*$/, '') + '…';
 }
 
-interface ToolCallProcess {
+// Neither reason is bounded: the credit denial is the platform's copy and the
+// rest are exception text, so one long enough would push a card's own content
+// out of shape.
+const STOP_REASON_MAX_CHARS = 180;
+
+function clampReason(text: string): string {
+  return text.length > STOP_REASON_MAX_CHARS
+    ? `${text.slice(0, STOP_REASON_MAX_CHARS).trimEnd()}\u2026`
+    : text;
+}
+
+function accountLinks(reason: string) {
+  // Same builder the pause card uses, so the two surfaces send the user to the
+  // same pages with the same wording rather than growing a second answer.
+  return buildRateLimitError(
+    { message: reason },
+    (import.meta.env.VITE_PLATFORM_URL as string | undefined) || '/account',
+  ).links;
+}
+
+/**
+ * A reason the user cannot act on, as a line inside the card: transport lost,
+ * a handler that raised. Worth saying, not worth interrupting for.
+ */
+function TaskStopReason({ reason }: { reason: string }): React.ReactElement {
+  return (
+    <div
+      data-testid="subagent-stop-reason"
+      style={{
+        marginTop: 8,
+        fontSize: '0.6875rem',
+        lineHeight: 1.5,
+        color: 'var(--color-text-tertiary)',
+        minWidth: 0,
+        wordBreak: 'break-word',
+      }}
+    >
+      {clampReason(reason)}
+    </div>
+  );
+}
+
+/**
+ * A credit stop, as a notice at the foot of the message in the MAIN transcript.
+ *
+ * A background task can outlive the turn that spawned it, and when the credit
+ * gate stops one the turn is already finished: there is no model boundary left
+ * to interrupt, so no pause card is ever raised in the thread. The denial then
+ * reaches only the task's own transcript, behind a click, while the thread
+ * shows a "Stopped" chip indistinguishable from a task the user ended.
+ *
+ * Deliberately outside the card rather than a line within it. Inside, it reads
+ * as a footnote on one task; the thing that actually happened is that the
+ * account ran out of money, which is the turn's news and the user's to act on.
+ * It borrows the pause card's layout for that reason - the same event should
+ * not look like two different kinds of event depending on when it landed. The
+ * placement is MessageContentSegments' call, and the reason it is last is
+ * written there.
+ */
+export function SubagentStopNotice({ subagentId }: { subagentId: string | undefined }): React.ReactElement | null {
+  const { t } = useTranslation();
+  const telemetry = useSubagentTelemetry(subagentId);
+  const reason = telemetry?.stopReason;
+  if (!reason || telemetry?.stopReasonType !== CREDIT_STOP_ERROR_TYPE) return null;
+  const links = accountLinks(reason);
+  return (
+    <div
+      data-testid="subagent-credit-stop-notice"
+      className="mt-2 rounded-lg px-4 py-3 space-y-2"
+      style={{ border: '1px solid var(--color-border-muted)' }}
+    >
+      <div className="flex items-center gap-2">
+        <PauseCircle className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-light)' }} />
+        <span className="text-[0.9375rem] font-medium" style={{ color: 'var(--color-text-primary)' }}>
+          {t('chat.creditStop.title')}
+        </span>
+      </div>
+      <div className="text-sm break-words" style={{ color: 'var(--color-text-secondary)' }}>
+        {clampReason(reason)}
+      </div>
+      {links && links.length > 0 && (
+        <div className="flex items-center gap-4 text-sm" style={{ color: 'var(--color-accent-light)' }}>
+          {links.map((l) => (
+            <ErrorLink key={`${l.url}|${l.label}`} {...l} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export interface ToolCallProcess {
   toolCallResult?: {
     content?: unknown;
     [key: string]: unknown;
@@ -38,7 +134,10 @@ interface SubagentTaskMessageContentProps {
   description?: string;
   type?: string;
   status?: string;
-  action?: 'init' | 'update' | 'resume';
+  /** Card verb from the task record. An unrecognized wire spelling is not
+   *  coerced — it falls through the ladder below to `unknown`, which shows the
+   *  raw status rather than inventing a state. */
+  action?: string;
   resumeTargetId?: string;
   onOpen?: (info: SubagentInfo) => void;
   onDetailOpen?: (process: ToolCallProcess) => void;
@@ -74,6 +173,13 @@ function SubagentTaskMessageContent({
   const ctxTelemetry = useSubagentTelemetry(subagentId);
   const toolCalls = toolCallsProp ?? ctxTelemetry?.toolCalls ?? 0;
   const tokenUsage = tokenUsageProp ?? ctxTelemetry?.tokenUsage;
+  const stopReason = ctxTelemetry?.stopReason;
+  const stopReasonType = ctxTelemetry?.stopReasonType;
+  // A still-running task keeps working until its own gate stops it at the next
+  // model boundary, so while this turn holds an unanswered credit pause the
+  // card says it is finishing rather than promising more.
+  const pausing = useCreditPausePending();
+  const { t } = useTranslation();
 
   if (!subagentId && !description) {
     return null;
@@ -84,224 +190,109 @@ function SubagentTaskMessageContent({
   // A cancelled subagent is terminal like completed (workflow stopped) — it may
   // still have captured partial output worth viewing.
   const isCancelled = status === 'cancelled';
-  const isError = status === 'error';
-  const hasResult = (isCompleted || isCancelled) && toolCallProcess?.toolCallResult?.content;
-  const summary = summarize(description);
+  // The panel this opens shows the task's instructions and status, never its
+  // output — the reply it used to key on is dispatch boilerplate that exists
+  // from the moment the task starts, so it promised a result no panel had.
+  const hasDetails = (isCompleted || isCancelled) && !!toolCallProcess;
+  const hasTelemetry = toolCalls > 0 || (tokenUsage?.total ?? 0) > 0;
 
-  // Status discriminator — drives icon, label, and accent color.
-  // Updated/Resumed share the warning-amber treatment with Running because
-  // those are all "in-flight or recent change" states; Completed is success;
-  // Cancelled is terminal-neutral (the turn was stopped); Failed is danger.
-  const statusKind: 'completed' | 'running' | 'cancelled' | 'error' | 'updated' | 'resumed' | 'unknown' =
+  // Status discriminator — drives icon, label, and accent color via STATUS_UI.
+  const statusKind: TaskCardStatusKind =
     action === 'update' ? 'updated'
     : action === 'resume' ? 'resumed'
-    : action === 'init' && isRunning ? 'running'
-    : action === 'init' && isCompleted ? 'completed'
-    : action === 'init' && isCancelled ? 'cancelled'
-    : action === 'init' && isError ? 'error'
+    : action === 'init' ? taskCardStatusKind(status, pausing)
     : 'unknown';
 
-  const statusColor =
-    statusKind === 'completed' ? 'var(--color-success)'
-    : statusKind === 'error' ? 'var(--color-danger, #c43d3d)'
-    : statusKind === 'unknown' || statusKind === 'cancelled' ? 'var(--color-text-tertiary)'
-    : 'var(--color-warning)';
-
-  const statusLabel =
-    statusKind === 'completed' ? 'Completed'
-    : statusKind === 'cancelled' ? 'Stopped'
-    : statusKind === 'error' ? 'Failed'
-    : statusKind === 'running' ? 'Running'
-    : statusKind === 'updated' ? 'Updated'
-    : statusKind === 'resumed' ? 'Resumed'
-    : status;
-
-  const StatusIcon =
-    statusKind === 'completed' ? Check
-    : statusKind === 'cancelled' ? StopCircle
-    : statusKind === 'error' ? AlertCircle
-    : statusKind === 'running' ? Loader2
-    : statusKind === 'updated' ? RefreshCw
-    : statusKind === 'resumed' ? RotateCw
-    : null;
-
-  const handleCardClick = (): void => {
-    if (onOpen) {
-      onOpen({ subagentId: resumeTargetId || subagentId || '', description: description || '', type, status });
-    }
+  const handleOpen = (): void => {
+    onOpen?.({ subagentId: resumeTargetId || subagentId || '', description: description || '', type, status });
   };
 
-  const handleViewOutput = (e: React.MouseEvent<HTMLButtonElement>): void => {
+  const handleViewDetails = (e: React.MouseEvent<HTMLButtonElement>): void => {
     e.stopPropagation();
     if (onDetailOpen && toolCallProcess) {
       onDetailOpen(toolCallProcess);
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
-    // Ignore keystrokes that originated on a descendant control (e.g. the
-    // "View subagent output" button) — the descendant handles its own
-    // activation, and the keydown shouldn't double-fire as a card click.
-    if (e.target !== e.currentTarget) return;
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      handleCardClick();
-    }
-  };
-
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      style={{
-        background: 'var(--color-bg-tool-card)',
-        border: '1px solid var(--color-border-muted)',
-        borderRadius: 12,
-        overflow: 'hidden',
-        cursor: 'pointer',
-        fontFamily: MONO_STACK,
-        transition: 'border-color 0.15s',
-      }}
-      onClick={handleCardClick}
-      onKeyDown={handleKeyDown}
-      onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => (e.currentTarget.style.borderColor = 'var(--color-border-default)')}
-      onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
-      title={
-        action === 'update' ? 'Click to view updated subagent'
-        : action === 'resume' ? 'Click to view resumed subagent'
-        : isRunning ? 'Click to view running subagent'
-        : 'Click to view subagent details'
+    <TaskCardShell
+      eyebrow={type}
+      statusKind={statusKind}
+      rawStatus={status}
+      title={summarize(description) || t('chat.subagentCard.titleFallback')}
+      hint={
+        onOpen
+          ? t(
+              action === 'update' ? 'chat.subagentCard.openUpdated'
+              : action === 'resume' ? 'chat.subagentCard.openResumed'
+              : isRunning ? 'chat.subagentCard.openRunning'
+              : 'chat.subagentCard.openDetails'
+            )
+          : undefined
       }
-    >
-      {/* Rule: agent type · status · affordance */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          padding: '10px 12px 8px 14px',
-          borderBottom: '1px solid var(--color-border-subtle)',
-          fontSize: 12,
-        }}
-      >
-        <span
+      onOpen={onOpen ? handleOpen : undefined}
+      affordance={hasDetails && onDetailOpen ? (
+        <button
+          type="button"
+          aria-label={t('chat.subagentCard.viewDetails')}
+          onClick={handleViewDetails}
           style={{
-            color: 'var(--color-text-secondary)',
-            fontWeight: 500,
-            textTransform: 'lowercase',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            minWidth: 0,
-            flex: '0 1 auto',
-          }}
-        >
-          {type}
-        </span>
-        <span style={{ flex: 1 }} />
-        <span
-          style={{
+            background: 'transparent',
+            border: 'none',
+            padding: 0,
             display: 'inline-flex',
             alignItems: 'center',
-            gap: 5,
-            color: statusColor,
-            fontSize: 11,
-            letterSpacing: '0.04em',
-            fontWeight: 500,
-            whiteSpace: 'nowrap',
+            cursor: 'pointer',
+            color: 'var(--color-accent-primary)',
+            flexShrink: 0,
           }}
         >
-          {StatusIcon && (
-            <StatusIcon
-              style={{
-                width: 11,
-                height: 11,
-                animation: statusKind === 'running' ? 'spin 1s linear infinite' : undefined,
-              }}
-            />
-          )}
-          {statusLabel}
-        </span>
-        {hasResult ? (
-          <button
-            type="button"
-            aria-label="View subagent output"
-            onClick={handleViewOutput}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              padding: 0,
-              display: 'inline-flex',
-              alignItems: 'center',
-              cursor: 'pointer',
-              color: 'var(--color-accent-primary)',
-              flexShrink: 0,
-            }}
-          >
-            <ArrowRight style={{ width: 14, height: 14 }} />
-          </button>
-        ) : (
-          <ChevronRight
-            aria-hidden="true"
-            style={{
-              width: 14,
-              height: 14,
-              flexShrink: 0,
-              color: 'var(--color-text-quaternary)',
-            }}
-          />
-        )}
-      </div>
-
-      {/* Body: description + telemetry */}
-      <div style={{ padding: '12px 14px 14px' }}>
+          <ArrowRight style={{ width: 14, height: 14 }} />
+        </button>
+      ) : undefined}
+    >
+      {hasTelemetry && (
         <div
+          data-testid="subagent-telemetry"
           style={{
-            fontFamily:
-              "'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-            fontSize: 14,
-            fontWeight: 500,
-            color: 'var(--color-text-primary)',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            marginBottom: (toolCalls > 0 || (tokenUsage?.total ?? 0) > 0) ? 8 : 0,
+            display: 'flex',
+            gap: 8,
+            marginTop: 8,
+            fontSize: '0.6875rem',
+            color: 'var(--color-text-tertiary)',
+            fontFamily: MONO_STACK,
+            letterSpacing: '0.02em',
           }}
         >
-          {summary || 'Subagent Task'}
+          {toolCalls > 0 && (
+            <span>
+              <strong style={{ color: 'var(--color-text-secondary)', fontWeight: 600 }}>{toolCalls}</strong>
+              {' '}
+              {t('chat.subagentCard.toolUnit', { count: toolCalls })}
+            </span>
+          )}
+          {(tokenUsage?.total ?? 0) > 0 && (
+            <span title={`${tokenUsage!.input} in · ${tokenUsage!.output} out`}>
+              {toolCalls > 0 ? '· ' : ''}
+              <strong style={{ color: 'var(--color-text-secondary)', fontWeight: 600 }}>{compactNumber(tokenUsage!.total)}</strong>
+              {' '}
+              {t('chat.subagentCard.tokenUnit')}
+            </span>
+          )}
         </div>
-
-        {(toolCalls > 0 || (tokenUsage?.total ?? 0) > 0) && (
-          <div
-            data-testid="subagent-telemetry"
-            style={{
-              display: 'flex',
-              gap: 8,
-              fontSize: 11,
-              color: 'var(--color-text-tertiary)',
-              fontFamily: MONO_STACK,
-              letterSpacing: '0.02em',
-            }}
-          >
-            {toolCalls > 0 && (
-              <span>
-                <strong style={{ color: 'var(--color-text-secondary)', fontWeight: 600 }}>{toolCalls}</strong>
-                {' '}
-                {toolCalls === 1 ? 'tool' : 'tools'}
-              </span>
-            )}
-            {(tokenUsage?.total ?? 0) > 0 && (
-              <span title={`${tokenUsage!.input} in · ${tokenUsage!.output} out`}>
-                {toolCalls > 0 ? '· ' : ''}
-                <strong style={{ color: 'var(--color-text-secondary)', fontWeight: 600 }}>{compactNumber(tokenUsage!.total)}</strong>
-                {' '}
-                tokens
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
+      )}
+      {/* Terminal only: a reason on a card still claiming to run would read as
+          a prediction. `running` covers `pausing`, which is a running task.
+          A credit stop is excluded here because it gets the notice at the foot
+          of the message instead; saying it twice would make the notice look
+          optional. */}
+      {stopReason
+        && stopReasonType !== CREDIT_STOP_ERROR_TYPE
+        && statusKind !== 'running'
+        && statusKind !== 'pausing' && (
+        <TaskStopReason reason={stopReason} />
+      )}
+    </TaskCardShell>
   );
 }
 

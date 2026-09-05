@@ -13,6 +13,7 @@ from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 
 from ptc_agent.agent.middleware import (
+    CreditGateMiddleware,
     EmptyToolCallRetryMiddleware,
     ToolArgumentParsingMiddleware,
     ToolErrorHandlingMiddleware,
@@ -22,18 +23,24 @@ from ptc_agent.agent.middleware import (
     SkillsMiddleware,
     AskUserMiddleware,
     LeakDetectionMiddleware,
+    MultimodalMiddleware,
     ProvenanceMiddleware,
+    ReasoningCompatibilityMiddleware,
 )
 from ptc_agent.agent.middleware.openai_prompt_caching import OpenAIPromptCachingMiddleware
+from ptc_agent.agent.middleware.skills.registry import (
+    build_effective_skill_registry,
+)
 from ptc_agent.agent.middleware.runtime_context import RuntimeContextMiddleware
 from ptc_agent.agent.state import DeltaAgentState
-from ptc_agent.agent.prompts import format_current_time, get_loader
+from ptc_agent.agent.prompts import (
+    format_current_time,
+    get_loader,
+    guidance_template_vars,
+)
 from ptc_agent.config import AgentConfig
 
-from ptc_agent.agent.middleware.model_resilience import (
-    ModelResilienceMiddleware,
-    build_fallback_pairs,
-)
+from ptc_agent.agent.turn import build_model_resilience_middleware, turn_model
 
 # External tools only (no sandbox, no MCP)
 from src.tools.web.search import get_web_search_tool
@@ -150,22 +157,18 @@ class FlashAgent:
 
         return tools
 
-    def _build_system_prompt(
-        self,
-        tools: list[Any],
-    ) -> str:
+    def _build_system_prompt(self, tools: list[Any], guidance: str) -> str:
         """Build the static system prompt (excludes time/profile for cacheability).
 
-        Args:
-            tools: List of available tools
-
-        Returns:
-            Rendered system prompt string
+        ``guidance`` is resolved for the flash model, not the main one: a
+        deployment running Haiku on Flash and Opus on PTC sizes each prompt for
+        the model that renders it.
         """
         loader = get_loader()
         return loader.render(
             "flash_system.md.j2",
             tools=tools,
+            **guidance_template_vars(guidance),
         )
 
     def create_agent(
@@ -190,7 +193,7 @@ class FlashAgent:
         Returns:
             Configured LangGraph agent
         """
-        model = llm if llm is not None else self.llm
+        turn = turn_model(self.config, llm, self.llm, flash=True)
 
         # Freeze current time for this request (refreshes on each new query)
         request_time = datetime.now(tz=UTC)
@@ -201,7 +204,7 @@ class FlashAgent:
         tools = self._build_tools()
 
         # Build system prompt (time + profile injected by RuntimeContextMiddleware)
-        system_prompt = self._build_system_prompt(tools)
+        system_prompt = self._build_system_prompt(tools, turn.guidance)
 
         # Leak detector wired into provenance so web/market/SEC snippets are
         # scrubbed before they're emitted/persisted, mirroring the main agent.
@@ -215,6 +218,8 @@ class FlashAgent:
 
         # Minimal shared middleware stack
         shared_middleware: list[Any] = [
+            # Inert unless the server installed a gate state for this run.
+            CreditGateMiddleware(),
             ToolArgumentParsingMiddleware(),
             ToolErrorHandlingMiddleware(),
             leak_detection,
@@ -223,9 +228,26 @@ class FlashAgent:
             ProvenanceMiddleware(redactor=leak_detection.redact),
         ]
 
-        # Add dynamic skill loader middleware (Flash mode: inline SKILL.md)
+        # Add dynamic skill loader middleware (Flash mode: inline SKILL.md).
+        # Same per-user registry assembly as the PTC build: feature gates,
+        # builtin disables, user skills. Flash previously took the bare
+        # system-gated registry, so a per-user feature opt-out that hid a
+        # skill in PTC left it visible here.
+        skill_registry = build_effective_skill_registry(
+            "flash",
+            feature_resolver=self.config.feature_enabled,
+            disabled_skills=self.config.disabled_skills,
+            user_skills=self.config.user_skills,
+            user_skill_dir=self.config.user_skill_dir,
+            workspace_skill_dir=self.config.workspace_skill_dir,
+        )
+
         skill_loader_middleware = SkillsMiddleware(
+            skill_registry=skill_registry,
             mode="flash",
+            skill_dirs=[
+                d for d, _ in self.config.skills.local_skill_dirs_with_sandbox()
+            ],
         )
         shared_middleware.append(skill_loader_middleware)
         tools.extend(skill_loader_middleware.tools)  # LoadSkill tool
@@ -269,23 +291,25 @@ class FlashAgent:
             )
 
         # Model resilience middleware (retry + fallback + progress events)
-        fallbacks = build_fallback_pairs(self.config)
-        main_middleware.append(
-            ModelResilienceMiddleware(
-                primary_name=self.config.llm.flash or self.config.llm.name,
-                primary_client=self.llm,
-                fallbacks=fallbacks,
-                max_retries=3,
-                backoff_factor=2.0,
-                initial_delay=1.0,
-                max_delay=60.0,
-                jitter=True,
-            )
-        )
+        model_resilience = build_model_resilience_middleware(self.config, turn)
+        main_middleware.append(model_resilience)
         logger.info(
             "Flash model resilience enabled",
             max_retries=3,
-            fallback_models=[name for name, _ in fallbacks],
+            fallback_models=[name for name, _ in model_resilience.fallbacks],
+        )
+
+        # Only the read-side strip is live here: Flash exposes no filesystem
+        # tool at all, so the injection half has nothing to intercept. Without
+        # it, a mid-thread switch to a text-only model replays an earlier turn's
+        # image/PDF blocks and strict providers reject the request outright.
+        # Inside model resilience so it strips against the post-fallback model.
+        main_middleware.append(
+            MultimodalMiddleware(
+                sandbox=None,
+                model_name=self.config.llm.flash_name,
+                custom_modalities=self.config.input_modalities,
+            )
         )
 
         # Prompt caching (per-provider breakpoints), empty tool call retry,
@@ -308,8 +332,15 @@ class FlashAgent:
 
         # Build final middleware stack
         # RuntimeContextMiddleware is last (innermost) so it appends after
-        # the cache breakpoint, keeping the static prompt cacheable.
-        middleware = [*shared_middleware, *main_middleware, runtime_context_middleware]
+        # the cache breakpoint, keeping the static prompt cacheable;
+        # ReasoningCompatibilityMiddleware sits inside model resilience so it
+        # sanitizes against the post-fallback model, not the requested one.
+        middleware = [
+            *shared_middleware,
+            *main_middleware,
+            runtime_context_middleware,
+            ReasoningCompatibilityMiddleware(),
+        ]
 
         logger.info(
             "Creating Flash agent",
@@ -330,7 +361,7 @@ class FlashAgent:
             create_kwargs["response_format"] = response_format
 
         agent = create_agent(
-            model,
+            turn.client,
             **create_kwargs,
         ).with_config({"recursion_limit": 500})
 

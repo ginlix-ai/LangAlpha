@@ -1,17 +1,17 @@
-"""Middleware for dynamically injecting workspace context (agent.md) into system prompt.
+"""Injects the workspace's identity and its agent.md into the system prompt.
 
-Reads agent.md from the sandbox on every model call, ensuring the agent always
-sees the latest workspace context — even after it creates or updates agent.md
-mid-conversation. The content is appended as the last content block in the
-system message, after skills and all other injections.
+The name and description are read when the turn's agent is built and held for
+that turn, so what the model is told is what the user last set. agent.md is read
+from the sandbox on every model call, so an edit the agent makes mid-conversation
+is visible to the call after it.
 
-When the YAML front matter in agent.md changes (e.g. agent updates
-workspace_name or description), the middleware syncs those changes back to
-the workspace record in the database.
+Both blocks land after the prompt-cache breakpoint (whichever of the provider
+caching middlewares is live pins the static prefix earlier in the stack), so
+neither costs a cache miss when it changes.
 """
 
-import asyncio
 from collections.abc import Awaitable, Callable
+from html import escape
 from typing import Any
 
 import structlog
@@ -22,29 +22,14 @@ logger = structlog.get_logger(__name__)
 
 MAX_AGENT_MD_SIZE = 8192
 
-
-def _parse_yaml_front_matter(content: str) -> dict[str, str] | None:
-    """Extract YAML front matter from markdown content.
-
-    Returns a dict of key-value pairs, or None if no front matter found.
-    Only handles simple `key: value` lines (no nested structures).
-    """
-    if not content.startswith("---\n"):
-        return None
-    end = content.find("\n---", 3)
-    if end == -1:
-        return None
-    # Start after first newline (handles "---\n" = 4 chars)
-    start = content.index("\n") + 1
-    block = content[start:end]
-    result = {}
-    for line in block.splitlines():
-        line = line.strip()
-        if not line or ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        result[key.strip()] = value.strip()
-    return result
+_NO_AGENT_MD_BLOCK = (
+    '<agentmd path="/agent.md">\n'
+    "No agent.md exists yet. Create /agent.md at the workspace root with:\n"
+    "- Workspace purpose based on the user's query\n"
+    "- Initial goals and planned artifacts\n"
+    "- Section stubs for Thread Index, Key Findings, File Index\n"
+    "</agentmd>"
+)
 
 
 def _append_content_block(system_message: SystemMessage | None, text: str) -> SystemMessage:
@@ -58,88 +43,42 @@ def _append_content_block(system_message: SystemMessage | None, text: str) -> Sy
 
 
 class WorkspaceContextMiddleware(AgentMiddleware):
-    """Dynamically injects agent.md content into the system prompt on every model call.
-
-    This ensures:
-    1. agent.md is always the LAST content block (after skills)
-    2. Changes to agent.md mid-conversation are reflected immediately
-    3. YAML front matter changes are synced back to the workspace DB
+    """Injects the workspace block and agent.md on every model call.
 
     Args:
         session: The Session object (has get_agent_md() with caching/invalidation).
+        name: The workspace's name, as its row had it when this agent was built.
+        description: The workspace's description, from the same read.
     """
 
-    def __init__(self, *, session: Any) -> None:
+    def __init__(self, *, session: Any, name: str = "", description: str = "") -> None:
         self._session = session
-        # Cache last-seen front matter to detect changes
-        self._last_front_matter: dict[str, str] | None = None
+        self._name = (name or "").strip()
+        self._description = (description or "").strip()
 
-    @property
-    def _workspace_id(self) -> str | None:
-        return getattr(self._session, "conversation_id", None)
+    def _workspace_block(self) -> str:
+        """What the workspace is called, as element text.
 
-    async def _sync_front_matter_to_db(
-        self, front_matter: dict[str, str], *, prev: dict[str, str] | None = None
-    ) -> None:
-        """Sync changed YAML front matter fields back to the workspace DB record."""
-        if not self._workspace_id:
-            return
+        Text rather than attributes: a name is free text the user typed, and as
+        text an escape of `<` and `&` is the whole obligation — no quoting rule
+        to get wrong, and an apostrophe survives as an apostrophe.
+        """
+        if not self._name:
+            return ""
+        lines = [f"Name: {escape(self._name, quote=False)}"]
+        if self._description:
+            lines.append(f"Description: {escape(self._description, quote=False)}")
+        body = "\n".join(lines)
+        return f"<workspace>\n{body}\n</workspace>"
 
-        updates: dict[str, str] = {}
-        prev = prev or {}
-
-        for key, db_field in (
-            ("workspace_name", "name"),
-            ("description", "description"),
-        ):
-            new_val = front_matter.get(key, "")
-            old_val = prev.get(key, "")
-            if new_val and new_val != old_val:
-                updates[db_field] = new_val
-
-        if not updates:
-            return
-
-        try:
-            from src.server.database.workspace import update_workspace
-
-            await update_workspace(workspace_id=self._workspace_id, **updates)
-            logger.debug(
-                "Synced agent.md front matter to workspace DB",
-                workspace_id=self._workspace_id,
-                updates=list(updates.keys()),
-            )
-        except Exception as e:
-            logger.warning(
-                "Failed to sync agent.md front matter to DB",
-                workspace_id=self._workspace_id,
-                error=str(e),
-            )
-
-    async def _get_workspace_context_block(self) -> str:
+    async def _get_agent_md_block(self) -> str:
         """Build the workspace context block from agent.md."""
-        agent_md = await self._session.get_agent_md()
-        if agent_md:
-            # Check for front matter changes and sync to DB
-            front_matter = _parse_yaml_front_matter(agent_md)
-            if front_matter is not None and front_matter != self._last_front_matter:
-                # Capture prev before overwriting — task runs async after this line
-                prev = self._last_front_matter
-                self._last_front_matter = front_matter
-                # Fire-and-forget — don't block the model call
-                asyncio.create_task(self._sync_front_matter_to_db(front_matter, prev=prev))
-
-            if len(agent_md) > MAX_AGENT_MD_SIZE:
-                agent_md = agent_md[:MAX_AGENT_MD_SIZE] + "\n\n[... truncated ...]"
-            return f'<agentmd path="/agent.md">\n{agent_md}\n</agentmd>'
-        return (
-            '<agentmd path="/agent.md">\n'
-            "No agent.md exists yet. Create /agent.md at the workspace root with:\n"
-            "- Workspace purpose based on the user's query\n"
-            "- Initial goals and planned artifacts\n"
-            "- Section stubs for Thread Index, Key Findings, File Index\n"
-            "</agentmd>"
-        )
+        content = await self._session.get_agent_md()
+        if not content:
+            return _NO_AGENT_MD_BLOCK
+        if len(content) > MAX_AGENT_MD_SIZE:
+            content = content[:MAX_AGENT_MD_SIZE] + "\n\n[... truncated ...]"
+        return f'<agentmd path="/agent.md">\n{content}\n</agentmd>'
 
     def wrap_model_call(
         self,
@@ -154,8 +93,10 @@ class WorkspaceContextMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """Inject latest agent.md into system message before each model call."""
-        context_block = await self._get_workspace_context_block()
-        new_system_message = _append_content_block(request.system_message, context_block)
+        """Inject the workspace block and the latest agent.md before each call."""
+        workspace = self._workspace_block()
+        agent_md = await self._get_agent_md_block()
+        blocks = "\n\n".join(b for b in (workspace, agent_md) if b)
+        new_system_message = _append_content_block(request.system_message, blocks)
         modified_request = request.override(system_message=new_system_message)
         return await handler(modified_request)

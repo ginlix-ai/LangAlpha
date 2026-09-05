@@ -17,7 +17,11 @@ interface BaseProps {
 
 interface WidgetVariant extends BaseProps {
   variant: 'widget';
-  /** widget-fullscreen srcDoc. */
+  /**
+   * widget-fullscreen srcDoc: display markup for this dialog only. `actions`
+   * deliberately operates on the inline srcDoc, which is the widget as an
+   * artifact — see InlineWidget.
+   */
   srcDoc: string;
 }
 
@@ -59,7 +63,7 @@ export default function HtmlFullscreenModal(props: HtmlFullscreenModalProps) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         variant="centered"
-        className="html-fullscreen-modal !w-[95vw] !max-w-[1400px] !h-[90vh] !max-h-[90vh] !p-0 !overflow-hidden"
+        className={`html-fullscreen-modal !w-[95vw] !h-[90vh] !max-h-[90vh] !p-0 !overflow-hidden ${props.variant === 'widget' ? '!max-w-[940px]' : '!max-w-[1400px]'}`}
         aria-describedby={undefined}
       >
         <DialogTitle className="sr-only">{title}</DialogTitle>
@@ -75,22 +79,39 @@ export default function HtmlFullscreenModal(props: HtmlFullscreenModalProps) {
             />
           </div>
           {props.variant === 'file' ? (
+            // src= loads: the served response's CSP `sandbox` header
+            // intersects with this attribute — serve.py owns the policy and
+            // the link-click rationale (both must carry the popup tokens).
             <iframe
               ref={iframeRef}
               src={servedUrl!}
-              sandbox="allow-scripts"
+              sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
               className="html-fullscreen-frame"
               title={title || t('filePanel.fullscreen')}
               onLoad={pushTheme}
             />
           ) : (
-            <iframe
-              ref={iframeRef}
-              srcDoc={props.srcDoc}
-              sandbox="allow-scripts"
-              className="html-fullscreen-frame"
-              title={title || t('filePanel.fullscreen')}
-            />
+            // Popup tokens: agent-embedded links must open as REAL tabs (a
+            // sandbox-inheriting tab has no cookies — bot checks break);
+            // buildHtmlSrcDoc's click handler forces noopener.
+            <div className="html-fullscreen-frame-pad">
+              <iframe
+                ref={iframeRef}
+                srcDoc={props.srcDoc}
+                sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+                className="html-fullscreen-frame"
+                title={title || t('filePanel.fullscreen')}
+                // The same push the served variant does, and needed for the same
+                // reason. A srcDoc bakes the theme in at build time, and this one
+                // is built once when the widget mounts inline, while the dialog
+                // creates a fresh document from it on every open. Between those
+                // two moments the user can change theme: the inline frame is
+                // patched live by the observer in useHtmlSandbox, but this frame
+                // did not exist to be patched, so it opens wearing whatever theme
+                // the thread was first rendered in.
+                onLoad={pushTheme}
+              />
+            </div>
           )}
         </div>
       </DialogContent>

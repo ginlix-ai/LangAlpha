@@ -1,5 +1,6 @@
 """Tests for src/tools/web/router.py — chain semantics with fake adapters."""
 
+import logging
 from typing import Dict, List
 
 import pytest
@@ -84,6 +85,36 @@ def make_router(monkeypatch):
 
 URL_A = "https://a.example/1"
 URL_B = "https://b.example/2"
+
+
+class TestAttemptOutcome:
+    """The attempt label is the telemetry a fall-through is read from."""
+
+    def _failed(self, native_kind, provider_fault, etype=WebErrorType.PROVIDER_ERROR):
+        return FetchResult(
+            url=URL_A,
+            error=WebError(
+                type=etype,
+                message="scripted",
+                provider_fault=provider_fault,
+                native_kind=native_kind,
+            ),
+        )
+
+    def test_prefers_the_providers_own_name_for_the_failure(self):
+        """PROVIDER_ERROR buckets a dead target and a broken provider together,
+        so a label built from the type alone cannot tell the two apart."""
+        dead_target = self._failed("dns_error", provider_fault=False)
+        our_capacity = self._failed("queue_full", provider_fault=True)
+
+        assert str(router_module._attempt_outcome("inhouse", [dead_target])) == "inhouse:dns_error"
+        assert str(router_module._attempt_outcome("inhouse", [our_capacity])) == "inhouse:queue_full"
+
+    def test_falls_back_to_the_normalized_type(self):
+        """Providers whose taxonomy is already granular carry no native kind."""
+        timed_out = self._failed(None, provider_fault=False, etype=WebErrorType.TIMEOUT)
+
+        assert str(router_module._attempt_outcome("exa", [timed_out])) == "exa:timeout"
 
 
 @pytest.mark.asyncio
@@ -429,6 +460,57 @@ class TestChainSemantics:
         assert not flaky.calls  # breaker open → provider never called
         assert second.provider == "inhouse"
         assert "flaky" not in second.providers_tried
+
+    async def test_attempts_record_why_the_chain_fell_through(self, make_router):
+        """providers_tried says a provider was tried; attempts says what it did.
+        Without the outcome a silent fallback is unattributable after the fact."""
+        primary = FakeAdapter("primary", {URL_A: WebErrorType.TIMEOUT})
+        router = make_router([primary, FakeAdapter("inhouse", {})])
+
+        resp = await router.fetch(FetchRequest(urls=[URL_A]))
+
+        assert [str(a) for a in resp.attempts] == ["primary:timeout", "inhouse:ok"]
+        assert resp.providers_tried == ["primary", "inhouse"]
+        assert resp.provider == "inhouse"
+
+    async def test_attempt_outcome_marks_partial_batches(self, make_router):
+        """One URL up, one down is neither ok nor an error type."""
+        only = FakeAdapter("only", {URL_B: WebErrorType.NOT_FOUND})
+        router = make_router([only])
+
+        resp = await router.fetch(FetchRequest(urls=[URL_A, URL_B]))
+
+        assert [str(a) for a in resp.attempts] == ["only:partial"]
+
+    async def test_breaker_open_log_carries_provider_and_cause(self, make_router, caplog):
+        """The transition is the only line emitted — routine failures stay
+        silent, so the one warning has to name the breaker and what opened it."""
+        flaky = FakeAdapter("flaky", {URL_A: WebErrorType.PROVIDER_ERROR})
+        router = make_router([flaky, FakeAdapter("inhouse", {})])
+        router._chain[0].breaker.failure_threshold = 1
+
+        with caplog.at_level(logging.WARNING, logger="src.tools.web.breaker"):
+            await router.fetch(FetchRequest(urls=[URL_A]))
+
+        opened = [r.getMessage() for r in caplog.records if "opening after" in r.getMessage()]
+        assert len(opened) == 1
+        assert "[fetch:flaky]" in opened[0]
+        assert "provider_error" in opened[0] and "scripted" in opened[0]
+
+    async def test_healthy_failures_emit_no_breaker_log(self, make_router, caplog):
+        """Target-side failures are routine; they must not log at all."""
+        flaky = FakeAdapter(
+            "flaky",
+            {URL_A: WebError(type=WebErrorType.PROVIDER_ERROR, message="Target server error",
+                             provider_fault=False)},
+        )
+        router = make_router([flaky, FakeAdapter("inhouse", {})])
+        router._chain[0].breaker.failure_threshold = 1
+
+        with caplog.at_level(logging.WARNING, logger="src.tools.web.breaker"):
+            await router.fetch(FetchRequest(urls=[URL_A]))
+
+        assert caplog.records == []
 
     async def test_target_fault_errors_do_not_trip_breaker(self, make_router):
         """All-URL failures that are the TARGET's fault (429/5xx from the

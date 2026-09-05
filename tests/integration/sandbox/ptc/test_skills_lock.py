@@ -6,7 +6,6 @@ Covers:
 - User preservation: user lock entries survive platform resync
 - Prune protection: user-installed skill dirs survive prune
 - Discovery: user-installed skills in manifest after cache build
-- Sync: sync_skills_lock adds/removes entries to match filesystem
 
 NOTE: Tests exercise skills methods directly (not full sync_sandbox_assets)
 because integration sandbox lacks mcp_registry for tool module install.
@@ -117,7 +116,6 @@ class TestSkillsLockLifecycle:
                 "skills": SkillsConfig(
                     enabled=True,
                     user_skills_dir=tmpdir,
-                    project_skills_dir=tmpdir,
                     sandbox_skills_base=skills_base,
                 ),
             })()
@@ -125,11 +123,12 @@ class TestSkillsLockLifecycle:
             skills_mod = await sb._compute_skills_module([tmpdir])
 
             # Upload skills + write lock
-            merged_lock = await sb._upload_skills(
+            merged_lock, collisions = await sb._upload_skills(
                 [(tmpdir, skills_base)],
                 manifest=skills_mod,
                 existing_lock=None,
             )
+            assert not collisions, 'no name here is agent-installed'
 
         # Verify lock file written
         lock_data = await _read_lock_from_sandbox(sb.runtime, lock_path)
@@ -161,10 +160,18 @@ class TestSkillsLockLifecycle:
             f"{user_dir}/SKILL.md",
         )
 
-        # Set existing lock with user entry
+        # Seed the lock FILE with the user entry, the way this state arises in
+        # prod (existing_lock is always _download_skills_lock's read of it).
+        # The merge re-reads the live file under the sandbox flock, so an
+        # entry that exists only as a host-side dict would rightly not
+        # survive — the file is the ledger, the parameter is a snapshot.
         existing_lock = {
             "my-custom": _make_lock_entry("my-custom", description="Custom user skill"),
         }
+        await sb.runtime.upload_file(
+            json.dumps({"version": 1, "skills": existing_lock}).encode(),
+            lock_path,
+        )
 
         # Upload platform skills with existing_lock containing user entry
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -174,11 +181,12 @@ class TestSkillsLockLifecycle:
                 f.write(_make_test_skill("plat-skill", "Platform"))
 
             skills_mod = await sb._compute_skills_module([tmpdir])
-            merged_lock = await sb._upload_skills(
+            merged_lock, collisions = await sb._upload_skills(
                 [(tmpdir, skills_base)],
                 manifest=skills_mod,
                 existing_lock=existing_lock,
             )
+            assert not collisions, 'the user entry has a different name'
 
         # Verify user entry preserved in merged result
         assert merged_lock is not None
@@ -256,147 +264,3 @@ class TestPruneProtection:
             f"test -d {stale_dir} && echo EXISTS || echo GONE"
         )
         assert "GONE" in result.stdout, "Stale platform skill was not pruned"
-
-
-class TestSyncSkillsLock:
-    """sync_skills_lock reconciles lock file with filesystem."""
-
-    async def test_sync_removes_orphaned_entry(self, shared_sandbox):
-        """Lock entry without corresponding directory is removed."""
-        sb = shared_sandbox
-        work_dir = sb._work_dir
-        skills_base = f"{work_dir}/.agents/skills"
-        lock_path = f"{skills_base}/skills-lock.json"
-
-        # Ensure at least one valid skill dir exists (so DIRS is non-empty)
-        valid_dir = f"{skills_base}/valid-skill"
-        await sb.runtime.exec(f"mkdir -p {valid_dir}")
-        await sb.runtime.upload_file(
-            _make_test_skill("valid-skill").encode(),
-            f"{valid_dir}/SKILL.md",
-        )
-
-        # Write lock with valid + ghost entries
-        lock_data = {
-            "version": 1,
-            "skills": {
-                "valid-skill": _make_lock_entry("valid-skill"),
-                "ghost-skill": _make_lock_entry("ghost-skill"),
-            },
-        }
-        await _write_lock_to_sandbox(sb.runtime, lock_path, lock_data)
-
-        # Verify ghost-skill is in the lock
-        pre = await _read_lock_from_sandbox(sb.runtime, lock_path)
-        assert pre is not None and "ghost-skill" in pre["skills"]
-
-        # Run sync
-        await sb.sync_skills_lock()
-
-        # Verify ghost removed, valid preserved
-        post = await _read_lock_from_sandbox(sb.runtime, lock_path)
-        assert post is not None
-        assert "ghost-skill" not in post["skills"], "Orphaned entry not cleaned"
-        assert "valid-skill" in post["skills"], "Valid entry incorrectly removed"
-
-    async def test_sync_adds_new_skill_entry(self, shared_sandbox):
-        """Skill directory without lock entry gets auto-registered."""
-        sb = shared_sandbox
-        work_dir = sb._work_dir
-        skills_base = f"{work_dir}/.agents/skills"
-        lock_path = f"{skills_base}/skills-lock.json"
-
-        # Create a skill dir with SKILL.md but no lock entry
-        new_dir = f"{skills_base}/auto-registered"
-        await sb.runtime.exec(f"mkdir -p {new_dir}")
-        await sb.runtime.upload_file(
-            _make_test_skill("auto-registered", "Auto-discovered skill").encode(),
-            f"{new_dir}/SKILL.md",
-        )
-
-        # Write lock without the new skill
-        lock_data = {"version": 1, "skills": {}}
-        await _write_lock_to_sandbox(sb.runtime, lock_path, lock_data)
-
-        # Run sync
-        await sb.sync_skills_lock()
-
-        # Verify new skill was added
-        post = await _read_lock_from_sandbox(sb.runtime, lock_path)
-        assert post is not None
-        skills = post.get("skills", {})
-        assert "auto-registered" in skills, f"New skill not added: {list(skills.keys())}"
-        entry = skills["auto-registered"]
-        assert entry["owner"] == "user"
-        assert entry["source"] == "local"
-        assert entry["description"] == "Auto-discovered skill"
-        assert entry["confirmed"] is True
-
-    async def test_sync_adds_and_removes_simultaneously(self, shared_sandbox):
-        """Sync handles both additions and removals in one pass."""
-        sb = shared_sandbox
-        work_dir = sb._work_dir
-        skills_base = f"{work_dir}/.agents/skills"
-        lock_path = f"{skills_base}/skills-lock.json"
-
-        # Create new skill dir (no lock entry)
-        new_dir = f"{skills_base}/new-skill"
-        await sb.runtime.exec(f"mkdir -p {new_dir}")
-        await sb.runtime.upload_file(
-            _make_test_skill("new-skill", "Brand new").encode(),
-            f"{new_dir}/SKILL.md",
-        )
-
-        # Write lock with a stale entry (no dir) only
-        lock_data = {
-            "version": 1,
-            "skills": {
-                "stale-skill": _make_lock_entry("stale-skill"),
-            },
-        }
-        await _write_lock_to_sandbox(sb.runtime, lock_path, lock_data)
-
-        await sb.sync_skills_lock()
-
-        post = await _read_lock_from_sandbox(sb.runtime, lock_path)
-        assert post is not None
-        skills = post.get("skills", {})
-        assert "stale-skill" not in skills, "Stale entry not removed"
-        assert "new-skill" in skills, "New skill not added"
-
-    async def test_sync_noop_when_in_sync(self, shared_sandbox):
-        """No write when lock and filesystem already match."""
-        sb = shared_sandbox
-        work_dir = sb._work_dir
-        skills_base = f"{work_dir}/.agents/skills"
-        lock_path = f"{skills_base}/skills-lock.json"
-
-        # Create skill dir + matching lock entry
-        skill_dir = f"{skills_base}/synced-skill"
-        await sb.runtime.exec(f"mkdir -p {skill_dir}")
-        await sb.runtime.upload_file(
-            _make_test_skill("synced-skill").encode(),
-            f"{skill_dir}/SKILL.md",
-        )
-        lock_data = {
-            "version": 1,
-            "skills": {
-                "synced-skill": _make_lock_entry("synced-skill"),
-            },
-        }
-        await _write_lock_to_sandbox(sb.runtime, lock_path, lock_data)
-
-        # Run sync — should be a noop (no error)
-        await sb.sync_skills_lock()
-
-        # Lock unchanged
-        post = await _read_lock_from_sandbox(sb.runtime, lock_path)
-        assert post is not None
-        assert "synced-skill" in post["skills"]
-
-    async def test_sync_safe_when_no_lock_file(self, shared_sandbox):
-        """sync_skills_lock is safe when no lock file exists."""
-        sb = shared_sandbox
-
-        # Should not raise
-        await sb.sync_skills_lock()

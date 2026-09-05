@@ -23,7 +23,7 @@ _has_ginlix = bool(os.getenv("GINLIX_DATA_URL"))
 @pytest.mark.skipif(not _has_fmp, reason="FMP_API_KEY not set")
 class TestGetStockDataLive:
     async def test_daily(self):
-        from mcp_servers.price_data_mcp_server import get_stock_data
+        from plugins.langalpha_market_data.price_data_mcp_server import get_stock_data
 
         result = await get_stock_data("AAPL", interval="1day")
         assert "error" not in result, result.get("error")
@@ -40,7 +40,7 @@ class TestGetStockDataLive:
             assert data[0]["date"] <= data[1]["date"]
 
     async def test_intraday_5min(self):
-        from mcp_servers.price_data_mcp_server import get_stock_data
+        from plugins.langalpha_market_data.price_data_mcp_server import get_stock_data
 
         result = await get_stock_data(
             "AAPL", interval="5min",
@@ -50,7 +50,7 @@ class TestGetStockDataLive:
         assert result["count"] > 0
 
     async def test_unsupported_interval(self):
-        from mcp_servers.price_data_mcp_server import get_stock_data
+        from plugins.langalpha_market_data.price_data_mcp_server import get_stock_data
 
         result = await get_stock_data("AAPL", interval="2min")
         assert "error" in result
@@ -64,21 +64,21 @@ class TestGetStockDataLive:
 @pytest.mark.skipif(not _has_fmp, reason="FMP_API_KEY not set")
 class TestGetAssetDataLive:
     async def test_commodity(self):
-        from mcp_servers.price_data_mcp_server import get_asset_data
+        from plugins.langalpha_market_data.price_data_mcp_server import get_asset_data
 
         result = await get_asset_data("GCUSD", asset_type="commodity")
         assert "error" not in result, result.get("error")
         assert result["count"] > 0
 
     async def test_crypto(self):
-        from mcp_servers.price_data_mcp_server import get_asset_data
+        from plugins.langalpha_market_data.price_data_mcp_server import get_asset_data
 
         result = await get_asset_data("BTCUSD", asset_type="crypto")
         assert "error" not in result, result.get("error")
         assert result["count"] > 0
 
     async def test_forex(self):
-        from mcp_servers.price_data_mcp_server import get_asset_data
+        from plugins.langalpha_market_data.price_data_mcp_server import get_asset_data
 
         result = await get_asset_data("EURUSD", asset_type="forex")
         assert "error" not in result, result.get("error")
@@ -98,7 +98,7 @@ async def _init_ginlix():
     time to avoid "Event loop is closed" errors.
     """
     import httpx
-    import mcp_servers.price_data_mcp_server as mod
+    import plugins.langalpha_market_data.price_data_mcp_server as mod
 
     client = mod._ginlix
 

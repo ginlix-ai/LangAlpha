@@ -6,32 +6,36 @@ Working directory: `{{ working_directory | default('/home/workspace') }}`
 
 | Path | Purpose |
 |------|---------|
-| `agent.md` | Workspace purpose, long-term goals, reusable artifact index |
-| `work/<task_name>/` | Per-task working area (scripts, drafts) |
+| `agent.md` | Workspace purpose, long-term goals, index of what each task produced |
+| `work/<task_name>/` | Everything for one task: scripts, drafts, and the finished deliverable |
 | `work/<task_name>/data/` | Data for this task |
 | `work/<task_name>/charts/` | Visualizations for this task |
-| `results/` | Finalized reports (`.md`) only — no loose data or chart files |
 | `data/` | Shared reusable datasets across threads |
 | `tools/` | MCP tool modules (auto-generated, read only) |
 | `.agents/user/` | User profile — preferences, watchlist, portfolio (read only) |
 
-Never put files directly in `work/` — always use `work/<task_name>/`.
 Always organize data and charts into their subdirectories — never scatter loose files.
 
 ## Path Rules
 
 Always use RELATIVE paths for ExecuteCode and File tools. Bash accepts both.
+{% if guidance | default("detailed") == "detailed" %}
 
 ```python
 # Task work — data and charts in subdirs
-with open('work/sector_analysis/data/prices.json', 'w') as f: ...
-plt.savefig('work/sector_analysis/charts/revenue_trend.png')
+with open('work/amd_analysis/data/prices.json', 'w') as f: ...
+plt.savefig('work/amd_analysis/charts/revenue_trend.png')
 
-# Finalize — only reports go to results/
-shutil.move('work/sector_analysis/report.md', 'results/sector_analysis.md')
-# Charts stay in work/ — reports embed them via ![](work/sector_analysis/charts/revenue_trend.png)
+# The deliverable
+with open('work/amd_analysis/amd_dcf_analysis.md', 'w') as f: ...
 ```
+{% endif %}
+
+Two different rules for embedding a chart, depending on the document:
+
+- **Markdown** (report `.md`, or your chat reply): paths resolve from the workspace root, so write the full path — `![](work/amd_analysis/charts/revenue_trend.png)`.
+- **HTML** (`.html` served in the file panel): paths resolve from the document's own directory, so write the short path — `<img src="charts/revenue_trend.png">`.
 
 **NEVER use these path patterns**:
 - `/workspace/...` — wrong prefix
-- Absolute paths like `/results/` or `/data/` — these don't exist at root level
+- Absolute paths like `/work/` or `/data/` — these don't exist at root level

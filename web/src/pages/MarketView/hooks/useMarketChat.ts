@@ -10,7 +10,7 @@
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { buildRateLimitError, type StructuredError } from '@/utils/rateLimitError';
+import { buildRateLimitError, type ErrorLinkSpec, type StructuredError } from '@/utils/rateLimitError';
 import { sendFlashChatMessage } from '../utils/api';
 import { applyAnnotationArtifact } from '../stores/chartAnnotationStore';
 
@@ -587,12 +587,12 @@ export function useMarketChat(): UseMarketChatReturn {
           if (errorInfo?.link) {
             setError({
               message: (errorInfo.message as string) || streamErr.message || 'An error occurred.',
-              link: errorInfo.link as { url: string; label: string },
+              links: [errorInfo.link as ErrorLinkSpec],
             });
           } else if (streamErr.status === 403) {
             setError({
               message: streamErr.message || 'Access denied.',
-              link: { url: '/setup/method', label: 'Configure providers' },
+              links: [{ url: '/setup/method', label: 'Configure providers' }],
             });
           } else {
             setError(streamErr.message || 'Failed to send message');

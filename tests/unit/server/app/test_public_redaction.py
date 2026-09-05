@@ -36,6 +36,18 @@ _FILE_SVC = "src.server.services.persistence.file.FilePersistenceService.get_fil
 _NORM_PATH = "src.server.app.public._normalize_requested_path"
 _WORK_DIR = "src.server.app.public._get_work_dir"
 _GET_REDACTOR = "src.server.app.public.get_redactor"
+_PUB_VAULT = "src.server.app.public.get_vault_secrets_for_redaction"
+
+
+@pytest.fixture(autouse=True)
+def _no_vault_secrets():
+    """Every redacting route reads the vault, and that read now FAILS CLOSED —
+    an unstubbed lookup raises here (no pool in unit tests) and the route 500s
+    instead of silently serving unredacted bytes. These tests exercise the
+    global-secret tier, so the vault tier answers empty; a test that wants its
+    own vault set patches over this one."""
+    with patch(_PUB_VAULT, AsyncMock(return_value={})):
+        yield
 
 
 def _make_thread(**overrides):
@@ -357,7 +369,9 @@ class TestServeSharedFile:
         # Keep the sandbox AND cap egress (connect-src 'none'); assert shape, not
         # the exact string, so directive ordering can change freely.
         csp = resp.headers["content-security-policy"]
-        assert csp.startswith("sandbox allow-scripts;")
+        assert csp.startswith(
+            "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox;"
+        )
         assert "default-src 'none'" in csp
         assert "connect-src 'none'" in csp
         assert "https://fonts.googleapis.com" in csp  # CJK web-font path
@@ -589,7 +603,6 @@ class TestServeSharedFilePdf:
 # inside the handler, so patch them at their source modules.
 _FP_TREE = "src.server.services.persistence.file.FilePersistenceService.get_file_tree"
 _WSMGR = "src.server.services.workspace_manager.WorkspaceManager"
-_PUB_VAULT = "src.server.app.public.get_vault_secrets_for_redaction"
 
 
 def _no_warm_manager():

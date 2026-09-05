@@ -3,11 +3,10 @@
 ``messages`` is a ``DeltaChannel`` (see ``ptc_agent.agent.state``), so a raw
 ``checkpointer.aget_tuple`` cannot materialize it: deltas live in
 ``checkpoint_writes`` and are only replayed by a compiled graph. This module
-compiles a no-op ``StateGraph(_ReaderState)`` against the server
-checkpointer purely to read state. Background subagents checkpoint under the
-parent ``thread_id`` with ``checkpoint_ns="task:{task_id}"``; resolving that
-namespace requires a child compiled graph registered as a node literally named
-``task``.
+compiles a no-op ``StateGraph(_ReaderState)`` against the server checkpointer
+purely to read state — in the ``task_namespace_graph`` shape, since background
+subagents checkpoint under the parent ``thread_id`` with
+``checkpoint_ns="task:{task_id}"``.
 """
 
 from __future__ import annotations
@@ -34,6 +33,12 @@ logger = logging.getLogger(__name__)
 # the constant, which langgraph made private in v1.0 (deprecated import); the
 # on-disk channel name is a stable storage-format detail.
 _INTERRUPT_CHANNEL = "__interrupt__"
+
+
+def _has_pending_interrupt(tup: Any) -> bool:
+    return tup is not None and any(
+        w[1] == _INTERRUPT_CHANNEL for w in (tup.pending_writes or ())
+    )
 
 # Concurrent aget_state reads per history materialization. Each read holds a
 # checkpointer-pool connection (pool max defaults to 25), so this stays well
@@ -232,26 +237,17 @@ class CheckpointHistoryReader:
     _instance: CheckpointHistoryReader | None = None
 
     def __init__(self, checkpointer: Any):
+        # Imported here so this module never sits on the agent middleware
+        # package's order-sensitive import graph; the reader is built once.
+        from ptc_agent.agent.middleware.background_subagent.workflow.ui_snapshot import (
+            task_namespace_graph,
+        )
+
         _silence_pending_sends_noise()
         self._checkpointer = checkpointer
-        # Child graph resolves checkpoint_ns="task:{id}" (recast to node name
-        # "task"). It MUST be compiled with the checkpointer: subgraph
-        # aget_state materializes DeltaChannel history via the child's OWN
-        # `self.checkpointer` (langgraph `_aprepare_state_snapshot` ignores the
-        # config-passed one for delta replay), so a plain-compiled child
-        # silently returns un-replayed (empty) messages.
-        child = (
-            StateGraph(_ReaderState)
-            .add_node("noop", lambda state: {})
-            .add_edge(START, "noop")
-            .compile(checkpointer=checkpointer)
-        )
-        self._graph = (
-            StateGraph(_ReaderState)
-            .add_node("task", child)
-            .add_edge(START, "task")
-            .compile(checkpointer=checkpointer)
-        )
+        # Same shape the snapshot writer uses, so what it wrote into
+        # task:{id} is what this reads back.
+        self._graph = task_namespace_graph(_ReaderState, checkpointer)
         # Separate single-node graph for ui-record appends: with exactly one
         # node, aupdate_state auto-attributes the write (no as_node needed),
         # and the update checkpoint carries source="update" — never a turn
@@ -400,10 +396,7 @@ class CheckpointHistoryReader:
     async def append_ui_record(
         self, thread_id: str, name: str, props: dict[str, Any]
     ) -> None:
-        """Append a ``UIMessage``-shaped record to the thread's ``ui`` channel.
-
-        The id is pre-stamped: ``ui_message_reducer`` upserts by id, so a
-        stable unique id keeps re-writes idempotent.
+        """Append a ``UIMessage``-shaped record to the thread's root ``ui`` channel.
 
         Skips the write when the thread tip is interrupted: ``aupdate_state``
         attributes the write to this reader graph's node and clears the real
@@ -411,12 +404,38 @@ class CheckpointHistoryReader:
         record is only a legacy fallback (new turns carry rewritten image
         paths in the checkpointed message itself), so dropping it on a live
         interrupt is safe.
+
+        The image-capture hook runs after the turn finalized, so the append
+        sits beyond the recorded branch tip where the replay walk cannot see
+        it — the recorded tip is CAS-advanced onto the new checkpoint (no-op
+        when a concurrent turn or branch switch moved the tip first).
+
+        The append is anchored to the tip it read rather than to the
+        checkpointer's latest, because the same value is also the CAS guard:
+        left unanchored, a turn that starts on another worker between the read
+        and the write re-parents the record onto that turn's uncommitted
+        checkpoint while the CAS still passes, publishing partial state as the
+        thread's commit pointer. Anchoring costs a dead-branch record when the
+        tip moves — which is the no-op case this already accepts.
         """
-        tip_interrupted = await self._tip_is_interrupted(thread_id)
-        if tip_interrupted is not False:
+        try:
+            tip = await self._checkpointer.aget_tuple(
+                {"configurable": {"thread_id": thread_id}}
+            )
+        except Exception as e:
+            # Fail closed: an unverifiable tip could hide a live interrupt.
+            logger.warning(
+                "[CheckpointHistoryReader] tip read failed, dropping ui "
+                "record %r for thread_id=%s: %s",
+                name,
+                thread_id,
+                e,
+            )
+            return
+        if _has_pending_interrupt(tip):
             logger.debug(
-                "[CheckpointHistoryReader] skip ui record %r on interrupted or "
-                "unknown tip for thread_id=%s",
+                "[CheckpointHistoryReader] skip ui record %r on interrupted "
+                "tip for thread_id=%s",
                 name,
                 thread_id,
             )
@@ -428,36 +447,38 @@ class CheckpointHistoryReader:
             "props": props,
             "metadata": {},
         }
-        await self._updater.aupdate_state(
-            {"configurable": {"thread_id": thread_id}}, {"ui": [record]}
+        tip_cfg = (tip.config.get("configurable") or {}) if tip is not None else {}
+        built_on = tip_cfg.get("checkpoint_id")
+        configurable: dict[str, Any] = {"thread_id": thread_id}
+        if built_on:
+            # The saver keys a write by (thread_id, checkpoint_ns, checkpoint_id),
+            # so the namespace has to ride along with the id.
+            configurable["checkpoint_ns"] = tip_cfg.get("checkpoint_ns", "")
+            configurable["checkpoint_id"] = built_on
+        new_config = await self._updater.aupdate_state(
+            {"configurable": configurable}, {"ui": [record]}
+        )
+        await self._advance_branch_tip(thread_id, built_on, new_config)
+
+    async def _advance_branch_tip(
+        self, thread_id: str, built_on: str | None, new_config: Any
+    ) -> None:
+        """CAS the recorded tip from the checkpoint the append was anchored to.
+
+        ``built_on`` is the caller's write anchor, not a re-read: passing the
+        same value to both is what keeps the guard honest.
+        """
+        from src.server.database.conversation.threads_write import (
+            advance_thread_checkpoint_id,
         )
 
-    async def _tip_is_interrupted(self, thread_id: str) -> bool | None:
-        """Interrupt state of the latest checkpoint (None when unreadable).
-
-        Reads the raw tuple rather than ``aget_state().next``: this reader's
-        graph nodes differ from the real agent graph, so it can't replan the
-        foreign pending task and ``.next`` reads empty. The stored
-        ``__interrupt__`` pending write is graph-agnostic. Read failures return
-        None so the optional legacy UI write fails closed and cannot clear an
-        interrupt whose state could not be verified.
-        """
-        try:
-            tup = await self._checkpointer.aget_tuple(
-                {"configurable": {"thread_id": thread_id}}
-            )
-        except Exception as e:
-            logger.warning(
-                "[CheckpointHistoryReader] interrupt check failed for "
-                "thread_id=%s: %s",
-                thread_id,
-                e,
-            )
-            return None
-        if tup is None:
-            return False
-        return any(
-            w[1] == _INTERRUPT_CHANNEL for w in (tup.pending_writes or ())
+        new_id = ((new_config or {}).get("configurable") or {}).get(
+            "checkpoint_id"
+        )
+        if not new_id:
+            return
+        await advance_thread_checkpoint_id(
+            thread_id, from_checkpoint_id=built_on, to_checkpoint_id=new_id
         )
 
     async def aget_task_history(
@@ -493,12 +514,6 @@ class CheckpointHistoryReader:
                 if isinstance(record, dict)
             ],
         )
-
-    async def aget_task_messages(
-        self, thread_id: str, task_id: str
-    ) -> list[AnyMessage]:
-        """Compatibility wrapper returning only a task namespace's transcript."""
-        return (await self.aget_task_history(thread_id, task_id)).messages
 
     async def aget_task_run_stamps(
         self, thread_id: str, task_id: str

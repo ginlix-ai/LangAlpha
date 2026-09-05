@@ -1,21 +1,16 @@
 """Market-watch guidance lives in a skill now, not a system-prompt flag.
 
 The flag-gated ``<market_watch>`` section was removed; its guidance moved into
-``skills/market-watch/SKILL.md``. These tests pin both halves: the section tag
-never renders (regardless of any lingering flag), and the skill file is present,
+the ``market-watch`` skill. These tests pin both halves: the section tag never
+renders (regardless of any lingering flag), and the skill file is present,
 parses, and carries the feed vocabulary the agent needs.
 """
 
 import re
-from pathlib import Path
 
 import yaml
 
 from ptc_agent.agent.prompts import get_loader
-
-# tests/unit/ptc_agent/agent/prompts/ -> repo root is five parents up.
-REPO_ROOT = Path(__file__).resolve().parents[5]
-SKILL_MD = REPO_ROOT / "skills" / "market-watch" / "SKILL.md"
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
@@ -56,12 +51,11 @@ def test_tool_guide_row_follows_the_master_switch():
     )
 
 
-def test_market_watch_skill_md_exists_and_frontmatter_parses():
-    assert SKILL_MD.is_file(), f"missing {SKILL_MD}"
-
-    content = SKILL_MD.read_text(encoding="utf-8")
+def test_market_watch_skill_md_exists_and_frontmatter_parses(shipped_skill_md):
+    skill_md = shipped_skill_md("market-watch")
+    content = skill_md.read_text(encoding="utf-8")
     match = _FRONTMATTER_RE.match(content)
-    assert match, "no YAML frontmatter in skills/market-watch/SKILL.md"
+    assert match, f"no YAML frontmatter in {skill_md}"
 
     frontmatter = yaml.safe_load(match.group(1))
     assert isinstance(frontmatter, dict)
@@ -69,8 +63,8 @@ def test_market_watch_skill_md_exists_and_frontmatter_parses():
     assert str(frontmatter.get("description", "")).strip()
 
 
-def test_market_watch_skill_body_covers_the_feed_vocabulary():
-    body = SKILL_MD.read_text(encoding="utf-8")
+def test_market_watch_skill_body_covers_the_feed_vocabulary(shipped_skill_md):
+    body = shipped_skill_md("market-watch").read_text(encoding="utf-8")
     assert "watch_market" in body
     assert 'action="unwatch"' in body
     assert "<market-watch>" in body

@@ -84,7 +84,6 @@ def _make_sandbox(mock_runtime):
     # execute() depends on these collaborators; stub them so we exercise only
     # the trace-collection logic.
     sandbox._runtime_call = AsyncMock(side_effect=_passthrough_runtime_call)
-    sandbox._list_result_files = AsyncMock(return_value=[])
     sandbox.aread_file_text = AsyncMock(return_value=_trace_jsonl())
     return sandbox
 

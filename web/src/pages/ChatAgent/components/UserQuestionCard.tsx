@@ -295,7 +295,7 @@ function UserQuestionCard({ questionData, onAnswer, onSkip }: UserQuestionCardPr
       {/* Question text */}
       <div className="flex items-start gap-2 pb-2">
         <HelpCircle className="h-4 w-4 flex-shrink-0 mt-1" style={{ color: 'var(--color-accent-light)' }} />
-        <div className="text-[15px] font-medium min-w-0" style={{ color: 'var(--color-text-primary)' }}>
+        <div className="text-[0.9375rem] font-medium min-w-0" style={{ color: 'var(--color-text-primary)' }}>
           <Markdown variant="compact" content={question} />
         </div>
       </div>
@@ -361,7 +361,7 @@ function UserQuestionCard({ questionData, onAnswer, onSkip }: UserQuestionCardPr
           value={otherText}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setOtherText(e.target.value)}
           onKeyDown={handleOtherKeyDown}
-          className="flex-1 text-sm px-3 py-2 rounded-md outline-none transition-colors duration-200 focus:border-[var(--color-accent-overlay)]"
+          className="flex-1 text-sm px-3 py-2 rounded-md transition-colors duration-200 focus:border-[var(--color-accent-overlay)]"
           style={{
             backgroundColor: 'var(--color-border-muted)',
             border: '1px solid var(--color-border-muted)',

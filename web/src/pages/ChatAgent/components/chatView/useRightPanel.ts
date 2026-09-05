@@ -69,6 +69,11 @@ export function useRightPanel({
   // True for exactly one render after drag ends — forces transition duration:0
   // so Framer Motion jumps to the final width instead of animating from pre-drag.
   const dragJustEndedRef = useRef(false);
+  // Armed for the duration of a divider drag; unmount mid-drag would otherwise
+  // strand document listeners, app-wide col-resize/no-select body styles, and
+  // pointer-events:none on every iframe.
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => dragCleanupRef.current?.(), []);
 
   // Right panel management - can show 'file', 'detail', 'preview', or null (closed)
   const [rightPanelType, setRightPanelType] = useState<'file' | 'detail' | 'preview' | null>(null);
@@ -132,24 +137,31 @@ export function useRightPanel({
       if (innerEl) innerEl.style.width = `${currentWidth}px`;
     };
 
-    const onMouseUp = () => {
+    // Hoisted declarations: teardown and onMouseUp reference each other.
+    function teardown() {
+      dragCleanupRef.current = null;
       isDraggingRef.current = false;
-      // Flag ensures the next render uses duration:0 so Framer doesn't
-      // animate from the stale pre-drag width to the final width.
-      dragJustEndedRef.current = true;
-      setIsDragging(false);
-      setRightPanelWidth(currentWidth);
       iframes?.forEach(iframe => { (iframe as HTMLIFrameElement).style.pointerEvents = ''; });
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
-    };
+    }
+
+    function onMouseUp() {
+      // Flag ensures the next render uses duration:0 so Framer doesn't
+      // animate from the stale pre-drag width to the final width.
+      dragJustEndedRef.current = true;
+      setIsDragging(false);
+      setRightPanelWidth(currentWidth);
+      teardown();
+    }
 
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
+    dragCleanupRef.current = teardown;
   }, [rightPanelWidth, rightPanelType, containerRef]);
 
   // Push a sentinel history entry when a panel opens so that the browser back

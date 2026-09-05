@@ -6,6 +6,7 @@ import { usePreferences } from '@/hooks/usePreferences';
 import { useApiKeys } from '@/hooks/useApiKeys';
 import type { ByokProvider } from '@/components/model/types';
 import { useTranslation } from 'react-i18next';
+import { modelPrefs } from '@/lib/modelPreferences';
 
 // ---------------------------------------------------------------------------
 // DoneStep — confirmation screen
@@ -34,10 +35,9 @@ export default function DoneStep() {
       .map(([k, v]) => (v as Record<string, unknown>).display_name as string ?? k);
   }, [apiKeys]);
 
-  const prefs = preferences as Record<string, unknown> | null;
-  const otherPref = prefs?.other_preference as Record<string, unknown> | undefined;
-  const primaryModel = (otherPref?.preferred_model as string) ?? t('setup.notSet');
-  const flashModel = (otherPref?.preferred_flash_model as string) ?? t('setup.notSet');
+  const modelPref = modelPrefs(preferences);
+  const primaryModel = modelPref.preferred_model ?? t('setup.notSet');
+  const flashModel = modelPref.preferred_flash_model ?? t('setup.notSet');
   const providerLabel = configuredProviderNames.length > 0
     ? configuredProviderNames.join(', ')
     : t('setup.notConfigured');

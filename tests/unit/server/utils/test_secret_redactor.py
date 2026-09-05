@@ -5,9 +5,20 @@ MCP config and redacts them in text and bytes content.
 """
 
 import os
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.server.utils.secret_redactor import SecretRedactor, get_redactor
+import pytest
+
+import src.server.database.mcp_servers as mcp_servers_db
+import src.server.database.vault_secrets as vault_secrets_db
+import src.server.database.workspace as workspace_db
+import src.server.services.workspace_manager as workspace_manager
+import src.server.utils.secret_redactor as secret_redactor
+from src.server.utils.secret_redactor import (
+    SecretRedactor,
+    get_redactor,
+    get_vault_secrets_for_redaction,
+)
 
 # Patch targets (imported inside SecretRedactor.__init__)
 _GAC = "src.config.tool_settings._get_agent_config_dict"
@@ -218,6 +229,207 @@ class TestRedactBytes:
         assert b"secret_value_123" not in result
         assert b"[REDACTED:KEY]" in result
         assert result.startswith(b"\xff\xfe head ")
+
+
+class TestVaultSecretsForRedaction:
+    """The redaction input must always be current truth, never a cached copy."""
+
+    @pytest.mark.asyncio
+    async def test_reads_db_even_when_a_session_holds_a_stale_dict(self, monkeypatch):
+        """A sandbox session caches the merged secret set at upload time, and
+        that cache is process-local: after a rotation handled by another worker
+        it still holds the RETIRED value. Redacting from it would scrub the dead
+        secret and pass the live one through in cleartext.
+        """
+        stale = MagicMock()
+        stale.sandbox.vault_secrets = {"API_KEY": "retired_value_000"}
+        wm = MagicMock()
+        wm._sessions = {"ws-1": stale}
+        monkeypatch.setattr(
+            workspace_manager, "WorkspaceManager",
+            MagicMock(get_instance=MagicMock(return_value=wm)),
+        )
+        monkeypatch.setattr(
+            secret_redactor, "_connector_secret_literals",
+            AsyncMock(return_value={}),
+        )
+        monkeypatch.setattr(
+            vault_secrets_db, "get_effective_secrets",
+            AsyncMock(return_value={"API_KEY": "rotated_value_111"}),
+        )
+
+        assert await get_vault_secrets_for_redaction("ws-1") == {
+            "API_KEY": "rotated_value_111"
+        }
+
+    @pytest.mark.asyncio
+    async def test_lookup_failure_propagates(self, monkeypatch):
+        """Fail closed. Swallowing this returns "no secrets" and silently
+        disables vault redaction, and the caller then serves the file — on a
+        route whose only credential is the workspace UUID. The 5xx is the
+        correct answer to "I don't know"."""
+        monkeypatch.setattr(
+            secret_redactor, "_connector_secret_literals",
+            AsyncMock(return_value={}),
+        )
+        monkeypatch.setattr(
+            vault_secrets_db, "get_effective_secrets",
+            AsyncMock(side_effect=RuntimeError("db down")),
+        )
+        with pytest.raises(RuntimeError):
+            await get_vault_secrets_for_redaction("ws-1")
+
+    @pytest.mark.asyncio
+    async def test_empty_vault_is_not_a_failure(self, monkeypatch):
+        """The other half of the contract: {} means the workspace has none."""
+        monkeypatch.setattr(
+            secret_redactor, "_connector_secret_literals",
+            AsyncMock(return_value={}),
+        )
+        monkeypatch.setattr(
+            vault_secrets_db, "get_effective_secrets", AsyncMock(return_value={}),
+        )
+        assert await get_vault_secrets_for_redaction("ws-1") == {}
+
+
+class TestConnectorLiteralRedaction:
+    """Inline connector credentials join the redaction set.
+
+    The vault is the sanctioned home for these values, but the API accepts
+    plain literals, and a literal the platform delivers into every inheriting
+    workspace deserves the same scrubbing a vault value gets.
+    """
+
+    def _patch_sources(
+        self, monkeypatch, *, ws_rows=(), catalog_rows=(), user_id="u1"
+    ):
+        monkeypatch.setattr(
+            mcp_servers_db, "list_workspace_servers",
+            AsyncMock(return_value=list(ws_rows)),
+        )
+        monkeypatch.setattr(
+            workspace_db, "get_workspace",
+            AsyncMock(return_value={"user_id": user_id} if user_id else None),
+        )
+        monkeypatch.setattr(
+            mcp_servers_db, "list_catalog_servers",
+            AsyncMock(return_value=list(catalog_rows)),
+        )
+        monkeypatch.setattr(
+            vault_secrets_db, "get_effective_secrets", AsyncMock(return_value={}),
+        )
+
+    @pytest.mark.asyncio
+    async def test_credential_literals_from_both_tiers_join_the_set(
+        self, monkeypatch
+    ):
+        self._patch_sources(
+            monkeypatch,
+            ws_rows=[{
+                "name": "alpha",
+                "config": {"env": {"API_TOKEN": "wstoken_value_123"}},
+            }],
+            catalog_rows=[{
+                "name": "beta",
+                "headers": {"Authorization": "Bearer usertoken_9999"},
+            }],
+        )
+
+        secrets = await get_vault_secrets_for_redaction("ws-1")
+
+        assert secrets["mcp:alpha:API_TOKEN"] == "wstoken_value_123"
+        assert secrets["mcp:beta:Authorization"] == "Bearer usertoken_9999"
+
+    @pytest.mark.asyncio
+    async def test_ordinary_config_values_stay_servable(self, monkeypatch):
+        """The false-positive class this filter exists for: a served README
+        that says "application/json" must not come back with holes in it."""
+        self._patch_sources(
+            monkeypatch,
+            catalog_rows=[{
+                "name": "beta",
+                "headers": {"Accept": "application/json"},
+                "env": {"LOG_LEVEL": "VERBOSE_MODE"},
+            }],
+        )
+
+        assert await get_vault_secrets_for_redaction("ws-1") == {}
+
+    @pytest.mark.asyncio
+    async def test_a_long_opaque_value_is_a_credential_whatever_its_key(
+        self, monkeypatch
+    ):
+        self._patch_sources(
+            monkeypatch,
+            catalog_rows=[{
+                "name": "beta",
+                "env": {"SESSION": "abcdefghij0123456789abcde"},
+            }],
+        )
+
+        secrets = await get_vault_secrets_for_redaction("ws-1")
+        assert secrets == {"mcp:beta:SESSION": "abcdefghij0123456789abcde"}
+
+    @pytest.mark.asyncio
+    async def test_arg_credentials_join_from_both_tiers(self, monkeypatch):
+        self._patch_sources(
+            monkeypatch,
+            ws_rows=[{
+                "name": "alpha",
+                "config": {"args": ["--api-key=wsargkey_12345"]},
+            }],
+            catalog_rows=[{
+                "name": "beta",
+                "args": ["--token", "userargtok_9999"],
+            }],
+        )
+
+        secrets = await get_vault_secrets_for_redaction("ws-1")
+
+        assert secrets["mcp:alpha:api-key"] == "wsargkey_12345"
+        assert secrets["mcp:beta:token"] == "userargtok_9999"
+
+    @pytest.mark.asyncio
+    async def test_ordinary_args_stay_servable(self, monkeypatch):
+        """Arg lists are full of paths and URLs; only a flag that NAMES the
+        value a credential may pull it into the redaction set."""
+        self._patch_sources(
+            monkeypatch,
+            catalog_rows=[{
+                "name": "beta",
+                "args": [
+                    "--config",
+                    "/workspace/output/analysis_results_2026.csv",
+                    "https://api.example.com/v1/some/endpoint",
+                ],
+            }],
+        )
+
+        assert await get_vault_secrets_for_redaction("ws-1") == {}
+
+    @pytest.mark.asyncio
+    async def test_vault_refs_are_not_collected(self, monkeypatch):
+        """A ``${vault:NAME}`` ref resolves to a vault value the scan already
+        covers; the ref text itself is not a secret."""
+        self._patch_sources(
+            monkeypatch,
+            catalog_rows=[{
+                "name": "beta",
+                "env": {"API_KEY": "${vault:MY_KEY}"},
+            }],
+        )
+
+        assert await get_vault_secrets_for_redaction("ws-1") == {}
+
+    @pytest.mark.asyncio
+    async def test_connector_lookup_failure_propagates(self, monkeypatch):
+        """Same fail-closed contract as the vault read."""
+        monkeypatch.setattr(
+            mcp_servers_db, "list_workspace_servers",
+            AsyncMock(side_effect=RuntimeError("db down")),
+        )
+        with pytest.raises(RuntimeError):
+            await get_vault_secrets_for_redaction("ws-1")
 
 
 class TestGetRedactor:

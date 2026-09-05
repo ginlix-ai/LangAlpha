@@ -66,10 +66,17 @@ export function chartSecToDateStr(sec: number): string {
  * "UTC+8" / "UTC-4" / "UTC+5:30" label for a timezone at a given instant
  * (DST-aware — New York flips between UTC-5 and UTC-4).
  */
+const offsetFormatters = new Map<string, Intl.DateTimeFormat>();
+
 export function utcOffsetLabel(tz: string, at: Date = new Date()): string {
-  const name = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'longOffset' })
-    .formatToParts(at)
-    .find((p) => p.type === 'timeZoneName')?.value ?? '';
+  // Intl.DateTimeFormat construction is expensive relative to formatting;
+  // callers invoke this every clock tick, so cache one formatter per zone.
+  let fmt = offsetFormatters.get(tz);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'longOffset' });
+    offsetFormatters.set(tz, fmt);
+  }
+  const name = fmt.formatToParts(at).find((p) => p.type === 'timeZoneName')?.value ?? '';
   const m = name.match(/GMT([+-])(\d{2}):(\d{2})/);
   if (!m) return 'UTC'; // bare "GMT" — the zone IS UTC
   const [, sign, hours, minutes] = m;

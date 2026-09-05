@@ -12,9 +12,9 @@ servers (plan §6 / Security). They reject hostile input early:
   host-env-style values are rejected (they would never resolve)
 - ``vault_blueprints`` / ``source`` keys are rejected (built-in-only fields)
 
-Response models NEVER echo env/header literal values for any row — only the
-vault reference names are surfaced (``env_refs`` / ``header_refs``); literals
-are masked.
+Response models echo env/headers exactly as stored — ``${vault:NAME}`` refs or
+owner-supplied literals, never resolved secrets — so the owner's edit form can
+round-trip them; ``env_refs``/``header_refs`` carry just the vault names.
 """
 
 from __future__ import annotations
@@ -22,13 +22,16 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import asdict, dataclass, field as dataclass_field
 from typing import Any, Literal, Optional
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from ptc_agent.core.mcp_sanitize import VAULT_REF_RE
+from src.server.database.mcp_oauth import ConnectionStatus
+from src.server.services.brokerages import Brokerage
+from src.server.services.mcp_config import Origin
 
 
 def _format_validation_error(exc: ValidationError) -> str:
@@ -50,7 +53,33 @@ ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,127}$")
 # Allowed stdio commands — deliberately WITHOUT `bash` (and any shell). Running
 # a user-chosen command is arbitrary code execution; this is the allowlist that
 # bounds it (plan §Security #4).
-ALLOWED_COMMANDS = frozenset({"npx", "uvx", "uv", "python", "python3", "node"})
+# Commands that resolve dependencies from the shared sandbox environment rather
+# than an isolated per-server venv. Allowed, but nudged: the platform image pins
+# their runtime (including the mcp SDK), so an SDK-major bump can kill a server
+# born outside it — the uvx/npx form is immune.
+SHARED_ENV_COMMANDS = frozenset({"uv", "python", "python3", "node"})
+
+
+def isolation_warnings(server: "McpServerInput") -> list[str]:
+    """Non-blocking policy nudges for a validated server definition."""
+    if server.transport == "stdio" and server.command in SHARED_ENV_COMMANDS:
+        return [
+            f"command {server.command!r} runs from the shared sandbox "
+            "environment, whose dependency versions (including the mcp SDK) "
+            "are pinned by the platform image and may change under it. For "
+            "third-party servers prefer an isolated launch: uvx --from "
+            "'<package>==<version>' <entrypoint> (or npx <package>@<version>)."
+        ]
+    # A warning, not a rejection: imports normalize legacy configs and must
+    # keep landing — but the sandbox client refuses 'sse' outright, so without
+    # this the server saves looking healthy and every tool call fails.
+    if server.transport == "sse":
+        return [
+            "transport 'sse' is the legacy remote MCP transport and the "
+            "sandbox client cannot execute its tools; change the server's "
+            "transport to 'http' (streamable HTTP)."
+        ]
+    return []
 
 DESCRIPTION_MAX = 512
 INSTRUCTION_MAX = 1024
@@ -87,18 +116,27 @@ def _validate_secret_map(
 
 
 def _validate_secret_value(value: str, *, kind: str, key: str) -> None:
-    """A value is OK iff it is a single full ``${vault:NAME}`` ref or a literal
-    with no ``${...}``-style placeholders at all."""
-    if VAULT_REF_RE.fullmatch(value):
-        return
-    # Any remaining ``${...}`` / ``$VAR`` token is a host-env-style placeholder
-    # that will never resolve for a workspace server — reject it.
-    if "${vault:" in value:
+    """A value may EMBED ``${vault:NAME}`` refs; what it may not carry is a
+    malformed one or a host-env placeholder.
+
+    Embedding matters because ``Authorization: Bearer ${vault:TOKEN}`` is the
+    shape an auth header takes almost everywhere, and requiring the whole value
+    to be the reference meant the scheme word had to be stored inside the
+    secret. The sandbox has always substituted refs in place rather than
+    replacing the field (``_resolve_vault_refs``), and ``_validate_args``
+    already accepts the embedded form — this is the same rule, applied to the
+    other two maps.
+    """
+    remainder = VAULT_REF_RE.sub("", value)
+    # Whatever is left after the well-formed refs come out: a surviving
+    # ``${vault:`` is a typo in one, and a ``${...}``/``$VAR`` token is a
+    # host-env-style placeholder that will never resolve for these servers.
+    if "${vault:" in remainder:
         raise ValueError(
             f"{kind} value for {key!r} contains a malformed vault reference; "
             "use the exact form ${vault:NAME}"
         )
-    if _BARE_ENV_RE.search(value):
+    if _BARE_ENV_RE.search(remainder):
         raise ValueError(
             f"{kind} value for {key!r} looks like a host-env placeholder; "
             "use ${vault:NAME} for secrets or a plain literal value"
@@ -144,6 +182,10 @@ def validate_remote_url(url: str) -> str:
         raise ValueError("url must use https://")
     if parts.username or parts.password or "@" in (parts.netloc or ""):
         raise ValueError("url must not contain userinfo credentials")
+    try:
+        parts.port
+    except ValueError:
+        raise ValueError("url port must be a number between 1 and 65535")
 
     host = parts.hostname
     if not host:
@@ -231,11 +273,13 @@ class McpServerInput(BaseModel):
                 raise ValueError("stdio transport must not set url")
             if self.headers:
                 raise ValueError("stdio transport must not set headers (env only)")
-            if self.command not in ALLOWED_COMMANDS:
-                raise ValueError(
-                    f"command {self.command!r} is not allowed; choose one of "
-                    f"{sorted(ALLOWED_COMMANDS)}"
-                )
+            # The command is not filtered. It is launched with an argv list and
+            # no shell, in the same sandbox where the agent already runs
+            # arbitrary commands on the user's behalf, so an allowlist here
+            # bounds nothing it does not already bound — it only decides which
+            # published MCP servers the user is able to install at all, and
+            # the ones distributed as a `docker run` or a `deno` invocation are
+            # not unusual.
             _validate_secret_map(self.env, kind="env", key_re=ENV_KEY_RE)
             _validate_args(self.args)
         else:  # sse / http
@@ -270,6 +314,16 @@ class McpServerInput(BaseModel):
             "discovery_uses_secrets": self.discovery_uses_secrets,
         }
 
+    def to_catalog_fields(self) -> dict[str, Any]:
+        """Serialize to the ``user_mcp_servers`` column set (the catalog tier).
+
+        Same content as ``to_config_blob`` minus ``name``, which the catalog
+        addresses rows by rather than storing in a blob.
+        """
+        fields = self.to_config_blob()
+        fields.pop("name")
+        return fields
+
 
 class EnabledInput(BaseModel):
     """PATCH body for the enabled toggle."""
@@ -283,10 +337,13 @@ class PromoteInput(BaseModel):
     """POST body for promoting a workspace server into the user template catalog.
 
     ``overwrite`` replaces an existing template of the same name; without it a
-    name clash is a 409 so the UI can confirm before clobbering.
+    name clash is a 409 so the UI can confirm before clobbering. ``remove_source``
+    turns the copy into a move: the workspace row is deleted after the catalog
+    write, so it does not shadow the template it just created.
     """
 
     overwrite: bool = False
+    remove_source: bool = False
 
     model_config = {"extra": "forbid"}
 
@@ -474,7 +531,7 @@ class EffectiveServer(BaseModel):
     """
 
     name: str
-    origin: Literal["builtin", "workspace"]
+    origin: Origin
     transport: str
     enabled: bool
     editable: bool
@@ -496,6 +553,23 @@ class EffectiveServer(BaseModel):
     args: list[str] = Field(default_factory=list)
     url: Optional[str] = None
     config_version: int = 0
+    # True on a workspace-local row that shadows an inherited user server of
+    # the same name (the local-fork affordance) — deleting the local row
+    # reveals the inherited one again.
+    shadows_inherited: bool = False
+    # Inherited (origin='user') rows only: the owner's OAuth connection status
+    # for this server, INCLUDING 'revoked' — so the UI can say "Disconnected,
+    # reconnect in Plugins" instead of waiting on a discovery that can
+    # never run. None = the server has no OAuth connection at all.
+    oauth_status: Optional[ConnectionStatus] = None
+    # DISABLED built-ins only: whether the disable is this workspace's marker
+    # row or the account-wide user disable — the latter renders read-only here
+    # ("disabled for your account", managed in Plugins).
+    disabled_scope: Optional[Literal["workspace", "user"]] = None
+    # Inherited rows installed by a plugin: the owning plugin's name, display
+    # only. Deliberately never on MCPServerConfig — provenance must not enter
+    # the config blob round-trip.
+    plugin_name: Optional[str] = None
 
 
 class EffectiveServerList(BaseModel):
@@ -517,21 +591,87 @@ class EffectiveServerList(BaseModel):
 
 
 class CatalogServer(BaseModel):
-    """A user catalog template row (masked — only vault refs surfaced)."""
+    """A user-level server row, returned only to its owner.
+
+    ``enabled`` rows are live: inherited into every one of the user's
+    workspaces by ``resolve_mcp_config``. Disabled rows are inert templates
+    (the legacy catalog behavior). ``oauth_status`` reflects the user's OAuth
+    connection for this server name (None when the server has none).
+    """
 
     name: str
     transport: str
+    enabled: bool = False
+    oauth_status: Optional[ConnectionStatus] = None
+    # The capability groups this connection was actually granted, in the order
+    # they were stored. None means no connection, or one for a server we curate
+    # no groups for -- distinct from ``[]``, which is a brokerage the user
+    # granted nothing. The consent is enforced per call at the relay, so a
+    # surface that cannot read it back can only guess what a connection does.
+    granted_capabilities: Optional[list[str]] = None
+    # The same keys, but answering "what did the user last choose" rather than
+    # "what is in force". They part company the moment a connection stops being
+    # servable: the grant is gone, so the badges must not draw one, while the
+    # choice behind it is still the user's and is what a reconnect has to open
+    # on. Seeding a repair from product defaults instead re-proposed every group
+    # the user had declined, on a flow they entered to fix an expiry rather than
+    # to change their mind.
+    remembered_capabilities: Optional[list[str]] = None
+    # Host-side discovered tool count for the server's CURRENT config (OAuth
+    # servers only today — that's the only user-level discovery path). None =
+    # no current snapshot; the UI omits the count rather than showing 0.
+    tool_count: Optional[int] = None
+    # Set only when the server's handshake named a mark we can reach. A path on
+    # this origin, never the server's own URL: resolving it here means one fetch
+    # for everyone instead of every settings-page render telling a third party
+    # who is looking, which is the same reason the brokerage marks are proxied.
+    icon_url: Optional[str] = None
     command: Optional[str] = None
     args: list[str] = Field(default_factory=list)
     url: Optional[str] = None
     env_refs: list[str] = Field(default_factory=list)
     header_refs: list[str] = Field(default_factory=list)
+    # Echo the stored reference maps (``${vault:NAME}`` ref strings or the
+    # owner's own literals — never resolved secrets) so the edit form can
+    # round-trip them, exactly as ``EffectiveServer`` does for workspace-origin
+    # rows. A PUT replaces the whole row, so a response that dropped them would
+    # make every unrelated edit a silent wipe.
+    env: dict[str, str] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
     description: str = ""
     instruction: str = ""
     tool_exposure_mode: str = "summary"
     discovery_uses_secrets: bool = False
+    # Non-blocking policy nudges (isolation etc.) — populated on create/update
+    # responses only, never stored.
+    warnings: Optional[list[str]] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    # Workspaces holding a tombstone for this name (deny-list) — populated in
+    # the all-scopes view only, for the "active in" checklist.
+    disabled_workspace_ids: list[str] = Field(default_factory=list)
+    # Plugin provenance (display + row-policy only): the owning plugin's name
+    # and its enable state, both None on a hand-made or detached row. The
+    # workspace list has no plugins query to join against, so the row carries
+    # what the UI needs to badge and to explain a suppressed server.
+    plugin_name: Optional[str] = None
+    plugin_enabled: Optional[bool] = None
+
+
+class WorkspaceScopedServer(BaseModel):
+    """A workspace-local server row surfaced in the all-scopes catalog view.
+
+    A summary, not an editable config: editing stays on the workspace
+    endpoints. ``shadows_inherited`` marks a name that also exists in the
+    catalog (the local fork hides the inherited copy in its workspace).
+    """
+
+    name: str
+    workspace_id: str
+    transport: str = "stdio"
+    enabled: bool = True
+    description: str = ""
+    shadows_inherited: bool = False
 
 
 class CatalogServerList(BaseModel):
@@ -539,6 +679,106 @@ class CatalogServerList(BaseModel):
 
     servers: list[CatalogServer]
     max_servers: int
+    # all_scopes=true only: workspace-local servers across the user's workspaces.
+    workspace_servers: list[WorkspaceScopedServer] = Field(default_factory=list)
+
+
+class BuiltinServer(BaseModel):
+    """One process-global builtin, with this user's account-wide toggle."""
+
+    name: str
+    description: str = ""
+    transport: str = "stdio"
+    enabled: bool
+    # As on ``CatalogServer``: a path on this origin, present only when the
+    # server's handshake named a mark. Ours draw their bundle's mark instead,
+    # so in practice this fills in for a self-hoster's own additions.
+    icon_url: Optional[str] = None
+    # The bundle that ships this server, and whether that bundle is switched
+    # on — the same provenance pair a catalog row carries for its plugin, so
+    # the list groups and explains both kinds the same way. Only a server
+    # declared outside ``plugins/`` (an operator's own YAML entry) has none.
+    plugin_name: Optional[str] = None
+    plugin_enabled: Optional[bool] = None
+    # Workspaces with a disable-marker for this builtin — all-scopes view only.
+    disabled_workspace_ids: list[str] = Field(default_factory=list)
+
+
+class BuiltinServerList(BaseModel):
+    """GET /api/v1/mcp/builtin-servers payload."""
+
+    servers: list[BuiltinServer]
+
+
+class CapabilityGroupOption(BaseModel):
+    """One consent toggle offered when connecting a brokerage.
+
+    ``key`` is the fact and also the translation key; ``tone`` is how loudly to
+    draw the row. No label or description, for the reason the flags above carry
+    no prose: the words are the client's.
+    """
+
+    key: str
+    tone: str
+    # One of the steps between reading and placing an order, which is the thing
+    # a row is asked first. False for the reading groups.
+    rung: bool = False
+
+
+class BrokerageOption(BaseModel):
+    """One shipped brokerage connector, as offered on the Plugins page.
+
+    A catalog row does not exist for it until the user turns it on, so this
+    carries no per-user state at all: the page joins it to the catalog by
+    ``name``. The two behavioural flags travel as booleans rather than prose
+    because the sentence that explains each one is translated client-side.
+    """
+
+    name: str
+    label: str
+    url: str
+    # The broker's own website, not the endpoint's host. The detail view links
+    # it, which is the one thing a user reliably wants that we cannot answer:
+    # where their actual account lives.
+    site: str = ""
+    description: str = ""
+    native_callback_only: bool = False
+    exclusive_connection: bool = False
+    # List order is display order. Empty would mean a brokerage we curate no
+    # groups for, which the client reads as "nothing to choose".
+    capabilities: list[CapabilityGroupOption] = []
+
+
+class BrokerageList(BaseModel):
+    """GET /api/v1/mcp/brokerages payload."""
+
+    brokerages: list[BrokerageOption]
+
+
+def brokerage_to_response(brokerage: Brokerage) -> BrokerageOption:
+    """Shape a shipped brokerage definition for the API.
+
+    A wire model of its own rather than the registry entry itself, because the
+    two are allowed to diverge: a field the registry needs is not automatically
+    one the API should carry. Extra keys are ignored on the way through, so
+    adding one to :class:`Brokerage` keeps it off the wire until it is named
+    above — and nobody has to maintain a copy to keep that true.
+
+    The exception is ``capabilities``, which is derived rather than stored: the
+    curation map is the source for which groups a vendor has, and copying them
+    onto the registry entry would be a second place for that to be wrong.
+    """
+    from src.server.services.brokerage_capabilities import groups_for
+
+    return BrokerageOption.model_validate(
+        asdict(brokerage)
+        | {
+            "capabilities": [
+                {"key": g.key, "tone": g.tone, "rung": g.rung}
+                for g in groups_for(brokerage.name)
+            ]
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -555,20 +795,51 @@ def collect_vault_refs(mapping: dict[str, str] | None) -> list[str]:
     return sorted(names)
 
 
-def catalog_row_to_response(row: dict[str, Any]) -> CatalogServer:
-    """Mask a DB catalog row: drop env/header literals, expose vault refs only."""
+def catalog_row_to_response(
+    row: dict[str, Any],
+    *,
+    oauth_status: ConnectionStatus | None = None,
+    granted_capabilities: list[str] | None = None,
+    remembered_capabilities: list[str] | None = None,
+    tool_count: int | None = None,
+    icon_url: str | None = None,
+) -> CatalogServer:
+    """Shape a DB catalog row for the owner-scoped API.
+
+    ``env``/``headers`` are echoed verbatim (refs and literals alike — the row
+    stores no resolved secret) so an edit round-trips; ``env_refs``/
+    ``header_refs`` stay the display-only projection of the vault names.
+    """
     return CatalogServer(
         name=row["name"],
         transport=row["transport"],
+        enabled=bool(row.get("enabled", False)),
+        oauth_status=oauth_status,
+        granted_capabilities=granted_capabilities,
+        remembered_capabilities=remembered_capabilities,
+        tool_count=tool_count,
+        icon_url=icon_url,
         command=row.get("command"),
         args=row.get("args") or [],
         url=row.get("url"),
         env_refs=collect_vault_refs(row.get("env")),
         header_refs=collect_vault_refs(row.get("headers")),
+        env=dict(row.get("env") or {}),
+        headers=dict(row.get("headers") or {}),
         description=row.get("description") or "",
         instruction=row.get("instruction") or "",
         tool_exposure_mode=row.get("tool_exposure_mode") or "summary",
         discovery_uses_secrets=bool(row.get("discovery_uses_secrets", False)),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
+        # Indexed, not .get(): the plugin LEFT JOIN is part of every catalog
+        # SELECT, so a missing key is a projection bug and should say so here
+        # rather than silently reading as an unowned row. Matches the skills
+        # projection, which makes the same argument.
+        plugin_name=row["plugin_name"],
+        plugin_enabled=(
+            bool(row["plugin_enabled"])
+            if row["plugin_enabled"] is not None
+            else None
+        ),
     )

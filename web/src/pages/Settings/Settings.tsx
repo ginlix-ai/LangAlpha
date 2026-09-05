@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useScrollMemory } from '@/lib/scrollMemory';
 import { useUser } from '@/hooks/useUser';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useTranslation } from 'react-i18next';
@@ -17,6 +18,8 @@ function Settings() {
 
   const tabParam = searchParams.get('tab') || 'userInfo';
   const [activeTab, setActiveTab] = useState(tabParam);
+  const pageRef = useRef<HTMLDivElement>(null);
+  useScrollMemory(pageRef, 'page:settings');
   const isLoading = isUserLoading || isPrefsLoading;
 
   // Sync tab with URL search params
@@ -36,71 +39,77 @@ function Settings() {
 
   return (
     <div className="settings-page">
-      <div className="settings-container">
-        <h2 className="text-xl font-semibold mb-6" style={{ color: 'var(--color-text-primary)' }}>{t('settings.title')}</h2>
-        <div className="flex gap-2 mb-6 border-b overflow-x-auto settings-tab-bar" style={{ borderColor: 'var(--color-border-muted)' }}>
-          <button
-            type="button"
-            onClick={() => handleTabChange('userInfo')}
-            className="px-4 py-2 text-sm font-medium whitespace-nowrap flex-shrink-0"
-            style={{
-              color: activeTab === 'userInfo' ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
-              borderBottom: activeTab === 'userInfo' ? '2px solid var(--color-accent-primary)' : '2px solid transparent',
-            }}
-          >
-            {t('settings.userInfo')}
-          </button>
-          <button
-            type="button"
-            onClick={() => handleTabChange('preferences')}
-            className="px-4 py-2 text-sm font-medium whitespace-nowrap flex-shrink-0"
-            style={{
-              color: activeTab === 'preferences' ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
-              borderBottom: activeTab === 'preferences' ? '2px solid var(--color-accent-primary)' : '2px solid transparent',
-            }}
-          >
-            {t('settings.preferences')}
-          </button>
-          <button
-            type="button"
-            onClick={() => handleTabChange('model')}
-            className="px-4 py-2 text-sm font-medium whitespace-nowrap flex-shrink-0"
-            style={{
-              color: activeTab === 'model' ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
-              borderBottom: activeTab === 'model' ? '2px solid var(--color-accent-primary)' : '2px solid transparent',
-            }}
-          >
-            {t('settings.model')}
-          </button>
-          <button
-            type="button"
-            onClick={() => handleTabChange('experiments')}
-            className="px-4 py-2 text-sm font-medium whitespace-nowrap flex-shrink-0"
-            style={{
-              color: activeTab === 'experiments' ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
-              borderBottom: activeTab === 'experiments' ? '2px solid var(--color-accent-primary)' : '2px solid transparent',
-            }}
-          >
-            {t('settings.experiments', 'Experiments')}
-          </button>
-        </div>
+      {/* Doubles as the window titlebar in the desktop shell; inert
+          elsewhere. Above the scroll port rather than inside it, so it stays
+          put once the page is scrolled. */}
+      <div className="chrome-drag-strip" aria-hidden="true" />
+      <div ref={pageRef} className="settings-scroll">
+        <div className="settings-container">
+          <h2 className="text-xl font-semibold mb-6" style={{ color: 'var(--color-text-primary)' }}>{t('settings.title')}</h2>
+          <div className="flex gap-2 mb-6 border-b overflow-x-auto settings-tab-bar clips-focus-ring" style={{ borderColor: 'var(--color-border-muted)' }}>
+            <button
+              type="button"
+              onClick={() => handleTabChange('userInfo')}
+              className="px-4 py-2 text-sm font-medium whitespace-nowrap flex-shrink-0"
+              style={{
+                color: activeTab === 'userInfo' ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
+                borderBottom: activeTab === 'userInfo' ? '2px solid var(--color-accent-primary)' : '2px solid transparent',
+              }}
+            >
+              {t('settings.userInfo')}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleTabChange('preferences')}
+              className="px-4 py-2 text-sm font-medium whitespace-nowrap flex-shrink-0"
+              style={{
+                color: activeTab === 'preferences' ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
+                borderBottom: activeTab === 'preferences' ? '2px solid var(--color-accent-primary)' : '2px solid transparent',
+              }}
+            >
+              {t('settings.preferences')}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleTabChange('model')}
+              className="px-4 py-2 text-sm font-medium whitespace-nowrap flex-shrink-0"
+              style={{
+                color: activeTab === 'model' ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
+                borderBottom: activeTab === 'model' ? '2px solid var(--color-accent-primary)' : '2px solid transparent',
+              }}
+            >
+              {t('settings.model')}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleTabChange('experiments')}
+              className="px-4 py-2 text-sm font-medium whitespace-nowrap flex-shrink-0"
+              style={{
+                color: activeTab === 'experiments' ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
+                borderBottom: activeTab === 'experiments' ? '2px solid var(--color-accent-primary)' : '2px solid transparent',
+              }}
+            >
+              {t('settings.experiments', 'Experiments')}
+            </button>
+          </div>
 
-        <div className="settings-content">
-          {isLoading && (
-            <div className="flex items-center justify-center py-8">
-              <p className="text-sm" style={{ color: 'var(--color-text-primary)', opacity: 0.7 }}>{t('common.loading')}</p>
-            </div>
-          )}
+          <div className="settings-content">
+            {isLoading && (
+              <div className="flex items-center justify-center py-8">
+                <p className="text-sm" style={{ color: 'var(--color-text-primary)', opacity: 0.7 }}>{t('common.loading')}</p>
+              </div>
+            )}
 
-          {!isLoading && activeTab === 'userInfo' && <UserInfoTab />}
+            {!isLoading && activeTab === 'userInfo' && <UserInfoTab />}
 
-          {!isLoading && activeTab === 'preferences' && <PreferencesTab />}
+            {!isLoading && activeTab === 'preferences' && <PreferencesTab />}
 
-          {!isLoading && activeTab === 'model' && <ModelTab />}
+            {!isLoading && activeTab === 'model' && <ModelTab />}
 
-          {/* Text-heavy tab: cap the measure so descriptions stay readable
-              instead of spanning the full settings container. */}
-          {!isLoading && activeTab === 'experiments' && <ExperimentsTab />}
+            {/* Text-heavy tab: cap the measure so descriptions stay readable
+                instead of spanning the full settings container. */}
+            {!isLoading && activeTab === 'experiments' && <ExperimentsTab />}
+          </div>
         </div>
       </div>
     </div>

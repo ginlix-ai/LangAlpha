@@ -9,8 +9,9 @@ namespace-owner handles, never itself.
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any, Optional
 
 import structlog
 from langchain_core.messages import ToolMessage
@@ -20,6 +21,11 @@ from langgraph.types import Command
 from ptc_agent.agent.middleware.background_subagent.context import (
     current_background_token_tracker,
 )
+from ptc_agent.agent.middleware.credit_gate import (
+    CreditGateState,
+    current_credit_gate,
+)
+from ptc_agent.agent.middleware.background_subagent.outcomes import Outcome
 from ptc_agent.agent.middleware.background_subagent.redis_stream import (
     parse_steering_payload,
     steering_queue_key,
@@ -27,7 +33,6 @@ from ptc_agent.agent.middleware.background_subagent.redis_stream import (
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTask,
     BackgroundTaskRegistry,
-    TransportLostError,
 )
 
 if TYPE_CHECKING:
@@ -50,7 +55,7 @@ def _make_task_done_callback(
     """Build a done_callback that bumps ``last_updated_at`` when the asyncio.Task finishes.
 
     Covers all completion paths (success, failure, cancellation) without
-    having to instrument every ``task.completed = True`` site.
+    having to instrument every site that settles a task.
     """
 
     def _on_task_done(_t: asyncio.Task) -> None:
@@ -87,7 +92,7 @@ def _merge_subagent_usage(
     the prior run's usage until cleanup drops it after a successful persist.
     """
     task.per_call_records = (task.per_call_records or []) + (
-        tracker.per_call_records or []
+        tracker.get_per_call_records()
     )
     for name, count in tool_tracker.get_summary().items():
         task.tool_usage[name] = task.tool_usage.get(name, 0) + count
@@ -180,20 +185,45 @@ async def _return_unconsumed_steering(
         )
 
 
-def _transport_lost_failure() -> dict[str, Any]:
-    return {
-        "error": (
-            "transport_lost: the task's Redis event stream tore mid-run "
-            "(spill failure or quota); the replay archive is incomplete"
-        ),
-        "error_type": "transport_lost",
-    }
+@asynccontextmanager
+async def _child_credit_lane(
+    task: BackgroundTask,
+    tracker: "PerCallTokenTracker",
+    tool_tracker: Any,
+    label: str,
+) -> AsyncIterator[Optional[CreditGateState]]:
+    """This child's credit lane: its own run ref, metering and ledger heartbeat,
+    sharing the turn's lease (inherited via context copy at task creation, so a
+    resumed task joins whichever turn resumed it).
 
-
-def _error_type(e: BaseException) -> str:
-    # One spelling for the retention contract's torn-transport terminal —
-    # consumers grep "transport_lost", never the class name.
-    return "transport_lost" if isinstance(e, TransportLostError) else type(e).__name__
+    The ContextVar is set on every path, including to None, so a lane that
+    cannot be opened runs ungated rather than under its parent's state.
+    """
+    parent_gate = current_credit_gate.get()
+    gate: Optional[CreditGateState] = None
+    if parent_gate is not None and task.task_run_id:
+        gate = parent_gate.spawn_child(
+            run_ref=task.task_run_id,
+            tracker=tracker,
+            tool_tracker=tool_tracker,
+        )
+        await gate.start()
+    elif parent_gate is not None:
+        # Degraded admission left this task without a ledger row, so it has
+        # nowhere to heartbeat and never joins the lease: it runs ungated, and
+        # its spend does not reach the family total the parent is measured
+        # against. Not fatal, but silent is how a hole like this stays open.
+        logger.warning(
+            "%s has no ledger row; running without a credit lane",
+            label,
+            display_id=task.display_id,
+        )
+    current_credit_gate.set(gate)
+    try:
+        yield gate
+    finally:
+        if gate is not None:
+            await gate.aclose()
 
 
 async def _run_background_task(
@@ -219,7 +249,8 @@ async def _run_background_task(
     async def run_handler() -> ToolMessage | Command:
         current_background_token_tracker.set(tracker)
         set_tool_tracker(tool_tracker)
-        return await handler(request)
+        async with _child_credit_lane(task, tracker, tool_tracker, label):
+            return await handler(request)
 
     handler_task: asyncio.Task[ToolMessage | Command] = asyncio.create_task(
         run_handler()
@@ -235,7 +266,6 @@ async def _run_background_task(
     try:
         result = await asyncio.shield(handler_task)
         ledger_status, ledger_failure = "completed", None
-        _merge_subagent_usage(task, tracker, tool_tracker)
         if isinstance(result, ToolMessage) and result.status == "error":
             # e.g. schema validation rejected the call before the subagent
             # ran. The run did not succeed — ledger, task result, and
@@ -263,20 +293,20 @@ async def _run_background_task(
             # must not settle "completed" — the replay archive has holes the
             # consumer can't detect. The abort loop usually raises first;
             # this covers a tear on the final events.
-            ledger_status = "error"
-            ledger_failure = _transport_lost_failure()
+            torn = Outcome.torn_stream()
+            ledger_status, ledger_failure = torn.status, torn.as_failure()
             logger.error(
                 "%s finished with a torn event stream; finalizing transport_lost",
                 label,
                 display_id=task.display_id,
             )
-            return {"success": False, **_transport_lost_failure()}
+            return torn.as_result()
         logger.debug(
             "%s completed",
             label,
             display_id=task.display_id,
             result_type=type(result).__name__,
-            token_records=len(task.per_call_records),
+            token_records=tracker.record_count(),
         )
         return {"success": True, "result": result}
     except asyncio.CancelledError:
@@ -288,40 +318,43 @@ async def _run_background_task(
         try:
             result = await handler_task
             ledger_status, ledger_failure = "completed", None
-            _merge_subagent_usage(task, tracker, tool_tracker)
             if task.redis_write_failed and not task.cancelled:
-                ledger_status = "error"
-                ledger_failure = _transport_lost_failure()
-                return {"success": False, **_transport_lost_failure()}
+                torn = Outcome.torn_stream()
+                ledger_status, ledger_failure = torn.status, torn.as_failure()
+                return torn.as_result()
             return {"success": True, "result": result}
         except Exception as e:
-            ledger_status = "error"
-            ledger_failure = {"error": str(e), "error_type": _error_type(e)}
-            _merge_subagent_usage(task, tracker, tool_tracker)
+            outcome = Outcome.from_exception(e)
+            ledger_status, ledger_failure = outcome.status, outcome.as_failure()
             logger.error(
                 "%s failed after cancellation",
                 label,
                 display_id=task.display_id,
                 error=str(e),
             )
-            return {"success": False, "error": str(e), "error_type": _error_type(e)}
+            return outcome.as_result()
     except Exception as e:
-        ledger_status = "error"
-        ledger_failure = {"error": str(e), "error_type": _error_type(e)}
-        _merge_subagent_usage(task, tracker, tool_tracker)
+        outcome = Outcome.from_exception(e)
+        ledger_status, ledger_failure = outcome.status, outcome.as_failure()
         logger.error(
             "%s failed",
             label,
             display_id=task.display_id,
             error=str(e),
         )
-        return {"success": False, "error": str(e), "error_type": _error_type(e)}
+        return outcome.as_result()
     finally:
         # A double-cancel can exit while the shielded handler still runs; in
         # that case keep the fence (the guard's teardown unlock_all reclaims
         # it) and leave the meta "running" until its TTL — never unfence a
-        # possibly-live writer.
+        # possibly-live writer. A live handler is also still appending to the
+        # tracker, so the merge below waits for the same condition.
         if handler_task.done():
+            # The one merge for every settle path. Doing it per-branch instead
+            # enumerates the ways a run can succeed, and a run force-cancelled
+            # mid-flight ends via a CancelledError that reaches none of them —
+            # its tokens were spent upstream and would go unbilled.
+            _merge_subagent_usage(task, tracker, tool_tracker)
             await _settle_terminal_run(
                 task,
                 ledger_status=ledger_status,
@@ -361,7 +394,7 @@ async def _settle_terminal_run(
     # survivor. Meta must mirror the row, not the local request.
     terminal_status = (
         "cancelled"
-        if task.cancelled
+        if task.cancelled or ledger_status == "cancelled"
         else ("completed" if ledger_status == "completed" else "error")
     )
     run_finalized = False

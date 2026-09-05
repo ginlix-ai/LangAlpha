@@ -1,0 +1,25 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "x_api": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "plugins/alternative_data/x_mcp_server.py"
+      ],
+      "env": {}
+    },
+    "scrape": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "plugins/alternative_data/scrape_mcp_server.py"
+      ],
+      "env": {}
+    }
+  }
+}

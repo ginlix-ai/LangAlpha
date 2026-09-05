@@ -18,9 +18,6 @@ vi.mock('@/hooks/usePreferences', () => ({
   usePreferences: () => ({ data: undefined, isLoading: false }),
 }));
 
-vi.mock('@/lib/modelCapabilities', () => ({
-  supportsXhighEffort: () => false,
-}));
 
 vi.mock('../use-toast', () => ({
   useToast: () => ({ toast: vi.fn() }),

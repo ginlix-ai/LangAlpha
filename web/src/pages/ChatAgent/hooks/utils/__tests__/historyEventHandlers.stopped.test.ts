@@ -11,6 +11,7 @@
  * (driven by the `stopped` flag) — matching the live finalize.
  */
 import { describe, it, expect } from 'vitest';
+import type { PairState } from '../../../session/types';
 import {
   handleHistoryReasoningSignal,
   handleHistoryReasoningContent,
@@ -18,11 +19,6 @@ import {
 } from '../historyEventHandlers';
 import type { MessageRecord } from '../types';
 
-interface PairState {
-  contentOrderCounter: number;
-  reasoningId: string | null;
-  toolCallId: string | null;
-}
 
 function makeStore(initial: MessageRecord[]) {
   const store = { messages: initial.slice() };
@@ -50,7 +46,7 @@ describe('historyEventHandlers — stopped turn replay', () => {
         toolCallProcesses: {},
       },
     ]);
-    const pairState: PairState = { contentOrderCounter: 0, reasoningId: null, toolCallId: null };
+    const pairState: PairState = { contentOrderCounter: 0, reasoningId: null, toolCallId: null, steeringBatches: 0 };
 
     // Replay: reasoning starts, gets content, then the synthetic close events.
     handleHistoryReasoningSignal({ assistantMessageId, signalContent: 'start', pairIndex: 0, pairState, setMessages });
@@ -77,7 +73,7 @@ describe('historyEventHandlers — stopped turn replay', () => {
     const { store, setMessages } = makeStore([
       { id: assistantMessageId, role: 'assistant', content: 'done', isStreaming: false, reasoningProcesses: {} },
     ]);
-    const pairState: PairState = { contentOrderCounter: 0, reasoningId: null, toolCallId: null };
+    const pairState: PairState = { contentOrderCounter: 0, reasoningId: null, toolCallId: null, steeringBatches: 0 };
 
     handleHistoryTextContent({ assistantMessageId, content: '', finishReason: 'stop', pairState, setMessages });
 

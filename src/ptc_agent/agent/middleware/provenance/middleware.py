@@ -42,14 +42,14 @@ from ptc_agent.agent.provenance import (
 from ptc_agent.agent.provenance.types import (
     RESULT_BODY_MAX_BYTES,
 )
+from ptc_agent.core.paths import MEMO_USER_DIR, MEMORY_USER_DIR, MEMORY_WORKSPACE_DIR
 
 logger = logging.getLogger(__name__)
 
-# Filesystem path prefixes used to classify reads. These mirror the routes
-# wired into CompositeFilesystemBackend in agent.py (paths.py constants
-# MEMO_USER_DIR / MEMORY_USER_DIR / MEMORY_WORKSPACE_DIR).
-_MEMO_PREFIX = ".agents/user/memo/"
-_MEMORY_PREFIXES = (".agents/user/memory/", ".agents/workspace/memory/")
+# Filesystem path prefixes used to classify reads — the same constants the
+# CompositeFilesystemBackend routes in agent.py are wired from.
+_MEMO_PREFIX = f"{MEMO_USER_DIR}/"
+_MEMORY_PREFIXES = (f"{MEMORY_USER_DIR}/", f"{MEMORY_WORKSPACE_DIR}/")
 
 # Agent-infrastructure path roots whose reads are scaffolding the agent operates
 # with — skill docs, generated tool/MCP wrapper modules, system trace files,

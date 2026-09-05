@@ -28,6 +28,12 @@ from .formatter import (
     format_subagent_summary,
     format_tool_summary,
 )
+from .guidance import (
+    DEFAULT_GUIDANCE,
+    PromptGuidance,
+    guidance_template_vars,
+    resolve_prompt_guidance,
+)
 from .loader import (
     PromptLoader,
     format_current_time,
@@ -37,12 +43,16 @@ from .loader import (
 )
 
 __all__ = [
+    "DEFAULT_GUIDANCE",
+    "PromptGuidance",
     "PromptLoader",
     "build_tool_summary_from_registry",
     "format_current_time",
     "format_subagent_summary",
     "format_tool_summary",
     "get_loader",
+    "guidance_template_vars",
     "init_loader",
     "reset_loader",
+    "resolve_prompt_guidance",
 ]

@@ -11,8 +11,10 @@ import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
-import SubagentTaskMessageContent from '../SubagentTaskMessageContent';
+import { MemoryRouter } from 'react-router-dom';
+import SubagentTaskMessageContent, { SubagentStopNotice } from '../SubagentTaskMessageContent';
 import { SubagentTelemetryContext } from '../SubagentTelemetryContext';
+import type { SubagentTelemetry } from '../../session/subagents/resolveSubagentTelemetry';
 
 const baseProps = {
   subagentId: 'tc-abc',
@@ -105,7 +107,7 @@ describe('SubagentTaskMessageContent — telemetry row', () => {
 });
 
 describe('SubagentTaskMessageContent — status discriminator', () => {
-  it('renders Running label with spin animation for action=init + status=running', () => {
+  it('renders Running label with the ascii liveness glyph for action=init + status=running', () => {
     render(
       <SubagentTaskMessageContent
         subagentId="tc-r"
@@ -115,7 +117,10 @@ describe('SubagentTaskMessageContent — status discriminator', () => {
         action="init"
       />,
     );
-    expect(screen.getByText('Running')).toBeInTheDocument();
+    // Two "Running" nodes by design: the visible label + the ascii Loader's
+    // aria-label (role="status") — assert both halves explicitly.
+    expect(screen.getAllByText('Running').length).toBeGreaterThan(0);
+    expect(screen.getByRole('status', { name: 'Running' })).toBeInTheDocument();
   });
 
   it('renders Completed label for action=init + status=completed', () => {
@@ -216,23 +221,56 @@ describe('SubagentTaskMessageContent — telemetry context fallback', () => {
 });
 
 describe('SubagentTaskMessageContent — accessibility', () => {
-  it('exposes the card as a keyboard-focusable button', () => {
+  it('exposes the card as a keyboard-focusable button when it can open', () => {
     render(
       <SubagentTaskMessageContent
         subagentId="tc-a11y"
         description="Click me"
         type="research"
         status="completed"
+        onOpen={() => {}}
       />,
     );
-    // Without a hasResult body, the card root is the only role=button.
+    // With no toolCallProcess there is no affordance, so the card root is
+    // the only role=button.
     // Without aria-label/title-as-accessible-name we just look up by role.
     const card = screen.getByRole('button');
     expect(card).toHaveAttribute('tabIndex', '0');
     expect(card).toHaveAttribute('title');
   });
 
-  it('opens the secondary view-output action via an accessible button', () => {
+  it('renders inert on read-only surfaces — no button role, focus stop, or tooltip', () => {
+    // Shared links strip onOpen (MessageContentSegments passes undefined on
+    // readOnly). The card must not keep the click costume without the click.
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-inert"
+        description="Click me"
+        type="research"
+        status="completed"
+      />,
+    );
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(document.querySelector('[tabindex]')).toBeNull();
+    expect(document.querySelector('[title]')).toBeNull();
+  });
+
+  it('omits the view-details affordance when onDetailOpen is absent', () => {
+    // A result with no handler (read-only surface) must not render the arrow
+    // button — it would swallow clicks and open nothing.
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-dead-affordance"
+        description="Done"
+        type="research"
+        status="completed"
+        toolCallProcess={{ toolCallResult: { content: 'output text' } }}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'View task details' })).toBeNull();
+  });
+
+  it('opens the secondary view-details action via an accessible button', () => {
     let captured: unknown = null;
     render(
       <SubagentTaskMessageContent
@@ -244,15 +282,15 @@ describe('SubagentTaskMessageContent — accessibility', () => {
         onDetailOpen={(p) => { captured = p; }}
       />,
     );
-    const viewButton = screen.getByRole('button', { name: 'View subagent output' });
+    const viewButton = screen.getByRole('button', { name: 'View task details' });
     expect(viewButton).toBeInTheDocument();
     viewButton.click();
     expect(captured).toEqual({ toolCallResult: { content: 'output text' } });
   });
 
-  it('mouse click on view-output button does not also fire the card click', () => {
+  it('mouse click on view-details button does not also fire the card click', () => {
     // Regression: outer card div has onClick=handleCardClick, inner button
-    // has onClick=handleViewOutput. handleViewOutput already calls
+    // has onClick=handleViewDetails. handleViewDetails already calls
     // stopPropagation, so the click should fire onDetailOpen exactly once
     // and never fire onOpen. Pinning this to catch any future change that
     // drops the stopPropagation.
@@ -269,13 +307,13 @@ describe('SubagentTaskMessageContent — accessibility', () => {
         onDetailOpen={onDetailOpen}
       />,
     );
-    const viewButton = screen.getByRole('button', { name: 'View subagent output' });
+    const viewButton = screen.getByRole('button', { name: 'View task details' });
     viewButton.click();
     expect(onDetailOpen).toHaveBeenCalledTimes(1);
     expect(onOpen).not.toHaveBeenCalled();
   });
 
-  it('keyboard activation of view-output button does not also fire the card click', () => {
+  it('keyboard activation of view-details button does not also fire the card click', () => {
     // Regression: outer `<div role="button" onKeyDown=...>` and inner
     // `<button>` are nested. A keydown on the inner button bubbles, so
     // without a target/currentTarget guard the outer keydown handler used
@@ -294,7 +332,7 @@ describe('SubagentTaskMessageContent — accessibility', () => {
         onDetailOpen={onDetailOpen}
       />,
     );
-    const viewButton = screen.getByRole('button', { name: 'View subagent output' });
+    const viewButton = screen.getByRole('button', { name: 'View task details' });
     // Simulate keyboard activation: keydown on the inner button bubbles to
     // the outer card, but the guard should prevent handleCardClick from running.
     fireEvent.keyDown(viewButton, { key: 'Enter' });
@@ -312,9 +350,104 @@ describe('SubagentTaskMessageContent — accessibility', () => {
         onOpen={onOpen}
       />,
     );
-    // Without a hasResult body there's only one role=button — the card root.
+    // With no toolCallProcess there's only one role=button — the card root.
     const card = screen.getByRole('button');
     fireEvent.keyDown(card, { key: 'Enter' });
     expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The reason a settled task stopped, on the card in the MAIN transcript.
+ *
+ * A background task can outlive its turn. When the credit gate stops one the
+ * turn is already finished, so no pause card is ever raised in the thread and
+ * the denial reaches only the task's own transcript — behind a click. What the
+ * thread showed was a bare "Stopped" chip, which is exactly what a task the
+ * user ended on purpose shows.
+ */
+describe('SubagentTaskMessageContent — stop reason', () => {
+  const ZERO = { input: 0, output: 0, total: 0 };
+
+  const withTelemetry = (
+    telemetry: Partial<SubagentTelemetry>,
+    props: Record<string, unknown> = {},
+  ) =>
+    render(
+      <MemoryRouter>
+        <SubagentTelemetryContext.Provider
+          value={() => ({ toolCalls: 13, tokenUsage: ZERO, ...telemetry })}
+        >
+          <SubagentTaskMessageContent {...baseProps} status="cancelled" {...props} />
+        </SubagentTelemetryContext.Provider>
+      </MemoryRouter>,
+    );
+
+  it('states the reason a stopped task stopped', () => {
+    withTelemetry({ stopReason: 'transport_lost: the stream tore mid-run' });
+    expect(screen.getByTestId('subagent-stop-reason')).toHaveTextContent('transport_lost');
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('leaves a credit stop to the notice below, so it is not said twice', () => {
+    withTelemetry({
+      stopReason: 'Monthly credit limit reached (50/50 credits)',
+      stopReasonType: 'credit_stop',
+    });
+    expect(screen.queryByTestId('subagent-stop-reason')).toBeNull();
+  });
+
+  it('says nothing while the task is still running — a reason there would be a prediction', () => {
+    withTelemetry({ stopReason: 'transport_lost' }, { status: 'running' });
+    expect(screen.queryByTestId('subagent-stop-reason')).toBeNull();
+  });
+
+  it('clamps an unbounded reason so it cannot push the card open', () => {
+    withTelemetry({ stopReason: 'x'.repeat(400) });
+    const text = screen.getByTestId('subagent-stop-reason').textContent || '';
+    expect(text.length).toBeLessThan(400);
+    expect(text.endsWith('…')).toBe(true);
+  });
+});
+
+describe('SubagentStopNotice', () => {
+  const ZERO = { input: 0, output: 0, total: 0 };
+
+  const withTelemetry = (telemetry: Partial<SubagentTelemetry> | undefined) =>
+    render(
+      <MemoryRouter>
+        <SubagentTelemetryContext.Provider
+          value={() => (telemetry ? { toolCalls: 0, tokenUsage: ZERO, ...telemetry } : undefined)}
+        >
+          <SubagentStopNotice subagentId="sub-1" />
+        </SubagentTelemetryContext.Provider>
+      </MemoryRouter>,
+    );
+
+  it('surfaces a credit stop in the main transcript, with the account pages', () => {
+    withTelemetry({
+      stopReason: 'Monthly credit limit reached (50/50 credits)',
+      stopReasonType: 'credit_stop',
+    });
+    const notice = screen.getByTestId('subagent-credit-stop-notice');
+    expect(notice).toHaveTextContent('Monthly credit limit reached (50/50 credits)');
+    expect(screen.getByRole('link', { name: 'Manage plan' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'View usage' })).toBeInTheDocument();
+  });
+
+  it('stays out of the way for a stop the user cannot act on', () => {
+    withTelemetry({ stopReason: 'transport_lost: the stream tore mid-run' });
+    expect(screen.queryByTestId('subagent-credit-stop-notice')).toBeNull();
+  });
+
+  it('renders nothing when no reason reached the client, as on a shared replay', () => {
+    withTelemetry(undefined);
+    expect(screen.queryByTestId('subagent-credit-stop-notice')).toBeNull();
+  });
+
+  it('clamps an unbounded reason', () => {
+    withTelemetry({ stopReason: 'x'.repeat(400), stopReasonType: 'credit_stop' });
+    const text = screen.getByTestId('subagent-credit-stop-notice').textContent || '';
+    expect(text.length).toBeLessThan(400);
   });
 });

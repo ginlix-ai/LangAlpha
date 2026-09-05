@@ -1,6 +1,7 @@
 # Data Processing
 
-**Core principle**: Always dump data first, then process. This enables iterative inspection and reprocessing without re-fetching.
+**Dump data first, then process.** Write raw tool output to your task directory before working with it and let only summaries reach the conversation, so you can inspect and reprocess without re-fetching. Promote a dataset to `data/` when it is worth reusing across threads.
+{% if guidance | default("detailed") == "detailed" %}
 
 ## Dump First, Then Process
 
@@ -44,3 +45,4 @@ print(f"""
 - Sample: {items[0] if items else 'empty'}
 """)
 ```
+{% endif %}

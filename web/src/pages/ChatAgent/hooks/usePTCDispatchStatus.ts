@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
+import { useThreadRunStatus, type PublicRunStatus } from '@/lib/threadLifecycle/store';
 import { getDispatchLiveness, type DispatchLiveness } from '../utils/api';
 
 /** UI-facing lifecycle of a dispatched PTC research run. */
@@ -201,10 +202,30 @@ export function DispatchStatusProvider({ children }: { children: ReactNode }) {
   return createElement(DispatchStatusContext.Provider, { value }, children);
 }
 
+/** Lifecycle-store status → card status; null while the store has nothing
+ *  ('idle') so the pre-ledger dispatch window falls through to the poll. */
+function mapLifecycleStatus(s: PublicRunStatus): PTCDispatchStatus | null {
+  switch (s) {
+    case 'running':
+    case 'stopping': return 'running';
+    case 'interrupted': return 'needs_input';
+    case 'completed': return 'completed';
+    case 'failed': return 'failed';
+    case 'cancelled': return 'stopped';
+    case 'queued':
+    case 'recovering': return 'starting';
+    default: return null;
+  }
+}
+
 /**
- * Read one dispatched thread's liveness from the shared DispatchStatusProvider.
+ * Read one dispatched thread's liveness. The lifecycle store (user feed) is
+ * the primary source once the run is ledger-known — settles arrive as pushes,
+ * not on the next poll tick. The provider's batched poll is retained as the
+ * pre-ledger fallback: a just-dispatched run has no lifecycle row yet, and
+ * only the poll can distinguish "still registering" from "never registered".
  * Registers the id while `enabled` so the provider's batched query covers it;
- * returns 'starting' when no provider is mounted or the id hasn't resolved yet.
+ * returns 'starting' when neither source has resolved the id yet.
  */
 export function useDispatchStatus(
   threadId: string | undefined,
@@ -224,5 +245,8 @@ export function useDispatchStatus(
     return () => unregister(threadId);
   }, [register, unregister, active, threadId]);
 
-  return { status: (ctx && threadId ? ctx.slices.get(threadId) : undefined) ?? 'starting' };
+  const pushed = mapLifecycleStatus(useThreadRunStatus(threadId ?? ''));
+  return {
+    status: pushed ?? (ctx && threadId ? ctx.slices.get(threadId) : undefined) ?? 'starting',
+  };
 }

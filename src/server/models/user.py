@@ -88,6 +88,17 @@ class OtherPreference(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class ModelPreference(BaseModel):
+    """Model configuration stored in JSONB: catalog, routing, and tuning.
+
+    Open like its sibling because the key set is owned by the resolver, not by
+    this schema. ``profiles`` is the one key with structure the DB layer knows
+    about — it merges per model name rather than wholesale.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+
 class AlertSettings(BaseModel):
     """Alert settings for watchlist items."""
 
@@ -180,6 +191,10 @@ class UserResponse(UserBase):
 class UserPreferencesBase(BaseModel):
     """Base preferences fields."""
 
+    # ``model_preference`` collides with Pydantic's reserved ``model_`` prefix;
+    # the column name predates the schema and is the one users see in the API.
+    model_config = ConfigDict(protected_namespaces=())
+
     risk_preference: Optional[RiskPreference] = Field(
         default_factory=RiskPreference, description="Risk tolerance settings"
     )
@@ -191,6 +206,9 @@ class UserPreferencesBase(BaseModel):
     )
     other_preference: Optional[OtherPreference] = Field(
         default_factory=OtherPreference, description="Miscellaneous preferences"
+    )
+    model_preference: Optional[ModelPreference] = Field(
+        default_factory=ModelPreference, description="Model catalog, routing and tuning settings"
     )
 
 

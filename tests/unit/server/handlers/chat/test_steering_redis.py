@@ -424,7 +424,7 @@ async def test_done_local_handle_defers_to_fresh_running_meta(monkeypatch):
     done = asyncio.create_task(asyncio.sleep(0))
     await done
     task.asyncio_task = done  # settled locally...
-    task.completed = True
+    task.terminal_status = "completed"
     _seed_meta(cache, "t-steer-done", task.task_id, "running")  # ...but live elsewhere
 
     try:

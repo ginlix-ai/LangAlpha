@@ -37,6 +37,8 @@ def _build_llm(sdk: str, base_url: str | None, parameters: dict | None = None) -
     llm.parameters = dict(parameters or {})
     llm.extra_body = {}
     llm.model = "gpt-5.6-sol"
+    llm.custom_model_name = llm.model
+    llm.resolved_reasoning_effort = None
     llm.api_key_override = "dummy-key"
     llm.prompt_cache_key_enabled = False
     return llm
@@ -81,6 +83,8 @@ class TestOpenAIEndpointGate:
         # gpt-5.x is a reasoning family: langchain-openai would normalize
         # temperature away on its own, masking what this test asserts.
         llm.model = "gpt-4o-mini"
+        llm.custom_model_name = llm.model
+        llm.resolved_reasoning_effort = None
         client = llm.get_llm()
         assert client.prompt_cache_options is None
         assert client.temperature == 0.3

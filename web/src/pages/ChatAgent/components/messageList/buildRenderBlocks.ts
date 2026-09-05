@@ -1,16 +1,17 @@
 import { chartInstanceKey, planChartAnnotationCards } from '../chartAnnotationGrouping';
 import { INLINE_ARTIFACT_TOOLS } from '../charts/InlineArtifactCards';
 import { normalizeSubagentText } from './normalizeSubagentText';
+import { MIN_LIVE_EXPOSURE_MS } from './liveZoneTiming';
 import type { ContentSegmentRecord, ToolCallProcessRecord } from './types';
 
-const MIN_LIVE_EXPOSURE_MS = 1800; // minimum time a just-completed item stays in the live zone before folding
-const MAX_IN_PROGRESS_MS = 15000; // max time a tool call can stay in-progress in live view before archiving (independent of MIN_LIVE_EXPOSURE_MS)
+export const MAX_IN_PROGRESS_MS = 15000; // max time a tool call can stay in-progress in live view before archiving (independent of MIN_LIVE_EXPOSURE_MS)
 /** Tools that should stay in the live zone for their entire duration (no MAX_IN_PROGRESS_MS cap) */
-const ALWAYS_LIVE_TOOLS = new Set(['TaskOutput', 'WebFetch']);
+export const ALWAYS_LIVE_TOOLS = new Set(['TaskOutput', 'WebFetch']);
 /** Tool calls that are never rendered as visible activity items — they have dedicated UI or are internal */
+/** Tools the transcript never draws a card for; the spinner gate skips them too. */
 export const HIDDEN_TOOL_CALL_NAMES = new Set(['TodoWrite', 'task', 'Task', 'SubmitPlan', 'AskUserQuestion', 'manage_workspaces', 'ptc_agent', 'agent_output', 'manage_threads', 'ShowWidget']);
 
-/** Render block types for the textOnly activity grouping */
+/** Render block types for the inline activity grouping */
 export interface ActivityRenderBlock {
   type: 'activity';
   key: string;
@@ -62,6 +63,11 @@ export interface SecretaryActionRenderBlock {
   key: string;
   segment: ContentSegmentRecord;
 }
+export interface CreditPauseRenderBlock {
+  type: 'credit_pause';
+  key: string;
+  segment: ContentSegmentRecord;
+}
 export interface NotificationRenderBlock {
   type: 'notification';
   key: string;
@@ -84,6 +90,7 @@ export type RenderBlock =
   | StartQuestionRenderBlock
   | PTCAgentRenderBlock
   | SecretaryActionRenderBlock
+  | CreditPauseRenderBlock
   | NotificationRenderBlock
   | HtmlWidgetRenderBlock;
 
@@ -121,7 +128,7 @@ export function groupSegments(segments: ContentSegmentRecord[]): ContentSegmentR
     return groups;
 }
 
-/** The textOnly-mode reducer: folds grouped segments into render blocks (live
+/** The transcript reducer: folds grouped segments into render blocks (live
  * activity zone vs archived accordion) and reports the next live→completed
  * expiry so the caller can schedule a recompute timer. */
 export function buildRenderBlocks(
@@ -150,6 +157,7 @@ export function buildRenderBlocks(
         if (s.type === 'delete_workspace') return true;
         if (s.type === 'stop_workspace') return true;
         if (s.type === 'delete_thread') return true;
+        if (s.type === 'credit_pause') return true;
         if (s.type === 'html_widget') return true;
         if (s.type === 'tool_call') {
           const toolName = toolCallProcesses[s.toolCallId!]?.toolName as string | undefined;
@@ -352,6 +360,9 @@ export function buildRenderBlocks(
         } else if (seg.type === 'delete_workspace' || seg.type === 'stop_workspace' || seg.type === 'delete_thread') {
           flushActivity();
           blocks.push({ type: seg.type, key: `secretary-${seg.type}-${seg.proposalId}`, segment: seg });
+        } else if (seg.type === 'credit_pause') {
+          flushActivity();
+          blocks.push({ type: 'credit_pause', key: `credit-pause-${seg.proposalId}`, segment: seg });
         } else if (seg.type === 'html_widget') {
           flushActivity();
           blocks.push({ type: 'html_widget', key: `widget-${seg.widgetId}`, segment: seg });

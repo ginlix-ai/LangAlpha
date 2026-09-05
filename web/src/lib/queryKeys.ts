@@ -1,5 +1,8 @@
+import type { QueryMeta } from '@tanstack/react-query';
+
 /**
- * Hierarchical query key factory for React Query.
+ * Hierarchical query key factory for React Query, plus the query `meta`
+ * contract that rides alongside it (see {@link CACHE_ONLY_META}).
  *
  * Each level builds on its parent to enable prefix-based invalidation:
  *   invalidateQueries({ queryKey: queryKeys.user.all })
@@ -41,8 +44,15 @@ export const queryKeys = {
   threads: {
     all:         ['threads'],
     byWorkspace: (wsId: string) => [...queryKeys.threads.all, 'workspace', wsId],
+    // ThreadGallery's infinite list. Deliberately UNDER the byWorkspace prefix
+    // so the lifecycle feed's prefix invalidation and the gallery's own
+    // self-invalidations keep reaching it; the suffix keeps it distinct from
+    // the sidebar's finite page entries, which cannot hold InfiniteData.
+    gallery:     (wsId: string, archived: boolean) => [...queryKeys.threads.byWorkspace(wsId), { view: 'gallery', archived }],
     detail:      (threadId: string) => [...queryKeys.threads.all, 'detail', threadId],
-    recent:      (limit: number) => [...queryKeys.threads.all, 'recent', limit],
+    // Base for every recent-list variant — invalidation targets this prefix.
+    recentAll:   () => [...queryKeys.threads.all, 'recent'],
+    recent:      (limit: number) => [...queryKeys.threads.recentAll(), limit],
     status:      (threadId: string) => [...queryKeys.threads.all, 'status', threadId],
     // Batched dispatch-liveness read for a turn's PTC cards. The base key
     // targets every id-set variant for invalidation; the concrete key is stable
@@ -70,8 +80,72 @@ export const queryKeys = {
     all:       ['mcp'],
     // User-level catalog of MCP templates (not workspace-scoped).
     catalog:   () => [...queryKeys.mcp.all, 'catalog'],
+    // Process-global builtins with the user's account-wide toggles.
+    builtins:  () => [...queryKeys.mcp.all, 'builtins'],
     // Effective per-workspace server list (builtins + workspace servers).
     workspace: (wsId: string) => [...queryKeys.mcp.all, 'workspace', wsId],
+    // Discovered tool snapshot for one catalog server (the detail view).
+    serverTools: (name: string) => [...queryKeys.mcp.all, 'serverTools', name],
+    // A builtin's tools, read from the frozen process registry. Its own family
+    // rather than a child of `builtins()`: schemas are fixed for the process
+    // lifetime, so a toggle there has nothing to tell this.
+    builtinServerTools: (name: string) => [
+      ...queryKeys.mcp.all,
+      'builtinServerTools',
+      name,
+    ],
+  },
+  // The brokerage connectors this build ships. Deliberately its own family
+  // rather than a child of `mcp`: it is static and user-independent, so the
+  // MCP fan-out has nothing to tell it, and sitting under that prefix meant
+  // every server toggle refetched a list whose `staleTime: Infinity` says it
+  // can never have changed.
+  brokerages: {
+    all:  ['brokerages'],
+    list: () => [...queryKeys.brokerages.all, 'list'],
+  },
+  // Skills are per-user and mutable; the mode variant is what the slash menu
+  // reads, the manage variant is the full list including disabled rows. A
+  // workspace id keys the workspace-effective view (shadowing + disables).
+  skills: {
+    all:  ['skills'],
+    // The scope slot is one of: 'user' (user view), a workspace id
+    // (workspace-effective view), or 'all-scopes' (the Plugins inventory) —
+    // allScopes and workspaceId are mutually exclusive on the wire.
+    list: (
+      mode: string | null,
+      includeDisabled = false,
+      workspaceId: string | null = null,
+      allScopes = false,
+    ) =>
+      [
+        ...queryKeys.skills.all, 'list', mode ?? 'all', includeDisabled,
+        allScopes ? 'all-scopes' : (workspaceId ?? 'user'),
+      ],
+    // One skill's SKILL.md text (the detail view).
+    content: (name: string, workspaceId: string | null = null) =>
+      [...queryKeys.skills.all, 'content', name, workspaceId ?? 'user'],
+  },
+  userVault: {
+    all:        ['userVault'],
+    secrets:    () => [...queryKeys.userVault.all, 'secrets'],
+    blueprints: () => [...queryKeys.userVault.all, 'blueprints'],
+  },
+  // Installed Agent Plugins packages. Their components live in the mcp and
+  // skills caches; mutations here invalidate the whole fan-out.
+  plugins: {
+    all:    ['plugins'],
+    list:   () => [...queryKeys.plugins.all, 'list'],
+    detail: (name: string) => [...queryKeys.plugins.all, 'detail', name],
+  },
+  // Workspace-tier vault. Scoped under the workspace id so a mutation
+  // invalidates that workspace's secrets AND blueprints (the recommended-
+  // credentials list is derived from them) without touching a sibling's cache.
+  workspaceVault: {
+    all:         ['workspaceVault'],
+    byWorkspace: (wsId: string) => [...queryKeys.workspaceVault.all, wsId],
+    secrets:     (wsId: string) => [...queryKeys.workspaceVault.byWorkspace(wsId), 'secrets'],
+    blueprints:  (wsId: string) => [...queryKeys.workspaceVault.byWorkspace(wsId), 'blueprints'],
   },
   marketData: {
     all:  ['marketData'],
@@ -85,3 +159,21 @@ export const queryKeys = {
     detail: (symbol: string) => [...queryKeys.quote.all, symbol],
   },
 };
+
+/**
+ * Marks a query as observed cache-only *by choice* — its arguments are complete
+ * and its queryFn would succeed, it simply must not fetch on its own schedule.
+ * Carrying it is what lets `refetchCacheOnlyLists`
+ * (lib/threadLifecycle/feedClient.ts) fetch a query behind `enabled: false`.
+ *
+ * Never put it on a query that is disabled because an argument is missing:
+ * those queryFns throw on the absent id, and the parked error is then read as a
+ * real failure by whatever watches the query — which is how a thread lookup
+ * with no id once evicted the user from every /chat route.
+ */
+export const CACHE_ONLY_META = { cacheOnly: true } as const;
+
+/** Reader for {@link CACHE_ONLY_META} — keeps the flag's name in one module. */
+export function isCacheOnlyMeta(meta: QueryMeta | undefined): boolean {
+  return meta?.cacheOnly === true;
+}

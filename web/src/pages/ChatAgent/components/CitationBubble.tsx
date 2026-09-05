@@ -72,7 +72,7 @@ function CitationBubble({ node: _node, label, href, ...props }: MarkdownComponen
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
               <Favicon domain={domain} size={16} />
               <span style={{
-                fontSize: 12,
+                fontSize: '0.75rem',
                 fontWeight: 500,
                 color: 'var(--color-text-tertiary)',
                 letterSpacing: '0.01em',
@@ -89,7 +89,7 @@ function CitationBubble({ node: _node, label, href, ...props }: MarkdownComponen
                 rel="noopener noreferrer"
                 className="cite-bubble-card-title"
                 style={{
-                  fontSize: 14,
+                  fontSize: '0.875rem',
                   fontWeight: 500,
                   lineHeight: 1.45,
                   color: 'var(--color-text-primary)',
@@ -108,7 +108,7 @@ function CitationBubble({ node: _node, label, href, ...props }: MarkdownComponen
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{
-                  fontSize: 12,
+                  fontSize: '0.75rem',
                   color: 'var(--color-accent-primary)',
                   textDecoration: 'none',
                   display: 'block',
@@ -125,7 +125,7 @@ function CitationBubble({ node: _node, label, href, ...props }: MarkdownComponen
             {/* Date + Snippet */}
             {(meta?.date || meta?.snippet) && (
               <div style={{
-                fontSize: 12,
+                fontSize: '0.75rem',
                 color: 'var(--color-text-tertiary)',
                 marginTop: 6,
                 lineHeight: 1.5,

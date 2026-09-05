@@ -35,7 +35,7 @@ async def _reset_ginlix_singleton():
     """Close and reset the ginlix-data httpx client after each test."""
     yield
     try:
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
         if hasattr(mod, "_ginlix_http") and mod._ginlix_http is not None:
             await mod._ginlix_http.aclose()
             mod._ginlix_http = None
@@ -60,6 +60,10 @@ _ALL_TABLES = [
     "workspace_mcp_tool_schemas",
     "workspace_mcp_servers",
     "user_mcp_servers",
+    "user_mcp_builtin_disables",
+    "workspace_skill_disables",
+    "user_skills",
+    "user_plugins",
     "workspace_files",
     "watchlist_items",
     "watchlists",
@@ -83,7 +87,9 @@ def _build_db_uri() -> str:
     name = os.getenv("TEST_DB_NAME", "langalpha_test")
     user = os.getenv("TEST_DB_USER", "postgres")
     password = os.getenv("TEST_DB_PASSWORD", "postgres")
-    sslmode = "require" if "supabase.com" in host else "disable"
+    # Deliberately not DB_SSLMODE — reading it would let a production-shaped .env
+    # dictate test TLS policy, which is what TEST_DB_* exists to prevent.
+    sslmode = os.getenv("TEST_DB_SSLMODE", "prefer")
     return f"postgresql://{user}:{password}@{host}:{port}/{name}?sslmode={sslmode}"
 
 
@@ -205,31 +211,36 @@ async def patched_get_db_connection(test_db_pool):
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
-    async def _test_get_db_connection():
-        async with test_db_pool.connection() as conn:
+    async def _test_get_db_connection(conn=None):
+        if conn is not None:
             yield conn
+            return
+        async with test_db_pool.connection() as owned:
+            yield owned
 
-    # Every module that does a module-level `from .conversation import
-    # get_db_connection` holds its own local reference, so each one needs
-    # its own patch target. Modules that import lazily inside a function
-    # (market_insight, services.workspace_manager) automatically pick up
-    # the source patch on pool.get_db_connection.
+    # Every module that does a module-level `from .pool import
+    # get_db_connection` holds its own local reference, so each one needs its
+    # own patch target. The database package is swept dynamically — a
+    # hand-kept list goes stale every time a DB module is added (it silently
+    # missed mcp_tool_schemas). Modules that import lazily inside a function
+    # automatically pick up the source patch on pool.get_db_connection.
+    import importlib
+    import pkgutil
+
+    import src.server.database as _database_pkg
+    from src.server.database.pool import get_db_connection as _pool_gdc
+
     targets = [
-        "src.server.database.pool.get_db_connection",
-        "src.server.database.workspace.get_db_connection",
-        "src.server.database.workspace_file.get_db_connection",
-        "src.server.database.user.get_db_connection",
-        "src.server.database.watchlist.get_db_connection",
-        "src.server.database.portfolio.get_db_connection",
-        "src.server.database.api_keys.get_db_connection",
-        "src.server.database.automation.get_db_connection",
-        "src.server.database.oauth_tokens.get_db_connection",
-        "src.server.database.vault_secrets.get_db_connection",
-        "src.server.database.mcp_servers.get_db_connection",
         # Services that hold their own from-import of get_db_connection
         "src.server.services.user_data_io.get_db_connection",
         "src.server.services.platform_secret_rollout.get_db_connection",
     ]
+    for _info in pkgutil.walk_packages(
+        _database_pkg.__path__, prefix="src.server.database."
+    ):
+        _mod = importlib.import_module(_info.name)
+        if getattr(_mod, "get_db_connection", None) is _pool_gdc:
+            targets.append(f"{_info.name}.get_db_connection")
     from contextlib import ExitStack
 
     with ExitStack() as stack:

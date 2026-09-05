@@ -307,7 +307,13 @@ class TestBYOKCRUDIntegration:
 
 class TestPreferencesIntegration:
     async def test_set_preferred_model(self, users_client):
-        """preferred_model in other_preference should persist."""
+        """A legacy write of preferred_model lands in model_preference.
+
+        The keys in MOVED_MODEL_KEYS left other_preference in migration 034.
+        The endpoint still accepts them there so an older client keeps
+        working, re-routing them on the way in, so the write below is the
+        legacy shape and the read is the current one.
+        """
         resp = await users_client.put(
             "/api/v1/users/me/preferences",
             json={"other_preference": {"preferred_model": "gpt-4o"}},
@@ -317,11 +323,15 @@ class TestPreferencesIntegration:
         # Read back
         resp = await users_client.get("/api/v1/users/me/preferences")
         assert resp.status_code == 200
-        other = resp.json().get("other_preference") or {}
-        assert other.get("preferred_model") == "gpt-4o"
+        body = resp.json()
+        model_pref = body.get("model_preference") or {}
+        assert model_pref.get("preferred_model") == "gpt-4o"
+        # The re-route is a move, not a copy: a value left behind in the old
+        # column would be read by nothing and drift out of date silently.
+        assert "preferred_model" not in (body.get("other_preference") or {})
 
     async def test_set_reasoning_effort(self, users_client):
-        """reasoning_effort should persist in other_preference."""
+        """reasoning_effort should persist in model_preference."""
         resp = await users_client.put(
             "/api/v1/users/me/preferences",
             json={"other_preference": {"reasoning_effort": "high"}},
@@ -329,8 +339,8 @@ class TestPreferencesIntegration:
         assert resp.status_code == 200
 
         resp = await users_client.get("/api/v1/users/me/preferences")
-        other = resp.json().get("other_preference") or {}
-        assert other.get("reasoning_effort") == "high"
+        model_pref = resp.json().get("model_preference") or {}
+        assert model_pref.get("reasoning_effort") == "high"
 
     async def test_set_flash_model(self, users_client):
         """preferred_flash_model should persist."""
@@ -341,8 +351,8 @@ class TestPreferencesIntegration:
         assert resp.status_code == 200
 
         resp = await users_client.get("/api/v1/users/me/preferences")
-        other = resp.json().get("other_preference") or {}
-        assert other.get("preferred_flash_model") == "gpt-4o-mini"
+        model_pref = resp.json().get("model_preference") or {}
+        assert model_pref.get("preferred_flash_model") == "gpt-4o-mini"
 
     async def test_set_fallback_models(self, users_client):
         """fallback_models list should persist."""
@@ -353,11 +363,11 @@ class TestPreferencesIntegration:
         assert resp.status_code == 200
 
         resp = await users_client.get("/api/v1/users/me/preferences")
-        other = resp.json().get("other_preference") or {}
-        assert other.get("fallback_models") == ["gpt-4o", "claude-haiku-4-5"]
+        model_pref = resp.json().get("model_preference") or {}
+        assert model_pref.get("fallback_models") == ["gpt-4o", "claude-haiku-4-5"]
 
     async def test_set_custom_providers_and_models(self, users_client):
-        """Custom providers and models should persist in other_preference."""
+        """Custom providers and models should persist in model_preference."""
         mc = MagicMock()
         mc.get_model_config.return_value = None  # Not a system model
         mc.get_byok_eligible_providers.return_value = ["openai", "anthropic"]
@@ -383,11 +393,11 @@ class TestPreferencesIntegration:
         assert resp.status_code == 200
 
         resp = await users_client.get("/api/v1/users/me/preferences")
-        other = resp.json().get("other_preference") or {}
-        assert len(other.get("custom_providers", [])) == 1
-        assert other["custom_providers"][0]["name"] == "my-openai"
-        assert len(other.get("custom_models", [])) == 1
-        assert other["custom_models"][0]["name"] == "my-gpt4"
+        model_pref = resp.json().get("model_preference") or {}
+        assert len(model_pref.get("custom_providers", [])) == 1
+        assert model_pref["custom_providers"][0]["name"] == "my-openai"
+        assert len(model_pref.get("custom_models", [])) == 1
+        assert model_pref["custom_models"][0]["name"] == "my-gpt4"
 
     async def test_model_preference_overwrite(self, users_client):
         """Changing preferred_model should overwrite the previous value."""
@@ -402,8 +412,8 @@ class TestPreferencesIntegration:
         )
 
         resp = await users_client.get("/api/v1/users/me/preferences")
-        other = resp.json().get("other_preference") or {}
-        assert other.get("preferred_model") == "claude-sonnet-4-5"
+        model_pref = resp.json().get("model_preference") or {}
+        assert model_pref.get("preferred_model") == "claude-sonnet-4-5"
 
 
 # ---------------------------------------------------------------------------
@@ -468,11 +478,11 @@ class TestBYOKPreferencesRoundTrip:
         # 4. Verify preferences state
         resp = await users_client.get("/api/v1/users/me/preferences")
         prefs = resp.json()
-        other = prefs.get("other_preference") or {}
-        assert other.get("preferred_model") == "my-gpt4"
-        assert other.get("reasoning_effort") == "high"
-        assert len(other.get("custom_models", [])) == 1
-        assert other["custom_models"][0]["parameters"]["temperature"] == 0.7
+        model_pref = prefs.get("model_preference") or {}
+        assert model_pref.get("preferred_model") == "my-gpt4"
+        assert model_pref.get("reasoning_effort") == "high"
+        assert len(model_pref.get("custom_models", [])) == 1
+        assert model_pref["custom_models"][0]["parameters"]["temperature"] == 0.7
 
         # 5. Verify encrypted key is retrievable from DB
         from src.server.database.api_keys import get_byok_config_for_provider

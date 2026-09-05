@@ -270,13 +270,13 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
         <div className="flex items-baseline gap-2">
           <Grid2x2 className="h-3.5 w-3.5 self-center" style={{ color: 'var(--color-text-tertiary)' }} />
           <span
-            className="text-[10px] font-semibold uppercase tracking-[0.14em]"
+            className="text-[0.625rem] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
             {t('dashboard.widgets.miniChartGrid.header')}
           </span>
         </div>
-        <span className="text-[11px] dashboard-mono" style={{ color: 'var(--color-text-tertiary)' }}>
+        <span className="text-[0.6875rem] dashboard-mono" style={{ color: 'var(--color-text-tertiary)' }}>
           {t('dashboard.widgets.miniChartGrid.summary', { count: effectiveSymbols.length, days: SPARK_DAYS })}
         </span>
       </div>
@@ -327,7 +327,7 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
                       {cell.symbol}
                     </span>
                     <span
-                      className="text-[11px] dashboard-mono"
+                      className="text-[0.6875rem] dashboard-mono"
                       style={{ color: up ? 'var(--color-profit)' : 'var(--color-loss)' }}
                     >
                       {up ? '+' : ''}{fmt2(pct)}%
@@ -335,7 +335,7 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
                   </div>
                   <div className="flex items-end justify-between mt-1">
                     <span
-                      className="text-[11px] dashboard-mono"
+                      className="text-[0.6875rem] dashboard-mono"
                       style={{ color: 'var(--color-text-secondary)' }}
                     >
                       {currencySymbol(cell.currency)}{fmt2(cell.last)}

@@ -15,8 +15,8 @@
   border-radius: 4px;
   background-color: var(--color-accent-soft);
   color: var(--color-text-primary);
-  font-size: 12px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
   line-height: 1.4;
   max-width: 200px;
 }
@@ -73,14 +73,14 @@
 /* ====== Slash command autocomplete description ====== */
 
 .mention-autocomplete-item .slash-cmd-name {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--color-text-primary);
   white-space: nowrap;
 }
 
 .mention-autocomplete-item .slash-cmd-desc {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -109,7 +109,7 @@
 
 .mention-autocomplete-empty {
   padding: 12px 14px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-text-tertiary);
 }
 
@@ -128,7 +128,7 @@
 }
 
 .mention-autocomplete-item .file-name {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -136,7 +136,7 @@
 }
 
 .mention-autocomplete-item .file-path {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -172,7 +172,7 @@
   gap: 8px;
   padding: 8px 14px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-text-primary);
   transition: background-color 0.1s;
 }
@@ -200,126 +200,53 @@
 
 /* ====== Model selector controls (inside Radix DropdownMenuContent) ====== */
 
-.model-effort-section {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 14px;
-  gap: 8px;
-}
-
-.model-effort-label {
-  font-size: 12px;
+/* Pushes the chevron to the edge and keeps the value right-aligned under it. */
+.model-setting-value {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
   color: var(--color-text-tertiary);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.model-effort-toggle {
-  display: flex;
-  gap: 2px;
-  background-color: var(--color-bg-card);
-  border-radius: 6px;
-  padding: 2px;
-}
-
-.model-effort-btn {
-  padding: 3px 10px;
-  border: none;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  background: transparent;
+.model-setting-caption {
+  padding: 6px 10px 8px;
+  font-size: 0.6875rem;
+  line-height: 1.45;
   color: var(--color-text-tertiary);
-  transition: background-color 0.15s, color 0.15s;
 }
 
-.model-effort-btn:hover {
-  color: var(--color-text-primary);
-}
-
-.model-effort-btn.active {
-  background-color: var(--color-accent-soft);
-  color: var(--color-accent-light);
-}
-
-.fast-mode-switch {
-  position: relative;
-  width: 36px;
-  height: 20px;
-  border-radius: 10px;
-  border: none;
-  background-color: var(--color-bg-card);
-  cursor: pointer;
-  padding: 0;
-  transition: background-color 0.2s ease;
-  flex-shrink: 0;
-}
-
-.fast-mode-switch:hover {
-  background-color: var(--color-border);
-}
-
-.fast-mode-switch.active {
-  background-color: var(--color-accent-light);
-}
-
-.fast-mode-switch-thumb {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background-color: #fff;
-  transition: transform 0.2s ease;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
-}
-
-.fast-mode-switch.active .fast-mode-switch-thumb {
-  transform: translateX(16px);
-}
-
-.fast-mode-help-wrap {
-  position: relative;
+.model-setting-option-label {
   display: inline-flex;
   align-items: center;
-  margin-left: 3px;
-  vertical-align: middle;
+  gap: 6px;
 }
 
-.fast-mode-help-icon {
-  width: 12px;
-  height: 12px;
-  color: var(--color-text-quaternary, #aaa);
-  cursor: help;
+.model-setting-badge {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background-color: var(--color-bg-card);
+  color: var(--color-text-tertiary);
+  font-size: 0.625rem;
+  font-weight: 500;
+  line-height: 1.5;
 }
 
-.fast-mode-help-wrap:hover .fast-mode-help-icon {
-  color: var(--color-text-secondary);
-}
-
-.fast-mode-help-tooltip {
-  display: none;
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
-  background: var(--color-bg-tooltip, #333);
-  color: var(--color-text-on-tooltip, #fff);
-  font-size: 11px;
-  font-weight: 400;
-  line-height: 1.4;
-  padding: 6px 10px;
-  border-radius: 6px;
-  white-space: nowrap;
-  z-index: 100;
-  pointer-events: none;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-}
-
-.fast-mode-help-wrap:hover .fast-mode-help-tooltip {
+.model-setting-hint {
   display: block;
+  margin-top: 1px;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--color-text-tertiary);
+}
+
+/* Mobile expands the options in place (Radix submenus lose a tap there), so
+   they need an indent to read as children of the row above. The caption is not
+   an item and keeps its own padding. */
+.model-setting-options [role^='menuitem'] {
+  padding-left: 24px;
 }
 
 /* ====== Mobile responsive dropdowns ====== */
@@ -328,6 +255,24 @@
     width: calc(100vw - 32px);
     max-width: 280px;
   }
+}
+
+/* ====== Stop button (quiet ink) ====== */
+
+/* Wears the send button's face — the square glyph alone says stop. Red is
+ * reserved for hover intent so a running stream never shows an alarm slab. */
+.stop-button {
+  background: var(--color-btn-primary-bg);
+  color: var(--color-btn-primary-text);
+}
+
+.stop-button:hover:not(:disabled) {
+  background: var(--color-btn-stop-hover-bg);
+  color: var(--color-btn-stop-hover-fg);
+}
+
+.stop-button:disabled {
+  opacity: 0.7;
 }
 
 /* ====== Voice Input (Mic) ====== */
@@ -361,6 +306,12 @@
 .chat-input-container {
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
+}
+
+/* Resting border stays neutral; focus is an intentional-action moment, so it
+ * earns a full-strength accent edge (never a fill or a glow). */
+.chat-input-container:focus-within:not(.recording) {
+  border-color: var(--color-accent-primary);
 }
 
 .chat-input-container.recording {
@@ -406,7 +357,7 @@
   pointer-events: none;
   z-index: 10;
   color: var(--color-text-muted);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   opacity: 0.8;
 }
@@ -486,8 +437,8 @@
   justify-content: space-between;
   gap: 12px;
   padding: 0 4px;
-  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
-  font-size: 9.5px;
+  font-family: var(--font-mono);
+  font-size: 0.5938rem;
   text-transform: uppercase;
   letter-spacing: 0.18em;
   color: var(--color-accent-primary, #b88a2c);
@@ -505,7 +456,6 @@
   height: 4px;
   border-radius: 50%;
   background: var(--color-accent-primary, #b88a2c);
-  box-shadow: 0 0 5px rgba(184, 138, 44, 0.4);
   flex-shrink: 0;
 }
 
@@ -513,10 +463,9 @@
   text-transform: none;
   letter-spacing: 0;
   font-style: italic;
-  font-size: 11px;
+  font-size: 0.6875rem;
   margin-left: 6px;
   opacity: 0.85;
-  font-family: var(--font-serif, "Instrument Serif", Georgia, serif);
 }
 
 .widget-deck-eyebrow-right {
@@ -531,7 +480,7 @@
   background: transparent;
   border: 0;
   font: inherit;
-  font-size: 9.5px;
+  font-size: 0.5938rem;
   text-transform: uppercase;
   letter-spacing: 0.18em;
   color: var(--color-text-tertiary, #8a8a8a);
@@ -541,7 +490,7 @@
 }
 
 .widget-deck-clear:hover {
-  color: var(--color-danger, #c43d3d);
+  color: var(--color-icon-danger);
 }
 
 /* Show-less pill — appears left of Clear when the deck is fanned. Pill
@@ -552,8 +501,7 @@
   border: 1px solid var(--color-border-muted, rgba(20, 20, 23, 0.08));
   background: var(--color-bg-card, rgba(255, 255, 255, 0.6));
   font: inherit;
-  font-size: 11px;
-  font-family: var(--font-serif, "Instrument Serif", Georgia, serif);
+  font-size: 0.6875rem;
   letter-spacing: 0;
   text-transform: none;
   color: var(--color-text-secondary, #4a4a4a);
@@ -613,8 +561,8 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  background: rgba(184, 138, 44, 0.08);
-  color: var(--color-accent-primary, #b88a2c);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-primary);
   overflow: hidden;
 }
 
@@ -636,7 +584,7 @@
 
 .widget-deck-card-title {
   font-weight: 500;
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.2;
   color: var(--color-text-primary, #1a1a1c);
   overflow: hidden;
@@ -645,7 +593,7 @@
 }
 
 .widget-deck-card-snippet {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-text-tertiary, #8a8a8a);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -674,8 +622,8 @@
 }
 
 .widget-deck-card-remove:hover {
-  color: var(--color-danger, #c43d3d);
-  background: rgba(196, 61, 61, 0.08);
+  color: var(--color-icon-danger);
+  background: var(--color-loss-soft);
 }
 
 /* Top card always shows its remove button. Fan-out reveals all of them. */

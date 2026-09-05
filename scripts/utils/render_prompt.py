@@ -28,6 +28,7 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+import difflib
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,7 +41,9 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from ptc_agent.agent.prompts import (
     format_current_time,
     format_subagent_summary,
+    guidance_template_vars,
     init_loader,
+    resolve_prompt_guidance,
 )
 from ptc_agent.agent.subagents import SubagentCompiler, SubagentRegistry
 from ptc_agent.agent.subagents.builtins import BUILTIN_SUBAGENTS
@@ -122,6 +125,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--no-user-profile", action="store_true", help="Omit user profile section."
     )
+    p.add_argument(
+        "--guidance",
+        choices=["lean", "detailed"],
+        default="detailed",
+        help=(
+            "Prompt scaffolding level to render. At runtime this resolves from "
+            "user preference, then config.yaml, then the model's prompt_guidance "
+            "in models.json. Default: detailed"
+        ),
+    )
+    p.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "Resolve the guidance level from this model's manifest entry "
+            "(e.g. claude-opus-5) instead of --guidance."
+        ),
+    )
+    p.add_argument(
+        "--diff",
+        action="store_true",
+        help="Show what lean drops relative to detailed, instead of a prompt.",
+    )
 
     # Variable overrides
     p.add_argument(
@@ -144,12 +170,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max concurrent sub-agent tasks. Default: 3",
     )
     p.add_argument(
-        "--max-task-iterations",
-        type=int,
-        default=10,
-        help="Max task delegation rounds. Default: 10",
-    )
-    p.add_argument(
         "--max-iterations",
         type=int,
         default=15,
@@ -170,6 +190,35 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+class _PreviewConfig:
+    """The slice of ``AgentConfig`` the compiler's prompt path reads.
+
+    A preview pins one level for every subagent; the runtime resolves one per
+    model, off a config this script has no way to build.
+    """
+
+    llm = None
+
+    def __init__(self, guidance: str) -> None:
+        self._guidance = guidance
+
+    def prompt_guidance_for_role(self, role: str) -> str:
+        return self._guidance
+
+    def feature_enabled(self, key: str) -> bool:
+        return False
+
+    def client_for_role(self, role: str, *, fallback_to_main: bool = False):
+        return None
+
+
+def resolve_guidance(args: argparse.Namespace) -> str:
+    """--model probes the manifest as the runtime would; otherwise --guidance."""
+    if args.model:
+        return resolve_prompt_guidance(args.model)
+    return args.guidance
+
+
 def render(args: argparse.Namespace) -> str:
     """Render the prompt based on CLI args."""
     now = datetime.now(tz=UTC)
@@ -181,6 +230,7 @@ def render(args: argparse.Namespace) -> str:
     tool_summary = args.tool_summary if args.tool_summary else STUB_TOOL_SUMMARY
     subagent_summary = format_subagent_summary(STUB_SUBAGENTS)
     user_profile = None if args.no_user_profile else STUB_USER_PROFILE
+    guidance_vars = guidance_template_vars(resolve_guidance(args))
 
     if args.subagent:
         # Subagent prompt via new registry/compiler system
@@ -211,6 +261,7 @@ def render(args: argparse.Namespace) -> str:
             thread_id=args.thread_id,
             tool_sets=stub_tool_sets,
             user_profile=user_profile,
+            config=_PreviewConfig(guidance_vars["guidance"]),
         )
         result = compiler.compile(defn)
         return result["system_prompt"]
@@ -221,6 +272,7 @@ def render(args: argparse.Namespace) -> str:
             "flash_system.md.j2",
             current_time=current_time,
             user_profile=user_profile,
+            **guidance_vars,
         )
 
     # PTC system prompt
@@ -235,9 +287,9 @@ def render(args: argparse.Namespace) -> str:
         current_time=current_time,
         thread_id=args.thread_id,
         max_concurrent_task_units=args.max_concurrent_tasks,
-        max_task_iterations=args.max_task_iterations,
         include_examples=True,
         include_anti_patterns=True,
+        **guidance_vars,
     )
 
 
@@ -246,9 +298,63 @@ def estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
+def render_diff(args: argparse.Namespace, *, use_color: bool) -> str:
+    """Show what lean drops relative to detailed.
+
+    Answers the one question inline fences make hard to eyeball: what does the
+    lean prompt actually say? Anything reported as added (rather than removed)
+    is a drift bug — lean is meant to be a strict subset.
+    """
+    detailed = render(argparse.Namespace(**{**vars(args), "guidance": "detailed", "model": None}))
+    lean = render(argparse.Namespace(**{**vars(args), "guidance": "lean", "model": None}))
+
+    red = "\033[31m" if use_color else ""
+    green = "\033[32m" if use_color else ""
+    dim = "\033[2m" if use_color else ""
+    reset = "\033[0m" if use_color else ""
+
+    lines = []
+    added = 0
+    for line in difflib.unified_diff(
+        detailed.splitlines(), lean.splitlines(), "detailed", "lean", lineterm="", n=1
+    ):
+        if line.startswith("+") and not line.startswith("+++"):
+            added += 1
+            lines.append(f"{green}{line}{reset}")
+        elif line.startswith("-") and not line.startswith("---"):
+            lines.append(f"{red}{line}{reset}")
+        else:
+            lines.append(f"{dim}{line}{reset}")
+
+    d_tok, l_tok = estimate_tokens(detailed), estimate_tokens(lean)
+    saved = d_tok - l_tok
+    pct = (saved / d_tok * 100) if d_tok else 0.0
+    summary = [
+        "",
+        f"{dim}detailed: ~{d_tok:,} tok | lean: ~{l_tok:,} tok | "
+        f"lean drops ~{saved:,} tok ({pct:.1f}%){reset}",
+    ]
+    if added:
+        summary.append(
+            f"{red}WARNING: lean adds {added} line(s) absent from detailed — "
+            f"lean must be a strict subset.{reset}"
+        )
+    return "\n".join(lines + summary)
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.diff:
+        color = not args.no_color and args.output is None and sys.stdout.isatty()
+        out = render_diff(args, use_color=color)
+        if args.output:
+            Path(args.output).write_text(out, encoding="utf-8")
+            print(f"Written to {args.output}", file=sys.stderr)
+        else:
+            print(out)
+        return
 
     result = render(args)
 

@@ -1,28 +1,21 @@
 """Tests for the per-workspace composite MCP registry (append-only over builtins).
 
 Covers §5: zero-user-server identity short-circuit, append-only built-in tools,
-deterministic byte-stable summaries, builtin-only ``.connectors``, and the host
-``call_tool`` guard for user-server tools.
+deterministic byte-stable summaries, and builtin-only ``.connectors``.
 """
 
-import pytest
-
 from ptc_agent.agent.prompts.formatter import build_tool_summary_from_registry
-from ptc_agent.config.core import MCPConfig, MCPServerConfig
-from ptc_agent.core.mcp_registry import (
-    MCPRegistry,
-    MCPToolInfo,
-    SchemaOnlyRegistry,
-    build_composite_registry,
+from ptc_agent.config.core import (
+    CoreConfig,
+    FilesystemConfig,
+    LoggingConfig,
+    MCPConfig,
+    MCPServerConfig,
+    SandboxConfig,
+    SecurityConfig,
 )
-
-
-class _FakeCore:
-    """Minimal CoreConfig-shaped stand-in exposing .mcp and an extra attr."""
-
-    def __init__(self, mcp: MCPConfig) -> None:
-        self.mcp = mcp
-        self.filesystem = "FS-SENTINEL"
+from ptc_agent.core.mcp_composite import SchemaOnlyRegistry, build_composite_registry
+from ptc_agent.core.mcp_registry import MCPRegistry, MCPToolInfo
 
 
 class _FakeConnector:
@@ -38,7 +31,13 @@ def _make_builtin_registry() -> MCPRegistry:
         instruction="Use for prices.",
     )
     reg = MCPRegistry.__new__(MCPRegistry)
-    reg.config = _FakeCore(MCPConfig(servers=[builtin_cfg], tool_exposure_mode="summary"))
+    reg.config = CoreConfig(
+        sandbox=SandboxConfig(),
+        security=SecurityConfig(),
+        mcp=MCPConfig(servers=[builtin_cfg], tool_exposure_mode="summary"),
+        logging=LoggingConfig(),
+        filesystem=FilesystemConfig(),
+    )
     reg._frozen = True
     reg.connectors = {
         "market": _FakeConnector(
@@ -107,8 +106,9 @@ def test_composite_config_exposes_builtins_and_user_servers():
     by_name = {s.name: s for s in servers}
     assert by_name["market"].source == "builtin"
     assert by_name["userserver"].source == "workspace"
-    # Other CoreConfig attributes defer to the built-in config.
-    assert composite.config.filesystem == "FS-SENTINEL"
+    # Only .mcp is rebuilt — every other sub-config is the built-in's own object.
+    assert composite.config.filesystem is reg.config.filesystem
+    assert composite.config.sandbox is reg.config.sandbox
     assert composite.frozen is True
 
 
@@ -120,13 +120,16 @@ def test_composite_connectors_are_builtin_only():
     assert composite.connectors is reg.connectors
 
 
-@pytest.mark.asyncio
-async def test_host_call_tool_for_user_server_raises():
-    """Host-side execution of a user-server tool must raise (sandbox-only)."""
+def test_no_host_side_execution_surface():
+    """The registry is a schema surface only — every MCP call runs sandbox-side.
+
+    Pinned as absence: reintroducing a host execution path is what would let a
+    user server's tool run outside its sandbox.
+    """
     reg = _make_builtin_registry()
     composite = build_composite_registry(reg, [_user_server()], _user_schemas())
-    with pytest.raises(RuntimeError, match="user-server tools execute only inside"):
-        await composite.call_tool("userserver", "do_thing", {})
+    assert not hasattr(composite, "call_tool")
+    assert not hasattr(reg, "call_tool")
 
 
 def test_pending_server_without_schema_contributes_config_zero_tools():
@@ -246,12 +249,10 @@ def test_disabled_builtin_hidden_from_get_tool_info():
     assert composite.get_tool_info("market", "get_price") is None
 
 
-@pytest.mark.asyncio
-async def test_disabled_builtin_call_tool_raises():
-    """Host call_tool refuses a workspace-disabled built-in."""
+def test_disabled_builtin_is_absent_from_connectors():
+    """A disabled built-in leaves no connector for anything to reach."""
     reg = _make_builtin_registry()
     composite = build_composite_registry(
         reg, [], {}, disabled_builtin_names=frozenset({"market"})
     )
-    with pytest.raises(RuntimeError, match="disabled for this workspace"):
-        await composite.call_tool("market", "get_price", {})
+    assert "market" not in composite.connectors

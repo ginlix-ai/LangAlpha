@@ -2,7 +2,8 @@
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from types import TracebackType
 
 import structlog
@@ -13,6 +14,20 @@ from .mcp_registry import MCPRegistry, get_global_registry
 from .sandbox import PTCSandbox
 
 logger = structlog.get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class EgressBinding:
+    """What this process last pushed to a session's sandbox credential file.
+
+    ``jwt_exp`` (from the mint, never recomputed) drives the cheap remint
+    check; ``user_id`` lets the remint run on paths with no request user in
+    hand. Not liveness truth — the grant rows are.
+    """
+
+    grants: Mapping[str, str]
+    jwt_exp: float
+    user_id: str
 
 
 class Session:
@@ -52,11 +67,31 @@ class Session:
         # the current composite + summary.
         self.mcp_tool_summary: str | None = None
         self.mcp_config_version: int | None = None
+        # Untrusted servers with a current-fingerprint ok discovery snapshot,
+        # recorded at composite install. Settlement lives here rather than in
+        # the composite's tool lists: a server that legitimately advertises
+        # zero tools is settled too, and must not re-probe every acquire.
+        self.mcp_settled_servers: set[str] = set()
+
+        # Egress-relay binding for OAuth-connected servers: what THIS process
+        # last pushed to the sandbox. Execution context only — grant truth is
+        # the sandbox_egress_grants table (see services/egress/session_binding).
+        self.egress_binding: EgressBinding | None = None
 
         # The platform-secret fleet generation whose bindings were last applied
         # to this session's sandbox (the ``mcp_config_version`` analog) — lets
         # the per-acquisition resync short-circuit without touching the provider.
         self.platform_secret_version: int | None = None
+
+        # The skills delivery signature (user-tier view dir + disabled names)
+        # this session's sandbox last synced under. Third stamp in the family
+        # above, but content-derived: the acquire path compares it against the
+        # value computed from the turn's already-loaded skill bundle and
+        # re-runs the asset sync on mismatch, so a warm sandbox converges on
+        # skill changes with no writer-side bump to forget. None means this
+        # process can't vouch for the sandbox — the next carrying acquire
+        # verifies once against the sandbox manifest and stamps.
+        self.skills_signature: str | None = None
 
         # agent.md cache with dirty flag (force first read)
         self._agent_md_cache: str | None = None
@@ -68,25 +103,31 @@ class Session:
         """Read agent.md from sandbox, with session-level caching.
 
         Returns cached content unless invalidated by invalidate_agent_md().
+
+        A failed read keeps the previous value and stays dirty. Caching the
+        failure as None would conflate "the workspace has no notes" with "the
+        sandbox did not answer", handing the model the no-agent.md placeholder
+        and inviting it to recreate a file that already exists.
         """
         if self._agent_md_dirty:
-            if self.sandbox:
-                try:
-                    self._agent_md_cache = await self.sandbox.aread_file_text(
-                        self.sandbox.normalize_path("agent.md")
-                    )
-                except Exception:
-                    # A missing agent.md is a silent None from aread_file_text;
-                    # reaching here means the read itself failed.
-                    logger.warning(
-                        "Failed to read agent.md",
-                        conversation_id=self.conversation_id,
-                        exc_info=True,
-                    )
-                    self._agent_md_cache = None
+            try:
+                content = (
+                    await self.sandbox.aread_file_text(self.sandbox.normalize_path("agent.md"))
+                    if self.sandbox
+                    else None
+                )
+            except Exception:
+                # A missing agent.md is a silent None from aread_file_text;
+                # reaching here means the read itself failed, so fall through
+                # holding the last good value and stay dirty for a retry.
+                logger.warning(
+                    "Failed to read agent.md",
+                    conversation_id=self.conversation_id,
+                    exc_info=True,
+                )
             else:
-                self._agent_md_cache = None
-            self._agent_md_dirty = False
+                self._agent_md_cache = content
+                self._agent_md_dirty = False
         return self._agent_md_cache
 
     def invalidate_agent_md(self) -> None:
@@ -291,6 +332,10 @@ class Session:
         self._owns_mcp_registry = False
         self.mcp_tool_summary = None
         self.mcp_config_version = None
+        # The binding records what the (now gone) sandbox held; keeping it
+        # would violate that invariant and read as a teardown trigger on the
+        # next sync.
+        self.egress_binding = None
 
         self._initialized = False
         self._agent_md_dirty = True
@@ -333,6 +378,7 @@ class Session:
         self._owns_mcp_registry = False
         self.mcp_tool_summary = None
         self.mcp_config_version = None
+        self.egress_binding = None
         # Restore the pristine server list so a restart re-enters PTCSandbox with
         # the unresolved built-ins, not the stale per-workspace resolution.
         self.config.mcp.servers = list(self._pristine_mcp_servers)
@@ -411,6 +457,15 @@ class SessionManager:
             logger.debug("Returning existing session", conversation_id=conversation_id)
 
         return cls._sessions[conversation_id]
+
+    @classmethod
+    def get_cached_session(cls, conversation_id: str) -> Session | None:
+        """Return the cached session without creating one.
+
+        Lets callers identity-check what this process has cached before evicting
+        it, so a concurrent replacement isn't thrown away.
+        """
+        return cls._sessions.get(conversation_id)
 
     @classmethod
     def remove_session(cls, conversation_id: str) -> None:

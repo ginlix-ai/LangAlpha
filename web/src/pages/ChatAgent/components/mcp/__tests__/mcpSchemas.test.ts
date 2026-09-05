@@ -5,13 +5,13 @@ import {
   validateArg,
   isValidSecretValue,
   collectVaultRefs,
-  ALLOWED_COMMANDS,
+  SUGGESTED_COMMANDS,
   DESCRIPTION_MAX,
   INSTRUCTION_MAX,
 } from '../mcpSchemas';
 
 // Mirror of the backend validator test matrix in
-// src/server/models/mcp_server.py (allowlist, URL policy incl.
+// src/server/models/mcp_server.py (command shape, URL policy incl.
 // 169.254.169.254, vault-ref vs bare ${VAR}, length caps). Neutral
 // placeholder names throughout.
 
@@ -38,17 +38,24 @@ describe('mcpSchemas — name shape', () => {
   });
 });
 
-describe('mcpSchemas — command allowlist (no bash)', () => {
-  it.each(ALLOWED_COMMANDS)('accepts allowed command %s', (command) => {
+describe('mcpSchemas — command shape', () => {
+  it.each([...SUGGESTED_COMMANDS])('accepts suggested command %s', (command) => {
     expect(validateMcpServer(stdio({ command })).ok).toBe(true);
   });
 
-  it.each(['bash', 'sh', 'zsh', 'curl', 'rm', '/bin/bash'])(
-    'rejects disallowed command %s',
+  // Published MCP servers are launched every one of these ways. A picker that
+  // knows only the node/python ones makes the rest uninstallable, which is a
+  // worse outcome than running what the user asked for in their own sandbox.
+  it.each(['docker', 'deno', 'bun', 'go', 'java', '/usr/local/bin/my-server', './server'])(
+    'accepts unlisted command %s',
     (command) => {
-      expect(validateMcpServer(stdio({ command })).ok).toBe(false);
+      expect(validateMcpServer(stdio({ command })).ok).toBe(true);
     },
   );
+
+  it.each([['empty', ''], ['blank', '   ']])('rejects %s command', (_label, command) => {
+    expect(validateMcpServer(stdio({ command })).ok).toBe(false);
+  });
 });
 
 describe('mcpSchemas — URL policy', () => {

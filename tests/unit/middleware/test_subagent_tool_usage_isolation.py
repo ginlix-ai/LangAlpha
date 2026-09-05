@@ -148,3 +148,47 @@ async def test_completion_merges_into_unpersisted_usage():
     }
     # run-1 token record preserved alongside run-2's (here run-2 has none)
     assert task.per_call_records == [{"run": 1}]
+
+
+@pytest.mark.asyncio
+async def test_force_cancelled_run_still_reports_what_it_spent():
+    """A force-cancelled subagent keeps the usage it accrued before the kill.
+
+    ``force_cancel`` cancels the handler and the wrapper, so the wrapper's
+    re-await raises ``CancelledError`` — a ``BaseException`` that no
+    ``except Exception`` arm catches. Merging per-branch therefore skipped this
+    path entirely and a workflow child killed at ``child_timeout`` was billed
+    nothing for however long it ran.
+    """
+    started = asyncio.Event()
+
+    async def handler(_request):
+        get_tool_tracker().record_usage("TavilySearchTool:deep", count=1)
+        started.set()
+        await asyncio.sleep(30)  # still working when the timeout fires
+        return ToolMessage(content="never", tool_call_id="tc", name="Task")
+
+    task = _make_task("killed1")
+    tracker = PerCallTokenTracker()
+    tracker.per_call_records.append({"usage": {"total_tokens": 4321}})
+
+    wrapper = asyncio.create_task(
+        _run_background_task(
+            task,
+            handler,
+            request=object(),
+            tracker=tracker,
+            label="killed",
+        )
+    )
+    task.asyncio_task = wrapper
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    task.force_cancel("Timed out after 1800s", status="timeout")
+    with pytest.raises(asyncio.CancelledError):
+        await wrapper
+
+    # The tokens were spent upstream whatever the local outcome; dropping them
+    # here is unbilled work, not a saved cost.
+    assert task.per_call_records == [{"usage": {"total_tokens": 4321}}]
+    assert task.tool_usage == {"TavilySearchTool:deep": 1}

@@ -56,6 +56,7 @@ from src.server.utils.multimodal_context import (
 from src.utils.tracking import ExecutionTracker
 from ptc_agent.agent.flash import build_flash_graph
 from ptc_agent.agent.graph import get_user_profile_for_prompt
+from ptc_agent.agent.middleware.credit_gate import run_with_credit_gate
 
 from .request_prep import (
     DISPATCH_STARTED_MARKER,
@@ -73,7 +74,10 @@ from .request_prep import (
     process_hitl_response,
     serialize_context_metadata,
     setup_steering_tracking,
+    turn_skill_names,
+    user_skill_commands,
 )
+from src.server.services.credit_gate_port import build_run_credit_gate
 from src.server.services.runs.admission import (
     RunScope,
     begin_run,
@@ -83,6 +87,7 @@ from src.config.settings import get_flash_recursion_limit
 
 from .admission_gate import admission_conflict_detail, wait_or_steer
 from .error_handling import handle_workflow_error
+from src.server.services.llm.clients import is_own_key_turn
 from src.server.services.llm.config import resolve_llm_config
 from .steering import (
     drain_steering_return_event,
@@ -216,13 +221,46 @@ async def astream_flash_workflow(
         query_type, fork = _resolve_fork(request=request)
         is_checkpoint_replay = bool(request.checkpoint_id and not request.messages)
 
+        # Resolve LLM config (pre-resolved by the route handler, fallback for
+        # standalone use). Ahead of the metadata below on purpose: that block
+        # records the model and the detected slash command, and both are read
+        # off this config. Resolved late, the standalone path would stamp a
+        # skill the turn then refuses, because activation gates on the
+        # resolved registry while the metadata had nothing to gate on. The
+        # route already resolves before this generator runs, so this only
+        # moves the standalone path onto the ordering production has.
+        if config is None:
+            config = await resolve_llm_config(
+                setup.agent_config,
+                user_id,
+                request.llm_model,
+                is_byok,
+                mode="flash",
+                reasoning_effort=getattr(request, "reasoning_effort", None),
+                fast_mode=getattr(request, "fast_mode", None),
+                thread_id=thread_id,
+                workspace_id=workspace_id,
+            )
+
         # Persist query start (with attachment and context metadata for display
         # in history).  This block is flash-specific because of multimodal guard
         # differences vs PTC.
-        effective_model = config.llm.flash if config and config.llm else None
+        # ``flash_name``, not ``flash``: an unset flash model means the turn
+        # runs the main one, and reporting None there left the history row
+        # and the run metadata blank for a turn that had a model all along.
+        effective_model = config.llm.flash_name if config and config.llm else None
+        # Off the resolved credential, not off ``is_byok``: that flag answers
+        # which ladder to try, and an automation with only an OAuth token
+        # passes it false while still paying its own vendor bill.
+        own_key = is_own_key_turn(config)
         query_metadata = {"msg_type": "flash"}
         if effective_model:
             query_metadata["llm_model"] = effective_model
+        if request.origin:
+            # Per-turn initiator, mirroring the thread-level metadata['origin']
+            # (threads go mixed: a pinned automation thread also takes manual
+            # user follow-ups, which carry no origin).
+            query_metadata["origin"] = request.origin.model_dump(exclude_none=True)
         widget_ctxs = parse_widget_contexts(request.additional_context)
         chart_selections = parse_chart_selection_contexts(request.additional_context)
         if request.additional_context:
@@ -241,7 +279,11 @@ async def astream_flash_workflow(
                 )
 
         # Persist lightweight additional_context + slash command fallback
-        serialize_context_metadata(request, query_metadata, user_input, mode="flash")
+        serialize_context_metadata(
+            request, query_metadata, user_input, mode="flash",
+            extra_commands=user_skill_commands(config),
+            allowed_skills=turn_skill_names(config, "flash"),
+        )
 
         # Extract HITL answer metadata for persistence
         feedback_action = None
@@ -302,23 +344,17 @@ async def astream_flash_workflow(
 
         token_callback, tool_tracker = init_tracking(thread_id)
 
+        # Runtime credit gate (None when platform gating is inactive) —
+        # same wiring as the PTC path; a Flash turn is shorter but is
+        # metered the same way.
+        credit_gate = build_run_credit_gate(
+            user_id, run_id, token_callback, tool_tracker, effective_model,
+            is_byok=own_key,
+        )
+
         # =================================================================
         # Build Flash Agent Graph
         # =================================================================
-
-        # Resolve LLM config (pre-resolved by route handler, fallback for
-        # standalone use)
-        if config is None:
-            config = await resolve_llm_config(
-                setup.agent_config,
-                user_id,
-                request.llm_model,
-                is_byok,
-                mode="flash",
-                reasoning_effort=getattr(request, "reasoning_effort", None),
-                fast_mode=getattr(request, "fast_mode", None),
-                thread_id=thread_id,
-            )
 
         # Resolve timezone for metadata (observability only -- agent clock
         # uses DB user_profile)
@@ -385,11 +421,16 @@ async def astream_flash_workflow(
         # SkillsMiddleware, which dedups bodies already live in the thread. Only
         # set on normal turns; HITL/replay carry no new user message to attach to.
         if not request.hitl_response and not is_checkpoint_replay:
-            skill_contexts = prepare_skill_contexts(messages, request, mode="flash")
+            skill_contexts = prepare_skill_contexts(
+                messages, request, mode="flash",
+                extra_commands=user_skill_commands(config),
+                allowed_skills=turn_skill_names(config, "flash"),
+            )
         else:
             skill_contexts = None
         skill_dirs = (
             [local_dir for local_dir, _ in config.skills.local_skill_dirs_with_sandbox()]
+            + ([config.user_skill_dir] if config.user_skill_dir else [])
             if skill_contexts
             else None
         )
@@ -437,7 +478,6 @@ async def astream_flash_workflow(
             token_callback=token_callback,
             request=request,
             effective_model=effective_model,
-            is_byok=is_byok,
             recursion_limit=get_flash_recursion_limit(),
             skill_contexts=skill_contexts,
             skill_dirs=skill_dirs,
@@ -469,10 +509,13 @@ async def astream_flash_workflow(
             await manager.start_run(
                 thread_id=thread_id,
                 run_id=run_id,
-                workflow_generator=handler.stream_workflow(
-                    graph=flash_graph,
-                    input_state=input_state,
-                    config=graph_config,
+                workflow_generator=run_with_credit_gate(
+                    credit_gate,
+                    handler.stream_workflow(
+                        graph=flash_graph,
+                        input_state=input_state,
+                        config=graph_config,
+                    ),
                 ),
                 metadata={
                     "workspace_id": workspace_id,

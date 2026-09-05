@@ -1,17 +1,21 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { Loader2, Check } from 'lucide-react';
+import { Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Loader } from '@/components/ui/loader';
 import { Input } from '@/components/ui/input';
 import { ApiKeyInput } from '@/components/model/ApiKeyInput';
 import { useUpdateApiKeys } from '@/hooks/useApiKeys';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
 import { queryKeys } from '@/lib/queryKeys';
+import { modelPrefs } from '@/lib/modelPreferences';
 import { api } from '@/api/client';
 import { useTranslation } from 'react-i18next';
-import { mergeCustomModelsForSlug, type CustomModelEntry } from '../mergeCustomModelsForSlug';
+import { mergeCustomModelsForSlug } from '../mergeCustomModelsForSlug';
+import type { CustomModelEntry } from '@/components/model/types';
+import type { CustomProviderEntry } from '@/lib/modelPreferences';
 import { API_FORMATS, useModalityState, type LocationState, type ParentModel } from './shared';
 
 export function CustomProviderConnect({ state }: { state: LocationState }) {
@@ -117,12 +121,11 @@ export function CustomProviderConnect({ state }: { state: LocationState }) {
       const useRespApi = format?.useResponseApi ?? false;
 
       // 1. Read existing custom_providers/custom_models from current preferences
-      const prefs = (preferences ?? {}) as Record<string, unknown>;
-      const otherPref = (prefs.other_preference ?? {}) as Record<string, unknown>;
-      const existingProviders = (Array.isArray(otherPref.custom_providers) ? otherPref.custom_providers : []) as Array<Record<string, unknown>>;
-      const existingModels = (Array.isArray(otherPref.custom_models) ? otherPref.custom_models : []) as Array<Record<string, unknown>>;
+      const mPref = modelPrefs(preferences);
+      const existingProviders = mPref.custom_providers ?? [];
+      const existingModels = mPref.custom_models ?? [];
 
-      const newProvider: Record<string, unknown> = {
+      const newProvider: CustomProviderEntry = {
         name: slug,
         parent_provider: parentProvider,
       };
@@ -133,10 +136,10 @@ export function CustomProviderConnect({ state }: { state: LocationState }) {
       // imported from the parent keep their original name/model_id; only the
       // ``provider`` is rewritten to the new variant so BYOK routes through
       // the user's key/base_url.
-      const newModels: Array<Record<string, unknown>> = [];
+      const newModels: CustomModelEntry[] = [];
       for (const pm of parentModels) {
         if (!selectedParentModelNames.has(pm.name)) continue;
-        const entry: Record<string, unknown> = {
+        const entry: CustomModelEntry = {
           name: pm.name,
           model_id: pm.model_id,
           provider: slug,
@@ -147,7 +150,7 @@ export function CustomProviderConnect({ state }: { state: LocationState }) {
         newModels.push(entry);
       }
       if (hasManual) {
-        const entry: Record<string, unknown> = {
+        const entry: CustomModelEntry = {
           name: customModelName.trim(),
           model_id: customModelId.trim() || customModelName.trim(),
           provider: slug,
@@ -167,14 +170,14 @@ export function CustomProviderConnect({ state }: { state: LocationState }) {
       // name collision; anything the user added elsewhere under this slug
       // keeps its current config.
       const mergedModels = mergeCustomModelsForSlug({
-        existing: existingModels as unknown as CustomModelEntry[],
+        existing: existingModels,
         slug,
-        newForSlug: newModels as unknown as CustomModelEntry[],
+        newForSlug: newModels,
       });
 
       // Only send custom_providers and custom_models — backend merges into existing JSONB
       await updatePreferences.mutateAsync({
-        other_preference: {
+        model_preference: {
           custom_providers: [...existingProviders.filter((p) => p.name !== slug), newProvider],
           custom_models: mergedModels,
         },
@@ -322,15 +325,15 @@ export function CustomProviderConnect({ state }: { state: LocationState }) {
               autoComplete="off"
             />
           </div>
-          <p className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>
+          <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
             {t('setup.modelIdHint')}
           </p>
           <div className="flex items-center gap-1.5 pt-1">
-            <span className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--color-text-tertiary)' }}>
+            <span className="text-[0.625rem] uppercase tracking-wider" style={{ color: 'var(--color-text-tertiary)' }}>
               {t('setup.capabilities', { defaultValue: 'Capabilities' })}:
             </span>
             <span
-              className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
+              className="inline-flex items-center rounded-full px-2 py-0.5 text-[0.625rem] font-medium"
               style={{ background: 'var(--color-accent-soft)', color: 'var(--color-accent-primary)', opacity: 0.6 }}
             >
               Text
@@ -342,7 +345,7 @@ export function CustomProviderConnect({ state }: { state: LocationState }) {
                   key={mod}
                   type="button"
                   onClick={() => toggleManualModality(mod)}
-                  className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors"
+                  className="inline-flex items-center rounded-full px-2 py-0.5 text-[0.625rem] font-medium transition-colors"
                   style={{
                     background: active ? 'var(--color-accent-soft)' : 'transparent',
                     color: active ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
@@ -374,16 +377,16 @@ export function CustomProviderConnect({ state }: { state: LocationState }) {
                   <button
                     type="button"
                     onClick={selectAllParentModels}
-                    className="text-[11px] font-medium transition-colors"
+                    className="text-[0.6875rem] font-medium transition-colors"
                     style={{ color: 'var(--color-accent-primary)' }}
                   >
                     {t('setup.selectAll', { defaultValue: 'All' })}
                   </button>
-                  <span className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>·</span>
+                  <span className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>·</span>
                   <button
                     type="button"
                     onClick={selectNoParentModels}
-                    className="text-[11px] font-medium transition-colors"
+                    className="text-[0.6875rem] font-medium transition-colors"
                     style={{ color: 'var(--color-text-secondary)' }}
                   >
                     {t('setup.selectNone', { defaultValue: 'None' })}
@@ -391,14 +394,16 @@ export function CustomProviderConnect({ state }: { state: LocationState }) {
                 </div>
               )}
             </div>
-            <p className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>
+            <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
               {t('setup.importParentModelsDesc', {
                 defaultValue: 'Models from the parent catalog, routed through your endpoint and key. Uncheck any you don\'t need.',
               })}
             </p>
             {parentModelsLoading && (
               <div className="flex items-center gap-2 py-2">
-                <Loader2 className="h-4 w-4 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
+                <span aria-hidden="true" className="flex-shrink-0">
+                  <Loader size={16} className="text-[color:var(--color-text-tertiary)]" />
+                </span>
                 <span className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
                   {t('setup.fetchingModels', { defaultValue: 'Fetching models...' })}
                 </span>
@@ -465,7 +470,9 @@ export function CustomProviderConnect({ state }: { state: LocationState }) {
           >
             {saving ? (
               <>
-                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                <span aria-hidden="true" className="mr-1.5 flex-shrink-0">
+                  <Loader size={16} className="text-current" />
+                </span>
                 {t('setup.saving')}
               </>
             ) : (

@@ -1,5 +1,13 @@
+/* Scroll port as a child, not the root -- see Plugins.css. */
 .settings-page {
   height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-scroll {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: clamp(16px, 3vw, 32px) clamp(16px, 3vw, 32px) 48px;
 }
@@ -14,7 +22,30 @@
 }
 
 @media (max-width: 767px) {
-  .settings-page { padding: 16px 16px 48px; }
+  .settings-scroll { padding: 16px 16px 48px; }
   .settings-tab-bar { scrollbar-width: none; -ms-overflow-style: none; }
   .settings-tab-bar::-webkit-scrollbar { display: none; }
+}
+
+/* Settings rows that are neither a labeled field nor a section: a name on the
+   left, its control on the right. They used to be individually bordered cards,
+   which made three ordinary settings look like a different kind of thing from
+   the Timezone and Language fields directly above them. One hairline stack
+   instead, so the whole tab reads as a single list. */
+.settings-rows {
+  border-top: 1px solid var(--color-border-muted);
+  border-bottom: 1px solid var(--color-border-muted);
+}
+
+.settings-rows > * + * {
+  border-top: 1px solid var(--color-border-muted);
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 2px;
+  min-height: 44px;
 }

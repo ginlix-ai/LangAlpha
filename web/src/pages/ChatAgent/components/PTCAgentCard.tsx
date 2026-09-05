@@ -1,8 +1,9 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { motion, AnimatePresence, useReducedMotion, type MotionProps } from 'framer-motion';
-import { Check, X, ChevronRight, Loader2, ArrowRight, AlertTriangle, Square } from 'lucide-react';
+import { motion, AnimatePresence, type MotionProps } from 'framer-motion';
+import { Check, X, ChevronRight, ArrowRight, AlertTriangle, Square } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import { useDispatchStatus, type PTCDispatchStatus } from '../hooks/usePTCDispatchStatus';
 
 interface ProposalData {
@@ -27,92 +28,102 @@ interface PTCAgentCardProps {
 }
 
 // Featured-surface visual language (matches ConversationWidget / AIDailyBriefCard).
-const PANEL_BG =
-  'linear-gradient(135deg, var(--color-bg-card) 0%, var(--color-bg-card) 46%, color-mix(in srgb, var(--color-accent-primary) 10%, var(--color-bg-card)) 100%)';
-// Tight 1px accent ring for a live run. We deliberately avoid a wide outer
-// box-shadow halo: the card spans the full chat column, which clips horizontal
-// overflow, so any outer glow bleeds past / hard-clips at the right margin. The
-// "alive" breathing is a contained inset layer instead (clipped by the card).
-const RING_LIVE = '0 0 0 1px var(--color-accent-overlay)';
+// Message-flow card → the chat artifact fill (tinted on the light chat page),
+// not --color-bg-card (white; the dashboard-on-canvas pairing).
+const PANEL_BG = 'var(--color-bg-tool-card)';
+const MONO = 'var(--font-mono)';
 
 /**
  * Single source of truth for the dispatch card's per-status presentation.
- * Every status-driven attribute — pill style/icon/label, card border, whether
- * the run is still in flight, and the footer hint/CTA — lives in this one
- * declarative table so adding or renaming a status is a single-row edit instead
- * of four functions kept in lockstep. `hintKey`/`ctaKey`/`labelKey` are i18n
- * keys resolved with `t()` at the render site. The lone exception is the
- * `running` pill icon (an animated ping), which stays inline in `StatusPill`.
+ * Every status-driven attribute — glyph, label color, whether the run is still
+ * in flight (the amber left rule), and the footer hint/CTA — lives in this one
+ * declarative table so adding or renaming a status is a single-row edit.
+ * `hintKey`/`ctaKey`/`labelKey` are i18n keys resolved with `t()` at the render
+ * site. Status is text + a small glyph, never a filled pill or accent bar: the
+ * design system keeps amber annotation-only, and the glyphs match the sidebar's
+ * thread rows (ascii spinner = running, hollow ring = needs input) so run state
+ * reads the same everywhere.
  */
 const STATUS_UI: Record<
   PTCDispatchStatus,
   {
     labelKey: string;
-    icon: React.ReactNode;
-    pill: React.CSSProperties;
-    cardBorder: string;
+    glyph: React.ReactNode;
+    labelColor: string;
+    /** Run still in flight — the shell keeps the slightly stronger border. */
     live: boolean;
     hintKey: string | null;
     ctaKey: string;
-    ctaWarn?: boolean;
+    /** Paints the CTA amber (the one state asking for the user's action). */
+    ctaAccent?: boolean;
   }
 > = {
   starting: {
     labelKey: 'chat.ptcCard.statusStarting',
-    icon: <Loader2 aria-hidden className="h-3 w-3 motion-safe:animate-spin" />,
-    pill: { color: 'var(--color-text-tertiary)', background: 'var(--color-bg-hover)', border: '1px solid var(--color-border-muted)' },
-    cardBorder: 'var(--color-accent-overlay)',
+    glyph: <LiveSpinner />,
+    labelColor: 'var(--color-text-tertiary)',
     live: true,
     hintKey: 'chat.ptcCard.hintProvisioning',
     ctaKey: 'chat.ptcCard.ctaOpenThread',
   },
   running: {
     labelKey: 'chat.ptcCard.statusWorking',
-    icon: null, // animated ping rendered inline in StatusPill
-    pill: { color: 'var(--color-accent-light)', background: 'var(--color-accent-soft)', border: '1px solid var(--color-accent-overlay)' },
-    cardBorder: 'var(--color-accent-overlay)',
+    glyph: <LiveSpinner />,
+    labelColor: 'var(--color-text-tertiary)',
     live: true,
     hintKey: 'chat.ptcCard.hintWorking',
     ctaKey: 'chat.ptcCard.ctaOpenThread',
   },
   needs_input: {
     labelKey: 'chat.ptcCard.statusNeedsInput',
-    icon: <AlertTriangle aria-hidden className="h-3 w-3" />,
-    pill: { color: 'var(--color-warning)', background: 'var(--color-warning-soft)', border: '1px solid rgba(234,179,8,0.3)' },
-    cardBorder: 'rgba(234,179,8,0.45)',
+    glyph: (
+      <span aria-hidden className="flex h-3 w-3 flex-shrink-0 items-center justify-center">
+        <span className="rounded-full" style={{ width: 7, height: 7, border: '1.5px solid var(--color-accent-primary)' }} />
+      </span>
+    ),
+    labelColor: 'var(--color-accent-primary)',
     live: true,
     hintKey: null,
     ctaKey: 'chat.ptcCard.ctaAnswerContinue',
-    ctaWarn: true,
+    ctaAccent: true,
   },
   completed: {
     labelKey: 'chat.ptcCard.statusCompleted',
-    icon: <Check aria-hidden className="h-3 w-3 stroke-[2.5]" />,
-    pill: { color: 'var(--color-success)', background: 'var(--color-success-soft)', border: '1px solid rgba(34,197,94,0.3)' },
-    cardBorder: 'var(--color-border-muted)',
+    glyph: <Check aria-hidden className="h-3 w-3 flex-shrink-0 stroke-[2.5]" style={{ color: 'var(--color-success)' }} />,
+    labelColor: 'var(--color-text-tertiary)',
     live: false,
     hintKey: null,
     ctaKey: 'chat.ptcCard.ctaOpenThread',
   },
   failed: {
     labelKey: 'chat.ptcCard.statusFailed',
-    icon: <AlertTriangle aria-hidden className="h-3 w-3" />,
-    pill: { color: 'var(--color-loss)', background: 'var(--color-loss-soft)', border: '1px solid rgba(255,56,60,0.3)' },
-    cardBorder: 'var(--color-border-muted)',
+    glyph: <AlertTriangle aria-hidden className="h-3 w-3 flex-shrink-0" style={{ color: 'var(--color-loss)' }} />,
+    labelColor: 'var(--color-loss)',
     live: false,
     hintKey: 'chat.ptcCard.hintFailed',
     ctaKey: 'chat.ptcCard.ctaViewThread',
   },
   stopped: {
     labelKey: 'chat.ptcCard.statusStopped',
-    icon: <Square aria-hidden className="h-3 w-3" />,
-    pill: { color: 'var(--color-text-secondary)', background: 'var(--color-bg-hover)', border: '1px solid var(--color-border-muted)' },
-    cardBorder: 'var(--color-border-muted)',
+    glyph: <Square aria-hidden className="h-2.5 w-2.5 flex-shrink-0" style={{ color: 'var(--color-icon-muted)' }} />,
+    labelColor: 'var(--color-text-tertiary)',
     live: false,
     hintKey: 'chat.ptcCard.hintStopped',
     ctaKey: 'chat.ptcCard.ctaViewThread',
   },
 };
+
+/** The sidebar's running-thread glyph (amber ascii spinner), reused so "amber
+ *  spinner = agent working" reads identically on every surface. The Loader
+ *  ships its own role="status"; the aria-hidden wrapper drops it from the a11y
+ *  tree — the card's persistent live region already announces the label. */
+function LiveSpinner() {
+  return (
+    <span aria-hidden className="flex-shrink-0">
+      <Loader size={12} className="text-[color:var(--color-accent-primary)]" />
+    </span>
+  );
+}
 
 function fmtElapsed(secs: number): string {
   const m = Math.floor(secs / 60);
@@ -139,101 +150,85 @@ function useElapsedSeconds(active: boolean): number {
   return secs;
 }
 
-const PILL_BASE =
-  'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold whitespace-nowrap flex-shrink-0';
-
-function StatusPill({ status, elapsed }: { status: PTCDispatchStatus; elapsed: string | null }) {
+function StatusIndicator({ status, elapsed }: { status: PTCDispatchStatus; elapsed: string | null }) {
   const { t } = useTranslation();
   const ui = STATUS_UI[status];
-  // One persistent role="status" live region; only the inner icon/label/style
-  // swap per state. Mounting a fresh live region per state can drop the
+  // One persistent role="status" live region; only the inner glyph/label swap
+  // per state. Mounting a fresh live region per state can drop the
   // announcement, so transitions stay reliably announced this way.
   return (
-    <span className={PILL_BASE} role="status" aria-live="polite" style={ui.pill}>
-      {status === 'running' ? (
-        <span aria-hidden className="relative flex h-1.5 w-1.5">
-          <span className="absolute inline-flex h-full w-full motion-safe:animate-ping rounded-full" style={{ background: 'var(--color-accent-light)', opacity: 0.75 }} />
-          <span className="relative inline-flex h-1.5 w-1.5 rounded-full" style={{ background: 'var(--color-accent-light)' }} />
-        </span>
-      ) : (
-        ui.icon
-      )}
+    <span
+      role="status"
+      aria-live="polite"
+      className="inline-flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap text-[0.75rem] font-medium"
+      style={{ color: ui.labelColor }}
+    >
+      {ui.glyph}
       {t(ui.labelKey)}
       {status === 'running' && elapsed && (
-        <span aria-hidden className="font-mono text-[11px] opacity-80">· {elapsed}</span>
+        <span aria-hidden className="text-[0.6875rem]" style={{ fontFamily: MONO, color: 'var(--color-text-quaternary)' }}>
+          {elapsed}
+        </span>
       )}
     </span>
   );
 }
 
 interface MissionPanelProps {
-  /** Uppercase kicker naming the workspace the run belongs to. */
+  /** Small mono kicker naming the workspace the run belongs to. */
   eyebrow: string;
-  /** Research question headline. */
+  /** Research question. */
   question: string;
-  /** Border color of the shell (drives the live/needs-input/idle accent). */
+  /** Border color of the shell. */
   border: string;
-  /** Dot-grid texture opacity — subtly stronger while live (0.22) than idle (0.18). */
-  dotOpacity: number;
-  /** Right-aligned header content (status pill or "awaiting approval" label). */
+  /** Right-aligned header content (status indicator or "awaiting approval" label). */
   statusSlot: React.ReactNode;
-  /** Shell entrance/liveness animation, forwarded to the motion shell. */
+  /** Shell entrance animation, forwarded to the motion shell. */
   animate: MotionProps['animate'];
   transition: MotionProps['transition'];
-  /** Extra accent washes layered above the dot grid (live corner/breathing glow). */
-  accentLayers?: React.ReactNode;
-  /** Footer content beneath the headline (open-thread affordance or approve/decline). */
+  /** Footer content beneath the question (open-thread affordance or approve/decline). */
   children?: React.ReactNode;
 }
 
 /**
- * Shared "mission panel" chrome for the pending + approved cards: the motion
- * shell, dot-grid texture, inner container, kicker, and headline. Both cards
- * layout-match exactly; only the accent layers, header status slot, border, and
- * footer differ, so those are slots.
+ * Shared work-order chrome for the pending + approved cards: the motion shell,
+ * kicker, and question. Both cards layout-match exactly; only the header status
+ * slot, border, and footer differ, so those are slots. Deliberately quiet — the
+ * card sits inside a chat transcript, so the question renders at body size and
+ * the workspace name is small mono metadata, not a display headline.
  */
 function MissionPanel({
   eyebrow,
   question,
   border,
-  dotOpacity,
   statusSlot,
   animate,
   transition,
-  accentLayers,
   children,
 }: MissionPanelProps) {
   return (
     <motion.div
-      initial={{ opacity: 0, y: 8 }}
+      initial={{ opacity: 0, y: 6 }}
       animate={animate}
       transition={transition}
-      className="relative overflow-hidden rounded-xl"
-      style={{ border: `1px solid ${border}`, background: PANEL_BG }}
+      className="relative overflow-hidden rounded-lg"
+      style={{
+        border: `1px solid ${border}`,
+        background: PANEL_BG,
+      }}
     >
-      {/* dot-grid texture */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0"
-        style={{
-          backgroundImage: 'radial-gradient(circle at 1px 1px, var(--color-dot-grid) 1px, transparent 0)',
-          backgroundSize: '22px 22px',
-          opacity: dotOpacity,
-          WebkitMaskImage: 'linear-gradient(180deg, transparent, #000 40%, #000 75%, transparent)',
-          maskImage: 'linear-gradient(180deg, transparent, #000 40%, #000 75%, transparent)',
-        }}
-      />
-      {accentLayers}
-
-      <div className="relative px-[18px] pb-[14px] pt-[15px]">
-        <div className="mb-2.5 flex items-center justify-between gap-3">
-          <span className="min-w-0 truncate text-[11px] font-bold uppercase" style={{ letterSpacing: '0.16em', color: 'var(--color-accent-light)' }}>
+      <div className="relative px-4 pb-3 pt-3">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <span
+            className="min-w-0 truncate text-[0.6563rem] font-medium uppercase"
+            style={{ fontFamily: MONO, letterSpacing: '0.08em', color: 'var(--color-text-quaternary)' }}
+          >
             {eyebrow}
           </span>
           {statusSlot}
         </div>
 
-        <div className="text-[16px] font-semibold leading-snug" style={{ color: 'var(--color-text-primary)', letterSpacing: '-0.005em' }}>
+        <div className="text-[0.875rem] font-medium leading-snug" style={{ color: 'var(--color-text-primary)' }}>
           {question}
         </div>
 
@@ -246,8 +241,8 @@ function MissionPanel({
 /**
  * PTCAgentCard — inline HITL card for dispatching a background PTC run.
  *
- *   pending  — question headline + report-back toggle + Approve/Decline
- *   approved — live "mission panel" that tracks the dispatched thread's /status
+ *   pending  — question + report-back toggle + Approve/Decline
+ *   approved — live work-order panel that tracks the dispatched thread's /status
  *              (starting → running → completed/needs-input/failed/stopped)
  *   rejected — quiet collapsed "Research declined" row
  */
@@ -256,7 +251,6 @@ function PTCAgentCard({ proposalData, onApprove, onReject, flashContext }: PTCAg
   const [collapsed, setCollapsed] = useState(true);
   const [reportBack, setReportBack] = useState(proposalData?.report_back ?? true);
   const navigate = useNavigate();
-  const reduceMotion = useReducedMotion();
   const detailId = useId();
 
   const status = proposalData?.status;
@@ -318,56 +312,27 @@ function PTCAgentCard({ proposalData, onApprove, onReject, flashContext }: PTCAg
     );
   }
 
-  // ---------------- Approved: live mission panel ----------------
+  // ---------------- Approved: live work-order panel ----------------
   if (isApproved) {
     const ui = STATUS_UI[dispatchStatus];
-    const live = ui.live;
-    const breathing = dispatchStatus === 'running' && !reduceMotion;
     const elapsed = dispatchStatus === 'running' ? fmtElapsed(elapsedSecs) : null;
 
     return (
       <MissionPanel
         eyebrow={eyebrow}
         question={question}
-        border={ui.cardBorder}
-        dotOpacity={0.22}
-        animate={{ opacity: 1, y: 0, boxShadow: live ? RING_LIVE : 'none' }}
-        transition={{
-          opacity: { duration: 0.4, ease: [0.22, 1, 0.36, 1] },
-          y: { duration: 0.4, ease: [0.22, 1, 0.36, 1] },
-          boxShadow: { duration: 0.3 },
-        }}
-        statusSlot={<StatusPill status={dispatchStatus} elapsed={elapsed} />}
-        accentLayers={
-          <>
-            {/* corner accent wash */}
-            <div
-              aria-hidden
-              className="pointer-events-none absolute inset-0"
-              style={{ background: 'radial-gradient(ellipse 70% 55% at 96% -8%, color-mix(in srgb, var(--color-accent-primary) 30%, transparent), transparent 60%)' }}
-            />
-            {/* Breathing accent light while the run is live — kept INSIDE the card so
-                it's clipped by overflow-hidden and can't bleed past the chat margin. */}
-            {live && (
-              <motion.div
-                aria-hidden
-                className="pointer-events-none absolute inset-0"
-                style={{ background: 'radial-gradient(125% 80% at 50% 0%, color-mix(in srgb, var(--color-accent-primary) 32%, transparent), transparent 62%)' }}
-                initial={{ opacity: breathing ? 0.45 : 0.65 }}
-                animate={{ opacity: breathing ? [0.4, 0.92, 0.4] : 0.65 }}
-                transition={breathing ? { duration: 3.4, repeat: Infinity, ease: 'easeInOut' } : { duration: 0.3 }}
-              />
-            )}
-          </>
-        }
+        border={ui.live ? 'var(--color-border-default)' : 'var(--color-border-muted)'}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+        statusSlot={<StatusIndicator status={dispatchStatus} elapsed={elapsed} />}
       >
         {threadId && (
-          <div className="mt-3 flex items-center justify-between gap-3 pt-3" style={{ borderTop: '1px solid var(--color-border-muted)' }}>
-            <span className="text-[12.5px]" style={{ color: 'var(--color-text-tertiary)' }}>{ui.hintKey ? t(ui.hintKey) : ''}</span>
+          <div className="mt-3 flex items-center justify-between gap-3 pt-2.5" style={{ borderTop: '1px solid var(--color-border-muted)' }}>
+            <span className="text-[0.75rem]" style={{ color: 'var(--color-text-quaternary)' }}>{ui.hintKey ? t(ui.hintKey) : ''}</span>
             <button
               onClick={openThread}
-              className="group inline-flex flex-shrink-0 items-center gap-1 text-[13px] font-medium transition-colors"
-              style={{ color: ui.ctaWarn ? 'var(--color-warning)' : 'var(--color-text-tertiary)' }}
+              className="group inline-flex flex-shrink-0 items-center gap-1 text-[0.7813rem] font-medium transition-opacity hover:opacity-80"
+              style={{ color: ui.ctaAccent ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)' }}
             >
               {t(ui.ctaKey)}
               <ArrowRight aria-hidden className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
@@ -384,11 +349,10 @@ function PTCAgentCard({ proposalData, onApprove, onReject, flashContext }: PTCAg
       eyebrow={eyebrow}
       question={question}
       border="var(--color-border-muted)"
-      dotOpacity={0.18}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+      transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
       statusSlot={
-        <span className="flex-shrink-0 text-[11px] font-medium" style={{ color: 'var(--color-text-quaternary)' }}>{t('chat.ptcCard.awaitingApproval')}</span>
+        <span className="flex-shrink-0 text-[0.6875rem] font-medium" style={{ color: 'var(--color-text-quaternary)' }}>{t('chat.ptcCard.awaitingApproval')}</span>
       }
     >
       {/* Report-back toggle */}
@@ -397,12 +361,12 @@ function PTCAgentCard({ proposalData, onApprove, onReject, flashContext }: PTCAg
         role="switch"
         aria-checked={reportBack}
         aria-label={t('chat.ptcCard.reportBack')}
-        className="mt-3 flex w-full cursor-pointer items-center justify-between rounded-md pt-3 outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="mt-3 flex w-full cursor-pointer items-center justify-between rounded-md pt-2.5 outline-none focus-visible:ring-2 focus-visible:ring-ring"
         style={{ borderTop: '1px solid var(--color-border-muted)' }}
         onClick={(e: React.MouseEvent) => { e.stopPropagation(); setReportBack((v) => !v); }}
       >
-        <span className="text-[13px]" style={{ color: 'var(--color-text-tertiary)' }}>{t('chat.ptcCard.reportBack')}</span>
-        <div aria-hidden className="relative h-[18px] w-8 rounded-full transition-colors" style={{ background: reportBack ? 'var(--color-accent-light)' : 'var(--color-border-muted)' }}>
+        <span className="text-[0.8125rem]" style={{ color: 'var(--color-text-tertiary)' }}>{t('chat.ptcCard.reportBack')}</span>
+        <div aria-hidden className="relative h-[18px] w-8 rounded-full transition-colors" style={{ background: reportBack ? 'var(--color-accent-primary)' : 'var(--color-border-muted)' }}>
           {/* Hairline ring + drop shadow keep the knob legible on the very light
               OFF track in light theme (where a flat white knob nearly vanishes)
               without dimming the ON-state look in either theme. */}
@@ -413,28 +377,22 @@ function PTCAgentCard({ proposalData, onApprove, onReject, flashContext }: PTCAg
         </div>
       </button>
 
-      {/* Actions */}
+      {/* Actions — quiet text buttons, no motion bounce. */}
       <div className="flex items-center gap-2 pt-3">
-        <motion.button
+        <button
           onClick={(e: React.MouseEvent) => { e.stopPropagation(); onApprove?.({ report_back: reportBack }); }}
-          className="flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition-colors hover:brightness-110"
+          className="rounded-md px-3.5 py-1.5 text-[0.8125rem] font-medium transition-[filter] hover:brightness-110"
           style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.98 }}
         >
-          <Check aria-hidden className="h-3.5 w-3.5 stroke-[2.5]" />
           {t('chat.ptcCard.approve')}
-        </motion.button>
-        <motion.button
+        </button>
+        <button
           onClick={(e: React.MouseEvent) => { e.stopPropagation(); onReject?.(); }}
-          className="flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition-colors"
-          style={{ backgroundColor: 'var(--color-border-muted)', color: 'var(--color-text-tertiary)' }}
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.98 }}
+          className="rounded-md px-3.5 py-1.5 text-[0.8125rem] font-medium transition-colors hover:bg-[var(--color-bg-hover)]"
+          style={{ border: '1px solid var(--color-border-default)', color: 'var(--color-text-tertiary)' }}
         >
-          <X aria-hidden className="h-3.5 w-3.5" />
           {t('chat.ptcCard.decline')}
-        </motion.button>
+        </button>
       </div>
     </MissionPanel>
   );

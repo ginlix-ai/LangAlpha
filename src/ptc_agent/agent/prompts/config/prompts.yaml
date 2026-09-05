@@ -7,7 +7,6 @@ defaults:
   tool_summary: ""  # Set at runtime with formatted tool summary
   # Task workflow defaults
   max_concurrent_task_units: 3
-  max_task_iterations: 10
 
   # General agent defaults
   max_iterations: 15
@@ -15,6 +14,14 @@ defaults:
   # Component defaults
   include_examples: true
   include_anti_patterns: true
+
+  # Prompt scaffolding level. Templates carry one body; expanded scaffolding is
+  # wrapped in `{% if guidance | default("detailed") == "detailed" %}` so lean
+  # is a strict subset of detailed and the two cannot drift. Resolved per render
+  # from the user's model_preference, then this file, then the model's
+  # prompt_guidance (see prompts/guidance.py).
+  # Default detailed — an unresolved render gets more guidance, never less.
+  guidance: detailed
 
   # Long-term memory (store-backed; injected via MemoryContextMiddleware)
   memory_enabled: true
@@ -31,6 +38,13 @@ defaults:
   # Market watch (live price injection). Gates the watch_market row in
   # tool_guide. Agent render overrides with the config.yaml master switch.
   market_watch_enabled: true
+
+  # Tool-tier gates for tool_guide. The main agent binds all three, so the
+  # default matches it; the subagent compiler passes the real per-agent value
+  # because a subagent that cannot call a tool must not be taught to.
+  show_widget_enabled: true
+  finance_enabled: true
+  web_enabled: true
 
 # System prompt template metadata (for documentation)
 system:

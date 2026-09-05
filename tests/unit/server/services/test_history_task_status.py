@@ -74,10 +74,11 @@ class TestLegacyStatusFallback:
                 "t", ["live1", "canc1", "done1", "gone1"]
             )
         assert details == {
-            "live1": {"status": "running", "error": None},
-            "canc1": {"status": "cancelled", "error": None},
-            "done1": {"status": "completed", "error": None},
-            "gone1": {"status": "completed", "error": None},  # no meta -> terminal default
+            "live1": {"status": "running", "error": None, "error_type": None},
+            "canc1": {"status": "cancelled", "error": None, "error_type": None},
+            "done1": {"status": "completed", "error": None, "error_type": None},
+            # no meta -> terminal default
+            "gone1": {"status": "completed", "error": None, "error_type": None},
         }
 
     @pytest.mark.asyncio
@@ -93,9 +94,9 @@ class TestLegacyStatusFallback:
             details = await resolve_task_details("t", ["run1", "done1", "gone1"])
         # Availability over precision: meta says running, probe unknown.
         assert details == {
-            "run1": {"status": "running", "error": None},
-            "done1": {"status": "completed", "error": None},
-            "gone1": {"status": "completed", "error": None},
+            "run1": {"status": "running", "error": None, "error_type": None},
+            "done1": {"status": "completed", "error": None, "error_type": None},
+            "gone1": {"status": "completed", "error": None, "error_type": None},
         }
 
 
@@ -136,6 +137,39 @@ class TestStamping:
         )
         assert "error" not in stamped["payload"]
 
+    def test_stamp_carries_the_reason_type_with_the_reason(self):
+        data = _artifact("aaa")["data"]
+        stamped = stamp_task_artifact_data(
+            data,
+            {
+                "aaa": {
+                    "status": "cancelled",
+                    "error": "Monthly credit limit reached.",
+                    "error_type": "credit_stop",
+                }
+            },
+        )
+        assert stamped["payload"]["error_type"] == "credit_stop"
+
+    def test_status_only_withholds_the_reason_type_too(self):
+        # It classifies failure text, so it travels under the same gate: a
+        # public viewer learns the task stopped, never that money stopped it.
+        data = _artifact("aaa")["data"]
+        stamped = stamp_task_artifact_data(
+            data,
+            {
+                "aaa": {
+                    "status": "cancelled",
+                    "error": "Monthly credit limit reached.",
+                    "error_type": "credit_stop",
+                }
+            },
+            status_only=True,
+        )
+        assert stamped["payload"]["status"] == "cancelled"
+        assert "error" not in stamped["payload"]
+        assert "error_type" not in stamped["payload"]
+
     def test_non_task_and_unknown_ids_pass_through_identically(self):
         chunk = {"content_type": "text"}
         details = {"aaa": {"status": "completed", "error": None}}
@@ -172,26 +206,42 @@ class TestResolveTaskDetails:
     @pytest.mark.asyncio
     async def test_error_reason_only_on_error_status(self):
         ledger = {
-            "err1": {"status": "error", "error": "transport_lost: boom"},
-            "done1": {"status": "completed", "error": None},
+            "err1": {
+                "status": "error",
+                "error": "transport_lost: boom",
+                "error_type": "transport_lost",
+            },
+            "done1": {"status": "completed", "error": None, "error_type": None},
         }
         with patch(
             "src.server.database.runs.subagent_runs.get_latest_run_details",
             new=AsyncMock(return_value=ledger),
         ):
             details = await resolve_task_details("t", ["err1", "done1"])
-        assert details["err1"] == {"status": "error", "error": "transport_lost: boom"}
-        assert details["done1"] == {"status": "completed", "error": None}
+        assert details["err1"] == {
+            "status": "error",
+            "error": "transport_lost: boom",
+            "error_type": "transport_lost",
+        }
+        assert details["done1"] == {
+            "status": "completed",
+            "error": None,
+            "error_type": None,
+        }
 
     @pytest.mark.asyncio
     async def test_interrupted_maps_to_error_without_reason(self):
-        ledger = {"int1": {"status": "interrupted", "error": None}}
+        ledger = {"int1": {"status": "interrupted", "error": None, "error_type": None}}
         with patch(
             "src.server.database.runs.subagent_runs.get_latest_run_details",
             new=AsyncMock(return_value=ledger),
         ):
             details = await resolve_task_details("t", ["int1"])
-        assert details["int1"] == {"status": "error", "error": None}
+        assert details["int1"] == {
+            "status": "error",
+            "error": None,
+            "error_type": None,
+        }
 
 
 class TestResolveTaskLiveness:
@@ -221,3 +271,58 @@ class TestResolveTaskLiveness:
             new=AsyncMock(return_value=None),
         ):
             assert await resolve_task_liveness("t", ["x"]) is None
+
+
+class TestLedgerReasonCarry:
+    """A terminal that is not ``error`` still carries its failure reason.
+
+    The regression: the projection handed the client a reason only when the
+    status was ``error``. A credit stop settles ``cancelled`` by design, so
+    its denial copy - the entire explanation the user gets - was nulled on
+    every reload, and the card showed a bare "Stopped" chip.
+    """
+
+    @staticmethod
+    def _ledger(rows: dict):
+        return patch(
+            "src.server.database.runs.subagent_runs.get_latest_run_details",
+            new=AsyncMock(return_value=rows),
+        )
+
+    @pytest.mark.asyncio
+    async def test_cancelled_run_keeps_its_reason(self):
+        with self._ledger(
+            {
+                "stopped1": {
+                    "status": "cancelled",
+                    "error": "You are out of credits.",
+                    "error_type": "credit_stop",
+                }
+            }
+        ):
+            details = await resolve_task_details("t", ["stopped1"])
+        # The type travels with the message: it is what lets the client offer
+        # the remedy for the one stop that has one, rather than only reporting.
+        assert details["stopped1"] == {
+            "status": "cancelled",
+            "error": "You are out of credits.",
+            "error_type": "credit_stop",
+        }
+
+    @pytest.mark.asyncio
+    async def test_completed_run_carries_no_reason(self):
+        with self._ledger(
+            {
+                "done1": {
+                    "status": "completed",
+                    "error": "stale",
+                    "error_type": "stale",
+                }
+            }
+        ):
+            details = await resolve_task_details("t", ["done1"])
+        assert details["done1"] == {
+            "status": "completed",
+            "error": None,
+            "error_type": None,
+        }

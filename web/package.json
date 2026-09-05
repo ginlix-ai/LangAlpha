@@ -6,7 +6,7 @@
   "packageManager": "pnpm@10.18.1",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node scripts/check-critical-path.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "preview": "vite preview",

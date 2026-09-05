@@ -1,0 +1,83 @@
+{
+  "_comment": "One precedence rule, two implementations: resolve_tuning_field in src/llms/preferences.py and resolveTuningField in web/src/lib/modelTuning.ts. Both read this table, so a change on either side fails the other's suite instead of letting the composer name a setting the turn will not run. `expected: null` means the field resolves to no value at all.",
+  "fields": ["prompt_guidance", "compaction_profile", "reasoning_effort", "fast_mode"],
+  "cases": [
+    {
+      "name": "nothing set anywhere",
+      "account": {},
+      "profile": {},
+      "field": "reasoning_effort",
+      "expected": null
+    },
+    {
+      "name": "account value with no override",
+      "account": { "reasoning_effort": "high" },
+      "profile": {},
+      "field": "reasoning_effort",
+      "expected": "high"
+    },
+    {
+      "name": "override outranks the account",
+      "account": { "reasoning_effort": "high" },
+      "profile": { "reasoning_effort": "low" },
+      "field": "reasoning_effort",
+      "expected": "low"
+    },
+    {
+      "name": "a profile carrying other fields does not shadow this one",
+      "account": { "reasoning_effort": "high" },
+      "profile": { "fast_mode": true },
+      "field": "reasoning_effort",
+      "expected": "high"
+    },
+    {
+      "name": "presence, not truthiness: an empty override is still an override",
+      "account": { "reasoning_effort": "high" },
+      "profile": { "reasoning_effort": "" },
+      "field": "reasoning_effort",
+      "expected": ""
+    },
+    {
+      "name": "presence, not truthiness: a null override is still an override",
+      "account": { "reasoning_effort": "high" },
+      "profile": { "reasoning_effort": null },
+      "field": "reasoning_effort",
+      "expected": null
+    },
+    {
+      "name": "false is a value, not an absence",
+      "account": { "fast_mode": true },
+      "profile": { "fast_mode": false },
+      "field": "fast_mode",
+      "expected": false
+    },
+    {
+      "name": "account fast_mode with no override",
+      "account": { "fast_mode": true },
+      "profile": {},
+      "field": "fast_mode",
+      "expected": true
+    },
+    {
+      "name": "guidance resolves by the same rule as every other field",
+      "account": { "prompt_guidance": "detailed" },
+      "profile": { "prompt_guidance": "lean" },
+      "field": "prompt_guidance",
+      "expected": "lean"
+    },
+    {
+      "name": "compaction profile resolves by the same rule",
+      "account": { "compaction_profile": "moderate" },
+      "profile": {},
+      "field": "compaction_profile",
+      "expected": "moderate"
+    },
+    {
+      "name": "an override with no account value beneath it",
+      "account": {},
+      "profile": { "compaction_profile": "relaxed" },
+      "field": "compaction_profile",
+      "expected": "relaxed"
+    }
+  ]
+}

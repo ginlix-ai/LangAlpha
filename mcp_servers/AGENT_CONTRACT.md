@@ -7,16 +7,14 @@ authority for the market-data MCP servers (`price_data`, `options`, `fundamental
 `macro`, `yf_*`). The `x_mcp_server` is exempt (its own conventions predate this and
 are already machine-readable).
 
-**Out of scope — direct LangChain tools.** `src/tools/market_data/tool.py` holds
-`@tool` functions the agent invokes directly and whose result is a **markdown report
-it reads**, not a JSON payload its code parses. They are not codegen'd, so none of the
-envelope shape, the `Returns: dict:` block, or the no-`Example`/`Note` rule below apply
-to them. Their docstring is the tool's prompt description and must stay a call-time
-decision aid — **what it is, what to pass (the `Args:`), and optionally when NOT to
-use it** (only a real constraint, e.g. a US-only tool → "US only, not for non-US
-symbols"). No "for X use tool_Y" cross-references (they duplicate across every tool),
-and no output-shape or formatting detail (no `Returns:` block, no markdown/table/
-currency description). Do not "conform" them to the envelope standard.
+**Direct LangChain tools follow a different `Returns:` rule.** `src/tools/` and
+`src/ptc_agent/agent/tools/` hold `@tool` functions the agent invokes directly, whose
+result is a **markdown report it reads**, not a JSON payload its code parses. Nothing
+below about the envelope, the `Returns: dict:` shape, or the no-`Example`/`Note` rule
+applies to them, and conforming them to the envelope standard is a mistake: their
+`Returns:` is a one-line selection signal, not a machine contract. The docstring rules
+shared by both surfaces are in **`src/tools/AGENTS.md`**, which is the general
+contract; this file is the market-data MCP specialisation of it.
 
 ## Success envelope
 
@@ -66,6 +64,38 @@ text never lands in `error`; a sanitized summary may go in `detail`. Context key
 Use the shared helpers in `_envelope.py` (`make_response`, `make_error`,
 `normalize_interval`) rather than hand-rolling either shape.
 
+## Published output schemas
+
+Every tool's return annotation is an `output_model()` subclass built in
+`_schemas.py`: `tools/list` publishes the tool's precise success∪error envelope
+as `outputSchema`, and successful calls carry the returned dict verbatim in
+`structuredContent` alongside the JSON text block. Validation stays permissive
+by construction (`RootModel[dict]` — any mapping validates), so an error
+envelope can never become an `isError` exception via schema validation, and
+open-ended echo keys or vendor drift never hard-fail a tool.
+
+Construction rules (both SDK eras derive these identically):
+
+- Root is `type: "object"` + `additionalProperties: true`, with a **sibling**
+  `anyOf` of the arms' required-key sets (`["count","data","source"]` vs
+  `["error","detail"]`). Never a root `anyOf` (breaks pre-2026 `tools/list`
+  parsers) and never a Python union annotation (the SDK nests unions under a
+  `result` wrapper).
+- Envelope tools build schemas with `envelope_schema(data_shape, frame=, echo=)`;
+  `data` is described at container level only (`RECORDS`, `RECORDS_BY_KEY`,
+  `OBJECT`, `OBJECTS_BY_KEY`, `ANY`) — never per-record field typing.
+- An arm's required set must hold for **every** reply on that arm: the v2 SDK
+  client auto-validates results, so a reply matching neither arm fails the call
+  (`x_mcp`'s error arm requires only `error` because rate-limit replies carry
+  no `detail`).
+- `x_mcp_server` publishes literal tool-specific schemas under the same
+  construction rules; its docstring conventions remain exempt.
+
+Return annotations are **not** prompt surface: the docstring lock does not
+cover them and wrapper return types stay docstring-derived. Warm sandboxes pick
+schema edits up on their own — server files resync by content hash and
+`_schemas.py` ships via `_MCP_SHARED_RUNTIME_FILES`.
+
 ## Docstring standard
 
 Three sections, in order, moderate length (target ≤800 characters total):
@@ -94,8 +124,9 @@ Codegen constraints behind the pattern (`src/ptc_agent/core/tool_generator.py`):
 - Ordering, timestamp format/timezone, currency semantics, and the error shape live
   *inside* the `Returns:` block — that is the text that survives extraction.
 - No `Example:`/`Note:` sections — they terminate the Returns capture and rot.
-- Any docstring change requires an `MCP_CLIENT_CODEGEN_VERSION` bump to reach warm
-  sandboxes.
+- A docstring change needs no version bump to reach warm sandboxes:
+  `MCP_CLIENT_CODEGEN_VERSION` is derived (runtime source + emission-probe hash,
+  under a hand-set major), and server files resync by content hash regardless.
 
 ## Content pinning
 

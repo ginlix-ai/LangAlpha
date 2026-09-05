@@ -291,8 +291,14 @@ def create_show_widget_tool(backend: SandboxBackend) -> BaseTool:
         """Render an interactive HTML/SVG widget inline in the chat.
 
         Use this to display charts, dashboards, data tables, or any interactive
-        visualization directly in the conversation. The HTML is rendered in a
-        sandboxed iframe with access to CDN libraries (Chart.js, D3, etc.).
+        visualization directly in the conversation.
+
+        Read `.agents/skills/inline-widget/SKILL.md` before your first widget; it
+        carries the layout and styling rules.
+
+        CSP blocks every non-CDN origin: fetch() and XMLHttpRequest to arbitrary
+        URLs will fail. Pass workspace files through data_files, or embed small
+        data directly in the HTML.
 
         Available in the widget:
         - CDN libraries: cdnjs.cloudflare.com, cdn.jsdelivr.net, unpkg.com, esm.sh
@@ -307,9 +313,6 @@ def create_show_widget_tool(backend: SandboxBackend) -> BaseTool:
                 made available in the widget as ``window.__WIDGET_DATA__["filename"]``.
                 Text files (json/csv/txt/…) are strings; binary files (png/jpg/…)
                 become data-URL strings.
-
-        Returns:
-            Confirmation message and artifact dict for inline rendering.
         """
         # Validate HTML before rendering
         violations = _validate_html(html)

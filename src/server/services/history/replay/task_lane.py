@@ -10,6 +10,7 @@ from typing import Any
 from langchain_core.messages import ToolMessage
 
 from src.server.database.runs import subagent_runs as sr_db
+from src.server.services.history import projection_cache
 from src.server.services.history import projector
 from src.server.services.history import replay
 from src.server.services.history.reader import CheckpointHistoryReader
@@ -20,9 +21,89 @@ from src.server.services.history.projector import (
 from src.server.services.history.replay import items
 from src.server.services.history.replay import segment_claim
 from src.server.services.history.replay import stored_merge
-from src.server.services.history.task_status import resolve_task_details
+from src.server.services.history.task_status import (
+    TERMINAL_TASK_STATUSES,
+    resolve_task_details,
+)
 
 logger = logging.getLogger(__name__)
+
+# Cap concurrent per-task checkpointer reads: each holds a pool connection,
+# so an uncapped gather over a task-heavy thread can exhaust the shared
+# checkpointer pool and stall live turns.
+_TASK_READ_CONCURRENCY = 8
+
+
+async def _gather_bounded(coros: list[Any]) -> list[Any]:
+    semaphore = asyncio.Semaphore(_TASK_READ_CONCURRENCY)
+
+    async def _run(coro: Any) -> Any:
+        async with semaphore:
+            return await coro
+
+    return await asyncio.gather(
+        *(_run(coro) for coro in coros), return_exceptions=True
+    )
+
+
+def _namespace_items(
+    messages: list[Any], *, thread_id: str, agent: str
+) -> list[dict[str, Any]]:
+    """Task-namespace messages as SSE items tagged to the task's lane.
+
+    Artifact events are dropped: live streams never emit them in the task
+    lane (subagent writer events carry node labels, not ``task:{id}``), and
+    the frontend subagent handler has no artifact case.
+    """
+    return [
+        item
+        for item in history_events_to_sse(
+            messages_to_history_events(messages, agent=agent),
+            thread_id=thread_id,
+        )
+        if item.get("event") != "artifact"
+    ]
+
+
+async def project_task_transcript(
+    thread_id: str, task_id: str
+) -> list[dict[str, Any]]:
+    """Full SSE-shaped transcript of one task namespace, on demand.
+
+    Serves drill-in views for tasks replay never projects as lanes —
+    workflow children have no Task-tool launch artifact in the main
+    transcript, so ``TaskLaneProjector`` cannot see them. Same conversion
+    as the lane projector, so the client reuses its reduction path.
+
+    Empty unless the task has settled — the lane path likewise leaves a
+    running task's segment to its live stream, and a checkpoint read here
+    would hand the caller a partial transcript that never self-heals. An
+    unresolvable status counts as running.
+    """
+    try:
+        details = await resolve_task_details(thread_id, [task_id])
+    except Exception:
+        logger.warning(
+            "[REPLAY] task status probe failed for %s/%s",
+            thread_id,
+            task_id,
+            exc_info=True,
+        )
+        return []
+    if (details.get(task_id) or {}).get("status") not in TERMINAL_TASK_STATUSES:
+        return []
+
+    reader = CheckpointHistoryReader.get_instance()
+    history = await reader.aget_task_history(thread_id, task_id)
+    task_agent = f"task:{task_id}"
+    out = projector.context_signal_items(thread_id, history, agent=task_agent)
+    out.extend(
+        projector.model_fallback_items(thread_id, history, agent=task_agent)
+    )
+    out.extend(
+        _namespace_items(history.messages, thread_id=thread_id, agent=task_agent)
+    )
+    return out
 
 
 class TaskLaneProjector:
@@ -54,6 +135,16 @@ class TaskLaneProjector:
         self._windowed = windowed
         self._tasks: dict[str, segment_claim.TaskRuns] = {}
         self._run_started: dict[str, float] = {}
+        # task_run_id -> short failure text from the ledger row's failure
+        # JSONB — the error surfaced when a workflow snapshot is missing or
+        # its terminal frame is overridden by the ledger status.
+        self._run_failure: dict[str, str] = {}
+        # Tasks whose Redis stream had no end sentinel when prepare() probed
+        # — BEFORE the namespace reads. The caller's cache guard: a turn that
+        # launched any of these must not be cached this build, because the
+        # stream may have sealed between our read and any later probe (the
+        # read could then hold pre-terminal state that never self-heals).
+        self.live_streams_at_read: set[str] = set()
         # Turn indexes whose stamps carry trailing salvage (populated by
         # trailing_items) — those turns must not be cached, or the fast path
         # would replay them without the salvage.
@@ -71,11 +162,27 @@ class TaskLaneProjector:
         # checkpoint never committed, so the merge may resurrect their
         # trailing rows. Reset by each project_for_turn call.
         self.turn_lossy_lanes: set[str] = set()
+        # Lanes the CURRENT turn projected from incomplete inputs. Cache
+        # control only — deliberately NOT the lossy set, whose other consumer
+        # resurrects stored rows past the checkpoint: an infrastructure
+        # failure must cost a rebuild, never change merge semantics.
+        self.turn_uncacheable_lanes: set[str] = set()
+        # Workflow status reconciliation needs the ledger; when its read
+        # failed this build must not be cacheable for workflow lanes (a
+        # sealed stream would otherwise freeze the snapshot's own status
+        # for the cache TTL).
+        self._ledger_read_failed = False
 
     @staticmethod
     def _launches_in(turn: Any) -> list[tuple[str, str, str | None, str | None]]:
         """Ordered ``(task_id, action, prompt, task_run_id)`` launch artifacts
-        in a turn. ``task_run_id`` is None on pre-ledger data."""
+        in a turn. ``task_run_id`` is None on pre-ledger data.
+
+        ``workflow`` launches (RunWorkflow) count too: the run task's
+        namespace holds no transcript, but membership in the launched set is
+        what keeps the launching turn uncacheable while the run's streams
+        are still live/unarchived.
+        """
         launches: list[tuple[str, str, str | None, str | None]] = []
         for message in turn.messages:
             if not isinstance(message, ToolMessage):
@@ -84,7 +191,7 @@ class TaskLaneProjector:
             if not isinstance(artifact, dict) or not artifact.get("task_id"):
                 continue
             action = artifact.get("action", "init")
-            if action in ("init", "resume"):
+            if action in ("init", "resume", "workflow"):
                 prompt = artifact.get("prompt")
                 run_id = artifact.get("task_run_id")
                 launches.append(
@@ -110,9 +217,14 @@ class TaskLaneProjector:
             return
 
         task_ids = list(launch_actions)
-        histories = await asyncio.gather(
-            *(reader.aget_task_history(self._thread_id, tid) for tid in task_ids),
-            return_exceptions=True,
+        # Stream-seal probe strictly before the namespace reads: a "sealed"
+        # verdict here proves the reads below see final state (sealing is
+        # monotonic), which is what makes the caller's cache store sound.
+        self.live_streams_at_read = await projection_cache.live_task_streams(
+            self._thread_id, set(task_ids)
+        )
+        histories = await _gather_bounded(
+            [reader.aget_task_history(self._thread_id, tid) for tid in task_ids]
         )
         stamps_by_task, run_status = await self._load_ledger(reader, task_ids)
         for task_id, history in zip(task_ids, histories):
@@ -181,9 +293,8 @@ class TaskLaneProjector:
         # asyncio.gather a non-awaitable. (AsyncMock passes the check.)
         stamp_walk = getattr(reader, "aget_task_run_stamps", None)
         if stamp_walk is not None and inspect.iscoroutinefunction(stamp_walk):
-            results = await asyncio.gather(
-                *(stamp_walk(self._thread_id, tid) for tid in task_ids),
-                return_exceptions=True,
+            results = await _gather_bounded(
+                [stamp_walk(self._thread_id, tid) for tid in task_ids]
             )
             for task_id, stamps in zip(task_ids, results):
                 if isinstance(stamps, BaseException):
@@ -204,7 +315,14 @@ class TaskLaneProjector:
                 for r in runs
                 if r.get("started_at") is not None
             }
+            self._run_failure = {
+                str(r["task_run_id"]): str((r.get("failure") or {}).get("error"))
+                for r in runs
+                if isinstance(r.get("failure"), dict)
+                and (r.get("failure") or {}).get("error")
+            }
         except Exception:
+            self._ledger_read_failed = True
             logger.warning(
                 "[REPLAY] run-ledger read failed for %s",
                 self._thread_id,
@@ -221,7 +339,8 @@ class TaskLaneProjector:
         out: list[dict[str, Any]] = []
         launched: set[str] = set()
         self.turn_lossy_lanes = set()
-        for task_id, _action, prompt, run_id in self._launches_in(turn):
+        self.turn_uncacheable_lanes = set()
+        for task_id, action, prompt, run_id in self._launches_in(turn):
             runs = self._tasks.get(task_id)
             if runs is None:
                 continue
@@ -229,6 +348,28 @@ class TaskLaneProjector:
             task_agent = f"task:{task_id}"
             runs.last_ctx = (turn_index, response_id)
             runs.remaining_launches -= 1
+            if action == "workflow":
+                # A workflow run's namespace holds no transcript, only the
+                # driver's terminal ui snapshot (empty until the run settles;
+                # the live stream owns it until then). Emit its lifecycle
+                # frames — reconciled against the ledger row, the status
+                # authority — and skip segment claiming entirely.
+                status = runs.run_status.get(run_id) if run_id else None
+                if self._ledger_read_failed:
+                    # Un-reconciled frames must rebuild per read until the
+                    # ledger is readable again.
+                    self.turn_uncacheable_lanes.add(task_agent)
+                out.extend(
+                    projector.workflow_run_items(
+                        runs.history,
+                        task_id=task_id,
+                        ledger_status=status,
+                        ledger_failure=(
+                            self._run_failure.get(run_id) if run_id else None
+                        ),
+                    )
+                )
+                continue
             status = runs.run_status.get(run_id) if run_id else None
             if status == "in_progress":
                 # The ledger says this exact run is still executing: its
@@ -273,23 +414,12 @@ class TaskLaneProjector:
                         self._thread_id, runs.history, agent=task_agent
                     )
                 )
-            out.extend(self._segment_items(task_agent, segment))
-        return out, launched
-
-    def _segment_items(
-        self, task_agent: str, segment: list[Any]
-    ) -> list[dict[str, Any]]:
-        return [
-            item
-            for item in history_events_to_sse(
-                messages_to_history_events(segment, agent=task_agent),
-                thread_id=self._thread_id,
+            out.extend(
+                _namespace_items(
+                    segment, thread_id=self._thread_id, agent=task_agent
+                )
             )
-            # Live streams never emit artifact events in the task lane
-            # (subagent writer events carry node labels, not task:{id});
-            # the frontend subagent handler has no artifact case.
-            if item.get("event") != "artifact"
-        ]
+        return out, launched
 
     async def trailing_items(self) -> list[dict[str, Any]]:
         """Segments beyond the last in-window launch, for settled runs only.
@@ -318,7 +448,11 @@ class TaskLaneProjector:
                 elif runs.live:
                     continue
                 salvaged_any = True
-                for item in self._segment_items(task_agent, runs.segments[idx]):
+                for item in _namespace_items(
+                    runs.segments[idx],
+                    thread_id=self._thread_id,
+                    agent=task_agent,
+                ):
                     items._enrich(item, self._thread_id, turn_index, response_id)
                     out.append(item)
             if salvaged_any:

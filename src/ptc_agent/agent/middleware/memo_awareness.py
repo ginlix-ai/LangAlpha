@@ -5,7 +5,7 @@ agent has read-only access. Unlike memory (agent-written), injecting every
 memo title into every turn is noisy and leaks potentially private contents.
 
 Instead we inject a single ~80-byte block advertising how many memos exist and
-where they live. The agent follows up on demand via ``read_file`` / ``glob``.
+where they live. The agent follows up on demand via ``Read`` / ``Glob``.
 The block is appended AFTER the prompt-cache breakpoint, mirroring
 ``MemoryContextMiddleware``.
 """

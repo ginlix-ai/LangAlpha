@@ -11,6 +11,10 @@ import logging
 from typing import Any, Dict, Optional
 
 from src.utils.cache.redis_cache import get_cache_client
+from src.utils.cache.stream_append import (
+    StreamAppendError,
+    stream_append_with_retry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +25,13 @@ def stream_key(thread_id: str, run_id: str) -> str:
 
 
 def stream_meta_key(thread_id: str, run_id: str) -> str:
-    """Per-run event-buffer metadata (HSET counter)."""
+    """Per-run event-buffer metadata, no longer written by this release.
+
+    LEGACY_META_COMPAT — kept only so the terminal path can stamp a TTL on
+    hashes a previous release's workers wrote during a rolling deploy. Grep
+    that tag for every site that goes with it; the removal checklist lives in
+    ``stream_retention_sweep``.
+    """
     return f"workflow:events:meta:{thread_id}:{run_id}"
 
 
@@ -38,6 +48,14 @@ class TransportLostError(RuntimeError):
     Raised by the Redis buffering path; the workflow failure handler turns it
     into a ``failed(transport_lost)`` finalize instead of letting the run
     complete with silently missing events.
+    """
+
+
+class StreamQuotaExceededError(TransportLostError):
+    """The run produced more events than its replay archive may hold.
+
+    A subtype so dashboards can tell a runaway run from a sick Redis: both
+    finalize the run, but only one of them is an infrastructure problem.
     """
 
 
@@ -76,43 +94,42 @@ async def buffer_event(
             "archive would silently diverge"
         )
 
-    meta_k = stream_meta_key(thread_id, run_id)
-    stream_k = stream_key(thread_id, run_id)
-
-    # Retention contract: active streams carry NO TTL (ttl=None) — a
-    # quiet-but-alive run must never lose its stream mid-run. The
-    # attach-grace TTL is stamped once, at terminal, by
-    # ``append_run_end_event``. MAXLEN is a 2x backstop only: the quota
-    # check below finalizes the run before FIFO trim could ever touch
+    # Retention contract: active streams carry NO TTL — a quiet-but-alive run
+    # must never lose its stream mid-run. The attach-grace TTL is stamped once,
+    # at terminal, by ``append_run_end_event``. MAXLEN is a 2x backstop only:
+    # the quota check below finalizes the run before FIFO trim could ever touch
     # the head, so a served replay never has a silent hole.
-    success, seq = await cache.pipelined_event_buffer(
-        meta_key=meta_k,
-        event=event,
-        max_size=max_stored_messages * 2,
-        ttl=None,
-        last_event_id=event_id,
-        stream_key=stream_k,
-    )
-
-    if not success:
-        raise TransportLostError(
-            f"transport_lost: Redis pipeline write failed for {key}"
+    try:
+        await stream_append_with_retry(
+            cache,
+            stream_key(thread_id, run_id),
+            event_id=event_id,
+            max_size=max_stored_messages * 2,
+            stream_event=event,
+            label=str(key),
         )
+    except StreamAppendError as exc:
+        # The append policy is layer-neutral; the fatal-to-the-run verdict is
+        # this layer's vocabulary.
+        raise TransportLostError(str(exc)) from exc
 
-    logger.debug(f"[EventBuffer] Buffered event to Redis: {key} (id={event_id}, seq={seq})")
+    logger.debug(f"[EventBuffer] Buffered event to Redis: {key} (id={event_id})")
 
-    if seq > max_stored_messages:
-        raise TransportLostError(
+    # The frame's own id is the event count: it is assigned sequentially from 1
+    # per run, and it counts every event the run emitted — including any the
+    # buffer never saw — so gating on it can only ever fire early.
+    if event_id > max_stored_messages:
+        raise StreamQuotaExceededError(
             f"transport_lost: stream quota exceeded for {key} "
-            f"({seq}/{max_stored_messages} events); finalizing "
+            f"({event_id}/{max_stored_messages} events); finalizing "
             "instead of silently trimming the replay head"
         )
 
     capacity_threshold = int(max_stored_messages * 0.9)
-    if seq >= capacity_threshold and (seq - capacity_threshold) % 1000 == 0:
+    if event_id >= capacity_threshold and (event_id - capacity_threshold) % 1000 == 0:
         logger.warning(
             f"[EventBuffer] Buffer near quota for {key}: "
-            f"{seq}/{max_stored_messages} events. "
+            f"{event_id}/{max_stored_messages} events. "
             "At quota the run finalizes error(transport_lost)."
         )
 
@@ -172,7 +189,10 @@ async def append_run_end_event(
         # Terminal retention stamp: active streams carry no TTL, so the
         # attach-grace clock starts HERE. Unconditional and idempotent —
         # every emitter stamps it, regardless of who wins the run_end
-        # gate below (EXPIRE on a missing key is a no-op).
+        # gate below (EXPIRE on a missing key is a no-op). ``meta_k`` is
+        # LEGACY_META_COMPAT: this release stopped writing that hash, but a
+        # previous-release worker in the same rotation may have created it,
+        # and an unstamped hash would live forever.
         try:
             async with cache.client.pipeline(transaction=False) as pipe:
                 pipe.expire(stream_k, redis_event_ttl)

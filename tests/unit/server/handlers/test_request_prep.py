@@ -583,6 +583,7 @@ class TestEnsureThread:
         request = MagicMock()
         request.external_thread_id = None
         request.platform = None
+        request.origin = None
 
         with patch(f"{PREP}.qr_db.ensure_thread_exists", new_callable=AsyncMock) as mock_db:
             await ensure_thread(
@@ -605,6 +606,7 @@ class TestEnsureThread:
         request = MagicMock()
         request.external_thread_id = "ext-123"
         request.platform = "slack"
+        request.origin = None
 
         with patch(f"{PREP}.qr_db.ensure_thread_exists", new_callable=AsyncMock) as mock_db:
             await ensure_thread(
@@ -622,12 +624,109 @@ class TestEnsureThread:
         request = MagicMock()
         request.external_thread_id = None
         request.platform = None
+        request.origin = None
 
         with patch(f"{PREP}.qr_db.ensure_thread_exists", new_callable=AsyncMock) as mock_db:
             await ensure_thread(request, "t-1", "ws-1", "u-1", msg_type="flash")
 
         call_kwargs = mock_db.call_args.kwargs
         assert call_kwargs["initial_query"] == ""
+
+    @pytest.mark.asyncio
+    async def test_origin_passed_as_metadata(self):
+        """request.origin lands in thread metadata under the 'origin' key."""
+        from src.server.handlers.chat.request_prep import ensure_thread
+        from src.server.models.chat import ThreadOrigin
+
+        request = MagicMock()
+        request.external_thread_id = None
+        request.platform = None
+        request.origin = ThreadOrigin(type="agent", id="flash-t-1")
+
+        with patch(
+            f"{PREP}.qr_db.ensure_thread_exists",
+            new_callable=AsyncMock,
+            return_value=False,
+        ) as mock_db:
+            await ensure_thread(
+                request, "t-1", "ws-1", "u-1", msg_type="ptc", initial_query="hi"
+            )
+
+        assert mock_db.call_args.kwargs["metadata"] == {
+            "origin": {"type": "agent", "id": "flash-t-1"}
+        }
+
+    @pytest.mark.asyncio
+    async def test_title_generation_on_create(self):
+        """A newly created thread with a first query spawns title generation."""
+        from src.server.handlers.chat.request_prep import ensure_thread
+
+        request = MagicMock()
+        request.external_thread_id = None
+        request.platform = None
+        request.origin = None
+
+        with (
+            patch(
+                f"{PREP}.qr_db.ensure_thread_exists",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "src.server.services.thread_title.schedule_title_generation"
+            ) as mock_schedule,
+        ):
+            await ensure_thread(
+                request, "t-1", "ws-1", "u-1", msg_type="ptc", initial_query="hello"
+            )
+
+        mock_schedule.assert_called_once()
+        assert mock_schedule.call_args.kwargs["thread_id"] == "t-1"
+        assert mock_schedule.call_args.kwargs["expected_title"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_no_title_generation_on_existing_thread(self):
+        """created=False (pre-created or follow-up turn) must not re-title."""
+        from src.server.handlers.chat.request_prep import ensure_thread
+
+        request = MagicMock()
+        request.external_thread_id = None
+        request.platform = None
+        request.origin = None
+
+        with (
+            patch(
+                f"{PREP}.qr_db.ensure_thread_exists",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "src.server.services.thread_title.schedule_title_generation"
+            ) as mock_schedule,
+        ):
+            await ensure_thread(
+                request, "t-1", "ws-1", "u-1", msg_type="ptc", initial_query="hello"
+            )
+
+        mock_schedule.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_title_generation_without_llm_service(self):
+        """The scheduler owns llm_service resolution, so neither creation door
+        carries a `getattr(setup, ...)` locator that could drift."""
+        from src.server.services.thread_title import schedule_title_generation
+
+        with patch("src.server.app.setup") as mock_setup:
+            mock_setup.llm_service = None
+            assert (
+                schedule_title_generation(
+                    thread_id="t-1",
+                    user_id="u-1",
+                    first_query="hello",
+                    expected_title="hello",
+                )
+                is None
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -654,7 +753,6 @@ class TestBuildGraphConfig:
                 platform=None,
             ),
             effective_model="gpt-4o",
-            is_byok=False,
             recursion_limit=100,
         )
         defaults.update(kwargs)
@@ -702,6 +800,46 @@ class TestBuildGraphConfig:
     def test_extra_configurable_merged(self):
         config = self._build(extra_configurable={"plan_mode": True})
         assert config["configurable"]["plan_mode"] is True
+
+    def test_graph_metadata_stays_turn_identity(self):
+        """A subagent inherits this dict wholesale while running its own model at
+        its own effort, so anything the LLM owns is asserted for calls it was
+        never true of. Those keys live on the client (see ``LLM.get_llm``)."""
+        from src.config.settings import get_langsmith_metadata
+        from src.server.handlers.chat.request_prep import build_graph_config
+
+        with (
+            patch(f"{PREP}.get_langsmith_tags", return_value=[]),
+            patch(f"{PREP}.get_langsmith_metadata", side_effect=get_langsmith_metadata),
+        ):
+            config = build_graph_config(
+                thread_id="t-1",
+                user_id="u-1",
+                workspace_id="ws-1",
+                mode="ptc",
+                timezone_str="UTC",
+                token_callback=None,
+                request=MagicMock(
+                    locale=None, checkpoint_id=None, reasoning_effort="high",
+                    fast_mode=True, platform=None,
+                ),
+                effective_model="claude-sonnet-5",
+                recursion_limit=100,
+            )
+
+        metadata = config["metadata"]
+        assert metadata["user_id"] == "u-1"
+        # The turn's own selection, which is a different question from what any
+        # one call hit; cost and latency charts group on it.
+        assert metadata["llm_model"] == "claude-sonnet-5"
+        for llm_owned in (
+            "reasoning_effort",
+            "prompt_guidance",
+            "compaction_profile",
+            "fast_mode",
+            "is_byok",
+        ):
+            assert llm_owned not in metadata
 
     def test_timezone_in_configurable(self):
         config = self._build(timezone_str="UTC")

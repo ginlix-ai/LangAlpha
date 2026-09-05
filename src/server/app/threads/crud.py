@@ -4,9 +4,17 @@ from typing import Optional
 
 
 from fastapi import HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.server.services.features import user_feature_enabled
+from src.server.services.thread_lifecycle import project_lifecycle
+from src.server.services.thread_lifecycle_feed import (
+    publish_thread_archived,
+    publish_thread_deleted,
+    publish_thread_pinned,
+    publish_thread_title,
+    publish_thread_unarchived,
+)
 # require_thread_owner is called through the module (auth_api.…) so a single
 # definition-site patch governs every route — a consumer-site patch that stops
 # intercepting after a move would silently bypass auth in tests.
@@ -30,14 +38,22 @@ from src.server.database.conversation import (
     get_workspace_threads,
     get_threads_for_user,
     delete_thread,
-    update_thread_title,
+    stamp_thread_seen,
+    update_thread_fields,
     update_thread_external_id,
     get_thread_by_id,
 )
 
-
-
 from ._deps import logger, router
+
+
+def _lifecycle_fields(row: dict) -> dict:
+    """Derive the lifecycle enrichment from a list row carrying the
+    latest-attempt LATERAL columns; {} when the row wasn't enriched (detail,
+    rename, external-id sites — the model fields are optional)."""
+    if "latest_run_seq" not in row:
+        return {}
+    return dict(project_lifecycle(row))
 
 
 # =============================================================================
@@ -61,6 +77,11 @@ async def list_threads(
         "'market_view:AAPL' and any future 'market_view:*' suffixes; 'web' "
         "matches exact 'web' since no suffix exists for that origin.",
     ),
+    archived: bool = Query(
+        False,
+        description="List archived threads instead of active ones. Requires "
+        "workspace_id — the archived view is per-workspace only.",
+    ),
 ):
     """
     List threads with optional workspace + platform-prefix filter.
@@ -69,6 +90,11 @@ async def list_threads(
     Otherwise returns all threads for the authenticated user.
     """
     try:
+        if archived and not workspace_id:
+            raise HTTPException(
+                status_code=400,
+                detail="archived=true requires workspace_id",
+            )
         if workspace_id:
             from src.server.database.workspace import get_workspace as db_get_workspace
 
@@ -81,6 +107,7 @@ async def list_threads(
                 sort_by=sort_by,
                 sort_order=sort_order,
                 platform_prefix=platform_prefix,
+                archived=archived,
             )
         else:
             threads, total = await get_threads_for_user(
@@ -102,9 +129,14 @@ async def list_threads(
                 title=thread.get("title"),
                 first_query_content=thread.get("first_query_content"),
                 platform=thread.get("platform"),
+                metadata=thread.get("metadata") or {},
                 is_shared=bool(thread.get("is_shared", False)),
+                is_pinned=bool(thread.get("is_pinned", False)),
+                archived_at=thread.get("archived_at"),
+                turn_count=thread.get("turn_count"),
                 created_at=thread["created_at"],
                 updated_at=thread["updated_at"],
+                **_lifecycle_fields(thread),
             )
             for thread in threads
         ]
@@ -133,16 +165,46 @@ async def get_thread(thread_id: str, x_user_id: CurrentUserId):
     thread = await get_thread_by_id(thread_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
-    return WorkspaceThreadListItem(
-        thread_id=str(thread["conversation_thread_id"]),
-        workspace_id=str(thread["workspace_id"]),
-        thread_index=thread["thread_index"],
-        current_status=thread["current_status"],
-        msg_type=thread.get("msg_type"),
-        title=thread.get("title"),
-        created_at=thread["created_at"],
-        updated_at=thread["updated_at"],
+    return _thread_list_item(thread)
+
+
+class ThreadSeenRequest(BaseModel):
+    run_id: str = Field(
+        ...,
+        description="The run id the client actually observed (from the list "
+        "row's latest_run_id or a feed event) — the causal token.",
     )
+
+
+class ThreadSeenResponse(BaseModel):
+    last_seen_run_seq: int
+    latest_run_seq: int
+
+
+@router.post("/{thread_id}/seen", response_model=ThreadSeenResponse)
+async def mark_thread_seen(
+    thread_id: str, request: ThreadSeenRequest, x_user_id: CurrentUserId
+):
+    """Causal seen stamp: advances the cursor to the OBSERVED run only.
+
+    The server requires the run to belong to this thread and be terminal,
+    then stamps ``GREATEST(last_seen_run_seq, run.run_seq)`` — a delayed
+    POST can never sweep a settlement the user hasn't seen. Returns the
+    authoritative cursors so the client can reconcile its store and cached
+    list rows.
+    """
+    await auth_api.require_thread_owner(thread_id, x_user_id)
+    result = await stamp_thread_seen(thread_id, request.run_id)
+    if result is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "seen_not_applicable",
+                "message": "The observed run is missing, belongs to another "
+                "thread, or is still live.",
+            },
+        )
+    return ThreadSeenResponse(**result)
 
 
 class MarketWatchResponse(BaseModel):
@@ -175,6 +237,12 @@ async def delete_thread_endpoint(thread_id: str, x_user_id: CurrentUserId):
 
     try:
         await auth_api.require_thread_owner(thread_id, x_user_id)
+        # Read the row pre-delete: the thread_deleted feed event needs the
+        # workspace_id and the row is gone afterwards.
+        try:
+            thread_row = await get_thread_by_id(thread_id)
+        except Exception:
+            thread_row = None
         # Guarded delete (v4 2.4): exclusive T(thread) refuses while a fenced
         # run or tail writer is live on ANY worker; the ledger gate refuses on
         # an in_progress row (cancel the run first). The delete statement runs
@@ -202,6 +270,14 @@ async def delete_thread_endpoint(thread_id: str, x_user_id: CurrentUserId):
             except Exception:
                 pass
 
+        await publish_thread_deleted(
+            user_id=x_user_id,
+            thread_id=thread_id,
+            workspace_id=(
+                str(thread_row["workspace_id"]) if thread_row else None
+            ),
+        )
+
         logger.info(f"Successfully deleted thread thread_id={thread_id}")
         return ThreadDeleteResponse(
             success=True,
@@ -219,7 +295,7 @@ async def delete_thread_endpoint(thread_id: str, x_user_id: CurrentUserId):
 
 
 def _thread_list_item(row: dict) -> WorkspaceThreadListItem:
-    """Build the list-item response from an updated thread row."""
+    """Build the list-item response from a detail/updated thread row."""
     return WorkspaceThreadListItem(
         thread_id=str(row["conversation_thread_id"]),
         workspace_id=str(row["workspace_id"]),
@@ -228,6 +304,10 @@ def _thread_list_item(row: dict) -> WorkspaceThreadListItem:
         msg_type=row.get("msg_type"),
         title=row.get("title"),
         platform=row.get("platform"),
+        metadata=row.get("metadata") or {},
+        is_shared=bool(row.get("is_shared", False)),
+        is_pinned=bool(row.get("is_pinned", False)),
+        archived_at=row.get("archived_at"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -237,13 +317,60 @@ def _thread_list_item(row: dict) -> WorkspaceThreadListItem:
 async def update_thread_endpoint(
     thread_id: str, request: ThreadUpdateRequest, x_user_id: CurrentUserId
 ):
-    """Rename a thread's title."""
+    """Update user-editable thread fields: title, pin, archive.
+
+    Applies only the fields explicitly present in the request body
+    (``model_fields_set``) — a pin toggle can't clear the title.
+    """
     try:
         await auth_api.require_thread_owner(thread_id, x_user_id)
-        updated_thread = await update_thread_title(thread_id, request.title)
+        provided = request.model_fields_set
+        updates: dict = {}
+        if "title" in provided:
+            # An explicit null clears the title (list rows fall back to the
+            # first-query preview) — only absence from the body skips it.
+            updates["title"] = request.title
+        if "is_pinned" in provided and request.is_pinned is not None:
+            updates["is_pinned"] = request.is_pinned
+        if "archived" in provided and request.archived is not None:
+            updates["archived"] = request.archived
+        if not updates:
+            raise HTTPException(
+                status_code=400, detail="No updatable fields provided"
+            )
+        updated_thread = await update_thread_fields(thread_id, **updates)
         if not updated_thread:
             raise HTTPException(
                 status_code=404, detail=f"Thread not found: {thread_id}"
+            )
+        if "title" in updates:
+            await publish_thread_title(
+                user_id=x_user_id,
+                thread_id=thread_id,
+                workspace_id=str(updated_thread["workspace_id"]),
+                title=updated_thread.get("title") or "",
+                updated_at=updated_thread.get("updated_at"),
+            )
+        if "is_pinned" in updates:
+            await publish_thread_pinned(
+                user_id=x_user_id,
+                thread_id=thread_id,
+                workspace_id=str(updated_thread["workspace_id"]),
+                pinned=bool(updated_thread.get("is_pinned", False)),
+            )
+        if "archived" in updates:
+            # Post-commit only: the archive statement already stamped the
+            # latest terminal attempt seen, so the row's absence from the
+            # next snapshot is honest rather than truncation.
+            publish = (
+                publish_thread_archived
+                if updates["archived"]
+                else publish_thread_unarchived
+            )
+            await publish(
+                user_id=x_user_id,
+                thread_id=thread_id,
+                workspace_id=str(updated_thread["workspace_id"]),
             )
         return _thread_list_item(updated_thread)
 

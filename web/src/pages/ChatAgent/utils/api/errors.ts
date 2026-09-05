@@ -3,13 +3,24 @@
  */
 
 /**
+ * The raw `detail` an axios/fetch failure carries, whatever its shape (string,
+ * FastAPI validation array, or a structured object). Every reader of a wire
+ * error starts here, so the cast ladder down to it is written once: it had
+ * already been re-derived in the plugins API layer and again inside a
+ * component, each copy free to spell the path differently.
+ */
+export function apiErrorDetail(err: unknown): unknown {
+  return (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+}
+
+/**
  * Extract the `message` from a structured object-shaped `detail` (e.g. the
  * platform's 429 quota payload `{ message, type, current, limit, remaining }`).
  * Returns null for string/array/absent details so callers can fall back to
  * their own copy.
  */
 export function apiErrorDetailMessage(err: unknown): string | null {
-  const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+  const detail = apiErrorDetail(err);
   if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
     const message = (detail as { message?: unknown }).message;
     if (typeof message === 'string' && message) return message;
@@ -28,7 +39,7 @@ export function apiErrorDetailMessage(err: unknown): string | null {
  * generic label.
  */
 export function formatApiErrorDetail(err: unknown): string {
-  const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+  const detail = apiErrorDetail(err);
   if (Array.isArray(detail)) {
     const parts = detail
       .map((entry) => {

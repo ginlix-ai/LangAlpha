@@ -11,6 +11,12 @@ export interface ToastProps {
   description?: React.ReactNode
   action?: React.ReactElement
   variant?: "default" | "destructive"
+  /**
+   * Exempt from TOAST_LIMIT. For a notice that carries the only control out of
+   * a broken state, being evicted is a silent failure — and it is the oldest
+   * toast on screen by then, so it is the one the cap drops first.
+   */
+  pinned?: boolean
   [key: string]: unknown
 }
 
@@ -51,11 +57,24 @@ const addToRemoveQueue = (toastId: string) => {
 
 export const reducer = (state: ToastState, action: ToastAction): ToastState => {
   switch (action.type) {
-    case "ADD_TOAST":
-      return {
-        ...state,
-        toasts: [action.toast, ...state.toasts].slice(0, TOAST_LIMIT),
+    case "ADD_TOAST": {
+      const next = [action.toast, ...state.toasts]
+      let over = next.length - TOAST_LIMIT
+      if (over <= 0) return { ...state, toasts: next }
+      // Drop from the oldest end, skipping pinned notices. If every toast is
+      // pinned the list is left over the limit rather than dropping one:
+      // pinning is a claim that losing the toast loses something, and there is
+      // nothing above this to notice it went.
+      const kept: ToastProps[] = []
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (over > 0 && !next[i].pinned) {
+          over--
+          continue
+        }
+        kept.unshift(next[i])
       }
+      return { ...state, toasts: kept }
+    }
 
     case "UPDATE_TOAST":
       return {

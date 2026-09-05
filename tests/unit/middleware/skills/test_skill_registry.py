@@ -1,7 +1,6 @@
 """Tests for the HTML-output skills (html-report, ui-design) in the registry."""
 
 import re
-from pathlib import Path
 
 import pytest
 import yaml
@@ -21,9 +20,6 @@ NEW_SKILLS = ("html-report", "ui-design")
 # Expected slash-command shortcut per skill (None = no shortcut).
 # html-report is user-invocable (like /dashboard); ui-design is a pure design reference.
 EXPECTED_COMMANDS = {"html-report": "html-report", "ui-design": None}
-
-# Repo root: tests/unit/middleware/skills/ -> repo root is four parents up.
-REPO_ROOT = Path(__file__).resolve().parents[4]
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
@@ -68,10 +64,9 @@ def test_listed_for_ptc(name):
 
 
 @pytest.mark.parametrize("name", NEW_SKILLS)
-def test_skill_md_exists_and_frontmatter_parses(name):
+def test_skill_md_exists_and_frontmatter_parses(name, shipped_skill_md):
     """SKILL.md is on disk with valid YAML frontmatter whose name matches the directory."""
-    skill_md = REPO_ROOT / SKILL_REGISTRY[name].skill_md_path
-    assert skill_md.is_file(), f"missing {skill_md}"
+    skill_md = shipped_skill_md(name)
 
     content = skill_md.read_text(encoding="utf-8")
     match = _FRONTMATTER_RE.match(content)

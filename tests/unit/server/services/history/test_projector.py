@@ -474,3 +474,193 @@ def test_token_usage_projected_after_message_content():
     assert data["input_tokens"] == 900
     assert data["output_tokens"] == 100
     assert data["total_tokens"] == 1000
+
+
+def test_workflow_run_items_whitelists_fields_and_sanitizes_errors():
+    # Driver frames carry raw `str(exc)`; replay must scrub them and drop
+    # anything the panel does not read, exactly as model_fallback does.
+    from types import SimpleNamespace
+
+    from src.server.services.history.projector import workflow_run_items
+
+    leaky = "HTTPError 401 from https://provider.example/v1?api_key=sk-0123456789abcdef"
+    history = SimpleNamespace(
+        new_ui_records=[
+            {
+                "name": "workflow_run",
+                "props": {
+                    "task_id": "wf1",
+                    "frames": [
+                        {
+                            "agent": "task:wf1",
+                            "phase": "child_done",
+                            "seq": 0,
+                            "status": "error",
+                            "error": leaky,
+                            "raw_stack": "/srv/app/driver.py line 42",
+                        },
+                    ],
+                },
+            }
+        ]
+    )
+    data = workflow_run_items(history, task_id="wf1")[0]["data"]
+    assert "sk-0123456789abcdef" not in data["error"]
+    assert "[REDACTED]" in data["error"]
+    assert "raw_stack" not in data
+
+
+def test_workflow_run_items_replays_every_field_the_emitter_declares():
+    # The whitelist is the emitter's own tuple, not a copy of it. Restating it
+    # here would put the live path and the replay path on two lists, and a name
+    # missing from this one renders live and blanks on refresh.
+    from types import SimpleNamespace
+
+    from ptc_agent.agent.middleware.background_subagent.workflow.emitter import (
+        WORKFLOW_FRAME_FIELDS,
+    )
+    from src.server.services.history.projector import workflow_run_items
+
+    frame = {name: f"value-{name}" for name in WORKFLOW_FRAME_FIELDS}
+    frame["off_the_whitelist"] = "dropped"
+    history = SimpleNamespace(
+        new_ui_records=[
+            {"name": "workflow_run", "props": {"task_id": "wf1", "frames": [frame]}}
+        ]
+    )
+
+    data = workflow_run_items(history, task_id="wf1")[0]["data"]
+    assert data == {name: f"value-{name}" for name in WORKFLOW_FRAME_FIELDS}
+
+
+def test_workflow_run_items_sanitizes_the_ledger_failure():
+    from types import SimpleNamespace
+
+    from src.server.services.history.projector import workflow_run_items
+
+    items = workflow_run_items(
+        SimpleNamespace(new_ui_records=[]),
+        task_id="wf1",
+        ledger_status="error",
+        ledger_failure="upstream refused: Authorization: Bearer abc.def.ghi",
+    )
+    assert (
+        items[0]["data"]["error"]
+        == "upstream refused: Authorization: Bearer [REDACTED]"
+    )
+
+
+def test_workflow_run_items_replays_every_frame_in_order():
+    from types import SimpleNamespace
+
+    from src.server.services.history.projector import workflow_run_items
+
+    frames = [
+        {"agent": "task:wf1", "phase": "run_started", "name": "n"},
+        {"agent": "task:wf1", "phase": "child_done", "seq": 0, "status": "ok"},
+        {"agent": "task:wf1", "phase": "run_completed", "status": "completed"},
+    ]
+    turn = SimpleNamespace(
+        new_ui_records=[
+            {"name": "image_capture", "props": {"path_to_url": {}}},
+            {"name": "workflow_run", "props": {"task_id": "wf1", "frames": frames}},
+        ]
+    )
+    items = workflow_run_items(turn)
+    assert [i["event"] for i in items] == ["workflow_lifecycle"] * 3
+    assert [i["data"] for i in items] == frames
+    # Verbatim copies, not aliases — downstream stamping must not mutate
+    # the checkpointed record.
+    assert all(i["data"] is not f for i, f in zip(items, frames))
+
+
+def test_workflow_run_items_skips_malformed_records():
+    from types import SimpleNamespace
+
+    from src.server.services.history.projector import workflow_run_items
+
+    turn = SimpleNamespace(
+        new_ui_records=[
+            {"name": "workflow_run", "props": {"frames": "not-a-list"}},
+            {"name": "workflow_run", "props": None},
+            {"name": "workflow_run", "props": {"frames": ["bare-string", {"phase": "log"}]}},
+        ]
+    )
+    items = workflow_run_items(turn)
+    assert [i["data"] for i in items] == [{"phase": "log"}]
+
+
+def test_workflow_run_items_ledger_overrides_contradicting_terminal():
+    # The driver snapshots run_completed BEFORE the terminal CAS, which can
+    # adopt a raced cancel intent — the ledger row is the status authority.
+    from types import SimpleNamespace
+
+    from src.server.services.history.projector import workflow_run_items
+
+    history = SimpleNamespace(
+        new_ui_records=[
+            {
+                "name": "workflow_run",
+                "props": {
+                    "task_id": "wf1",
+                    "frames": [
+                        {"agent": "task:wf1", "phase": "run_started"},
+                        {
+                            "agent": "task:wf1",
+                            "phase": "run_completed",
+                            "status": "completed",
+                            "error": None,
+                        },
+                    ],
+                },
+            }
+        ]
+    )
+    items = workflow_run_items(
+        history, task_id="wf1", ledger_status="cancelled"
+    )
+    assert [i["data"]["phase"] for i in items] == [
+        "run_started",
+        "run_completed",
+    ]
+    terminal = items[-1]["data"]
+    assert terminal["status"] == "cancelled"
+    # Agreeing ledger never rewrites, and an open ledger row never overrides.
+    agree = workflow_run_items(history, task_id="wf1", ledger_status="completed")
+    assert agree[-1]["data"]["status"] == "completed"
+    live = workflow_run_items(history, task_id="wf1", ledger_status="in_progress")
+    assert live[-1]["data"]["status"] == "completed"
+
+
+def test_workflow_run_items_synthesizes_terminal_when_snapshot_missing():
+    # A best-effort snapshot write can fail (or be refused by the namespace
+    # fence) while the terminal pipeline still archives the stream: replay
+    # then settles the panel from the ledger row instead of leaving it
+    # empty forever.
+    from types import SimpleNamespace
+
+    from src.server.services.history.projector import workflow_run_items
+
+    history = SimpleNamespace(new_ui_records=[])
+    items = workflow_run_items(
+        history,
+        task_id="wf1",
+        ledger_status="error",
+        ledger_failure="engine crashed",
+    )
+    assert len(items) == 1
+    data = items[0]["data"]
+    assert data["agent"] == "task:wf1"
+    assert data["phase"] == "run_completed"
+    assert data["status"] == "failed"
+    assert data["error"] == "engine crashed"
+
+    # A clean run carries no `error` key at all — the emitter drops a null
+    # error live and `_projected_run_frame` drops it on replay, so a synthesized
+    # frame that kept it would be the one shape of the three that disagrees.
+    clean = workflow_run_items(history, task_id="wf1", ledger_status="completed")
+    assert "error" not in clean[0]["data"]
+
+    # No synthesis while the run is open or the ledger row is absent.
+    assert workflow_run_items(history, task_id="wf1", ledger_status="in_progress") == []
+    assert workflow_run_items(history, task_id="wf1") == []

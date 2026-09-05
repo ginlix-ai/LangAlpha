@@ -13,6 +13,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // Fixtures a unit test shares with the Playwright specs.
+      '@e2e': path.resolve(__dirname, './e2e'),
     },
   },
 });

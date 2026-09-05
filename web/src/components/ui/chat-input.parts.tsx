@@ -1,10 +1,14 @@
-import { FileText, Loader2, X } from 'lucide-react';
+import type { ButtonHTMLAttributes, CSSProperties, ReactNode, Ref } from 'react';
+import { FileText, X } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { Loader } from '@/components/ui/loader';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { cn } from '@/lib/utils';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import { WidgetContextDeck } from '@/pages/Dashboard/widgets/framework/WidgetContextDeck';
-import type { FileAttachment } from './chat-input.types';
+import { getSlashCommandIcon } from './chat-input.helpers';
+import type { FileAttachment, SlashCommand } from './chat-input.types';
 
 const formatFileSize = (bytes: number): string => {
   if (bytes === 0) return '0 Bytes';
@@ -32,7 +36,7 @@ export const FilePreviewCard = ({ file, onRemove }: { file: FileAttachment; onRe
             <div className="p-1.5 rounded" style={{ background: 'var(--color-border-muted)' }}>
               <FileText className="w-4 h-4" style={{ color: 'var(--color-text-tertiary)' }} />
             </div>
-            <span className="text-[10px] font-medium uppercase tracking-wider truncate" style={{ color: 'var(--color-text-tertiary)' }}>
+            <span className="text-[0.625rem] font-medium uppercase tracking-wider truncate" style={{ color: 'var(--color-text-tertiary)' }}>
               {file.file.name.split('.').pop()}
             </span>
           </div>
@@ -40,7 +44,7 @@ export const FilePreviewCard = ({ file, onRemove }: { file: FileAttachment; onRe
             <p className="text-xs font-medium truncate" style={{ color: 'var(--color-text-muted)' }} title={file.file.name}>
               {file.file.name}
             </p>
-            <p className="text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>
+            <p className="text-[0.625rem]" style={{ color: 'var(--color-text-tertiary)' }}>
               {formatFileSize(file.file.size)}
             </p>
           </div>
@@ -58,7 +62,7 @@ export const FilePreviewCard = ({ file, onRemove }: { file: FileAttachment; onRe
       {/* Upload Status */}
       {file.uploadStatus === 'uploading' && (
         <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-          <Loader2 className="w-5 h-5 text-white animate-spin" />
+          <Loader size={20} label="Uploading" className="text-white" />
         </div>
       )}
     </div>
@@ -66,9 +70,12 @@ export const FilePreviewCard = ({ file, onRemove }: { file: FileAttachment; onRe
 };
 
 /**
- * Composer pill toggle (Plan / Watch). Transparent when off; fills with
- * `--color-border-muted` on hover and while active. `activeClass` tags the
- * active state for CSS hooks; `title` is the hover tooltip.
+ * The single composer pill: every labeled control in the action bar (mode,
+ * workspace, plan, watch) is one of these, so pill geometry exists once and
+ * the hidden measure row can render the very same component.
+ *
+ * Always transparent with a transient hover fill; active state is signaled by
+ * the amber accent alone (icon + label), never a fill or border ring.
  */
 export function PillToggle({
   active,
@@ -76,42 +83,177 @@ export function PillToggle({
   icon: Icon,
   label,
   title,
-  activeClass,
+  trailing,
+  disabledReason,
+  aria = 'pressed',
+  gap = 6,
+  className = 'flex-none',
+  labelClassName,
+  buttonRef,
+  measureOnly = false,
 }: {
-  active: boolean;
-  onToggle: () => void;
+  /** Amber accent state (a toggle that is on, or a menu pill that is open). */
+  active?: boolean;
+  onToggle?: () => void;
   icon: LucideIcon;
   label: string;
-  title: string;
-  activeClass: string;
+  title?: string;
+  /** Rendered after the label — e.g. the chevron on a menu-opening pill. */
+  trailing?: ReactNode;
+  /** Inert pill: dimmed, not-allowed cursor, reason shown as the tooltip. */
+  disabledReason?: string | null;
+  /** Which state the pill announces: a toggle, a menu trigger, or neither. */
+  aria?: 'pressed' | 'expanded' | 'none';
+  gap?: number;
+  className?: string;
+  labelClassName?: string;
+  buttonRef?: Ref<HTMLButtonElement>;
+  /** Geometry-only render for the hidden measure row — same element and
+   *  styles, no handlers, tooltip, or aria state, and out of the tab order. */
+  measureOnly?: boolean;
 }) {
+  const blocked = !!disabledReason;
+  // Active = accent only (amber icon + label), no fill or border ring — the
+  // pill silhouette stays identical in both states; hover feedback is the
+  // same transient fill either way.
+  const style: CSSProperties = {
+    gap: `${gap}px`,
+    padding: '6px 10px',
+    fontSize: '0.8125rem',
+    fontWeight: 500,
+    background: 'transparent',
+    color: blocked
+      ? 'var(--color-text-quaternary, #9ca3af)'
+      : active ? 'var(--color-accent-light)' : 'var(--color-text-muted, #8b8fa3)',
+    border: '1px solid transparent',
+    opacity: blocked ? 0.6 : 1,
+    cursor: blocked ? 'not-allowed' : 'pointer',
+    transition: 'background 0.2s, color 0.2s, border-color 0.2s',
+  };
+  const body = (
+    <>
+      <Icon className="h-4 w-4 flex-none" />
+      <span className={labelClassName}>{label}</span>
+      {trailing}
+    </>
+  );
+
+  if (measureOnly) {
+    return (
+      <button
+        type="button"
+        tabIndex={-1}
+        className={cn('inline-flex items-center rounded-full border-none whitespace-nowrap', className)}
+        style={style}
+      >
+        {body}
+      </button>
+    );
+  }
+
+  const ariaProps: ButtonHTMLAttributes<HTMLButtonElement> =
+    aria === 'pressed' ? { 'aria-pressed': active }
+      : aria === 'expanded' ? { 'aria-haspopup': 'menu', 'aria-expanded': active }
+        : {};
+
   return (
     <button
-      className={`inline-flex items-center rounded-full border-none cursor-pointer${active ? ` ${activeClass}` : ''}`}
-      style={{
-        gap: '6px',
-        padding: '6px 10px',
-        fontSize: '13px',
-        fontWeight: 500,
-        background: active ? 'var(--color-border-muted)' : 'transparent',
-        color: 'var(--color-text-muted, #8b8fa3)',
-        border: '1px solid transparent',
-        transition: 'background 0.2s, color 0.2s, border-color 0.2s',
-      }}
-      onClick={(e) => { e.stopPropagation(); onToggle(); }}
-      onMouseEnter={(e) => {
-        if (!active) e.currentTarget.style.background = 'var(--color-border-muted)';
-      }}
-      onMouseLeave={(e) => {
-        if (!active) e.currentTarget.style.background = 'transparent';
-      }}
+      ref={buttonRef}
+      className={cn('inline-flex items-center rounded-full border-none whitespace-nowrap', className)}
+      style={style}
+      onClick={(e) => { e.stopPropagation(); if (!blocked) onToggle?.(); }}
+      onMouseEnter={(e) => { if (!blocked) e.currentTarget.style.background = 'var(--color-border-muted)'; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
       type="button"
-      title={title}
-      aria-pressed={active}
+      title={disabledReason || title}
+      aria-disabled={blocked || undefined}
+      {...ariaProps}
     >
-      <Icon className="h-4 w-4" style={active ? { color: 'var(--color-accent-light)' } : {}} />
-      <span>{label}</span>
+      {body}
     </button>
+  );
+}
+
+/* --- @MENTION / /SLASH AUTOCOMPLETE LISTS ---
+ * Presentation only — the matching, selection and keyboard machinery lives in
+ * chat-input.useMentions / chat-input.useSlashCommands. */
+
+export function MentionAutocompleteList({
+  listRef,
+  files,
+  activeIndex,
+  hasWorkspaceFiles,
+  onSelect,
+  onHover,
+}: {
+  listRef: Ref<HTMLDivElement>;
+  files: string[];
+  activeIndex: number;
+  hasWorkspaceFiles: boolean;
+  onSelect: (path: string) => void;
+  onHover: (idx: number) => void;
+}) {
+  return (
+    <div className="mention-autocomplete" ref={listRef}>
+      {files.length === 0 ? (
+        <div className="mention-autocomplete-empty">
+          {hasWorkspaceFiles ? 'No matching files' : 'No files available'}
+        </div>
+      ) : (
+        files.map((filePath, idx) => {
+          const name = filePath.split('/').pop();
+          const dir = filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : '';
+          return (
+            <div
+              key={filePath}
+              className={`mention-autocomplete-item ${idx === activeIndex ? 'active' : ''}`}
+              onMouseDown={(e) => { e.preventDefault(); onSelect(filePath); }}
+              onMouseEnter={() => onHover(idx)}
+            >
+              <FileText className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+              <span className="file-name">{name}</span>
+              {dir && <span className="file-path">{dir}/</span>}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+export function SlashCommandList({
+  listRef,
+  commands,
+  activeIndex,
+  onSelect,
+  onHover,
+}: {
+  listRef: Ref<HTMLDivElement>;
+  commands: SlashCommand[];
+  activeIndex: number;
+  onSelect: (cmd: SlashCommand) => void;
+  onHover: (idx: number) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="mention-autocomplete" ref={listRef}>
+      {commands.length === 0 ? (
+        <div className="mention-autocomplete-empty">{t('chat.slashCommand.noMatching')}</div>
+      ) : (
+        commands.map((cmd, idx) => (
+          <div
+            key={cmd.name}
+            className={`mention-autocomplete-item ${idx === activeIndex ? 'active' : ''}`}
+            onMouseDown={(e) => { e.preventDefault(); onSelect(cmd); }}
+            onMouseEnter={() => onHover(idx)}
+          >
+            {getSlashCommandIcon(cmd, 'h-4 w-4 flex-shrink-0 slash-cmd-icon')}
+            <span className="slash-cmd-name">/{cmd.name}</span>
+            <span className="slash-cmd-desc">{cmd.description}</span>
+          </div>
+        ))
+      )}
+    </div>
   );
 }
 

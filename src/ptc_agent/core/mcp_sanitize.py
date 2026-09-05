@@ -1,9 +1,10 @@
 """Sanitization helpers for untrusted (user-configured) MCP server schemas.
 
-User MCP servers (``source == "workspace"``) report arbitrary tool names,
-parameter names, and descriptions. That text reaches generated Python code
-(docstrings, wrapper modules) and the system prompt, so it is hostile input.
-These helpers bound identifiers and text before either boundary.
+Untrusted MCP servers (``source`` ``"workspace"`` or ``"user"``) report
+arbitrary tool names, parameter names, and descriptions. That text reaches
+generated Python code (docstrings, wrapper modules) and the system prompt, so
+it is hostile input. These helpers bound identifiers and text before either
+boundary.
 
 The ``${vault:NAME}`` reference regex is defined here ONCE
 (``VAULT_REF_RE``) and imported by every lane that resolves or validates
@@ -30,6 +31,82 @@ VAULT_REF_RE = re.compile(r"\$\{vault:([A-Za-z_][A-Za-z0-9_]{0,127})\}")
 # Default bounds for untrusted tool text entering docstrings / docs / prompt.
 DEFAULT_TOOL_TEXT_MAX_LEN = 2048
 
+# An env/header literal reads as a credential when its key name does, or the
+# value is a long opaque token. Every lane that must separate credentials from
+# ordinary config (import-time vault extraction, output redaction) shares this
+# ONE heuristic so a value one lane vaults is never a value another serves.
+_SECRET_KEY_RE = re.compile(
+    r"(?i)(secret|token|password|passwd|pwd|apikey|api[_-]?key|access[_-]?key|"
+    r"authorization|auth|bearer|credential|cred|private[_-]?key|\bpat\b|\bkey\b)"
+)
+_OPAQUE_TOKEN_MIN_LEN = 20
+
+
+def looks_like_secret(key: str, value: str) -> bool:
+    """Heuristic: is this env/header literal a credential rather than config?"""
+    if _SECRET_KEY_RE.search(key or ""):
+        return True
+    v = value or ""
+    return len(v) >= _OPAQUE_TOKEN_MIN_LEN and " " not in v and not v.isdigit()
+
+
+def iter_arg_flag_pairs(args) -> "list[tuple[int, str, str]]":
+    """``(value_index, flag, value)`` for space-separated ``--token VALUE`` pairs.
+
+    The one arg shape every lane agrees on, and the reason it is here rather
+    than inlined three times: vault extraction and the export scrub have to
+    rewrite the value, so they need its index, while output redaction only
+    needs the pair — but all three must reach the same verdict or one lane
+    serves a value another vaulted.
+
+    Key-signal only, deliberately: the element after a flag is usually a path,
+    a port, or a URL, and the opaque-value heuristic reads plenty of those as
+    credentials. The flag naming itself is the only signal narrow enough to act
+    on, so a bare positional secret is accepted as missed.
+    """
+    found: list[tuple[int, str, str]] = []
+    prev_flag = ""
+    for i, arg in enumerate(args or []):
+        if not isinstance(arg, str):
+            prev_flag = ""
+            continue
+        if arg.startswith("-"):
+            flag, sep, _ = arg.partition("=")
+            prev_flag = flag if not sep else ""
+            continue
+        if (
+            prev_flag
+            and _SECRET_KEY_RE.search(prev_flag)
+            and not VAULT_REF_RE.search(arg)
+        ):
+            found.append((i, prev_flag.lstrip("-"), arg))
+        prev_flag = ""
+    return found
+
+
+def iter_arg_credentials(args) -> "list[tuple[str, str]]":
+    """Credential literals in a stdio arg list: ``--token=X`` and ``--token X``.
+
+    Key-signal only — no opaque-value fallback: arg lists are full of paths and
+    URLs that the value heuristic reads as secrets, and the redaction lanes
+    consuming this would scrub ordinary arguments out of served files. A bare
+    positional secret with no flag naming it is accepted as missed.
+    """
+    found: list[tuple[str, str]] = []
+    for arg in args or []:
+        if not isinstance(arg, str) or not arg.startswith("-"):
+            continue
+        flag, sep, val = arg.partition("=")
+        if (
+            sep
+            and val
+            and not VAULT_REF_RE.search(val)
+            and _SECRET_KEY_RE.search(flag)
+        ):
+            found.append((flag.lstrip("-"), val))
+    found.extend((flag, val) for _, flag, val in iter_arg_flag_pairs(args))
+    return found
+
 
 @dataclass(frozen=True)
 class SanitizedToolSet:
@@ -48,13 +125,16 @@ def vault_refs(value: str) -> list[str]:
     return VAULT_REF_RE.findall(value or "")
 
 
-def is_user_server(server) -> bool:
-    """True for user-configured workspace servers (``source == 'workspace'``).
+def is_untrusted_server(server) -> bool:
+    """True for user-configured servers (``source`` 'workspace' or 'user').
 
     The single definition of the trust-boundary predicate — built-ins (no
-    ``source`` attr, or ``'builtin'``) are trusted; workspace servers are not.
+    ``source`` attr, or ``'builtin'``) are trusted; workspace-local and
+    user-level (workspace-inherited) servers are not. Named for the property
+    that matters: ``source='user'`` is one of the untrusted tiers, not the
+    complement of this predicate.
     """
-    return getattr(server, "source", "builtin") == "workspace"
+    return getattr(server, "source", "builtin") in ("workspace", "user")
 
 
 def discovery_should_use_secrets(server) -> bool:
@@ -69,7 +149,7 @@ def discovery_should_use_secrets(server) -> bool:
     """
     if bool(getattr(server, "discovery_uses_secrets", False)):
         return True
-    if is_user_server(server) and getattr(server, "transport", None) in ("sse", "http"):
+    if is_untrusted_server(server) and getattr(server, "transport", None) in ("sse", "http"):
         headers = getattr(server, "headers", {}) or {}
         return any(VAULT_REF_RE.search(str(v)) for v in headers.values())
     return False
@@ -134,15 +214,41 @@ def sanitize_tool_name(name: str) -> str | None:
     return candidate
 
 
+def unsalvageable_required_params(input_schema) -> list[str]:
+    """Required wire params whose name can never become a Python identifier.
+
+    Codegen drops such a param from the wrapper signature, so a tool that
+    REQUIRES one can never be called correctly — discovery drops the whole tool
+    instead of advertising it healthy. Name COLLISIONS are deliberately not
+    counted: two params that sanitize to the same identifier are salvageable
+    (codegen de-duplicates them) and the tool stays callable.
+    """
+    if not isinstance(input_schema, dict):
+        return []
+    properties = input_schema.get("properties")
+    required = input_schema.get("required")
+    if not isinstance(properties, dict) or not isinstance(required, list):
+        return []
+    return [
+        name
+        for name in required
+        if isinstance(name, str)
+        and name in properties
+        and sanitize_tool_name(name) is None
+    ]
+
+
 def sanitize_tool_text(text: str | None, max_len: int = DEFAULT_TOOL_TEXT_MAX_LEN) -> str:
     """Make untrusted text safe to embed inside a triple-quoted docstring.
 
     Neutralizes triple-quote breakouts, escapes trailing backslashes that would
     eat the closing quotes, strips control characters, and length-caps. The
     result is plain data — it cannot terminate the docstring early or smuggle
-    code past the wrapper.
+    code past the wrapper. Total over untrusted input: a non-string (a hostile
+    schema can put a number or a dict where a description belongs) collapses to
+    "" instead of raising mid-codegen.
     """
-    if not text:
+    if not isinstance(text, str) or not text:
         return ""
     # Strip control chars except tab/newline (which docstrings tolerate).
     cleaned = "".join(

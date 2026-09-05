@@ -132,3 +132,46 @@ async def test_cancel_workflow_publishes_only_for_unhandled_stamped_intent():
     # Already terminal -> nothing to nudge.
     publish = await _run(cancel_success=False, intent_state="already_terminal")
     publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_publish_with_task_id_extends_payload():
+    """Task-targeted nudges add task_id; run-level payloads stay unchanged
+    (pinned above) so old workers keep parsing them."""
+    cache = _cache()
+    with patch(CACHE, return_value=cache):
+        await publish_cancel_nudge("t-1", None, task_id="abc123")
+
+    _channel, payload = cache.client.publish.await_args.args
+    assert json.loads(payload) == {
+        "thread_id": "t-1",
+        "run_id": None,
+        "task_id": "abc123",
+    }
+
+
+@pytest.mark.asyncio
+async def test_listener_routes_task_targeted_nudge_to_registry_store():
+    listener = TurnCancelListener()
+    store = MagicMock()
+    store.cancel_task = AsyncMock(return_value=True)
+    btm = MagicMock()
+    btm.signal_cancel = AsyncMock()
+    with (
+        patch(
+            "src.server.services.background_registry_store."
+            "BackgroundRegistryStore.get_instance",
+            return_value=store,
+        ),
+        patch(
+            "src.server.services.runs.executor.LocalRunExecutor.get_instance",
+            return_value=btm,
+        ),
+    ):
+        await listener._handle(
+            json.dumps({"thread_id": "t-1", "task_id": "abc123"}).encode()
+        )
+
+    store.cancel_task.assert_awaited_once_with("t-1", "abc123")
+    # A task nudge never falls through to the run-level cancel.
+    btm.signal_cancel.assert_not_awaited()

@@ -302,54 +302,30 @@ async def get_sec_filing(
     include_financials: Annotated[bool, "Include financial statements and key metrics (10-K/10-Q only)"] = True,
     include_earnings_call: Annotated[bool, "Include matching earnings call transcript (10-K/10-Q only)"] = True,
 ) -> Tuple[str, Dict[str, Any]]:
-    """Fetch SEC filing (10-K, 10-Q, or 8-K) with related information.
+    """Fetch an SEC filing (10-K, 10-Q or 8-K) with its financial statements,
+    essential sections and the matching earnings call.
 
-    Retrieves SEC filings with essential sections, financial statements,
-    earnings call transcript, and recent 8-K filings. Returns formatted
-    markdown combining all sources.
-
-    IMPORTANT - Citation Requirement:
-    The returned content includes source URLs linking to official SEC EDGAR
-    filings. When using information from this filing in your response, you MUST
-    cite the source URLs to ensure proper attribution and allow users to verify
-    the information directly from SEC.gov.
-
-    IMPORTANT - Choosing filing_type:
-    - Use "10-K" (annual) for comprehensive analysis when recent quarterly
-      data is not critical. 10-K provides full-year financials with detailed
-      business description, complete risk factors, and audited statements.
-    - Use "10-Q" (quarterly) when you need the MOST RECENT financial data.
-      10-Q is filed ~45 days after quarter end, so it's more current than
-      10-K which is filed ~60 days after fiscal year end.
-    - Use "8-K" (event-driven) to get ALL 8-K filings from the last 90 days,
-      including earnings announcements, forward guidance, and material events.
-
-    Rule of thumb: Choose strategically based on the goal and current date.
+    US SEC filers only — a non-US listing ("0700.HK", "600519.SS") has no
+    10-K, 10-Q or 8-K to fetch.
 
     Args:
-        symbol: Stock ticker symbol (e.g., "AAPL", "MSFT", "NVDA")
-        filing_type: Type of SEC filing:
-            - "10-K": Annual report (comprehensive, audited, full year)
-            - "10-Q": Quarterly report (more recent, unaudited, interim)
-            - "8-K": All event-driven reports from last 90 days
-        include_financials: If True (default), include financial statements
-            (balance sheet, income statement, cash flow) and key metrics.
-        include_earnings_call: If True (default), include the earnings call
-            transcript from the same fiscal period. Automatically matches
-            the call date to the SEC filing date.
+        symbol: Stock ticker, e.g. "AAPL".
+        filing_type: "10-K" for full-year depth (audited, filed ~60 days after
+            fiscal year end); "10-Q" for the most recent numbers (filed ~45 days
+            after quarter end); "8-K" for every event-driven filing of the last
+            90 days.
+        include_financials: Include statements and key metrics. Default True.
+        include_earnings_call: Include the transcript for the same fiscal period,
+            matched to the filing date. Default True.
 
     Returns:
-        For 10-K/10-Q:
-        - Filing metadata (date, period, source URL)
-        - Key financial metrics summary
-        - Financial statements as structured tables
-        - Essential sections (MD&A, Risk Factors, etc.)
-        - Earnings call transcript (when available and requested)
-        - List of recent 8-K filings (last 90 days)
+        A long markdown report carrying the filing's official SEC EDGAR source
+        URLs. Expect it to consume real context; for headline fundamentals alone
+        use get_company_overview.
 
-        For 8-K:
-        - All 8-K filings from the last 90 days
-        - Each filing includes: date, items, source URL, press release (if any)
+    You MUST cite those source URLs inline for every claim you take from the
+    filing, so the user can verify each figure against SEC.gov instead of taking
+    it on trust.
     """
     return await get_sec_filing_async(
         symbol=symbol,

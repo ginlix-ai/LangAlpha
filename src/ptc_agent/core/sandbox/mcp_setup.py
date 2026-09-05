@@ -18,6 +18,7 @@ from ptc_agent.core.sandbox._defaults import DEFAULT_DEPENDENCIES
 from ptc_agent.core.sandbox.retry import RetryPolicy
 
 from ..mcp_sanitize import (
+    is_untrusted_server,
     sanitize_tool_name,
 )
 from typing import TYPE_CHECKING
@@ -26,6 +27,22 @@ if TYPE_CHECKING:
     from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
 logger = structlog.get_logger(__name__)
+
+
+def _doc_name(tool_name: str, untrusted: bool) -> str:
+    """The filename a tool's documentation is written under.
+
+    Shared by the writer and by the sweep that removes what the writer no longer
+    produces. Two derivations of one name is exactly how a doc for a tool the
+    agent may not call survives a pass meant to delete it.
+
+    Untrusted names could carry ``..`` or ``/`` and traverse out of the docs
+    directory, so there the sanitized identifier is the filename; a builtin's
+    name is already a valid identifier.
+    """
+    if untrusted:
+        return sanitize_tool_name(tool_name) or "_invalid_tool"
+    return tool_name
 
 
 async def _install_dependencies(sandbox: "PTCSandbox") -> None:
@@ -163,11 +180,12 @@ async def _install_tool_modules(sandbox: "PTCSandbox") -> None:
         )
     )
 
-    # Per-server source map (builtin vs untrusted workspace) drives codegen
-    # sanitization + neutral framing for user-server tools.
-    source_by_name = {
-        s.name: getattr(s, "source", "builtin")
-        for s in sandbox.config.mcp.servers
+    # Trust is computed ONCE here, per server, and passed across the codegen
+    # boundary as a bool — codegen never re-derives it from the raw source
+    # string (that duplication is how user-level servers once slipped through
+    # the workspace-only gates).
+    untrusted_by_name = {
+        s.name: is_untrusted_server(s) for s in sandbox.config.mcp.servers
     }
 
     # 2. Tool modules and documentation
@@ -183,43 +201,86 @@ async def _install_tool_modules(sandbox: "PTCSandbox") -> None:
     docs_root = f"{work_dir}/tools/docs"
     tools_root = f"{work_dir}/tools"
     stale_paths: list[str] = []
-    try:
-        existing_docs = await sandbox.als_directory(docs_root)
-        if existing_docs:
-            stale_paths.extend(
-                entry["path"]
-                for entry in existing_docs
-                if entry.get("is_dir") and entry.get("name") not in tools_by_server
-            )
-    except Exception:
-        pass  # docs dir may not exist yet on fresh sandbox
-    try:
-        existing_tools = await sandbox.als_directory(tools_root)
-        if existing_tools:
-            expected_wrappers = {f"{name}.py" for name in tools_by_server}
-            stale_paths.extend(
-                entry["path"]
-                for entry in existing_tools
-                if not entry.get("is_dir")
-                and entry.get("name", "").endswith(".py")
-                and entry.get("name") not in expected_wrappers
-                and entry.get("name") not in ("mcp_client.py", "__init__.py")
-            )
-    except Exception:
-        pass  # tools dir may not exist yet on fresh sandbox
+    # Not wrapped: ``als_directory`` returns [] for a directory that is empty or
+    # absent, and raises only when the sandbox itself failed. Swallowing that
+    # raise reads a broken sandbox as "nothing stale here", and the sync then
+    # stamps the manifest current -- so the doc for a tool the user declined
+    # survives every later sync too, which is the failure this sweep exists to
+    # prevent. A fresh sandbox costs nothing here; a broken one should fail.
+    existing_docs = await sandbox.als_directory(docs_root)
+    stale_paths.extend(
+        entry["path"]
+        for entry in existing_docs
+        if entry.get("is_dir") and entry.get("name") not in tools_by_server
+    )
+
+    # The sweep inside the servers that DID survive. Removing a whole directory
+    # when its server leaves the set was enough while a server's tool list only
+    # changed when the vendor changed it. Capability consent changes it on a user
+    # toggle, so a declined tool now routinely leaves its doc behind: the wrapper
+    # module is one file rewritten whole and correctly loses the function, while
+    # ``tools/docs/<server>/`` goes on describing it.
+    #
+    # That is not clutter. The tool guide sends the agent to this directory to
+    # find out what a server can do, and it is the surface the agent trusts, so a
+    # doc left behind is the agent reading that it can place live orders and
+    # telling the user so -- on a connection whose owner declined exactly that.
+    # The call is refused at the relay either way; what leaks here is the claim,
+    # which on this feature is the part that matters.
+    #
+    # Only directories the listing above already found are opened, so a fresh
+    # sandbox costs nothing and a warm one costs one listing per server present.
+    for entry in existing_docs:
+        server_name = entry.get("name")
+        if not entry.get("is_dir") or server_name not in tools_by_server:
+            continue
+        expected = {
+            f"{_doc_name(tool.name, untrusted_by_name.get(server_name, True))}.md"
+            for tool in tools_by_server[server_name]
+        }
+        existing_tool_docs = await sandbox.als_directory(entry["path"])
+        stale_paths.extend(
+            doc["path"]
+            for doc in existing_tool_docs
+            if not doc.get("is_dir")
+            and doc.get("name", "").endswith(".md")
+            and doc.get("name") not in expected
+        )
+    existing_tools = await sandbox.als_directory(tools_root)
+    if existing_tools:
+        expected_wrappers = {f"{name}.py" for name in tools_by_server}
+        stale_paths.extend(
+            entry["path"]
+            for entry in existing_tools
+            if not entry.get("is_dir")
+            and entry.get("name", "").endswith(".py")
+            and entry.get("name") not in expected_wrappers
+            and entry.get("name") not in ("mcp_client.py", "__init__.py")
+        )
     if stale_paths:
         rm_cmd = "rm -rf " + " ".join(shlex.quote(p) for p in stale_paths)
-        await sandbox._runtime_call(
+        result = await sandbox._runtime_call(
             sandbox.runtime.exec,
             rm_cmd,
             retry_policy=RetryPolicy.SAFE,
         )
+        # A delete that silently failed is the same outcome as never sweeping:
+        # the manifest is stamped current and the stale doc is never revisited.
+        exit_code = getattr(result, "exit_code", 0)
+        if exit_code:
+            raise RuntimeError(
+                f"failed to remove stale tool files (exit {exit_code}): "
+                f"{getattr(result, 'stderr', '')}"
+            )
 
     for server_name, tools in tools_by_server.items():
-        source = source_by_name.get(server_name, "builtin")
+        # Fail closed: a server present in the registry but missing from the
+        # trust map (config drift mid-sync) is treated as untrusted — a wrong
+        # guess here costs sanitization, not a docstring breakout.
+        untrusted = untrusted_by_name.get(server_name, True)
         # Generate Python module
         module_code = sandbox.tool_generator.generate_tool_module(
-            server_name, tools, source=source
+            server_name, tools, untrusted=untrusted
         )
         module_path = f"{work_dir}/tools/{server_name}.py"
         uploads.append(
@@ -240,16 +301,9 @@ async def _install_tool_modules(sandbox: "PTCSandbox") -> None:
         # Generate documentation for each tool
         for tool in tools:
             doc = sandbox.tool_generator.generate_tool_documentation(
-                tool, source=source
+                tool, untrusted=untrusted
             )
-            # Untrusted workspace tool names could contain ``..`` or ``/`` and
-            # traverse out of the docs dir; use the sanitized identifier for
-            # the filename. Builtin names are already valid identifiers, so
-            # sanitize_tool_name leaves them unchanged (byte-identical path).
-            if source == "workspace":
-                doc_name = sanitize_tool_name(tool.name) or "_invalid_tool"
-            else:
-                doc_name = tool.name
+            doc_name = _doc_name(tool.name, untrusted)
             doc_path = f"{work_dir}/tools/docs/{server_name}/{doc_name}.md"
             upload_item: tuple[bytes, str, tuple[str, dict[str, str]] | None] = (
                 doc.encode("utf-8"),
@@ -311,7 +365,8 @@ async def discover_user_mcp_schemas(
         For each server: run ``mcp_client.py discover <name> <out>`` (file IPC —
         the CLI writes its result JSON to a temp file, never stdout), read the
         file back, delete it. Per-server error isolation; one hung/broken server
-        never blocks the others. Returns ``{name: {"status","error","tools"}}``.
+        never blocks the others. Returns
+        ``{name: {"status","error","tools","server_info"}}``.
         No vault file is needed — the client substitutes inert placeholders.
         """
     await sandbox._wait_ready()
@@ -359,10 +414,12 @@ async def discover_user_mcp_schemas(
                 parsed = json.loads(
                     raw.decode("utf-8") if isinstance(raw, bytes) else raw
                 )
+                info = parsed.get("server_info")
                 return name, {
                     "status": parsed.get("status", "error"),
                     "error": parsed.get("error", "") or "",
                     "tools": parsed.get("tools") or [],
+                    "server_info": info if isinstance(info, dict) else None,
                 }
             except Exception as e:  # noqa: BLE001 — isolate one bad server
                 logger.warning(
@@ -472,7 +529,7 @@ async def _start_internal_mcp_servers(sandbox: "PTCSandbox") -> None:
 
 
 def _detect_missing_imports(sandbox: "PTCSandbox", stderr: str) -> list[str]:
-    """Extract missing module names from ImportError/ModuleNotFoundError.
+    """Extract missing module names from the executed script's own traceback.
 
         Args:
             stderr: Standard error output from code execution
@@ -482,14 +539,36 @@ def _detect_missing_imports(sandbox: "PTCSandbox", stderr: str) -> list[str]:
         """
     import re
 
+    # Whatever comes out of here is handed to `uv pip install` in the sandbox,
+    # so the input is trusted as narrowly as possible against two attacks:
+    #
+    # 1. Shell injection — the capture is a real dotted module path, never
+    #    "anything between the quotes". A name with a space or ``;`` fails to
+    #    match at all (and could never name an installable package anyway).
+    # 2. Dependency confusion — a third-party MCP server spawned during the run
+    #    shares this stderr stream and could inject a fake
+    #    "ModuleNotFoundError: No module named 'evil'" to make us install an
+    #    attacker-registered package (whose sdist build runs code). So only the
+    #    executed script's OWN unhandled exception is trusted: the FINAL
+    #    traceback block of stderr, and only when it carries a genuine frame
+    #    line. A server's mid-stream text, or a preceding block, is ignored.
+    marker = "Traceback (most recent call last):"
+    start = stderr.rfind(marker)
+    if start == -1:
+        return []
+    final_tb = stderr[start:]
+    if '\n  File "' not in final_tb:
+        # No real frame → not a Python interpreter traceback; don't trust it.
+        return []
+
     patterns = [
-        r"ModuleNotFoundError: No module named ['\"]([^'\"]+)['\"]",
-        r"ImportError: No module named ['\"]([^'\"]+)['\"]",
+        r"ModuleNotFoundError: No module named ['\"]([A-Za-z_][A-Za-z0-9_.]*)['\"]",
+        r"ImportError: No module named ['\"]([A-Za-z_][A-Za-z0-9_.]*)['\"]",
     ]
 
     matches = []
     for pattern in patterns:
-        matches.extend(re.findall(pattern, stderr))
+        matches.extend(re.findall(pattern, final_tb))
 
     # Handle submodule imports (e.g., "foo.bar" -> "foo")
     # Also deduplicate
@@ -518,7 +597,10 @@ async def _install_package(sandbox: "PTCSandbox", package: str) -> bool:
         assert sandbox.runtime is not None
         result = await sandbox._runtime_call(
             sandbox.runtime.exec,
-            f"uv pip install -q {package}",
+            # Quoted at the sink as well as filtered at the parser: this is the
+            # only place a caller-supplied name becomes shell text, so it should
+            # be safe for callers that don't come through _detect_missing_imports.
+            f"uv pip install -q {shlex.quote(package)}",
             retry_policy=RetryPolicy.SAFE,
         )
         exit_code = getattr(result, "exit_code", 1)

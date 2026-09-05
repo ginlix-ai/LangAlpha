@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Loader2 } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import type { ModelStatus } from '../../session/types';
 
 /* Model resilience: the provider is retrying the current
@@ -16,7 +16,9 @@ export function ModelStatusPill({ modelStatus, isLoading }: {
     <div className="flex items-center gap-2 px-3 py-1.5 text-xs"
       role="status" aria-live="polite"
       style={{ color: 'var(--color-text-tertiary)' }}>
-      <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" style={{ color: 'var(--color-accent-primary)' }} />
+      <span aria-hidden="true" className="flex-shrink-0">
+        <Loader size={14} className="text-[color:var(--color-accent-primary)]" />
+      </span>
       {modelStatus.kind === 'retrying'
         ? t('chat.modelRetrying', {
             model: modelStatus.model,

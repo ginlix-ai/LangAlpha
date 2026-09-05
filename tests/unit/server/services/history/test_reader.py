@@ -307,13 +307,120 @@ async def test_task_namespace_transcript():
     assert task_history.newly_offloaded_reads == 1
     assert task_history.new_ui_records == [task_ui]
 
-    # Compatibility surface delegates to the full materialization.
-    messages = await reader.aget_task_messages(THREAD, "tsk1")
-    assert [m.content for m in messages] == ["sub prompt", "subagent reply"]
-
     # The subagent namespace does not leak turn boundaries into the main thread.
     history = await reader.aget_thread_history(THREAD)
     assert len(history.turns) == 1
+
+
+async def test_project_task_transcript_serves_unprojected_lanes(monkeypatch):
+    # On-demand transcript for tasks replay never projects as lanes (workflow
+    # children have no Task-tool launch artifact): the endpoint's projection
+    # must emit the same SSE-shaped items as the lane projector, tagged with
+    # the task's agent id.
+    saver = InMemorySaver()
+    graph = _echo_graph(saver)
+    await _run_turns(graph, 1)
+    sub_graph = (
+        StateGraph(_ReaderState)
+        .add_node(
+            "agent",
+            lambda s: {
+                "messages": [AIMessage(content="child reply", id="sub-ai-1")]
+            },
+        )
+        .add_edge(START, "agent")
+        .compile(checkpointer=saver)
+    )
+    await sub_graph.ainvoke(
+        {"messages": [HumanMessage(content="child prompt", id="sub-h-1")]},
+        {
+            "configurable": {
+                "thread_id": THREAD,
+                "checkpoint_ns": "task:wf1",
+                CONFIG_KEY_TASK_ID: "parent-task",
+            }
+        },
+    )
+    reader = CheckpointHistoryReader(saver)
+    monkeypatch.setattr(
+        CheckpointHistoryReader, "get_instance", classmethod(lambda cls: reader)
+    )
+    from src.server.services.history.replay import task_lane
+    from src.server.services.history.replay.task_lane import (
+        project_task_transcript,
+    )
+
+    monkeypatch.setattr(
+        task_lane,
+        "resolve_task_details",
+        AsyncMock(return_value={"wf1": {"status": "completed"}}),
+    )
+
+    items = await project_task_transcript(THREAD, "wf1")
+
+    assert items
+    assert all(i["data"]["agent"] == "task:wf1" for i in items)
+    events = [i["event"] for i in items]
+    assert "user_message" in events  # the spawn instruction (run boundary)
+    assert "message_chunk" in events  # the child's reply
+    assert "artifact" not in events
+
+    # Unknown task: honest empty, not an error.
+    monkeypatch.setattr(
+        task_lane,
+        "resolve_task_details",
+        AsyncMock(return_value={"nosuch": {"status": "completed"}}),
+    )
+    assert await project_task_transcript(THREAD, "nosuch") == []
+
+
+async def test_project_task_transcript_gates_on_a_settled_task(monkeypatch):
+    # The endpoint promises "the same items replay emits", and replay leaves a
+    # running task's segment to its live stream. The gate has to sit here, not
+    # in the browser: a checkpoint read of a live task freezes a partial
+    # transcript the live writes never reconcile.
+    saver = InMemorySaver()
+    graph = _echo_graph(saver)
+    await _run_turns(graph, 1)
+    sub_graph = (
+        StateGraph(_ReaderState)
+        .add_node(
+            "agent",
+            lambda s: {"messages": [AIMessage(content="partial", id="sub-ai-1")]},
+        )
+        .add_edge(START, "agent")
+        .compile(checkpointer=saver)
+    )
+    await sub_graph.ainvoke(
+        {"messages": [HumanMessage(content="child prompt", id="sub-h-1")]},
+        {
+            "configurable": {
+                "thread_id": THREAD,
+                "checkpoint_ns": "task:wf1",
+                CONFIG_KEY_TASK_ID: "parent-task",
+            }
+        },
+    )
+    reader = CheckpointHistoryReader(saver)
+    monkeypatch.setattr(
+        CheckpointHistoryReader, "get_instance", classmethod(lambda cls: reader)
+    )
+    from src.server.services.history.replay import task_lane
+
+    monkeypatch.setattr(
+        task_lane,
+        "resolve_task_details",
+        AsyncMock(return_value={"wf1": {"status": "running"}}),
+    )
+    assert await task_lane.project_task_transcript(THREAD, "wf1") == []
+
+    # An unresolvable status counts as running, same as the client's rule.
+    monkeypatch.setattr(
+        task_lane,
+        "resolve_task_details",
+        AsyncMock(side_effect=RuntimeError("ledger down")),
+    )
+    assert await task_lane.project_task_transcript(THREAD, "wf1") == []
 
 
 async def test_append_ui_record_no_new_boundary():
@@ -361,7 +468,7 @@ async def test_append_ui_record_skipped_on_interrupted_tip():
     await graph.ainvoke({"messages": [HumanMessage(content="q0", id="h-0")]}, _cfg())
 
     reader = CheckpointHistoryReader(saver)
-    assert await reader._tip_is_interrupted(THREAD) is True
+    assert (await graph.aget_state(_cfg())).next == ("agent",)
 
     await reader.append_ui_record(
         THREAD, "image_capture", {"path_to_url": {"a.png": "https://x/a"}}
@@ -392,6 +499,154 @@ async def test_append_ui_record_skipped_when_interrupt_check_fails(monkeypatch):
 
     interrupt_check.assert_awaited_once()
     update.assert_not_awaited()
+
+
+async def test_append_ui_record_advances_recorded_branch_tip(monkeypatch):
+    # The image-capture hook appends after turn end, creating a checkpoint
+    # beyond the recorded branch tip where the replay walk cannot see it. The
+    # append must CAS the recorded tip from the checkpoint it built on onto
+    # the new one. (The workflow terminal snapshot does NOT come through here
+    # — it writes into task:{id} via persist_task_ui_record, below.)
+    saver = InMemorySaver()
+    graph = _echo_graph(saver)
+    await _run_turns(graph, 1)
+    reader = CheckpointHistoryReader(saver)
+
+    advance = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "src.server.database.conversation.threads_write."
+        "advance_thread_checkpoint_id",
+        advance,
+    )
+    root_cfg = {"configurable": {"thread_id": THREAD}}
+    tip_before = await saver.aget_tuple(root_cfg)
+
+    await reader.append_ui_record(
+        THREAD, "image_capture", {"path_to_url": {"chart.png": "https://x/chart.png"}}
+    )
+
+    tip_after = await saver.aget_tuple(root_cfg)
+    assert advance.await_args.args[0] == THREAD
+    kwargs = advance.await_args.kwargs
+    assert (
+        kwargs["from_checkpoint_id"]
+        == tip_before.config["configurable"]["checkpoint_id"]
+    )
+    assert (
+        kwargs["to_checkpoint_id"]
+        == tip_after.config["configurable"]["checkpoint_id"]
+    )
+    assert kwargs["to_checkpoint_id"] != kwargs["from_checkpoint_id"]
+
+
+async def test_append_ui_record_anchors_to_the_tip_it_read(monkeypatch):
+    # A turn starting on another worker between the tip read and the append
+    # must not re-parent the record onto that turn's uncommitted checkpoint:
+    # the CAS guard is the tip that was read, so an unanchored write would
+    # still pass it and publish partial state as the thread's commit pointer.
+    saver = InMemorySaver()
+    graph = _echo_graph(saver)
+    await _run_turns(graph, 1)
+    reader = CheckpointHistoryReader(saver)
+    root_cfg = {"configurable": {"thread_id": THREAD}}
+    stale_tip = await saver.aget_tuple(root_cfg)
+    stale_id = stale_tip.config["configurable"]["checkpoint_id"]
+
+    # The concurrent turn lands. It has not finalized, so the recorded pointer
+    # still names the turn-1 tip — which is exactly why the CAS would pass.
+    await _run_turns(graph, 1, start=1)
+    moved = await saver.aget_tuple(root_cfg)
+    moved_id = moved.config["configurable"]["checkpoint_id"]
+    assert moved_id != stale_id
+
+    class _StaleTip:
+        """Models the read/write window: the reader holds the older tip."""
+
+        async def aget_tuple(self, config):
+            return stale_tip
+
+    monkeypatch.setattr(reader, "_checkpointer", _StaleTip())
+    advance = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "src.server.database.conversation.threads_write."
+        "advance_thread_checkpoint_id",
+        advance,
+    )
+
+    await reader.append_ui_record(THREAD, "image_capture", {"path_to_url": {}})
+
+    kwargs = advance.await_args.kwargs
+    assert kwargs["from_checkpoint_id"] == stale_id
+    written = await saver.aget_tuple(
+        {
+            "configurable": {
+                "thread_id": THREAD,
+                "checkpoint_id": kwargs["to_checkpoint_id"],
+            }
+        }
+    )
+    # The guard and the write agree on one parent — the whole point.
+    assert written.parent_config["configurable"]["checkpoint_id"] == stale_id
+
+
+async def test_task_ui_snapshot_readable_through_reader():
+    # Cross-layer contract: the workflow driver persists its terminal ui
+    # snapshot middleware-side (through the run's own checkpointer, so the
+    # writer-guard fence applies), and the server reader materializes it. The
+    # snapshot may land while the launching turn is still executing — a
+    # root-ns append there forks a dead branch — so the writer must (a)
+    # surface via aget_task_history, (b) upsert by record id, and (c) leave
+    # the root chain untouched.
+    from ptc_agent.agent.middleware.background_subagent.workflow.ui_snapshot import (
+        persist_task_ui_record,
+    )
+
+    saver = InMemorySaver()
+    graph = _echo_graph(saver)
+    await _run_turns(graph, 1)
+    reader = CheckpointHistoryReader(saver)
+    root_cfg = {"configurable": {"thread_id": THREAD}}
+    tip_before = await saver.aget_tuple(root_cfg)
+
+    await persist_task_ui_record(
+        saver,
+        THREAD,
+        "wf1",
+        "workflow_run",
+        {"task_id": "wf1", "frames": [{"phase": "run_started"}]},
+        record_id="workflow-run-r1",
+    )
+    await persist_task_ui_record(
+        saver,
+        THREAD,
+        "wf1",
+        "workflow_run",
+        {
+            "task_id": "wf1",
+            "frames": [{"phase": "run_started"}, {"phase": "run_completed"}],
+        },
+        record_id="workflow-run-r1",
+    )
+
+    task_history = await reader.aget_task_history(THREAD, "wf1")
+    records = [
+        r for r in task_history.new_ui_records if r["id"] == "workflow-run-r1"
+    ]
+    assert len(records) == 1  # same-id rewrite upserts, never duplicates
+    assert [f["phase"] for f in records[0]["props"]["frames"]] == [
+        "run_started",
+        "run_completed",
+    ]
+
+    # Root chain untouched: same tip, no root ui records, no new boundary.
+    tip_after = await saver.aget_tuple(root_cfg)
+    assert (
+        tip_after.config["configurable"]["checkpoint_id"]
+        == tip_before.config["configurable"]["checkpoint_id"]
+    )
+    history = await reader.aget_thread_history(THREAD)
+    assert history.ui == []
+    assert len(history.turns) == 1
 
 
 async def test_new_ui_records_attributed_to_their_turn():

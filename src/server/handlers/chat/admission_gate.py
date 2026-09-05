@@ -56,7 +56,7 @@ def admission_conflict_detail(state: str) -> dict:
     if state == "stopping":
         return {
             "code": "stopping",
-            "message": "The workflow is stopping. Wait a moment, then retry.",
+            "message": "The turn is stopping. Wait a moment, then retry.",
         }
     if state == "compacting":
         return {
@@ -66,12 +66,12 @@ def admission_conflict_detail(state: str) -> dict:
     if state == "not_running":
         return {
             "code": "not_running",
-            "message": "No workflow is running to steer. Resubmit as a new message.",
+            "message": "No turn is running to steer. Resubmit as a new message.",
         }
     return {
         "code": "running",
         "message": (
-            "The workflow is still running. Wait a moment, then retry — "
+            "The turn is still running. Wait a moment, then retry — "
             "or use /reconnect to continue streaming, or /cancel to stop it."
         ),
     }

@@ -10,6 +10,7 @@ import structlog
 from langchain_core.tools import tool
 
 from ptc_agent.agent.backends import FilesystemBackend, ReadOnlyStoreError
+from ptc_agent.core.paths import MEMO_USER_DIR
 from src.server.services.user_data_io import UserDataValidationError
 
 logger = structlog.get_logger(__name__)
@@ -27,7 +28,29 @@ VISUAL_EXTENSIONS = IMAGE_EXTENSIONS | DOCUMENT_EXTENSIONS
 # tier; serve their extracted text through the regular read path instead of
 # the multimodal/document middleware (which is wired to the sandbox FS, not
 # the composite memo backend).
-_MEMO_TEXT_PREFIX = ".agents/user/memo/"
+_MEMO_TEXT_PREFIX = f"{MEMO_USER_DIR}/"
+
+
+def is_memo_text_path(file_path: str) -> bool:
+    """Whether this path lives in the store-backed memo tier, not the sandbox FS.
+
+    Both the Read tool and MultimodalMiddleware classify against this, and they
+    have to agree: if the middleware disagrees it intercepts a memo PDF, looks
+    for it on the sandbox FS, and replaces the extracted text the tool just
+    returned with a not-found error. Note this is a location test, not a content
+    test — it answers True for a memo *image* too, which the read path then
+    serves as text. That is a pre-existing gap in the memo tier (binaries have
+    no public URL either), not something the caller can distinguish here.
+    """
+    # Glob/Grep virtualize store-backed matches as ``/.agents/...`` and users
+    # may pass ``./.agents/...`` from a relative cwd. ``lstrip`` would strip
+    # every leading ``.`` and ``/`` indiscriminately (it's a charset, not a
+    # substring), so we match each literal prefix.
+    if file_path.startswith("./"):
+        file_path = file_path[2:]
+    elif file_path.startswith("/"):
+        file_path = file_path[1:]
+    return file_path.startswith(_MEMO_TEXT_PREFIX)
 
 # Type alias for operation callback
 OperationCallback = Callable[[dict[str, Any]], None]
@@ -58,20 +81,19 @@ def create_filesystem_tools(
 
     @tool("Read")
     async def read_file(file_path: str, offset: int | None = None, limit: int | None = None) -> str:
-        """Read a file with line numbers (cat -n format). Also supports images (PNG, JPG, GIF, WebP), PDFs, and URLs.
-
-        Output is capped to protect the context window: at most ``limit`` lines
-        (default 2000) and at most ~160k characters of formatted output. If
-        either cap fires, the result ends with a marker telling you how to
-        continue with a follow-up Read.
+        """Read a file. Also supports images (PNG, JPG, GIF, WebP), PDFs and URLs.
 
         Args:
-            file_path: Path to file (relative or absolute), or image/PDF URL.
-            offset: Line offset (0-indexed). Default: 0. Ignored for images/PDFs.
-            limit: Maximum number of lines. Default: 2000. Ignored for images/PDFs.
+            file_path: Path to file (relative or absolute), or an image/PDF URL.
+            offset: Line offset (0-indexed). Default 0. Ignored for images/PDFs.
+            limit: Maximum number of lines. Default 2000. Ignored for images/PDFs.
 
         Returns:
-            File contents with line numbers, document loading confirmation, or ERROR.
+            File contents prefixed with line numbers (cat -n format), capped at
+            `limit` lines and ~160k characters. If a cap fires the output ends with
+            a marker giving the offset to resume from.
+
+        Strip the line-number prefix before passing text to Edit.
         """
         try:
             # Middleware injects the actual content; this return is just a sentinel.
@@ -84,17 +106,7 @@ def create_filesystem_tools(
             # in the store and the multimodal middleware would otherwise fail
             # to find the file on the sandbox FS.
             suffix = Path(file_path).suffix.lower()
-            # Glob/Grep virtualize store-backed matches as ``/.agents/...`` and
-            # users may pass ``./.agents/...`` from a relative cwd. ``lstrip``
-            # would strip every leading ``.`` and ``/`` indiscriminately (it's
-            # a charset, not a substring), so we match each literal prefix.
-            _stripped = file_path
-            if _stripped.startswith("./"):
-                _stripped = _stripped[2:]
-            elif _stripped.startswith("/"):
-                _stripped = _stripped[1:]
-            is_memo_path = _stripped.startswith(_MEMO_TEXT_PREFIX)
-            if suffix in VISUAL_EXTENSIONS and not is_memo_path:
+            if suffix in VISUAL_EXTENSIONS and not is_memo_text_path(file_path):
                 # Validate the path exists before returning acknowledgment
                 normalized_path = backend.normalize_path(file_path)
                 logger.info("Loading image file", file_path=file_path, normalized_path=normalized_path)
@@ -209,7 +221,13 @@ def create_filesystem_tools(
 
     @tool("Write")
     async def write_file(file_path: str, content: str) -> str:
-        """Write content to a file. Overwrites existing."""
+        """Write content to a file. Overwrites existing.
+
+        Args:
+            file_path: Path to the file, relative to the workspace.
+            content: The complete file contents. There is no append mode — to add to
+                a file, Read it and write back the full text.
+        """
         try:
             normalized_path = backend.normalize_path(file_path)
             logger.info("Writing file", file_path=file_path, normalized_path=normalized_path, size=len(content))
@@ -256,7 +274,16 @@ def create_filesystem_tools(
 
     @tool("Edit")
     async def edit_file(file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
-        """Replace exact string in a file. Must Read file first."""
+        """Replace exact string in a file. Must Read file first.
+
+        Args:
+            file_path: Path to the file.
+            old_string: Text to replace. Must match the file exactly, including
+                indentation, and must be unique unless replace_all is set.
+            new_string: Replacement text.
+            replace_all: Replace every occurrence instead of requiring a unique
+                match. Default False.
+        """
         try:
             normalized_path = backend.normalize_path(file_path)
             logger.info(

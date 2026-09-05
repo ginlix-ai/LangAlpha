@@ -1,6 +1,6 @@
 """Retry middleware for empty tool_calls with tool_use stop_reason.
 
-Some LLM providers (e.g. dashscope-coding with qwen models) may return
+Some LLM providers (observed on Anthropic-protocol coding-plan routes) may return
 stop_reason="tool_use" but with an empty tool_calls list — the model intended
 to call tools but the content was malformed/truncated and the SDK silently
 dropped it.  LangGraph sees empty tool_calls and routes to __END__, stopping

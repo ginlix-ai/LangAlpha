@@ -36,6 +36,10 @@ class StoreContentTooLargeError(ValueError):
     """Raised when a write would exceed ``MAX_CONTENT_BYTES``."""
 
 
+class StoreListingIncomplete(RuntimeError):
+    """A namespace walk ended early, so absence cannot be concluded from it."""
+
+
 class ReadOnlyStoreError(PermissionError):
     """Raised when ``awrite_text`` is called against a read-only tier.
 
@@ -271,7 +275,18 @@ class StoreBackend:
         new_string: str,
         *,
         replace_all: bool = False,
+        base_content: str | None = None,
+        max_bytes: int | None = None,
     ) -> dict[str, Any]:
+        """Edit a stored file; ``base_content`` forks it when the key is absent.
+
+        An overlay tier (shipped scripts shadowed by the user's own) passes the
+        shipped source so the fork and the edit land as one ``aput`` under this
+        lock — two separate writes would race, skip the size check, and report
+        success even when the fork never persisted. ``max_bytes`` lets a tier
+        whose own limit is tighter than the store's apply it to the edited
+        result; it can only tighten.
+        """
         if self._read_only:
             return {"success": False, "error": self._read_only_error}
         try:
@@ -302,8 +317,11 @@ class StoreBackend:
                     "error": "Long-term store timed out. Retry shortly.",
                 }
             if item is None:
-                return {"success": False, "error": f"File not found: {file_path}"}
-            content = self._content_from_value(item.value)
+                if base_content is None:
+                    return {"success": False, "error": f"File not found: {file_path}"}
+                content: str | None = base_content
+            else:
+                content = self._content_from_value(item.value)
             if content is None:
                 return {
                     "success": False,
@@ -327,16 +345,19 @@ class StoreBackend:
             else:
                 new_content = content.replace(old_string, new_string, 1)
 
-            if len(new_content.encode("utf-8")) > MAX_CONTENT_BYTES:
+            cap = min(max_bytes or MAX_CONTENT_BYTES, MAX_CONTENT_BYTES)
+            if len(new_content.encode("utf-8")) > cap:
                 return {
                     "success": False,
                     "error": (
-                        f"Edit would grow content past {MAX_CONTENT_BYTES} bytes; "
+                        f"Edit would grow content past {cap} bytes; "
                         "split the file or shorten the replacement."
                     ),
                 }
 
-            value = self._build_value(content=new_content, existing=item.value)
+            value = self._build_value(
+                content=new_content, existing=item.value if item else None
+            )
             try:
                 await asyncio.wait_for(
                     self._store.aput(namespace, key, value),
@@ -368,7 +389,7 @@ class StoreBackend:
             ),
         }
 
-    async def _all_items(self) -> list[Any]:
+    async def _all_items(self, *, strict: bool = False) -> list[Any]:
         """Page through every Item under the backend's namespace.
 
         Pages are fetched in fan-out batches of ``fanout`` so that a 300-key
@@ -378,6 +399,12 @@ class StoreBackend:
         offset and stop. Tiny namespaces (≤ page_size) issue exactly one
         round-trip in either implementation, so there's no overhead in the
         common case.
+
+        A timed-out page ends the walk with what it has, which reads as a
+        short listing and not as a failure — right for search and grep, where
+        partial beats nothing. ``strict`` is for the callers that infer
+        absence from a miss, and for whom a truncated listing and an empty
+        namespace must not look alike.
         """
         namespace = self._namespace()
         page_size = 100
@@ -407,6 +434,10 @@ class StoreBackend:
                     offset=offset,
                     timeout_s=_STORE_OP_TIMEOUT_S,
                 )
+                if strict:
+                    raise StoreListingIncomplete(
+                        f"listing {namespace} timed out at offset {offset}"
+                    ) from None
                 break
             stop = False
             for page in pages:
@@ -425,7 +456,9 @@ class StoreBackend:
     def _absolute(self, key: str) -> str:
         return f"{self._root_prefix}{key}"
 
-    async def aglob_paths(self, pattern: str, path: str = ".") -> list[str]:
+    async def aglob_paths(
+        self, pattern: str, path: str = ".", *, strict: bool = False
+    ) -> list[str]:
         normalized_path = self.normalize_path(path)
         try:
             subtree = ""
@@ -436,7 +469,7 @@ class StoreBackend:
         except Exception:
             return []
 
-        items = await self._all_items()
+        items = await self._all_items(strict=strict)
         out: list[str] = []
         for item in items:
             key = str(item.key)

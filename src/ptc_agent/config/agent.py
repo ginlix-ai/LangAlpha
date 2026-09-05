@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ptc_agent.config.plugins import bundled_skill_dirs
 from ptc_agent.config.core import (
     CoreConfig,
     DaytonaConfig,
@@ -58,6 +59,12 @@ class CompactionConfig(BaseModel):
     truncate_args_keep_messages: int = 20
     truncate_args_max_length: int = 2000
 
+    #: Which named preset the numbers above came from, stamped by
+    #: ``resolve_llm_config``. None means they are the deployment's own YAML
+    #: values, which is the honest answer for a model that declares no context
+    #: window. Reported, never read: the knobs are the behavior.
+    profile: str | None = None
+
 
 # Named presets that bundle the three user-facing compaction knobs
 # (token_threshold, truncate_args_trigger_messages, keep_messages). Applied at
@@ -100,6 +107,25 @@ class FlashConfig(BaseModel):
     enabled: bool = True
 
 
+#: The operator's own drop-in directory, and the one place to override a
+#: shipped skill. Absolute rather than relative to the working directory, so it
+#: means the same thing whether the server was started from the repo or from
+#: anywhere else.
+DEFAULT_USER_SKILLS_DIR = "~/.ptc-agent/skills"
+
+
+def host_skill_dirs(user_skills_dir: str = DEFAULT_USER_SKILLS_DIR) -> list[Path]:
+    """Every host-side skill source, in the order that resolves them.
+
+    Last wins, so the operator's directory comes after the bundles. Two
+    readers that never build a config -- skill-name reservation and the
+    content route -- have to name the same sources in the same order as
+    delivery does, because both answer questions about the file the agent will
+    actually load.
+    """
+    return [*bundled_skill_dirs(), Path(user_skills_dir).expanduser()]
+
+
 class SkillsConfig(BaseModel):
     """Skills configuration for agent capabilities.
 
@@ -107,35 +133,34 @@ class SkillsConfig(BaseModel):
     Each skill is a directory containing a SKILL.md file with YAML frontmatter.
 
     Resolution and precedence:
-    - Skills are sourced from both user and project directories.
-    - Project skills override user skills when names conflict.
+    - Skills are sourced from the shipped bundles, then the user directory.
+    - A later source overrides an earlier one when names conflict, so an
+      operator can replace a shipped skill by dropping one of the same name
+      into ``user_skills_dir``.
     """
 
     enabled: bool = True
-    user_skills_dir: str = "~/.ptc-agent/skills"
-    project_skills_dir: str = (
-        "skills"  # Project skills directory (relative to project root)
-    )
+    #: See ``DEFAULT_USER_SKILLS_DIR``.
+    user_skills_dir: str = DEFAULT_USER_SKILLS_DIR
     sandbox_skills_base: str = "/home/workspace/.agents/skills"  # Where skills live in sandbox
 
-    def local_skill_dirs_with_sandbox(
-        self, *, cwd: Path | None = None
-    ) -> list[tuple[str, str]]:
+    def local_skill_dirs_with_sandbox(self) -> list[tuple[str, str]]:
         """Return ordered (local_dir, sandbox_dir) sources.
 
         Precedence is last-wins (later sources override earlier ones).
-        Order: user skills < project skills (project wins on conflict).
+        Order: bundled skills < user skills.
+
+        Nothing here depends on the working directory. Both sources resolve
+        from somewhere fixed — the bundles from the installed source, the
+        operator's from their home — so a server started from anywhere finds
+        the same skills, which a directory relative to ``cwd`` could not
+        promise once the shipped skills moved into the bundles that declare
+        them.
         """
-        base = cwd or Path.cwd()
-
-        user_dir = str(Path(self.user_skills_dir).expanduser())
-        project_dir = str((base / self.project_skills_dir).resolve())
-
-        sources: list[tuple[str, str]] = [
-            (user_dir, self.sandbox_skills_base),
-            (project_dir, self.sandbox_skills_base),
+        return [
+            (str(d), self.sandbox_skills_base)
+            for d in host_skill_dirs(self.user_skills_dir)
         ]
-        return sources
 
 
 class SubagentConfig(BaseModel):
@@ -194,6 +219,16 @@ class LLMConfig(BaseModel):
     fetch: str | None = None  # LLM for web content extraction (fetch tool)
     fallback: list[str] | None = None  # Fallback model names for retry exhaustion
 
+    @property
+    def flash_name(self) -> str:
+        """The model a flash turn actually runs on, resolving the ``name`` fallback.
+
+        Callers outside the flash agent (metadata, tuning lookups) have to agree
+        with it on which model that is, so the rule lives here rather than being
+        spelled out at each site.
+        """
+        return self.flash or self.name
+
 
 class AgentConfig(BaseModel):
     """Agent-specific configuration.
@@ -221,15 +256,17 @@ class AgentConfig(BaseModel):
     # Custom model input modalities override (set by resolve_llm_config for custom models)
     input_modalities: list[str] | None = None
 
-    # Vision tool configuration
-    # If True, enable view_image tool for viewing images (requires vision-capable model)
-    enable_view_image: bool = True
-
     # Subagent configuration
     subagents: SubagentsConfig = Field(default_factory=SubagentsConfig)
 
     # Compaction middleware configuration
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
+
+    #: How much prompt scaffolding the main model gets, resolved per model and
+    #: stamped by ``resolve_llm_config``, the twin of ``CompactionConfig
+    #: .profile``. None means nobody resolved it, and the agents fall back to
+    #: what the deployment and the manifest declare.
+    prompt_guidance: str | None = None
 
     # Search API provider (tavily, serper, bocha, exa, parallel)
     search_api: str = "tavily"
@@ -271,6 +308,10 @@ class AgentConfig(BaseModel):
         default=CredentialSource.NONE, exclude=True
     )
     subsidiary_llm_clients: dict[str, Any] = Field(default_factory=dict, exclude=True)
+    # Scaffolding level per role key, for the model that role actually runs.
+    # Written alongside the clients above, because a role without a client of
+    # its own still runs a model: by name, or by inheriting the main one.
+    role_prompt_guidance: dict[str, str] = Field(default_factory=dict, exclude=True)
     fallback_llm_clients: list[Any] | None = Field(default=None, exclude=True)  # Pre-resolved fallback instances
     # Display names aligned index-for-index with ``fallback_llm_clients``
     # (skipped fallbacks drop from both lists).
@@ -281,6 +322,21 @@ class AgentConfig(BaseModel):
     # Per-user resolved feature flags, set by ``resolve_llm_config``. None
     # (entry points that skip resolution) falls back to system defaults.
     features: dict[str, bool] | None = Field(default=None, exclude=True)
+    # Per-user skill tier, set by ``resolve_llm_config``: uploaded skill specs
+    # (duck-typed name/description/command), the host dir materializing their
+    # bodies, and builtin skill names the user disabled. Not to be confused
+    # with ``SkillsConfig.user_skills_dir``, a config-file path.
+    user_skills: list[Any] = Field(default_factory=list, exclude=True)
+    disabled_skills: frozenset[str] = Field(default_factory=frozenset, exclude=True)
+    user_skill_dir: str | None = Field(default=None, exclude=True)
+    # Workspace-tier bodies: a second host dir, because the sandbox delivery
+    # path uploads ``user_skill_dir`` wholesale and must not touch these.
+    workspace_skill_dir: str | None = Field(default=None, exclude=True)
+    # Platform-skill command renames (skill name → alias); the alias replaces
+    # the registry command as the slash trigger for this user.
+    skill_command_overrides: dict[str, str] = Field(
+        default_factory=dict, exclude=True
+    )
     config_file_dir: Path | None = Field(
         default=None, exclude=True
     )  # For path resolution
@@ -324,7 +380,6 @@ class AgentConfig(BaseModel):
             log_level: Logging level (default: "INFO")
             allowed_directories: Sandbox paths (default: ["/home/workspace", "/tmp"])
             subagents: SubagentsConfig or use subagents_enabled for backward compat
-            enable_view_image: Enable image viewing (default: True)
             background_auto_wait: Wait for background tasks (default: False)
 
         Returns:
@@ -451,7 +506,6 @@ class AgentConfig(BaseModel):
         skills_config = SkillsConfig(
             enabled=kwargs.pop("skills_enabled", True),
             user_skills_dir=kwargs.pop("user_skills_dir", "~/.ptc-agent/skills"),
-            project_skills_dir=kwargs.pop("project_skills_dir", "skills"),
             sandbox_skills_base=kwargs.pop(
                 "sandbox_skills_base",
                 f"{filesystem_config.working_directory}/.agents/skills",
@@ -473,7 +527,6 @@ class AgentConfig(BaseModel):
             logging=logging_config,
             filesystem=filesystem_config,
             skills=skills_config,
-            enable_view_image=kwargs.pop("enable_view_image", True),
             subagents=SubagentsConfig(
                 enabled=kwargs.pop("subagents_enabled", ["general-purpose"]),
                 definitions=kwargs.pop("subagents_definitions", {}),
@@ -548,6 +601,14 @@ class AgentConfig(BaseModel):
             return None
         main = self.llm_client
         return main.model_copy() if main is not None else None
+
+    def prompt_guidance_for_role(self, role: str) -> str | None:
+        """Scaffolding level for the model this role actually runs.
+
+        Pinned roles run their own model, so sizing their prompt for the main
+        one is the drift ``resolve_llm_config`` records this to prevent.
+        """
+        return self.role_prompt_guidance.get(role) or self.prompt_guidance
 
     def to_core_config(self) -> CoreConfig:
         """Convert to CoreConfig for use with SessionManager.

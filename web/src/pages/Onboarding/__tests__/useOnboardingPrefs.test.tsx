@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 
 const mockWrite = vi.fn().mockReturnValue(true);
+const mockRemoteUpdateGen = { current: 0 };
 vi.mock('../onboardingPrefsWriter', () => ({
-  useOnboardingPrefsWriter: () => ({ writeOnboardingPrefs: mockWrite }),
+  useOnboardingPrefsWriter: () => ({ writeOnboardingPrefs: mockWrite, remoteUpdateGen: mockRemoteUpdateGen }),
 }));
 
 let mockPreferences: unknown = { other_preference: {} };
@@ -26,6 +27,7 @@ function applyUpdater(callIndex: number, cur: OnboardingPrefs): OnboardingPrefs 
 describe('useOnboardingPrefs', () => {
   beforeEach(() => {
     mockWrite.mockClear();
+    mockRemoteUpdateGen.current = 0;
     mockPreferences = { other_preference: {} };
     mockLoading = false;
     localStorage.clear();
@@ -65,6 +67,61 @@ describe('useOnboardingPrefs', () => {
     expect(
       applyUpdater(0, { ...emptyOnboardingPrefs(), pageIntrosSeen: { chat: 5 } })
     ).toBeNull();
+  });
+
+  it('markTaskDone attempts each task once per session, even when the write never lands', () => {
+    // A rejected PUT rolls the cache back and then refetches: two new prefs
+    // identities, both still unstamped. Callers stamp from effects keyed on
+    // those prefs (route visits, the stocks and workspace probes), so the
+    // guard has to live here or the same write is re-sent in a tight loop.
+    // The writer accepts the attempt (true); the PUT fails later, async.
+    const { result } = renderHook(() => useOnboardingPrefs());
+    act(() => {
+      result.current.markTaskDone('dashboard');
+      result.current.markTaskDone('dashboard');
+    });
+    expect(mockWrite).toHaveBeenCalledTimes(1);
+
+    // Another task is unaffected.
+    act(() => result.current.markTaskDone('stocks'));
+    expect(mockWrite).toHaveBeenCalledTimes(2);
+
+    // A reset un-stamps every task, so its attempt starts over.
+    act(() => {
+      result.current.resetAll();
+      result.current.markTaskDone('dashboard');
+    });
+    expect(mockWrite).toHaveBeenCalledTimes(4);
+  });
+
+  it('markTaskDone tries again after another tab lands a write, never on its own', () => {
+    const { result } = renderHook(() => useOnboardingPrefs());
+    act(() => result.current.markTaskDone('dashboard'));
+    act(() => result.current.markTaskDone('dashboard'));
+    expect(mockWrite).toHaveBeenCalledTimes(1);
+
+    // Another tab reset the guides: its write bumps the remote count, and the
+    // task this tab already gave up on is unstamped again on the server.
+    mockRemoteUpdateGen.current += 1;
+    act(() => result.current.markTaskDone('dashboard'));
+    expect(mockWrite).toHaveBeenCalledTimes(2);
+    // Still one attempt per remote update, not a loop.
+    act(() => result.current.markTaskDone('dashboard'));
+    expect(mockWrite).toHaveBeenCalledTimes(2);
+  });
+
+  it('markTaskDone does not spend its attempt on a cold-cache refusal', () => {
+    // The prefs query failed once: preferences is null with isLoading false,
+    // so the guard is reached but the writer refuses (false). A later refetch
+    // fills the cache; the visit effect runs again and must still stamp.
+    mockWrite.mockReturnValueOnce(false);
+    const { result } = renderHook(() => useOnboardingPrefs());
+    act(() => result.current.markTaskDone('dashboard'));
+    act(() => result.current.markTaskDone('dashboard'));
+    expect(mockWrite).toHaveBeenCalledTimes(2);
+    // Accepted the second time: from here it is once per session.
+    act(() => result.current.markTaskDone('dashboard'));
+    expect(mockWrite).toHaveBeenCalledTimes(2);
   });
 
   it('markTaskDone stamps once and aborts when already done', () => {

@@ -1,8 +1,8 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Loader } from '@/components/ui/loader';
 import { Input } from '@/components/ui/input';
 import { ApiKeyInput, type TestResult } from '@/components/model/ApiKeyInput';
 import { useUpdateApiKeys } from '@/hooks/useApiKeys';
@@ -234,7 +234,7 @@ export function ApiKeyConnect({ state }: { state: LocationState }) {
               <button
                 type="button"
                 onClick={() => setBaseUrl(effectiveBaseUrl)}
-                className="text-[11px]"
+                className="text-[0.6875rem]"
                 style={{ color: 'var(--color-accent-primary)' }}
               >
                 {t('setup.resetToDefault')}
@@ -249,7 +249,7 @@ export function ApiKeyConnect({ state }: { state: LocationState }) {
             className="font-mono text-xs"
           />
           {effectiveBaseUrl && baseUrl !== effectiveBaseUrl && baseUrl.trim() !== '' && (
-            <p className="text-[11px]" style={{ color: 'var(--color-warning, #f59e0b)' }}>
+            <p className="text-[0.6875rem]" style={{ color: 'var(--color-warning, #f59e0b)' }}>
               {t('setup.customUrlWarning', { url: effectiveBaseUrl })}
             </p>
           )}
@@ -295,7 +295,9 @@ export function ApiKeyConnect({ state }: { state: LocationState }) {
         >
           {saving ? (
             <>
-              <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+              <span aria-hidden="true" className="mr-1.5 flex-shrink-0">
+                <Loader size={16} className="text-current" />
+              </span>
               {t('setup.saving')}
             </>
           ) : (

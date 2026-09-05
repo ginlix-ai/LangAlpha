@@ -42,8 +42,11 @@ async def _wait_for_subagent_task(thread_id: str, task_id: str) -> Any:
     the producer has registered anywhere.
     """
     registry_store = BackgroundRegistryStore.get_instance()
-    waited = 0.0
-    while waited < _SUBAGENT_STARTUP_TIMEOUT:
+    # Wall-clock deadline: the two awaited reads per round are not free, and
+    # summing only the sleeps let the bound overrun by however long they took.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _SUBAGENT_STARTUP_TIMEOUT
+    while loop.time() < deadline:
         registry = await registry_store.get_registry(thread_id)
         if registry is not None:
             task = await registry.get_task_by_task_id(task_id)
@@ -52,7 +55,6 @@ async def _wait_for_subagent_task(thread_id: str, task_id: str) -> Any:
         if await read_task_meta(thread_id, task_id) is not None:
             return None
         await asyncio.sleep(_SUBAGENT_STARTUP_POLL)
-        waited += _SUBAGENT_STARTUP_POLL
     return None
 
 

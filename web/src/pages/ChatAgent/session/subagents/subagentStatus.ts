@@ -47,6 +47,8 @@ export function isTerminalStatus(
  * artifact is never a failure. For Task results this is the settle-or-spin
  * discriminator: a failed spawn opens no channel, so no chan_close will ever
  * arrive — the caller must stamp 'error' from this signal alone.
+ * Case-insensitive: older persisted turns carry "ERROR: …" spawn failures
+ * (pre-normalization RunWorkflow), which must settle the same way.
  */
 export function isToolResultFailure(result: {
   content?: unknown;
@@ -54,7 +56,7 @@ export function isToolResultFailure(result: {
 }): boolean {
   return (
     typeof result.content === 'string' &&
-    result.content.trim().startsWith('Error') &&
+    result.content.trim().slice(0, 5).toLowerCase() === 'error' &&
     !result.artifact
   );
 }
@@ -102,4 +104,56 @@ export function deriveSubagentStatus(agent: {
   // promote to 'active' once any content has streamed, else hold 'initializing'.
   const hasMessages = !!agent.messages && agent.messages.length > 0;
   return hasMessages ? 'active' : 'initializing';
+}
+
+/** The only agent fields a nav-tree row renders. Rows are projected once at
+ * the publisher (useSubagentTabs) with identity kept stable while these
+ * fields are unchanged — that stability is what keeps streamed subagent
+ * chunks from re-rendering the whole tree. */
+export interface SidebarAgentRow {
+  id: string;
+  name: string;
+  description: string;
+  isMainAgent: boolean;
+  status: SubagentDisplayStatus;
+}
+
+export function toSidebarAgentRow(agent: {
+  id: string;
+  name: string;
+  description?: string;
+  isMainAgent?: boolean;
+  status?: string;
+  messages?: unknown[];
+}): SidebarAgentRow {
+  return {
+    id: agent.id,
+    name: agent.name,
+    // JSON wire shape may carry null (or other non-strings) — normalize here
+    // so row consumers can trim/render without re-guarding.
+    description: typeof agent.description === 'string' ? agent.description : '',
+    isMainAgent: !!agent.isMainAgent,
+    status: agent.isMainAgent ? 'active' : deriveSubagentStatus(agent),
+  };
+}
+
+export function sidebarAgentRowsEqual(
+  a: readonly SidebarAgentRow[],
+  b: readonly SidebarAgentRow[],
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (
+      x.id !== y.id ||
+      x.name !== y.name ||
+      x.description !== y.description ||
+      x.isMainAgent !== y.isMainAgent ||
+      x.status !== y.status
+    ) {
+      return false;
+    }
+  }
+  return true;
 }

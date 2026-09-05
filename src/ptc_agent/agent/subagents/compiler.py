@@ -14,8 +14,13 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from ptc_agent.agent.middleware.skills.content import load_skill_content
-from ptc_agent.agent.middleware.skills.registry import SKILL_REGISTRY
-from ptc_agent.agent.prompts import build_tool_summary_from_registry, get_loader
+from ptc_agent.agent.middleware.skills.registry import SKILL_REGISTRY, SkillDefinition
+from ptc_agent.agent.prompts import (
+    build_tool_summary_from_registry,
+    get_loader,
+    guidance_template_vars,
+    resolve_prompt_guidance,
+)
 from ptc_agent.agent.subagents.definition import SubagentDefinition
 
 if TYPE_CHECKING:
@@ -71,6 +76,8 @@ class SubagentCompiler:
         current_time: str | None = None,
         thread_id: str = "",
         config: AgentConfig | None = None,
+        skill_registry: dict[str, SkillDefinition] | None = None,
+        skill_dirs: list[str] | None = None,
     ) -> None:
         self._sandbox = sandbox
         self._mcp_registry = mcp_registry
@@ -79,27 +86,32 @@ class SubagentCompiler:
         self._current_time = current_time
         self._thread_id = thread_id
         self._config = config
+        # Per-build registry (feature gates + user disables + user skills),
+        # authoritative when provided; None (bare/test construction) keeps the
+        # global-registry behavior.
+        self._skill_registry = skill_registry
+        self._skill_dirs = skill_dirs
 
     # ── Public API ────────────────────────────────────────────────────
 
     def compile(self, definition: SubagentDefinition) -> dict[str, Any]:
         """Compile a single definition into a ``SubAgent`` TypedDict."""
-        prompt = self._resolve_prompt(definition)
-        tools = self._resolve_tools(definition)
-
         result: dict[str, Any] = {
             "name": definition.name,
             "description": definition.description,
-            "system_prompt": prompt,
-            "tools": tools,
+            "system_prompt": self._resolve_prompt(definition),
+            "tools": self._resolve_tools(definition),
         }
 
-        # Resolved client (credentialed user) overrides the string model name.
-        resolved = None
-        if self._config is not None:
-            resolved = self._config.client_for_role(
+        # A credentialed user's resolved client outranks the definition's
+        # string model name.
+        resolved = (
+            self._config.client_for_role(
                 f"subagent:{definition.name}", fallback_to_main=False
             )
+            if self._config is not None
+            else None
+        )
         model = resolved if resolved is not None else definition.model
         if model is not None:
             result["model"] = model
@@ -133,14 +145,8 @@ class SubagentCompiler:
             "thread_id": self._thread_id,
             "max_iterations": defn.max_iterations,
             "user_profile": self._user_profile,
-            # Must mirror the per-user tool binding (agent.py gates watch_market
-            # out of the finance tool set) — the yaml default (true) would
-            # otherwise advertise an uncallable tool in subagent prompts.
-            "market_watch_enabled": (
-                self._config.feature_enabled("market_watch")
-                if self._config is not None
-                else False
-            ),
+            **self._tool_gates(defn),
+            **guidance_template_vars(self._guidance(defn)),
         }
         # Pass working_directory so workspace_paths template can use it
         if self._sandbox is not None and hasattr(self._sandbox, "config"):
@@ -168,6 +174,44 @@ class SubagentCompiler:
             **template_kwargs,
         )
 
+    def _tool_gates(self, defn: SubagentDefinition) -> dict[str, bool]:
+        """Which tool tiers this subagent's prompt is allowed to advertise.
+
+        The tool guide is shared, the tool sets are not: report-builder binds
+        neither finance nor web, no subagent binds show_widget, and the yaml
+        default for market_watch (true) would advertise a tool ``agent.py`` has
+        already gated out of this user's finance set.
+        """
+        bound = set(defn.tools)
+        market_watch = (
+            self._config is not None
+            and self._config.feature_enabled("market_watch")
+            and "finance" in bound
+        )
+        return {
+            "market_watch_enabled": market_watch,
+            "show_widget_enabled": "show_widget" in bound,
+            "finance_enabled": "finance" in bound,
+            "web_enabled": "web_search" in bound,
+        }
+
+    def _guidance(self, defn: SubagentDefinition) -> str:
+        """Scaffolding level for the model this subagent runs.
+
+        ``resolve_llm_config`` settles it per role and stamps it on the config,
+        so a subagent pinned to its own model is scaffolded for that model
+        rather than for whatever the orchestrator runs. The manifest probe is
+        the floor under a build that never went through the resolver.
+        """
+        config = self._config
+        if config is None:
+            return resolve_prompt_guidance(None)
+        return config.prompt_guidance_for_role(
+            f"subagent:{defn.name}"
+        ) or resolve_prompt_guidance(
+            defn.model or (config.llm.name if config.llm else None)
+        )
+
     def _identity_line(self, defn: SubagentDefinition) -> str:
         """Build the first-line identity for a subagent."""
         return f"You are a {defn.name} task execution sub-agent."
@@ -191,7 +235,9 @@ class SubagentCompiler:
             return ""
         parts: list[str] = []
         for skill_name in defn.preload_skills:
-            content = load_skill_content(skill_name)
+            content = load_skill_content(
+                skill_name, self._skill_dirs, registry=self._skill_registry
+            )
             if content:
                 parts.append(f"## Skill: {skill_name}\n\n{content}")
             else:
@@ -217,10 +263,13 @@ class SubagentCompiler:
                     available=list(self._tool_sets),
                 )
 
-        # 2. Resolve skills (both runtime and preload) → add skill tools
+        # 2. Resolve skills (both runtime and preload) → add skill tools.
+        # The per-build registry keeps a skill the main agent dropped (feature
+        # gate, user disable) from handing its tools to a subagent anyway.
+        registry = self._skill_registry if self._skill_registry is not None else SKILL_REGISTRY
         all_skill_names = set(defn.skills) | set(defn.preload_skills)
         for skill_name in all_skill_names:
-            skill = SKILL_REGISTRY.get(skill_name)
+            skill = registry.get(skill_name)
             if skill and skill.tools:
                 tools.extend(skill.tools)
 

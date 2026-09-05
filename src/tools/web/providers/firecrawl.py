@@ -155,10 +155,22 @@ class FirecrawlFetchAdapter:
             return FetchResult(url=url, error=error_from_httpx(e, status_overrides=_STATUS_OVERRIDES))
 
         if not data.get("success", False):
+            # A 200 with success=false reports the outcome of scraping THIS url
+            # — a dead domain, a page no engine could render — so it must not
+            # count against the breaker every url shares. A real Firecrawl
+            # outage arrives as 5xx or a transport error and is classified
+            # above. Verified against the live API with an unresolvable host,
+            # which returns 200 with SCRAPE_DNS_RESOLUTION_ERROR.
+            code = data.get("code")
             message = str(data.get("error") or "Firecrawl returned success=false")
             return FetchResult(
                 url=url,
-                error=WebError(type=WebErrorType.PROVIDER_ERROR, message=clip_error(message)),
+                error=WebError(
+                    type=WebErrorType.PROVIDER_ERROR,
+                    message=clip_error(f"[{code}] {message}" if code else message),
+                    provider_fault=False,
+                    native_kind=str(code).lower() if code else None,
+                ),
             )
 
         page = data.get("data") or {}

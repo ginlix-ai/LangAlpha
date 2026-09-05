@@ -1,6 +1,7 @@
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, CheckCircle2, Circle, Loader2, StopCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Circle, StopCircle } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import { deriveSubagentStatus } from '../../session/subagents/subagentStatus';
 import type { SubagentStatusIndicatorProps } from './types';
 
@@ -33,10 +34,18 @@ export default function SubagentStatusIndicator({ status, currentTool, toolCalls
 
   const getIcon = (): React.ReactElement => {
     if (!isTerminal && derivedCurrentTool) {
-      return <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />;
+      return (
+        <span aria-hidden="true" className="flex-shrink-0">
+          <Loader size={14} className="text-[color:var(--color-text-tertiary)]" />
+        </span>
+      );
     }
     if (effectiveStatus === 'active') {
-      return <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />;
+      return (
+        <span aria-hidden="true" className="flex-shrink-0">
+          <Loader size={14} className="text-[color:var(--color-text-tertiary)]" />
+        </span>
+      );
     }
     if (effectiveStatus === 'completed') {
       return <CheckCircle2 className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />;

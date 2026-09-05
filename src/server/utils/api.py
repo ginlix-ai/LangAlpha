@@ -98,6 +98,31 @@ async def get_current_user_id(
 CurrentUserId = Annotated[str, Depends(get_current_user_id)]
 
 
+async def get_optional_user_id(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer),
+) -> Optional[str]:
+    """Like ``get_current_user_id`` but resolves to ``None`` when no credential
+    is presented, instead of 401.
+
+    For endpoints that serve an anonymous baseline and a richer per-user view
+    (e.g. the skills list). A *present but invalid* credential still 401s —
+    only genuine absence is anonymous.
+    """
+    matched, user_id = _service_token_user_id(request)
+    if matched:
+        return user_id
+    if HOST_MODE == "oss":
+        return LOCAL_DEV_USER_ID
+    if credentials is None:
+        return None
+    return _decode_token(credentials.credentials).user_id
+
+
+# The resolved user id, or None for an anonymous caller.
+OptionalUserId = Annotated[Optional[str], Depends(get_optional_user_id)]
+
+
 async def get_stamp_auth(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer),

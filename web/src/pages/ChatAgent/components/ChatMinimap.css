@@ -8,30 +8,137 @@
   display: none;
 }
 
+/* The column itself is inert: only the tick rail takes the pointer, and the
+   rail is as narrow as the widest bar so it overlaps as little of the
+   transcript's right edge as possible. */
 .chat-minimap {
-  width: 32px;
   position: absolute;
   right: 12px;
   top: 0;
   bottom: 0;
   z-index: 20;
+  width: 32px;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  pointer-events: auto;
-  transition: width 200ms ease;
+  justify-content: center;
+  align-items: flex-end;
+  pointer-events: none;
 }
 
-.chat-minimap:hover {
-  width: 240px;
-}
-
-.chat-minimap-entries {
+/* Past the minimum tick pitch the rail scrolls itself rather than spilling
+   out of the column; its scrollbar stays hidden like the transcript's. The
+   vertical padding is mirrored by RAIL_PADDING_PX in the component. */
+.chat-minimap-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  flex-shrink: 0;
+  max-height: 100%;
+  padding: 8px 0;
   overflow-y: auto;
   scrollbar-width: none;
-  -ms-overflow-style: none;
+  pointer-events: auto;
+}
+.chat-minimap-rail::-webkit-scrollbar {
+  display: none;
 }
 
-.chat-minimap-entries::-webkit-scrollbar {
-  display: none;
+.chat-minimap-tick {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: flex-end;
+  width: 32px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* The ring goes on the button, not the faded bar: an outline inherits the
+   bar's opacity and a 22% ring is no focus indicator. */
+.chat-minimap-tick:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
+
+/* Width and opacity come from the component as custom properties: the
+   rail magnifies around the hovered (else active) tick, so every bar is a
+   function of its distance to that focus. */
+.chat-minimap-tick > span {
+  display: block;
+  height: 2px;
+  border-radius: 1px;
+  width: var(--tick-w, 12px);
+  opacity: var(--tick-o, 0.22);
+  background: var(--color-text-primary);
+  transition:
+    width 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 180ms ease;
+}
+
+/* Sized against the message area (an inline-size container) so a narrow
+   column keeps most of the transcript readable beside the card. */
+.chat-minimap-card {
+  position: absolute;
+  top: 0;
+  right: calc(100% + 4px);
+  width: min(300px, 40cqw);
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-muted);
+  box-shadow: var(--shadow-card);
+  color: var(--color-text-primary);
+  pointer-events: none;
+  animation: chat-minimap-card-enter 140ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transition: top 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.chat-minimap-card-prompt {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-minimap-card-reply {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--color-text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* Liveness is the shared glyph plus a word, at the annotation scale the task
+   chips already use: the glyph takes the accent, the label rides along. */
+.chat-minimap-card-live {
+  margin-top: 7px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.75rem;
+  color: var(--color-accent-primary);
+}
+
+@keyframes chat-minimap-card-enter {
+  from { opacity: 0; transform: translateX(4px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-minimap-tick > span,
+  .chat-minimap-card {
+    transition: none;
+    animation: none;
+  }
 }

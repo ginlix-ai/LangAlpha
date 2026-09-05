@@ -386,7 +386,7 @@ async def test_patch_title_renames():
     with (
         patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
         patch(
-            f"{THREADS_MOD}.update_thread_title",
+            f"{THREADS_MOD}.update_thread_fields",
             new=AsyncMock(return_value=row),
         ) as m,
     ):
@@ -394,7 +394,7 @@ async def test_patch_title_renames():
 
     assert resp.status_code == 200
     assert resp.json()["title"] == "Renamed"
-    m.assert_awaited_once_with("t-1", "Renamed")
+    m.assert_awaited_once_with("t-1", title="Renamed")
 
 
 @pytest.mark.asyncio
@@ -408,7 +408,7 @@ async def test_patch_title_service_no_user_is_401():
     with (
         patch("src.server.utils.api._SERVICE_TOKEN", "svc-secret"),
         patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()) as owner,
-        patch(f"{THREADS_MOD}.update_thread_title", new=AsyncMock()) as title,
+        patch(f"{THREADS_MOD}.update_thread_fields", new=AsyncMock()) as title,
     ):
         resp = await _patch(
             app, {"title": "Renamed"}, headers={"X-Service-Token": "svc-secret"}

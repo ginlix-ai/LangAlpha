@@ -1,5 +1,17 @@
 {
   "common": {
+    "staleBuild": {
+      "title": "此标签页与服务器版本不一致",
+      "description": "服务器提供的版本与此标签页加载的版本不同，重新加载即可切换。",
+      "blockedTitle": "页面加载失败",
+      "blockedDescription": "此标签页打开期间应用版本已变更，请重新加载以继续。",
+      "reload": "重新加载"
+    },
+    "networkBanner": {
+      "offlineMessage": "网络已断开。恢复连接前，数据可能不是最新的。"
+    },
+    "copy": "复制",
+    "submit": "提交",
     "save": "保存",
     "saving": "保存中...",
     "cancel": "取消",
@@ -66,6 +78,9 @@
     "confirming": "正在确认邮箱…",
     "confirmedSigningIn": "邮箱已确认，正在登录…",
     "confirmError": "链接无效或已过期。",
+    "shellHandoffTitle": "正在打开 LangAlpha…",
+    "shellHandoffBody": "此链接已交给 LangAlpha 应用，请在应用中完成登录。",
+    "shellHandoffFallback": "在浏览器中继续",
     "requestNewLink": "重新获取链接",
     "confirmPassword": "确认密码",
     "strengthTooShort": "长度不足",
@@ -101,7 +116,14 @@
     "marketView": "行情中心",
     "automations": "自动化",
     "settings": "设置",
-    "account": "用量与套餐"
+    "account": "用量与套餐",
+    "newChat": "新对话",
+    "workspaces": "工作区",
+    "workspaceGallery": "工作区总览",
+    "collapse": "收起侧边栏",
+    "expand": "展开侧边栏",
+    "resize": "调整侧边栏宽度",
+    "plugins": "插件"
   },
   "account": {
     "menuLabel": "账号菜单"
@@ -117,10 +139,27 @@
     "threadsPerWorkspace": "每个工作区显示的对话数",
     "all": "全部",
     "showMore": "显示更多",
-    "loadAll": "加载全部"
+    "loadAll": "加载全部",
+    "pinThread": "置顶",
+    "unpinThread": "取消置顶",
+    "archiveThread": "归档",
+    "threadUpdated": "更新于",
+    "threadCreated": "创建于",
+    "threadTurns": "轮次",
+    "threadNeedsInput": "等待您的输入",
+    "threadUnseen": "已完成，尚未查看",
+    "untitledThread": "未命名",
+    "noConversations": "暂无会话",
+    "workspaceFallback": "工作区",
+    "collapseAgents": "收起智能体",
+    "expandAgents": "展开智能体",
+    "removeAgent": "移除智能体"
   },
   "settings": {
     "title": "用户设置",
+    "connected": "已连接",
+    "manageProviders": "管理提供商",
+    "fontSize": "字体大小",
     "userInfo": "用户信息",
     "preferences": "偏好设置",
     "model": "模型",
@@ -255,6 +294,10 @@
     "claudeOpenAgain": "重新打开授权页面",
     "starredModels": "快速切换模型",
     "starredModelsDesc": "标星的模型会显示在聊天输入框中方便快速切换",
+    "fallbackModels": "备用模型",
+    "fallbackModelsDesc": "当主模型或快速模型不可用时，按顺序依次尝试。请只添加你有权访问的模型。未选择时不使用备用模型。",
+    "fallbackModelsEmpty": "未找到模型",
+    "removeModel": "移除 {{model}}",
     "addModels": "添加",
     "searchProvider": "网络搜索引擎",
     "searchProviderDesc": "Agent 进行网络搜索时使用的搜索引擎。",
@@ -271,7 +314,7 @@
       "deep": "深度"
     },
     "compactionProfile": "压缩预设",
-    "compactionProfileDesc": "用于控制压缩触发与保留的预设组合。除非有特殊需求，否则建议保持系统默认。",
+    "compactionProfileDesc": "用于控制压缩触发与保留的预设组合。保持系统默认时，每个模型会自动匹配与其上下文窗口相称的预设。",
     "compactionProfileUseDefault": "使用系统默认",
     "compactionProfilePreset": "{{tokens}}k tokens · 保留 {{keep}} 条 · 第 {{trim}} 条起截断",
     "compactionProfiles": {
@@ -291,6 +334,40 @@
         "label": "宽松",
         "description": "最大化上下文。适合 1M 上下文模型。"
       }
+    },
+    "modelTuning": {
+      "sectionModels": "模型",
+      "sectionDefaults": "账户默认值",
+      "sectionRouting": "路由",
+      "sectionSearch": "网页搜索",
+      "sectionProviders": "服务商与账户",
+      "detailLevel": "显示层级",
+      "simple": "简洁",
+      "advanced": "高级",
+      "perModel": "按模型设置",
+      "perModelDesc": "仅对单个模型生效的设置。保持为默认的项目将沿用上方的账户默认值。",
+      "colModel": "模型",
+      "colEffort": "思考强度",
+      "colContext": "上下文",
+      "colGuidance": "提示词",
+      "colSpeed": "速度",
+      "default": "默认",
+      "defaultNamed": "默认（{{value}}）",
+      "modelDefault": "模型默认",
+      "useModelDefault": "使用模型默认值",
+      "notSupported": "不支持",
+      "modelUnavailable": "当前不可用",
+      "addModel": "添加模型",
+      "resetModel": "移除覆盖设置",
+      "effortDesc": "模型在回答前的思考强度，仅对提供该选项的模型生效。",
+      "guidanceDesc": "代理在每轮对话中携带的指令量。精简会去掉指导性内容，只保留事实。",
+      "guidanceLean": "精简",
+      "guidanceDetailed": "完整",
+      "fetchModel": "网页抓取模型",
+      "fetchModelDesc": "用于提取网页内容。",
+      "compactionModel": "上下文压缩模型",
+      "compactionModelDesc": "用于压缩过长的对话上下文。",
+      "defaultsToFlash": "默认使用快速模型"
     }
   },
   "dashboard": {
@@ -1047,9 +1124,6 @@
       "placeholderMobile": "向 AI 询问市场趋势……",
       "placeholderDesktop": "向 AI 询问市场趋势、特定股票或投资组合分析……"
     },
-    "networkBanner": {
-      "offlineMessage": "网络离线 — 重新连接前，仪表板数据可能已过时。"
-    },
     "newsFeedCard": {
       "tabMarket": "市场动态",
       "tabPortfolio": "我的持仓",
@@ -1182,7 +1256,12 @@
     "failedDeleteThread": "删除对话失败，请重试。",
     "failedRenameThread": "重命名对话失败，请重试。",
     "viewAll": "查看全部",
-    "shared": "已分享"
+    "shared": "已分享",
+    "archive": "归档",
+    "unarchive": "取消归档",
+    "archived": "已归档",
+    "archivedTasks": "已归档任务",
+    "noArchivedThreads": "暂无已归档的对话"
   },
   "share": {
     "shareConversation": "分享对话",
@@ -1194,12 +1273,25 @@
     "anyoneWithLink": "任何拥有此链接的人都可以查看对话。"
   },
   "chat": {
+    "backToWorkflow": "返回工作流",
+    "backToMain": "返回主对话",
+    "backToFlash": "返回 Flash",
+    "reconnecting": "重新连接中…",
+    "offlineHistoryLoad": "网络已断开，无法刷新此对话。恢复连接后会自动同步。",
+    "jumpToLatest": {
+      "aria": "滚动到最新消息"
+    },
+    "minimap": {
+      "untitledTurn": "无文字消息",
+      "replyPending": "处理中"
+    },
     "pills": {
       "plan": "计划",
       "planTitle": "计划模式 — 智能体先生成计划，经确认后再执行",
       "watch": "盯盘",
       "watchTitle": "盯盘模式 — 实时跟踪智能体关注的股票价格"
     },
+    "moreTools": "更多工具",
     "widgetContext": {
       "inContext_one": "{{count}} 项上下文",
       "inContext_other": "{{count}} 项上下文",
@@ -1228,6 +1320,8 @@
     "errorHintModelAccess": "请确认您的套餐或订阅允许访问此模型。",
     "errorHintProviderStatus": "请查看提供商状态页，了解是否存在服务中断。",
     "errorHintTryAnotherModel": "请尝试在模型选择器中切换到其他模型。",
+    "errorLinkManagePlan": "管理套餐",
+    "errorLinkViewUsage": "查看用量",
     "errorUpstreamHeadlineModel": "{{model}} 返回错误",
     "errorUpstreamHeadlineModelStatus": "{{model}} 返回错误 ({{status}})",
     "errorAttemptedModels": "还尝试了：",
@@ -1237,6 +1331,23 @@
     "modelFallbackAttempts_other": "尝试 {{count}} 次",
     "viewErrorDetail": "查看错误",
     "hideErrorDetail": "隐藏错误",
+    "showRawJson": "显示原始 JSON",
+    "hideRawJson": "隐藏原始 JSON",
+    "resultTruncated": "部分结果 — 其余内容已从预览中截断",
+    "expandResult": "显示全部",
+    "collapseResult": "收起",
+    "resultMoreItems": "另有 {{n}} 项",
+    "actions": {
+      "copyMessage": "复制消息",
+      "copied": "已复制！",
+      "editMessage": "编辑消息",
+      "goodResponse": "点赞回复",
+      "removeRating": "取消评价",
+      "reportIssue": "反馈问题",
+      "feedbackSubmitted": "已提交反馈",
+      "regenerate": "重新生成回复",
+      "retry": "重试"
+    },
     "modelTroubleSuggestion": "{{from}} 出现问题 — 本次回答由 {{to}} 完成",
     "switchToModel": "切换到 {{model}}",
     "modelSwitched": "默认模型已设为 {{model}}",
@@ -1244,6 +1355,77 @@
     "backgroundTasksRunning": "后台任务仍在运行",
     "reportBackPending": "等待 PTC Agent 汇报结果",
     "taskReportBackPending": "等待子代理结果汇报",
+    "taskCard": {
+      "statusRunning": "运行中",
+      "statusPausing": "完成当前步骤",
+      "statusCompleted": "已完成",
+      "statusStopped": "已停止",
+      "statusFailed": "失败",
+      "statusUpdated": "已更新",
+      "statusResumed": "已恢复"
+    },
+    "creditPause": {
+      "title": "运行已暂停",
+      "resume": "继续",
+      "resuming": "继续中…",
+      "resumedLabel": "已继续"
+    },
+    "creditStop": {
+      "title": "额度已用尽"
+    },
+    "subagentCard": {
+      "titleFallback": "子智能体任务",
+      "viewDetails": "查看任务详情",
+      "openUpdated": "点击查看已更新的子智能体",
+      "openResumed": "点击查看已恢复的子智能体",
+      "openRunning": "点击查看运行中的子智能体",
+      "openDetails": "点击查看子智能体详情",
+      "toolUnit_one": "次工具调用",
+      "toolUnit_other": "次工具调用",
+      "tokenUnit": "tokens"
+    },
+    "subagentBar": {
+      "completedWithTools_one": "已完成（{{count}} 次工具调用）",
+      "completedWithTools_other": "已完成（{{count}} 次工具调用）",
+      "runningWithTool": "运行中：{{tool}}",
+      "initializing": "初始化中",
+      "instruct": "指示",
+      "errorHeading": "该智能体因错误而停止",
+      "stoppedHeading": "该智能体已停止",
+      "inputPlaceholder": "为该智能体添加指令…",
+      "avatarAlt": "智能体"
+    },
+    "workflowRun": {
+      "titleFallback": "工作流运行",
+      "openRunning": "点击查看运行中的工作流",
+      "openDetails": "点击查看工作流详情",
+      "sharedUnavailable": "分享视图中不提供运行详情",
+      "agents_one": "{{count}} 个智能体",
+      "agents_other": "{{count}} 个智能体",
+      "done": "已完成 {{count}} 个",
+      "tokens": "{{value}} tokens",
+      "earlier": "更早的 {{count}} 个",
+      "childFallbackLabel": "智能体 {{n}}",
+      "childRunning": "运行中",
+      "childDone": "已完成",
+      "childFailed": "失败",
+      "childTimedOut": "已超时",
+      "childInvalid": "结果无效",
+      "childStopped": "已停止",
+      "stop": "停止",
+      "stopping": "正在停止…",
+      "statAgents": "智能体",
+      "statPhases": "阶段",
+      "statDuration": "耗时",
+      "statTokens": "Tokens",
+      "toolCalls_one": "{{count}} 次工具调用",
+      "toolCalls_other": "{{count}} 次工具调用",
+      "tokensShort": "{{value}} tok",
+      "sectionResult": "结果",
+      "sectionLog": "日志",
+      "starting": "工作流启动中…",
+      "noProgress": "本次运行没有记录到进度。"
+    },
     "ptcCard": {
       "awaitingApproval": "等待批准",
       "researchDeclined": "已拒绝研究",
@@ -1257,7 +1439,7 @@
       "statusFailed": "已失败",
       "statusStopped": "已停止",
       "hintProvisioning": "正在配置沙盒…",
-      "hintWorking": "正在进行分析…",
+      "hintWorking": "正在后台运行",
       "hintFailed": "运行未完成便已停止",
       "hintStopped": "运行已停止",
       "ctaOpenThread": "打开对话",
@@ -1295,6 +1477,11 @@
     "workspaceStateArchivedTitle": "正在从冷存储中恢复",
     "workspaceStateArchivedBody": "闲置超过 7 天的沙盒会被归档以释放算力。唤回时需要下载快照并重启容器，通常需要 60 至 90 秒。",
     "workspaceStateArchivedFootnote": "您的文件、工具和对话状态都完好无损——沙盒就绪后即可继续对话。",
+    "archiveConfirm": {
+      "title": "该对话仍在运行，确定归档？",
+      "body": "此对话还有任务正在运行。归档只是把它从列表中隐藏，任务会继续跑完——之后可在“已归档”中找到它和运行结果。",
+      "confirm": "归档"
+    },
     "compacting": "正在压缩对话...",
     "offloading": "正在转存上下文...",
     "compactionStopped": "压缩已停止",
@@ -1333,6 +1520,7 @@
     },
     "compactedNotification": "上下文已压缩 · {{from}} 条消息 → 摘要",
     "taskErrorNotification": "子任务运行失败",
+    "taskStoppedNotification": "子任务运行已停止",
     "taskSteeringReturnedNotification": "引导消息已退回 · 运行在送达前已结束",
     "viewSummary": "查看摘要",
     "hideSummary": "隐藏摘要",
@@ -1346,16 +1534,20 @@
       "manageModels": "管理模型",
       "moreModels": "更多模型",
       "configureModels": "配置模型 →",
-      "reasoningEffort": "推理",
+      "reasoningEffort": "推理强度",
+      "effortNone": "关闭",
+      "effortMinimal": "极简",
       "effortLow": "低",
       "effortMedium": "中",
       "effortHigh": "高",
-      "effortXhigh": "极高",
-      "incompatibleSdk": "当前会话无法切换到此模型（提供商不同）",
-      "fastMode": "快速",
-      "fastModeDesc": "优先路由以获得更快响应",
-      "fastModeHelpLine1": "等同于 Codex 中的 /fast",
-      "fastModeHelpLine2": "消耗 2 倍积分，优先服务层级"
+      "effortXhigh": "超高",
+      "effortMax": "最大",
+      "effortHint": "强度越高越细致，但速度更慢。",
+      "defaultBadge": "默认",
+      "speed": "速度",
+      "speedStandard": "标准",
+      "speedFast": "快速",
+      "speedFastHint": "消耗 2 倍积分，优先服务层级"
     },
     "voice": {
       "start": "开启语音输入",
@@ -1447,6 +1639,9 @@
     "addNLinesToContext": "添加 {{count}} 行到上下文",
     "openFile": "打开文件",
     "fromAgentResponse": "来自 Agent 回复",
+    "pastedText": "粘贴的文本",
+    "pastedLines_one": "粘贴的文本 · {{count}} 行",
+    "pastedLines_other": "粘贴的文本 · {{count}} 行",
     "addToMemo": "添加到备忘录",
     "syncWithMemo": "同步到备忘录",
     "memoAdding": "正在将 \"{{name}}\" 添加到备忘录",
@@ -1500,6 +1695,7 @@
     "htmlSource": "源代码",
     "pdfPrintHint": "按 Cmd/Ctrl-P 将页面保存为 PDF。",
     "pdfGenerating": "正在生成 PDF…",
+    "pdfFailed": "无法保存 PDF，请重试。",
     "copyShareLink": "复制链接",
     "shareLinkCopied": "分享链接已复制到剪贴板",
     "shareLinkFailed": "无法复制链接",
@@ -1763,6 +1959,7 @@
   },
   "toolArtifact": {
     "open": "开盘",
+    "floatPct": "流通比例",
     "prevClose": "前收",
     "dayRange": "日内区间",
     "52wRange": "52周区间",
@@ -1775,8 +1972,14 @@
     "vol": "量",
     "liveQuotes": "实时报价",
     "extendedHours": {
-      "preMarket": { "long": "盘前", "short": "盘前" },
-      "afterHours": { "long": "盘后", "short": "盘后" }
+      "preMarket": {
+        "long": "盘前",
+        "short": "盘前"
+      },
+      "afterHours": {
+        "long": "盘后",
+        "short": "盘后"
+      }
     },
     "marketStatus": {
       "early_trading": "盘前",
@@ -1887,9 +2090,6 @@
     "noPlanDescription": "暂无计划描述。",
     "subagentTask": "子 Agent 任务",
     "instructions": "指令",
-    "result": "结果",
-    "subagentStillRunning": "子 Agent 运行中...",
-    "noResultAvailable": "暂无结果",
     "goToSubagentTab": "前往子 Agent 标签",
     "noResultContent": "无结果内容",
     "input": "输入",
@@ -2071,6 +2271,14 @@
     }
   },
   "setup": {
+    "capabilities": "能力",
+    "importParentModels": "同时添加这些模型",
+    "importParentModelsDesc": "来自父级目录的模型，通过您的端点和密钥路由。取消勾选不需要的模型。",
+    "selectNone": "全不选",
+    "fetchingModels": "正在获取模型…",
+    "selectModelsDesc": "选择您服务器上可用的模型。",
+    "availableModels": "可用模型",
+    "noModelsFound": "未找到模型。请确认您的服务器正在运行且已加载模型。",
     "brandedHeader": "配置您的 LLM 提供商",
     "securityNote": "您的 API 密钥已加密且不会被共享",
     "methodTitle": "您想如何连接？",
@@ -2237,7 +2445,7 @@
     "addModel": "添加模型",
     "modelIdInputPlaceholder": "输入模型 ID（如 GPT-5.4）",
     "customModelNameLabel": "显示名称",
-    "customModelNamePlaceholder": "在菜单中如何显示（如 glm-5.1）",
+    "customModelNamePlaceholder": "在菜单中如何显示（如 glm-5.3）",
     "customModelNameSlugPreview": "将保存为：{{slug}}",
     "customModelNameSlugEmpty": "请输入字母或数字 — 空格和符号会被自动移除。",
     "customModelIdLabel": "上游模型 ID",
@@ -2448,6 +2656,482 @@
       "replayDone": "页面提示与快速上手指南将重新显示。",
       "reset": "重置新手引导",
       "resetDone": "新手引导已重置，提示与指南将重新开始。"
+    }
+  },
+  "mcp": {
+    "list": {
+      "title": "连接器",
+      "addServer": "添加服务器",
+      "importJson": "导入 JSON",
+      "importHint": "粘贴标准 mcpServers JSON 配置",
+      "atCap": "已达上限 {{max}}/{{max}} — 请先删除一个",
+      "loadFailed": "加载 MCP 服务器失败",
+      "empty": "还没有 MCP 服务器。添加一个或复制模板。"
+    },
+    "tab": {
+      "plugins": "插件",
+      "pluginsHint": "用户级服务器、技能、OAuth 连接与共享密钥",
+      "startingWorkspace": "工作区启动中 — 启动完成后将自动检查你的服务器。",
+      "workspaceStopped": "工作区已停止 — 保存服务器会自动重新启动并检查该服务器。",
+      "promoteExistsBefore": "服务器 ",
+      "promoteExistsAfter": " 已存在。用此服务器的当前配置覆盖它吗？",
+      "overwrite": "覆盖",
+      "savedWithWarnings": "服务器已保存（含提示）",
+      "promotedTitle": "已保存到你的服务器",
+      "promoteUpdatedTitle": "服务器已更新",
+      "promotedDesc": "“{{name}}”已成为你的服务器，可在插件页管理并在任意工作区使用。",
+      "promoteFailed": "无法保存服务器"
+    },
+    "row": {
+      "builtin": "内置",
+      "inherited": "继承",
+      "workspace": "工作区",
+      "inheritedHint": "继承自你的服务器，对所有工作区生效",
+      "overridesInherited": "覆盖继承项",
+      "overridesInheritedHint": "此工作区的同名副本在这里覆盖了你的用户级服务器",
+      "userDisabled": "已在插件页停用",
+      "toolCount_other": "{{count}} 个工具",
+      "setupSecret": "设置 {{name}}",
+      "manageInPlugins": "在插件页管理",
+      "reconnectInPlugins": "在插件页重新连接",
+      "edit": "编辑",
+      "testConnection": "测试连接",
+      "promoteToUser": "保存到你的服务器",
+      "delete": "删除",
+      "enableAria": "启用 {{name}}",
+      "disableAria": "禁用 {{name}}",
+      "actionsAria": "{{name}} 的操作"
+    },
+    "status": {
+      "connected": "已连接",
+      "error": "错误",
+      "needsSecret": "需要密钥",
+      "pending": "待检查",
+      "disabled": "已禁用",
+      "unknown": "未知",
+      "pendingHint": "等待发现。请启动工作区，或测试连接。"
+    },
+    "lifecycle": {
+      "verifying": "验证中…",
+      "starting": "工作区启动中…",
+      "waiting": "等待工作区启动",
+      "applying": "应用到智能体…",
+      "appliesOnStart": "工作区启动后生效",
+      "ready": "就绪"
+    },
+    "discover": {
+      "failed": "发现失败",
+      "noTools": "已连接，未报告工具",
+      "toolCount_other": "已连接，{{count}} 个工具"
+    }
+  },
+  "vault": {
+    "addSecret": "添加密钥",
+    "valuePlaceholder": "密钥值",
+    "editValuePlaceholder": "新值（留空保持不变）",
+    "descriptionPlaceholder": "描述（可选）",
+    "update": "更新",
+    "edit": "编辑",
+    "delete": "删除",
+    "deleteConfirmYes": "确认",
+    "deleting": "删除中…",
+    "hideValue": "隐藏值",
+    "revealValue": "显示值",
+    "loadFailed": "加载密钥失败",
+    "nameInvalid": "名称只能使用字母、数字和下划线，且以字母或下划线开头",
+    "recommended": "推荐凭据",
+    "setUp": "设置",
+    "settingUp": "正在设置",
+    "docs": "文档",
+    "tokenFallback": "令牌",
+    "atCapHint": "密钥库已达上限 {{max}}/{{max}} — 请先删除一个密钥",
+    "valueHintInvalid": "这看起来不像有效的{{label}}",
+    "valueHintDocs": " — 请查看上方的文档链接。",
+    "valueHintStillSave": "你仍然可以保存。",
+    "workspace": {
+      "title": "密钥库",
+      "empty": "尚未存储密钥。为智能体代码添加 API 密钥或凭据。",
+      "usageTitle": "用法",
+      "usageAccess": "在代码中访问：",
+      "securityTitle": "安全",
+      "security1": "密钥使用 AES（pgcrypto）静态加密，绝不会以明文存储在我们的服务器上。",
+      "security2a": "AI 智能体无法直接读取密钥值 — 只能在沙箱代码中调用",
+      "security2b": "。",
+      "security3": "所有智能体输出都会经过泄漏检测扫描。工具结果中发现的任何密钥值都会在到达模型前自动脱敏。",
+      "security4a": "代码校验阻止直接访问内部密钥存储 — 仅允许使用",
+      "security4b": "API。"
+    }
+  },
+  "plugins": {
+    "title": "插件",
+    "description": "在所有工作区中可供智能体使用的 MCP 服务器、技能与凭据。",
+    "tabs": {
+      "mcp": "连接器",
+      "skills": "技能",
+      "secrets": "密钥",
+      "plugins": "插件",
+      "brokerages": "券商"
+    },
+    "servers": {
+      "inheritHint": "在此开启的服务器对你的所有工作区生效；如需在单个工作区关闭，请前往该工作区的 MCP 标签页。关闭状态的服务器仅作为模板保留。",
+      "enabledState": "已在所有工作区开启",
+      "disabledState": "已关闭，不会被继承",
+      "empty": "还没有服务器。添加一个服务器或导入 JSON 配置。",
+      "emptyPluginOnly": "你现有的服务器都来自插件。可以在这里添加自己的服务器。",
+      "toggleFailed": "无法更改服务器状态",
+      "enabledWithWarnings": "服务器已启用，但存在警告",
+      "deleteFailed": "无法删除服务器",
+      "deleteConfirm": "从你的服务器中删除“{{server}}”？所有工作区将立即停止继承它。",
+      "deleteConfirmYes": "删除",
+      "deleteConfirmNo": "取消",
+      "warningTitle": "服务器已保存（含提示）"
+    },
+    "brokerages": {
+      "capabilities": {
+        "market_data": {
+          "label": "行情与研究",
+          "desc": "报价、K 线、基本面、公告和选股器。不涉及你的账户。"
+        },
+        "watchlists": {
+          "label": "自选列表",
+          "desc": "读取自选列表，增删标的，并可新建或删除整个列表。"
+        },
+        "scanners": {
+          "label": "已保存的选股条件",
+          "desc": "读取你保存的选股器，并可新建、运行或修改。"
+        },
+        "alerts": {
+          "label": "价格提醒",
+          "desc": "读取你的价格提醒，并新建或删除。"
+        },
+        "account": {
+          "label": "账户与持仓",
+          "desc": "余额、持仓和订单历史。仅读取。"
+        },
+        "paper_trading": {
+          "label": "模拟交易",
+          "desc": "在券商的模拟账户中交易。它有自己的资金和持仓，不涉及真实资金。"
+        },
+        "order_preview": {
+          "label": "订单预览",
+          "desc": "针对真实账户试算一笔订单，查看成本与风险提示。不会提交，也不会保存。"
+        },
+        "staged_orders": {
+          "label": "待提交订单",
+          "desc": "在真实账户中保存一份订单草稿。它尚未生效，但你可以在券商端一键提交。"
+        },
+        "trading": {
+          "label": "实盘下单",
+          "desc": "使用账户中的真实资金买入、卖出、改单和撤单，且无需再次征询你的同意。"
+        }
+      },
+      "consent": {
+        "title": "连接“{{server}}”",
+        "subtitle": "选择此连接允许智能体在该券商做哪些事。",
+        "footnote": "未勾选的分组在智能体调用时会被拒绝，而不只是隐藏。之后可重新连接以更改。"
+      },
+      "detail": {
+        "broker": "券商",
+        "capabilities": "可执行的操作",
+        "capabilitiesNote": "被拒绝的分组在智能体调用时会被拒绝，而不只是隐藏。重新连接可以更改。",
+        "declined": "未授予",
+        "endpoint": "接入地址",
+        "granted": "已授予",
+        "grantedNone": "此连接未获授权任何分组，因此分组内的所有工具都会被拒绝。重新连接可重新选择。",
+        "notConnectedNote": "连接之前不会授予任何操作，连接时由你选择。",
+        "offered": "可选",
+        "website": "官网",
+        "unclassified": "不属于任何分组",
+        "unclassifiedNote": "没有分组涵盖这些工具，因此拒绝某个分组并不会拒绝它们。智能体仍然可以调用。",
+        "unclassifiedNoteUnconnected": "这些工具不属于任何分组，拒绝某个分组不会屏蔽它们。此处尚未连接，因此暂时无法调用。",
+        "neverAvailable": "始终不可用",
+        "neverAvailableNote": "已刻意保留。无论授权什么都会被拒绝。"
+      },
+      "exclusiveNote": "会取代该账户已有的 AI 连接",
+      "exclusiveWarning": "该账户只允许连接一个 AI 平台，因此在此连接会取代当前已连接的那一个。",
+      "grantedNone": "未授予任何操作",
+      "intro": "智能体可读取并交易的券商账户。连接后即可关联你的账户；在此之前不会向券商发送任何数据。",
+      "none": "此版本未内置券商连接器。",
+      "notAdded": "未添加",
+      "openInMcp": "在连接器中打开",
+      "redirectedNote": "指向自定义地址",
+      "removeConfirm": "确定移除“{{server}}”吗？这将断开你的账户连接，并从所有工作区中移除。",
+      "toggleFailed": "无法更改此连接器"
+    },
+    "oauth": {
+      "abandonedDesc": "“{{server}}”未从服务商的登录页面返回。",
+      "abandonedDescNeedsDesktop": "“{{server}}”未从服务商的登录页面返回。部分服务商仅接受桌面应用，请使用 LangAlpha 桌面应用连接。",
+      "abandonedTitle": "连接未完成",
+      "callbackError": {
+        "blocked_endpoint": "服务商要求从本应用不会访问的地址获取令牌。",
+        "denied": "你在服务商处拒绝了该请求。",
+        "internal": "我们这边出现了问题，请重试。",
+        "invalid_state": "此次连接请求已失效，请重新发起。",
+        "issuer_mismatch": "服务商的身份与其自身配置不符，连接已中止。",
+        "missing_code": "服务商未返回授权信息，请重新发起连接。",
+        "missing_state": "服务商返回的链接不完整，请重新发起连接。",
+        "provider_error": "服务商拒绝了此次连接。",
+        "server_changed": "连接过程中该连接器的地址发生了变化，请检查后重试。",
+        "state_mismatch": "无法将其与你发起的连接对应上，请在最初的窗口中重新发起。",
+        "token_exchange_failed": "服务商未能将授权兑换为令牌，请重新发起连接。",
+        "unknown": "连接未完成，请重试。"
+      },
+      "callbackErrorTitle": "连接失败",
+      "connect": "连接",
+      "connectFailed": "无法发起连接",
+      "connected": "已连接",
+      "connectedDesc": "“{{server}}”已连接。开启后即可在工作区中使用。",
+      "connectedDescAnon": "连接已完成。",
+      "connectedTitle": "已连接",
+      "disconnect": "断开连接",
+      "disconnectFailed": "无法断开连接",
+      "disconnectedDesc": "“{{server}}”已断开。可随时重新连接；在此之前智能体调用将失败。",
+      "disconnectedTitle": "已断开",
+      "loopback": {
+        "no-listener": "无法占用本地端口来接收该券商的回调。请先退出其他正在运行的桌面端，然后重试。",
+        "not-minted": "服务端尚未配置为将回调发回桌面端。请稍后重试。",
+        "not-bound": "在本次连接完成前，又发起了另一个连接。请重新连接。",
+        "shell-outdated": "当前版本的桌面应用无法接收提供方的回调。请更新桌面应用后重试。"
+      },
+      "nativeHint": "部分服务商仅接受桌面应用，无法在浏览器中连接。",
+      "nativeOnlyNote": "需要桌面应用",
+      "registryUnavailableNote": "无法获取券商要求，连接暂时不可用。",
+      "needsReauth": "需要重新连接",
+      "reconnect": "重新连接",
+      "refreshAmbiguous": "请检查连接",
+      "refreshFailed": "无法刷新工具",
+      "refreshFailedStaleDesc": "“{{server}}”的刷新未能完成。此前发现的 {{count}} 个工具仍可使用。",
+      "refreshFailedStaleTitle": "工具未刷新",
+      "refreshSchemas": "刷新工具",
+      "refreshedDesc": "“{{server}}”现提供 {{count}} 个工具。",
+      "refreshedTitle": "工具已刷新",
+      "revoked": "已断开",
+      "serverMoved": "自本页面加载以来，该服务器的地址已更改。请刷新页面后重新连接。",
+      "shellOutdatedHint": "当前版本的桌面应用无法完成连接。请更新桌面应用，或在浏览器中连接。",
+      "shellOutdatedNote": "桌面应用需要更新"
+    },
+    "import": {
+      "disabledNudgeTitle": "导入的服务器为关闭状态",
+      "disabledNudgeDesc": "导入的服务器默认关闭。逐个开启后才会在你的工作区中生效。"
+    },
+    "secrets": {
+      "title": "密钥库",
+      "scopeHint": "此处的密钥用于你的 MCP 服务器，并在所有工作区可用。同名的工作区密钥会在该工作区内覆盖此处的值。",
+      "empty": "尚未存储密钥。为你的服务器添加 API 密钥或凭据。"
+    },
+    "mcp": {
+      "platform": "平台服务器",
+      "platformBadge": "平台",
+      "yours": "你的服务器",
+      "builtinLoadFailed": "无法加载随应用一起提供的服务器。"
+    },
+    "skills": {
+      "platform": "平台技能",
+      "yours": "你的技能",
+      "platformBadge": "平台",
+      "upload": "上传技能",
+      "inheritHint": "在此上传的技能对你的所有工作区可用。关闭状态的技能仍会在此列出，但不会出现在智能体的菜单中。",
+      "empty": "还没有技能。上传一个包含 SKILL.md 的 zip，教你的智能体一个新工作流。",
+      "toggleFailed": "无法更改技能状态",
+      "deleteFailed": "无法删除技能",
+      "commandFailed": "无法修改命令",
+      "editCommandHint": "点击编辑斜杠命令。回车保存，Esc 取消，留空恢复为技能名。",
+      "commandInputAria": "斜杠命令",
+      "deleteConfirm": "删除“{{skill}}”？所有工作区将立即停止使用它。",
+      "deleteConfirmYes": "删除",
+      "deleteConfirmNo": "取消",
+      "uploadTitle": "上传技能",
+      "uploadHint": "zip 根目录（或唯一的顶层文件夹内）需包含 SKILL.md，大小不超过 2 MB。",
+      "uploadDropzone": "将 .zip 拖到此处，或点击选择文件",
+      "uploadNotZip": "该文件不是 .zip 压缩包。",
+      "uploadTooLarge": "zip 超过 2 MB。",
+      "uploading": "上传中 {{percent}}%",
+      "uploadConfirm": "上传",
+      "workspaceSection": "当前工作区",
+      "workspaceHint": "在此上传的技能仅在当前工作区可用，并会覆盖插件页中的同名技能。",
+      "workspaceEmpty": "暂无工作区技能。上传包含 SKILL.md 的 zip 即可添加。",
+      "inheritedSection": "继承的技能",
+      "inheritedHint": "当前工作区可见的平台技能与插件页技能。在此关闭仅对当前工作区生效。",
+      "shadowsBadge": "覆盖用户技能",
+      "userDisabledBadge": "已在插件页停用"
+    },
+    "scope": {
+      "allWorkspaces": "所有工作区",
+      "allExcept": "所有工作区（除 {{count}} 个外）",
+      "activeIn": "生效于",
+      "futureHint": "新建工作区默认启用",
+      "moveToWorkspace": "移至工作区",
+      "moveToAll": "移至所有工作区",
+      "moveToAnother": "移至其他工作区",
+      "moveOauthBlocked": "请先断开 OAuth 连接，再将此服务器移至工作区",
+      "moveShadowBlocked": "账户层已存在同名项，请先删除或重命名其中一个",
+      "moveFailed": "移动失败",
+      "inWorkspace": "工作区：{{name}}",
+      "unknownWorkspace": "未知工作区",
+      "triggerAria": "范围：{{scope}}",
+      "movePluginBlocked": "由 {{plugin}} 提供；其组件保留在账户层级"
+    },
+    "list": {
+      "title": "已安装插件",
+      "install": "安装插件",
+      "hint": "插件是 MCP 服务器和技能的组合包。其组件会带着插件名出现在 MCP 和技能标签页中；此处的开关会同时切换全部组件。",
+      "empty": "尚未安装插件。可以从 zip 文件或公开 git 地址安装。",
+      "atCap": "已达插件数量上限（{{max}}）"
+    },
+    "card": {
+      "serverCount_other": "{{count}} 个服务器",
+      "skillCount_other": "{{count}} 个技能",
+      "componentCount": "{{servers}}，{{skills}}",
+      "sourceZip": "zip",
+      "sourceRemote": "远程",
+      "disabledState": "已关闭，所有工作区中的组件均被停用",
+      "update": "更新",
+      "export": "导出",
+      "uninstall": "卸载",
+      "toggleFailed": "无法更新插件",
+      "updatedTitle": "{{plugin}} 已更新",
+      "updateFailed": "更新失败",
+      "exportFailed": "导出失败",
+      "uninstalledTitle": "{{plugin}} 已卸载",
+      "uninstalledDesc": "移除了 {{servers}} 和 {{skills}}。已自定义的组件被保留。",
+      "uninstallFailed": "卸载失败",
+      "uninstallConfirm": "卸载 {{plugin}}？其服务器和技能将从所有工作区移除。已自定义的组件会被保留。",
+      "uninstallConfirmYes": "卸载",
+      "uninstallConfirmNo": "保留",
+      "sourceBundled": "随 LangAlpha 提供"
+    },
+    "component": {
+      "fromPlugin": "由 {{plugin}} 提供",
+      "customize": "自定义",
+      "customizeHint": "将其从 {{plugin}} 分离以便编辑。此后插件更新将跳过它。",
+      "suppressed": "已停用：{{plugin}} 处于关闭状态",
+      "suppressedBadge": "插件已关闭"
+    },
+    "install": {
+      "title": "安装插件",
+      "stepSource": "选择来源",
+      "stepChoose": "选择插件",
+      "stepInstalling": "安装中",
+      "stepReport": "安装报告",
+      "stepBindings": "凭据",
+      "sourceZip": "上传 zip 文件",
+      "sourceGit": "从公开 git 地址安装",
+      "or": "或",
+      "installConfirm": "安装",
+      "notZip": "请选择 .zip 文件",
+      "chooseHint_other": "该来源包含 {{count}} 个插件，请选择要安装的插件。",
+      "tooLarge": "zip 超过 64 MB 限制",
+      "urlRequired": "请输入 git 地址或选择 zip 文件",
+      "notHttps": "git 地址必须以 https:// 开头",
+      "hasPlaceholder": "git 地址不能包含占位符或密钥",
+      "hasUserinfo": "请从 git 地址中移除用户名和密码",
+      "badHost": "无法访问该主机，请使用 github.com 等公开的 git 托管地址",
+      "badUrl": "git 地址格式无效",
+      "fetching": "正在获取插件",
+      "uploading": "上传中 {{percent}}%",
+      "reportInstalled": "已安装",
+      "reportSkipped": "已跳过",
+      "reportUpgradable": "需要确认",
+      "reportErrors": "错误",
+      "reportWarnings": "警告",
+      "specRef": "规范",
+      "reportNoChanges": "没有变化，该插件已是最新版本。",
+      "sseUpgradeHint": "这些服务器声明了旧版 SSE 传输。它们通过了 streamable HTTP 探测，可以用现代传输方式安装。",
+      "sseUpgradeConfirm": "以 streamable HTTP 安装",
+      "sseUpgradeFailed": "升级失败",
+      "droppedFiles": "未导入：{{files}}",
+      "continueToBindings": "继续",
+      "bindingsHint": "该插件声明了所需凭据。值会保存到你的保险库，不会以明文展示给智能体。也可以跳过，稍后在密钥标签页中设置。",
+      "bindingsSkip": "暂时跳过",
+      "bindingsSave": "保存 {{count}} 项",
+      "bindingPlaceholder": "粘贴值",
+      "bindingDocs": "获取方式",
+      "boundTitle": "凭据已保存",
+      "boundDesc": "已保存 {{count}} 项到保险库"
+    },
+    "groups": {
+      "tally": "{{enabled}} 个启用 · {{disabled}} 个停用",
+      "expandAria": "展开 {{title}}",
+      "collapseAria": "收起 {{title}}",
+      "selectAllAria": "全选 {{title}}",
+      "uploaded": "本地上传",
+      "openPlugin": "查看插件",
+      "bundled": "内置"
+    },
+    "bulk": {
+      "select": "选择",
+      "selected": "已选 {{count}} 项",
+      "enable": "启用 {{count}}",
+      "disable": "停用 {{count}}",
+      "delete": "删除 {{count}}",
+      "uninstall": "卸载 {{count}}",
+      "confirmDelete_other": "删除 {{count}} 项？此操作无法撤销。",
+      "confirmUninstall_other": "卸载 {{count}} 个插件？其服务器和技能将被移除。",
+      "progress": "正在处理 {{done}} / {{total}}",
+      "resultTitle": "批量操作完成",
+      "okPart": "{{count}} 项成功",
+      "failPart": "{{count}} 项失败",
+      "scope": "范围",
+      "scopeAria": "设置所选项的范围",
+      "scopeEverywhere": "全部工作区 ({{count}})",
+      "scopeOnlyIn": "仅限所选工作区 ({{count}})",
+      "scopeMoveTo": "移入工作区 ({{count}})",
+      "scopeApply": "应用到 {{count}} 项",
+      "noChanges": "所选项无需更改"
+    },
+    "filter": {
+      "placeholder": "筛选",
+      "clear": "清除筛选",
+      "noMatches": "无匹配项"
+    },
+    "addMenu": {
+      "add": "添加",
+      "installPlugin": "安装插件",
+      "addServer": "添加 MCP 服务器",
+      "importServers": "导入服务器",
+      "uploadSkill": "上传技能"
+    },
+    "stateFilter": {
+      "all": "全部",
+      "on": "开启",
+      "off": "关闭",
+      "attention": "需要处理"
+    },
+    "detail": {
+      "kindServer": "MCP 服务器",
+      "kindBrokerage": "券商",
+      "kindSkill": "技能",
+      "kindPlugin": "插件",
+      "tools": "工具",
+      "toolsEmpty": "尚未发现工具。服务器首次连接后即会显示。",
+      "discovered": "发现于 {{date}}",
+      "config": "配置",
+      "transport": "传输方式",
+      "url": "URL",
+      "command": "命令",
+      "envVars": "环境变量",
+      "headers": "请求头",
+      "info": "详情",
+      "origin": "来源",
+      "originPlatform": "平台",
+      "originUser": "自有",
+      "originWorkspace": "工作区",
+      "size": "大小",
+      "updated": "更新于",
+      "created": "添加于",
+      "skillSource": "SKILL.md",
+      "sourceLoadFailed": "无法加载技能源文件。",
+      "components": "组件",
+      "version": "版本",
+      "author": "作者",
+      "homepage": "主页",
+      "sourceLabel": "来源",
+      "installed": "安装于",
+      "openComponentAria": "打开 {{name}}",
+      "toolsFailed": "无法加载工具。请求失败，请重试。",
+      "toolsUnavailable": "当前服务进程未能获取，重启后通常可恢复。",
+      "repository": "代码仓库",
+      "license": "许可证"
     }
   }
 }

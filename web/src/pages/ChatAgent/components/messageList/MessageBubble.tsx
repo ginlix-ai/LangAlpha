@@ -8,61 +8,61 @@ import { useTheme } from '../../../../contexts/ThemeContext';
 import LissajousLoading from '@/components/ui/lissajous-loading';
 import { useUser } from '@/hooks/useUser';
 import { CitationMetadataProvider } from '../CitationMetadataContext';
+import { CreditPausePendingProvider } from '../CreditPausePendingContext';
 import TextMessageContent from '../TextMessageContent';
-import { countDedupedSources, type ProvenanceRecord } from '@/types/chat';
+import { countDedupedSources, type CreditPauseState, type ProvenanceRecord, type SubagentTaskRecord } from '@/types/chat';
 import { TextShimmer } from '@/components/ui/text-shimmer';
 import type { SelectionPreviewShape } from '../SelectionContextPreview';
 import { AttachmentCard, InlineSelectionCards, InlineWidgetDeck } from './attachments';
 import type { AttachmentData, WidgetChipShape } from './attachments';
 import { MessageContentSegments } from './MessageContentSegments';
+import { OverflowCollapse } from './OverflowCollapse';
+import { useMessageActions } from './MessageActionsContext';
+import { useArrivalQuiet, useLiveToolRunning } from './useArrivalQuiet';
+import { isSteeringUserMessage } from './messagePredicates';
+import { assistantText } from './messageText';
 import { EMPTY_OBJ } from './types';
-import type { ContentSegmentRecord, FeedbackResult, MessageRecord, SubagentInfo, ToolCallProcessRecord } from './types';
+import type { ContentSegmentRecord, FeedbackResult, MessageRecord, ToolCallProcessRecord } from './types';
 
 // --- MessageBubble ---
 
+/** Pause without new text before the streaming indicator fades back in. Longer
+ *  than a token-cadence gap and the typewriter's own lag, shorter than a tool
+ *  call or a thinking pause. */
+const ARRIVAL_QUIET_MS = 700;
+
+/** Collapsed bound for long user messages (~10 lines of chat text). */
+const USER_MESSAGE_COLLAPSE_PX = 240;
+
 interface MessageBubbleProps {
   message: MessageRecord;
+  /** Backend turn this bubble belongs to (a steering continuation folds back
+   *  into the turn it continues). Feedback is addressed by turn, not bubble. */
+  turnIndex: number;
+  /** Whether this assistant bubble is the LAST VISIBLE bubble of its backend
+   *  turn (steering splits one turn across several bubbles). Regenerate renders
+   *  only on the tail. Computed positionally in MessageList. */
+  isTurnTail: boolean;
+  /** This turn's stored rating, or null. */
+  feedback?: FeedbackResult | null;
   isLoading?: boolean;
   hideAvatar?: boolean;
   compactToolCalls?: boolean;
   isSubagentView?: boolean;
   readOnly?: boolean;
   allowFiles?: boolean;
-  onOpenSubagentTask?: (info: SubagentInfo) => void;
-  onOpenFile?: (filePath: string, workspaceId?: string) => void;
-  onOpenSources?: (messageId: string) => void;
-  onOpenDir?: (dirPath: string) => void;
-  onToolCallDetailClick?: (proc: ToolCallProcessRecord) => void;
-  onApprovePlan?: () => void;
-  onRejectPlan?: () => void;
-  onPlanDetailClick?: (planData: Record<string, unknown>) => void;
-  onAnswerQuestion?: (answer: string, questionId: string, interruptId: string) => void;
-  onSkipQuestion?: (questionId: string, interruptId: string) => void;
-  onApproveCreateWorkspace?: (proposalData: Record<string, unknown>) => void;
-  onRejectCreateWorkspace?: (proposalData: Record<string, unknown>) => void;
-  onApproveStartQuestion?: (proposalData: Record<string, unknown>) => void;
-  onRejectStartQuestion?: (proposalData: Record<string, unknown>) => void;
-  onApprovePTCAgent?: (proposalData: Record<string, unknown>, overrides: { report_back?: boolean } | undefined, proposalId: string, interruptId: string) => void;
-  onRejectPTCAgent?: (proposalData: Record<string, unknown>, proposalId: string, interruptId: string) => void;
-  onApproveSecretaryAction?: (proposalData: Record<string, unknown>) => void;
-  onRejectSecretaryAction?: (proposalData: Record<string, unknown>) => void;
-  onEditMessage?: (messageId: string, content: string) => void;
-  onRegenerate?: (messageId: string) => void;
-  onRetry?: () => void;
-  onThumbUp?: (messageId: string) => Promise<FeedbackResult | null>;
-  onThumbDown?: (messageId: string, issueCategories: string[], comment: string | null, consentHumanReview: boolean) => Promise<FeedbackResult | null>;
-  getFeedbackForMessage?: (messageId: string) => FeedbackResult | null;
-  onReportWithAgent?: (instruction: string) => void;
-  onWidgetSendPrompt?: (text: string) => void;
   isMobile?: boolean;
   flashContext?: { threadId: string; workspaceId: string } | null;
 }
 
 /**
  * Wrapped with React.memo — safe because updateMessage() in messageHelpers.ts
- * returns the same object reference for unchanged messages.
+ * returns the same object reference for unchanged messages. Actions come from
+ * MessageActionsContext (one identity-stable object per host), so a streamed
+ * chunk never re-renders settled bubbles through a handler identity.
  */
-export const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenSources, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, getFeedbackForMessage, onReportWithAgent, onWidgetSendPrompt, isMobile, flashContext }: MessageBubbleProps): React.ReactElement {
+export const MessageBubble = memo(function MessageBubble({ message, turnIndex, isTurnTail, feedback, isLoading, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, isMobile, flashContext }: MessageBubbleProps): React.ReactElement {
+  const { onOpenFile, onOpenSources, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, onReportWithAgent } = useMessageActions();
   const { t } = useTranslation();
   const { user } = useUser();
   const { theme } = useTheme();
@@ -85,25 +85,28 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
 
   // Copy state
   const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+  }, []);
 
   // Feedback state
   const [feedbackRating, setFeedbackRating] = useState<string | null>(null);
   const [showThumbDownModal, setShowThumbDownModal] = useState(false);
 
-  // Load initial feedback on mount
+  // Seed from the turn's stored rating. Data, not a lookup callback: the old
+  // `getFeedbackForMessage` identity changed on every load/submit and re-seeded
+  // EVERY mounted bubble; `feedback` changes only for the turn it belongs to.
   useEffect(() => {
-    if (isAssistant && getFeedbackForMessage) {
-      const fb = getFeedbackForMessage(message.id as string);
-      if (fb) setFeedbackRating(fb.rating);
-    }
-  }, [message.id, isAssistant, getFeedbackForMessage]);
+    if (isAssistant && feedback) setFeedbackRating(feedback.rating);
+  }, [isAssistant, feedback]);
 
   const handleThumbUpClick = async () => {
     if (!onThumbUp) return;
     const prevRating = feedbackRating;
     const newRating = prevRating === 'thumbs_up' ? null : 'thumbs_up';
     setFeedbackRating(newRating);
-    const result = await onThumbUp(message.id as string);
+    const result = await onThumbUp(turnIndex);
     if (result === null) setFeedbackRating(prevRating);
     else if (result) setFeedbackRating(result.rating);
   };
@@ -113,7 +116,7 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
     const prevRating = feedbackRating;
     setFeedbackRating('thumbs_down');
     setShowThumbDownModal(false);
-    const result = await onThumbDown(message.id as string, issueCategories, comment, consentHumanReview);
+    const result = await onThumbDown(turnIndex, issueCategories, comment, consentHumanReview);
     if (result === null) setFeedbackRating(prevRating);
   };
 
@@ -123,12 +126,21 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
   const canShowActions = !isSubagentView && !readOnly;
   const showActions = canShowActions && !(message.isStreaming as boolean) && !isLoading;
 
-  // Provenance count for the Sources pill, deduped by (source_type, identifier)
-  // — the same URL fetched twice in one turn counts once. The pill lives in its
-  // own always-visible row (not the hover-gated footer), so it shows mid-stream.
-  // This counts distinct sources (every result URL), so it intentionally runs
-  // ahead of the panel's visible row count: the panel groups a whole web search
-  // into one deck, but the pill still reports how many pages were actually read.
+  // The stream stamps `arrivalSeq` on every landed reply text, reasoning text
+  // or tool-argument chunk, whatever the typewriter has shown of it. The
+  // streaming indicator hides while it climbs and shows in the pauses. A tool
+  // whose card is visibly running counts as busy too.
+  const isStreaming = message.isStreaming as boolean;
+  const toolCallProcesses = message.toolCallProcesses as Record<string, ToolCallProcessRecord> | undefined;
+  const arrivalSeq = (message.arrivalSeq as number | undefined) ?? 0;
+  const toolRunning = useLiveToolRunning(toolCallProcesses, isStreaming);
+  const arrivalQuiet = useArrivalQuiet(arrivalSeq, isStreaming, ARRIVAL_QUIET_MS) && !toolRunning;
+
+  // Provenance count for the Sources pill, deduped by (source_type,
+  // identifier): the same URL fetched twice in one turn counts once. It counts
+  // distinct sources (every result URL), so it intentionally runs ahead of the
+  // panel's visible row count: the panel groups a whole web search into one
+  // deck, but the pill still reports how many pages were actually read.
   const sourceCount = useMemo(() => {
     if (!isAssistant || isSubagentView) return 0;
     return countDedupedSources(message.provenanceRecords as Record<string, ProvenanceRecord> | undefined);
@@ -174,15 +186,15 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
   };
 
   const handleCopy = () => {
-    // Collect all text content from segments
-    const contentSegments = message.contentSegments as ContentSegmentRecord[] | undefined;
-    const text = contentSegments
-      ?.filter((s) => s.type === 'text')
-      .map((s) => s.content)
-      .join('') || (message.content as string) || '';
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    const text = assistantText(message);
+    // Confirm only after the write lands (it can reject when the document
+    // loses focus); rapid re-copies reset the shared timer instead of
+    // stacking timers that would cut the newer indicator short.
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
   };
 
   return (
@@ -216,7 +228,7 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
             <div
               className="rounded-xl px-4 py-3"
               style={{
-                border: '2px solid var(--color-accent-primary, #6b7280)',
+                border: '2px solid var(--color-accent-overlay)',
                 backgroundColor: 'transparent',
                 color: 'var(--color-text-primary)',
               }}
@@ -229,7 +241,7 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
                   resizeTextarea();
                 }}
                 onKeyDown={handleEditKeyDown}
-                className="w-full bg-transparent text-sm resize-none outline-none leading-relaxed overflow-hidden"
+                className="w-full bg-transparent text-sm resize-none leading-relaxed overflow-hidden"
                 style={{ color: 'var(--color-text-primary)' }}
                 rows={1}
               />
@@ -249,7 +261,7 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
                   className="px-4 py-1.5 rounded-full text-sm font-medium transition-colors"
                   style={{
                     color: 'var(--color-text-primary)',
-                    border: '1px solid var(--color-border, #d1d5db)',
+                    border: '1px solid var(--color-border-muted)',
                   }}
                 >
                   Cancel
@@ -258,8 +270,8 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
                   onClick={handleSubmitEdit}
                   className="px-4 py-1.5 rounded-full text-sm font-medium transition-colors"
                   style={{
-                    color: 'var(--color-text-on-accent, #fff)',
-                    backgroundColor: 'var(--color-text-secondary)',
+                    color: 'var(--color-btn-primary-text)',
+                    backgroundColor: 'var(--color-btn-primary-bg)',
                   }}
                 >
                   Save
@@ -285,6 +297,7 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
             color: 'var(--color-text-primary)',
           }}
         >
+          <OverflowCollapse enabled={isUser} maxHeight={USER_MESSAGE_COLLAPSE_PX}>
           {isPendingDelivery ? (
             <TextShimmer
               as="span"
@@ -298,12 +311,13 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
           {/* Render content segments in chronological order */}
           {(message.contentSegments as ContentSegmentRecord[] | undefined) && (message.contentSegments as ContentSegmentRecord[]).length > 0 ? (
             <CitationMetadataProvider toolCallProcesses={(message.toolCallProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}>
+            <CreditPausePendingProvider creditPauses={message.creditPauses as Record<string, CreditPauseState> | undefined}>
             <MessageContentSegments
               segments={message.contentSegments as ContentSegmentRecord[]}
               reasoningProcesses={(message.reasoningProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
               toolCallProcesses={(message.toolCallProcesses as Record<string, ToolCallProcessRecord>) || EMPTY_OBJ}
               todoListProcesses={(message.todoListProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-              subagentTasks={(message.subagentTasks as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
+              subagentTasks={(message.subagentTasks as Record<string, SubagentTaskRecord>) || EMPTY_OBJ}
               planApprovals={(message.planApprovals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
               userQuestions={(message.userQuestions as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
               workspaceProposals={(message.workspaceProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
@@ -315,32 +329,15 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
               isAssistant={isAssistant}
               compactToolCalls={compactToolCalls}
               isSubagentView={isSubagentView}
-              onOpenSubagentTask={onOpenSubagentTask}
-              onOpenFile={onOpenFile}
-              onOpenDir={onOpenDir}
-              onToolCallDetailClick={onToolCallDetailClick}
-              onApprovePlan={onApprovePlan}
-              onRejectPlan={onRejectPlan}
-              onPlanDetailClick={onPlanDetailClick}
-              onAnswerQuestion={onAnswerQuestion}
-              onSkipQuestion={onSkipQuestion}
-              onApproveCreateWorkspace={onApproveCreateWorkspace}
-              onRejectCreateWorkspace={onRejectCreateWorkspace}
-              onApproveStartQuestion={onApproveStartQuestion}
-              onRejectStartQuestion={onRejectStartQuestion}
-              onApprovePTCAgent={onApprovePTCAgent}
-              onRejectPTCAgent={onRejectPTCAgent}
-              onApproveSecretaryAction={onApproveSecretaryAction}
-              onRejectSecretaryAction={onRejectSecretaryAction}
               ptcAgentProposals={(message.ptcAgentProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
               secretaryActionProposals={(message.secretaryActionProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-              onWidgetSendPrompt={onWidgetSendPrompt}
+              creditPauses={(message.creditPauses as Record<string, CreditPauseState>) || EMPTY_OBJ}
               htmlWidgetProcesses={(message.htmlWidgetProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-              textOnly={true}
               readOnly={readOnly}
               allowFiles={allowFiles}
               flashContext={flashContext}
             />
+            </CreditPausePendingProvider>
             </CitationMetadataProvider>
           ) : (
             // Fallback for messages without segments (backward compatibility) - main chat shows text only
@@ -356,20 +353,44 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
           )}
           </>
           )}
+          </OverflowCollapse>
 
-          {/* Streaming indicator -- hidden when dot-loader is already showing for pending chunks */}
-          {(message.isStreaming as boolean) && !Object.keys((message.pendingToolCallChunks as Record<string, unknown>) || {}).length && (() => {
+          {/* Streaming indicator -- hidden when dot-loader is already showing
+              for pending chunks. Stays mounted for the whole stream and only
+              fades: while text is landing it is invisible (the text is the
+              liveness signal), in a pause it fades back in so the turn never
+              looks finished. Fading rather than unmounting keeps its row, so
+              the transcript bottom does not hop by a line on every pause. */}
+          {isStreaming && !Object.keys((message.pendingToolCallChunks as Record<string, unknown>) || {}).length && (() => {
             const contentSegments = message.contentSegments as ContentSegmentRecord[] | undefined;
             const hasContent = contentSegments?.some(s => s.content?.trim()) || (message.content as string)?.trim();
-            return <LissajousLoading className={`${hasContent ? "mt-2" : "mt-0"} ${isMobile ? 'w-5 h-5' : 'w-6 h-6'} text-neutral-500 dark:text-neutral-400`} />;
+            return (
+              <div
+                className={`${hasContent ? 'mt-2' : 'mt-0'} transition-opacity duration-200`}
+                style={{ opacity: arrivalQuiet ? 1 : 0 }}
+                aria-hidden={!arrivalQuiet}
+                data-testid="streaming-indicator"
+                data-quiet={arrivalQuiet ? 'true' : 'false'}
+              >
+                <LissajousLoading className={`${isMobile ? 'w-5 h-5' : 'w-6 h-6'} text-neutral-500 dark:text-neutral-400`} />
+              </div>
+            );
           })()}
         </div>
 
-        {/* Sources pill -- always-visible row (not the hover-gated footer below,
-            which is hidden during streaming). Surfaces the turn's tracked data
-            provenance; clicking opens the Sources tab in the right panel. */}
+        {/* Sources pill -- always-visible row (not the hover-gated footer
+            below). Mounted from the first source onward and only faded in once
+            the turn has finished: a count that climbs mid-stream reads as
+            activity, but unmounting the row until then would hop the whole
+            transcript by a line the moment the turn ends. While faded the row
+            is inert, so the invisible button takes neither a click nor a tab
+            stop. Clicking opens the Sources tab in the right panel. */}
         {isAssistant && !isSubagentView && sourceCount > 0 && (
-          <div className="flex justify-start mt-1">
+          <div
+            className="flex justify-start mt-1 transition-opacity duration-200"
+            style={{ opacity: isStreaming ? 0 : 1 }}
+            inert={isStreaming}
+          >
             <button
               type="button"
               onClick={() => onOpenSources?.(message.id as string)}
@@ -386,14 +407,15 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
           </div>
         )}
 
-        {/* Per-message "⏹ Stopped" chip — the turn was hard-stopped by the
-            user (live finalize or replay of a stopped turn). */}
+        {/* Per-message "⏹ Stopped" marker — the turn was hard-stopped by the
+            user (live finalize or replay of a stopped turn). Quiet ink, not
+            red: a stop is the user's own action, not a loss/error state. */}
         {isAssistant && (message.stopped as boolean) && (
           <div
-            className="inline-flex items-center gap-1 self-start px-2 py-0.5 rounded text-xs"
-            style={{ backgroundColor: 'var(--color-loss-soft)', color: 'var(--color-loss)' }}
+            className="inline-flex items-center gap-1.5 self-start mt-1 text-xs"
+            style={{ color: 'var(--color-text-tertiary)' }}
           >
-            <StopCircle className="h-3 w-3 flex-shrink-0" />
+            <StopCircle className="h-3.5 w-3.5 flex-shrink-0" />
             <span>{t('chat.stoppedChip')}</span>
           </div>
         )}
@@ -432,46 +454,48 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
             inert={!showActions || undefined}
             className={`flex gap-1 mt-0.5 transition-opacity ${
               showActions
-                ? (isMobile ? 'opacity-70' : 'opacity-0 group-hover:opacity-100')
+                ? (isMobile ? 'opacity-70' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100')
                 : 'opacity-0 pointer-events-none'
             } ${
               isUser ? 'justify-end' : 'justify-start'
             }`}
           >
-            {/* User message actions */}
-            {isUser && onEditMessage && (
+            {/* User message actions. Steering bubbles get no edit pencil:
+                they're injected mid-turn and have no turn checkpoint of their
+                own, so an edit fork would target the NEXT turn and leave the
+                original steering text in the agent's context. */}
+            {isUser && onEditMessage && !isSteeringUserMessage(message) && (
               <button
                 onClick={handleStartEdit}
                 className="p-1 rounded transition-colors hover:bg-[var(--color-bg-elevated)]"
-                title="Edit message"
+                title={t('chat.actions.editMessage')}
               >
                 <Pencil className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
               </button>
             )}
 
-            {/* Assistant message actions: Copy -> ThumbUp -> ThumbDown -> Regenerate/Retry */}
-            {isAssistant && (
-              <button
-                onClick={handleCopy}
-                className="p-1 rounded transition-colors hover:bg-[var(--color-bg-elevated)]"
-                title={copied ? 'Copied!' : 'Copy message'}
-              >
-                {copied
-                  ? <Check className="h-3.5 w-3.5" style={{ color: 'var(--color-gain)' }} />
-                  : <Copy className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
-                }
-              </button>
-            )}
+            {/* Copy — both roles (a user bubble falls back to message.content).
+                Then assistant-only: ThumbUp -> ThumbDown -> Regenerate/Retry */}
+            <button
+              onClick={handleCopy}
+              className="p-1 rounded transition-colors hover:bg-[var(--color-bg-elevated)]"
+              title={copied ? t('chat.actions.copied') : t('chat.actions.copyMessage')}
+            >
+              {copied
+                ? <Check className="h-3.5 w-3.5" style={{ color: 'var(--color-profit)' }} />
+                : <Copy className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
+              }
+            </button>
             {isAssistant && !(message.error as boolean) && onThumbUp && (
               <button
                 onClick={handleThumbUpClick}
                 className="p-1 rounded transition-colors hover:bg-[var(--color-bg-elevated)]"
-                title={feedbackRating === 'thumbs_up' ? 'Remove rating' : 'Good response'}
+                title={feedbackRating === 'thumbs_up' ? t('chat.actions.removeRating') : t('chat.actions.goodResponse')}
               >
                 <ThumbsUp
                   className="h-3.5 w-3.5"
                   fill={feedbackRating === 'thumbs_up' ? 'currentColor' : 'none'}
-                  style={{ color: feedbackRating === 'thumbs_up' ? 'var(--color-gain)' : 'var(--color-text-tertiary)' }}
+                  style={{ color: feedbackRating === 'thumbs_up' ? 'var(--color-profit)' : 'var(--color-text-tertiary)' }}
                 />
               </button>
             )}
@@ -479,7 +503,7 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
               <button
                 onClick={() => setShowThumbDownModal(true)}
                 className="p-1 rounded transition-colors hover:bg-[var(--color-bg-elevated)]"
-                title={feedbackRating === 'thumbs_down' ? 'Feedback submitted' : 'Report issue'}
+                title={feedbackRating === 'thumbs_down' ? t('chat.actions.feedbackSubmitted') : t('chat.actions.reportIssue')}
               >
                 <ThumbsDown
                   className="h-3.5 w-3.5"
@@ -488,11 +512,15 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
                 />
               </button>
             )}
-            {isAssistant && !(message.error as boolean) && onRegenerate && (
+            {/* One regenerate per backend turn, on the turn's last bubble —
+                regenerating re-runs the whole turn from its input checkpoint
+                (mid-run steering can't be replayed), so the affordance sits
+                at the end of the full response. */}
+            {isAssistant && !(message.error as boolean) && onRegenerate && isTurnTail && (
               <button
                 onClick={() => onRegenerate(message.id as string)}
                 className="p-1 rounded transition-colors hover:bg-[var(--color-bg-elevated)]"
-                title="Regenerate response"
+                title={t('chat.actions.regenerate')}
               >
                 <RefreshCw className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
               </button>
@@ -501,7 +529,7 @@ export const MessageBubble = memo(function MessageBubble({ message, isLoading, h
               <button
                 onClick={onRetry}
                 className="p-1 rounded transition-colors hover:bg-[var(--color-bg-elevated)]"
-                title="Retry"
+                title={t('chat.actions.retry')}
               >
                 <RotateCcw className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
               </button>

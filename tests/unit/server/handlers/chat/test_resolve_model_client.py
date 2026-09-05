@@ -12,14 +12,16 @@ import pytest
 from ptc_agent.config.agent import CredentialSource
 
 HANDLER = "src.server.services.llm.config"
+USER_MODELS = "src.server.services.llm.user_models"
+CLIENTS = "src.server.services.llm.clients"
 
 
 def _patch_classify(source):
     """Patch classify_model to return (source, {})."""
-    from src.server.services.llm.config import ModelSource  # noqa: F401
+    from src.server.services.llm.user_models import ModelSource  # noqa: F401
 
     return patch(
-        f"{HANDLER}.classify_model",
+        f"{USER_MODELS}.classify_model",
         new_callable=AsyncMock,
         return_value=(source, {}),
     )
@@ -27,18 +29,19 @@ def _patch_classify(source):
 
 @pytest.mark.asyncio
 async def test_oauth_present_returns_oauth_and_skips_byok():
-    from src.server.services.llm.config import ModelSource, resolve_model_client
+    from src.server.services.llm.clients import resolve_model_client
+    from src.server.services.llm.user_models import ModelSource
 
     oauth_client = MagicMock(name="oauth-client")
     byok = AsyncMock(name="byok")
     with (
         _patch_classify(ModelSource.SYSTEM),
         patch(
-            f"{HANDLER}.resolve_oauth_llm_client",
+            f"{CLIENTS}.resolve_oauth_llm_client",
             new_callable=AsyncMock,
             return_value=oauth_client,
         ),
-        patch(f"{HANDLER}.resolve_byok_llm_client", byok),
+        patch(f"{CLIENTS}.resolve_byok_llm_client", byok),
     ):
         result = await resolve_model_client("u", "m", is_byok=True)
 
@@ -49,18 +52,19 @@ async def test_oauth_present_returns_oauth_and_skips_byok():
 
 @pytest.mark.asyncio
 async def test_byok_present_returns_byok():
-    from src.server.services.llm.config import ModelSource, resolve_model_client
+    from src.server.services.llm.clients import resolve_model_client
+    from src.server.services.llm.user_models import ModelSource
 
     byok_client = MagicMock(name="byok-client")
     with (
         _patch_classify(ModelSource.SYSTEM),
         patch(
-            f"{HANDLER}.resolve_oauth_llm_client",
+            f"{CLIENTS}.resolve_oauth_llm_client",
             new_callable=AsyncMock,
             return_value=None,
         ),
         patch(
-            f"{HANDLER}.resolve_byok_llm_client",
+            f"{CLIENTS}.resolve_byok_llm_client",
             new_callable=AsyncMock,
             return_value=byok_client,
         ),
@@ -73,18 +77,19 @@ async def test_byok_present_returns_byok():
 
 @pytest.mark.asyncio
 async def test_platform_fallback_when_byok_none_and_system():
-    from src.server.services.llm.config import ModelSource, resolve_model_client
+    from src.server.services.llm.clients import resolve_model_client
+    from src.server.services.llm.user_models import ModelSource
 
     platform_client = MagicMock(name="platform-client")
     with (
         _patch_classify(ModelSource.SYSTEM),
         patch(
-            f"{HANDLER}.resolve_oauth_llm_client",
+            f"{CLIENTS}.resolve_oauth_llm_client",
             new_callable=AsyncMock,
             return_value=None,
         ),
         patch(
-            f"{HANDLER}.resolve_byok_llm_client",
+            f"{CLIENTS}.resolve_byok_llm_client",
             new_callable=AsyncMock,
             return_value=None,
         ),
@@ -101,17 +106,18 @@ async def test_platform_fallback_when_byok_none_and_system():
 
 @pytest.mark.asyncio
 async def test_no_fallback_when_disabled():
-    from src.server.services.llm.config import ModelSource, resolve_model_client
+    from src.server.services.llm.clients import resolve_model_client
+    from src.server.services.llm.user_models import ModelSource
 
     with (
         _patch_classify(ModelSource.SYSTEM),
         patch(
-            f"{HANDLER}.resolve_oauth_llm_client",
+            f"{CLIENTS}.resolve_oauth_llm_client",
             new_callable=AsyncMock,
             return_value=None,
         ),
         patch(
-            f"{HANDLER}.resolve_byok_llm_client",
+            f"{CLIENTS}.resolve_byok_llm_client",
             new_callable=AsyncMock,
             return_value=None,
         ),
@@ -129,17 +135,18 @@ async def test_no_fallback_when_disabled():
 @pytest.mark.asyncio
 async def test_platform_fallback_not_built_for_custom():
     """Platform fallback only applies to SYSTEM models, never CUSTOM."""
-    from src.server.services.llm.config import ModelSource, resolve_model_client
+    from src.server.services.llm.clients import resolve_model_client
+    from src.server.services.llm.user_models import ModelSource
 
     with (
         _patch_classify(ModelSource.CUSTOM),
         patch(
-            f"{HANDLER}.resolve_oauth_llm_client",
+            f"{CLIENTS}.resolve_oauth_llm_client",
             new_callable=AsyncMock,
             return_value=None,
         ),
         patch(
-            f"{HANDLER}.resolve_byok_llm_client",
+            f"{CLIENTS}.resolve_byok_llm_client",
             new_callable=AsyncMock,
             return_value=None,
         ),
@@ -157,18 +164,19 @@ async def test_platform_fallback_not_built_for_custom():
 @pytest.mark.asyncio
 async def test_byok_on_system_model_is_orthogonal():
     """A BYOK user on a SYSTEM-catalog model: model_source=SYSTEM, cred=BYOK."""
-    from src.server.services.llm.config import ModelSource, resolve_model_client
+    from src.server.services.llm.clients import resolve_model_client
+    from src.server.services.llm.user_models import ModelSource
 
     byok_client = MagicMock(name="byok-client")
     with (
         _patch_classify(ModelSource.SYSTEM),
         patch(
-            f"{HANDLER}.resolve_oauth_llm_client",
+            f"{CLIENTS}.resolve_oauth_llm_client",
             new_callable=AsyncMock,
             return_value=None,
         ),
         patch(
-            f"{HANDLER}.resolve_byok_llm_client",
+            f"{CLIENTS}.resolve_byok_llm_client",
             new_callable=AsyncMock,
             return_value=byok_client,
         ),
@@ -184,17 +192,18 @@ async def test_oauth_required_exception_propagates():
     """An OAuth-required HTTPException must NOT be swallowed."""
     from fastapi import HTTPException
 
-    from src.server.services.llm.config import ModelSource, resolve_model_client
+    from src.server.services.llm.clients import resolve_model_client
+    from src.server.services.llm.user_models import ModelSource
 
     exc = HTTPException(status_code=400, detail={"type": "oauth_required"})
     with (
         _patch_classify(ModelSource.SYSTEM),
         patch(
-            f"{HANDLER}.resolve_oauth_llm_client",
+            f"{CLIENTS}.resolve_oauth_llm_client",
             new_callable=AsyncMock,
             side_effect=exc,
         ),
-        patch(f"{HANDLER}.resolve_byok_llm_client", new_callable=AsyncMock) as byok,
+        patch(f"{CLIENTS}.resolve_byok_llm_client", new_callable=AsyncMock) as byok,
     ):
         with pytest.raises(HTTPException) as raised:
             await resolve_model_client("u", "m", is_byok=True)

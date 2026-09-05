@@ -3,20 +3,35 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import React from 'react';
 import { McpServerModal } from '../McpServerModal';
-
-// VaultSecretPicker pulls in the api module for inline-create; stub it so the
-// modal renders without a real backend.
-vi.mock('../../../utils/api', async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>();
-  return { ...actual, createVaultSecret: vi.fn() };
-});
+import type { McpServerDraft } from '../../../utils/api';
 
 const baseProps = {
-  workspaceId: 'ws-1',
   secretNames: ['EXISTING_TOKEN'],
   onClose: vi.fn(),
   onSubmit: vi.fn().mockResolvedValue(undefined),
+  createSecret: vi.fn().mockResolvedValue({ name: 'NEW' }),
 };
+
+/**
+ * An edited server as the modal now receives it — the config-shaped `Pick`, not
+ * a whole row. Both surfaces hand it one of their real rows; nothing about
+ * status, permissions or tool counts reaches this component.
+ */
+function makeDraft(overrides: Partial<McpServerDraft> = {}): McpServerDraft {
+  return {
+    name: 'srv',
+    transport: 'stdio',
+    command: 'npx',
+    args: [],
+    url: null,
+    env_refs: [],
+    header_refs: [],
+    description: '',
+    instruction: '',
+    tool_exposure_mode: 'summary',
+    ...overrides,
+  };
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -51,10 +66,12 @@ describe('McpServerModal — conditional fields per transport', () => {
     expect(screen.getByText('Headers')).toBeInTheDocument();
   });
 
-  it('renders the untrusted-context helper text on description + instruction', () => {
+  // Each hint has to say something the other doesn't. They used to be one
+  // string repeated, which told the user nothing about which field to fill in.
+  it('gives description and instruction their own helper text', () => {
     render(<McpServerModal {...baseProps} />);
-    const hints = screen.getAllByText(/shown to the agent as untrusted, user-provided context/i);
-    expect(hints.length).toBe(2);
+    expect(screen.getByText(/decide when to reach for this server/i)).toBeInTheDocument();
+    expect(screen.getByText(/before it calls this server's tools/i)).toBeInTheDocument();
   });
 
   it('exposes the summary/detailed exposure toggle', () => {
@@ -96,30 +113,7 @@ describe('McpServerModal — discovery_uses_secrets toggle', () => {
   });
 
   it('pre-fills the toggle from the edited server', () => {
-    const initial = {
-      name: 'srv',
-      origin: 'workspace' as const,
-      transport: 'stdio',
-      enabled: true,
-      editable: true,
-      deletable: true,
-      status: 'connected' as const,
-      error: '',
-      tool_count: 0,
-      tools: [],
-      missing_secrets: [],
-      env_refs: [],
-      header_refs: [],
-      description: '',
-      instruction: '',
-      tool_exposure_mode: 'summary',
-      discovery_uses_secrets: true,
-      command: 'npx',
-      args: [],
-      url: null,
-      config_version: 1,
-    };
-    render(<McpServerModal {...baseProps} initial={initial} />);
+    render(<McpServerModal {...baseProps} initial={makeDraft({ discovery_uses_secrets: true })} />);
     expect(
       screen.getByRole('checkbox', { name: /use my secrets during discovery/i }),
     ).toBeChecked();
@@ -131,30 +125,12 @@ describe('McpServerModal — edit-mode env/header hydration (data-loss guard)', 
   // (real keys + ${vault:NAME}/literal values), so an unrelated edit re-saves the
   // existing config intact. The old code seeded BLANK keys from env_refs, and
   // kvsToMap drops blank-key rows → PUT silently erased every entry on save.
-  const editingStdio = {
-    name: 'srv',
-    origin: 'workspace' as const,
-    transport: 'stdio',
-    enabled: true,
-    editable: true,
-    deletable: true,
-    status: 'connected' as const,
-    error: '',
-    tool_count: 0,
-    tools: [],
-    missing_secrets: [],
+  const editingStdio = makeDraft({
     env_refs: ['API_TOKEN'],
-    header_refs: [],
     env: { API_TOKEN: '${vault:API_TOKEN}', REGION: 'us-east-1' },
     headers: {},
     description: 'old description',
-    instruction: '',
-    tool_exposure_mode: 'summary',
-    command: 'npx',
-    args: [],
-    url: null,
-    config_version: 1,
-  };
+  });
 
   it('preserves env entries from the stored map when saving an unrelated edit', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
@@ -183,7 +159,7 @@ describe('McpServerModal — edit-mode env/header hydration (data-loss guard)', 
 
   it('preserves header entries from the stored map when saving an http server', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
-    const editingHttp = {
+    const editingHttp: McpServerDraft = {
       ...editingStdio,
       transport: 'http',
       command: null,
@@ -270,29 +246,7 @@ describe('McpServerModal — validation gating', () => {
   });
 
   it('locks the name field when editing', () => {
-    const initial = {
-      name: 'locked_name',
-      origin: 'workspace' as const,
-      transport: 'stdio',
-      enabled: true,
-      editable: true,
-      deletable: true,
-      status: 'connected' as const,
-      error: '',
-      tool_count: 0,
-      tools: [],
-      missing_secrets: [],
-      env_refs: [],
-      header_refs: [],
-      description: '',
-      instruction: '',
-      tool_exposure_mode: 'summary',
-      command: 'npx',
-      args: [],
-      url: null,
-      config_version: 1,
-    };
-    render(<McpServerModal {...baseProps} initial={initial} />);
+    render(<McpServerModal {...baseProps} initial={makeDraft({ name: 'locked_name' })} />);
     const nameInput = screen.getByDisplayValue('locked_name') as HTMLInputElement;
     expect(nameInput).toBeDisabled();
   });

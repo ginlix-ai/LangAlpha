@@ -6,10 +6,12 @@ loaded by the agent via the load_skill mechanism. Each skill contains a set
 of tools that are pre-registered but hidden until the skill is loaded.
 """
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
 from src.config.features import is_feature_enabled_system
+from src.config.settings import get_workflow_orchestration_config
 from src.tools.automation import AUTOMATION_TOOLS
 from src.tools.chart_annotation import CHART_ANNOTATION_TOOLS
 from src.tools.onboarding import ONBOARDING_TOOLS
@@ -27,13 +29,29 @@ class SkillDefinition:
         name: Unique skill identifier
         description: Human-readable description of what the skill does
         tools: List of LangChain tools included in this skill
-        skill_md_path: Optional path to SKILL.md with detailed instructions
+        tool_names: Names of externally-registered tools gated by this skill —
+            for per-thread factory tools that can't be instantiated at import
+            time (e.g. RunWorkflow). The tool object is registered by the agent
+            factory; the skill only controls its visibility.
+        skill_md_path: Where the agent reaches SKILL.md, not where the repo
+            keeps it. A sandbox-relative suffix, matched against the reads
+            the agent makes under ``.agents/skills/``, which the sync
+            flattens every source into. A shipped skill's files live in the
+            bundle that declares it; that path never appears here.
         exposure: Which agent mode(s) can use this skill ("ptc", "flash", or "both")
+        system_gate: Deployment kill switch for skills owned by a config section
+            rather than the feature catalog — False drops the skill everywhere.
+        source_dir: Absolute host directory containing ``<name>/SKILL.md`` for
+            user-tier skills — lets the loader read the body without any
+            ``skill_dirs`` search. None for platform skills.
+        origin: Whose content this is. "user" entries get trust framing in the
+            manifest and the user-tier wire shape in the API.
     """
 
     name: str
     description: str
     tools: list[Any]
+    tool_names: tuple[str, ...] = ()
     skill_md_path: str | None = None
     exposure: Literal["ptc", "flash", "both", "hidden"] = "ptc"
     command: str | None = None
@@ -41,10 +59,13 @@ class SkillDefinition:
     # drops out of every accessor while the feature's system default is off.
     # Per-user resolution happens at agent build (SkillsMiddleware injection).
     feature: str | None = None
+    system_gate: Callable[[], bool] | None = None
+    source_dir: str | None = None
+    origin: Literal["platform", "user"] = "platform"
 
     def get_tool_names(self) -> list[str]:
-        """Get list of tool names in this skill."""
-        return [getattr(t, "name", str(t)) for t in self.tools]
+        """Get list of tool names in this skill (including externally-registered ones)."""
+        return [getattr(t, "name", str(t)) for t in self.tools] + list(self.tool_names)
 
     def format_tool_descriptions(self, max_desc_len: int = 200) -> str:
         """Format tool descriptions for display.
@@ -65,17 +86,24 @@ class SkillDefinition:
         return "\n".join(lines)
 
 
+def _run_workflow_enabled() -> bool:
+    return get_workflow_orchestration_config().enabled
+
+
 def _is_enabled(
     skill: SkillDefinition, feature_resolver: Callable[[str], bool] | None = None
 ) -> bool:
-    """Feature-flag gate: skills of a disabled feature drop out of every
-    accessor (listings, lookups, sandbox sync).
+    """Availability gate: skills whose deployment switch or owning feature is
+    off drop out of every accessor (listings, lookups, sandbox sync).
 
     ``feature_resolver`` defaults to the system gate — the no-user-context
     default these accessors run under. The agent build injects a per-user
     resolver (via ``get_skill_registry``) so a user's opt-in/out is honored
-    when skills are assembled for that build.
+    when skills are assembled for that build. ``system_gate`` is a deployment
+    kill switch, so no resolver overrides it.
     """
+    if skill.system_gate is not None and not skill.system_gate():
+        return False
     if skill.feature is None:
         return True
     resolve = feature_resolver or is_feature_enabled_system
@@ -119,9 +147,10 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     "chart-annotation": SkillDefinition(
         name="chart-annotation",
         # Keep this text in sync with the `description:` in
-        # skills/chart-annotation/SKILL.md frontmatter — both are live (this one
-        # drives PTC discovery; the frontmatter drives the sandbox/Flash skill
-        # manifest), so they must not drift.
+        # plugins/langalpha_deliverables/skills/chart-annotation/SKILL.md
+        # frontmatter — both are live (this one drives PTC discovery; the
+        # frontmatter drives the sandbox/Flash skill manifest), so they must
+        # not drift.
         description=(
             "Draw price lines, trendlines, zones, and event markers directly on a "
             "stock's price chart — reach for it whenever you'd otherwise describe a "
@@ -139,7 +168,8 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "market-watch": SkillDefinition(
         name="market-watch",
-        # Keep in sync with the `description:` in skills/market-watch/SKILL.md
+        # Keep in sync with the `description:` in
+        # plugins/langalpha_research/skills/market-watch/SKILL.md
         # frontmatter (this drives PTC discovery; the frontmatter drives the
         # sandbox skill manifest).
         description=(
@@ -173,6 +203,24 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         tools=AUTOMATION_TOOLS,
         skill_md_path="skills/automation/SKILL.md",
         exposure="both",
+    ),
+    "run-workflow": SkillDefinition(
+        name="run-workflow",
+        # Keep in sync with the `description:` in
+        # plugins/langalpha_service/skills/run-workflow/SKILL.md
+        # frontmatter (locked by a unit test). RunWorkflow itself is a per-thread
+        # factory tool registered in agent.py, so it's gated by name here.
+        description=(
+            "Orchestrate parallel subagent pipelines from a JavaScript workflow "
+            "script — fan out work across many items (tickers, filings, findings) "
+            "then synthesize, or run a saved workflow by name. "
+            "Unlocks the RunWorkflow tool."
+        ),
+        tools=[],
+        tool_names=("RunWorkflow",),
+        skill_md_path="skills/run-workflow/SKILL.md",
+        exposure="ptc",
+        system_gate=_run_workflow_enabled,
     ),
     "pdf": SkillDefinition(
         name="pdf",
@@ -355,7 +403,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "html-report": SkillDefinition(
         name="html-report",
-        description="Self-contained styled HTML reports written to results/: PDF-exportable research documents with inline data, charts, and theme-aware CSS",
+        description="Self-contained styled HTML reports written to the task directory: PDF-exportable research documents with inline data, charts, and theme-aware CSS",
         tools=[],
         skill_md_path="skills/html-report/SKILL.md",
         exposure="ptc",
@@ -369,6 +417,76 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         exposure="ptc",
     ),
 }
+
+
+def build_user_skill_definitions(
+    specs: Sequence[Any],
+    *,
+    source_dir: str | None,
+    workspace_source_dir: str | None = None,
+) -> dict[str, SkillDefinition]:
+    """Build registry entries for a user's uploaded skills.
+
+    ``specs`` is duck-typed (needs ``.name``/``.description``, optional
+    ``.command``/``.workspace_scoped``) so the server's spec dataclass never
+    has to be imported here. Every entry is docs-only (no tools), exposed in
+    both modes, and carries ``skill_md_path="skills/<name>/SKILL.md"`` so PTC
+    auto-load on ``Read`` of ``.agents/skills/<name>/SKILL.md`` matches with no
+    extra code.
+
+    The two tiers read from different host dirs (see
+    ``load_user_skill_bundle``); a spec whose tier has no dir is skipped
+    rather than pointed at the other one's.
+    """
+    out: dict[str, SkillDefinition] = {}
+    for spec in specs:
+        root = (
+            workspace_source_dir
+            if getattr(spec, "workspace_scoped", False)
+            else source_dir
+        )
+        if root is None:
+            continue
+        out[spec.name] = SkillDefinition(
+            name=spec.name,
+            description=spec.description,
+            tools=[],
+            skill_md_path=f"skills/{spec.name}/SKILL.md",
+            exposure="both",
+            command=getattr(spec, "command", None) or spec.name,
+            origin="user",
+            source_dir=root,
+        )
+    return out
+
+
+def build_effective_skill_registry(
+    mode: SkillMode | None,
+    *,
+    feature_resolver: Callable[[str], bool] | None = None,
+    disabled_skills: Iterable[str] = (),
+    user_skills: Sequence[Any] = (),
+    user_skill_dir: str | None = None,
+    workspace_skill_dir: str | None = None,
+) -> dict[str, SkillDefinition]:
+    """Assemble the per-build registry every agent surface consumes.
+
+    Mode + feature gating, minus the user's builtin disables, plus the user's
+    uploaded skills. The one assembly path shared by the PTC build, the Flash
+    build, and the subagent compiler, so a gate applied in one can't be missed
+    in another.
+    """
+    registry = get_skill_registry(mode, feature_resolver=feature_resolver)
+    for name in disabled_skills:
+        registry.pop(name, None)
+    registry.update(
+        build_user_skill_definitions(
+            user_skills,
+            source_dir=user_skill_dir,
+            workspace_source_dir=workspace_skill_dir,
+        )
+    )
+    return registry
 
 
 def get_skill_registry(
@@ -502,7 +620,7 @@ def list_skills(mode: SkillMode | None = None) -> list[dict[str, Any]]:
         {
             "name": skill.name,
             "description": skill.description,
-            "tool_count": len(skill.tools),
+            "tool_count": len(skill.get_tool_names()),
             "tools": skill.get_tool_names(),
             "command": skill.command,
         }

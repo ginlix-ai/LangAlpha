@@ -65,160 +65,51 @@ sandbox:
     #   - "/data/datasets:/mnt/datasets:ro"
 
 mcp:
-  # MCP server configurations
-  # Note: Filesystem is now a first-class tool (see filesystem section below)
-  # Each server can have 'enabled: true/false' to enable/disable it (default: true)
+  # The servers that ship with LangAlpha are declared by the bundles under
+  # plugins/, one Agent Plugins package per group -- see plugins/README.md.
+  # This list is yours: servers you add, and overrides for the ones we ship.
+  #
+  # A name no bundle declares ADDS a server. A name a bundle already declares
+  # OVERRIDES it -- the keys you write here are laid over the shipped server
+  # and every key you leave out keeps its shipped value. Switching one off is
+  # two lines, and changing one field never means restating the command:
+  #
+  #   - name: "price_data"          # stop launching a server we ship
+  #     enabled: false
+  #
+  #   - name: "yf_price"            # keep ours, show the agent every tool
+  #     tool_exposure_mode: "detailed"
+  #
+  #   - name: "fundamentals"        # keep our description, run your own build
+  #     command: "uvx"
+  #     args: ["--from", "my-fundamentals-mcp", "serve"]
+  #
+  # Overriding here rather than editing plugins/ keeps your choice out of a
+  # file the next pull overwrites. `env` and `headers` replace the shipped map
+  # whole rather than merging key by key, so you can take a variable away as
+  # well as add one.
+  #
+  # Third-party stdio servers: always launch isolated -- uvx/npx with pinned
+  # versions -- never from the shared environment, whose dependency pins
+  # (including the mcp SDK) will strand them on the next SDK major. Builtin
+  # servers under plugins/ are era-proof via _bootstrap and run with
+  # `uv run python`.
   servers:
-    # Price data MCP server for OHLCV time series.
+    # A no-op override, here so the shape is in front of you. Flip it to
+    # false and price_data stops launching on the next restart.
     - name: "price_data"
       enabled: true
-      description: "OHLCV price data and short sale analytics for stocks, commodities, crypto, forex"
-      instruction: "Use for raw OHLCV time series data (get_stock_data/get_asset_data) and short interest/volume data (get_short_data). Supports daily and intraday intervals. Short data supports date range filters."
-      tool_exposure_mode: "detailed"
-      transport: "stdio"
-      command: "uv"
-      args: ["run", "python", "mcp_servers/price_data_mcp_server.py"]
-      env:
-        FMP_API_KEY: "${FMP_API_KEY}"
-        GINLIX_DATA_URL: "${GINLIX_DATA_URL}"
 
-    # Fundamentals MCP server for financial statements, ratios, growth, valuation,
-    # insider trades, dividends/splits, shares float, key executives, and technical indicators.
-    - name: "fundamentals"
-      enabled: true
-      description: "Raw fundamental data, ownership, and technical indicators for multi-year analysis"
-      instruction: "Use for financial statements, ratios, growth metrics, valuation data, insider trades, dividends/splits, shares float, key executives, and technical indicators. Returns raw JSON for programmatic analysis, charting, and model building."
-      tool_exposure_mode: "summary"
-      transport: "stdio"
-      command: "uv"
-      args: ["run", "python", "mcp_servers/fundamentals_mcp_server.py"]
-      env:
-        FMP_API_KEY: "${FMP_API_KEY}"
-
-    # Macro MCP server for economic indicators, treasury rates, risk premium, and event calendars.
-    - name: "macro"
-      enabled: true
-      description: "Economic indicators, treasury rates, earnings calendar, and macro events"
-      instruction: "Use for macro-economic data: GDP, CPI, unemployment, treasury yield curve, risk-free rate for DCF, earnings calendar by date range, and economic event calendar. Returns raw JSON."
-      tool_exposure_mode: "summary"
-      transport: "stdio"
-      command: "uv"
-      args: ["run", "python", "mcp_servers/macro_mcp_server.py"]
-      env:
-        FMP_API_KEY: "${FMP_API_KEY}"
-
-    # Options MCP server for contracts chain, OHLCV, and real-time snapshots.
-    # Returns raw JSON for programmatic analysis (IV surfaces, strategy modeling, charting).
-    - name: "options"
-      enabled: true
-      description: "Options contracts chain, historical OHLCV, and real-time snapshots"
-      instruction: "Use for in-depth options analysis: list contracts/chain (get_options_chain), historical OHLCV bars (get_options_prices), and real-time bid/ask snapshots (get_options_snapshot). Returns raw JSON for programmatic analysis, charting, and strategy modeling. Options tickers use format O:AAPL251219C00150000."
-      tool_exposure_mode: "summary"
-      transport: "stdio"
-      command: "uv"
-      args: ["run", "python", "mcp_servers/options_mcp_server.py"]
-      env:
-        GINLIX_DATA_URL: "${GINLIX_DATA_URL}"
-
-    - name: "tavily"
-      enabled: false
-      description: "Web search engine for finding current information online"
-      instruction: "Use for web searches, news, research, and real-time information. Best for queries requiring up-to-date data from the internet."
-      tool_exposure_mode: "summary" # Brief - 4 simple tools
-      transport: "stdio"
-      command: "npx"
-      args: ["-y", "tavily-mcp@latest"]
-      env:
-        TAVILY_API_KEY: "${TAVILY_API_KEY}"
-
-    - name: "yf_price"
-      enabled: true
-      description: "Yahoo Finance price history, dividends, and splits data"
-      instruction: "Use for historical OHLCV price data, dividend history, stock splits, and multi-stock price comparisons. Returns large time series ideal for code-based analysis."
-      tool_exposure_mode: "summary"
-      transport: "stdio"
-      command: "uv"
-      args: ["run", "python", "mcp_servers/yf_price_mcp_server.py"]
-      env: {}
-
-    - name: "yf_fundamentals"
-      enabled: true
-      description: "Yahoo Finance financial statements, earnings, company info, and valuations"
-      instruction: "Use for income statements, balance sheets, cash flow, earnings data, company info, and valuation comparisons across multiple stocks. Returns structured financial data ideal for fundamental analysis."
-      tool_exposure_mode: "summary"
-      transport: "stdio"
-      command: "uv"
-      args: ["run", "python", "mcp_servers/yf_fundamentals_mcp_server.py"]
-      env: {}
-
-    - name: "yf_analysis"
-      enabled: true
-      description: "Yahoo Finance analyst data, holdings, insiders, news, and ESG"
-      instruction: "Use for analyst recommendations, price targets, upgrades/downgrades, earnings estimates, institutional/mutual fund holders, insider transactions, news, and ESG sustainability scores."
-      tool_exposure_mode: "summary"
-      transport: "stdio"
-      command: "uv"
-      args: ["run", "python", "mcp_servers/yf_analysis_mcp_server.py"]
-      env: {}
-
-    - name: "yf_market"
-      enabled: true
-      description: "Yahoo Finance market status, search, screener, calendars, sectors"
-      instruction: "Use for ticker search, stock screening (custom and predefined), earnings calendars, market status, and sector/industry analysis. Best for market-wide discovery and screening."
-      tool_exposure_mode: "summary"
-      transport: "stdio"
-      command: "uv"
-      args: ["run", "python", "mcp_servers/yf_market_mcp_server.py"]
-      env: {}
-
-    # Scrapling web scraping MCP server
-    # Provides get, bulk_get, fetch, bulk_fetch, stealthy_fetch, bulk_stealthy_fetch
-    - name: "scrapling"
-      enabled: true
-      description: "Web scraping with anti-bot bypass, CSS selection, and markdown extraction"
-      instruction: "Use for scraping web pages. Choose extraction_type='markdown' for readable content. Use 'get' for fast HTTP requests, 'fetch' for JS-rendered pages, 'stealthy_fetch' for Cloudflare-protected sites. Bulk variants accept multiple URLs for parallel scraping."
-      tool_exposure_mode: "summary"
-      transport: "stdio"
-      command: "scrapling"
-      args: ["mcp"]
-      env: {}
-
-    # X (Twitter) API MCP server — read-only post search, user lookup, tweet lookup, thread fetch.
-    # Bearer token flows as a per-call tool argument sourced from the workspace vault
-    # (`from vault import get; get("X_BEARER_TOKEN")`), not from the MCP subprocess env.
-    # Host-env X_BEARER_TOKEN acts as a single-tenant fallback if the arg is omitted.
-    - name: "x_api"
-      enabled: true
-      description: "Search X (Twitter) posts and fetch users, tweets, and reply threads. Read-only."
-      instruction: "Use for X/Twitter search and thread retrieval. Tools: search_posts, search_all_posts, get_conversation, get_user_by_username, get_tweet_by_id. For a single known X post URL, prefer web_fetch — reserve these tools for search, aggregation, and thread traversal. Every call needs bearer_token from the workspace vault: `from vault import get; token = get(\"X_BEARER_TOKEN\")`. Prefer search_posts by default; reach for search_all_posts only when the user needs posts older than ~7 days. See skills/x-api/ for usage and errors."
-      tool_exposure_mode: "summary"
-      transport: "stdio"
-      command: "uv"
-      args: ["run", "python", "mcp_servers/x_mcp_server.py"]
-      # env intentionally empty: in multi-tenant deployments the token MUST come
-      # from the per-workspace vault, not a shared host env. Single-tenant OSS
-      # users who want the convenience of a host-env fallback can uncomment:
-      #   X_BEARER_TOKEN: "${X_BEARER_TOKEN}"
-      # This will make every workspace's MCP subprocess share the same host token.
-      env: {}
-      vault_blueprints:
-        - name: "X_BEARER_TOKEN"
-          label: "X (Twitter) Bearer Token"
-          description: "Read-only app-only auth for the x_api MCP server. Get one at console.x.com → App → Keys and tokens → Bearer Token. Paste the raw token — no 'Bearer ' prefix, no whitespace."
-          docs_url: "https://console.x.com/"
-          # Live X bearer tokens are opaque URL-safe strings, typically 100+ chars.
-          # Regex catches empty, short-paste, and 'Bearer <token>' prefix mistakes
-          # without being too strict about the exact character set.
-          regex: "^[A-Za-z0-9%_-]{20,}$"
-
-    # Not enabled in Porduction or maintained by us
-    - name: "alphavantage"
-      enabled: false
-      description: "Financial market data API for stocks, forex, crypto, and economic indicators"
-      instruction: "Use for stock quotes, historical prices, technical indicators, forex rates, crypto data, and economic data."
-      tool_exposure_mode: "summary" # Full signatures - 118 complex tools
-      transport: "http"
-      url: "https://mcp.alphavantage.co/mcp?apikey=${ALPHA_VANTAGE_API_KEY}"
+    # Adding a server of your own looks like this:
+    # - name: "tavily"
+    #   description: "Web search engine for finding current information online"
+    #   instruction: "Use for web searches, news, research, and real-time information."
+    #   tool_exposure_mode: "summary"
+    #   transport: "stdio"
+    #   command: "npx"
+    #   args: ["-y", "tavily-mcp@latest"]
+    #   env:
+    #     TAVILY_API_KEY: "${TAVILY_API_KEY}"
 
   # Tool discovery settings
   tool_discovery_enabled: true
@@ -256,7 +147,6 @@ logging:
   file: "logs/ptc.log"
 
 agent:
-  enable_view_image: true
   background_auto_wait: false
 
 # Subagent configuration
@@ -335,10 +225,3 @@ web_fetch:
   sitemap_max_urls: 100 # Max URLs to fetch from sitemap
   sitemap_max_examples: 3 # Max example URLs per path prefix in summary
   sitemap_timeout: 10 # Timeout in seconds for sitemap fetch
-
-# Embedding Model Configuration (Currently not in use)
-embedding:
-  model: embedding-small # Options: embedding-small, embedding-large (see src/llms/llm_config.json)
-  batch_size: 100 # Number of texts to embed in a single batch
-  enable_auto_embedding: true
-  hybrid_search_alpha: 0.5 # Balance between semantic (0.0) and keyword search (1.0)

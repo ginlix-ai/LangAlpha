@@ -15,9 +15,18 @@ import { ZERO_USAGE } from '../../utils/tokenUsage';
 import { REPORT_BACK_IDLE_MAX_REARMS } from '../../hooks/useReportBackWatch';
 import { createAssistantMessage, appendMessage, updateMessage } from '../../hooks/utils/messageHelpers';
 import { finalizeTodoListProcessesInMessages } from '../../hooks/utils/messageFinalizers';
+import { checkForNewBuild } from '@/lib/staleBuild';
+import { isOnline, waitForOnline } from '@/lib/network';
 import type { AssistantMessage } from '@/types/chat';
 import type { SSEEvent, HistoryInterruptInfo, StreamProcessorRefs } from '../types';
 import type { RecoveryRuntime } from '../runtime';
+
+/** Quiet gap after the last held event before a reconnect stream that never
+ *  sends `caught_up` paints what it has. */
+export const RECONNECT_BACKLOG_QUIET_MS = 1500;
+/** Ceiling measured from the first held event, so a replay that keeps the
+ *  quiet window alive still paints instead of being held indefinitely. */
+export const RECONNECT_BACKLOG_CAP_MS = 6000;
 
 export interface ReconnectOptions {
   activeTasks?: string[];
@@ -189,6 +198,12 @@ export const reconnectToStream = async (
             return !stripProposalIds.has(seg.proposalId);
           }
           if (seg.type === 'plan_approval') return !stripPlanApprovalIds.has(seg.planApprovalId);
+          // A credit pause is stripped like the rest. Falling through to
+          // `true` kept the history copy while the id above was released from
+          // the rendered set, so the reconnect's re-delivery rendered a second
+          // card — and resolving one left the other `pending`, which pins
+          // every task card in the finishing state for the rest of the turn.
+          if (seg.type === 'credit_pause') return !stripProposalIds.has(seg.proposalId);
           return true;
         });
         const next: AssistantMessage = { ...msg, contentSegments: newSegments };
@@ -198,7 +213,7 @@ export const reconnectToStream = async (
           next.userQuestions = map;
         }
         if (stripProposalIds.size > 0) {
-          for (const key of ['workspaceProposals', 'questionProposals', 'ptcAgentProposals', 'secretaryActionProposals'] as const) {
+          for (const key of ['workspaceProposals', 'questionProposals', 'ptcAgentProposals', 'secretaryActionProposals', 'creditPauses'] as const) {
             const bucket = msg[key];
             if (!bucket) continue;
             const map = { ...bucket };
@@ -331,18 +346,77 @@ export const reconnectToStream = async (
       rt.isReconnectingOwnerRef.current = null;
     }
   };
+  // The per-run log replays its backlog in a burst before the live tail.
+  // Applied event by event, that burst is presented as if it were live: the
+  // bubble mounts empty, the typewriter re-types everything already written,
+  // and the scroll follow chases it. So the backlog is held until the server's
+  // `caught_up` marker and applied in one synchronous pass, which React
+  // batches into a single render: the turn appears as it was, and only what
+  // arrives afterwards streams. The timers are the fallback for a stream that
+  // never sends the marker; they cost a delayed first paint, never lost events.
+  let backlog: SSEEvent[] | null = [];
+  let backlogTimer: ReturnType<typeof setTimeout> | null = null;
+  let backlogCapAt = 0;
+  // One processor for the whole stream: it owns closure state a steering
+  // continuation rewrites (the bubble it appends to, pending task ids), so
+  // the tail cannot be handed to a fresh one. Handlers read `isReconnect` off
+  // the bag on arrival, so flipping it after the synchronous flush is what
+  // turns the tail live. Only the stream that still owns the reader may paint
+  // what it held: a superseded or stopped one discards its backlog, and the
+  // cursor stays put, so the reconnect that replaced it replays the same
+  // events from the log.
+  const flushBacklog = () => {
+    if (!backlog) return;
+    const held = backlog;
+    backlog = null;
+    if (backlogTimer) clearTimeout(backlogTimer);
+    backlogTimer = null;
+    if (rt.wasStoppedRef.current || rt.mainStreamAbortRef.current !== abortController) return;
+    for (const heldEvent of held) baseProcessEvent(heldEvent);
+    refs.isReconnect = false;
+    // Reaching this point is itself proof the stream is attached and current.
+    markReconnected();
+  };
+  // Restart the quiet window on every held event so a slow replay is not cut
+  // in half, but never hold past the cap.
+  const armBacklogTimer = () => {
+    const now = Date.now();
+    if (!backlogCapAt) backlogCapAt = now + RECONNECT_BACKLOG_CAP_MS;
+    if (backlogTimer) clearTimeout(backlogTimer);
+    backlogTimer = setTimeout(
+      flushBacklog,
+      Math.max(0, Math.min(RECONNECT_BACKLOG_QUIET_MS, backlogCapAt - now)),
+    );
+  };
   const processEvent = (event: SSEEvent) => {
-    receivedEvent = true;
     // Progress resets the re-arm budget: a healthy run with an occasional
     // >idleAbortMs gap must never accrue toward the wedged-run cap.
     idleRearms = 0;
+    bumpIdle?.();
+    // The marker is transport, not content: a stream that sent only it has
+    // rendered nothing, and must read as such when it closes.
+    if (event.event === 'caught_up') {
+      flushBacklog();
+      return;
+    }
+    receivedEvent = true;
+    if (backlog) {
+      backlog.push(event);
+      armBacklogTimer();
+      return;
+    }
     baseProcessEvent(event);
     markReconnected();
-    bumpIdle?.();
   };
   // Arm before the first read so an un-started run (no events at all) still
   // trips the watchdog instead of hanging forever.
   bumpIdle?.();
+  // Bound the hold from the first read, not the first held event: a stream
+  // that sends neither marker nor data (the head probe failed with the
+  // cursor already at the head) would otherwise keep the spinner up until
+  // the model speaks again.
+  backlogCapAt = Date.now() + RECONNECT_BACKLOG_CAP_MS;
+  backlogTimer = setTimeout(flushBacklog, RECONNECT_BACKLOG_CAP_MS);
 
   try {
     // Replay buffered events first — this processes artifact{task,spawned} events
@@ -355,6 +429,10 @@ export const reconnectToStream = async (
       processEvent,
       abortController.signal,
     );
+    // A stream that ended (or dropped) before the marker still shows what it
+    // delivered, and advances the cursor so a retry resumes after it. Not on
+    // a user stop: stopWorkflow already finalized the bubble.
+    flushBacklog();
     // User stop aborted the reader — stopWorkflow owns teardown; bail.
     // Exception: a foreground handler aborted this stream because the tab
     // resumed (background abort, not a user stop) — re-kick the reconnect.
@@ -420,6 +498,7 @@ export const reconnectToStream = async (
       deps.attachSubagentMux(tid, processEvent, snapshotAtMs);
     }
   } catch (err: unknown) {
+    flushBacklog();
     // User stop aborted the reader — stopWorkflow owns teardown; bail before
     // surfacing this as a reconnect error.
     if ((err as Error)?.name === 'AbortError' || rt.wasStoppedRef.current) {
@@ -436,6 +515,7 @@ export const reconnectToStream = async (
   } finally {
     // Stop the idle watchdog (no-op when it already fired or was never armed).
     if (idleTimer) clearTimeout(idleTimer);
+    if (backlogTimer) clearTimeout(backlogTimer);
     // Clean up empty reconnect messages (no content segments = nothing was
     // streamed). Skip on a user stop: finalizeStreamingMessage just stamped
     // this bubble `stopped: true` (with the "⏹ Stopped" chip) but left it
@@ -506,8 +586,12 @@ export const reconnectToStream = async (
 
 /**
  * Attempts to auto-reconnect after a mid-stream network disconnect.
- * Uses exponential backoff (1s, 2s, 4s, 8s, 16s) with up to 5 retries.
- * Falls back to cleanupAfterStreamEnd if workflow completes or retries exhaust.
+ *
+ * Two different failures, handled differently: a network that is present but
+ * unhappy gets 5 attempts on exponential backoff (1s, 2s, 4s, 8s — ~15s of
+ * delay), and a machine with no link at all is waited on rather than retried
+ * at, up to OFFLINE_CEILING_MS. Falls back to cleanupAfterStreamEnd when the
+ * workflow is no longer reconnectable or both budgets are spent.
  */
 export const attemptReconnectAfterDisconnect = async (
   rt: RecoveryRuntime,
@@ -516,22 +600,115 @@ export const attemptReconnectAfterDisconnect = async (
 ) => {
   const MAX_RETRIES = 5;
   const BASE_DELAY = 1000;
+  // Long, because the cost of waiting is a spinner while the cost of giving up
+  // is a truncated answer for a turn that is still running server-side.
+  const OFFLINE_CEILING_MS = 5 * 60 * 1000;
+  // The offline wait is sliced rather than taken in one go so a stop landing
+  // mid-wait is noticed within a slice instead of at link-return. It cannot be
+  // aborted instead: the prior stream's finally already nulled
+  // mainStreamAbortRef, and parking our own controller there would read as a
+  // live stream to the tab-resume handler, which would abort us expecting a
+  // stream teardown to re-kick the reconnect.
+  const OFFLINE_SLICE_MS = 5 * 1000;
 
   rt.setIsReconnecting(true);
 
   // Target the latched thread, not the threadId prop: a first-turn disconnect
   // (background during a brand-new chat's first answer) still has the prop at
   // '__default__' while the real id lives in threadIdRef. Snapshot once so the
-  // ~31s retry loop stays pinned to the run we started reconnecting, matching
-  // the prior closure-captured semantics.
+  // retry loop stays pinned to the run we started reconnecting, matching the
+  // prior closure-captured semantics.
   const tid = rt.threadIdRef.current;
+  // The turn this retry belongs to. Every other candidate is reused by the next
+  // turn — see the token's declaration in useChatMessages.
+  const originSessionEpoch = rt.sessionEpochRef.current;
 
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+  // Three ways this reconnect stops being wanted, checked across every await.
+  //
+  // A user stop stays reachable for the whole function: the send path returns
+  // before its own cleanup on a disconnect, so isLoading stays true and the
+  // composer still offers Stop. And reconnectToStream clears wasStoppedRef on
+  // entry, so without this we would resume streaming under a bubble already
+  // stamped "Stopped".
+  //
+  // Navigation is the other, and it is invisible to every existing cancel: the
+  // thread-load effect supersedes a cross-thread stream by aborting
+  // mainStreamAbortRef, which is null for this entire wait (the disconnected
+  // send nulled it and skipped the rest of its cleanup). Ungated, a link that
+  // returns after the user opened another thread attaches THIS run's id and
+  // cursor to THAT thread — reconnectToStream targets the live threadIdRef,
+  // not our tid, so the status check and the stream would disagree about which
+  // thread they are for.
+  //
+  // A newer turn on this same thread is the third, and it is why the stop flag
+  // alone is not enough: a fresh send clears wasStoppedRef before opening its
+  // own stream, so a stop followed by a send inside one slice leaves this retry
+  // looking at its own thread with the flag already reset. It would then either
+  // run the give-up cleanup against the live new turn, or reconnect and
+  // overwrite that turn's mainStreamAbortRef, putting two readers on one run
+  // and leaving Stop pointing at neither.
+  //
+  // Returning rather than breaking is deliberate in all three cases: the
+  // give-up tail runs cleanupAfterStreamEnd, which a user stop already did
+  // (stopWorkflow finalized the message and tore the session down) and which
+  // would clobber whatever session has taken over since.
+  const abandoned = () => {
+    if (rt.wasStoppedRef.current) {
+      console.log('[Reconnect] Turn was stopped; abandoning reconnect');
+      rt.setIsReconnecting(false);
+      return true;
+    }
+    if (rt.sessionEpochRef.current !== originSessionEpoch) {
+      console.log('[Reconnect] A newer turn took the session; abandoning reconnect');
+      // Same spinner rule as below: the turn that superseded us owns its own.
+      if (rt.isReconnectingOwnerRef.current === null) rt.setIsReconnecting(false);
+      return true;
+    }
+    if (rt.threadIdRef.current !== tid) {
+      console.log('[Reconnect] Thread changed under the reconnect; abandoning', tid);
+      // Clear the spinner only if nobody newer owns it — the thread we moved to
+      // may already be reconnecting on its own, and hiding its pill would read
+      // as a turn that finished.
+      if (rt.isReconnectingOwnerRef.current === null) rt.setIsReconnecting(false);
+      return true;
+    }
+    return false;
+  };
+
+  // Wall-clock bound on waiting for a link, so a flapping connection cannot
+  // keep the loop alive indefinitely.
+  const offlineDeadline = Date.now() + OFFLINE_CEILING_MS;
+  let attempt = 0;
+
+  while (attempt < MAX_RETRIES) {
     if (!tid || tid === '__default__') break;
+    if (abandoned()) return;
+
+    // An offline machine cannot be retried into working. Spending the budget
+    // against it is why this used to give up ~15s in, long before anyone has
+    // noticed their wifi dropped: every attempt fails instantly, so the whole
+    // allowance burns in setTimeout. Wait for the link instead, and do not
+    // charge the wait against the retries — they exist for a network that is
+    // present but unhappy, which is a different problem.
+    if (!isOnline()) {
+      const remaining = offlineDeadline - Date.now();
+      if (remaining <= 0) {
+        console.warn('[Reconnect] Still offline after the ceiling; giving up');
+        break;
+      }
+      await waitForOnline(Math.min(remaining, OFFLINE_SLICE_MS));
+      continue;
+    }
 
     if (attempt > 0) {
       await new Promise((r) => setTimeout(r, BASE_DELAY * Math.pow(2, attempt - 1)));
+      if (abandoned()) return;
+      // The link can drop during the backoff. Charging an attempt to a request
+      // that is guaranteed to fail instantly is the exact waste this function
+      // exists to avoid, so re-gate on connectivity before spending one.
+      if (!isOnline()) continue;
     }
+    attempt += 1;
 
     try {
       const snapshotAtMs = Date.now();
@@ -541,7 +718,28 @@ export const attemptReconnectAfterDisconnect = async (
         break;
       }
 
-      console.log('[Reconnect] Attempt', attempt + 1, 'of', MAX_RETRIES);
+      // Five minutes offline is long enough for the run we lost to finish and a
+      // NEW one to take the thread (another tab, an automation, a queued
+      // report-back). The stream is keyed per run, and this path deliberately
+      // keeps the disconnected run's id and cursor — so resuming here would
+      // target a dead key and, with no idle watchdog armed on this path, hang
+      // holding the spinner. Break instead: the give-up tail settles this
+      // bubble and reloads, and the load path attaches to status.run_id with a
+      // reset cursor, which is the only way to pick up a run we never saw.
+      if (
+        status.run_id &&
+        rt.currentRunIdRef.current &&
+        status.run_id !== rt.currentRunIdRef.current
+      ) {
+        console.log('[Reconnect] Thread moved to run', status.run_id, '; reloading instead of resuming', rt.currentRunIdRef.current);
+        break;
+      }
+
+      console.log('[Reconnect] Attempt', attempt, 'of', MAX_RETRIES);
+      // Last gate before handing the turn back to a live stream: getWorkflowStatus
+      // is a round trip, and a stop landing inside it would otherwise be undone
+      // by reconnectToStream clearing wasStoppedRef.
+      if (abandoned()) return;
       // Mid-stream disconnect resumes from the retained cursor (no resetCursor),
       // so it does NOT replay the subagent projection — wiping the cards here
       // would strand a task spawned earlier in this same (unpersisted) turn with
@@ -552,11 +750,28 @@ export const attemptReconnectAfterDisconnect = async (
       rt.setIsReconnecting(false);
       return;
     } catch (err: unknown) {
-      console.warn('[Reconnect] Attempt', attempt + 1, 'failed:', (err as Error).message);
+      console.warn('[Reconnect] Attempt', attempt, 'failed:', (err as Error).message);
     }
   }
 
   rt.setIsReconnecting(false);
+
+  // Settle the bubble we gave up on. Nothing else does: cleanupAfterStreamEnd
+  // resets the *session* (isLoading, subagents, todos) but never touches the
+  // message, and the other stream-end paths each clear isStreaming themselves
+  // on their way out. Left set, the bubble keeps its loading animation forever
+  // while the composer has already flipped back to send — visibly alive, inert,
+  // and with its hover actions suppressed so it cannot even be retried.
+  // Deliberately narrow to this path rather than folded into
+  // cleanupAfterStreamEnd, which every other stream-end route also calls.
+  rt.setMessages((prev) =>
+    prev.map((m) =>
+      m.role === 'assistant' && m.id === assistantMessageId && m.isStreaming
+        ? { ...m, isStreaming: false }
+        : m,
+    ),
+  );
+
   cleanupAfterStreamEnd(rt, deps, assistantMessageId);
   // Reload conversation to show complete response after failed reconnection
   rt.setReloadTrigger((n) => n + 1);
@@ -575,6 +790,10 @@ export const cleanupAfterStreamEnd = (
   rt.setWorkspaceStarting(false);
   rt.setIsCompacting(false);
   deps.clearModelStatus();
+  // A settled turn is the cheapest moment to learn the edge has moved on: the
+  // user is between actions, so a reload costs them nothing. Throttled, and
+  // silent on every ambiguity.
+  void checkForNewBuild();
   rt.currentMessageRef.current = null;
   releaseStreamOwnership(rt);
 

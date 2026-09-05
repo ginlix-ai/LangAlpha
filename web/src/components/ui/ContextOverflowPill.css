@@ -10,7 +10,7 @@
   background: var(--color-bg-card, #ffffff);
   border: 1px solid var(--color-border-elevated, rgba(20, 20, 23, 0.14));
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-text-primary, #1a1a1c);
   cursor: pointer;
   box-shadow:
@@ -31,11 +31,6 @@
     0 6px 12px -4px rgba(20, 20, 23, 0.10);
 }
 
-.context-overflow-pill:focus-visible {
-  outline: 2px solid var(--color-accent-primary, #b88a2c);
-  outline-offset: 2px;
-}
-
 .context-overflow-pill__count {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -43,7 +38,7 @@
 }
 
 .context-overflow-pill__label {
-  font-size: 10.5px;
+  font-size: 0.6563rem;
   text-transform: uppercase;
   letter-spacing: 0.16em;
   color: var(--color-text-tertiary, #8a8a8a);

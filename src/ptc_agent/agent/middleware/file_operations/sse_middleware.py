@@ -31,6 +31,8 @@ from langchain.agents.middleware import AgentMiddleware, AgentState
 from typing_extensions import NotRequired
 from langgraph.config import get_stream_writer
 
+from ptc_agent.core.paths import workspace_relative_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,7 +50,7 @@ class FileOperationMiddleware(AgentMiddleware):
     Middleware that emits file_operation SSE events after tool execution.
 
     Hooks into tool execution to emit custom events with full file content
-    for write_file and edit_file operations, enabling frontend to display
+    for Write and Edit operations, enabling frontend to display
     file changes without polluting agent context.
     """
 
@@ -66,7 +68,7 @@ class FileOperationMiddleware(AgentMiddleware):
     ) -> None:
         super().__init__()
         self._on_agent_md_write = on_agent_md_write
-        self._work_dir_prefix = work_dir.rstrip("/") + "/"
+        self._work_dir = work_dir
 
     @staticmethod
     def _count_lines(text: str) -> int:
@@ -122,12 +124,7 @@ class FileOperationMiddleware(AgentMiddleware):
         try:
             result = await handler(request)
 
-            # removeprefix (not lstrip) — lstrip eats a leading "." from paths
-            # like ".agents/user/memory/memory.md".
-            normalized = file_path or ""
-            if normalized.startswith(self._work_dir_prefix):
-                normalized = normalized[len(self._work_dir_prefix):]
-            normalized = normalized.removeprefix("./")
+            normalized = workspace_relative_path(file_path, self._work_dir)
 
             # Invalidate agent.md cache when agent.md is written or edited
             if self._on_agent_md_write and normalized == "agent.md":

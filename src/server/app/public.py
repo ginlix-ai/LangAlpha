@@ -22,7 +22,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import Response, StreamingResponse
 
+from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 from src.observability import observe_replay_stream
+from src.server.utils.error_sanitization import single_line
 from src.server.utils.http_headers import content_disposition
 from src.server.utils.secret_redactor import get_redactor, get_vault_secrets_for_redaction
 
@@ -87,6 +89,24 @@ def _prefers_chinese(request: Request) -> bool:
     """Whether the browser's top Accept-Language tag is Chinese."""
     primary = request.headers.get("accept-language", "").split(",")[0].strip().lower()
     return primary.startswith("zh")
+
+
+def _share_unavailable_response(request: Request, status_code: int) -> "Response | None":
+    """The branded page for a failed share serve, or None to keep the JSON error.
+
+    Shared by both failure routes into this page. An ``HTTPException`` raised
+    inside one ``except`` clause is not caught by a sibling clause of the same
+    ``try``, so the sandbox path cannot reach the ``HTTPException`` handler by
+    raising and has to render through here itself.
+    """
+    if status_code not in (403, 404) or not _wants_html(request):
+        return None
+    return Response(
+        content=_share_unavailable_page(status_code, chinese=_prefers_chinese(request)),
+        status_code=status_code,
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex"},
+    )
 
 
 def _share_unavailable_page(status_code: int, *, chinese: bool) -> str:
@@ -398,7 +418,9 @@ async def list_shared_files(
     if workspace.get("status") == "running":
         try:
             manager = WorkspaceManager.get_instance()
-            session = manager.get_session_if_ready(workspace_id)
+            session = manager.get_session_if_ready(
+                workspace_id, expected_sandbox_id=workspace.get("sandbox_id")
+            )
             sandbox = getattr(session, "sandbox", None) if session else None
             if sandbox:
                 absolute_paths = await sandbox.aglob_files("**/*", path=path)
@@ -409,8 +431,15 @@ async def list_shared_files(
                         continue
                     files.append(cp)
                 return {"path": path, "files": files, "source": "sandbox"}
-        except Exception:
-            logger.debug(f"Sandbox not available for shared files in workspace {workspace_id}")
+        except Exception as e:
+            # Warning, not debug: this route collapses every sandbox failure into
+            # a uniform 404 on purpose (unauthenticated — a 503 would confirm a
+            # guessed workspace UUID), so the log line is the only place the real
+            # cause survives. At the default INFO level a debug line is dropped.
+            logger.warning(
+                f"Sandbox not available for shared files in workspace "
+                f"{workspace_id}: {single_line(str(e))}"
+            )
 
     return {"path": path, "files": files, "source": "database"}
 
@@ -477,7 +506,9 @@ async def read_shared_file(
     if workspace.get("status") == "running":
         try:
             manager = WorkspaceManager.get_instance()
-            session = manager.get_session_if_ready(workspace_id)
+            session = manager.get_session_if_ready(
+                workspace_id, expected_sandbox_id=workspace.get("sandbox_id")
+            )
             sandbox = getattr(session, "sandbox", None) if session else None
             if sandbox:
                 norm, error = sandbox.validate_and_normalize_path(path)
@@ -514,8 +545,15 @@ async def read_shared_file(
                 }
         except HTTPException:
             raise
-        except Exception:
-            logger.debug(f"Sandbox not available for shared file read in workspace {workspace_id}")
+        except Exception as e:
+            # Warning, not debug: this route collapses every sandbox failure into
+            # a uniform 404 on purpose (unauthenticated — a 503 would confirm a
+            # guessed workspace UUID), so the log line is the only place the real
+            # cause survives. At the default INFO level a debug line is dropped.
+            logger.warning(
+                f"Sandbox not available for shared file read in workspace "
+                f"{workspace_id}: {single_line(str(e))}"
+            )
 
     raise HTTPException(status_code=404, detail="File not found")
 
@@ -582,7 +620,9 @@ async def download_shared_file(
     if workspace.get("status") == "running":
         try:
             manager = WorkspaceManager.get_instance()
-            session = manager.get_session_if_ready(workspace_id)
+            session = manager.get_session_if_ready(
+                workspace_id, expected_sandbox_id=workspace.get("sandbox_id")
+            )
             sandbox = getattr(session, "sandbox", None) if session else None
             if sandbox:
                 norm, error = sandbox.validate_and_normalize_path(path)
@@ -611,8 +651,15 @@ async def download_shared_file(
                 )
         except HTTPException:
             raise
-        except Exception:
-            logger.debug(f"Sandbox not available for shared file download in workspace {workspace_id}")
+        except Exception as e:
+            # Warning, not debug: this route collapses every sandbox failure into
+            # a uniform 404 on purpose (unauthenticated — a 503 would confirm a
+            # guessed workspace UUID), so the log line is the only place the real
+            # cause survives. At the default INFO level a debug line is dropped.
+            logger.warning(
+                f"Sandbox not available for shared file download in workspace "
+                f"{workspace_id}: {single_line(str(e))}"
+            )
 
     raise HTTPException(status_code=404, detail="File not found")
 
@@ -671,15 +718,20 @@ async def serve_shared_file(
             inject_theme=(inject == "theme"),
             workspace=workspace,
         )
+    except (SandboxGoneError, SandboxTransientError):
+        # This route is unauthenticated, so it must never distinguish "sandbox
+        # down" from "no such file" — a 503 would confirm that a guessed
+        # workspace UUID is real. Today serve.py absorbs these before they get
+        # here; this keeps the 404 posture from depending on that.
+        page = _share_unavailable_response(request, 404)
+        if page is not None:
+            return page
+        raise HTTPException(status_code=404, detail="File not found") from None
     except HTTPException as exc:
         # A browser/iframe opening a revoked (404) or forbidden (403) shared link
         # should see a branded page, not raw JSON. Other statuses and API clients
         # (Accept without text/html) keep the default JSON error.
-        if exc.status_code in (403, 404) and _wants_html(request):
-            return Response(
-                content=_share_unavailable_page(exc.status_code, chinese=_prefers_chinese(request)),
-                status_code=exc.status_code,
-                media_type="text/html; charset=utf-8",
-                headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex"},
-            )
+        page = _share_unavailable_response(request, exc.status_code)
+        if page is not None:
+            return page
         raise

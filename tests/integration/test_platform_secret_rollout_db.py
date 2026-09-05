@@ -213,9 +213,9 @@ async def test_provider_change_is_an_identity_change(
 async def test_certification_attaches_a_verified_replacement(
     seed_workspace, patched_get_db_connection, db_conn
 ):
-    from src.server.services.platform_secret_rollout import (
-        certify_new_workspace_sandbox,
-    )
+    """Verify, then bind — the order that keeps an uncertified sandbox unbound."""
+    from src.server.database.workspace import try_bind_workspace_sandbox
+    from src.server.services.platform_secret_rollout import certify_platform_secrets
 
     rollout_set = await _register(
         _identity(secret_id="secret-1", placeholder="dtn_secret_one")
@@ -225,16 +225,38 @@ async def test_certification_attaches_a_verified_replacement(
     config = _capable_config()
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr("src.config.env.HOST_MODE", "platform")
-        workspace = await certify_new_workspace_sandbox(
-            config,
-            workspace_id=workspace_id,
-            expected_previous_sandbox_id=None,
-            sandbox_id="replacement-sandbox",
-            runtime=_VerifiedRuntime("dtn_secret_one"),
+        version = await certify_platform_secrets(
+            config, runtime=_VerifiedRuntime("dtn_secret_one")
         )
+
+    assert version == rollout_set.generation
+    workspace = await try_bind_workspace_sandbox(
+        workspace_id,
+        sandbox_id="replacement-sandbox",
+        expected_previous_sandbox_id=None,
+        platform_secret_version=version,
+    )
 
     assert workspace["platform_secret_version"] == rollout_set.generation
     assert workspace["sandbox_id"] == "replacement-sandbox"
+
+
+async def test_certification_without_a_catalog_stamps_the_zero_sentinel(
+    seed_workspace, patched_get_db_connection
+):
+    """0 means "never certified — may hold plaintext env" (migration 021).
+
+    A no-catalog deployment must stamp it rather than carry the previous
+    sandbox's generation forward, which would leave a plaintext sandbox looking
+    certified and invisible to the sweeper.
+    """
+    from src.server.services.platform_secret_rollout import certify_platform_secrets
+
+    await _register(_identity(secret_id="secret-1", placeholder="dtn_secret_one"))
+    sandbox = type("Sandbox", (), {"provider": "daytona", "platform_secrets": ()})()
+    config = type("Config", (), {"sandbox": sandbox})()
+
+    assert await certify_platform_secrets(config, runtime=None) == 0
 
 
 async def test_stamp_cas_rejects_a_moved_workspace(
@@ -257,27 +279,81 @@ async def test_stamp_cas_rejects_a_moved_workspace(
         )
 
 
-async def test_certify_cas_rejects_a_concurrent_attachment(
+async def test_bind_cas_rejects_a_concurrent_attachment(
     seed_workspace, patched_get_db_connection
 ):
-    from src.server.services.platform_secret_rollout import (
-        certify_new_workspace_sandbox,
+    """A losing provisioner gets None, not the row — never a silent overwrite.
+
+    None is the signal to delete the sandbox it just built and re-attach to the
+    winner's; a last-writer-wins UPDATE here is how two workers both believe
+    they own the workspace and one sandbox is billed with nothing pointing at
+    it.
+    """
+    from src.server.database.workspace import (
+        get_workspace_identity,
+        try_bind_workspace_sandbox,
     )
 
-    await _register(_identity(secret_id="secret-1", placeholder="dtn_secret_one"))
     workspace_id = str(seed_workspace["workspace_id"])
+    await try_bind_workspace_sandbox(
+        workspace_id,
+        sandbox_id="winner-sandbox",
+        expected_previous_sandbox_id=None,
+        platform_secret_version=7,
+    )
 
-    config = _capable_config()
-    with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr("src.config.env.HOST_MODE", "platform")
-        with pytest.raises(RuntimeError, match="before platform Secret"):
-            await certify_new_workspace_sandbox(
-                config,
-                workspace_id=workspace_id,
-                expected_previous_sandbox_id="stale-previous-sandbox",
-                sandbox_id="replacement-sandbox",
-                runtime=_VerifiedRuntime("dtn_secret_one"),
-            )
+    lost = await try_bind_workspace_sandbox(
+        workspace_id,
+        sandbox_id="replacement-sandbox",
+        expected_previous_sandbox_id="stale-previous-sandbox",
+        platform_secret_version=9,
+    )
+
+    assert lost is None
+    identity = await get_workspace_identity(workspace_id)
+    assert identity["sandbox_id"] == "winner-sandbox"
+
+
+@pytest.mark.parametrize("stopped_status", ["stopping", "stopped"])
+async def test_bind_cas_refuses_to_resurrect_a_stopped_workspace(
+    seed_workspace, patched_get_db_connection, stopped_status
+):
+    """Identity matching alone would let a recovery undo a concurrent stop.
+
+    The dangerous race shares the sandbox id rather than changing it, so the
+    id-only predicate matched: worker B stops the workspace while worker A
+    recovers the SAME sandbox, and since this statement writes ``running``
+    unconditionally the bind resurrected the row. The outcome is a ``stopped``
+    row whose sandbox is still up and billing, or a workspace that restarts
+    itself after a user stopped it.
+    """
+    from src.server.database.workspace import (
+        get_workspace_identity,
+        try_bind_workspace_sandbox,
+        update_workspace_status,
+    )
+
+    workspace_id = str(seed_workspace["workspace_id"])
+    await try_bind_workspace_sandbox(
+        workspace_id,
+        sandbox_id="sb-old",
+        expected_previous_sandbox_id=None,
+        platform_secret_version=1,
+    )
+    await update_workspace_status(workspace_id=workspace_id, status=stopped_status)
+
+    # Same expected id: this is a recovery of the very sandbox being stopped.
+    lost = await try_bind_workspace_sandbox(
+        workspace_id,
+        sandbox_id="sb-new",
+        expected_previous_sandbox_id="sb-old",
+        platform_secret_version=2,
+    )
+
+    assert lost is None
+    identity = await get_workspace_identity(workspace_id)
+    assert identity["status"] == stopped_status
+    assert identity["sandbox_id"] == "sb-old"
 
 
 async def test_missing_rollout_row_fails_readiness(patched_get_db_connection):

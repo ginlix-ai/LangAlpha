@@ -78,9 +78,11 @@ describe('HtmlViewer', () => {
     );
   });
 
-  it('sandboxes the preview iframe with allow-scripts only', () => {
+  it('sandboxes the preview iframe without allow-same-origin', () => {
     renderViewer(<HtmlViewer {...defaultProps} />);
-    expect(getPreviewIframe().getAttribute('sandbox')).toBe('allow-scripts');
+    expect(getPreviewIframe().getAttribute('sandbox')).toBe(
+      'allow-scripts allow-popups allow-popups-to-escape-sandbox',
+    );
   });
 
   it('switches to the Source tab and renders the full content in the highlighter', () => {

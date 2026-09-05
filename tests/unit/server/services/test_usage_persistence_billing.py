@@ -79,7 +79,7 @@ class TestTrackLlmUsageBilling:
         assert svc._has_platform_calls is True
 
     @pytest.mark.asyncio
-    async def test_has_platform_calls_false_when_no_platform_cost(self):
+    async def test_has_platform_calls_false_when_every_call_is_own_key(self):
         svc = _make_service()
 
         mock_result = {
@@ -94,7 +94,7 @@ class TestTrackLlmUsageBilling:
             f"{CORE_MODULE}.calculate_cost_from_per_call_records",
             return_value=mock_result,
         ):
-            await svc.track_llm_usage([{"dummy": "record"}])
+            await svc.track_llm_usage([{"billing_type": "byok"}])
 
         assert svc._has_platform_calls is False
 
@@ -126,8 +126,10 @@ class TestPersistUsageEffectiveByok:
         """Run persist_usage and return the usage_data dict passed to create_usage_record."""
         if has_token_usage:
             svc._token_usage = {"by_model": {}, "total_cost": 0.0}
+            svc._has_per_call_data = True
         else:
             svc._token_usage = None
+            svc._has_per_call_data = False
 
         mock_create = AsyncMock()
 
@@ -178,6 +180,34 @@ class TestPersistUsageEffectiveByok:
 
         data2 = await self._persist_and_capture(svc2, is_byok=False, has_token_usage=False)
         assert data2["is_byok"] is False
+
+    @pytest.mark.asyncio
+    async def test_caller_byok_used_when_records_were_empty(self):
+        """A zeroed payload is not per-call data, so the caller's hint still wins.
+
+        track_llm_usage([]) stores empty_usage_payload() and returns before
+        _has_platform_calls is computed. That payload is truthy, so keying the
+        decision on _token_usage read it as real billing data and discarded the
+        hint -- the same fallback the error path documents relying on.
+        """
+        svc = _make_service()
+        await svc.track_llm_usage([])
+        assert svc._token_usage, "the zeroed payload is truthy -- that is the trap"
+
+        mock_create = AsyncMock()
+
+        @asynccontextmanager
+        async def mock_get_conn():
+            yield MagicMock()
+
+        with patch(
+            f"{DB_MODULE}.create_usage_record", mock_create
+        ), patch(
+            "src.server.database.pool.get_db_connection", mock_get_conn
+        ):
+            await svc.persist_usage(response_id="resp-1", is_byok=False)
+
+        assert mock_create.call_args[0][0]["is_byok"] is False
 
 
 class TestTrackLlmUsageErrorPath:
@@ -245,3 +275,161 @@ class TestResetClearsState:
         assert svc._has_platform_calls is False
         assert svc._token_credits == Decimal("0.0")
         assert svc._token_usage is None
+
+
+class TestByokStampFromRealRecords:
+    """The stamp derived end-to-end, driving the production assignments.
+
+    TestPersistUsageEffectiveByok sets the flags by hand to isolate
+    persist_usage. Nothing there reaches the lines in track_llm_usage that
+    compute them, so both could be deleted with the suite still green. These
+    run the real pass.
+    """
+
+    @staticmethod
+    async def _stamp(records, priced, *, is_byok):
+        """track_llm_usage(records) then persist_usage, returning the row's is_byok."""
+        svc = _make_service()
+
+        with patch(
+            f"{CORE_MODULE}.calculate_cost_from_per_call_records",
+            return_value=priced,
+        ):
+            await svc.track_llm_usage(records)
+
+        mock_create = AsyncMock()
+
+        @asynccontextmanager
+        async def mock_get_conn():
+            yield MagicMock()
+
+        with patch(
+            f"{DB_MODULE}.create_usage_record", mock_create
+        ), patch(
+            "src.server.database.pool.get_db_connection", mock_get_conn
+        ):
+            await svc.persist_usage(response_id="resp-1", is_byok=is_byok)
+
+        return svc, mock_create.call_args[0][0]["is_byok"]
+
+    @staticmethod
+    def _priced(platform_cost, total_cost=0.0):
+        return {
+            "by_model": {},
+            "total_cost": total_cost,
+            "platform_cost": platform_cost,
+            "cost_breakdown": {},
+            "per_call_costs": [],
+        }
+
+    @pytest.mark.asyncio
+    async def test_zero_priced_platform_call_is_not_byok(self):
+        """A platform call that priced to nothing still ran on the platform's key.
+
+        The regression this locks: deriving the stamp from platform_cost read a
+        free call as the user's own, and a caller hint of True went unchallenged.
+        """
+        svc, is_byok = await self._stamp(
+            [{"billing_type": "platform"}], self._priced(0.0), is_byok=True
+        )
+
+        assert svc._has_per_call_data is True
+        assert svc._has_platform_calls is True
+        assert is_byok is False
+
+    @pytest.mark.asyncio
+    async def test_mixed_turn_is_not_byok(self):
+        """One platform call anywhere in the turn settles it, whatever the rest cost."""
+        svc, is_byok = await self._stamp(
+            [{"billing_type": "byok"}, {"billing_type": "platform"}],
+            self._priced(0.02, total_cost=0.30),
+            is_byok=True,
+        )
+
+        assert svc._has_platform_calls is True
+        assert is_byok is False
+
+    @pytest.mark.asyncio
+    async def test_byok_and_oauth_turn_stays_byok(self):
+        """Both values are the user's own credential, so neither trips the stamp.
+
+        The one test that catches oauth being folded in with the platform's key
+        -- a test for "not byok" rather than "is platform" passes every other
+        case here and fails only this one.
+        """
+        svc, is_byok = await self._stamp(
+            [{"billing_type": "byok"}, {"billing_type": "oauth"}],
+            self._priced(0.0, total_cost=0.30),
+            is_byok=False,
+        )
+
+        assert svc._has_platform_calls is False
+        assert is_byok is True
+
+    @pytest.mark.asyncio
+    async def test_raise_after_pricing_falls_back_to_caller_hint(self):
+        """A raise past the pricing call leaves _token_usage set but nothing computed.
+
+        The error path's fallback was unreachable this way: _token_usage is
+        assigned the moment pricing returns, so keying on it sent a turn that
+        never computed _has_platform_calls down the derived branch and stamped
+        it from the default.
+        """
+        svc = _make_service()
+
+        # Priced fine, then the credit conversion trips on a non-numeric cost.
+        with patch(
+            f"{CORE_MODULE}.calculate_cost_from_per_call_records",
+            return_value=self._priced("not-a-number"),
+        ):
+            await svc.track_llm_usage([{"billing_type": "platform"}])
+
+        assert svc._token_usage, "pricing returned, so the payload is set"
+        assert svc._has_per_call_data is False, "but nothing past it ran"
+
+        mock_create = AsyncMock()
+
+        @asynccontextmanager
+        async def mock_get_conn():
+            yield MagicMock()
+
+        with patch(
+            f"{DB_MODULE}.create_usage_record", mock_create
+        ), patch(
+            "src.server.database.pool.get_db_connection", mock_get_conn
+        ):
+            await svc.persist_usage(response_id="resp-1", is_byok=False)
+
+        assert mock_create.call_args[0][0]["is_byok"] is False
+
+    @pytest.mark.asyncio
+    async def test_reset_releases_the_derived_stamp(self):
+        """A reused service must not carry the prior turn's answer into an empty one."""
+        svc = _make_service()
+
+        with patch(
+            f"{CORE_MODULE}.calculate_cost_from_per_call_records",
+            return_value=self._priced(0.05),
+        ):
+            await svc.track_llm_usage([{"billing_type": "platform"}])
+        assert svc._has_per_call_data is True
+
+        svc.reset()
+        assert svc._has_per_call_data is False
+
+        await svc.track_llm_usage([])
+
+        mock_create = AsyncMock()
+
+        @asynccontextmanager
+        async def mock_get_conn():
+            yield MagicMock()
+
+        with patch(
+            f"{DB_MODULE}.create_usage_record", mock_create
+        ), patch(
+            "src.server.database.pool.get_db_connection", mock_get_conn
+        ):
+            await svc.persist_usage(response_id="resp-2", is_byok=False)
+
+        assert mock_create.call_args[0][0]["is_byok"] is False

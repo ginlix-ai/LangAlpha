@@ -1,7 +1,8 @@
 """Workspace Vault Secrets API Router.
 
-CRUD for per-workspace encrypted secrets. On every mutation, secrets are
-pushed to the running sandbox (if any) so code can use them immediately.
+CRUD for per-workspace encrypted secrets. Convergence after a mutation (the
+sandbox push and the MCP cache invalidation) is ``services/vault_invalidation``,
+shared with the user tier.
 
 Endpoints:
 - GET    /api/v1/workspaces/{workspace_id}/vault/secrets
@@ -15,10 +16,8 @@ Endpoints:
 from __future__ import annotations
 
 import logging
-import re
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, field_validator
 
 from src.server.database.vault_secrets import (
     MAX_SECRETS_PER_WORKSPACE,
@@ -30,120 +29,51 @@ from src.server.database.vault_secrets import (
     update_secret,
 )
 from src.server.database.workspace import get_workspace as db_get_workspace
-from src.server.services.workspace_manager import WorkspaceManager
+from src.server.models.vault import CreateSecretRequest, UpdateSecretRequest
+from src.server.services.vault_invalidation import WORKSPACE_TIER, after_secret_change
 from src.server.utils.api import CurrentUserId, handle_api_exceptions, require_workspace_owner
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/workspaces", tags=["Vault Secrets"])
 
-_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 
+def _collect_config_blueprints() -> dict[str, dict]:
+    """Vault blueprints declared by the enabled builtin MCP servers, by name.
 
-# ---------------------------------------------------------------------------
-# Request / response models
-# ---------------------------------------------------------------------------
+    First-declaration wins on metadata; duplicate blueprint names across
+    servers are treated as aliases: the second server's description/docs_url/
+    regex are discarded, but its name is appended to `sources` so the UI can
+    show which integrations share the credential.
 
-class CreateSecretRequest(BaseModel):
-    name: str = Field(..., min_length=1, max_length=64)
-    value: str = Field(..., min_length=1, max_length=4096)
-    description: str = Field("", max_length=256)
-
-    @field_validator("name")
-    @classmethod
-    def validate_name(cls, v: str) -> str:
-        if not _NAME_RE.match(v):
-            raise ValueError(
-                "Name must be 1-64 characters: letters, digits, underscores; "
-                "must start with a letter or underscore"
-            )
-        return v
-
-
-class UpdateSecretRequest(BaseModel):
-    value: str | None = Field(None, min_length=1, max_length=4096)
-    description: str | None = Field(None, max_length=256)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-async def _push_to_sandbox(workspace_id: str) -> None:
-    """Push vault secrets to the running sandbox (best-effort)."""
-    try:
-        wm = WorkspaceManager.get_instance()
-        await wm.push_vault_secrets(workspace_id)
-    except Exception:
-        logger.warning(
-            f"[vault] Failed to push secrets to sandbox for workspace {workspace_id}",
-            exc_info=True,
-        )
-
-
-async def _invalidate_mcp_for_secret(
-    workspace_id: str, user_id: str, secret_name: str
-) -> None:
-    """Best-effort MCP cache invalidation when a secret's VALUE changes.
-
-    The MCP discovery fingerprint hashes ``${vault:NAME}`` ref strings, never
-    values, so a vault mutation alone can't churn any config hash. When the
-    changed secret is referenced by a workspace MCP server we bump
-    ``mcp_config_version`` (live sessions re-resolve on next acquire), purge
-    discovery snapshots of referencing servers whose discovery runs WITH
-    secrets (their cached ``tools/list`` may depend on the credential), and
-    schedule a proactive apply so a ``needs_secret``/``pending`` server comes
-    alive without waiting for the user's next message.
+    Shared with the user tier, which layers each enabled plugin's declared
+    secrets on top of this same dict.
     """
-    try:
-        import json
+    # Lazy import to avoid circular dependency between `setup` module and router
+    # registration. `setup.agent_config` is populated in `lifespan()` at startup.
+    from src.server.app import setup
 
-        from ptc_agent.core.mcp_sanitize import (
-            discovery_should_use_secrets,
-            vault_refs,
-        )
-
-        from src.server.database import mcp_servers as mcp_db
-        from src.server.services.mcp_config import workspace_row_to_server_config
-
-        referencing: list[dict] = []
-        for row in await mcp_db.list_workspace_servers(workspace_id):
-            if row.get("source") != "workspace" or not row.get("config"):
-                continue
-            if secret_name in vault_refs(json.dumps(row["config"])):
-                referencing.append(row)
-        if not referencing:
-            return
-
-        purge: list[str] = []
-        for row in referencing:
-            try:
-                server = workspace_row_to_server_config(row)
-            except Exception:
-                continue
-            if discovery_should_use_secrets(server):
-                purge.append(row["name"])
-
-        # Purge + bump in ONE transaction: a partial purge with an un-bumped
-        # version would let live sessions skip re-resolution against the
-        # half-purged cache.
-        if purge:
-            await mcp_db.delete_tool_schemas_and_bump(workspace_id, purge)
-        else:
-            await mcp_db.bump_workspace_mcp_version(workspace_id)
-
-        from src.server.app.mcp_servers import _schedule_proactive_apply
-
-        _schedule_proactive_apply(workspace_id, user_id)
-        logger.info(
-            f"[vault] secret {secret_name!r} change invalidated MCP config for "
-            f"workspace {workspace_id} ({len(referencing)} referencing server(s))"
-        )
-    except Exception:
-        logger.warning(
-            f"[vault] MCP invalidation failed for workspace {workspace_id}",
-            exc_info=True,
-        )
+    collected: dict[str, dict] = {}
+    if setup.agent_config is None:
+        # Startup race: request landed before lifespan completed.
+        return collected
+    for server in setup.agent_config.mcp.servers:
+        if not server.enabled:
+            continue
+        for bp in server.vault_blueprints:
+            entry = collected.get(bp.name)
+            if entry is None:
+                collected[bp.name] = {
+                    "name": bp.name,
+                    "label": bp.label,
+                    "description": bp.description,
+                    "docs_url": bp.docs_url,
+                    "regex": bp.regex,
+                    "sources": [server.name],
+                }
+            else:
+                entry["sources"].append(server.name)
+    return collected
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +102,9 @@ async def create_secret(
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
-    await _push_to_sandbox(workspace_id)
-    await _invalidate_mcp_for_secret(workspace_id, user_id, body.name)
+    await after_secret_change(
+        WORKSPACE_TIER, workspace_id, body.name, user_id=user_id
+    )
     return {"name": body.name}
 
 
@@ -191,9 +122,11 @@ async def update_secret_endpoint(
     if not found:
         raise HTTPException(status_code=404, detail="Secret not found")
 
-    await _push_to_sandbox(workspace_id)
-    if body.value is not None:  # description-only edits can't affect discovery
-        await _invalidate_mcp_for_secret(workspace_id, user_id, name)
+    await after_secret_change(
+        WORKSPACE_TIER, workspace_id, name,
+        user_id=user_id,
+        value_changed=body.value is not None,
+    )
     return {"name": name}
 
 
@@ -223,8 +156,7 @@ async def delete_secret_endpoint(
     if not found:
         raise HTTPException(status_code=404, detail="Secret not found")
 
-    await _push_to_sandbox(workspace_id)
-    await _invalidate_mcp_for_secret(workspace_id, user_id, name)
+    await after_secret_change(WORKSPACE_TIER, workspace_id, name, user_id=user_id)
     return {"ok": True}
 
 
@@ -243,38 +175,9 @@ async def list_blueprints(workspace_id: str, user_id: CurrentUserId):
     workspace = await db_get_workspace(workspace_id)
     require_workspace_owner(workspace, user_id=user_id)
 
-    # Lazy import to avoid circular dependency between `setup` module and router
-    # registration. `setup.agent_config` is populated in `lifespan()` at startup.
-    from src.server.app import setup
-
     existing_names = await get_workspace_secret_names(workspace_id)
     remaining_slots = max(0, MAX_SECRETS_PER_WORKSPACE - len(existing_names))
-
-    if setup.agent_config is None:
-        # Startup race: request landed before lifespan completed.
-        return {"blueprints": [], "remaining_slots": remaining_slots}
-
-    # First-declaration wins on metadata; duplicate blueprint names across
-    # servers are treated as aliases: the second server's description/docs_url/
-    # regex are discarded, but its name is appended to `sources` so the UI can
-    # show which integrations share the credential.
-    collected: dict[str, dict] = {}
-    for server in setup.agent_config.mcp.servers:
-        if not server.enabled:
-            continue
-        for bp in server.vault_blueprints:
-            existing = collected.get(bp.name)
-            if existing is None:
-                collected[bp.name] = {
-                    "name": bp.name,
-                    "label": bp.label,
-                    "description": bp.description,
-                    "docs_url": bp.docs_url,
-                    "regex": bp.regex,
-                    "sources": [server.name],
-                }
-            else:
-                existing["sources"].append(server.name)
+    collected = _collect_config_blueprints()
 
     blueprints = [bp for name, bp in collected.items() if name not in existing_names]
     return {"blueprints": blueprints, "remaining_slots": remaining_slots}

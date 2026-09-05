@@ -1,6 +1,7 @@
 import { useEffect, type RefObject } from 'react';
 import type { ISeriesApi, Time } from 'lightweight-charts';
 import type { ChartDataPoint } from '@/types/market';
+import { getChartTheme } from '../utils/chartConstants';
 
 interface EarningsEntry {
   date?: string;
@@ -85,7 +86,8 @@ export function useChartOverlays(
   overlayData: OverlayData | null,
   overlayVisibility: OverlayVisibility | null,
   symbol: string | null,
-  extraMarkers: OverlayMarker[] = []
+  extraMarkers: OverlayMarker[] = [],
+  theme: 'dark' | 'light' = 'dark'
 ): void {
   useEffect(() => {
     const series = candlestickSeriesRef.current;
@@ -97,6 +99,9 @@ export function useChartOverlays(
     }
 
     const markers: OverlayMarker[] = [];
+    // Themed profit/loss pair — canvas markers can't read CSS variables, so
+    // they go through the resolved chart theme, never hex literals.
+    const { upColor, downColor } = getChartTheme(theme);
 
     // Earnings markers
     if (overlayVisibility?.earnings && earningsData && Array.isArray(earningsData)) {
@@ -114,7 +119,7 @@ export function useChartOverlays(
           time: time as Time,
           position: isBeat ? 'belowBar' : 'aboveBar',
           shape: isBeat ? 'arrowUp' : 'arrowDown',
-          color: isBeat ? '#10b981' : '#ef4444',
+          color: isBeat ? upColor : downColor,
           text: 'E',
         });
       });
@@ -133,7 +138,7 @@ export function useChartOverlays(
           time: time as Time,
           position: isUpgrade ? 'belowBar' : 'aboveBar',
           shape: isUpgrade ? 'arrowUp' : 'arrowDown',
-          color: isUpgrade ? '#22d3ee' : '#f87171',
+          color: isUpgrade ? upColor : downColor,
           text: isUpgrade ? '\u2191' : '\u2193',
         });
       });
@@ -165,5 +170,5 @@ export function useChartOverlays(
         try { series.setMarkers([]); } catch (_) { /* already cleaned */ }
       }
     };
-  }, [candlestickSeriesRef, chartData, earningsData, overlayData, overlayVisibility, symbol, extraMarkers]);
+  }, [candlestickSeriesRef, chartData, earningsData, overlayData, overlayVisibility, symbol, extraMarkers, theme]);
 }

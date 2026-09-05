@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useTheme } from '@/contexts/ThemeContext';
 import { getTVCommonConfig, mapLocaleForTV, resolveScriptSrc } from './tvConfig';
 import { EmbedFallback } from './EmbedFallback';
+import './tvEmbed.css';
 
 interface Props {
   /** Either a known short key (`ticker-tape`) or a full embed-widget URL. */
@@ -198,6 +199,9 @@ export function TradingViewEmbed({ scriptKey, config, className, card = false, c
             : 'relative flex-1 min-h-0'
         }
       >
+        {/* `tv-embed-container` is load-bearing beyond layout — tvEmbed.css
+            hangs the color-scheme reset off it that keeps the iframe
+            compositing transparently. TV's subtree must stay inside it. */}
         <div
           ref={containerRef}
           className="tv-embed-container tradingview-widget-container w-full"

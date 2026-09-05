@@ -271,6 +271,58 @@ class TestFirecrawlFetchAdapter:
         resp = await self._run(monkeypatch, payload)
         assert resp.results[0].error.type == WebErrorType.PROVIDER_ERROR
 
+    async def test_success_false_does_not_fault_the_provider(self, monkeypatch):
+        """A 200 with success=false describes one url's scrape, not an outage.
+        PROVIDER_ERROR faults the provider by default, so this branch has to
+        say otherwise or a handful of dead links disables Firecrawl outright.
+        """
+        payload = {
+            "success": False,
+            "code": "SCRAPE_DNS_RESOLUTION_ERROR",
+            "error": 'DNS resolution failed for hostname "example.invalid".',
+        }
+        resp = await self._run(monkeypatch, payload)
+        error = resp.results[0].error
+
+        assert error.provider_fault is False
+        assert error.retryable  # the chain should still try the next provider
+        # The code is the only handle on which failure it was, so it must survive.
+        assert "SCRAPE_DNS_RESOLUTION_ERROR" in error.message
+
+
+# Every outcome SafeCrawlerWrapper can emit, with both routing axes.
+# provider_fault=True is what counts against the chain's breaker for this
+# provider, so it belongs only to failures another URL would not survive
+# either — never to a host that blocks, throttles, or fails to resolve.
+_CRAWLER_OUTCOMES = [
+    ("blocked", WebErrorType.FORBIDDEN, False, False),
+    ("stealth_failed", WebErrorType.ANTI_BOT, True, False),
+    ("timeout", WebErrorType.TIMEOUT, True, False),
+    ("connection_timeout", WebErrorType.TIMEOUT, True, False),
+    ("rate_limited", WebErrorType.RATE_LIMITED, True, False),
+    ("circuit_open", WebErrorType.CIRCUIT_OPEN, True, False),
+    ("empty_content", WebErrorType.EMPTY, True, False),
+    ("dns_error", WebErrorType.PROVIDER_ERROR, True, False),
+    ("connection_refused", WebErrorType.PROVIDER_ERROR, True, False),
+    ("network_error", WebErrorType.PROVIDER_ERROR, True, False),
+    ("crawl_error", WebErrorType.PROVIDER_ERROR, True, False),
+    ("infra_error", WebErrorType.PROVIDER_ERROR, True, False),
+    ("cancelled", WebErrorType.PROVIDER_ERROR, False, False),
+    ("queue_full", WebErrorType.PROVIDER_ERROR, True, True),
+    ("browser_closed", WebErrorType.PROVIDER_ERROR, True, True),
+]
+
+
+def test_inhouse_mapping_covers_every_crawler_outcome():
+    """The map is total. An outcome added to the crawler without a mapping here
+    would otherwise fall through to a breaker-tripping default."""
+    from src.tools.web.providers import inhouse
+
+    # ``cancelled`` is handled ahead of the map (it also clears retryable).
+    assert set(inhouse._ERROR_TYPES) | {"cancelled"} == {
+        kind for kind, *_ in _CRAWLER_OUTCOMES
+    }
+
 
 @pytest.mark.asyncio
 class TestInhouseFetchAdapter:
@@ -299,19 +351,11 @@ class TestInhouseFetchAdapter:
         assert resp.results[0].ok and resp.results[0].markdown == "content"
 
     @pytest.mark.parametrize(
-        ("error_type", "expected", "retryable"),
-        [
-            ("blocked", WebErrorType.FORBIDDEN, False),
-            ("stealth_failed", WebErrorType.ANTI_BOT, True),
-            ("timeout", WebErrorType.TIMEOUT, True),
-            ("rate_limited", WebErrorType.RATE_LIMITED, True),
-            ("circuit_open", WebErrorType.CIRCUIT_OPEN, True),
-            ("empty_content", WebErrorType.EMPTY, True),
-            ("dns_error", WebErrorType.PROVIDER_ERROR, True),
-            ("cancelled", WebErrorType.PROVIDER_ERROR, False),
-        ],
+        ("error_type", "expected", "retryable", "provider_fault"), _CRAWLER_OUTCOMES
     )
-    async def test_error_type_mapping(self, monkeypatch, error_type, expected, retryable):
+    async def test_error_type_mapping(
+        self, monkeypatch, error_type, expected, retryable, provider_fault
+    ):
         from src.tools.web.inhouse.safe_wrapper import CrawlResult
 
         resp = await self._run(
@@ -321,3 +365,19 @@ class TestInhouseFetchAdapter:
         error = resp.results[0].error
         assert error.type == expected
         assert error.retryable is retryable
+        assert error.provider_fault is provider_fault
+        # Several outcomes normalize to PROVIDER_ERROR; the crawler's own name
+        # is what keeps them apart in the attempt telemetry.
+        assert error.native_kind == error_type
+
+    async def test_unmapped_outcome_is_not_a_provider_fault(self, monkeypatch):
+        """An unrecognized outcome must not be able to open the breaker."""
+        from src.tools.web.inhouse.safe_wrapper import CrawlResult
+
+        resp = await self._run(
+            monkeypatch,
+            CrawlResult(success=False, error="scripted", error_type="brand_new_kind"),
+        )
+        error = resp.results[0].error
+        assert error.type == WebErrorType.PROVIDER_ERROR
+        assert error.provider_fault is False

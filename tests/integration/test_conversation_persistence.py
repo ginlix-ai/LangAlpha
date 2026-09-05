@@ -304,7 +304,7 @@ class TestThreadLifecycle:
     ):
         from src.server.database.conversation import (
             create_thread,
-            update_thread_title,
+            update_thread_fields,
         )
 
         ws_id = str(seed_workspace["workspace_id"])
@@ -317,7 +317,7 @@ class TestThreadLifecycle:
             title="Original title",
         )
 
-        updated = await update_thread_title(thread_id, "Updated title")
+        updated = await update_thread_fields(thread_id, title="Updated title")
         assert updated is not None
         assert updated["title"] == "Updated title"
 

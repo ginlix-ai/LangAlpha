@@ -3,8 +3,9 @@
  * All backend endpoints used by the MarketView page
  */
 import { api } from '@/api/client';
-import { supabase } from '@/lib/supabase';
+import { getAuthHeaders } from '@/lib/authToken';
 import { normalizeIndexKey } from '@/lib/marketUtils';
+import type { Workspace, WorkspacesResponse } from '@/types/api';
 
 // Legacy full-window bar loader now lives in lib/bars (so lib/ never imports a
 // page); re-exported for page-internal callers that still import it from here.
@@ -25,29 +26,6 @@ export function getMarketDataWSUrl(market: string = 'stock', interval: string = 
     ? (baseURL as string).replace(/^http/, 'ws')
     : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
   return `${wsBase}/ws/v1/market-data/aggregates/${market}?interval=${interval}`;
-}
-
-/**
- * Get the current Supabase access token for WS auth.
- * Returns null when auth is disabled (local dev).
- * @returns {Promise<string|null>}
- */
-export async function getWSAuthToken(): Promise<string | null> {
-  if (!supabase) return null;
-  try {
-    const { data } = await supabase.auth.getSession();
-    return data.session?.access_token || null;
-  } catch {
-    return null;
-  }
-}
-
-/** Get Bearer auth headers for raw fetch() calls (SSE streams). */
-async function getAuthHeaders(): Promise<Record<string, string>> {
-  if (!supabase) return {};
-  const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
-  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 interface SnapshotData {
@@ -511,19 +489,13 @@ export async function deleteMarketThread(threadId: string): Promise<void> {
   }
 }
 
-interface Workspace {
-  workspace_id: string;
-  name: string;
-  [key: string]: unknown;
-}
-
 /**
  * List all workspaces for the user
  * @returns {Promise<Array>} Array of workspace objects
  */
 export async function listWorkspaces(): Promise<Workspace[]> {
   try {
-    const { data } = await api.get('/api/v1/workspaces');
+    const { data } = await api.get<WorkspacesResponse>('/api/v1/workspaces');
     return data?.workspaces || [];
   } catch (error: unknown) {
     console.warn('[MarketView] Failed to list workspaces:', error);

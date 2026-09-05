@@ -1,6 +1,10 @@
 import React, { useState } from 'react';
-import { Brain, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
+import { Brain, ChevronDown, ChevronUp } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import Markdown from './Markdown';
+
+/** Module scope, not a literal: a fresh object would defeat Markdown's memo on every tick. */
+const REASONING_BODY_STYLE = { borderLeft: '2px solid var(--color-border-elevated)' };
 
 interface ReasoningMessageContentProps {
   reasoningContent: string;
@@ -42,13 +46,13 @@ function ReasoningMessageContent({ reasoningContent, isReasoning, reasoningCompl
           display: 'flex',
           alignItems: 'center',
           gap: '8px',
-          fontSize: '14px',
+          fontSize: '0.875rem',
           lineHeight: '20px',
           color: 'var(--Labels-Secondary)',
           padding: '4px 12px',
           borderRadius: '6px',
           backgroundColor: isReasoning
-            ? 'var(--color-accent-soft)'
+            ? 'var(--color-bg-hover)'
             : 'transparent',
           border: isReasoning
             ? '1px solid var(--color-border-muted)'
@@ -61,10 +65,9 @@ function ReasoningMessageContent({ reasoningContent, isReasoning, reasoningCompl
         <div className="relative flex-shrink-0">
           <Brain className="h-4 w-4" style={{ color: 'var(--Labels-Secondary)' }} />
           {isReasoning && (
-            <Loader2
-              className="h-3 w-3 absolute -top-0.5 -right-0.5 animate-spin"
-              style={{ color: 'var(--Labels-Secondary)' }}
-            />
+            <span aria-hidden="true" className="absolute -top-0.5 -right-0.5">
+              <Loader size={12} className="text-[color:var(--Labels-Secondary)]" />
+            </span>
           )}
         </div>
 
@@ -103,7 +106,7 @@ function ReasoningMessageContent({ reasoningContent, isReasoning, reasoningCompl
           variant="compact"
           content={reasoningContent}
           className="mt-2 pl-3 pr-0 py-1 text-xs"
-          style={{ borderLeft: '3px solid var(--color-accent-overlay)' }}
+          style={REASONING_BODY_STYLE}
         />
       )}
     </div>

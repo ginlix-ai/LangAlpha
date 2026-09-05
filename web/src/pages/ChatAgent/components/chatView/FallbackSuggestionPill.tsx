@@ -55,10 +55,10 @@ export function FallbackSuggestionPill({
       <button
         type="button"
         onClick={() => onSwitchModel(fallbackSuggestion.toModel)}
-        className="text-xs font-medium whitespace-nowrap rounded-md px-2.5 py-1 flex-shrink-0 hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] focus-visible:ring-offset-1"
+        className="text-xs font-medium whitespace-nowrap rounded-md px-2.5 py-1 flex-shrink-0 hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
         style={{
-          backgroundColor: 'var(--color-accent-primary)',
-          color: 'var(--color-text-on-accent)',
+          backgroundColor: 'var(--color-btn-primary-bg)',
+          color: 'var(--color-btn-primary-text)',
         }}
       >
         {t('chat.switchToModel', { model: fallbackSuggestion.toModel })}

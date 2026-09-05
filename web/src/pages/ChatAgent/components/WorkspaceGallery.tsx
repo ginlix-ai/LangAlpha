@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Plus, Loader2, Search, ArrowDownUp, MoreHorizontal, Zap, MessageSquareText, Pin, Trash2, GripVertical, Check, Pencil, Cpu, Copy, Infinity as InfinityIcon } from 'lucide-react';
+import { Plus, Search, ArrowDownUp, MoreHorizontal, Zap, MessageSquareText, Pin, GripVertical, Check, Cpu, Infinity as InfinityIcon } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -8,86 +9,33 @@ import type { DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, useSortable, arrayMove, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { toast } from '@/components/ui/use-toast';
-import { isPlatformMode } from '@/config/hostMode';
-import type { ResourceTier, Workspace } from '@/types/api';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import type { Workspace } from '@/types/api';
 import CreateWorkspaceModal from './CreateWorkspaceModal';
-import DeleteConfirmModal from './DeleteConfirmModal';
-import ChangeSpecDialog, { normalizeTier, tierLabel } from './ChangeSpecDialog';
+import { normalizeTier, tierLabel } from './ChangeSpecDialog';
 import RenameWorkspaceDialog from './RenameWorkspaceDialog';
-import DuplicateWorkspaceDialog from './DuplicateWorkspaceDialog';
-import AlwaysOnConfirmDialog from './AlwaysOnConfirmDialog';
 import MorphingPageDots from '../../../components/ui/morphing-page-dots';
 import { useIsMobile, getIsMobileSnapshot } from '@/hooks/useIsMobile';
 import { useWorkspaces } from '../../../hooks/useWorkspaces';
 import { queryKeys } from '../../../lib/queryKeys';
 import {
   createWorkspace,
-  deleteWorkspace,
   getFlashWorkspace,
-  updateWorkspace,
   reorderWorkspaces,
   renameWorkspace,
-  setWorkspaceSpec,
-  setWorkspaceAlwaysOn,
-  duplicateWorkspace,
-  getWorkspaceQuota,
-  formatApiErrorDetail,
-  apiErrorDetailMessage,
-  apiErrorStatus,
 } from '../utils/api';
-import { removeStoredThreadId } from '../hooks/useChatMessages';
-import { clearAllMarketThreadsForWorkspace } from '../../MarketView/utils/threadPersistence';
-import { forgetNavPanelExpansion } from './navExpansionStore';
-import { forgetStableNavOrder, forgetSharedWorkspaceThreads } from '../hooks/useNavigationData';
+import { WorkspaceMenuItems, useWorkspaceActions } from './workspaceActions';
+import { isEffectivelyPinned } from '../hooks/useNavigationData';
+import { pinWorkspaceRow } from '../hooks/workspaceRowActions';
 import { clearChatSession } from '../hooks/utils/chatSessionRestore';
-import { useWorkspaceMutation, patchCachedWorkspace, rollbackCachedWorkspaces } from '../hooks/useWorkspaceMutation';
+import { useWorkspaceMutation } from '../hooks/useWorkspaceMutation';
 
 const DEFAULT_PAGE_SIZE = 8;
-
-/**
- * Map a mutation error to user-facing copy. In platform mode the backend gates
- * elevated tiers / always-on: 403 = capability not on plan, 429 = count limit
- * reached. OSS mode never returns these, so we fall through to the generic
- * detail message.
- */
-function entitlementErrorMessage(
-  err: unknown,
-  t: ReturnType<typeof useTranslation>['t'],
-  tier?: ResourceTier,
-): string {
-  if (isPlatformMode) {
-    const status = apiErrorStatus(err);
-    if (status === 403) {
-      return t('workspace.notOnPlan', 'Not available on your plan — upgrade to unlock.');
-    }
-    if (status === 429) {
-      // Prefer the platform's structured quota message when it forwards one
-      // (detail: { message, type, current, limit, remaining }); fall back to
-      // the localized generic copy otherwise.
-      const platformMessage = apiErrorDetailMessage(err);
-      if (platformMessage) return platformMessage;
-      if (tier) {
-        return t('workspace.tierLimitReached', "You've reached your {{tier}} workspace limit.", {
-          tier: tierLabel(t, tier),
-        });
-      }
-      return t('workspace.workspaceLimitReached', "You've reached your workspace limit.");
-    }
-  }
-  return formatApiErrorDetail(err);
-}
 
 // Gallery view of a workspace: the shared DTO plus manual-order metadata.
 interface WorkspaceRecord extends Workspace {
   is_pinned?: boolean;
   sort_order?: number;
-}
-
-interface DeleteModalState {
-  isOpen: boolean;
-  workspace: WorkspaceRecord | null;
 }
 
 const slideVariants = {
@@ -125,9 +73,6 @@ interface CardMenuProps {
 }
 
 function CardMenu({ workspace, onTogglePin, onRename, onUpgrade, onToggleAlwaysOn, onDuplicate, onDelete }: CardMenuProps) {
-  const { t } = useTranslation();
-  const isAlwaysOn = workspace.is_always_on === true;
-
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
@@ -140,34 +85,15 @@ function CardMenu({ workspace, onTogglePin, onRename, onUpgrade, onToggleAlwaysO
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={4}>
-        <DropdownMenuItem onSelect={() => onTogglePin(workspace)}>
-          <Pin className="h-4 w-4" />
-          {workspace.is_pinned ? t('workspace.unpin') : t('workspace.pinToTop')}
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => onRename(workspace)}>
-          <Pencil className="h-4 w-4" />
-          {t('workspace.rename')}
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => onUpgrade(workspace)}>
-          <Cpu className="h-4 w-4" />
-          {t('workspace.changeSpec', 'Change spec')}
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => onToggleAlwaysOn(workspace)}>
-          <InfinityIcon className="h-4 w-4" />
-          {isAlwaysOn
-            ? t('workspace.alwaysOnDisable', 'Turn off always-on')
-            : t('workspace.alwaysOnEnable', 'Turn on always-on')}
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => onDuplicate(workspace)}>
-          <Copy className="h-4 w-4" />
-          {t('workspace.duplicate', 'Duplicate')}
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem variant="destructive" onSelect={() => onDelete(workspace)}>
-          <Trash2 className="h-4 w-4" />
-          {t('common.delete', 'Delete')}
-        </DropdownMenuItem>
+        <WorkspaceMenuItems
+          workspace={workspace}
+          onTogglePin={onTogglePin}
+          onRename={onRename}
+          onUpgrade={onUpgrade}
+          onToggleAlwaysOn={onToggleAlwaysOn}
+          onDuplicate={onDuplicate}
+          onDelete={onDelete}
+        />
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -178,9 +104,10 @@ function CardMenu({ workspace, onTogglePin, onRename, onUpgrade, onToggleAlwaysO
  */
 interface SortableReorderRowProps {
   workspace: WorkspaceRecord;
+  disabled: boolean | { draggable: boolean; droppable: boolean };
 }
 
-function SortableReorderRow({ workspace }: SortableReorderRowProps) {
+function SortableReorderRow({ workspace, disabled }: SortableReorderRowProps) {
   const {
     attributes,
     listeners,
@@ -188,7 +115,13 @@ function SortableReorderRow({ workspace }: SortableReorderRowProps) {
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: workspace.workspace_id, disabled: workspace.status === 'flash' });
+  } = useSortable({
+    id: workspace.workspace_id,
+    // dnd-kit back-compat trap: a boolean `disabled` normalizes to
+    // {draggable, droppable: false} — the row would stay an active drop
+    // target. Spell out both aspects so `true` really means fully disabled.
+    disabled: typeof disabled === 'boolean' ? { draggable: disabled, droppable: disabled } : disabled,
+  });
 
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
@@ -205,26 +138,24 @@ function SortableReorderRow({ workspace }: SortableReorderRowProps) {
       className="flex items-center gap-3 px-4 py-3 rounded-xl border mb-2"
       style={{
         ...style,
+        // Same material split as the gallery card: flash rides an elevated
+        // surface, user rows keep the card wash; the Zap glyph is the accent.
         background: isFlash
-          ? 'linear-gradient(to right, var(--color-accent-soft), var(--color-bg-subtle))'
+          ? 'var(--color-bg-elevated)'
           : 'var(--color-bg-card-gradient, var(--color-border-muted))',
-        borderColor: isFlash ? 'var(--color-accent-overlay)' : 'var(--color-bg-card-border, var(--color-border-muted))',
+        borderColor: isFlash ? 'var(--color-border-default)' : 'var(--color-bg-card-border, var(--color-border-muted))',
       }}
     >
-      {!isFlash ? (
-        <button
-          {...listeners}
-          {...attributes}
-          className="flex-shrink-0 cursor-grab active:cursor-grabbing p-1 rounded"
-          style={{ color: 'var(--color-text-tertiary)' }}
-        >
-          <GripVertical className="h-5 w-5" />
-        </button>
-      ) : (
-        <div className="flex-shrink-0 p-1">
-          <Zap className="h-5 w-5" style={{ color: 'var(--color-accent-primary)' }} />
-        </div>
-      )}
+      {/* Flash drags too (within the pinned block) — its Zap identity glyph
+          doubles as the grab handle where user rows show the grip. */}
+      <button
+        {...listeners}
+        {...attributes}
+        className="flex-shrink-0 cursor-grab active:cursor-grabbing p-1 rounded"
+        style={{ color: isFlash ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)' }}
+      >
+        {isFlash ? <Zap className="h-5 w-5" /> : <GripVertical className="h-5 w-5" />}
+      </button>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           {!isFlash && workspace.is_pinned && (
@@ -271,18 +202,22 @@ function WorkspaceCard({ workspace, onSelect, onTogglePin, onRenameStart, onUpgr
     >
       <div
         className="relative group h-full"
+        data-testid="workspace-card"
         onMouseEnter={!isMobile ? () => prefetchThreads?.(workspace.workspace_id) : undefined}
       >
         <div
           onClick={() => onSelect(workspace.workspace_id, workspace.name, workspace.status)}
           className="relative flex cursor-pointer flex-col overflow-hidden rounded-xl py-4 pl-5 pr-4 transition-all ease-in-out hover:shadow-sm active:scale-[0.98] h-full w-full"
           style={{
+            // Flash is a system card: flat elevated surface + crisp hairline,
+            // a different material from user cards; the amber Zap glyph is the
+            // only accent.
             background: isFlash
-              ? 'linear-gradient(to bottom, var(--color-accent-soft), var(--color-bg-subtle))'
+              ? 'var(--color-bg-elevated)'
               : 'var(--color-bg-card-gradient, linear-gradient(to bottom, var(--color-border-muted), var(--color-border-muted)))',
             border: isFlash
-              ? '0.5px solid var(--color-accent-overlay)'
-              : '0.5px solid var(--color-bg-card-border, var(--color-border-muted))',
+              ? '1px solid var(--color-border-default)'
+              : '1px solid var(--color-bg-card-border, var(--color-border-muted))',
             backdropFilter: 'blur(8px)',
             WebkitBackdropFilter: 'blur(8px)',
           }}
@@ -310,7 +245,7 @@ function WorkspaceCard({ workspace, onSelect, onTogglePin, onRenameStart, onUpgr
                 <div className="flex items-center gap-1.5 flex-shrink-0">
                   {showTierBadge && (
                     <span
-                      className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
+                      className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.625rem] font-medium"
                       style={{ backgroundColor: 'var(--color-accent-soft)', color: 'var(--color-accent-primary)' }}
                       title={t('workspace.tierBadgeTitle', { tier: tierLabel(t, tier) })}
                     >
@@ -320,7 +255,7 @@ function WorkspaceCard({ workspace, onSelect, onTogglePin, onRenameStart, onUpgr
                   )}
                   {showAlwaysOn && (
                     <span
-                      className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
+                      className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.625rem] font-medium"
                       style={{ backgroundColor: 'var(--color-border-muted)', color: 'var(--color-text-secondary)' }}
                       title={t('workspace.alwaysOnBadgeTitle', 'Always-on — sandbox stays running')}
                     >
@@ -368,9 +303,6 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [deleteModal, setDeleteModal] = useState<DeleteModalState>({ isOpen: false, workspace: null });
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   // Default to the manual ('custom') order so the gallery matches the in-chat
@@ -381,15 +313,13 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
   const [sortBy, setSortBy] = useState<'activity' | 'name' | 'custom'>('custom');
   const [currentPage, setCurrentPage] = useState(0);
   const [isReorderMode, setIsReorderMode] = useState(false);
+  // Lifted row during a reorder drag — rows across the pin boundary from it
+  // stop being drop targets so the preview never shows a refused arrangement.
+  const [reorderActiveId, setReorderActiveId] = useState<string | null>(null);
   const [allWorkspaces, setAllWorkspaces] = useState<WorkspaceRecord[]>([]);
-  // Rename / Change-spec / Duplicate / Always-on dialogs each target one workspace
-  // at a time. Enabling always-on bills 24/7, so it asks for confirmation first;
-  // disabling is harmless and toggles directly.
+  // Rename is the gallery's own dialog (the tree renames inline); change-spec,
+  // always-on, duplicate and delete all come from useWorkspaceActions below.
   const [renameTarget, setRenameTarget] = useState<WorkspaceRecord | null>(null);
-  const [upgradeTarget, setUpgradeTarget] = useState<WorkspaceRecord | null>(null);
-  const [duplicateTarget, setDuplicateTarget] = useState<WorkspaceRecord | null>(null);
-  const [duplicateBusy, setDuplicateBusy] = useState(false);
-  const [alwaysOnTarget, setAlwaysOnTarget] = useState<WorkspaceRecord | null>(null);
   const navigate = useNavigate();
   const { workspaceId: currentWorkspaceId } = useParams();
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -427,15 +357,6 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
     staleTime: 5 * 60_000,
   });
 
-  // Per-tier count quotas — drives the "N left" hint in the change-spec dialog.
-  // Platform mode only, fetched lazily when the dialog opens; null in OSS mode.
-  const { data: workspaceQuota } = useQuery({
-    queryKey: queryKeys.workspaces.quota(),
-    queryFn: getWorkspaceQuota,
-    enabled: isPlatformMode && !!upgradeTarget,
-    staleTime: 60_000,
-  });
-
   // Reorder mode: fetch all workspaces
   const { data: allWsData } = useWorkspaces({
     limit: 100,
@@ -446,7 +367,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
 
   // Derive workspace list from query data
   const workspaces = useMemo((): WorkspaceRecord[] => {
-    const list = (wsData as any)?.workspaces || []; // TODO: type properly
+    const list = wsData?.workspaces || [];
     // Prepend flash workspace on first page when not searching
     if (flashWs && isFirstPage && !isSearching) {
       return [flashWs as WorkspaceRecord, ...list];
@@ -454,13 +375,13 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
     return list;
   }, [wsData, flashWs, isFirstPage, isSearching]);
 
-  const totalWorkspaces = (wsData as any)?.total || 0; // TODO: type properly
+  const totalWorkspaces = wsData?.total || 0;
   const totalPages = Math.ceil((totalWorkspaces + 1) / pageSize);
 
   // Sync allWorkspaces state from query data when in reorder mode
   useEffect(() => {
-    if (isReorderMode && (allWsData as any)?.workspaces) {
-      const list = (allWsData as any).workspaces;
+    if (isReorderMode && allWsData?.workspaces) {
+      const list = allWsData.workspaces;
       setAllWorkspaces(flashWs ? [flashWs as WorkspaceRecord, ...list] : list);
     }
   }, [isReorderMode, allWsData, flashWs]);
@@ -476,6 +397,14 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
       slideDirectionRef.current = page > prev ? 1 : -1;
       return page;
     });
+  }, []);
+
+  // Reveal a mutation whose result lands at the top of the list (pin, duplicate):
+  // slide backwards to page 0 and release the locked grid height.
+  const snapToFirstPage = useCallback(() => {
+    slideDirectionRef.current = -1;
+    gridHeightRef.current = null;
+    setCurrentPage(0);
   }, []);
 
   // Swipe gesture handlers for mobile pagination
@@ -609,126 +538,23 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
   };
 
   /**
-   * Handles delete icon click - opens confirmation modal
+   * Pin/unpin from the card menu. The canonical row action owns the
+   * refetch-then-unfreeze sequence (shared with the nav tree, so an unpin here
+   * releases the sidebar's session freeze too); the gallery only adds its own
+   * presentation reaction — pinning re-sorts the list, so snap back to page 0.
    */
-  const handleDeleteClick = (workspace: WorkspaceRecord) => {
-    setDeleteModal({ isOpen: true, workspace });
-    setDeleteError(null);
+  const handleTogglePin = (workspace: WorkspaceRecord) => {
+    void pinWorkspaceRow(queryClient, workspace.workspace_id, !workspace.is_pinned, {
+      onAfterPin: snapToFirstPage,
+    });
   };
 
-  /**
-   * Handles confirmed workspace deletion
-   */
-  const handleConfirmDelete = async () => {
-    if (!deleteModal.workspace) return;
-
-    const workspaceToDelete = deleteModal.workspace;
-    const workspaceId = workspaceToDelete.workspace_id;
-
-    if (!workspaceId) {
-      console.error('No workspace ID found in workspace object:', workspaceToDelete);
-      setDeleteError(t('workspace.invalidWorkspace'));
-      return;
-    }
-
-    setIsDeleting(true);
-    setDeleteError(null);
-
-    try {
-      await deleteWorkspace(workspaceId);
-
-      // Clean up localStorage: remove thread pointers for the deleted workspace
-      // in both ChatAgent (single key per workspace) and MarketView (one key per
-      // (workspace, symbol) pair).
-      removeStoredThreadId(workspaceId);
-      clearAllMarketThreadsForWorkspace(workspaceId);
-      // Drop the nav panel's remembered expansion so a later remount doesn't
-      // re-expand the now-deleted workspace and fire a spurious threads 404,
-      // and clear its frozen-order entries so they don't linger all session.
-      forgetNavPanelExpansion(workspaceId);
-      forgetStableNavOrder(workspaceId);
-      forgetSharedWorkspaceThreads(workspaceId);
-
-      // Invalidate workspace list cache
-      queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.lists() });
-
-      // If page would be empty after deletion, go to previous page
-      const remainingOnPage = workspaces.filter((ws) => ws.workspace_id !== workspaceId).length;
-      if (remainingOnPage === 0 && currentPage > 0) {
-        slideDirectionRef.current = -1;
-        setCurrentPage((p) => p - 1);
-      }
-
-      // If the deleted workspace is currently active, navigate back to gallery
-      if (currentWorkspaceId === workspaceId) {
-        navigate('/chat');
-      }
-
-      // Close modal
-      setDeleteModal({ isOpen: false, workspace: null });
-    } catch (err: any) { // TODO: type properly
-      console.error('Error deleting workspace:', err);
-      const errorMessage = err.message || t('workspace.failedDeleteWorkspace');
-      setDeleteError(errorMessage);
-      // Keep modal open so user can see the error
-    } finally {
-      setIsDeleting(false);
-    }
-  };
-
-  /**
-   * Handles canceling deletion
-   */
-  const handleCancelDelete = () => {
-    setDeleteModal({ isOpen: false, workspace: null });
-    setDeleteError(null);
-  };
-
-  /**
-   * Toggle pin state with optimistic update and rollback on error. Kept separate
-   * from useWorkspaceMutation: no toast on error and a custom success side effect
-   * (pinning reorders the list, so we snap back to page 0).
-   */
-  const handleTogglePin = async (workspace: WorkspaceRecord) => {
-    const newPinned = !workspace.is_pinned;
-    const wsId = workspace.workspace_id;
-
-    const previous = patchCachedWorkspace(queryClient, wsId, { is_pinned: newPinned });
-    try {
-      await updateWorkspace(wsId, { is_pinned: newPinned });
-      // Refetch from server -- pinning changes global sort order
-      slideDirectionRef.current = -1;
-      gridHeightRef.current = null;
-      if (currentPage !== 0) {
-        setCurrentPage(0);
-      }
-      queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.lists() });
-    } catch (err) {
-      rollbackCachedWorkspaces(queryClient, previous);
-      console.error('Error toggling pin:', err);
-    }
-  };
-
-  // Rename: plain error map. Upgrade + always-on: entitlement-aware map + quota
-  // invalidation. run() returns true on success so the dialog closes / toasts.
+  // Rename is the gallery's own flow (dialog + optimistic patch); the tree
+  // renames inline through the same row action.
   const renameMutation = useWorkspaceMutation<string>({
     mutationFn: (wsId, name) => renameWorkspace(wsId, name),
     optimisticPatch: (name) => ({ name }),
     errorTitleKey: 'workspace.renameFailed',
-  });
-  const upgradeMutation = useWorkspaceMutation<ResourceTier>({
-    mutationFn: (wsId, tier) => setWorkspaceSpec(wsId, tier),
-    optimisticPatch: (tier) => ({ resource_tier: tier }),
-    invalidateQuota: true,
-    errorTitleKey: 'workspace.specFailed',
-    mapError: (err, tier) => entitlementErrorMessage(err, t, tier),
-  });
-  const alwaysOnMutation = useWorkspaceMutation<boolean>({
-    mutationFn: (wsId, next) => setWorkspaceAlwaysOn(wsId, next),
-    optimisticPatch: (next) => ({ is_always_on: next }),
-    invalidateQuota: true,
-    errorTitleKey: 'workspace.alwaysOnFailed',
-    mapError: (err) => entitlementErrorMessage(err, t),
   });
 
   /** Open the rename dialog (the card menu's Rename action). */
@@ -748,69 +574,20 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
     if (ok) setRenameTarget(null);
   };
 
-  /** Open the change-spec dialog. */
-  const handleUpgradeStart = (workspace: WorkspaceRecord) => {
-    setUpgradeTarget(workspace);
-  };
-
-  /** Commit the chosen tier; close + toast on success. */
-  const handleUpgradeSubmit = async (tier: ResourceTier) => {
-    if (!upgradeTarget) return;
-    const ok = await upgradeMutation.run(upgradeTarget.workspace_id, tier);
-    if (ok) {
-      setUpgradeTarget(null);
-      toast({ title: t('workspace.specUpdated', 'Workspace spec updated'), description: tierLabel(t, tier) });
-    }
-  };
-
-  /**
-   * Apply an always-on change (enabling is gated in platform mode, disabling is
-   * always allowed). Closes the confirm dialog on success. The mutation's busy
-   * set dedupes double-submits inside its functional updater.
-   */
-  const applyAlwaysOn = async (workspace: WorkspaceRecord, next: boolean) => {
-    const ok = await alwaysOnMutation.run(workspace.workspace_id, next);
-    if (ok) setAlwaysOnTarget((cur) => (cur?.workspace_id === workspace.workspace_id ? null : cur));
-  };
-
-  /**
-   * Card-menu entry point. Enabling opens a confirmation (24/7 billing); disabling
-   * applies directly. Ignored while a toggle for this workspace is in flight.
-   */
-  const handleToggleAlwaysOn = (workspace: WorkspaceRecord) => {
-    if (alwaysOnMutation.busyIds.has(workspace.workspace_id)) return;
-    if (workspace.is_always_on === true) {
-      void applyAlwaysOn(workspace, false);
-    } else {
-      setAlwaysOnTarget(workspace);
-    }
-  };
-
-  /**
-   * Confirm + run a duplicate. The copy is a new workspace (and inherits the
-   * source's tier, so it can consume a per-tier quota slot) — invalidate the
-   * list + quota and jump back to page 0 to reveal it.
-   */
-  const handleDuplicateConfirm = async () => {
-    if (!duplicateTarget || duplicateBusy) return;
-    const wsId = duplicateTarget.workspace_id;
-    setDuplicateBusy(true);
-    try {
-      await duplicateWorkspace(wsId);
-      queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.lists() });
-      queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.quota() });
-      slideDirectionRef.current = -1;
-      gridHeightRef.current = null;
-      setCurrentPage(0);
-      setDuplicateTarget(null);
-      toast({ title: t('workspace.duplicated', 'Workspace duplicated') });
-    } catch (err) {
-      console.error('Error duplicating workspace:', err);
-      toast({ variant: 'destructive', title: t('workspace.duplicateFailed', 'Could not duplicate workspace'), description: entitlementErrorMessage(err, t) });
-    } finally {
-      setDuplicateBusy(false);
-    }
-  };
+  // Change-spec / always-on / duplicate / delete — one implementation, shared
+  // with the nav tree. Only the paging reactions are gallery-specific: a
+  // duplicate lands at the top, and a delete that empties the page steps back.
+  const wsActions = useWorkspaceActions({
+    currentWorkspaceId,
+    onAfterMutate: (op) => { if (op === 'duplicate') snapToFirstPage(); },
+    onAfterDelete: (wsId) => {
+      const remainingOnPage = workspaces.filter((ws) => ws.workspace_id !== wsId).length;
+      if (remainingOnPage === 0 && currentPage > 0) {
+        slideDirectionRef.current = -1;
+        setCurrentPage((p) => p - 1);
+      }
+    },
+  });
 
   /**
    * Enter reorder mode -- fetch all workspaces
@@ -838,6 +615,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
    * Handle drag end in reorder mode
    */
   const handleReorderDragEnd = async (event: DragEndEvent) => {
+    setReorderActiveId(null);
     const { active, over } = event;
     if (!over || active.id === over.id) return;
 
@@ -849,17 +627,19 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
     const draggedWs = sorted[oldIndex];
     const targetWs = sorted[newIndex];
 
-    // Prevent crossing pin/unpin boundary
-    if (draggedWs.is_pinned !== targetWs.is_pinned) return;
-    // Prevent moving flash workspaces
-    if (draggedWs.status === 'flash' || targetWs.status === 'flash') return;
+    // Prevent crossing the pin boundary. No flash special case: it counts as
+    // pinned, so this both contains it in the pinned block and keeps
+    // unpinned rows out.
+    if (isEffectivelyPinned(draggedWs) !== isEffectivelyPinned(targetWs)) return;
 
     const reordered = arrayMove(sorted, oldIndex, newIndex);
 
-    // Assign sequential sort_order
+    // Assign sequential sort_order. Flash is included: it's DB-pinned with a
+    // real sort_order, and writing its slot is what makes "pinned workspace
+    // above/below Flash" stick — omitting it leaves a sort_order tie decided
+    // by updated_at, so the pinned block would reshuffle whenever Flash is used.
     const items: { workspace_id: string; sort_order: number }[] = [];
     reordered.forEach((ws, i) => {
-      if (ws.status === 'flash') return;
       items.push({ workspace_id: ws.workspace_id, sort_order: i });
     });
 
@@ -884,42 +664,62 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
   /**
    * Filter and sort workspaces
    */
-  // Server handles sort order; client only filters by search and keeps flash on top
+  // Server handles sort order; the client only filters by search and enforces
+  // the ordering rule shared with the nav tree: the pinned block stays above
+  // unpinned rows, and Flash counts as always-pinned (it isn't guaranteed to
+  // carry is_pinned in the DB). No flash-first hoist — within the pinned
+  // block Flash competes on the server sort like any pinned workspace.
   const filteredAndSortedWorkspaces = workspaces
     .filter((workspace) =>
       workspace.name.toLowerCase().includes(searchQuery.toLowerCase())
     )
     .sort((a, b) => {
-      // Keep flash workspace pinned to top
-      const aFlash = a.status === 'flash' ? 1 : 0;
-      const bFlash = b.status === 'flash' ? 1 : 0;
-      if (aFlash !== bFlash) return bFlash - aFlash;
-      return 0; // preserve server order
+      const aPinned = isEffectivelyPinned(a) ? 1 : 0;
+      const bPinned = isEffectivelyPinned(b) ? 1 : 0;
+      return bPinned - aPinned; // stable sort: server order preserved within blocks
     });
 
   const visibleWorkspaces = filteredAndSortedWorkspaces;
 
-  // Sorted list for reorder mode (flash first, then pinned, then unpinned -- by sort_order)
-  const reorderSortedList = [...allWorkspaces].sort((a, b) => {
-    const aFlash = a.status === 'flash' ? 1 : 0;
-    const bFlash = b.status === 'flash' ? 1 : 0;
-    if (aFlash !== bFlash) return bFlash - aFlash;
-    const aPinned = a.is_pinned ? 1 : 0;
-    const bPinned = b.is_pinned ? 1 : 0;
-    if (aPinned !== bPinned) return bPinned - aPinned;
-    if ((a.sort_order ?? 0) !== (b.sort_order ?? 0)) return (a.sort_order ?? 0) - (b.sort_order ?? 0);
-    return new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime();
-  });
+  // Sorted list for reorder mode (pinned block first — Flash counts as
+  // always-pinned — then sort_order, then recency). Sort keys are computed
+  // once per item, not per comparison, and the whole sort re-runs only when
+  // the list changes — not on every drag-position render.
+  const reorderSortedList = useMemo(() => {
+    const keyed = allWorkspaces.map((ws) => ({
+      ws,
+      pinned: isEffectivelyPinned(ws) ? 1 : 0,
+      order: ws.sort_order ?? 0,
+      updated: new Date(ws.updated_at || 0).getTime(),
+    }));
+    keyed.sort((a, b) => {
+      if (a.pinned !== b.pinned) return b.pinned - a.pinned;
+      if (a.order !== b.order) return a.order - b.order;
+      return b.updated - a.updated;
+    });
+    return keyed.map((k) => k.ws);
+  }, [allWorkspaces]);
   const reorderSortedIds = reorderSortedList.map((ws) => ws.workspace_id);
+  const reorderActiveWs = reorderActiveId
+    ? reorderSortedList.find((w) => w.workspace_id === reorderActiveId) ?? null
+    : null;
 
   if (isWsLoading) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <div className="flex flex-col items-center gap-4">
-          <Loader2 className="h-8 w-8 animate-spin" style={{ color: 'var(--color-accent-primary)' }} />
-          <p className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('workspace.loadingWorkspaces')}
-          </p>
+      // A branch that replaces the whole route replaces its top bar too, so it
+      // owes the window a titlebar of its own -- otherwise the column beside the
+      // sidebar stops moving the window for as long as the fetch is in flight.
+      <div className="h-full flex flex-col">
+        <div className="chrome-drag-strip" aria-hidden="true" />
+        <div className="flex-1 min-h-0 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-4">
+            <span aria-hidden="true" className="flex-shrink-0">
+              <Loader size={32} className="text-[color:var(--color-accent-primary)]" />
+            </span>
+            <p className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
+              {t('workspace.loadingWorkspaces')}
+            </p>
+          </div>
         </div>
       </div>
     );
@@ -927,21 +727,24 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
 
   if (wsError) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <div className="flex flex-col items-center gap-4 max-w-md text-center px-4">
-          <p className="text-sm" style={{ color: 'var(--color-loss)' }}>
-            {t('workspace.failedLoadWorkspaces')}
-          </p>
-          <button
-            onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.lists() })}
-            className="px-4 py-2 rounded-md text-sm font-medium transition-colors"
-            style={{
-              backgroundColor: 'var(--color-accent-primary)',
-              color: 'var(--color-text-on-accent)',
-            }}
-          >
-            {t('common.retry')}
-          </button>
+      <div className="h-full flex flex-col">
+        <div className="chrome-drag-strip" aria-hidden="true" />
+        <div className="flex-1 min-h-0 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-4 max-w-md text-center px-4">
+            <p className="text-sm" style={{ color: 'var(--color-loss)' }}>
+              {t('workspace.failedLoadWorkspaces')}
+            </p>
+            <button
+              onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.lists() })}
+              className="px-4 py-2 rounded-md text-sm font-medium transition-opacity hover:opacity-90"
+              style={{
+                backgroundColor: 'var(--color-btn-primary-bg)',
+                color: 'var(--color-btn-primary-text)',
+              }}
+            >
+              {t('common.retry')}
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -993,10 +796,10 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
                     console.error('Error starting onboarding:', err);
                   }
                 }}
-                className="flex items-center gap-2 px-6 py-3 rounded-lg transition-all hover:scale-[1.01] active:scale-[0.985]"
+                className="flex items-center gap-2 px-6 py-3 rounded-lg transition-all hover:opacity-90 active:scale-[0.985]"
                 style={{
-                  backgroundColor: 'var(--color-accent-primary)',
-                  color: 'var(--color-text-on-accent)',
+                  backgroundColor: 'var(--color-btn-primary-bg)',
+                  color: 'var(--color-btn-primary-text)',
                 }}
               >
                 <MessageSquareText className="h-5 w-5" />
@@ -1048,10 +851,10 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
               onSelect={onWorkspaceSelect}
               onTogglePin={handleTogglePin}
               onRenameStart={handleRenameStart}
-              onUpgrade={handleUpgradeStart}
-              onToggleAlwaysOn={handleToggleAlwaysOn}
-              onDuplicate={setDuplicateTarget}
-              onDelete={handleDeleteClick}
+              onUpgrade={wsActions.openUpgrade}
+              onToggleAlwaysOn={wsActions.toggleAlwaysOn}
+              onDuplicate={wsActions.openDuplicate}
+              onDelete={wsActions.openDelete}
               prefetchThreads={prefetchThreads}
             />
           ))}
@@ -1065,13 +868,12 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
   return (
     <div
       className="h-full flex flex-col overflow-hidden"
-      style={{
-        backgroundColor: 'var(--color-bg-page)',
-        backgroundImage: 'radial-gradient(circle at center, var(--color-dot-grid) 0.75px, transparent 0.75px)',
-        backgroundSize: '18px 18px',
-        backgroundPosition: '0 0'
-      }}
+      style={{ backgroundColor: 'var(--color-bg-page)' }}
     >
+      {/* Doubles as the window titlebar in the desktop shell; inert elsewhere.
+          The header below is centred and holds a title, so it is not the bar to
+          hand the window -- a drag region over prose is text you cannot select. */}
+      <div className="chrome-drag-strip" aria-hidden="true" />
       {/* Header (desktop only) */}
       <header className="hidden md:flex w-full h-24 items-end mx-auto max-w-4xl flex-shrink-0 px-8 enter-fade-up">
         <div className="flex w-full items-center justify-between gap-4">
@@ -1081,10 +883,10 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
           {hasWorkspaces && (
             <button
               onClick={() => setIsModalOpen(true)}
-              className="flex items-center gap-1.5 px-4 py-2 h-9 rounded-lg transition-all hover:scale-[1.01] active:scale-[0.985]"
+              className="flex items-center gap-1.5 px-4 py-2 h-9 rounded-lg transition-all hover:opacity-90 active:scale-[0.985]"
               style={{
-                backgroundColor: 'var(--color-accent-primary)',
-                color: 'var(--color-text-on-accent)',
+                backgroundColor: 'var(--color-btn-primary-bg)',
+                color: 'var(--color-btn-primary-text)',
               }}
             >
               <Plus className="h-4 w-4" />
@@ -1103,10 +905,10 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
           {hasWorkspaces && (
             <button
               onClick={() => setIsModalOpen(true)}
-              className="flex items-center gap-1.5 px-4 py-2 h-9 rounded-lg transition-all hover:scale-[1.01] active:scale-[0.985]"
+              className="flex items-center gap-1.5 px-4 py-2 h-9 rounded-lg transition-all hover:opacity-90 active:scale-[0.985]"
               style={{
-                backgroundColor: 'var(--color-accent-primary)',
-                color: 'var(--color-text-on-accent)',
+                backgroundColor: 'var(--color-btn-primary-bg)',
+                color: 'var(--color-btn-primary-text)',
               }}
             >
               <Plus className="h-4 w-4" />
@@ -1119,8 +921,11 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
         <div className="flex-shrink-0 flex flex-col gap-4 pb-4 md:pb-6 px-1 enter-fade-up enter-fade-up-d1">
           {/* Search Bar */}
           <div className="w-full">
+            {/* The pill rings for the field inside it: a ring drawn on the
+                field alone would cut this border and leave the icon outside
+                the indicator. `rings-within` in tokens.css owns the rule. */}
             <div
-              className="flex items-center gap-2 h-11 px-3 rounded-xl border transition-colors"
+              className="rings-within flex items-center gap-2 h-11 px-3 rounded-xl border transition-colors"
               style={{
                 backgroundColor: 'var(--color-bg-input)',
                 borderColor: 'var(--color-border-muted)',
@@ -1128,7 +933,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
             >
               <Search className="h-5 w-5 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
               <input
-                className="w-full bg-transparent outline-none text-base sm:text-sm"
+                className="w-full bg-transparent text-base sm:text-sm"
                 style={{ color: 'var(--color-text-primary)' }}
                 placeholder={t('workspace.searchWorkspaces')}
                 value={searchQuery}
@@ -1179,10 +984,10 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
               </span>
               <button
                 onClick={exitReorderMode}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-opacity hover:opacity-90"
                 style={{
-                  backgroundColor: 'var(--color-accent-primary)',
-                  color: 'var(--color-text-on-accent)',
+                  backgroundColor: 'var(--color-btn-primary-bg)',
+                  color: 'var(--color-btn-primary-text)',
                 }}
               >
                 <Check className="h-4 w-4" />
@@ -1190,11 +995,25 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
               </button>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto px-1 pb-4">
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleReorderDragEnd}>
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragStart={(e) => setReorderActiveId(String(e.active.id))}
+                onDragCancel={() => setReorderActiveId(null)}
+                onDragEnd={handleReorderDragEnd}
+              >
                 <SortableContext items={reorderSortedIds} strategy={verticalListSortingStrategy}>
-                  {reorderSortedList.map((ws) => (
-                    <SortableReorderRow key={ws.workspace_id} workspace={ws} />
-                  ))}
+                  {reorderSortedList.map((ws) => {
+                    const crossBlock = !!reorderActiveWs && ws.workspace_id !== reorderActiveId &&
+                      isEffectivelyPinned(ws) !== isEffectivelyPinned(reorderActiveWs);
+                    return (
+                      <SortableReorderRow
+                        key={ws.workspace_id}
+                        workspace={ws}
+                        disabled={crossBlock ? { draggable: false, droppable: true } : false}
+                      />
+                    );
+                  })}
                 </SortableContext>
               </DndContext>
             </div>
@@ -1238,17 +1057,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
         onComplete={(wsId) => onWorkspaceSelect(wsId)}
       />
 
-      {/* Delete Confirmation Modal */}
-      <DeleteConfirmModal
-        isOpen={deleteModal.isOpen}
-        workspaceName={deleteModal.workspace?.name || ''}
-        onConfirm={handleConfirmDelete}
-        onCancel={handleCancelDelete}
-        isDeleting={isDeleting}
-        error={deleteError}
-      />
-
-      {/* Rename Dialog */}
+      {/* Rename Dialog — the gallery's own flow; the rest live in wsActions.dialogs */}
       <RenameWorkspaceDialog
         target={renameTarget}
         onClose={() => setRenameTarget(null)}
@@ -1256,30 +1065,8 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
         busy={renameTarget ? renameMutation.busyIds.has(renameTarget.workspace_id) : false}
       />
 
-      {/* Change Spec Dialog */}
-      <ChangeSpecDialog
-        target={upgradeTarget}
-        onClose={() => setUpgradeTarget(null)}
-        onSubmit={(tier) => void handleUpgradeSubmit(tier)}
-        busy={upgradeTarget ? upgradeMutation.busyIds.has(upgradeTarget.workspace_id) : false}
-        quota={workspaceQuota}
-      />
-
-      {/* Duplicate Confirmation Dialog */}
-      <DuplicateWorkspaceDialog
-        target={duplicateTarget}
-        onClose={() => setDuplicateTarget(null)}
-        onConfirm={() => void handleDuplicateConfirm()}
-        busy={duplicateBusy}
-      />
-
-      {/* Always-On Enable Confirmation Dialog */}
-      <AlwaysOnConfirmDialog
-        target={alwaysOnTarget}
-        onClose={() => setAlwaysOnTarget(null)}
-        onConfirm={() => { if (alwaysOnTarget) void applyAlwaysOn(alwaysOnTarget, true); }}
-        busy={alwaysOnTarget ? alwaysOnMutation.busyIds.has(alwaysOnTarget.workspace_id) : false}
-      />
+      {/* Change-spec / always-on / duplicate / delete confirmations */}
+      {wsActions.dialogs}
     </div>
   );
 }

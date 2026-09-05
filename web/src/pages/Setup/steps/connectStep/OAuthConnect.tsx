@@ -1,8 +1,9 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { Loader2, ExternalLink, AlertTriangle } from 'lucide-react';
+import { ExternalLink, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Loader } from '@/components/ui/loader';
 import { Input } from '@/components/ui/input';
 import { queryKeys } from '@/lib/queryKeys';
 import {
@@ -254,7 +255,9 @@ export function OAuthConnect({ state }: { state: LocationState }) {
         {/* Phase 2: Connecting spinner */}
         {oauthPhase === 'connecting' && (
           <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-6 w-6 animate-spin" style={{ color: 'var(--color-accent-primary)' }} />
+            <span aria-hidden="true" className="flex-shrink-0">
+              <Loader size={24} className="text-[color:var(--color-accent-primary)]" />
+            </span>
             <span className="ml-2 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
               {t('setup.connecting')}
             </span>
@@ -296,7 +299,9 @@ export function OAuthConnect({ state }: { state: LocationState }) {
                 className="text-xs flex items-center gap-1.5"
                 style={{ color: 'var(--color-text-tertiary)' }}
               >
-                <Loader2 className="h-3 w-3 animate-spin" />
+                <span aria-hidden="true" className="flex-shrink-0">
+                  <Loader size={12} className="text-current" />
+                </span>
                 {t('setup.waitingApproval')}
               </p>
             )}
@@ -352,7 +357,9 @@ export function OAuthConnect({ state }: { state: LocationState }) {
               >
                 {claudeSubmitting ? (
                   <>
-                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                    <span aria-hidden="true" className="mr-1.5 flex-shrink-0">
+                      <Loader size={16} className="text-current" />
+                    </span>
                     {t('setup.submitting')}
                   </>
                 ) : (

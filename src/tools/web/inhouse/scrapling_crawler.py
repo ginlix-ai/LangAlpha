@@ -12,20 +12,19 @@ Stage-level concurrency: Tier 1 (HTTP) and Tier 2/3 (browser) acquire separate
 semaphores. A burst of stuck browser fetches cannot starve fast Tier-1 calls.
 The HTTP semaphore is released before any browser-tier wait.
 
-Browser lifecycle: Tier 2/3 use the session classes directly (rather than the
-`DynamicFetcher.async_fetch()` classmethod wrapper) so we can shield
-`session.close()` from cancellation. `asyncio.wait_for` in safe_wrapper.py
-cancels the fetch coroutine on timeout; if close() is not shielded, it gets
-cancelled mid-teardown and orphans Chromium helper processes.
+Fetching, browser-session lifecycle and HTML→markdown extraction live in
+`mcp_servers/_browser.py` and `mcp_servers/_extract.py`, shared with the scrape
+MCP server so the same URL yields the same content whichever path fetched it.
+This module owns the tier policy — when to escalate, when to give up — plus the
+logging those shared helpers deliberately leave to their caller.
 """
 
 import asyncio
 import logging
-import re
 from typing import Literal, Optional
 
-import html_to_markdown
-import trafilatura
+from mcp_servers._browser import fetch_fast, fetch_with_session, make_session
+from mcp_servers._extract import to_markdown
 
 from .backend import CrawlOutput
 
@@ -55,14 +54,21 @@ _TERMINAL_BLOCK_STATUSES = (401, 451)
 _TIER1_TIMEOUT_MS = 15000
 
 
-def _log_close_task_exception(task: asyncio.Task) -> None:
-    # Observes close_task after outer cancel so asyncio doesn't emit
-    # "Task exception was never retrieved" when close() raises post-cancel.
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc is not None:
+def _log_close_failure(exc: BaseException, post_cancel: bool) -> None:
+    """``fetch_with_session``'s teardown-failure sink.
+
+    tini (init: true in compose) reaps leaked helpers in prod; dev/macOS has no
+    init backstop so a failed close leaks until the Python process exits.
+    """
+    if post_cancel:
         logger.warning(f"Browser session close failed post-cancel: {exc!r}")
+    else:
+        logger.warning(f"Browser session close failed (init will reap if present): {exc}")
+
+
+def _html_to_markdown(html: str) -> str:
+    """Shared extraction with this module's logger wired to its decision trace."""
+    return to_markdown(html, trace=logger.debug)
 
 
 def _needs_browser(html_body: str, status: int) -> bool:
@@ -101,166 +107,6 @@ def _needs_stealth(
     if status in (401, 403):
         return "blocked"
     return None
-
-
-# Tuning for the trafilatura-vs-full-page decision, calibrated on a live 10-page
-# sample (financial news, IR releases, explainers, government statements). Well
-# extracted pages retain 88-100% of figures and stay above ~10% of the full-page
-# size; pages where trafilatura silently drops the article body retain <=28% of
-# figures (CNBC card/liveblog layouts) or collapse to <2% of the page (index/
-# listing stubs). Thresholds sit inside those gaps, biased toward preserving
-# content — for a research agent a noisier full page beats silent data loss.
-_STUB_SIZE_RATIO = 0.10       # extraction below this fraction of the full page...
-_STUB_MIN_FULL_LEN = 5000     # ...on a non-trivial page => listing/index stub
-_FIGURE_MIN_SAMPLE = 8        # only trust the figure ratio above this many figures
-_FIGURE_KEEP_RATIO = 0.65     # retaining fewer than this fraction => body dropped
-
-# Context-safety ceiling on the full-page fallback. The fallback returns the
-# entire noisy page, which on liveblog/hub layouts runs to hundreds of KB; cap
-# it to ~100K tokens (~4 chars/token) so a single crawl can't swamp the agent's
-# context. The clean trafilatura extraction is small and never hits this.
-_MAX_FULL_PAGE_CHARS = 400_000
-
-_PCT_RE = re.compile(r"\d+(?:\.\d+)?\s?%")
-_DOLLAR_RE = re.compile(
-    r"\$\s?\d[\d,]*(?:\.\d+)?\s?(?:billion|million|trillion|bn|b|m)?", re.IGNORECASE
-)
-_BIGNUM_RE = re.compile(r"\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b")
-
-
-def _financial_figures(text: str) -> set[str]:
-    """Normalized set of $/% /comma-grouped numbers — the detail an analyst needs."""
-    figs: set[str] = set()
-    for rx in (_PCT_RE, _DOLLAR_RE, _BIGNUM_RE):
-        for match in rx.findall(text):
-            figs.add(re.sub(r"\s+", "", match.lower()))
-    return figs
-
-
-def _try_trafilatura(html: str) -> Optional[str]:
-    """Extract the main article as markdown with a YAML metadata frontmatter.
-
-    `with_metadata=True` keeps trafilatura's title/source/date/author/description
-    block — without it a lone `<h1>` page extracts to body-only and loses the
-    heading. The frontmatter is already clean (junk fields come back empty and are
-    omitted); pass it through and let the agent decide which fields it cares about.
-    """
-    try:
-        return trafilatura.extract(
-            html,
-            favor_recall=True,
-            output_format="markdown",
-            include_links=True,
-            include_images=True,
-            include_formatting=True,
-            include_tables=True,
-            with_metadata=True,
-        )
-    except Exception as e:
-        logger.debug(f"trafilatura extraction failed: {e}")
-        return None
-
-
-def _try_full_page(html: str) -> Optional[str]:
-    """Convert the entire page to markdown via html-to-markdown's Rust core.
-
-    `extract_metadata=False` suppresses html-to-markdown's default <head> dump (a
-    `meta-og:*` / gtm-dataLayer frontmatter block) that is pure noise on the hub,
-    listing and error pages this full-page fallback handles.
-    """
-    try:
-        return html_to_markdown.convert(
-            html, html_to_markdown.ConversionOptions(extract_metadata=False)
-        ).content
-    except Exception as e:
-        logger.debug(f"html-to-markdown conversion failed: {e}")
-        return None
-
-
-def _cap_full_page(text: str) -> str:
-    """Truncate an oversized full-page fallback to the context-safety ceiling."""
-    if len(text) <= _MAX_FULL_PAGE_CHARS:
-        return text
-    logger.debug(
-        f"full-page fallback {len(text)} chars exceeds cap — truncating to "
-        f"{_MAX_FULL_PAGE_CHARS}"
-    )
-    return text[:_MAX_FULL_PAGE_CHARS] + "\n\n[... truncated: page exceeded ~100K tokens ...]"
-
-
-def _html_to_markdown(html: str) -> str:
-    """Convert fetched HTML to markdown for the LLM.
-
-    trafilatura extracts the main article and strips nav/ads/boilerplate (cleaner,
-    3-7x cheaper input), but silently under-extracts on two page shapes. We compare
-    it against a faithful full-page conversion (html-to-markdown's Rust core — the
-    cheaper of the two and immune to recursion limits) and prefer the full page when
-    trafilatura returns an index/listing stub or drops most of the page's financial
-    figures. A stdlib text extractor is the last resort.
-    """
-    extracted = _try_trafilatura(html)
-    full = _try_full_page(html)
-
-    # trafilatura found no main content (e.g. legacy table-only filings).
-    if not (extracted and extracted.strip()):
-        return _cap_full_page(full) if (full and full.strip()) else _plain_text(html)
-
-    # No full-page baseline to compare against — trust trafilatura.
-    if not (full and full.strip()):
-        return extracted
-
-    # Index/listing stub: trafilatura kept an intro blurb and dropped the link
-    # list (SEC/Fed newsrooms). The full page preserves the headlines.
-    if len(extracted) < _STUB_SIZE_RATIO * len(full) and len(full) > _STUB_MIN_FULL_LEN:
-        logger.debug(
-            f"trafilatura output {len(extracted)} chars vs full {len(full)} — "
-            "treating as listing stub, using full page"
-        )
-        return _cap_full_page(full)
-
-    # Card/liveblog layout: trafilatura kept the lead card and dropped the body's
-    # figures (CNBC). Compare $/% figure sets; prefer the full page on heavy loss.
-    full_figs = _financial_figures(full)
-    if len(full_figs) >= _FIGURE_MIN_SAMPLE:
-        kept = len(_financial_figures(extracted) & full_figs) / len(full_figs)
-        if kept < _FIGURE_KEEP_RATIO:
-            logger.debug(
-                f"trafilatura retained {kept:.0%} of {len(full_figs)} figures — "
-                "treating as dropped body, using full page"
-            )
-            return _cap_full_page(full)
-
-    return extracted
-
-
-def _plain_text(html: str) -> str:
-    """Last-resort plain-text extraction using the stdlib parser (never recurses)."""
-    from html.parser import HTMLParser
-
-    class _Extractor(HTMLParser):
-        def __init__(self) -> None:
-            super().__init__()
-            self.parts: list[str] = []
-            self._skip = 0
-
-        def handle_starttag(self, tag, attrs):
-            if tag in ("script", "style"):
-                self._skip += 1
-
-        def handle_endtag(self, tag):
-            if tag in ("script", "style") and self._skip:
-                self._skip -= 1
-
-        def handle_data(self, data):
-            if not self._skip and data.strip():
-                self.parts.append(data.strip())
-
-    try:
-        p = _Extractor()
-        p.feed(html)
-        return " ".join(p.parts)
-    except Exception:
-        return html
 
 
 def _extract_title(page) -> str:
@@ -425,28 +271,15 @@ class ScraplingCrawler:
     async def _tier1_fetch(self, url: str):
         """HTTP-only fetch via curl_cffi. Bounded by _http_sem; releases on return."""
         async with self._http_sem:
-            from scrapling.fetchers import AsyncFetcher
-
-            page = await AsyncFetcher.get(
-                url,
-                stealthy_headers=True,
-                follow_redirects=True,
-                timeout=_TIER1_TIMEOUT_MS / 1000,  # ms → seconds
-            )
-            html_body = page.body.decode(page.encoding or "utf-8", errors="replace")
-            return page, html_body, page.status
+            return await fetch_fast(url, timeout_s=_TIER1_TIMEOUT_MS / 1000)
 
     async def _tier2_fetch(self, url: str):
-        # Direct session use (not DynamicFetcher.async_fetch) so we own the
-        # close() path and can shield it from outer cancellation.
         async with self._browser_sem:
-            from scrapling.engines._browsers._controllers import AsyncDynamicSession
-
-            session = AsyncDynamicSession(
-                headless=True,
+            session = make_session(
+                "browser",
+                timeout_ms=self.timeout,
                 disable_resources=self.disable_resources,
                 network_idle=self.network_idle,
-                timeout=self.timeout,
             )
             return await self._fetch_with_session(session, url)
 
@@ -454,69 +287,18 @@ class ScraplingCrawler:
         """Stealth fetch with optional CF solver. Caller decides based on Tier 2's
         observation — invoking the solver against a non-CF page is wasted work."""
         async with self._browser_sem:
-            from scrapling.engines._browsers._stealth import AsyncStealthySession
-
-            session = AsyncStealthySession(
-                headless=True,
-                network_idle=self.network_idle,
-                timeout=self.timeout,
+            session = make_session(
+                "stealth", timeout_ms=self.timeout, network_idle=self.network_idle
             )
             return await self._fetch_with_session(
                 session, url, solve_cloudflare=solve_cloudflare
             )
 
     async def _fetch_with_session(self, session, url: str, **fetch_kwargs):
-        """Start a scrapling session, fetch one URL, shield close() from cancel.
-
-        Prior learnings applied:
-          - CancelledError inherits from BaseException and is NOT caught by
-            `except Exception`. It must be handled explicitly if we want to
-            run teardown before re-raising.
-          - `asyncio.shield(coro)` only protects a Task; wrapping a bare
-            coroutine is a no-op. We create the close task explicitly, then
-            await shield() so the inner task keeps running even if the outer
-            is cancelled.
-          - Scrapling's `AsyncDynamicSession.start()` wraps browser spawn in
-            `except Exception`, which misses CancelledError. On cancellation
-            during start(), `self.playwright` stays set but `_is_alive=False`,
-            and close() early-returns on the `_is_alive` guard. We force
-            `_is_alive=True` before close() so the cleanup path actually runs
-            and stops the playwright driver. Without this, cancel-during-start
-            leaks the node driver process.
-        """
-        try:
-            await session.start()
-            page = await session.fetch(url, **fetch_kwargs)
-            html_body = page.body.decode(page.encoding or "utf-8", errors="replace")
-            return page, html_body, page.status
-        finally:
-            # If start() was cancelled mid-spawn, scrapling's own cleanup was
-            # skipped (CancelledError bypassed its except Exception). Force
-            # close() to run its teardown branches — they're idempotent on
-            # None-valued context/browser, so this is safe even if only
-            # playwright.stop() is needed.
-            if (
-                getattr(session, "playwright", None) is not None
-                and not getattr(session, "_is_alive", True)
-            ):
-                session._is_alive = True  # unblock close()'s guard clause
-            close_task = asyncio.create_task(session.close())
-            try:
-                await asyncio.shield(close_task)
-            except asyncio.CancelledError:
-                # Outer task cancelled. close_task survives (shield) and will
-                # complete in the background, freeing the browser. Attach a
-                # done-callback so its exception (if any) is logged instead of
-                # surfacing as asyncio's "Task exception was never retrieved".
-                close_task.add_done_callback(_log_close_task_exception)
-                pass
-            except Exception as e:
-                # tini (init: true in compose) reaps leaked helpers in prod;
-                # dev/macOS has no init backstop so a failed close leaks until
-                # the Python process exits.
-                logger.warning(
-                    f"Browser session close failed (init will reap if present): {e}"
-                )
+        """Shared cancel-safe session fetch with this module's logger attached."""
+        return await fetch_with_session(
+            session, url, on_close_error=_log_close_failure, **fetch_kwargs
+        )
 
     async def shutdown(self) -> None:
         """No persistent resources to clean up (sessions are per-fetch)."""

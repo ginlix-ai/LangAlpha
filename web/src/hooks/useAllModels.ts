@@ -7,6 +7,7 @@ import type { BuildVisibleModelsResult, ModelMetadataEntry } from './useFiltered
 import { useConfiguredProviders } from './useConfiguredProviders';
 import type { ProviderModelsData, CustomModelEntry } from '@/components/model/types';
 import type { PlatformModelsResponse, ModelAccess } from '@/types/platform';
+import { modelPrefs } from '@/lib/modelPreferences';
 
 interface SystemDefaults {
   default_model?: string;
@@ -14,6 +15,8 @@ interface SystemDefaults {
   compaction_model?: string;
   fetch_model?: string;
   fallback_models?: string[];
+  /** Deployment-pinned `prompt.guidance`; absent or null on the `auto` default. */
+  prompt_guidance?: string | null;
 }
 
 export interface CompactionProfilePreset {
@@ -84,9 +87,7 @@ export function useAllModels(): UseAllModelsResult {
 
   const customModels = useMemo<CustomModelEntry[]>(() => {
     if (!preferences) return [];
-    const prefs = preferences as Record<string, unknown>;
-    const other = (prefs.other_preference ?? {}) as Record<string, unknown>;
-    const cm = other.custom_models;
+    const cm = modelPrefs(preferences).custom_models;
     if (!Array.isArray(cm)) return [];
     return cm as CustomModelEntry[];
   }, [preferences]);
@@ -102,9 +103,7 @@ export function useAllModels(): UseAllModelsResult {
     }
     // Also index custom providers from preferences
     if (preferences) {
-      const prefs = preferences as Record<string, unknown>;
-      const other = (prefs.other_preference ?? {}) as Record<string, unknown>;
-      const customProviders = (other.custom_providers ?? []) as Array<{ name: string; parent_provider?: string }>;
+      const customProviders = (modelPrefs(preferences).custom_providers ?? []) as Array<{ name: string; parent_provider?: string }>;
       for (const cp of customProviders) {
         if (!map[cp.name] && cp.parent_provider && map[cp.parent_provider]) {
           map[cp.name] = { sdk: map[cp.parent_provider].sdk };

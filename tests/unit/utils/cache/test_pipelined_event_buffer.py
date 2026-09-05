@@ -1,11 +1,11 @@
 """Unit tests for RedisCacheClient.pipelined_event_buffer.
 
-Verifies the Stream-only semantics post-cutover:
-- Meta hash + XADD only (no List writes).
-- ``stream_record`` adds a second ``b"record"`` field on the XADD entry so
-  the post-turn collector can XRANGE it back out without a separate List.
-- Stream branch gated on both ``stream_key`` AND ``last_event_id``.
-- Dirty-resume guard DELs the stream and HDELs the seq counter.
+The hot path is one bare XADD. Everything else — the epoch DEL, the retention
+heal, an explicit TTL — is an exception that pulls the write into a MULTI, and
+each of those exceptions is what these tests pin. The other half of the
+contract is that failures RAISE: the caller's retry policy classifies by
+exception type, and a boolean return would erase the difference between
+"nothing was sent" and "the reply was lost".
 """
 
 from __future__ import annotations
@@ -13,31 +13,20 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import redis.exceptions as redis_exceptions
 
-from src.utils.cache.redis_cache import RedisCacheClient
+from src.utils.cache.redis_cache import (
+    EventBufferUnavailableError,
+    RedisCacheClient,
+)
 
 
 def _make_pipeline_mock() -> tuple[MagicMock, MagicMock]:
     """Build a redis-py-like async pipeline mock recording queued commands."""
     pipe = MagicMock()
-    for fn in (
-        "rpush",
-        "ltrim",
-        "expire",
-        "persist",
-        "hincrby",
-        "hsetnx",
-        "hset",
-        "hdel",
-        "xadd",
-        "delete",
-    ):
+    for fn in ("expire", "persist", "xadd", "delete"):
         setattr(pipe, fn, MagicMock(return_value=pipe))
-    # The implementation pulls ``seq`` from the HINCRBY result whose index
-    # depends on whether the dirty-resume guard fired. Returning ``7`` at
-    # every position keeps the ``seq == 7`` assertion stable across all
-    # guard variants without hard-coding the per-test command count.
-    pipe.execute = AsyncMock(return_value=[7] * 20)
+    pipe.execute = AsyncMock(return_value=[b"7-0"])
 
     pipeline_ctx = MagicMock()
     pipeline_ctx.__aenter__ = AsyncMock(return_value=pipe)
@@ -45,248 +34,280 @@ def _make_pipeline_mock() -> tuple[MagicMock, MagicMock]:
     return pipe, pipeline_ctx
 
 
-def _make_client_with_pipeline(pipeline_ctx: MagicMock) -> RedisCacheClient:
+def _make_client(pipeline_ctx: MagicMock) -> RedisCacheClient:
     client = RedisCacheClient.__new__(RedisCacheClient)
     client.enabled = True
     client.stats = {"hits": 0, "misses": 0, "sets": 0, "deletes": 0, "errors": 0}
     redis_mock = MagicMock()
     redis_mock.pipeline = MagicMock(return_value=pipeline_ctx)
+    redis_mock.xadd = AsyncMock(return_value=b"7-0")
     client.client = redis_mock
     return client
 
 
 @pytest.mark.asyncio
-async def test_main_workflow_stream_only():
-    """Main-workflow caller writes the meta hash + XADD only — no RPUSH/LTRIM."""
+async def test_steady_state_is_a_single_bare_xadd():
+    """No meta hash, no PERSIST, no pipeline — one command per event."""
     pipe, pipeline_ctx = _make_pipeline_mock()
-    cache = _make_client_with_pipeline(pipeline_ctx)
+    cache = _make_client(pipeline_ctx)
 
-    success, seq = await cache.pipelined_event_buffer(
-        meta_key="workflow:events:meta:t1",
-        event="id: 42\nevent: x\ndata: hi\n\n",
+    await cache.pipelined_event_buffer(
+        "workflow:stream:t1",
+        event_id=42,
         max_size=1000,
-        ttl=86400,
-        last_event_id=42,
-        stream_key="workflow:stream:t1",
+        stream_event="id: 42\nevent: x\ndata: hi\n\n",
     )
 
-    assert success is True
-    assert seq == 7
-    pipe.rpush.assert_not_called()
-    pipe.ltrim.assert_not_called()
-    pipe.xadd.assert_called_once()
-    args, kwargs = pipe.xadd.call_args
+    cache.client.pipeline.assert_not_called()
+    cache.client.xadd.assert_awaited_once()
+    args, kwargs = cache.client.xadd.call_args
     assert args[0] == "workflow:stream:t1"
     assert args[1] == {b"event": b"id: 42\nevent: x\ndata: hi\n\n"}
     assert kwargs["id"] == "42-0"
     assert kwargs["maxlen"] == 1000
     assert kwargs["approximate"] is True
-    # EXPIRE on meta + stream only.
-    assert pipe.expire.call_count == 2
-    expire_keys = [call.args[0] for call in pipe.expire.call_args_list]
-    assert "workflow:stream:t1" in expire_keys
-    assert "workflow:events:meta:t1" in expire_keys
 
 
 @pytest.mark.asyncio
-async def test_subagent_xadd_carries_record_field_when_stream_record_provided():
-    """Subagent caller passes ``stream_event`` + ``stream_record`` (no
-    ``event``) → XADD entry has both ``b"event"`` (pre-rendered SSE wire)
-    and ``b"record"`` (JSON record) so the post-turn collector can XRANGE
-    the record back out."""
+async def test_stream_record_rides_the_same_entry():
+    """The collector reads ``b"record"`` back with XRANGE instead of a List."""
     pipe, pipeline_ctx = _make_pipeline_mock()
-    cache = _make_client_with_pipeline(pipeline_ctx)
+    cache = _make_client(pipeline_ctx)
 
     await cache.pipelined_event_buffer(
-        meta_key="subagent:events:meta:t1:abc",
+        "subagent:stream:t1:abc",
+        event_id=5,
         max_size=1000,
-        ttl=86400,
-        last_event_id=5,
-        stream_key="subagent:stream:t1:abc",
         stream_event="id: 5\nevent: message_chunk\ndata: {}\n\n",
         stream_record='{"seq": 5, "event": "message_chunk"}',
     )
 
-    pipe.rpush.assert_not_called()
-    pipe.xadd.assert_called_once()
-    xadd_args = pipe.xadd.call_args.args
-    fields = xadd_args[1]
+    fields = cache.client.xadd.call_args.args[1]
     assert fields[b"event"] == b"id: 5\nevent: message_chunk\ndata: {}\n\n"
     assert fields[b"record"] == b'{"seq": 5, "event": "message_chunk"}'
-    # EXPIRE on meta_key + stream_key only.
-    assert pipe.expire.call_count == 2
 
 
 @pytest.mark.asyncio
-async def test_stream_write_without_payload_returns_failure():
-    """Requesting a stream write (stream_key + last_event_id) with neither
-    ``event`` nor ``stream_event`` would advance the meta ``seq`` counter
-    past an event that was never written, leaving a permanent gap. The
-    helper raises ValueError; the outer except returns ``(False, 0)`` so
-    the caller sees a clean failure rather than silent meta/stream drift."""
-    pipe, pipeline_ctx = _make_pipeline_mock()
-    cache = _make_client_with_pipeline(pipeline_ctx)
+async def test_no_record_field_when_not_supplied():
+    _, pipeline_ctx = _make_pipeline_mock()
+    cache = _make_client(pipeline_ctx)
 
-    success, seq = await cache.pipelined_event_buffer(
-        meta_key="workflow:events:meta:t1",
-        max_size=1000,
-        ttl=86400,
-        last_event_id=1,
-        stream_key="workflow:stream:t1",
-    )
-
-    assert success is False
-    assert seq == 0
-    pipe.xadd.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_xadd_omits_record_field_when_stream_record_missing():
-    """Without ``stream_record``, XADD writes only the ``b"event"`` field —
-    used by the main-workflow path where there is nothing to collect."""
-    pipe, pipeline_ctx = _make_pipeline_mock()
-    cache = _make_client_with_pipeline(pipeline_ctx)
-
+    # Mid-turn id: the bare path, where the fields go straight to client.xadd.
     await cache.pipelined_event_buffer(
-        meta_key="workflow:events:meta:t1",
-        event="id: 1\nevent: x\ndata: hi\n\n",
+        "workflow:stream:t1",
+        event_id=7,
         max_size=1000,
-        ttl=86400,
-        last_event_id=1,
-        stream_key="workflow:stream:t1",
+        stream_event="id: 7\nevent: x\ndata: hi\n\n",
     )
 
-    pipe.xadd.assert_called_once()
-    fields = pipe.xadd.call_args.args[1]
+    fields = cache.client.xadd.call_args.args[1]
     assert b"event" in fields
     assert b"record" not in fields
 
 
 @pytest.mark.asyncio
-async def test_xadd_skipped_when_stream_key_missing():
-    """No stream_key → meta-only writes. Currently exercised only by tests;
-    production callers always provide a stream_key."""
+async def test_epoch_reset_dels_and_writes_atomically():
+    """A crashed predecessor's leftovers must be gone before id 1-0 lands, or
+    the XADD is rejected against a stream whose tail is already past it."""
     pipe, pipeline_ctx = _make_pipeline_mock()
-    cache = _make_client_with_pipeline(pipeline_ctx)
+    cache = _make_client(pipeline_ctx)
 
     await cache.pipelined_event_buffer(
-        meta_key="m",
-        event="id: 1\ndata: x\n\n",
-        max_size=10,
-        ttl=60,
-        last_event_id=1,
-        stream_key=None,
-    )
-
-    pipe.xadd.assert_not_called()
-    pipe.rpush.assert_not_called()
-    # EXPIRE on meta only.
-    assert pipe.expire.call_count == 1
-
-
-@pytest.mark.asyncio
-async def test_xadd_skipped_when_last_event_id_missing():
-    """Without an integer last_event_id we cannot construct the explicit
-    XADD ID; skip the Stream write rather than fall back to auto IDs (which
-    would produce mismatched cursor semantics)."""
-    pipe, pipeline_ctx = _make_pipeline_mock()
-    cache = _make_client_with_pipeline(pipeline_ctx)
-
-    await cache.pipelined_event_buffer(
-        meta_key="m",
-        event="event: x\ndata: hi\n\n",
-        max_size=10,
-        ttl=60,
-        last_event_id=None,
-        stream_key="workflow:stream:t1",
-    )
-
-    pipe.xadd.assert_not_called()
-    pipe.rpush.assert_not_called()
-    assert pipe.expire.call_count == 1
-
-
-@pytest.mark.asyncio
-async def test_dirty_resume_guard_resets_stream_and_seq():
-    """First event of a fresh turn must DEL the Stream and HDEL the seq
-    counter atomically. ``created_at`` is preserved (HDEL only ``seq``)."""
-    pipe, pipeline_ctx = _make_pipeline_mock()
-    cache = _make_client_with_pipeline(pipeline_ctx)
-
-    await cache.pipelined_event_buffer(
-        meta_key="workflow:events:meta:t1",
-        event="id: 1\nevent: x\ndata: hi\n\n",
+        "workflow:stream:t1",
+        event_id=1,
         max_size=1000,
-        ttl=86400,
-        last_event_id=1,
-        stream_key="workflow:stream:t1",
+        stream_event="id: 1\nevent: x\ndata: hi\n\n",
     )
 
-    delete_calls = [call.args for call in pipe.delete.call_args_list]
-    assert ("workflow:stream:t1",) in delete_calls
-    pipe.hdel.assert_called_once_with("workflow:events:meta:t1", "seq")
-    pipe.xadd.assert_called_once()
+    cache.client.xadd.assert_not_awaited()
+    pipe.delete.assert_called_once_with("workflow:stream:t1")
     assert pipe.xadd.call_args.kwargs["id"] == "1-0"
+    pipe.execute.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_no_dirty_resume_del_when_last_event_id_is_not_one():
-    """Mid-turn events (last_event_id > 1) must NOT trigger the guard — DEL
-    would wipe in-flight stream contents and break attached consumers."""
-    pipe, pipeline_ctx = _make_pipeline_mock()
-    cache = _make_client_with_pipeline(pipeline_ctx)
+async def test_mid_turn_write_never_dels():
+    _, pipeline_ctx = _make_pipeline_mock()
+    cache = _make_client(pipeline_ctx)
 
     await cache.pipelined_event_buffer(
-        meta_key="workflow:events:meta:t1",
-        event="id: 7\nevent: x\ndata: hi\n\n",
+        "workflow:stream:t1",
+        event_id=7,
         max_size=1000,
-        ttl=86400,
-        last_event_id=7,
-        stream_key="workflow:stream:t1",
+        stream_event="id: 7\nevent: x\ndata: hi\n\n",
     )
 
-    pipe.delete.assert_not_called()
-    pipe.hdel.assert_not_called()
-    pipe.xadd.assert_called_once()
+    cache.client.pipeline.assert_not_called()
+    cache.client.xadd.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_ttl_none_persists_both_keys_instead_of_expiring():
-    """Active-run writes (ttl=None) PERSIST both keys rather than merely
-    skipping the EXPIRE — a TTL inherited from a failed cleanup delete or a
-    stale collector stamp heals on the next write instead of silently
-    expiring a served active stream (retention contract enforcement)."""
+async def test_heal_retention_persists_the_stream():
+    """Periodic re-assertion that an active stream carries no TTL — a failed
+    cleanup or a stale collector stamp would otherwise expire it mid-run."""
     pipe, pipeline_ctx = _make_pipeline_mock()
-    cache = _make_client_with_pipeline(pipeline_ctx)
+    cache = _make_client(pipeline_ctx)
 
     await cache.pipelined_event_buffer(
-        meta_key="workflow:events:meta:t1",
-        event="id: 7\nevent: x\ndata: hi\n\n",
+        "workflow:stream:t1",
+        event_id=512,
         max_size=1000,
-        ttl=None,
-        last_event_id=7,
-        stream_key="workflow:stream:t1",
+        stream_event="id: 512\nevent: x\ndata: hi\n\n",
     )
 
+    pipe.persist.assert_called_once_with("workflow:stream:t1")
     pipe.expire.assert_not_called()
-    persist_keys = [call.args[0] for call in pipe.persist.call_args_list]
-    assert persist_keys == ["workflow:events:meta:t1", "workflow:stream:t1"]
 
 
 @pytest.mark.asyncio
-async def test_returns_false_zero_when_disabled():
+async def test_heal_rides_one_write_in_512_not_the_one_before():
+    """The cadence is the whole saving: id 511 must take the bare path."""
+    _, pipeline_ctx = _make_pipeline_mock()
+    cache = _make_client(pipeline_ctx)
+
+    await cache.pipelined_event_buffer(
+        "workflow:stream:t1",
+        event_id=511,
+        max_size=1000,
+        stream_event="id: 511\nevent: x\ndata: hi\n\n",
+    )
+
+    cache.client.pipeline.assert_not_called()
+    cache.client.xadd.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_bare_suppresses_both_extras():
+    """What a retry sends. Replaying the DEL could erase a frame this process
+    never wrote, and replaying the PERSIST could re-immortalize a stream
+    something else already stamped terminal."""
+    _, pipeline_ctx = _make_pipeline_mock()
+    cache = _make_client(pipeline_ctx)
+
+    for event_id in (1, 512):
+        cache.client.xadd.reset_mock()
+        cache.client.pipeline.reset_mock()
+        await cache.pipelined_event_buffer(
+            "workflow:stream:t1",
+            event_id=event_id,
+            max_size=1000,
+            stream_event=f"id: {event_id}\nevent: x\ndata: hi\n\n",
+            bare=True,
+        )
+        cache.client.pipeline.assert_not_called()
+        cache.client.xadd.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_explicit_ttl_expires_and_never_persists():
+    pipe, pipeline_ctx = _make_pipeline_mock()
+    cache = _make_client(pipeline_ctx)
+
+    await cache.pipelined_event_buffer(
+        "workflow:stream:t1",
+        event_id=512,
+        max_size=1000,
+        stream_event="id: 512\nevent: x\ndata: hi\n\n",
+        ttl=86400,
+    )
+
+    pipe.expire.assert_called_once_with("workflow:stream:t1", 86400)
+    pipe.persist.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_transport_errors_propagate_with_their_type():
+    """The retry policy branches on the exception; swallowing it to a bool
+    would make "pool exhausted" and "reply lost" indistinguishable."""
+    _, pipeline_ctx = _make_pipeline_mock()
+    cache = _make_client(pipeline_ctx)
+    cache.client.xadd = AsyncMock(
+        side_effect=redis_exceptions.TimeoutError("Timeout reading from redis")
+    )
+
+    with pytest.raises(redis_exceptions.TimeoutError):
+        await cache.pipelined_event_buffer(
+            "workflow:stream:t1",
+            event_id=3,
+            max_size=10,
+            stream_event="id: 3\ndata: x\n\n",
+        )
+    assert cache.stats["errors"] == 1
+
+
+@pytest.mark.asyncio
+async def test_disabled_cache_raises_a_distinct_unretryable_error():
     cache = RedisCacheClient.__new__(RedisCacheClient)
     cache.enabled = False
     cache.client = None
     cache.stats = {"hits": 0, "misses": 0, "sets": 0, "deletes": 0, "errors": 0}
 
-    success, seq = await cache.pipelined_event_buffer(
-        meta_key="m",
-        event="x",
-        max_size=10,
-        ttl=60,
-        last_event_id=1,
-        stream_key="workflow:stream:t1",
+    with pytest.raises(EventBufferUnavailableError):
+        await cache.pipelined_event_buffer(
+            "workflow:stream:t1",
+            event_id=1,
+            max_size=10,
+            stream_event="x",
+        )
+
+
+@pytest.mark.asyncio
+async def test_stream_tail_returns_the_entry_id_and_its_payload():
+    """All three, from one XREVRANGE: the id alone cannot prove authorship."""
+    _, pipeline_ctx = _make_pipeline_mock()
+    cache = _make_client(pipeline_ctx)
+    cache.client.xrevrange = AsyncMock(return_value=[(b"41-0", {b"event": b"x"})])
+
+    assert await cache.stream_tail("workflow:stream:t1") == (41, b"x", None)
+
+
+@pytest.mark.asyncio
+async def test_stream_tail_returns_the_record_field_too():
+    """The rendered frame omits the writer's ownership ids; ``record`` carries
+    them, so the ambiguous-write witness needs it in the same round trip."""
+    _, pipeline_ctx = _make_pipeline_mock()
+    cache = _make_client(pipeline_ctx)
+    cache.client.xrevrange = AsyncMock(
+        return_value=[(b"41-0", {b"event": b"x", b"record": b'{"seq": 41}'})]
     )
-    assert success is False
-    assert seq == 0
+
+    assert await cache.stream_tail("workflow:stream:t1") == (
+        41,
+        b"x",
+        b'{"seq": 41}',
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_tail_is_none_for_an_empty_stream():
+    _, pipeline_ctx = _make_pipeline_mock()
+    cache = _make_client(pipeline_ctx)
+    cache.client.xrevrange = AsyncMock(return_value=[])
+
+    assert await cache.stream_tail("workflow:stream:t1") is None
+
+
+@pytest.mark.asyncio
+async def test_stream_tail_payload_is_none_when_the_entry_has_no_event_field():
+    """A foreign writer's entry need not carry our field; that must read as
+    "not our bytes", not blow up the probe."""
+    _, pipeline_ctx = _make_pipeline_mock()
+    cache = _make_client(pipeline_ctx)
+    cache.client.xrevrange = AsyncMock(return_value=[(b"7-0", {b"other": b"x"})])
+
+    assert await cache.stream_tail("workflow:stream:t1") == (7, None, None)
+
+
+@pytest.mark.asyncio
+async def test_stream_tail_sorts_auto_ids_above_event_ids():
+    """An auto-id frame (run_end, or a recovery-appended error) carries a ms
+    timestamp — the caller relies on it comparing above any event id so a
+    foreign append is never mistaken for its own landed write."""
+    _, pipeline_ctx = _make_pipeline_mock()
+    cache = _make_client(pipeline_ctx)
+    cache.client.xrevrange = AsyncMock(
+        return_value=[(b"1769000000000-0", {b"event": b"run_end"})]
+    )
+
+    tail = await cache.stream_tail("workflow:stream:t1")
+    assert tail is not None and tail[0] > 10_000

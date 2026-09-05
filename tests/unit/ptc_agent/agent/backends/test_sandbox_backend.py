@@ -23,6 +23,7 @@ from deepagents.backends.protocol import (
 )
 
 from ptc_agent.agent.backends.sandbox import SandboxBackend
+from ptc_agent.core.sandbox.runtime import SandboxTransientError
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +296,25 @@ class TestAedit:
         await backend.aedit("/f.py", "x", "y")
         cb.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_a_failed_readback_does_not_fail_a_committed_edit(self, sandbox):
+        """The read now raises where it used to return None.
+
+        The edit is already committed by the time the callback re-reads, so
+        letting a sandbox that died in between propagate would fail the whole
+        tool call over a snapshot the callback can do without.
+        """
+        sandbox.aedit_file_text.return_value = {"success": True, "occurrences": 2}
+        sandbox.aread_file_text.side_effect = SandboxTransientError("sandbox went away")
+        cb = MagicMock()
+        backend = SandboxBackend(sandbox, operation_callback=cb)
+
+        result = await backend.aedit("/f.py", "old", "new")
+
+        assert result.error is None
+        assert result.occurrences == 2
+        assert cb.call_args.args[0]["content"] is None
+
 
 class TestAdownloadAupload:
     """Protocol-surface batch file transfer methods."""
@@ -311,10 +331,15 @@ class TestAdownloadAupload:
         assert r.error == "file_not_found"
 
     @pytest.mark.asyncio
-    async def test_adownload_exception_maps_to_file_not_found(self, sandbox, backend):
+    async def test_adownload_exception_is_not_reported_as_not_found(
+        self, sandbox, backend
+    ):
+        """A transport failure must not read as "this file does not exist"."""
         sandbox.adownload_file_bytes.side_effect = RuntimeError("net")
         [r] = await backend.adownload_files(["/x.txt"])
-        assert r.error == "file_not_found"
+        assert r.error is not None
+        assert r.error != "file_not_found"
+        assert "net" in r.error
 
     @pytest.mark.asyncio
     async def test_adownload_mixed_batch_preserves_order(self, sandbox, backend):

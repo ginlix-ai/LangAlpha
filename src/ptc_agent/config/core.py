@@ -130,12 +130,12 @@ class VaultBlueprint(BaseModel):
     exact secret name for each integration.
     """
 
-    # Same regex as CreateSecretRequest in src/server/app/vault.py:37.
+    # Same regex as CreateSecretRequest in src/server/models/vault.py.
     # Blueprint name becomes a vault key, so it must satisfy the same rule.
     # The regex's {0,63} already caps length at 64 — no separate max_length needed.
     name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
     label: str = Field(..., min_length=1, max_length=80)
-    # max_length matches CreateSecretRequest.description in src/server/app/vault.py
+    # max_length matches CreateSecretRequest.description in src/server/models/vault.py
     # so that pre-filling the add-secret form from a blueprint never produces a
     # description that the create endpoint would reject with a 422.
     description: str = Field("", max_length=256)
@@ -184,10 +184,16 @@ class MCPServerConfig(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)  # For SSE/HTTP transports
     tool_exposure_mode: Literal["summary", "detailed"] | None = None  # Per-server override
     vault_blueprints: list[VaultBlueprint] = Field(default_factory=list)
-    # 'builtin' = from agent_config.yaml; 'workspace' = user-configured per-workspace.
-    # Workspace servers are untrusted: vault-only secret resolution, neutral prompt framing.
-    source: Literal["builtin", "workspace"] = "builtin"
+    # 'builtin' = from agent_config.yaml; 'workspace' = user-configured per-workspace;
+    # 'user' = user-level server inherited by every workspace of the user.
+    # Workspace AND user servers are untrusted: vault-only secret resolution,
+    # neutral prompt framing, sanitized discovery.
+    source: Literal["builtin", "workspace", "user"] = "builtin"
     discovery_uses_secrets: bool = False  # workspace servers: resolve vault secrets during discovery (default off = secret-less probe)
+    # Set at resolve time when the user has a non-revoked OAuth connection for
+    # this server — the server is then bound through the egress relay and its
+    # sandbox config carries a grant reference instead of the vendor URL.
+    oauth_connection_id: str | None = None
 
 
 class MCPConfig(BaseModel):

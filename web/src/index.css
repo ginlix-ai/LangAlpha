@@ -5,6 +5,7 @@
 /* Tokens + global base/utilities - must be before @tailwind */
 @import './styles/tokens.css';
 @import './styles/animations.css';
+@import './styles/chrome.css';
 
 @tailwind base;
 @tailwind components;
@@ -34,12 +35,4 @@
   25% { transform: translate(3px, 3px) scale(1.1) rotate(-90deg); border-radius: 25%; }
   50% { transform: translate(0, -5px) scale(1.3) rotate(-180deg); border-radius: 100%; }
   75% { transform: translate(-3px, -3px) scale(0.9) rotate(-270deg); border-radius: 75%; }
-}
-
-/* Suppress focus outlines on chart containers (Recharts, lightweight-charts) */
-.recharts-responsive-container,
-.recharts-responsive-container *,
-.tv-lightweight-charts,
-.tv-lightweight-charts * {
-  outline: none !important;
 }

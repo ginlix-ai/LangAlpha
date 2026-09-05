@@ -90,9 +90,20 @@ def _query(turn_index, content="hello"):
 def _response(turn_index, status="completed"):
     return {
         "conversation_response_id": f"resp-{turn_index}",
+        "turn_index": turn_index,
         "sse_events": [],
         "status": status,
     }
+
+
+def _key(tail, response=None, provenance=None, usage=None):
+    """Production cache key for a turn — keys carry the input fingerprint, so
+    a test that seeds or asserts an entry must derive it the same way."""
+    return projection_cache._key(
+        THREAD,
+        tail,
+        projection_cache.turn_fingerprint(response, provenance or [], usage),
+    )
 
 
 def _mock_reader(monkeypatch, *, anchors=None, tip="cp-tip", history=None,
@@ -119,10 +130,68 @@ def _mock_reader(monkeypatch, *, anchors=None, tip="cp-tip", history=None,
 
 async def test_store_and_get_round_trip(fake_cache):
     items = [{"event": "user_message", "data": {"content": "hi"}}]
-    await projection_cache.store_turn(THREAD, "tail-1", items)
-    cached = await projection_cache.get_cached_turns(THREAD, ["tail-1", "tail-2"])
+    await projection_cache.store_turn(THREAD, "tail-1", "fp-1", items)
+    cached = await projection_cache.get_cached_turns(
+        THREAD, [("tail-1", "fp-1"), ("tail-2", "fp-2")]
+    )
     assert cached["tail-1"] == items
     assert cached["tail-2"] is None
+
+
+async def test_superseded_fingerprint_is_unreachable(fake_cache):
+    """The whole point of the fingerprint: an entry built before a turn's
+    post-finalize archive drain must not be servable afterwards, without
+    anyone having to evict it."""
+    stale = [{"event": "user_message", "data": {"content": "pre-drain"}}]
+    await projection_cache.store_turn(THREAD, "tail-1", "fp-before", stale)
+
+    cached = await projection_cache.get_cached_turns(THREAD, [("tail-1", "fp-after")])
+
+    assert cached["tail-1"] is None
+    # The old generation is still in Redis (it expires by TTL) — it is
+    # unreachable, not deleted.
+    assert projection_cache._key(THREAD, "tail-1", "fp-before") in fake_cache.store
+
+
+async def test_fingerprint_tracks_each_mutable_input(fake_cache):
+    response = {"conversation_response_id": "r0", "sse_events": [], "status": "completed"}
+    base = projection_cache.turn_fingerprint(response, [], None)
+
+    drained = dict(response, sse_events=[{"event": "message_chunk", "data": {}}])
+    assert projection_cache.turn_fingerprint(drained, [], None) != base
+    assert projection_cache.turn_fingerprint(response, [{"identifier": "x"}], None) != base
+    assert projection_cache.turn_fingerprint(response, [], {"total_credits": 1}) != base
+    # Stable across dict ordering — psycopg row key order is not a contract.
+    reordered = {k: response[k] for k in reversed(list(response))}
+    assert projection_cache.turn_fingerprint(reordered, [], None) == base
+
+
+async def test_fingerprint_reads_the_response_row_through_its_row_version():
+    """The replay query ships ``xmin``, so the fingerprint never serializes the
+    transcript: any rewrite of the row lands a new version, and that is what
+    invalidates."""
+    response = {
+        "conversation_response_id": "r0",
+        "status": "completed",
+        "sse_events": [{"event": "message_chunk", "data": {}}],
+        "xmin": "100",
+    }
+    base = projection_cache.turn_fingerprint(response, [], None)
+
+    drained = dict(response, sse_events=[], xmin="101")
+    assert projection_cache.turn_fingerprint(drained, [], None) != base
+    # A retry's row is a different response entirely, version or not.
+    assert (
+        projection_cache.turn_fingerprint(
+            dict(response, conversation_response_id="r1"), [], None
+        )
+        != base
+    )
+    # The columns themselves are not hashed — a rewrite always bumps xmin.
+    assert (
+        projection_cache.turn_fingerprint(dict(response, sse_events=[]), [], None)
+        == base
+    )
 
 
 async def test_store_canonicalizes_to_wire_json(fake_cache):
@@ -131,16 +200,16 @@ async def test_store_canonicalizes_to_wire_json(fake_cache):
     # isoformat — space separator).
     ts = datetime(2026, 7, 7, 12, 0, 30, tzinfo=timezone.utc)
     await projection_cache.store_turn(
-        THREAD, "tail-1", [{"event": "user_message", "data": {"timestamp": ts}}]
+        THREAD, "tail-1", "fp-1", [{"event": "user_message", "data": {"timestamp": ts}}]
     )
-    cached = await projection_cache.get_cached_turns(THREAD, ["tail-1"])
+    cached = await projection_cache.get_cached_turns(THREAD, [("tail-1", "fp-1")])
     assert cached["tail-1"][0]["data"]["timestamp"] == str(ts)
 
 
 async def test_store_skips_oversize_and_missing_tail(fake_cache):
-    await projection_cache.store_turn(THREAD, None, [{"event": "x", "data": {}}])
+    await projection_cache.store_turn(THREAD, None, "fp-1", [{"event": "x", "data": {}}])
     big = [{"event": "x", "data": {"blob": "a" * (projection_cache._MAX_ENTRY_BYTES + 1)}}]
-    await projection_cache.store_turn(THREAD, "tail-big", big)
+    await projection_cache.store_turn(THREAD, "tail-big", "fp-1", big)
     assert fake_cache.store == {}
 
 
@@ -165,8 +234,8 @@ async def test_full_hit_assembles_without_materializing(monkeypatch, fake_cache)
         {"event": "user_message", "data": {"thread_id": THREAD, "turn_index": 1}},
         {"event": "message_chunk", "data": {"content": "hi", "turn_index": 1}},
     ]
-    fake_cache.store[projection_cache._key(THREAD, "tail-0")] = entry0
-    fake_cache.store[projection_cache._key(THREAD, "tail-1")] = entry1
+    fake_cache.store[_key("tail-0", _response(0))] = entry0
+    fake_cache.store[_key("tail-1", _response(1))] = entry1
     reader = _mock_reader(
         monkeypatch,
         anchors=[_anchor(0, "tail-0", 0), _anchor(1, "tail-1", 1)],
@@ -187,7 +256,7 @@ async def test_full_hit_assembles_without_materializing(monkeypatch, fake_cache)
 
 
 async def test_fast_path_stubs_inflight_turn_from_rows(monkeypatch, fake_cache):
-    fake_cache.store[projection_cache._key(THREAD, "tail-0")] = [
+    fake_cache.store[_key("tail-0", _response(0))] = [
         {"event": "user_message", "data": {"turn_index": 0}}
     ]
     _mock_reader(monkeypatch, anchors=[_anchor(0, "tail-0", 0)], tip="tail-0")
@@ -209,7 +278,7 @@ async def test_any_miss_rebuilds_and_backfills(monkeypatch, fake_cache):
         _turn(1, [HumanMessage(content="hello", id="h-1"),
                   AIMessage(content="a1", id="ai-1")], "tail-1", 1),
     ]
-    fake_cache.store[projection_cache._key(THREAD, "tail-0")] = [
+    fake_cache.store[_key("tail-0", _response(0))] = [
         {"event": "user_message", "data": {"turn_index": 0}}
     ]  # tail-1 missing → full rebuild
     reader = _mock_reader(
@@ -231,9 +300,54 @@ async def test_any_miss_rebuilds_and_backfills(monkeypatch, fake_cache):
     ]
     # Both turns backfilled under their tail keys, wire-canonical.
     for tail, turn_index in (("tail-0", 0), ("tail-1", 1)):
-        entry = fake_cache.store[projection_cache._key(THREAD, tail)]
+        entry = fake_cache.store[_key(tail, _response(turn_index))]
         assert [i["event"] for i in entry] == ["user_message", "message_chunk"]
         assert entry[-1]["data"]["turn_index"] == turn_index
+
+
+async def test_post_drain_inputs_miss_the_pre_drain_entry(monkeypatch, fake_cache):
+    """The workflow-child regression. A settled turn's provenance rows are
+    (re)derived by the subagent collector's archive drain, seconds AFTER the
+    turn finalized and its projection was cached — and the drain never moves
+    the tail. Under a tail-only key the pre-drain, provenance-free entry
+    stayed servable for the full cache TTL; the fingerprint must make it
+    unreachable so the read rebuilds with the rows now present."""
+    turns = [_turn(0, [HumanMessage(content="hello", id="h-0"),
+                       AIMessage(content="a0", id="ai-0")], "tail-0", 0)]
+    reader = _mock_reader(
+        monkeypatch,
+        anchors=[_anchor(0, "tail-0", 0)],
+        tip="tail-0",
+        history=ThreadHistory(thread_id=THREAD, turns=turns),
+    )
+    response = _response(0)
+    # Cached at finalize, before the drain: no provenance in the entry.
+    fake_cache.store[_key("tail-0", response)] = [
+        {"event": "user_message", "data": {"turn_index": 0}}
+    ]
+    # The drain lands: rows now exist for the same response, same tail.
+    provenance = [
+        {
+            "conversation_response_id": "resp-0",
+            "turn_index": 0,
+            "source_type": "web_search",
+            "identifier": "https://example.test/a",
+            "agent": "task:child1",
+        }
+    ]
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: response}, provenance=provenance
+    )
+
+    reader.aget_thread_history.assert_called_once()  # missed → rebuilt
+    assert [i["event"] for i in items] == [
+        "user_message", "message_chunk", "provenance",
+    ]
+    assert items[-1]["data"]["agent"] == "task:child1"
+    # Backfilled under the post-drain fingerprint, leaving the old generation
+    # stranded rather than overwritten.
+    assert _key("tail-0", response, provenance) in fake_cache.store
 
 
 async def test_missing_tail_falls_back_to_rebuild(monkeypatch, fake_cache):
@@ -270,7 +384,7 @@ async def test_refresh_writes_last_two_turn_entries(monkeypatch, fake_cache):
         history=ThreadHistory(thread_id=THREAD, turns=turns),
     )
     # Stale previous-turn entry that the refresh must overwrite.
-    fake_cache.store[projection_cache._key(THREAD, "tail-0")] = [
+    fake_cache.store[_key("tail-0", _response(0))] = [
         {"event": "user_message", "data": {"stale": True}}
     ]
     monkeypatch.setattr(
@@ -287,10 +401,10 @@ async def test_refresh_writes_last_two_turn_entries(monkeypatch, fake_cache):
 
     await projection_cache.refresh_thread_projection(THREAD)
 
-    for tail in ("tail-0", "tail-1"):
-        entry = fake_cache.store[projection_cache._key(THREAD, tail)]
+    for turn_index, tail in enumerate(("tail-0", "tail-1")):
+        entry = fake_cache.store[_key(tail, _response(turn_index))]
         assert [i["event"] for i in entry] == ["user_message", "message_chunk"]
-    assert "stale" not in str(fake_cache.store[projection_cache._key(THREAD, "tail-0")])
+    assert "stale" not in str(fake_cache.store[_key("tail-0", _response(0))])
 
 
 async def test_refresh_noops_without_commit_pointer(monkeypatch, fake_cache):
@@ -352,25 +466,28 @@ async def test_schedule_refresh_coalesces_overlapping_requests(monkeypatch, fake
     assert THREAD not in projection_cache._refresh_dirty
 
 
-async def test_task_streams_live_variants(fake_cache):
+async def test_live_task_streams_variants(fake_cache):
     key = f"subagent:stream:{THREAD}:tsk1"
     # No stream cannot prove completion (it may have TTL'd or failed to spill),
     # so stay conservative and skip caching.
-    assert await projection_cache.task_streams_live(THREAD, {"tsk1"}) is True
+    assert await projection_cache.live_task_streams(THREAD, {"tsk1"}) == {"tsk1"}
     # Last entry is a wire string → producer still writing.
     fake_cache.client.stream_tails[key] = "id: 7\nevent: message_chunk\ndata: {}\n\n"
-    assert await projection_cache.task_streams_live(THREAD, {"tsk1"}) is True
+    assert await projection_cache.live_task_streams(THREAD, {"tsk1"}) == {"tsk1"}
     # Finalized sentinel → terminal.
     fake_cache.client.stream_tails[key] = _END_SENTINEL
-    assert await projection_cache.task_streams_live(THREAD, {"tsk1"}) is False
-    # Every referenced task needs an explicit sentinel.
-    assert await projection_cache.task_streams_live(THREAD, {"tsk1", "missing"}) is True
+    assert await projection_cache.live_task_streams(THREAD, {"tsk1"}) == set()
+    # Every referenced task needs an explicit sentinel — only the unproven
+    # one reports live.
+    assert await projection_cache.live_task_streams(THREAD, {"tsk1", "missing"}) == {
+        "missing"
+    }
     # No tasks → trivially terminal; Redis failures/disconnects → conservative live.
-    assert await projection_cache.task_streams_live(THREAD, set()) is False
+    assert await projection_cache.live_task_streams(THREAD, set()) == set()
     fake_cache.client.xrevrange = AsyncMock(side_effect=RuntimeError("redis down"))
-    assert await projection_cache.task_streams_live(THREAD, {"tsk1"}) is True
+    assert await projection_cache.live_task_streams(THREAD, {"tsk1"}) == {"tsk1"}
     fake_cache.client = None
-    assert await projection_cache.task_streams_live(THREAD, {"tsk1"}) is True
+    assert await projection_cache.live_task_streams(THREAD, {"tsk1"}) == {"tsk1"}
 
 
 async def test_live_subagent_turn_not_cached_until_finalized(monkeypatch, fake_cache):
@@ -415,13 +532,13 @@ async def test_live_subagent_turn_not_cached_until_finalized(monkeypatch, fake_c
         )
     )
     items = await build_checkpoint_replay_items(THREAD, [_query(0)], {0: _response(0)})
-    entry = fake_cache.store[projection_cache._key(THREAD, "tail-0")]
+    entry = fake_cache.store[_key("tail-0", _response(0))]
     assert sum(1 for i in entry if i["data"].get("agent") == "task:tsk1") == 2
 
 
 async def test_windowed_fast_path_keeps_absolute_pairing(monkeypatch, fake_cache):
     entry = [{"event": "user_message", "data": {"turn_index": 2}}]
-    fake_cache.store[projection_cache._key(THREAD, "tail-2")] = entry
+    fake_cache.store[_key("tail-2", _response(2))] = entry
     reader = _mock_reader(
         monkeypatch,
         anchors=[_anchor(0, "tail-0", 0), _anchor(1, "tail-1", 1), _anchor(2, "tail-2", 2)],

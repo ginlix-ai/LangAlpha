@@ -1,10 +1,11 @@
 import React from 'react';
+import { relativeTime } from '@/lib/format';
 import { motion } from 'framer-motion';
 import { Clock, Timer, TrendingUp } from 'lucide-react';
 import StatusBadge from './StatusBadge';
 import { cronToHuman } from '../utils/cron';
 import { formatPriceTrigger } from '../utils/price';
-import { formatRelativeTime, formatDateTime } from '../utils/time';
+import { formatDateTime } from '../utils/time';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useTranslation } from 'react-i18next';
 import type { Automation } from '@/types/automation';
@@ -77,7 +78,7 @@ export default function AutomationRow({ automation, index, onClick }: Automation
           {!isPrice && automation.next_run_at && (
             <>
               <span style={{ color: 'var(--color-border-default)' }}>·</span>
-              <span className="shrink-0">{formatRelativeTime(automation.next_run_at)}</span>
+              <span className="shrink-0">{relativeTime(automation.next_run_at)}</span>
             </>
           )}
         </div>
@@ -133,7 +134,7 @@ export default function AutomationRow({ automation, index, onClick }: Automation
 
       {/* Next Run */}
       <span className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-        {isPrice ? t('automation.onTrigger') : automation.next_run_at ? formatRelativeTime(automation.next_run_at) : '\u2014'}
+        {isPrice ? t('automation.onTrigger') : automation.next_run_at ? relativeTime(automation.next_run_at) : '\u2014'}
       </span>
 
       {/* Status */}

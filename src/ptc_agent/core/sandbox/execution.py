@@ -27,7 +27,6 @@ from ptc_agent.core.sandbox.retry import RetryPolicy
 from ptc_agent.core.sandbox._shared import (
     ChartData,
     ExecutionResult,
-    _entry_name,
 )
 from typing import TYPE_CHECKING
 
@@ -192,9 +191,6 @@ async def execute(
                 error=str(upload_err),
             )
 
-        # Get list of files before execution
-        files_before = await sandbox._list_result_files()
-
         # Execute code
         # Set PYTHONPATH so code can import from tools/ and _internal/
         # MCP + GitHub env vars are injected at sandbox creation time
@@ -236,12 +232,6 @@ async def execute(
                     elements=[],
                 )
             )
-        # Get files after execution
-        files_after = await sandbox._list_result_files()
-
-        # Determine file changes
-        files_created = [f for f in files_after if f not in files_before]
-        files_modified: list[str] = []  # TODO: Implement modification tracking
 
         duration = time.time() - start_time
 
@@ -257,8 +247,6 @@ async def execute(
             stdout=stdout,
             stderr=stderr,
             duration=duration,
-            files_created=files_created,
-            files_modified=files_modified,
             execution_id=execution_id,
             code_hash=code_hash,
             charts=charts,
@@ -296,7 +284,6 @@ async def execute(
             execution_id=execution_id,
             success=success,
             duration=duration,
-            files_created=len(files_created),
             charts_captured=len(charts),
         )
 
@@ -349,8 +336,6 @@ async def execute(
             stdout="",
             stderr=stderr_msg,
             duration=duration,
-            files_created=[],
-            files_modified=[],
             execution_id=execution_id,
             code_hash=code_hash,
             charts=[],
@@ -682,26 +667,3 @@ def _build_trace_env_command(
     return trace_path, command
 
 
-async def _list_result_files(sandbox: "PTCSandbox") -> list[str]:
-    """List files in the results directory.
-
-        Returns:
-            List of file paths relative to workspace (e.g., "results/file.csv")
-        """
-    try:
-        assert sandbox.runtime is not None
-        file_infos = await sandbox._runtime_call(
-            sandbox.runtime.list_files,
-            "results",
-            retry_policy=RetryPolicy.SAFE,
-        )
-        if not file_infos:
-            return []
-        # Return paths relative to workspace, not just filenames
-        return [
-            f"results/{_entry_name(f)}"
-            for f in file_infos
-        ]
-    except (OSError, AttributeError) as e:
-        logger.warning(f"Error listing result files: {e}")
-        return []

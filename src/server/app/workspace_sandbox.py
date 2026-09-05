@@ -39,6 +39,60 @@ router = APIRouter(prefix="/api/v1/workspaces", tags=["Workspace Sandbox"])
 
 _SIGNED_URL_TTL = 3000  # 50 min (signed URLs expire in 1h)
 
+# Provider-native synonyms for "up and usable", canonicalized for the wire.
+# get_metadata() is provider-specific by contract, so daytona reports "started"
+# where docker reports "running". Daytona's own _STATE_MAP maps the same synonym
+# one layer down for RuntimeState — renaming a state there needs a change here too.
+_DISPLAY_STATE_SYNONYMS = {"started": "running"}
+
+
+def _configured_provider() -> str | None:
+    """Which provider this deployment runs, read from config rather than metadata.
+
+    Deliberately not ``meta["provider"]``: only the docker provider sets that key,
+    and the metadata read can fail — either would silently report "not docker" and
+    defeat the disk-quota branch this value exists to drive.
+
+    Reads ``config.sandbox`` directly rather than via ``to_core_config()``, which
+    deep-copies the MCP config to hand each workspace its own — wasted work here,
+    since it passes ``sandbox`` straight through.
+    """
+    try:
+        config = WorkspaceManager.get_instance().config
+        provider = getattr(getattr(config, "sandbox", None), "provider", None)
+        return provider if isinstance(provider, str) else None
+    except Exception as e:
+        logger.debug(f"Could not resolve the configured sandbox provider: {e}")
+        return None
+
+
+def _display_state(state: Any) -> str | None:
+    """Canonicalize a provider state for the wire; see _DISPLAY_STATE_SYNONYMS.
+
+    Unwraps enums defensively: ``get_metadata`` is provider-specific by contract,
+    and ``str()`` on a str-mixin enum yields ``"RuntimeState.RUNNING"`` rather
+    than its value. Both current providers already stringify.
+    """
+    if not state:
+        return None
+    raw = str(getattr(state, "value", state))
+    return _DISPLAY_STATE_SYNONYMS.get(raw, raw)
+
+
+def _offline_display_state(state: Any, row_status: str | None) -> str | None:
+    """Like _display_state, but never reports "running" — the offline path can't back it.
+
+    That path collects no disk usage, packages or skills, while the client reads
+    "running" as proof they are present and as licence to offer Stop. When the
+    provider says the sandbox is up but the row still says starting/stopping, the
+    row is the honest answer: it is what the action endpoints validate against,
+    and the full path takes over the moment it says running.
+    """
+    display = _display_state(state)
+    if display is None or display == "running":
+        return row_status
+    return display
+
 
 def _preview_cache_key(sandbox_id: str, port: int) -> str:
     """Redis key for cached signed preview URL."""
@@ -148,7 +202,7 @@ class DiskOverview(BaseModel):
 
 
 class DirectorySize(BaseModel):
-    path: str  # e.g. "results/"
+    path: str  # e.g. "work/"
     size: str  # e.g. "1.2G"
 
 
@@ -163,9 +217,19 @@ class SkillInfo(BaseModel):
 
 
 class SandboxStatsResponse(BaseModel):
+    """Sandbox stats for the workspace settings panel.
+
+    ``state`` is a display vocabulary, not ``RuntimeState``: "running" is canonical
+    across providers, anything else is a provider or workspace value passed through
+    as a label.
+    """
+
     workspace_id: str
     sandbox_id: str | None = None
     state: str | None = None
+    # Which provider answered. The UI needs it because disk_usage is a df(1) read
+    # inside the sandbox, and docker sets no disk quota, so its totals are the host's.
+    provider: str | None = None
     created_at: str | None = None
     auto_stop_interval: int | None = None
     resources: SandboxResources
@@ -313,6 +377,7 @@ async def _get_offline_sandbox_stats(
         return SandboxStatsResponse(
             workspace_id=workspace_id,
             state=workspace.get("status", "unknown"),
+            provider=_configured_provider(),
             created_at=str(workspace.get("created_at", "")),
             resources=SandboxResources(),
         )
@@ -328,7 +393,8 @@ async def _get_offline_sandbox_stats(
         return SandboxStatsResponse(
             workspace_id=workspace_id,
             sandbox_id=sandbox_id,
-            state=meta.get("state"),
+            state=_offline_display_state(meta.get("state"), workspace.get("status")),
+            provider=_configured_provider(),
             created_at=str(meta["created_at"]) if meta.get("created_at") else None,
             auto_stop_interval=meta.get("auto_stop_interval"),
             resources=SandboxResources(
@@ -344,6 +410,7 @@ async def _get_offline_sandbox_stats(
             workspace_id=workspace_id,
             sandbox_id=sandbox_id,
             state=workspace.get("status", "unknown"),
+            provider=_configured_provider(),
             created_at=str(workspace.get("created_at", "")),
             resources=SandboxResources(),
         )
@@ -362,7 +429,9 @@ async def _get_full_sandbox_stats(
 
     # --- 1. Static properties from the runtime metadata ---
     resources = SandboxResources()
-    state = None
+    # Seeded from the workspace status this path already gated on, so a missing
+    # or unreadable provider state can't downgrade a live sandbox to "offline".
+    state = workspace.get("status")
     created_at = None
     auto_stop_interval = None
     sandbox_id = getattr(sandbox, "sandbox_id", None)
@@ -377,13 +446,13 @@ async def _get_full_sandbox_stats(
                 disk=meta.get("disk"),
                 gpu=meta.get("gpu"),
             )
-            state = meta.get("state")
+            state = _display_state(meta.get("state")) or state
             raw_created = meta.get("created_at")
             if raw_created is not None:
                 created_at = str(raw_created)
             auto_stop_interval = meta.get("auto_stop_interval")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to read sandbox metadata for {sandbox_id}: {e}")
 
     # --- 2. Concurrent bash commands for disk & packages ---
     work_dir = sandbox.working_dir
@@ -459,6 +528,7 @@ async def _get_full_sandbox_stats(
         workspace_id=workspace_id,
         sandbox_id=sandbox_id,
         state=state,
+        provider=_configured_provider(),
         created_at=created_at,
         auto_stop_interval=auto_stop_interval,
         resources=resources,
@@ -737,7 +807,9 @@ async def _preview_redirect(workspace_id: str, port: int, path: str = "") -> Res
     async def _resolve() -> Response:
         manager = WorkspaceManager.get_instance()
         try:
-            session = await manager.get_session_for_workspace(workspace_id)
+            session = await manager.get_session_for_workspace(
+                workspace_id, user_id=workspace.get("user_id")
+            )
         except Exception:
             raise HTTPException(status_code=503, detail="Sandbox not ready") from None
 

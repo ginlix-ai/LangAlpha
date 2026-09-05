@@ -1,0 +1,45 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "alternative-data",
+  "version": "1.0.0",
+  "description": "Signals from outside the market tape. X post search back to 2006 with profiles and reply threads, and web scraping with anti-bot bypass that returns markdown rather than raw HTML.",
+  "author": {
+    "name": "LangAlpha",
+    "url": "https://langalpha.ai"
+  },
+  "homepage": "https://langalpha.ai",
+  "repository": "https://github.com/ginlix/langalpha",
+  "license": "Apache-2.0",
+  "keywords": [
+    "alternative-data",
+    "social-sentiment",
+    "web-scraping",
+    "x",
+    "twitter"
+  ],
+  "extensions": {
+    "ai.langalpha": {
+      "servers": {
+        "x_api": {
+          "description": "Search X (Twitter) posts and fetch users, tweets, and reply threads. Read-only.",
+          "instruction": "Use for X/Twitter search and thread retrieval. Tools: search_posts, search_all_posts, get_conversation, get_user_by_username, get_tweet_by_id. For a single known X post URL, prefer web_fetch — reserve these tools for search, aggregation, and thread traversal. Every call needs bearer_token from the workspace vault: `from vault import get; token = get(\"X_BEARER_TOKEN\")`. Prefer search_posts by default; reach for search_all_posts only when the user needs posts older than ~7 days. See skills/x-api/ for usage and errors.",
+          "tool_exposure_mode": "summary",
+          "vault_blueprints": [
+            {
+              "name": "X_BEARER_TOKEN",
+              "label": "X (Twitter) Bearer Token",
+              "description": "Read-only app-only auth for the x_api MCP server. Get one at console.x.com → App → Keys and tokens → Bearer Token. Paste the raw token — no 'Bearer ' prefix, no whitespace.",
+              "docs_url": "https://console.x.com/",
+              "regex": "^[A-Za-z0-9%_-]{20,}$"
+            }
+          ]
+        },
+        "scrape": {
+          "description": "Web scraping with anti-bot bypass and markdown extraction",
+          "instruction": "Use scrape_page for one URL, scrape_pages for batches. Start with mode='fast'; use 'browser' for JS-rendered pages, 'stealth' for bot-protected sites (add solve_cloudflare=true if still blocked). extraction: markdown|html|text.",
+          "tool_exposure_mode": "summary"
+        }
+      }
+    }
+  }
+}

@@ -87,12 +87,12 @@ class TestFetchService:
             provider_names = ["fake"]
 
             async def fetch(self, req):
-                from src.tools.web.types import FetchResponse
+                from src.tools.web.types import FetchAttempt, FetchResponse
 
                 return FetchResponse(
                     results=[FetchResult(url=u, markdown=f"got {u}") for u in req.urls],
                     provider="fake",
-                    providers_tried=["fake"],
+                    attempts=[FetchAttempt("fake", "ok")],
                 )
 
         service = FetchService(chain=["inhouse"])
@@ -107,6 +107,9 @@ class TestFetchService:
             "https://b.example/y",
         ]
         assert resp.provider == "fake"
+        # The service must forward routing telemetry, not just the winner.
+        assert [str(a) for a in resp.attempts] == ["fake:ok"]
+        assert resp.providers_tried == ["fake"]
 
     async def test_cache_only_miss_is_empty_error(self, monkeypatch):
         import src.tools.web.fetch as fetch_module

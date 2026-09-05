@@ -48,6 +48,11 @@ export function useOnboardingPrefsWriter() {
   const pendingRef = useRef<PendingBatch | null>(null);
 
   const bcRef = useRef<BroadcastChannel | null>(null);
+  // Bumped on every write another tab lands. Read lazily by guards that key
+  // off this tab's own history (markTaskDone's once-per-task set): a remote
+  // reset un-stamps tasks this tab already tried, and the count moving is
+  // how it learns to try again without re-rendering anything.
+  const remoteUpdateGen = useRef(0);
   useEffect(() => {
     if (typeof BroadcastChannel === 'undefined') return;
     const chan = new BroadcastChannel(ONBOARDING_BROADCAST_CHANNEL);
@@ -58,6 +63,7 @@ export function useOnboardingPrefsWriter() {
     // re-opening a popup another tab already dismissed. Mirrors useDashboardPrefs.
     chan.onmessage = (e: MessageEvent) => {
       if ((e.data as { type?: string } | null)?.type !== 'updated') return;
+      remoteUpdateGen.current += 1;
       queryClient.invalidateQueries({ queryKey: queryKeys.user.preferences() });
     };
     return () => {
@@ -161,5 +167,5 @@ export function useOnboardingPrefsWriter() {
     [queryClient, send, currentUserId]
   );
 
-  return { writeOnboardingPrefs };
+  return { writeOnboardingPrefs, remoteUpdateGen };
 }

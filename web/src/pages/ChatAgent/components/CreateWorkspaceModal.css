@@ -44,7 +44,7 @@
 }
 
 .cwm-title {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 600;
   color: var(--color-text-primary);
   margin: 0;
@@ -74,7 +74,7 @@
 
 .cwm-label {
   display: block;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--color-text-primary);
   margin-bottom: 6px;
@@ -86,7 +86,7 @@
 
 .cwm-label-optional {
   color: var(--color-text-secondary);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 400;
 }
 
@@ -94,7 +94,7 @@
   width: 100%;
   border-radius: 6px;
   padding: 8px 12px;
-  font-size: 14px;
+  font-size: 0.875rem;
   resize: none;
   background-color: var(--color-bg-card);
   border: 1px solid var(--color-border-muted);
@@ -120,7 +120,7 @@
 
 .cwm-toggle-btn {
   padding: 5px 12px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;
   border: none;
@@ -130,20 +130,22 @@
 }
 
 .cwm-toggle-btn:hover:not(.cwm-toggle-btn--active) {
-  background-color: var(--color-border-muted);
+  background-color: var(--color-bg-hover);
 }
 
 .cwm-toggle-btn:not(:last-child) {
   border-right: 1px solid var(--color-border-muted);
 }
 
+/* Selected segment must read STRONGER than a hovered unselected one, and
+   must differ from the modal ground (--color-bg-elevated). */
 .cwm-toggle-btn--active {
-  background-color: var(--color-accent-primary);
-  color: var(--color-text-on-accent);
+  background-color: var(--color-bg-surface);
+  color: var(--color-text-primary);
 }
 
 .cwm-toggle-hint {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-text-secondary);
   margin-top: 6px;
 }
@@ -154,14 +156,14 @@
 }
 
 .cwm-dropzone-label {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--color-text-primary);
   margin-bottom: 6px;
 }
 
 .cwm-dropzone-sublabel {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-text-secondary);
   margin-bottom: 8px;
 }
@@ -186,7 +188,7 @@
 
 .cwm-dropzone-active {
   border-color: var(--color-accent-primary) !important;
-  background-color: var(--color-accent-soft) !important;
+  background-color: var(--color-bg-hover) !important;
 }
 
 .cwm-dropzone-icon {
@@ -194,7 +196,7 @@
 }
 
 .cwm-dropzone-text {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-text-secondary);
 }
 
@@ -230,7 +232,7 @@
 
 .cwm-file-name {
   flex: 1;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-text-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -240,7 +242,7 @@
 
 .cwm-file-size {
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-text-secondary);
 }
 
@@ -265,7 +267,7 @@
 
 /* ---- Error ---- */
 .cwm-error {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-loss);
   margin-bottom: 8px;
 }
@@ -281,7 +283,7 @@
 .cwm-btn-cancel {
   padding: 8px 16px;
   border-radius: 6px;
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 500;
   color: var(--color-text-primary);
   background: none;
@@ -302,17 +304,17 @@
 .cwm-btn-create {
   padding: 8px 16px;
   border-radius: 6px;
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 500;
-  color: var(--color-text-on-accent);
-  background-color: var(--color-accent-primary);
+  color: var(--color-btn-primary-text);
+  background-color: var(--color-btn-primary-bg);
   border: none;
   cursor: pointer;
   transition: opacity 0.15s;
 }
 
 .cwm-btn-create:disabled {
-  background-color: var(--color-accent-disabled);
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
@@ -362,7 +364,7 @@
 }
 
 .cwm-step-label {
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--color-text-primary);
 }
 
@@ -389,7 +391,7 @@
 
 .cwm-upload-file-name {
   flex: 1;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-text-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -399,7 +401,7 @@
 
 .cwm-upload-file-status {
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .cwm-upload-file-status--done {
@@ -436,14 +438,14 @@
 }
 
 .cwm-done-title {
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 600;
   color: var(--color-text-primary);
   margin-bottom: 4px;
 }
 
 .cwm-done-subtitle {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-text-secondary);
 }
 
@@ -452,6 +454,6 @@
   border-radius: 6px;
   background-color: var(--color-loss-soft);
   border: 1px solid var(--color-border-loss);
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-loss);
 }

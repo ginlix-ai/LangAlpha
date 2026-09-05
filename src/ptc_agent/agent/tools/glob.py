@@ -34,11 +34,11 @@ def create_glob_tool(backend: FilesystemBackend) -> BaseTool:
         Use for: Finding files by name. For content search, use Grep.
 
         Args:
-            pattern: Glob pattern (e.g., "**/*.py", "*.{js,ts}")
+            pattern: Glob pattern (e.g., "**/*.py", "work/*/*.{csv,json}")
             path: Search directory (default: current directory)
 
         Returns:
-            Matching file paths sorted by modification time, or ERROR
+            File paths only, not contents; newest first.
         """
         search_path = path if path is not None else "."
         try:

@@ -29,8 +29,9 @@ async def test_single_jsonb_append_to_latest_response(mock_connection, mock_curs
     # In-place concat, not a full-blob overwrite.
     assert "||" in sql
     assert "SET sse_events =" in sql
-    # Scoped to the most-recent response by turn_index.
-    assert "ORDER BY turn_index DESC" in sql
+    # Scoped to the most-recent response by run_seq (the one monotonic run
+    # ordering — turn_index is reused by retries and rewound by branches).
+    assert "ORDER BY run_seq DESC" in sql
     assert "LIMIT 1" in sql
     # Payload bound as a one-element JSONB array (the concat operand).
     json_binds = [p for p in params if isinstance(p, Json)]

@@ -1,5 +1,10 @@
 from src.llms.patches import _patch_langchain_anthropic_usage_metadata
+from src.llms.extension.dashscope import _install_responses_stream_bridge
 _patch_langchain_anthropic_usage_metadata()
+# Here rather than at first client construction: the bridge rewrites a module
+# global, so installing it lazily would let two workers disagree about whether
+# a Responses stream reports its reasoning and names its failures.
+_install_responses_stream_bridge()
 
 from .llm import LLM, ModelConfig, create_llm, get_llm_by_type, get_configured_llm_models, get_input_modalities, should_enable_caching
 from .api_call import (

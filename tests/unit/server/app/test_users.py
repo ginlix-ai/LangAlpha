@@ -8,6 +8,7 @@ get_current_auth_info (a different dependency not overridden in create_test_app)
 """
 
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -622,7 +623,7 @@ async def test_fetch_platform_membership_oss_mode_short_circuits():
     with (
         patch(f"{LIMITS}.HOST_MODE", "oss"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch(f"{LIMITS}._get_http_client", return_value=mock_client),
+        patch(f"{LIMITS}.get_http_client", return_value=mock_client),
     ):
         from src.server.dependencies.usage_limits import _fetch_platform_membership
 
@@ -646,7 +647,7 @@ async def test_fetch_platform_tier_returns_tier():
         patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(
-            f"{LIMITS}._get_http_client",
+            f"{LIMITS}.get_http_client",
             return_value=mock_client,
         ),
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
@@ -672,7 +673,7 @@ async def test_fetch_platform_tier_cache_hit():
         patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(
-            f"{LIMITS}._get_http_client",
+            f"{LIMITS}.get_http_client",
             return_value=mock_client,
         ),
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
@@ -698,7 +699,7 @@ async def test_fetch_platform_membership_caches_tier_and_plan_display_name_toget
     with (
         patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch(f"{LIMITS}._get_http_client", return_value=mock_client),
+        patch(f"{LIMITS}.get_http_client", return_value=mock_client),
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
         patch("os.getenv", return_value="token"),
     ):
@@ -726,7 +727,7 @@ async def test_fetch_platform_tier_platform_error():
         patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(
-            f"{LIMITS}._get_http_client",
+            f"{LIMITS}.get_http_client",
             return_value=mock_client,
         ),
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
@@ -750,7 +751,7 @@ async def test_fetch_platform_tier_network_error():
         patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(
-            f"{LIMITS}._get_http_client",
+            f"{LIMITS}.get_http_client",
             return_value=mock_client,
         ),
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
@@ -775,7 +776,7 @@ async def test_fetch_platform_tier_missing_field():
         patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(
-            f"{LIMITS}._get_http_client",
+            f"{LIMITS}.get_http_client",
             return_value=mock_client,
         ),
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
@@ -786,3 +787,87 @@ async def test_fetch_platform_tier_missing_field():
         result = await _fetch_platform_tier("user-123")
 
     assert result == -1
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/v1/users/me/preferences — model_preference validation
+# ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def _prefs_endpoint(stored_model_preference=None):
+    """The preferences PUT with its DB reads stubbed, yielding the upsert mock."""
+    upsert = AsyncMock(return_value=_prefs())
+    with (
+        patch(f"{DB}.db_get_user", new_callable=AsyncMock, return_value=_user()),
+        patch(
+            f"{DB}.db_get_user_preferences",
+            new_callable=AsyncMock,
+            return_value={"model_preference": stored_model_preference or {}},
+        ),
+        patch(f"{DB}.upsert_user_preferences", new=upsert),
+        patch(f"{DB}.maybe_complete_onboarding", new_callable=AsyncMock),
+    ):
+        yield upsert
+
+
+@pytest.mark.parametrize(
+    "model_preference",
+    [
+        {"fast_mode": "yes"},
+        {"prompt_guidance": "verbose"},
+        {"compaction_profile": "enormous"},
+        {"profiles": {"some-model": {"fast_mode": "yes"}}},
+    ],
+)
+@pytest.mark.asyncio
+async def test_bad_tuning_is_rejected_on_either_level(client, model_preference):
+    """The account level is a real write path, not just a fallback for profiles.
+
+    It used to skip validation entirely whenever ``profiles`` was absent, so a
+    string landed in a column the resolver reads as a boolean.
+    """
+    async with _prefs_endpoint() as upsert:
+        resp = await client.put(
+            "/api/v1/users/me/preferences", json={"model_preference": model_preference}
+        )
+
+    assert resp.status_code == 400
+    upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_valid_tuning_is_accepted_on_the_account_level(client):
+    async with _prefs_endpoint() as upsert:
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={"model_preference": {"fast_mode": True, "prompt_guidance": "lean"}},
+        )
+
+    assert resp.status_code == 200
+    upsert.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_provider_a_stored_model_still_needs_is_rejected(client):
+    """The invariant holds on the merged row, not on the request.
+
+    A patch that only clears ``custom_providers`` names no model at all, so
+    checking the request body alone let it through and left the stored model
+    pointing at a provider that no longer existed.
+    """
+    stored = {
+        "custom_providers": [{"name": "my-gw", "parent_provider": "openai"}],
+        "custom_models": [
+            {"name": "my-model", "model_id": "gpt-x", "provider": "my-gw"}
+        ],
+    }
+    async with _prefs_endpoint(stored) as upsert:
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={"model_preference": {"custom_providers": None}},
+        )
+
+    assert resp.status_code == 400
+    assert "my-gw" in resp.json()["detail"]
+    upsert.assert_not_awaited()

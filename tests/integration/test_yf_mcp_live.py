@@ -38,7 +38,7 @@ class TestYfPriceLive:
     """Live tests for yf_price_mcp_server."""
 
     def test_get_stock_history(self):
-        from mcp_servers.yf_price_mcp_server import get_stock_history
+        from plugins.yfinance.yf_price_mcp_server import get_stock_history
 
         result = get_stock_history(_SYMBOL, period="5d", interval="1d")
         assert "error" not in result, result.get("error")
@@ -56,7 +56,7 @@ class TestYfPriceLive:
             assert data[0]["date"] <= data[1]["date"]
 
     def test_get_stock_history_intraday(self):
-        from mcp_servers.yf_price_mcp_server import get_stock_history
+        from plugins.yfinance.yf_price_mcp_server import get_stock_history
 
         result = get_stock_history(_SYMBOL, period="1d", interval="5m")
         assert "error" not in result, result.get("error")
@@ -66,7 +66,7 @@ class TestYfPriceLive:
     def test_get_stock_history_lse_minor_units(self):
         """LSE quotes arrive from Yahoo in pence (GBp); the server converts to
         major units and reports currency GBP."""
-        from mcp_servers.yf_price_mcp_server import get_stock_history
+        from plugins.yfinance.yf_price_mcp_server import get_stock_history
 
         result = get_stock_history("VOD.L", period="5d", interval="1d")
         assert "error" not in result, result.get("error")
@@ -77,7 +77,7 @@ class TestYfPriceLive:
         assert 0 < close < 20
 
     def test_get_multiple_stocks_history(self):
-        from mcp_servers.yf_price_mcp_server import get_multiple_stocks_history
+        from plugins.yfinance.yf_price_mcp_server import get_multiple_stocks_history
 
         result = get_multiple_stocks_history([_SYMBOL, "MSFT"], period="5d")
         assert "error" not in result
@@ -89,7 +89,7 @@ class TestYfPriceLive:
         assert result["data"][_SYMBOL]["count"] > 0
 
     def test_get_dividends_and_splits(self):
-        from mcp_servers.yf_price_mcp_server import get_dividends_and_splits
+        from plugins.yfinance.yf_price_mcp_server import get_dividends_and_splits
 
         result = get_dividends_and_splits(_SYMBOL)
         assert "error" not in result, result.get("error")
@@ -101,7 +101,7 @@ class TestYfPriceLive:
         assert div["amount"] > 0
 
     def test_get_multiple_stocks_dividends(self):
-        from mcp_servers.yf_price_mcp_server import get_multiple_stocks_dividends
+        from plugins.yfinance.yf_price_mcp_server import get_multiple_stocks_dividends
 
         result = get_multiple_stocks_dividends([_SYMBOL, "MSFT"])
         assert "error" not in result
@@ -119,7 +119,7 @@ class TestYfFundamentalsLive:
     """Live tests for yf_fundamentals_mcp_server."""
 
     def test_get_income_statement_quarterly(self):
-        from mcp_servers.yf_fundamentals_mcp_server import get_income_statement
+        from plugins.yfinance.yf_fundamentals_mcp_server import get_income_statement
 
         result = get_income_statement(_SYMBOL, quarterly=True)
         assert "error" not in result, result.get("error")
@@ -132,14 +132,14 @@ class TestYfFundamentalsLive:
         assert keys & {"Total Revenue", "Net Income", "Gross Profit"}
 
     def test_get_income_statement_annual(self):
-        from mcp_servers.yf_fundamentals_mcp_server import get_income_statement
+        from plugins.yfinance.yf_fundamentals_mcp_server import get_income_statement
 
         result = get_income_statement(_SYMBOL, quarterly=False)
         assert "error" not in result, result.get("error")
         assert len(result["data"]) > 0
 
     def test_get_balance_sheet(self):
-        from mcp_servers.yf_fundamentals_mcp_server import get_balance_sheet
+        from plugins.yfinance.yf_fundamentals_mcp_server import get_balance_sheet
 
         result = get_balance_sheet(_SYMBOL)
         assert "error" not in result, result.get("error")
@@ -147,7 +147,7 @@ class TestYfFundamentalsLive:
         assert len(result["data"]) > 0
 
     def test_get_cash_flow(self):
-        from mcp_servers.yf_fundamentals_mcp_server import get_cash_flow
+        from plugins.yfinance.yf_fundamentals_mcp_server import get_cash_flow
 
         result = get_cash_flow(_SYMBOL)
         assert "error" not in result, result.get("error")
@@ -155,7 +155,7 @@ class TestYfFundamentalsLive:
         assert len(result["data"]) > 0
 
     def test_get_company_info(self):
-        from mcp_servers.yf_fundamentals_mcp_server import get_company_info
+        from plugins.yfinance.yf_fundamentals_mcp_server import get_company_info
 
         result = get_company_info(_SYMBOL)
         assert "error" not in result, result.get("error")
@@ -166,7 +166,7 @@ class TestYfFundamentalsLive:
         assert info.get("marketCap", 0) > 0
 
     def test_get_earnings_dates(self):
-        from mcp_servers.yf_fundamentals_mcp_server import get_earnings_dates
+        from plugins.yfinance.yf_fundamentals_mcp_server import get_earnings_dates
 
         result = get_earnings_dates(_SYMBOL)
         assert "error" not in result, result.get("error")
@@ -178,7 +178,7 @@ class TestYfFundamentalsLive:
 
     def test_get_earnings_data_fixed(self):
         """Verify the earnings tool works with the earnings_history API."""
-        from mcp_servers.yf_fundamentals_mcp_server import get_earnings_data
+        from plugins.yfinance.yf_fundamentals_mcp_server import get_earnings_data
 
         result = get_earnings_data(_SYMBOL)
         assert "error" not in result, result.get("error")
@@ -189,7 +189,7 @@ class TestYfFundamentalsLive:
         assert "epsestimate" in keys or "epsactual" in keys
 
     def test_compare_financials(self):
-        from mcp_servers.yf_fundamentals_mcp_server import compare_financials
+        from plugins.yfinance.yf_fundamentals_mcp_server import compare_financials
 
         result = compare_financials([_SYMBOL, "MSFT"], statement_type="income")
         assert result["statement_type"] == "income"
@@ -197,7 +197,7 @@ class TestYfFundamentalsLive:
         assert "MSFT" in result["data"]
 
     def test_compare_valuations(self):
-        from mcp_servers.yf_fundamentals_mcp_server import compare_valuations
+        from plugins.yfinance.yf_fundamentals_mcp_server import compare_valuations
 
         result = compare_valuations([_SYMBOL, "MSFT"])
         assert _SYMBOL in result["data"]
@@ -206,7 +206,7 @@ class TestYfFundamentalsLive:
 
     def test_get_multiple_stocks_earnings_fixed(self):
         """Verify the multi-earnings tool works."""
-        from mcp_servers.yf_fundamentals_mcp_server import get_multiple_stocks_earnings
+        from plugins.yfinance.yf_fundamentals_mcp_server import get_multiple_stocks_earnings
 
         result = get_multiple_stocks_earnings([_SYMBOL])
         assert _SYMBOL in result["data"]
@@ -223,7 +223,7 @@ class TestYfAnalysisLive:
     """Live tests for yf_analysis_mcp_server."""
 
     def test_get_analyst_recommendations(self):
-        from mcp_servers.yf_analysis_mcp_server import get_analyst_recommendations
+        from plugins.yfinance.yf_analysis_mcp_server import get_analyst_recommendations
 
         result = get_analyst_recommendations(_SYMBOL)
         assert "error" not in result, result.get("error")
@@ -232,7 +232,7 @@ class TestYfAnalysisLive:
 
     def test_get_news_fixed(self):
         """Verify the news tool works with yfinance's xhr/ncp API."""
-        from mcp_servers.yf_analysis_mcp_server import get_news
+        from plugins.yfinance.yf_analysis_mcp_server import get_news
 
         result = get_news(_SYMBOL, count=5)
         assert "error" not in result, result.get("error")
@@ -243,7 +243,7 @@ class TestYfAnalysisLive:
         assert len(article) > 0
 
     def test_get_news_tab_press_releases(self):
-        from mcp_servers.yf_analysis_mcp_server import get_news
+        from plugins.yfinance.yf_analysis_mcp_server import get_news
 
         result = get_news(_SYMBOL, count=5, tab="press releases")
         # May be empty for some tickers (a success envelope with empty data);
@@ -251,7 +251,7 @@ class TestYfAnalysisLive:
         assert "error" not in result or "detail" in result
 
     def test_get_institutional_holders(self):
-        from mcp_servers.yf_analysis_mcp_server import get_institutional_holders
+        from plugins.yfinance.yf_analysis_mcp_server import get_institutional_holders
 
         result = get_institutional_holders(_SYMBOL)
         assert "error" not in result, result.get("error")
@@ -261,14 +261,14 @@ class TestYfAnalysisLive:
         assert "shares" in holder
 
     def test_get_mutualfund_holders(self):
-        from mcp_servers.yf_analysis_mcp_server import get_mutualfund_holders
+        from plugins.yfinance.yf_analysis_mcp_server import get_mutualfund_holders
 
         result = get_mutualfund_holders(_SYMBOL)
         assert "error" not in result, result.get("error")
         assert result["count"] > 0
 
     def test_get_insider_transactions(self):
-        from mcp_servers.yf_analysis_mcp_server import get_insider_transactions
+        from plugins.yfinance.yf_analysis_mcp_server import get_insider_transactions
 
         result = get_insider_transactions(_SYMBOL)
         assert "error" not in result, result.get("error")
@@ -277,7 +277,7 @@ class TestYfAnalysisLive:
         assert "insider" in txn or "text" in txn
 
     def test_get_insider_roster(self):
-        from mcp_servers.yf_analysis_mcp_server import get_insider_roster
+        from plugins.yfinance.yf_analysis_mcp_server import get_insider_roster
 
         result = get_insider_roster(_SYMBOL)
         assert "error" not in result, result.get("error")
@@ -287,7 +287,7 @@ class TestYfAnalysisLive:
         assert "position" in insider
 
     def test_get_analyst_price_targets(self):
-        from mcp_servers.yf_analysis_mcp_server import get_analyst_price_targets
+        from plugins.yfinance.yf_analysis_mcp_server import get_analyst_price_targets
 
         result = get_analyst_price_targets(_SYMBOL)
         assert "error" not in result, result.get("error")
@@ -295,7 +295,7 @@ class TestYfAnalysisLive:
         assert "current" in data or "mean" in data or "high" in data
 
     def test_get_upgrades_downgrades(self):
-        from mcp_servers.yf_analysis_mcp_server import get_upgrades_downgrades
+        from plugins.yfinance.yf_analysis_mcp_server import get_upgrades_downgrades
 
         result = get_upgrades_downgrades(_SYMBOL)
         assert "error" not in result, result.get("error")
@@ -305,35 +305,35 @@ class TestYfAnalysisLive:
         assert "tograde" in rec
 
     def test_get_earnings_history(self):
-        from mcp_servers.yf_analysis_mcp_server import get_earnings_history
+        from plugins.yfinance.yf_analysis_mcp_server import get_earnings_history
 
         result = get_earnings_history(_SYMBOL)
         assert "error" not in result, result.get("error")
         assert result["count"] > 0
 
     def test_get_earnings_estimates(self):
-        from mcp_servers.yf_analysis_mcp_server import get_earnings_estimates
+        from plugins.yfinance.yf_analysis_mcp_server import get_earnings_estimates
 
         result = get_earnings_estimates(_SYMBOL)
         assert "error" not in result, result.get("error")
         assert result["count"] > 0
 
     def test_get_revenue_estimates(self):
-        from mcp_servers.yf_analysis_mcp_server import get_revenue_estimates
+        from plugins.yfinance.yf_analysis_mcp_server import get_revenue_estimates
 
         result = get_revenue_estimates(_SYMBOL)
         assert "error" not in result, result.get("error")
         assert result["count"] > 0
 
     def test_get_growth_estimates(self):
-        from mcp_servers.yf_analysis_mcp_server import get_growth_estimates
+        from plugins.yfinance.yf_analysis_mcp_server import get_growth_estimates
 
         result = get_growth_estimates(_SYMBOL)
         assert "error" not in result, result.get("error")
         assert result["count"] > 0
 
     def test_get_major_holders(self):
-        from mcp_servers.yf_analysis_mcp_server import get_major_holders
+        from plugins.yfinance.yf_analysis_mcp_server import get_major_holders
 
         result = get_major_holders(_SYMBOL)
         assert "error" not in result, result.get("error")
@@ -350,7 +350,7 @@ class TestYfMarketLive:
     """Live tests for yf_market_mcp_server."""
 
     def test_search_tickers(self):
-        from mcp_servers.yf_market_mcp_server import search_tickers
+        from plugins.yfinance.yf_market_mcp_server import search_tickers
 
         result = search_tickers("Apple")
         assert "error" not in result, result.get("error")
@@ -360,7 +360,7 @@ class TestYfMarketLive:
         assert "AAPL" in symbols
 
     def test_get_market_status(self):
-        from mcp_servers.yf_market_mcp_server import get_market_status
+        from plugins.yfinance.yf_market_mcp_server import get_market_status
 
         result = get_market_status("US")
         assert "error" not in result, result.get("error")
@@ -368,21 +368,21 @@ class TestYfMarketLive:
         assert "status" in result["data"]
 
     def test_get_predefined_screen_most_actives(self):
-        from mcp_servers.yf_market_mcp_server import get_predefined_screen
+        from plugins.yfinance.yf_market_mcp_server import get_predefined_screen
 
         result = get_predefined_screen("most_actives")
         assert "error" not in result, result.get("error")
         assert result["screen_name"] == "most_actives"
 
     def test_get_predefined_screen_invalid(self):
-        from mcp_servers.yf_market_mcp_server import get_predefined_screen
+        from plugins.yfinance.yf_market_mcp_server import get_predefined_screen
 
         result = get_predefined_screen("nonexistent_screen")
         assert "error" in result
         assert result["error"] == "invalid_argument"
 
     def test_screen_stocks(self):
-        from mcp_servers.yf_market_mcp_server import screen_stocks
+        from plugins.yfinance.yf_market_mcp_server import screen_stocks
 
         filters = [
             {"operator": "gt", "operands": ["percentchange", 1]},
@@ -392,7 +392,7 @@ class TestYfMarketLive:
         assert "data" in result
 
     def test_get_sector_info(self):
-        from mcp_servers.yf_market_mcp_server import get_sector_info
+        from plugins.yfinance.yf_market_mcp_server import get_sector_info
 
         result = get_sector_info("technology")
         assert "error" not in result, result.get("error")
@@ -402,7 +402,7 @@ class TestYfMarketLive:
         assert "top_companies" in data
 
     def test_get_industry_info(self):
-        from mcp_servers.yf_market_mcp_server import get_industry_info
+        from plugins.yfinance.yf_market_mcp_server import get_industry_info
 
         result = get_industry_info("software-infrastructure")
         assert "error" not in result, result.get("error")

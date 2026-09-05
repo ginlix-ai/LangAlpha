@@ -48,7 +48,7 @@ def create_grep_tool(backend: FilesystemBackend) -> BaseTool:
             path: Directory or file (default: ".")
             output_mode: "files_with_matches" | "content" | "count"
             glob: File filter (e.g., "*.py")
-            type: File type filter (e.g., "py", "js") - matches rg --type
+            type: File type filter (e.g., "py", "csv") - matches rg --type
             i: Case insensitive search
             n: Show line numbers in output
             A: Lines to show after each match
@@ -59,7 +59,8 @@ def create_grep_tool(backend: FilesystemBackend) -> BaseTool:
             offset: Skip first N results
 
         Returns:
-            Search results or ERROR
+            Matching lines, the list of matching files, or a count — whichever
+            output_mode selects.
         """
         search_path = path if path is not None else "."
         try:

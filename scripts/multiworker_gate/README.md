@@ -1,11 +1,18 @@
 # Multi-worker gate
 
-Re-runnable fault-injection suite for the v4 turn-lifecycle multi-worker
-contract, distilled from the pre-merge fault-injection matrix (17/17 PASS).
-Run the automated cells whenever a change touches **turn lifecycle,
-streaming/SSE, the hook outbox, or subagent ownership** — the failure mode
-they catch is always the same: *works when producer and consumer land on
-the same worker, breaks ~50% of the time at `--workers 2`.*
+Re-runnable fault-injection suite for the multi-worker contract, distilled from
+the v4 turn-lifecycle pre-merge fault-injection matrix (17/17 PASS) and since
+extended past the turn tier. Run the automated cells whenever a change touches
+**turn lifecycle, streaming/SSE, the hook outbox, subagent ownership, or the
+workspace↔sandbox binding** — the failure mode they catch is always the same:
+*works when producer and consumer land on the same worker, breaks ~50% of the
+time at `--workers 2`.*
+
+Cells 1–17 cover the turn/run tier. Cell 18 opened the **workspace/sandbox**
+tier: v4 put runs under a durable-truth contract and left
+`WorkspaceManager._sessions` on process memory, which is how a worker can go on
+calling a sandbox Postgres has already replaced, serving "File not found" for
+files that exist.
 
 ## Topology
 
@@ -57,6 +64,7 @@ the run and which worker attacks it.
 | 15 | Steering vs root finalization | manual | steer cross-worker to the live owner; archived on the response's `steering_inputs` |
 | 16 | `--workers 2` boot / split-DB / pool exhaustion | manual | 16b: split unreachable by construction in the server path; 16c: `POSTGRES_WRITER_POOL_MAX=1` → bounded 503 |
 | 17 | Graceful SIGTERM with open run | ✅ | owner-finalized `cancelled` (`cancelled_by_user=false`, no `recovery`) before exit |
+| 18 | Sandbox replaced behind a worker → re-attach | ✅ | first **workspace/sandbox**-tier cell (1–17 are all turn/run tier). `/spec` on A recreates the sandbox while B is probed concurrently; requires `sandbox_id` changed, B converged to 200 with the exact sentinel bytes, zero 404s, and a `is stale` detection in B's log. A 503 inside the window is fine; a 503 at the end is not |
 
 Manual procedures and full evidence for every cell live in the original
 fault-injection report (kept out of the repo — summarized in the PR that

@@ -79,7 +79,7 @@ export function WhatsNewModal({
           <button
             type="button"
             onClick={onAcknowledge}
-            className="rounded-md px-4 py-2 text-sm font-semibold transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] focus-visible:ring-offset-2"
+            className="rounded-md px-4 py-2 text-sm font-semibold transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             style={{ background: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
           >
             {t('onboarding.whatsNew.gotIt', 'Got it')}

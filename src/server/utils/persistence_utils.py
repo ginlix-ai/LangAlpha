@@ -34,10 +34,12 @@ def get_token_usage_from_callback(
     per_call_records = None
     token_callback = metadata.get("token_callback")
 
-    if token_callback and hasattr(token_callback, "per_call_records"):
+    if token_callback and hasattr(token_callback, "get_per_call_records"):
         try:
             from src.utils.tracking import calculate_cost_from_per_call_records
-            per_call_records = token_callback.per_call_records
+            # Snapshot under the tracker's lock — this runs at interrupt, error
+            # and cancellation, where writers are still live by definition.
+            per_call_records = token_callback.get_per_call_records()
             token_usage = calculate_cost_from_per_call_records(per_call_records)
             logger.debug(
                 f"[WorkflowPersistence] Captured token usage at {context}: "

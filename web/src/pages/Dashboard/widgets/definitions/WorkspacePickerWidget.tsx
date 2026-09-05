@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import i18n from '@/i18n';
+import { relativeTime } from '@/lib/format';
 import { LayoutGrid, Zap, ArrowUpRight, Plus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useWorkspaces } from '@/hooks/useWorkspaces';
@@ -18,33 +18,6 @@ interface WorkspaceRecord extends Workspace {
   is_pinned?: boolean;
 }
 
-// Outside React render — module-level helper. Components that consume this
-// MUST call useTranslation() so the surrounding tree re-renders on locale
-// switch and picks up the freshly-resolved string.
-function formatRelative(ts?: string): string {
-  if (!ts) return '';
-  const then = new Date(ts).getTime();
-  if (Number.isNaN(then)) return '';
-  const mins = Math.max(0, Math.floor((Date.now() - then) / 60000));
-  if (mins < 1) return i18n.t('dashboard.widgets.common.relativeNow');
-  let when: string;
-  if (mins < 60) when = `${mins}m`;
-  else {
-    const hrs = Math.floor(mins / 60);
-    if (hrs < 24) when = `${hrs}h`;
-    else {
-      const days = Math.floor(hrs / 24);
-      if (days < 7) when = `${days}d`;
-      else {
-        const weeks = Math.floor(days / 7);
-        if (weeks < 5) when = `${weeks}w`;
-        else when = `${Math.floor(days / 30)}mo`;
-      }
-    }
-  }
-  return i18n.t('dashboard.widgets.common.relativePast', { when });
-}
-
 function WorkspaceTile({
   workspace,
   index,
@@ -56,7 +29,7 @@ function WorkspaceTile({
 }) {
   const { t } = useTranslation();
   const isFlash = workspace.status === 'flash';
-  const relative = formatRelative(workspace.updated_at as string | undefined);
+  const relative = relativeTime(workspace.updated_at as string | undefined);
   const idx = String(index + 1).padStart(2, '0');
 
   return (
@@ -88,14 +61,14 @@ function WorkspaceTile({
             />
           ) : (
             <span
-              className="text-[10px] dashboard-mono leading-none select-none"
+              className="text-[0.625rem] dashboard-mono leading-none select-none"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               {idx}
             </span>
           )}
           <span
-            className="text-[13px] font-semibold truncate"
+            className="text-[0.8125rem] font-semibold truncate"
             style={{
               color: 'var(--color-text-primary)',
               letterSpacing: '-0.005em',
@@ -112,21 +85,21 @@ function WorkspaceTile({
       <div className="px-3.5 pb-2.5 flex-1 flex flex-col justify-between gap-2">
         {workspace.description ? (
           <div
-            className="text-[11.5px] line-clamp-2 leading-snug"
+            className="text-[0.7188rem] line-clamp-2 leading-snug"
             style={{ color: 'var(--color-text-tertiary)' }}
           >
             {workspace.description}
           </div>
         ) : (
           <div
-            className="text-[11.5px] italic"
+            className="text-[0.7188rem] italic"
             style={{ color: 'var(--color-text-tertiary)', opacity: 0.7 }}
           >
             {isFlash ? t('dashboard.widgets.workspacePicker.flashDesc') : t('dashboard.widgets.workspacePicker.noDescription')}
           </div>
         )}
         {relative ? (
-          <div className="flex items-center justify-between text-[10px] dashboard-mono uppercase tracking-wider">
+          <div className="flex items-center justify-between text-[0.625rem] dashboard-mono uppercase tracking-wider">
             <span style={{ color: 'var(--color-text-tertiary)', opacity: 0.75 }}>
               {isFlash ? t('dashboard.widgets.workspacePicker.tagFlash') : t('dashboard.widgets.workspacePicker.tagWorkspace')}
             </span>
@@ -145,7 +118,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
   // slice locally to honor the widget's configured display limit.
   const { data, isLoading } = useWorkspaces({ limit: 100 });
   const displayLimit = instance.config.limit ?? 12;
-  const workspaces: WorkspaceRecord[] = ((data?.workspaces ?? []) as WorkspaceRecord[]).slice(0, displayLimit);
+  const workspaces: WorkspaceRecord[] = (data?.workspaces ?? []).slice(0, displayLimit);
 
   useWidgetContextExport(instance.id, {
     full: () => {
@@ -196,7 +169,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
         <div className="flex items-baseline gap-2.5 min-w-0">
           <LayoutGrid className="h-3.5 w-3.5 flex-shrink-0 self-center" style={{ color: 'var(--color-text-tertiary)' }} />
           <span
-            className="text-[10px] font-semibold uppercase tracking-[0.14em]"
+            className="text-[0.625rem] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
             {t('dashboard.widgets.workspacePicker.header')}
@@ -214,7 +187,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
             clearChatSession();
             navigate('/chat');
           }}
-          className="group flex items-center gap-1 text-[11px] uppercase tracking-wider transition-colors"
+          className="group flex items-center gap-1 text-[0.6875rem] uppercase tracking-wider transition-colors"
           style={{ color: 'var(--color-text-tertiary)' }}
           onMouseEnter={(e) => {
             e.currentTarget.style.color = 'var(--color-text-primary)';
@@ -260,7 +233,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
                   clearChatSession();
                   navigate('/chat');
                 }}
-                className="text-[11px] uppercase tracking-wider underline-offset-4 hover:underline"
+                className="text-[0.6875rem] uppercase tracking-wider underline-offset-4 hover:underline"
                 style={{ color: 'var(--color-text-secondary)' }}
               >
                 {t('dashboard.widgets.workspacePicker.emptyCta')}

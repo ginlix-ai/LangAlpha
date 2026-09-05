@@ -1,4 +1,9 @@
-FROM python:3.12-slim
+# 3.13 is a floor, not a preference: the Redis cache and stream-reader pools are
+# BlockingConnectionPool, whose waiter queue is an asyncio.Condition. Before
+# 3.13, a waiter cancelled at its own deadline consumed a notify without
+# re-delivering it, so a caller could time out — and be reported as pool
+# exhaustion — while a connection sat free. See pyproject requires-python.
+FROM python:3.13-slim
 
 ENV PYTHONUNBUFFERED=1
 
@@ -44,7 +49,8 @@ RUN chmod +x scripts/docker_entrypoint.sh
 COPY config.yaml .
 COPY agent_config.yaml .
 COPY mcp_servers/ mcp_servers/
-COPY skills/ skills/
+COPY plugins/ plugins/
+COPY workflows/ workflows/
 
 EXPOSE 8000
 

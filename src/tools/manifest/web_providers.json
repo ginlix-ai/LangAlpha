@@ -197,7 +197,7 @@
             {
               "name": "fast",
               "display_name": "Fast",
-              "credits": 5,
+              "credits": 1,
               "native_params": {
                 "mode": "turbo"
               }
@@ -285,7 +285,7 @@
             {
               "name": "standard",
               "display_name": "Standard",
-              "credits": 1,
+              "credits": 4,
               "native_params": {
                 "proxy": "auto"
               }
@@ -293,7 +293,7 @@
             {
               "name": "stealth",
               "display_name": "Stealth",
-              "credits": 5,
+              "credits": 20,
               "native_params": {
                 "proxy": "stealth"
               }
@@ -307,7 +307,7 @@
             {
               "name": "standard",
               "display_name": "Standard",
-              "credits": 1,
+              "credits": 4,
               "native_params": {}
             }
           ]
@@ -319,7 +319,7 @@
             {
               "name": "map",
               "display_name": "Map",
-              "credits": 1,
+              "credits": 4,
               "native_params": {}
             }
           ]

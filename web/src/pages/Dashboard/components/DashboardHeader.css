@@ -22,8 +22,7 @@
   flex: 1;
   height: 100%;
   padding: 0;
-  font-size: 14px;
-  outline: none;
+  font-size: 0.875rem;
   background: transparent;
 }
 
@@ -59,7 +58,7 @@
   border: none;
   background: none;
   color: var(--color-text-primary);
-  font-size: 14px;
+  font-size: 0.875rem;
   text-align: left;
   cursor: pointer;
   transition: background-color 0.15s;

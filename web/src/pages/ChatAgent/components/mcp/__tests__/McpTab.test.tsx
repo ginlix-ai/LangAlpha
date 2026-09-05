@@ -47,11 +47,13 @@ vi.mock('@/hooks/useMcpServers', () => ({
 // (matches the existing toast-mock pattern across the codebase).
 vi.mock('@/components/ui/use-toast', () => ({ toast: vi.fn() }));
 
-// getVaultSecrets is called on mount for the secret picker; keep it benign.
-vi.mock('../../../utils/api', async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>();
-  return { ...actual, getVaultSecrets: vi.fn().mockResolvedValue([]), createVaultSecret: vi.fn() };
-});
+// The secret picker reads the workspace vault through React Query; keep it
+// empty and benign. (`formatApiErrorDetail` stays real — the inline submit-error
+// copy is what the first test asserts on.)
+vi.mock('@/hooks/useWorkspaceVault', () => ({
+  useWorkspaceVaultSecrets: () => ({ data: [], isLoading: false, error: null }),
+  useCreateWorkspaceVaultSecret: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
 
 // Stub the row so the promote action is a plain button — the real Radix kebab
 // needs portal/pointer machinery jsdom doesn't drive (the row's own test mocks
@@ -153,7 +155,7 @@ describe('McpTab — promote workspace server to template', () => {
     fireEvent.click(screen.getByText('save-template-fresh_server'));
 
     await waitFor(() =>
-      expect(mutateAsync.promote).toHaveBeenCalledWith({ name: 'fresh_server', overwrite: false }),
+      expect(mutateAsync.promote).toHaveBeenCalledWith({ workspaceId: 'ws-1', name: 'fresh_server', overwrite: false }),
     );
     // No overwrite confirm for a fresh name.
     expect(screen.queryByText(/already exists/i)).not.toBeInTheDocument();
@@ -174,7 +176,31 @@ describe('McpTab — promote workspace server to template', () => {
     fireEvent.click(screen.getByRole('button', { name: /overwrite/i }));
 
     await waitFor(() =>
-      expect(mutateAsync.promote).toHaveBeenCalledWith({ name: 'dup_server', overwrite: true }),
+      expect(mutateAsync.promote).toHaveBeenCalledWith({ workspaceId: 'ws-1', name: 'dup_server', overwrite: true }),
+    );
+  });
+
+  it('surfaces a rejected promote as a toast rather than an unhandled rejection', async () => {
+    // The branch that moved Templates out to the user tier deleted this file's
+    // only toast-error assertion along with it; promote is McpTab's remaining
+    // fire-and-report mutation, and a swallowed failure here reads as success.
+    listData = makeList([makeServer('fresh_server')]);
+    catalogData = { servers: [] };
+    mutateAsync.promote.mockRejectedValue({
+      response: { data: { detail: 'connector catalog at cap' } },
+    });
+    renderWithProviders(<McpTab workspaceId="ws-1" />);
+
+    fireEvent.click(screen.getByText('save-template-fresh_server'));
+
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          variant: 'destructive',
+          title: 'Could not save the server',
+          description: 'connector catalog at cap',
+        }),
+      ),
     );
   });
 
@@ -220,6 +246,35 @@ describe('McpTab — auto-resolve pending servers', () => {
     expect(mutateAsync.discover).not.toHaveBeenCalled();
   });
 
+  it('probes a pending INHERITED server too (it runs in this sandbox like any other)', async () => {
+    listData = makeList([makeServer('inherited', { origin: 'user', status: 'pending' })]);
+    mutateAsync.discover.mockResolvedValue({ status: 'connected', tools: [], error: '' });
+    renderWithProviders(<McpTab workspaceId="ws-1" />);
+
+    await waitFor(() => expect(mutateAsync.discover).toHaveBeenCalledWith('inherited'));
+  });
+
+  it('does NOT probe an OAuth row — discovery is host-side and the backend 409s', async () => {
+    // The gate that keeps this and the list query's self-stopping poll in
+    // agreement: probing here would 409, and counting it there would poll
+    // forever on a server no probe can ever resolve.
+    listData = makeList([
+      makeServer('oauth_row', { origin: 'user', status: 'pending', oauth_status: 'connected' }),
+    ]);
+    renderWithProviders(<McpTab workspaceId="ws-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('row-oauth_row')).toBeInTheDocument());
+    expect(mutateAsync.discover).not.toHaveBeenCalled();
+  });
+
+  it('does NOT probe a builtin (always connected, process-global)', async () => {
+    listData = makeList([makeServer('builtin_row', { origin: 'builtin', status: 'pending' })]);
+    renderWithProviders(<McpTab workspaceId="ws-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('row-builtin_row')).toBeInTheDocument());
+    expect(mutateAsync.discover).not.toHaveBeenCalled();
+  });
+
   it('does NOT re-probe a connected server', async () => {
     listData = makeList([makeServer('ok', { status: 'connected' })]);
     renderWithProviders(<McpTab workspaceId="ws-1" />);
@@ -229,42 +284,10 @@ describe('McpTab — auto-resolve pending servers', () => {
   });
 });
 
-describe('McpTab — add-from-template error surfacing (FIX 2)', () => {
-  it('surfaces a toast (and does not throw) when adding a template fails', async () => {
-    // Catalog has one template; the from_template add rejects.
-    catalogData = {
-      servers: [{ name: 'svc', transport: 'stdio', description: '' }],
-      max_servers: 20,
-    };
-    mutateAsync.add.mockRejectedValue({
-      response: { data: { detail: 'workspace at server cap' } },
-    });
-    renderWithProviders(<McpTab workspaceId="ws-1" />);
-
-    // Switch to the Templates sub-view and add the template to the workspace.
-    fireEvent.click(screen.getByRole('button', { name: /^templates$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /add to workspace/i }));
-
-    await waitFor(() =>
-      expect(mutateAsync.add).toHaveBeenCalledWith({ from_template: 'svc' }),
-    );
-    // The rejection is caught and surfaced — no unhandled rejection, user sees it.
-    await waitFor(() =>
-      expect(toast).toHaveBeenCalledWith(
-        expect.objectContaining({
-          variant: 'destructive',
-          description: 'workspace at server cap',
-        }),
-      ),
-    );
-  });
-});
-
 describe('McpTab — Add button cap gating', () => {
   it('disables "Add server" when the workspace is at max_servers', async () => {
     listData = makeList([makeServer('a'), makeServer('b')], 2);
     renderWithProviders(<McpTab workspaceId="ws-1" />);
-    // Flush the on-mount getVaultSecrets effect so its setState lands in act().
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /add server/i })).toBeDisabled(),
     );

@@ -39,6 +39,7 @@ vi.mock('framer-motion', async () => {
     useMotionValue: (v: unknown) => ({ get: () => v, set: () => {}, on: () => () => {}, onChange: () => () => {} }),
     useTransform: () => ({ get: () => 0, set: () => {}, on: () => () => {} }),
     useSpring: (v: unknown) => ({ get: () => v, set: () => {}, on: () => () => {} }),
+    useReducedMotion: () => false,
   };
 });
 
@@ -118,7 +119,7 @@ const baseChatState = () => ({
   handleRetry: vi.fn(),
   handleThumbUp: vi.fn(),
   handleThumbDown: vi.fn(),
-  getFeedbackForMessage: vi.fn().mockReturnValue(null),
+  feedbackByTurn: {} as Record<number, unknown>,
   reconnectIfStaleRun: vi.fn().mockResolvedValue(undefined),
   getSubagentHistory: vi.fn().mockReturnValue(null),
   resolveSubagentIdToAgentId: vi.fn((id: string) => id),

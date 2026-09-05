@@ -1086,15 +1086,15 @@ async def apply_watchlist_diff(
 
 
 _PREFERENCE_KEYS = ("risk_preference", "investment_preference", "agent_preference", "other_preference")
-# Keys exposed to the agent in preference.json. `other_preference` is a
-# server-managed JSONB column (onboarding state, internal flags) — keeping it
-# out of the agent's view means the agent can't accidentally clobber it via
-# replace-mode writes.
+# Keys exposed to the agent in preference.json. `other_preference` and
+# `model_preference` are server-managed JSONB columns (onboarding state,
+# platform flags, model routing) — keeping them out of the agent's view means
+# the agent can't accidentally clobber them via replace-mode writes.
 _AGENT_PREFERENCE_KEYS = ("risk_preference", "investment_preference", "agent_preference")
-# `other_preference` is tolerated on input (silently dropped — see
+# Both server-managed keys are tolerated on input (silently dropped — see
 # test_parse_silently_drops_other_preference) but treated as "known".
 _PREFERENCE_ROOT_KEYS: frozenset[str] = frozenset(
-    ("__version__", "other_preference", *_AGENT_PREFERENCE_KEYS)
+    ("__version__", "other_preference", "model_preference", *_AGENT_PREFERENCE_KEYS)
 )
 
 
@@ -1179,9 +1179,11 @@ async def apply_preferences(
     """Replace-mode upsert of the agent-visible preference columns.
 
     Writes only ``risk_preference``, ``investment_preference``, ``agent_preference``.
-    ``other_preference`` is intentionally left untouched — it's server-managed
-    (onboarding state, internal flags) and not exposed to the agent. New users
-    get ``other_preference = '{}'`` on first insert; existing rows keep theirs.
+    ``other_preference`` and ``model_preference`` are intentionally left
+    untouched — both are server-managed (onboarding state, platform flags, model
+    routing) and not exposed to the agent. New users get empty objects on first
+    insert, from the explicit value and the column default respectively;
+    existing rows keep theirs.
     """
     async with _locked_version_check(
         user_id,

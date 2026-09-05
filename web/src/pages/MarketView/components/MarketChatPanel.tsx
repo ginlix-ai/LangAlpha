@@ -2,17 +2,21 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, RefreshCw, MessageSquare, Loader2, ScrollText, X } from 'lucide-react';
+import { ArrowLeft, RefreshCw, MessageSquare, ScrollText, X } from 'lucide-react';
 import { queryKeys } from '@/lib/queryKeys';
 import { ErrorBanner } from '@/components/ui/error-banner';
+import { Loader } from '@/components/ui/loader';
 import LogoLoading from '@/components/ui/logo-loading';
 import ChatInput, { type ChatInputHandle } from '@/components/ui/chat-input';
 import { useNarrowContainer } from '@/hooks/useNarrowContainer';
+import { useStableHandler } from '@/hooks/useStableHandler';
 import MessageList from '../../ChatAgent/components/MessageList';
+import { MessageActionsProvider, type MessageActions } from '../../ChatAgent/components/messageList/MessageActionsContext';
 import { SubagentTelemetryContext } from '../../ChatAgent/components/SubagentTelemetryContext';
 import { ChartSurfaceContext, type ChartSurface } from '../../ChatAgent/contexts/ChartSurfaceContext';
 import { WorkspaceProvider } from '../../ChatAgent/contexts/WorkspaceContext';
 import { useChatMessages } from '../../ChatAgent/hooks/useChatMessages';
+import { useActiveThreadPublisher } from '@/lib/threadLifecycle/useActiveThreadPublisher';
 import { getFlashWorkspace, getPreviewUrl, summarizeThread, offloadThread } from '../../ChatAgent/utils/api';
 import { attachmentsToContexts } from '../../ChatAgent/utils/fileUpload';
 import {
@@ -21,6 +25,7 @@ import {
 } from '../../ChatAgent/session/subagents/resolveSubagentTelemetry';
 import type { ToolCallProcessRecord, SubagentInfo } from '../../ChatAgent/components/ToolCallDetailView';
 import type { PreviewData } from '../../ChatAgent/hooks/utils/types';
+import type { Workspace } from '@/types/api';
 import MarketChatHistoryButton from './MarketChatHistoryButton';
 import MarketDetailDialog, { type DialogPayload } from './MarketDetailDialog';
 import { getMarketThreadId, setMarketThreadId, clearMarketThreadId } from '../utils/threadPersistence';
@@ -40,7 +45,7 @@ function bannerStyle(background: string): React.CSSProperties {
     borderRadius: 6,
     background,
     color: 'var(--color-text-tertiary)',
-    fontSize: 12,
+    fontSize: '0.75rem',
   };
 }
 
@@ -70,13 +75,6 @@ interface ModelOptionsLike {
   model?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean | null;
-}
-
-interface Workspace {
-  workspace_id: string;
-  name?: string;
-  status?: string;
-  [key: string]: unknown;
 }
 
 interface AttachmentItem {
@@ -199,7 +197,7 @@ export default function MarketChatPanel(props: MarketChatPanelProps): React.Reac
   if (mode === 'ptc' && !activeWorkspaceId) {
     return (
       <div className="market-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, padding: 16 }}>
-        <span style={{ color: 'var(--color-text-tertiary)', fontSize: 14 }}>
+        <span style={{ color: 'var(--color-text-tertiary)', fontSize: '0.875rem' }}>
           {t('marketView.chatPanel.noWorkspacePrompt')}
         </span>
       </div>
@@ -402,6 +400,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     handleRejectPTCAgent,
     handleApproveSecretaryAction,
     handleRejectSecretaryAction,
+    handleResumeCreditPause,
     // Turn/context state — drives the stop button, input gating, and the
     // interrupted / plan-feedback / compaction status banners.
     pendingInterrupt,
@@ -418,8 +417,12 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     handleRetry,
     handleThumbUp,
     handleThumbDown,
-    getFeedbackForMessage,
+    feedbackByTurn,
   } = chat;
+
+  // The market panel's thread is what the user is looking at — same active
+  // contract as ChatAgent (no unseen dot for watched finishes, seen on open).
+  useActiveThreadPublisher(threadId);
 
   // Subagent telemetry resolver — feeds ActivityBlock's live token counts.
   // MarketView has no floating cards layer, so we resolve through history only.
@@ -623,13 +626,83 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     setDialogPayload({ type: 'toolcall', toolCallProcess: proc as ToolCallProcessRecord });
   }, []);
 
+  // The panel's transcript action surface. Each member is useStableHandler'd
+  // so the context value survives every streamed chunk — the chat engine
+  // rebuilds its handlers per render, and a fresh value here would re-render
+  // every settled bubble in the panel.
+  const stableOpenSubagentTask = useStableHandler(handleOpenSubagentTask);
+  const stableToolCallDetail = useStableHandler(handleToolCallDetailClick);
+  const stableApprovePlan = useStableHandler(handleApproveInterrupt);
+  const stableRejectPlan = useStableHandler(handleRejectInterrupt);
+  const stableAnswerQuestion = useStableHandler(handleAnswerQuestion);
+  const stableSkipQuestion = useStableHandler(handleSkipQuestion);
+  const stableApproveCreateWorkspace = useStableHandler(handleApproveCreateWorkspace);
+  const stableRejectCreateWorkspace = useStableHandler(handleRejectCreateWorkspace);
+  const stableApproveStartQuestion = useStableHandler(handleApproveStartQuestion);
+  const stableRejectStartQuestion = useStableHandler(handleRejectStartQuestion);
+  const stableApprovePTCAgent = useStableHandler(handleApprovePTCAgent);
+  const stableRejectPTCAgent = useStableHandler(handleRejectPTCAgent);
+  const stableApproveSecretaryAction = useStableHandler(handleApproveSecretaryAction);
+  const stableRejectSecretaryAction = useStableHandler(handleRejectSecretaryAction);
+  const stableResumeCreditPause = useStableHandler(handleResumeCreditPause);
+  const stableEditMessage = useStableHandler((id: string, content: string) =>
+    handleEditMessage(id, content, chatInputRef.current?.getModelOptions?.()));
+  const stableRegenerate = useStableHandler((id: string) =>
+    handleRegenerate(id, chatInputRef.current?.getModelOptions?.()));
+  const stableRetry = useStableHandler(() => handleRetry(chatInputRef.current?.getModelOptions?.()));
+  const stableThumbUp = useStableHandler(handleThumbUp);
+  const stableThumbDown = useStableHandler(handleThumbDown);
+  const stableReportWithAgent = useStableHandler((instruction: string) => {
+    handleSendMessage(`/self-improve ${instruction}`, false, null, null, {});
+  });
+  const stableWidgetSendPrompt = useStableHandler((text: string) => {
+    handleSendMessage(text, false, null, null, {});
+  });
+
+  const messageActions = useMemo<MessageActions>(() => ({
+    onOpenSubagentTask: stableOpenSubagentTask,
+    onToolCallDetailClick: stableToolCallDetail,
+    onApprovePlan: stableApprovePlan,
+    onRejectPlan: stableRejectPlan,
+    onAnswerQuestion: stableAnswerQuestion,
+    onSkipQuestion: stableSkipQuestion,
+    onApproveCreateWorkspace: stableApproveCreateWorkspace,
+    onRejectCreateWorkspace: stableRejectCreateWorkspace,
+    onApproveStartQuestion: stableApproveStartQuestion,
+    onRejectStartQuestion: stableRejectStartQuestion,
+    onApprovePTCAgent: stableApprovePTCAgent,
+    onRejectPTCAgent: stableRejectPTCAgent,
+    onApproveSecretaryAction: stableApproveSecretaryAction,
+    onRejectSecretaryAction: stableRejectSecretaryAction,
+    onResumeCreditPause: stableResumeCreditPause,
+    onEditMessage: stableEditMessage,
+    onRegenerate: stableRegenerate,
+    onRetry: stableRetry,
+    onThumbUp: stableThumbUp,
+    onThumbDown: stableThumbDown,
+    onReportWithAgent: stableReportWithAgent,
+    onWidgetSendPrompt: stableWidgetSendPrompt,
+  }), [
+    stableOpenSubagentTask, stableToolCallDetail, stableApprovePlan, stableRejectPlan,
+    stableAnswerQuestion, stableSkipQuestion, stableApproveCreateWorkspace,
+    stableRejectCreateWorkspace, stableApproveStartQuestion, stableRejectStartQuestion,
+    stableApprovePTCAgent, stableRejectPTCAgent, stableApproveSecretaryAction,
+    stableRejectSecretaryAction, stableResumeCreditPause, stableEditMessage, stableRegenerate, stableRetry,
+    stableThumbUp, stableThumbDown, stableReportWithAgent, stableWidgetSendPrompt,
+  ]);
+
   const initialModel = lastThreadModel ?? null;
 
   // In fast mode, carry the source thread/workspace into a PTC-agent proposal so
-  // its "open in chat" deep-link lands back here. Null in PTC mode.
-  const flashContext = agentMode === 'flash' && threadId && threadId !== '__default__'
-    ? { threadId, workspaceId: activeWorkspaceId }
-    : null;
+  // its "open in chat" deep-link lands back here. Null in PTC mode. Memoized:
+  // a fresh object per render would defeat the memoized bubbles downstream.
+  const flashContext = useMemo(
+    () =>
+      agentMode === 'flash' && threadId && threadId !== '__default__'
+        ? { threadId, workspaceId: activeWorkspaceId }
+        : null,
+    [agentMode, threadId, activeWorkspaceId],
+  );
 
   const showQuickQueries = messages.length === 0 && !isLoading && !isLoadingHistory;
 
@@ -649,22 +722,24 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     gap: 5,
     flexShrink: 0,
     padding: '4px 10px',
-    background: 'var(--color-accent-soft)',
-    border: '1px solid var(--color-accent-overlay)',
+    background: 'transparent',
+    border: '1px solid var(--color-border-default)',
     borderRadius: 8,
-    color: 'var(--color-accent-light)',
-    fontSize: 12,
+    color: 'var(--color-text-secondary)',
+    fontSize: '0.75rem',
     fontWeight: 500,
     cursor: 'pointer',
-    transition: 'background 0.15s, border-color 0.15s',
+    transition: 'background 0.15s, border-color 0.15s, color 0.15s',
   };
   const headerBtnHover = (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.currentTarget.style.background = 'var(--color-accent-overlay)';
-    e.currentTarget.style.borderColor = 'var(--color-accent-primary)';
+    e.currentTarget.style.background = 'var(--color-bg-hover)';
+    e.currentTarget.style.borderColor = 'var(--color-border-elevated)';
+    e.currentTarget.style.color = 'var(--color-text-primary)';
   };
   const headerBtnLeave = (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.currentTarget.style.background = 'var(--color-accent-soft)';
-    e.currentTarget.style.borderColor = 'var(--color-accent-overlay)';
+    e.currentTarget.style.background = 'transparent';
+    e.currentTarget.style.borderColor = 'var(--color-border-default)';
+    e.currentTarget.style.color = 'var(--color-text-secondary)';
   };
 
   // Session title: first user message text (truncated) or fallback to "New chat".
@@ -750,38 +825,16 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
           <div style={{ padding: '16px 24px', maxWidth: '100%' }}>
             <ChartSurfaceContext.Provider value={chartSurface}>
               <SubagentTelemetryContext.Provider value={resolveSubagentTelemetry}>
-                <MessageList
-                  messages={messages as never[]}
-                  isLoading={isLoading}
-                  isLoadingHistory={isLoadingHistory}
-                  hideAvatar={isNarrowChat}
-                  onOpenSubagentTask={handleOpenSubagentTask}
-                  onToolCallDetailClick={handleToolCallDetailClick}
-                  onApprovePlan={handleApproveInterrupt}
-                  onRejectPlan={handleRejectInterrupt}
-                  onAnswerQuestion={handleAnswerQuestion}
-                  onSkipQuestion={handleSkipQuestion}
-                  onApproveCreateWorkspace={handleApproveCreateWorkspace}
-                  onRejectCreateWorkspace={handleRejectCreateWorkspace}
-                  onApproveStartQuestion={handleApproveStartQuestion}
-                  onRejectStartQuestion={handleRejectStartQuestion}
-                  onApprovePTCAgent={handleApprovePTCAgent}
-                  onRejectPTCAgent={handleRejectPTCAgent}
-                  onApproveSecretaryAction={handleApproveSecretaryAction}
-                  onRejectSecretaryAction={handleRejectSecretaryAction}
-                  onEditMessage={(id: string, content: string) =>
-                    handleEditMessage(id, content, chatInputRef.current?.getModelOptions?.())}
-                  onRegenerate={(id: string) =>
-                    handleRegenerate(id, chatInputRef.current?.getModelOptions?.())}
-                  onRetry={() => handleRetry(chatInputRef.current?.getModelOptions?.())}
-                  onThumbUp={handleThumbUp}
-                  onThumbDown={handleThumbDown}
-                  getFeedbackForMessage={getFeedbackForMessage}
-                  onReportWithAgent={(instruction: string) =>
-                    handleSendMessage(`/self-improve ${instruction}`, false, null, null, {})}
-                  flashContext={flashContext}
-                  onWidgetSendPrompt={(text: string) => handleSendMessage(text, false, null, null, {})}
-                />
+                <MessageActionsProvider actions={messageActions}>
+                  <MessageList
+                    messages={messages as never[]}
+                    isLoading={isLoading}
+                    isLoadingHistory={isLoadingHistory}
+                    hideAvatar={isNarrowChat}
+                    feedbackByTurn={feedbackByTurn}
+                    flashContext={flashContext}
+                  />
+                </MessageActionsProvider>
               </SubagentTelemetryContext.Provider>
             </ChartSurfaceContext.Provider>
             {messageError && (
@@ -820,7 +873,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         || isCompacting) && (
         <div style={{ padding: '0 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
           {pendingRejection && (
-            <div style={bannerStyle('var(--color-accent-soft)')}>
+            <div style={bannerStyle('var(--color-bg-surface)')}>
               <ScrollText style={{ width: 14, height: 14, flexShrink: 0, color: 'var(--color-accent-primary)' }} />
               <span>{t('chat.planFeedbackHint')}</span>
             </div>
@@ -836,13 +889,17 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
           )}
           {workspaceStarting && (
             <div style={bannerStyle('transparent')}>
-              <Loader2 style={{ width: 14, height: 14, flexShrink: 0, color: 'var(--color-accent-primary)' }} className="animate-spin" />
+              <span aria-hidden="true" style={{ flexShrink: 0 }}>
+                <Loader size={14} className="text-[color:var(--color-accent-primary)]" />
+              </span>
               <span>{t(workspaceStarting === 'archived' ? 'chat.workspaceRestoring' : 'chat.workspaceStarting')}</span>
             </div>
           )}
           {isCompacting && (
             <div style={bannerStyle('transparent')}>
-              <Loader2 style={{ width: 14, height: 14, flexShrink: 0, color: 'var(--color-accent-primary)' }} className="animate-spin" />
+              <span aria-hidden="true" style={{ flexShrink: 0 }}>
+                <Loader size={14} className="text-[color:var(--color-accent-primary)]" />
+              </span>
               <span>{t(isCompacting === 'offload' ? 'chat.offloading' : 'chat.compacting')}</span>
             </div>
           )}
@@ -874,10 +931,10 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
                   maxWidth: '100%',
                   padding: '4px 6px 4px 10px',
                   borderRadius: 6,
-                  background: 'var(--color-accent-soft)',
-                  border: '1px solid var(--color-accent-overlay)',
+                  background: 'var(--color-bg-surface)',
+                  border: '1px solid var(--color-border-muted)',
                   color: 'var(--color-text-secondary)',
-                  fontSize: 12,
+                  fontSize: '0.75rem',
                 }}
               >
                 <button
@@ -936,7 +993,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         mode={mode}
         onModeChange={onModeChange}
         ptcDisabledReason={ptcDisabledReason}
-        workspaces={ptcWorkspaces as never}
+        workspaces={ptcWorkspaces}
         selectedWorkspaceId={selectedWorkspaceId}
         onWorkspaceChange={onWorkspaceChange}
         onCaptureChart={onCaptureChart}

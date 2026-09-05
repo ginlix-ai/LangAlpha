@@ -22,6 +22,7 @@
 }
 
 .bottom-tab-item {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -44,8 +45,20 @@
   transition: transform 0s;
 }
 
+/* Same split as the rail: the glyph darkening carries selection, the accent only
+   reinforces it — here as an underline, since a horizontal pill has no edge. */
 .bottom-tab-item.active {
-  color: var(--color-accent-primary);
+  color: var(--color-text-primary);
+}
+
+.bottom-tab-item.active::after {
+  content: '';
+  position: absolute;
+  bottom: 6px;
+  width: 16px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--color-accent-primary);
 }
 
 .bottom-tab-item-icon {

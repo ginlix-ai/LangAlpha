@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { Mail, Link2 } from 'lucide-react';
 import { Input } from '../../components/ui/input';
 import { useTranslation, Trans } from 'react-i18next';
@@ -177,16 +177,20 @@ function LoginPage() {
       'Sign up failed',
       (result) => {
         const { data } = result;
-        if (data?.user && !data.session) {
-          if (data.user.identities?.length === 0) {
-            setError({ message: t('auth.signupEmailExists'), code: 'user_already_exists' });
-          } else {
-            // Confirmation email sent — make the pending state unmistakable.
-            setSentKind('signup');
-            setSentEmail(signupEmail);
-            goToView('check-inbox');
-          }
+        // Total on purpose: an error-free response means GoTrue accepted the
+        // signup and the confirmation mail is already sent, so check-inbox is
+        // the truthful screen unless we positively know otherwise. Requiring
+        // `data.user` to be present instead left the form sitting there saying
+        // nothing when auth-js 2.106.1 answered a confirmation-required signup
+        // with `user: null`, and a silent success reads as a broken button.
+        if (data?.session) return; // already signed in; the auth listener routes
+        if (data?.user?.identities?.length === 0) {
+          setError({ message: t('auth.signupEmailExists'), code: 'user_already_exists' });
+          return;
         }
+        setSentKind('signup');
+        setSentEmail(signupEmail);
+        goToView('check-inbox');
       },
     );
   };
@@ -526,9 +530,18 @@ function LoginPage() {
         )}
 
         <p className="login-page__legal">
+          {/* Deliberately anchors and not <Link>: these two are documents about
+              the product rather than app surface, and the desktop shell hands a
+              window.open of one of our own URLs to the system browser
+              (setWindowOpenHandler in desktop/src/main.js). Routing them through
+              a new window is what keeps a page of prose out of a frameless app
+              window, where the top of it sits under the titlebar drag region. */}
           <Trans
             i18nKey="auth.agreeToTerms"
-            components={{ 1: <Link to="/legal" />, 2: <Link to="/privacy" /> }}
+            components={{
+              1: <a href="/legal" target="_blank" rel="noopener noreferrer" />,
+              2: <a href="/privacy" target="_blank" rel="noopener noreferrer" />,
+            }}
           />
         </p>
         </div>

@@ -10,8 +10,9 @@ SANDBOX_NODE_VERSION = "24.14.1"  # Pinned; mirrored in Dockerfile.sandbox.
 
 DEFAULT_DEPENDENCIES = [
     # Core
-    "mcp",
-    "fastmcp",
+    # Exact pin, never a range: mcp_setup joins this list into a shell
+    # command, where "<" would parse as a redirect.
+    "mcp==2.0.0",
     "fastapi",
     "pandas",
     "requests",

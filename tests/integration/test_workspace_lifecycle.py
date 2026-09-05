@@ -5,7 +5,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-import pytest_asyncio
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -138,19 +137,48 @@ class TestUpdateWorkspace:
         assert updated["status"] == "stopped"
         assert updated["stopped_at"] is not None
 
-    async def test_update_workspace_status_with_sandbox_id(
+    async def test_update_workspace_status_leaves_the_binding_alone(
         self, seed_workspace, patched_get_db_connection
     ):
-        from src.server.database.workspace import update_workspace_status
+        """A status move must never rebind the workspace to a sandbox.
+
+        ``try_bind_workspace_sandbox``'s compare-and-set is the sole writer of
+        ``sandbox_id``; if a plain status change could also write it, a worker
+        holding a superseded id could resurrect it.
+        """
+        from src.server.database.workspace import (
+            try_bind_workspace_sandbox,
+            update_workspace_status,
+        )
 
         ws_id = str(seed_workspace["workspace_id"])
-        updated = await update_workspace_status(
-            ws_id, "running", sandbox_id="sandbox-abc-123"
+        await try_bind_workspace_sandbox(
+            ws_id,
+            sandbox_id="sandbox-abc-123",
+            expected_previous_sandbox_id=None,
+            platform_secret_version=0,
         )
+
+        updated = await update_workspace_status(ws_id, "running")
 
         assert updated is not None
         assert updated["status"] == "running"
         assert updated["sandbox_id"] == "sandbox-abc-123"
+
+    async def test_update_workspace_status_cannot_revive_a_deleted_row(
+        self, seed_workspace, patched_get_db_connection
+    ):
+        """Soft-deleted is terminal: nothing clears ``sandbox_id`` on delete, so a
+        revived row would hand its still-named sandbox back out."""
+        from src.server.database.workspace import (
+            delete_workspace,
+            update_workspace_status,
+        )
+
+        ws_id = str(seed_workspace["workspace_id"])
+        await delete_workspace(ws_id)
+
+        assert await update_workspace_status(ws_id, "running") is None
 
     async def test_update_workspace_activity(
         self, seed_workspace, patched_get_db_connection

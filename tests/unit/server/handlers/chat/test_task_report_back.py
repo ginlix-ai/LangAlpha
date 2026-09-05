@@ -8,6 +8,7 @@ TaskOutput — the result rides the durable archive, never the payload.
 """
 
 import contextlib
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -122,8 +123,13 @@ def _arb_env(
     wake=None,
 ):
     """Patch set for the executor's pre-dispatch arbitration."""
+    # A plain string is the status alone; a dict is the whole attempt row, for
+    # the arms that read more of it than its status.
     latest = AsyncMock(
-        side_effect=[{"status": s} if s else None for s in latest_statuses]
+        side_effect=[
+            s if isinstance(s, dict) else ({"status": s} if s else None)
+            for s in latest_statuses
+        ]
     )
     patches = (
         patch(
@@ -482,3 +488,104 @@ async def test_terminal_pointer_row_read_failure_leaves_recents():
     # covers the window.
     assert out["recent_report_back_run_ids"] == ["rb-1"]
     assert out["pending_report_back"] is True
+
+
+# ---------------------------------------------------------------------------
+# a cancel releases every parked job on the thread — but a stop must not be
+# the thing that starts a turn
+# ---------------------------------------------------------------------------
+
+_STOPPED_AT = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+_STOPPED_RUN = "attempt-stopped"
+
+
+def _cancelled_attempt() -> dict:
+    return {
+        "status": "cancelled",
+        "cancel_requested_at": _STOPPED_AT,
+        "conversation_response_id": _STOPPED_RUN,
+    }
+
+
+@pytest.mark.asyncio
+async def test_dispatch_drops_when_the_users_own_stop_released_it():
+    """The result was already settled and parked when they pressed stop, and
+    the cancel finalize is what released it. Posting here would make the stop
+    itself open a billable turn a second later.
+    """
+    post, wake = AsyncMock(), AsyncMock()
+    with _arb_env(
+        run_row={
+            "status": "completed",
+            "result_delivered_at": None,
+            "parent_run_id": _STOPPED_RUN,
+            "finalized_at": _STOPPED_AT - timedelta(seconds=30),
+        },
+        latest_statuses=[_cancelled_attempt()],
+        post=post,
+        wake=wake,
+    ):
+        await execute_task_report_back(_arb_job())
+
+    post.assert_not_awaited()
+    assert wake.await_args.kwargs.get("cleared") is True
+
+
+@pytest.mark.asyncio
+async def test_dispatch_announces_a_task_the_stopped_turn_did_not_launch():
+    """The task belongs to an earlier turn and settled while a later one ran,
+    so its job was parked. Cancelling that later turn releases it — but the
+    stop was never about this result, and a timestamp-only test would read the
+    earlier settle as covered and lose the notification for good.
+    """
+    post = AsyncMock(return_value=("dispatched", "rb-run-1"))
+    with _arb_env(
+        run_row={
+            "status": "completed",
+            "result_delivered_at": None,
+            "parent_run_id": "attempt-earlier",
+            "finalized_at": _STOPPED_AT - timedelta(seconds=30),
+        },
+        latest_statuses=[_cancelled_attempt()],
+        post=post,
+    ):
+        await execute_task_report_back(_arb_job())
+
+    post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_still_announces_a_result_that_landed_after_the_stop():
+    """News the stop cannot have been about. A blanket "this thread was
+    cancelled once" test would silence every later completion on it — the
+    exact job this pipeline exists to do.
+    """
+    post = AsyncMock(return_value=("dispatched", "rb-run-1"))
+    with _arb_env(
+        run_row={
+            "status": "completed",
+            "result_delivered_at": None,
+            "finalized_at": _STOPPED_AT + timedelta(minutes=5),
+        },
+        latest_statuses=[_cancelled_attempt()],
+        post=post,
+    ):
+        await execute_task_report_back(_arb_job())
+
+    post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_announces_when_the_stop_carries_no_timestamp():
+    """Undecidable without both stamps, and silence is the worse failure —
+    the pipeline's stated posture is a duplicate over a lost notification.
+    """
+    post = AsyncMock(return_value=("dispatched", "rb-run-1"))
+    with _arb_env(
+        run_row={"status": "completed", "result_delivered_at": None},
+        latest_statuses=[{"status": "cancelled", "cancel_requested_at": None}],
+        post=post,
+    ):
+        await execute_task_report_back(_arb_job())
+
+    post.assert_awaited_once()

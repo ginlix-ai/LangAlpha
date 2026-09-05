@@ -1,22 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { Mock } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import React from 'react';
 import { VaultSecretPicker } from '../VaultSecretPicker';
 
-// Stub the api module so inline-create hits a controllable mock, not a backend.
-vi.mock('../../../utils/api', async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>();
-  return { ...actual, createVaultSecret: vi.fn() };
-});
-
-import { createVaultSecret } from '../../../utils/api';
+// The picker no longer knows which vault it writes to — `createSecret` is the
+// caller's, so a mock of it IS the boundary under test.
+const createSecret = vi.fn();
 
 const baseProps = {
-  workspaceId: 'ws-1',
   value: '',
   secretNames: [] as string[],
+  createSecret,
 };
 
 beforeEach(() => {
@@ -31,46 +26,28 @@ function openCreateForm(name: string, value: string) {
 }
 
 describe('VaultSecretPicker — inline create success', () => {
-  it('emits the ${vault:NAME} ref (uppercased) and fires onSecretCreated', async () => {
-    (createVaultSecret as Mock).mockResolvedValue({ name: 'MY_TOKEN' });
+  it('creates through the injected vault and emits the ${vault:NAME} ref (uppercased)', async () => {
+    createSecret.mockResolvedValue({ name: 'MY_TOKEN' });
     const onChange = vi.fn();
-    const onSecretCreated = vi.fn();
-    render(
-      <VaultSecretPicker
-        {...baseProps}
-        onChange={onChange}
-        onSecretCreated={onSecretCreated}
-      />,
-    );
+    render(<VaultSecretPicker {...baseProps} onChange={onChange} />);
 
     // The name input force-uppercases on change; pass lowercase to prove it.
     openCreateForm('my_token', 'super-secret');
     fireEvent.click(screen.getByRole('button', { name: /create & use/i }));
 
-    await waitFor(() => expect(createVaultSecret).toHaveBeenCalledTimes(1));
-    expect(createVaultSecret).toHaveBeenCalledWith('ws-1', {
-      name: 'MY_TOKEN',
-      value: 'super-secret',
-    });
+    await waitFor(() => expect(createSecret).toHaveBeenCalledTimes(1));
+    expect(createSecret).toHaveBeenCalledWith({ name: 'MY_TOKEN', value: 'super-secret' });
     expect(onChange).toHaveBeenCalledWith('${vault:MY_TOKEN}');
-    expect(onSecretCreated).toHaveBeenCalledWith('MY_TOKEN');
   });
 });
 
 describe('VaultSecretPicker — inline create failure', () => {
   it('surfaces the error detail and does NOT call onChange', async () => {
-    (createVaultSecret as Mock).mockRejectedValue({
+    createSecret.mockRejectedValue({
       response: { data: { detail: 'secret name already in use' } },
     });
     const onChange = vi.fn();
-    const onSecretCreated = vi.fn();
-    render(
-      <VaultSecretPicker
-        {...baseProps}
-        onChange={onChange}
-        onSecretCreated={onSecretCreated}
-      />,
-    );
+    render(<VaultSecretPicker {...baseProps} onChange={onChange} />);
 
     openCreateForm('DUP', 'value');
     fireEvent.click(screen.getByRole('button', { name: /create & use/i }));
@@ -79,6 +56,5 @@ describe('VaultSecretPicker — inline create failure', () => {
       expect(screen.getByText('secret name already in use')).toBeInTheDocument(),
     );
     expect(onChange).not.toHaveBeenCalled();
-    expect(onSecretCreated).not.toHaveBeenCalled();
   });
 });

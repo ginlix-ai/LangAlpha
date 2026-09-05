@@ -100,6 +100,20 @@ def _build_pricing_table() -> Dict[str, Any]:
 # Load pricing from manifests at module import (single source of truth)
 INFRASTRUCTURE_PRICING = _build_pricing_table()
 
+# Tool names already warned about, process-wide. This function used to run once
+# per turn at finalize; the runtime credit gate calls it on every spend poll, so
+# an unpriced name would otherwise log every couple of seconds per lane for the
+# rest of the turn. The set is unbounded only in the number of distinct tool
+# names, which is bounded by the toolset.
+_UNPRICED_WARNED: set[str] = set()
+
+
+def _warn_once(key: str, message: str) -> None:
+    if key in _UNPRICED_WARNED:
+        return
+    _UNPRICED_WARNED.add(key)
+    logger.warning(message)
+
 # Service name mapping (tool class names → user-friendly service names)
 TOOL_TO_SERVICE_MAPPING = {
     "TavilySearchTool": "tavily_search",
@@ -159,9 +173,10 @@ def calculate_infrastructure_credits(
 
         pricing = pricing_config.get(tool_name)
         if not pricing:
-            logger.warning(
+            _warn_once(
+                f"missing:{tool_name}",
                 f"[InfrastructureCosts] No pricing found for tool: {tool_name}. "
-                f"Skipping credit calculation."
+                f"Skipping credit calculation.",
             )
             continue
 
@@ -179,9 +194,10 @@ def calculate_infrastructure_credits(
             credits_per_op = pricing["credits_per_op"]
             tool_credits = count * credits_per_op
         else:
-            logger.warning(
+            _warn_once(
+                f"format:{tool_name}",
                 f"[InfrastructureCosts] Unknown pricing format for {tool_name}. "
-                f"Skipping."
+                f"Skipping.",
             )
             continue
 

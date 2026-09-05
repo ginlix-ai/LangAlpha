@@ -17,16 +17,21 @@ export const CARD_BORDER = 'var(--color-border-muted)';
 
 // ─── Sizing tokens ──────────────────────────────────────────────────
 
-/** Shared mobile / desktop sizing tokens for inline cards */
+/** Shared mobile / desktop sizing tokens for inline cards.
+ *  The *Fs tokens are rem strings so DOM text follows the root font scale;
+ *  chartFs stays a px number for recharts internals (SVG ticks/labels in
+ *  fixed-height charts), which must not scale with the page. */
 export const SIZES_MOBILE = {
   gap: 6, listGap: 2, gridGap: '1px 12px',
-  headerFs: 12, rowFs: 11, labelFs: 10, badgeFs: 9,
+  headerFs: '0.75rem', rowFs: '0.6875rem', labelFs: '0.625rem', badgeFs: '0.5625rem',
+  chartFs: 9,
   rowPad: '2px 0', sectionMb: 4, filingMb: 6,
   moreMt: 2, changeMinW: 48,
 } as const;
 export const SIZES_DESKTOP = {
   gap: 8, listGap: 4, gridGap: '2px 20px',
-  headerFs: 13, rowFs: 12, labelFs: 11, badgeFs: 10,
+  headerFs: '0.8125rem', rowFs: '0.75rem', labelFs: '0.6875rem', badgeFs: '0.625rem',
+  chartFs: 10,
   rowPad: '3px 0', sectionMb: 6, filingMb: 8,
   moreMt: 4, changeMinW: 55,
 } as const;

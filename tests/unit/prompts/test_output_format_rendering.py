@@ -48,7 +48,7 @@ class TestHtmlSteeringBlock:
     def test_html_renders_block(self):
         out = _render({"output_format": "html"})
         assert HTML_BLOCK_MARKER in out
-        assert "results/*.html" in out
+        assert "work/<task>/<name>.html" in out
         for ref in SKILL_REFS:
             assert ref in out
 
@@ -69,7 +69,7 @@ class TestHtmlSteeringBlock:
 
     def test_html_no_block_without_sandbox(self):
         # Flash has no sandbox: HTML steering must not fire even when the user
-        # set output_format=html — there is no filesystem to write results/ to.
+        # set output_format=html — there is no filesystem to write the report to.
         out = _render({"output_format": "html"}, sandbox_enabled=False)
         assert HTML_BLOCK_MARKER not in out
         for ref in SKILL_REFS:

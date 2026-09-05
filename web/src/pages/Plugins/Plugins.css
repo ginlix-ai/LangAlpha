@@ -1,0 +1,33 @@
+/* The scroll port is a child rather than the root, so the desktop shell's drag
+   strip can sit above it and stay put while the page scrolls. Off the shell the
+   strip collapses to nothing and this is a plain full-height column. */
+.plugins-page {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  /* Ground behind the connector card grid — matches the Dashboard page root.
+     Aliases bg-page in dark; a distinct lighter canvas in light mode. */
+  background-color: var(--color-bg-canvas);
+}
+
+.plugins-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: clamp(16px, 3vw, 32px) clamp(16px, 3vw, 32px) 48px;
+}
+
+.plugins-container {
+  max-width: 672px;
+  margin: 0 auto;
+}
+
+.plugins-content {
+  min-height: 0;
+}
+
+@media (max-width: 767px) {
+  .plugins-scroll { padding: 16px 16px 48px; }
+  .plugins-tab-bar { scrollbar-width: none; -ms-overflow-style: none; }
+  .plugins-tab-bar::-webkit-scrollbar { display: none; }
+}

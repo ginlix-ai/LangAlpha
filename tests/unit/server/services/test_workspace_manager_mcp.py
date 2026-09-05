@@ -14,7 +14,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.server.services.egress.session_binding import RelayBind
 from src.server.services.workspace_manager import WorkspaceManager
+from tests.unit.server.mcp_builders import resolved_mcp
+from tests.unit.server.services.conftest import _patch_identity, _patch_sandbox_bind
 
 
 def _make_config():
@@ -55,6 +58,9 @@ def _make_session(*, version=None, summary=None):
     session.config = MagicMock()
     session.config.mcp = MagicMock(servers=[])
     session.sandbox = MagicMock()
+    # Must match _make_workspace's sandbox_id: every cached return validates the
+    # session's binding against the row before handing it out.
+    session.sandbox.sandbox_id = "sb-1"
     session.sandbox.is_ready = MagicMock(return_value=True)
     session.sandbox.has_failed = MagicMock(return_value=False)
     session.sandbox.ensure_sandbox_ready = AsyncMock()
@@ -64,16 +70,22 @@ def _make_session(*, version=None, summary=None):
     session._builtin_mcp_registry = session.mcp_registry
     session.mcp_tool_summary = summary
     session.mcp_config_version = version
+    session.egress_binding = None
     return session
 
 
-def _resolved(version, servers=None, user_names=None):
-    r = MagicMock()
-    r.version = version
-    r.servers = servers or []
-    r.builtin_names = frozenset()
-    r.user_names = frozenset(user_names or [])
-    return r
+def _srv(name, *, source="workspace", oauth_connection_id=None):
+    """A stand-in server config (MagicMock: only the read fields matter)."""
+    server = MagicMock()
+    server.name = name
+    server.source = source
+    server.oauth_connection_id = oauth_connection_id
+    return server
+
+
+def _resolved(version, servers=None):
+    """A real ResolvedMCP whose ``servers`` are workspace-local entries."""
+    return resolved_mcp(version=version, local=list(servers or []))
 
 
 # ---------------------------------------------------------------------------
@@ -90,25 +102,91 @@ class TestWarmCooldownNoQuery:
 
     @pytest.mark.asyncio
     @patch("src.server.services.workspace_manager.db_get_workspace", new_callable=AsyncMock)
-    async def test_warm_cooldown_zero_workspace_queries(self, mock_get_ws):
-        """A ready cached session inside the 30s cooldown returns WITHOUT any
-        db_get_workspace read — so the version check adds zero per-turn queries."""
+    async def test_warm_cooldown_reads_identity_only(self, mock_get_ws):
+        """A ready cached session inside the 30s cooldown returns after exactly one
+        narrow ``status, sandbox_id`` read — never the full row.
+
+        The identity read is not optional: workers are spawn-isolated, so a
+        cached handle can name a sandbox Postgres has already replaced and every
+        warm path returns without consulting the row. What the hot path must
+        keep avoiding is ``db_get_workspace``, which drags the JSONB ``config``
+        and ``artifacts`` columns along with it.
+        """
         wm = WorkspaceManager.get_instance(config=_make_config())
         ws_id = str(uuid.uuid4())
         session = _make_session(version=0, summary="cached")
         wm._sessions[ws_id] = session
         wm._record_sync(ws_id)  # cooldown active
 
+        identity = AsyncMock(
+            return_value={"status": "running", "sandbox_id": "sb-1"}
+        )
         # resolve must NOT be called within cooldown.
-        with patch(
-            "src.server.services.mcp_config.resolve_mcp_config",
-            new_callable=AsyncMock,
-        ) as mock_resolve:
+        with (
+            patch(
+                "src.server.services.mcp_config.resolve_mcp_config",
+                new_callable=AsyncMock,
+            ) as mock_resolve,
+            patch(
+                "src.server.services.workspace_manager.db_get_workspace_identity",
+                identity,
+            ),
+        ):
             result = await wm.get_session_for_workspace(ws_id, user_id="user-1")
 
         assert result is session
+        identity.assert_awaited_once_with(ws_id)
         mock_get_ws.assert_not_awaited()
         mock_resolve.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.workspace_manager.db_get_workspace", new_callable=AsyncMock)
+    @patch("src.server.services.workspace_manager.update_workspace_status", new_callable=AsyncMock)
+    @patch("src.server.services.workspace_manager.update_workspace_activity", new_callable=AsyncMock)
+    async def test_a_superseded_resolve_gets_past_the_cooldown(
+        self, mock_activity, mock_status, mock_get_ws
+    ):
+        """The withheld version stamp only closes the loop if something reads it.
+
+        A superseded resolve clears ``mcp_config_version`` so the next acquire
+        re-resolves, but the version is read on the slow path and the cooldown
+        returns before it. So the stamp alone bought nothing: for a full cooldown
+        the session kept serving a composite built from grants a newer resolve
+        had already replaced -- the declined tools' wrappers and docs among them.
+        """
+        wm = WorkspaceManager.get_instance(config=_make_config())
+        ws_id = str(uuid.uuid4())
+        session = _make_session(version=None, summary="stale")
+        wm._sessions[ws_id] = session
+        wm._record_sync(ws_id)  # cooldown active
+        wm._resolve_superseded.add(ws_id)
+
+        workspace = _make_workspace(ws_id, mcp_config_version=5)
+        mock_get_ws.return_value = workspace
+        wm._sync_sandbox_assets = AsyncMock()
+        wm._maybe_restore_files = AsyncMock()
+
+        with patch(
+            "src.server.services.mcp_config.resolve_mcp_config",
+            new_callable=AsyncMock,
+            return_value=_resolved(5),
+        ) as mock_resolve, patch(
+            "src.server.services.workspace_manager.sync_egress_relay",
+            new=AsyncMock(return_value=RelayBind.APPLIED),
+        ), patch(
+            "ptc_agent.core.mcp_registry.build_composite_registry",
+            return_value=MagicMock(),
+        ), patch(
+            "ptc_agent.agent.prompts.formatter.build_tool_summary_from_registry",
+            return_value="NEW",
+        ), _patch_identity(workspace):
+            await wm.get_session_for_workspace(ws_id, user_id="user-1")
+
+        mock_resolve.assert_awaited_once()
+        assert session.mcp_config_version == 5
+        # Spent, not held: the mark exists to get one acquire to the version
+        # read, and the resolve it forced either succeeded or re-marked.
+        assert ws_id not in wm._resolve_superseded
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +233,9 @@ class TestSessionCachesMcp:
             new_callable=AsyncMock,
             return_value=resolved,
         ) as mock_resolve, patch(
+            "src.server.services.workspace_manager.sync_egress_relay",
+            new=AsyncMock(return_value=RelayBind.APPLIED),
+        ), patch(
             "ptc_agent.core.mcp_registry.build_composite_registry",
             return_value=composite,
         ), patch(
@@ -171,6 +252,112 @@ class TestSessionCachesMcp:
         assert session.sandbox.mcp_registry is composite
         assert session.mcp_tool_summary == "SUMMARY"
         assert session.mcp_config_version == 2
+
+    @pytest.mark.asyncio
+    async def test_a_superseded_resolve_publishes_nothing(self):
+        """A resolve a newer version has overtaken must not reach the sandbox.
+
+        Everything derived from it is stale by the same amount, including the
+        tool set the wrappers and per-tool docs come from -- so publishing here
+        reinstates, in a sandbox the newer resolve just corrected, the
+        documentation for tools its user had declined. Reporting no change is
+        what keeps the asset sync from running; the composite still installs so
+        the turn keeps a registry, and the withheld stamp forces a re-resolve.
+        """
+        wm = WorkspaceManager.get_instance(config=_make_config())
+        session = _make_session(version=None, summary=None)
+        resolved = _resolved(2)
+
+        composite = MagicMock()
+        with patch(
+            "src.server.services.mcp_config.resolve_mcp_config",
+            new_callable=AsyncMock,
+            return_value=resolved,
+        ), patch(
+            "src.server.services.workspace_manager.sync_egress_relay",
+            new=AsyncMock(return_value=RelayBind.SUPERSEDED),
+        ), patch(
+            "ptc_agent.core.mcp_registry.build_composite_registry",
+            return_value=composite,
+        ), patch(
+            "ptc_agent.agent.prompts.formatter.build_tool_summary_from_registry",
+            return_value="SUMMARY",
+        ):
+            out = await wm._apply_session_mcp(
+                "ws", "user-1", session, ws_version=2
+            )
+
+        # None is what the callers read as "nothing changed", and it is the only
+        # thing standing between a stale composite and the asset sync.
+        assert out is None
+        assert session.mcp_config_version is None
+        assert session.mcp_registry is composite
+        # The stamp is read on the slow path only, so the mark is what carries
+        # the next acquire past the sync cooldown far enough to read it.
+        assert "ws" in wm._resolve_superseded
+
+    @pytest.mark.asyncio
+    async def test_apply_session_mcp_withholds_the_stamp_on_a_refused_push(self):
+        """A refused relay-credential push must not be stamped as applied:
+        nothing else re-pushes the file, so the version stays None (the
+        busted-stamp idiom) and the next acquire re-resolves and retries.
+        The composite still installs — non-OAuth tools stay live."""
+        wm = WorkspaceManager.get_instance(config=_make_config())
+        session = _make_session(version=None, summary=None)
+        resolved = _resolved(2)
+
+        composite = MagicMock()
+        with patch(
+            "src.server.services.mcp_config.resolve_mcp_config",
+            new_callable=AsyncMock,
+            return_value=resolved,
+        ), patch(
+            "src.server.services.workspace_manager.sync_egress_relay",
+            new=AsyncMock(return_value=RelayBind.REFUSED),
+        ), patch(
+            "ptc_agent.core.mcp_registry.build_composite_registry",
+            return_value=composite,
+        ), patch(
+            "ptc_agent.agent.prompts.formatter.build_tool_summary_from_registry",
+            return_value="SUMMARY",
+        ):
+            out = await wm._apply_session_mcp(
+                "ws", "user-1", session, ws_version=2
+            )
+
+        assert out is resolved
+        assert session.mcp_registry is composite
+        assert session.mcp_tool_summary == "SUMMARY"
+        assert session.mcp_config_version is None
+
+    @pytest.mark.asyncio
+    async def test_apply_session_mcp_withholds_the_stamp_when_the_sync_raises(self):
+        """The swallowed-exception path is a failed publication too — it must
+        leave the same retry signal as an explicit refusal."""
+        wm = WorkspaceManager.get_instance(config=_make_config())
+        session = _make_session(version=None, summary=None)
+        resolved = _resolved(2)
+
+        with patch(
+            "src.server.services.mcp_config.resolve_mcp_config",
+            new_callable=AsyncMock,
+            return_value=resolved,
+        ), patch(
+            "src.server.services.workspace_manager.sync_egress_relay",
+            new=AsyncMock(side_effect=RuntimeError("relay down")),
+        ), patch(
+            "ptc_agent.core.mcp_registry.build_composite_registry",
+            return_value=MagicMock(),
+        ), patch(
+            "ptc_agent.agent.prompts.formatter.build_tool_summary_from_registry",
+            return_value="SUMMARY",
+        ):
+            out = await wm._apply_session_mcp(
+                "ws", "user-1", session, ws_version=2
+            )
+
+        assert out is resolved
+        assert session.mcp_config_version is None
 
     @pytest.mark.asyncio
     async def test_install_composite_builds_from_builtin_not_prior_composite(self):
@@ -200,6 +387,61 @@ class TestSessionCachesMcp:
             await wm._install_session_composite(session, resolved)
 
         assert captured["reg"] is builtin
+
+    @pytest.mark.asyncio
+    async def test_composite_prefers_the_user_tier_for_inherited_servers(self):
+        """A workspace snapshot of an inherited server is OAuth-blind and can
+        outlive a disconnect/reconnect; the host-side user snapshot is purged
+        and refreshed with the connection. The agent lane must serve the user
+        tier — the same precedence the effective-list API already used."""
+        from ptc_agent.config.core import MCPServerConfig
+        from src.server.services.mcp_discovery import mcp_discovery_fingerprint
+
+        wm = WorkspaceManager.get_instance(config=_make_config())
+        session = _make_session(version=1, summary="old")
+        inherited = MCPServerConfig(
+            name="robinhood", transport="http",
+            url="https://api.example.test/mcp", source="user",
+        )
+        resolved = resolved_mcp(version=2, inherited=[inherited])
+
+        def _row(tool_name):
+            return {
+                "server_name": "robinhood",
+                "status": "ok",
+                "config_hash": mcp_discovery_fingerprint(inherited),
+                "tools": [{"name": tool_name}],
+            }
+
+        captured = {}
+
+        def fake_build(reg, servers, schemas, disabled=frozenset()):
+            captured["schemas"] = schemas
+            return MagicMock()
+
+        with (
+            patch(
+                "src.server.database.mcp_tool_schemas.get_tool_schemas",
+                new=AsyncMock(return_value=[_row("stale_in_sandbox")]),
+            ),
+            patch(
+                "src.server.database.mcp_tool_schemas.get_user_tool_schemas",
+                new=AsyncMock(return_value=[_row("fresh_host_side")]),
+            ),
+            patch(
+                "ptc_agent.core.mcp_registry.build_composite_registry",
+                side_effect=fake_build,
+            ),
+            patch(
+                "ptc_agent.agent.prompts.formatter.build_tool_summary_from_registry",
+                return_value="S",
+            ),
+        ):
+            await wm._install_session_composite(session, resolved, user_id="user-1")
+
+        assert [t["name"] for t in captured["schemas"]["robinhood"]] == [
+            "fresh_host_side"
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -352,24 +594,101 @@ class TestVersionDeltaBackgroundDiscovery:
         assert ws_id not in wm._mcp_discovery_tasks_by_ws
 
     @pytest.mark.asyncio
-    async def test_servers_needing_discovery_excludes_servers_with_tools(self):
-        """Only user servers without cached tools (pending/new) need discovery."""
+    async def test_servers_needing_discovery_settles_on_snapshot_not_tools(self):
+        """Settlement is the recorded ok-snapshot set, not the composite's tool
+        count — alpha is settled even though it contributes zero tools."""
         wm = WorkspaceManager.get_instance(config=_make_config())
         session = _make_session()
-        # Composite reports alpha has tools, beta has none.
+        session.mcp_settled_servers = {"alpha"}
+        # The registry would have called alpha unsettled (zero tools) — the
+        # predicate must not consult it.
         session.mcp_registry.get_all_tools = MagicMock(
-            return_value={"alpha": [MagicMock()], "beta": []}
+            return_value={"alpha": [], "beta": []}
         )
-        alpha = MagicMock()
-        alpha.name = "alpha"
-        alpha.source = "workspace"
-        beta = MagicMock()
-        beta.name = "beta"
-        beta.source = "workspace"
-        resolved = _resolved(2, servers=[alpha, beta])
+        resolved = _resolved(2, servers=[_srv("alpha"), _srv("beta")])
 
         needing = wm._servers_needing_discovery(session, resolved)
         assert [s.name for s in needing] == ["beta"]
+
+    @pytest.mark.asyncio
+    async def test_an_ok_empty_snapshot_settles_discovery(self):
+        """A server that legitimately advertises zero tools (or whose tools
+        were all sanitized out) has an ok snapshot and must NOT re-probe on
+        every acquire — its untrusted process would otherwise respawn forever."""
+        from ptc_agent.config.core import MCPServerConfig
+        from src.server.services.mcp_discovery import mcp_discovery_fingerprint
+
+        wm = WorkspaceManager.get_instance(config=_make_config())
+        session = _make_session(version=1, summary="old")
+        server = MCPServerConfig(
+            name="zerotool", transport="stdio", command="npx",
+            args=["-y", "zero-tool-server"], source="workspace",
+        )
+        resolved = resolved_mcp(version=2, local=[server])
+
+        with (
+            patch(
+                "src.server.database.mcp_tool_schemas.get_tool_schemas",
+                new=AsyncMock(return_value=[{
+                    "server_name": "zerotool",
+                    "status": "ok",
+                    "config_hash": mcp_discovery_fingerprint(server),
+                    "tools": [],
+                }]),
+            ),
+            patch(
+                "ptc_agent.core.mcp_registry.build_composite_registry",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "ptc_agent.agent.prompts.formatter.build_tool_summary_from_registry",
+                return_value="S",
+            ),
+        ):
+            await wm._install_session_composite(session, resolved)
+
+        assert session.mcp_settled_servers == {"zerotool"}
+        assert wm._servers_needing_discovery(session, resolved) == []
+
+    @pytest.mark.asyncio
+    async def test_an_error_snapshot_still_needs_discovery(self):
+        """Error rows are not settlement — the next acquire retries them."""
+        from ptc_agent.config.core import MCPServerConfig
+        from src.server.services.mcp_discovery import mcp_discovery_fingerprint
+
+        wm = WorkspaceManager.get_instance(config=_make_config())
+        session = _make_session(version=1, summary="old")
+        server = MCPServerConfig(
+            name="flaky", transport="stdio", command="npx",
+            args=["-y", "flaky-server"], source="workspace",
+        )
+        resolved = resolved_mcp(version=2, local=[server])
+
+        with (
+            patch(
+                "src.server.database.mcp_tool_schemas.get_tool_schemas",
+                new=AsyncMock(return_value=[{
+                    "server_name": "flaky",
+                    "status": "error",
+                    "config_hash": mcp_discovery_fingerprint(server),
+                    "tools": [],
+                }]),
+            ),
+            patch(
+                "ptc_agent.core.mcp_registry.build_composite_registry",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "ptc_agent.agent.prompts.formatter.build_tool_summary_from_registry",
+                return_value="S",
+            ),
+        ):
+            await wm._install_session_composite(session, resolved)
+
+        assert session.mcp_settled_servers == set()
+        assert [s.name for s in wm._servers_needing_discovery(session, resolved)] == [
+            "flaky"
+        ]
 
     @pytest.mark.asyncio
     @patch("src.server.services.workspace_manager.db_get_workspace", new_callable=AsyncMock)
@@ -387,7 +706,8 @@ class TestVersionDeltaBackgroundDiscovery:
         wm._sessions[ws_id] = session
         wm._last_sync_at = {}  # cooldown expired → slow path runs
 
-        mock_get_ws.return_value = _make_workspace(ws_id, mcp_config_version=5)
+        workspace = _make_workspace(ws_id, mcp_config_version=5)
+        mock_get_ws.return_value = workspace
 
         # Assert the resolve does NOT run while the per-workspace lock is held.
         lock_held_during_resolve = {"value": False}
@@ -409,12 +729,15 @@ class TestVersionDeltaBackgroundDiscovery:
             new_callable=AsyncMock,
             return_value=resolved,
         ) as mock_resolve, patch(
+            "src.server.services.workspace_manager.sync_egress_relay",
+            new=AsyncMock(return_value=RelayBind.APPLIED),
+        ), patch(
             "ptc_agent.core.mcp_registry.build_composite_registry",
             return_value=MagicMock(),
         ), patch(
             "ptc_agent.agent.prompts.formatter.build_tool_summary_from_registry",
             return_value="NEW",
-        ):
+        ), _patch_identity(workspace):
             await wm.get_session_for_workspace(ws_id, user_id="user-1")
 
         mock_resolve.assert_awaited_once()
@@ -440,12 +763,22 @@ class TestAppliedVersionAndProactiveApply:
     def test_applied_version_none_without_session(self):
         """No warm session ⇒ the config isn't loaded anywhere live ⇒ None."""
         wm = WorkspaceManager.get_instance(config=_make_config())
-        assert wm.get_applied_mcp_config_version("ws-x") is None
+        assert (
+            wm.get_applied_mcp_config_version("ws-x", expected_sandbox_id="sb-1")
+            is None
+        )
 
     def test_applied_version_reads_warm_session(self):
         wm = WorkspaceManager.get_instance(config=_make_config())
         wm._sessions["ws"] = _make_session(version=7, summary="s")
-        assert wm.get_applied_mcp_config_version("ws") == 7
+        assert wm.get_applied_mcp_config_version("ws", expected_sandbox_id="sb-1") == 7
+
+    def test_applied_version_none_when_session_holds_a_superseded_sandbox(self):
+        """The version claims what a LIVE sandbox applied. A session bound to a
+        replaced sandbox can only name a number no live sandbox has."""
+        wm = WorkspaceManager.get_instance(config=_make_config())
+        wm._sessions["ws"] = _make_session(version=7, summary="s")
+        assert wm.get_applied_mcp_config_version("ws", expected_sandbox_id="sb-2") is None
 
     @pytest.mark.asyncio
     async def test_proactive_apply_warms_without_ready_session(self):
@@ -544,7 +877,7 @@ class TestDiscoveryKickSeesCachedSession:
         mock_session_mgr.get_session.return_value = session
 
         wm._mint_sandbox_tokens = AsyncMock(return_value={})
-        wm._apply_session_mcp = AsyncMock(return_value=_resolved(1, user_names=["alpha"]))
+        wm._apply_session_mcp = AsyncMock(return_value=_resolved(1, servers=[_srv("alpha")]))
         wm._servers_needing_discovery = MagicMock(return_value=[MagicMock(name="alpha")])
         wm._sync_sandbox_assets = AsyncMock()
         wm._restore_files = AsyncMock()
@@ -558,7 +891,8 @@ class TestDiscoveryKickSeesCachedSession:
 
         wm._kick_mcp_discovery = spy_kick
 
-        await wm._recover_sandbox(ws_id, "user-1", MagicMock())
+        with _patch_sandbox_bind(_make_workspace(ws_id)):
+            await wm._recover_sandbox(ws_id, "user-1", MagicMock())
 
         assert cached_at_kick["value"] is True
         assert wm._sessions.get(ws_id) is session
@@ -576,7 +910,7 @@ class TestDiscoveryKickSeesCachedSession:
         session.initialize = AsyncMock()
         mock_session_mgr.get_session.return_value = session
 
-        wm._apply_session_mcp = AsyncMock(return_value=_resolved(1, user_names=["alpha"]))
+        wm._apply_session_mcp = AsyncMock(return_value=_resolved(1, servers=[_srv("alpha")]))
         wm._servers_needing_discovery = MagicMock(return_value=[MagicMock(name="alpha")])
         wm._sync_sandbox_assets = AsyncMock()
         wm._maybe_migrate_sandbox = AsyncMock(return_value=None)
@@ -599,6 +933,84 @@ class TestDiscoveryKickSeesCachedSession:
         assert wm._sessions.get(ws_id) is session
 
     @pytest.mark.asyncio
+    @patch("src.server.services.workspace_manager.SessionManager")
+    async def test_attach_binds_a_sandbox_it_had_to_build(self, mock_session_mgr):
+        """A row naming no sandbox must be bound to the one ``initialize`` builds.
+
+        ``session.initialize(sandbox_id=None)`` creates a sandbox, so this path
+        provisions without going through provisioning. If the binding is not
+        written back, the row still says NULL on the next request, the identity
+        check reads that as stale, retires the session, and builds another
+        sandbox — one billed sandbox per request, each abandoned with its files.
+        Regression: the identity fencing made this fatal rather than untidy.
+        """
+        wm = WorkspaceManager.get_instance(config=_make_config())
+        ws_id = str(uuid.uuid4())
+
+        session = _make_session(version=1, summary="s")
+        session._initialized = False
+        session.sandbox.sandbox_id = "sb-built-by-initialize"
+        session.initialize = AsyncMock()
+        mock_session_mgr.get_session.return_value = session
+
+        wm._apply_session_mcp = AsyncMock(return_value=_resolved(1))
+        wm._servers_needing_discovery = MagicMock(return_value=[])
+        wm._sync_sandbox_assets = AsyncMock()
+        wm._maybe_migrate_sandbox = AsyncMock(return_value=None)
+        wm._apply_session_platform_secret = AsyncMock()
+        wm._kick_mcp_discovery = MagicMock()
+
+        workspace = _make_workspace(ws_id, status="running", mcp_config_version=1)
+        workspace["sandbox_id"] = None
+        bound_row = dict(workspace, sandbox_id="sb-built-by-initialize")
+
+        with patch(
+            "src.server.services.workspace_manager.try_bind_workspace_sandbox",
+            AsyncMock(return_value=bound_row),
+        ) as mock_bind:
+            await wm._attach_running_session(
+                workspace, "user-1", None, lambda _stage: None
+            )
+
+        mock_bind.assert_awaited_once()
+        assert mock_bind.await_args.kwargs["sandbox_id"] == "sb-built-by-initialize"
+        # NULL-safe CAS: the fence is the value we read, so a concurrent binder
+        # that got there first makes this write lose rather than clobber.
+        assert mock_bind.await_args.kwargs["expected_previous_sandbox_id"] is None
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.workspace_manager.SessionManager")
+    async def test_attach_does_not_rebind_when_the_row_already_matches(
+        self, mock_session_mgr
+    ):
+        """Reattaching to the sandbox the row already names must not write."""
+        wm = WorkspaceManager.get_instance(config=_make_config())
+        ws_id = str(uuid.uuid4())
+
+        session = _make_session(version=1, summary="s")
+        session._initialized = False
+        session.initialize = AsyncMock()  # sandbox_id stays 'sb-1', as the row says
+        mock_session_mgr.get_session.return_value = session
+
+        wm._apply_session_mcp = AsyncMock(return_value=_resolved(1))
+        wm._servers_needing_discovery = MagicMock(return_value=[])
+        wm._sync_sandbox_assets = AsyncMock()
+        wm._maybe_migrate_sandbox = AsyncMock(return_value=None)
+        wm._apply_session_platform_secret = AsyncMock()
+        wm._kick_mcp_discovery = MagicMock()
+
+        workspace = _make_workspace(ws_id, status="running", mcp_config_version=1)
+        with patch(
+            "src.server.services.workspace_manager.try_bind_workspace_sandbox",
+            AsyncMock(),
+        ) as mock_bind:
+            await wm._attach_running_session(
+                workspace, "user-1", None, lambda _stage: None
+            )
+
+        mock_bind.assert_not_awaited()
+
+    @pytest.mark.asyncio
     @patch("src.server.services.workspace_manager.db_get_workspace", new_callable=AsyncMock)
     @patch("src.server.services.workspace_manager.update_workspace_status", new_callable=AsyncMock)
     @patch("src.server.services.workspace_manager.update_workspace_activity", new_callable=AsyncMock)
@@ -618,15 +1030,19 @@ class TestDiscoveryKickSeesCachedSession:
         mock_session_mgr.get_session.return_value = session
 
         wm._mint_sandbox_tokens = AsyncMock(return_value={})
-        wm._apply_session_mcp = AsyncMock(return_value=_resolved(1, user_names=["alpha"]))
+        wm._apply_session_mcp = AsyncMock(return_value=_resolved(1, servers=[_srv("alpha")]))
         wm._servers_needing_discovery = MagicMock(return_value=[MagicMock(name="alpha")])
         wm._sync_sandbox_assets = AsyncMock()
         wm._restore_files = AsyncMock()
         wm._kick_mcp_discovery = MagicMock()
         wm._cancel_mcp_discovery = MagicMock()
-        mock_status.side_effect = RuntimeError("status write failed")
+        # The last step of a provision, i.e. genuinely after the kick.
+        wm._record_sync = MagicMock(side_effect=RuntimeError("sync stamp failed"))
 
-        with pytest.raises(RuntimeError, match="status write failed"):
+        with (
+            pytest.raises(RuntimeError, match="sync stamp failed"),
+            _patch_sandbox_bind(_make_workspace(ws_id)),
+        ):
             await wm._recover_sandbox(ws_id, "user-1", MagicMock())
 
         assert wm._sessions.get(ws_id) is None
@@ -728,8 +1144,9 @@ class TestSetWorkspaceSpecDiskGuard:
 
     @pytest.fixture(autouse=True)
     def _quiet_durable_probes(self):
-        """The spec-change activity guard also reads the run ledgers; keep
-        both quiet so these tests exercise only the disk-guard mechanics."""
+        """The spec-change activity guard also reads the run ledgers, and the
+        replacement is durably fenced before teardown; keep all three quiet so
+        these tests exercise only the disk-guard mechanics."""
         with (
             patch(
                 "src.server.database.runs.lifecycle.workspace_has_active_run",
@@ -739,7 +1156,13 @@ class TestSetWorkspaceSpecDiskGuard:
                 "src.server.database.runs.subagent_runs.count_open_runs_for_workspace",
                 new=AsyncMock(return_value=0),
             ),
+            patch(
+                "src.server.services.workspace_entitlements."
+                "try_claim_workspace_for_replacement",
+                new=AsyncMock(return_value={"status": "starting"}),
+            ) as claim,
         ):
+            self.claim = claim
             yield
 
     @staticmethod
@@ -777,6 +1200,9 @@ class TestSetWorkspaceSpecDiskGuard:
         wm._backup_files_to_db.assert_awaited_once()
         wm._recover_sandbox.assert_not_awaited()
         mock_session_mgr.cleanup_session.assert_not_called()
+        # Rejected before the replacement was claimed, so the row still
+        # advertises running/<old id> rather than being stranded at 'starting'.
+        self.claim.assert_not_awaited()
         # Tier set to target optimistically, then reverted to the original.
         assert mock_set_tier.await_args_list[0].args == (ws_id, "standard")
         assert mock_set_tier.await_args_list[-1].args == (ws_id, "max")

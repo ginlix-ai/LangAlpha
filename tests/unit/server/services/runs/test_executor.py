@@ -2186,7 +2186,7 @@ class TestCleanupSpillLockFence:
             prompt="p",
             subagent_type="general-purpose",
             agent_id="general-purpose:x",
-            completed=True,
+            terminal_status="completed",
         )
         task.collector_response_id = claim
         task.sse_drain_complete.set()
@@ -2290,7 +2290,7 @@ class TestReplayOwnershipRecheck:
             prompt="p",
             subagent_type="general-purpose",
             agent_id="general-purpose:x",
-            completed=True,
+            terminal_status="completed",
         )
         task.collector_response_id = "run-1"
 
@@ -2333,7 +2333,7 @@ class TestReplayOwnershipRecheck:
             prompt="p",
             subagent_type="general-purpose",
             agent_id="general-purpose:x",
-            completed=True,
+            terminal_status="completed",
         )
         task.collector_response_id = "run-1"  # worker A's claim, never stolen
         # Round 1 attempted exactly its own two appends; the foreign record

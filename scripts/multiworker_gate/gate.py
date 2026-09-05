@@ -6,16 +6,18 @@ running backend container — multiple processes against one Postgres + Redis is
 the multi-worker topology every cell exercises — then drives real turns across
 them and asserts terminal state on the run ledger (conversation_responses).
 
-Run it whenever a change touches turn lifecycle, streaming, outbox, or
-subagent ownership:
+Run it whenever a change touches turn lifecycle, streaming, outbox, subagent
+ownership, or the workspace<->sandbox binding:
 
     uv run python scripts/multiworker_gate/gate.py --user <user_id>
     uv run python scripts/multiworker_gate/gate.py --cells 1,7,13   # subset
 
 Requires: the worktree's docker stack up, service-token auth
 (INTERNAL_SERVICE_TOKEN in the container env), and a flash-capable LLM key.
-Threads created by the gate are kept for inspection (--clean deletes them).
-See README.md for the full 17-cell matrix and the manual-only cells.
+Cell 18 additionally needs a working sandbox provider — it creates, recreates
+and deletes a real sandbox. Threads created by the gate are kept for inspection
+(--clean deletes them); cell 18 always deletes its own workspace.
+See README.md for the full matrix and the manual-only cells.
 """
 
 from __future__ import annotations
@@ -123,12 +125,17 @@ class Stack:
     def teardown_workers(self) -> None:
         # Kill by cmdline pattern, not only the pidfile: an aborted run can
         # overwrite the pidfile while an older server still holds the port.
+        # Skip $$ — this shell's own cmdline contains the pattern, and the glob
+        # sorts /proc lexicographically, so a 4-digit teardown pid is visited
+        # before a 3-digit server: without the guard the loop SIGKILLs itself
+        # first and silently leaves the worker alive for the next run.
         for name, port in WORKERS.items():
             script = (
-                "for d in /proc/[0-9]*; do "
+                "self=$$; for d in /proc/[0-9]*; do "
+                "p=$(basename $d); [ \"$p\" = \"$self\" ] && continue; "
                 "c=$(tr '\\0' ' ' < $d/cmdline 2>/dev/null); "
                 f"case \"$c\" in *\"server.py --host 127.0.0.1 --port {port}\"*) "
-                "kill -9 $(basename $d) 2>/dev/null;; esac; done; "
+                "kill -9 $p 2>/dev/null;; esac; done; "
                 f"rm -f /tmp/gate_{name}.pid"
             )
             sh(["docker", "exec", self.backend, "sh", "-c", script])
@@ -385,6 +392,114 @@ def cell_17_graceful_sigterm(st: Stack) -> tuple[bool, str]:
     return ok, f"row={row} worker_exited={exited} thread={tid}"
 
 
+def cell_18_sandbox_replacement(st: Stack) -> tuple[bool, str]:
+    """Sandbox replaced behind worker B → B re-attaches, never 404s a live file.
+
+    The workspace/sandbox tier's counterpart to the run-ledger cells.
+    ``WorkspaceManager._sessions`` is process memory, so B keeps a handle to
+    whatever sandbox it last attached to; when A's ``/spec`` recreates the
+    sandbox, B must notice from ``workspaces.sandbox_id`` and re-attach. The
+    symptom when it doesn't is a 404 "File not found" for a file that exists.
+
+    B is probed CONCURRENTLY with the replacement, not after it: once ``/spec``
+    returns the row is already ``running`` on the new id, so a post-hoc read
+    proves nothing about the window where DB and cache both name a sandbox that
+    is being destroyed. 503 is an acceptable transient verdict inside the
+    window but not a terminal one — the cell requires convergence to 200 with
+    the exact sentinel bytes.
+    """
+    sentinel = f"gate-18-{uuid.uuid4().hex}"
+    path = "gate_18.txt"
+    code, text = st.api("A", "POST", "/api/v1/workspaces",
+                        {"name": "gate-18 sandbox replacement"}, max_time=240)
+    if code != 201:
+        return False, f"workspace create failed: {code} {text[:200]}"
+    ws = json.loads(text)["workspace_id"]
+
+    # Everything past the create goes inside the try: a real sandbox exists from
+    # here on, and st.pq raises on a psql failure, so a setup line left outside
+    # would skip the finally and leak the sandbox to bill on.
+    try:
+        tier_before = st.pq("SELECT COALESCE(resource_tier,'standard') FROM "
+                            f"workspaces WHERE workspace_id='{ws}'")
+        target = "performance" if tier_before == "standard" else "standard"
+        read_path = (
+            f"/api/v1/workspaces/{ws}/files/read?path={path}&unlimited=true"
+        )
+
+        # 1. Write through A — A must own the session /spec will replace.
+        wcode, wtext = st.api("A", "PUT",
+                              f"/api/v1/workspaces/{ws}/files/write?path={path}",
+                              {"content": sentinel}, max_time=90)
+        if wcode != 200:
+            return False, f"write failed: {wcode} {wtext[:200]} ws={ws}"
+
+        # 2. Warm B, so B holds a cached handle to the pre-replacement sandbox.
+        bcode, btext = st.api("B", "GET", read_path, max_time=90)
+        if bcode != 200 or sentinel not in btext:
+            return False, f"B warm read failed: {bcode} {btext[:200]} ws={ws}"
+        sandbox_before = st.pq(
+            f"SELECT sandbox_id FROM workspaces WHERE workspace_id='{ws}'")
+
+        # 3. Replace the sandbox through A while hammering B throughout.
+        b_codes: list[int] = []
+        stop_probing = False
+
+        def probe_b() -> None:
+            while not stop_probing:
+                c, _ = st.api("B", "GET", read_path, max_time=20)
+                b_codes.append(c)
+                time.sleep(1)
+
+        with concurrent.futures.ThreadPoolExecutor(2) as pool:
+            prober = pool.submit(probe_b)
+            spec = pool.submit(st.api, "A", "POST",
+                               f"/api/v1/workspaces/{ws}/spec",
+                               {"tier": target}, False, 300)
+            scode, stext = spec.result()
+            stop_probing = True
+            prober.result()
+
+        if scode != 200:
+            return False, f"/spec failed: {scode} {stext[:200]} ws={ws}"
+        sandbox_after = st.pq(
+            f"SELECT sandbox_id FROM workspaces WHERE workspace_id='{ws}'")
+        if not sandbox_after or sandbox_after == sandbox_before:
+            return False, (f"sandbox_id did not change ({sandbox_before!r}) — "
+                           f"/spec did not recreate; ws={ws}")
+
+        # 4. B must converge to the real content, not merely stop 404ing.
+        converged, last = False, ""
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            c, t = st.api("B", "GET", read_path, max_time=30)
+            b_codes.append(c)
+            last = f"{c} {t[:160]}"
+            if c == 200 and sentinel in t:
+                converged = True
+                break
+            if c == 404:  # the reported bug: absence claimed for a live file
+                break
+            time.sleep(3)
+
+        # 5. B must have *noticed*, not just gotten lucky on a cold cache.
+        # Scoped to THIS workspace: /tmp/gate_B.log is opened append-only and
+        # survives teardown, so a bare 'is stale' count is satisfied by any
+        # previous run's detection and would keep passing after a regression.
+        log = sh(["docker", "exec", st.backend, "sh", "-c",
+                  f"grep -c 'Cached session for {ws} is stale' "
+                  "/tmp/gate_B.log || true"]).stdout.strip()
+        noticed = (log or "0") != "0"
+        never_404 = 404 not in b_codes
+        ok = converged and never_404 and noticed
+        return ok, (f"sandbox {sandbox_before[:8]}→{sandbox_after[:8]} "
+                    f"B_codes={sorted(set(b_codes))} converged={converged} "
+                    f"stale_detections={log} last={last} ws={ws}")
+    finally:
+        # Before teardown_workers, or the Daytona sandbox leaks and bills on.
+        st.api("A", "DELETE", f"/api/v1/workspaces/{ws}", max_time=180)
+
+
 CELLS = {
     "1": ("Two-process START slot exclusivity", cell_1_start_race),
     "7": ("Cancel: cross-worker + idempotent", cell_7_cancel_races),
@@ -392,6 +507,7 @@ CELLS = {
     "10": ("Delete vs live run → 409", cell_10_delete_vs_live),
     "13": ("Request-key replay → one run", cell_13_request_key_replay),
     "14": ("Retry race → one attempt-2", cell_14_retry_race),
+    "18": ("Sandbox replaced behind a worker → re-attach", cell_18_sandbox_replacement),
     "2": ("SIGKILL mid-run → scanner finalize", cell_2_sigkill_scanner),
     "17": ("Graceful SIGTERM with open run", cell_17_graceful_sigterm),
 }

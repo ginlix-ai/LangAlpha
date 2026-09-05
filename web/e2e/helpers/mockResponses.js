@@ -40,6 +40,21 @@ export const defaultResponses = {
     },
   },
   'GET /workspaces': { workspaces: [], total: 0, limit: 20, offset: 0 },
+  // What ChatAgent fetches one path segment below /chat. Left unmocked these
+  // 404, and ThreadGallery's not-found effect navigates back to /chat -- so a
+  // test that names /chat/<id> silently measures the workspace gallery above it
+  // and passes. The id is fixed rather than echoed from the URL because nothing
+  // downstream compares the two; `status` is what decides the flash path.
+  'GET /workspaces/*': {
+    workspace_id: 'a0000001-0000-4000-8000-000000000001',
+    name: 'Research',
+    description: 'Main workspace',
+    status: 'ready',
+    config: {},
+    created_at: '2025-01-01T00:00:00Z',
+    updated_at: '2025-01-01T00:00:00Z',
+  },
+  'GET /threads': { threads: [], total: 0, limit: 20, offset: 0 },
   'POST /workspaces/flash': {
     workspace_id: 'ws-flash',
     name: 'Flash',
@@ -58,6 +73,21 @@ export const defaultResponses = {
   'GET /market-data/snapshots/indexes': { snapshots: [] },
   'GET /market-data/intraday/indexes/*': { data: [] },
   'GET /news': { results: [], count: 0, next_cursor: null },
+  // The article behind /news/:id. Unmocked, the detail page renders its
+  // "Article not found" branch, which has text and so satisfies every wait a
+  // test puts on it while measuring a page nobody meant to test.
+  'GET /news/*': {
+    id: 'news-1',
+    title: 'Markets Rally on Strong Earnings',
+    published_at: '2025-01-01T12:00:00Z',
+    author: 'Test Author',
+    source: { name: 'Reuters', favicon_url: '' },
+    image_url: '',
+    tickers: ['AAPL'],
+    description: 'A test article body.',
+    sentiments: [],
+    article_url: 'https://example.com/article',
+  },
   'GET /insights/today': { insights: [] },
   'GET /users/me/watchlists': {
     watchlists: [{ watchlist_id: 'wl-1', name: 'Default' }],
@@ -266,6 +296,9 @@ export const sseEvents = {
       },
     },
   }),
+
+  /** Backlog/live boundary on a reconnect stream. */
+  caughtUp: () => ({ event: 'caught_up', data: {} }),
 
   replayDone: (threadId = 'b0000001-0000-4000-8000-000000000001') => ({
     event: 'replay_done',

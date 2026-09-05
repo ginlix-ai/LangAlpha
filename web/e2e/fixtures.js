@@ -47,6 +47,11 @@ export async function mockAPI(page, overrides = {}) {
     await page.route(
       (url) => pathRegex.test(url.pathname.replace('/api/v1', '')),
       async (route) => {
+        // A page navigation is never one of these calls. Some API paths are also
+        // app routes -- `/news/:id` is both -- and the predicate above sees only
+        // a pathname, so without this the document request for /news/1 is
+        // answered with the article JSON and the SPA never loads at all.
+        if (route.request().resourceType() === 'document') return route.fallback();
         const reqMethod = route.request().method();
         if (method !== '*' && reqMethod !== method) {
           return route.fallback();

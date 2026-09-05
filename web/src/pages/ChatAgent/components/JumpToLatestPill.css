@@ -7,14 +7,15 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  /* 44px tall = a comfortable touch target (WCAG 2.5.5). */
-  min-height: 44px;
-  padding: 0 18px;
+  gap: 4px;
+  /* Compact icon circle; --count widens it to fit the new-message number. */
+  height: 36px;
+  min-width: 36px;
+  padding: 0;
   background: var(--color-bg-card);
   border: 1px solid var(--color-border-elevated);
   border-radius: 999px;
-  font-size: 13px;
+  font-size: 0.75rem;
   color: var(--color-text-primary);
   cursor: pointer;
   /* Theme-aware token (strong on the dark default, soft on light) — a hardcoded
@@ -26,19 +27,27 @@
   animation: jumpPillIn 220ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+.jump-to-latest-pill--count {
+  padding: 0 12px;
+}
+
+/* Touch targets keep the 44px comfort size (WCAG 2.5.5). */
+@media (pointer: coarse) {
+  .jump-to-latest-pill {
+    height: 44px;
+    min-width: 44px;
+  }
+}
+
 .jump-to-latest-pill:hover {
   transform: translateX(-50%) translateY(-1px);
   border-color: var(--color-accent-primary);
 }
 
-.jump-to-latest-pill:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
-  outline-offset: 2px;
-}
-
 .jump-to-latest-pill__count {
-  /* Text-primary (not accent): the blue accent fails AA contrast on the dark
-     near-black pill; bold tabular text-primary is legible in both themes. */
+  /* Text-primary (not accent): the amber accent fails AA contrast on the
+     light theme's white pill; bold tabular text-primary is legible in both
+     themes. */
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--color-text-primary);

@@ -202,7 +202,11 @@ class IntradayCacheService(_SeriesCacheCore):
 
     _instance: Optional["IntradayCacheService"] = None
     _refresh_locks: Dict[str, asyncio.Lock]
+    # Two gates because they bound two different resources: outbound fetches by
+    # what the provider tolerates, cache lookups by what the Redis pool can
+    # spare. One shared gate would park cache reads behind upstream network I/O.
     _max_concurrent_fetches: int = 10
+    _max_concurrent_lookups: int = 32
     _logger = logger
 
     def __new__(cls):
@@ -210,6 +214,9 @@ class IntradayCacheService(_SeriesCacheCore):
             cls._instance = super().__new__(cls)
             cls._instance._refresh_locks = {}
             cls._instance._semaphore = asyncio.Semaphore(cls._max_concurrent_fetches)
+            cls._instance._lookup_semaphore = asyncio.Semaphore(
+                cls._max_concurrent_lookups
+            )
         return cls._instance
 
     @classmethod
@@ -506,9 +513,24 @@ class IntradayCacheService(_SeriesCacheCore):
             normalized = sym.lstrip("^").upper()
             clock = clock_for(normalized, is_index)
 
-            key, envelope = await self._find_cached(
-                normalized, interval, from_date, to_date, is_index,
-            )
+            # Bounded because each lookup is several Redis round trips and the
+            # fan-out stacks across concurrent requests. Deliberately not the
+            # fetch gate, which phase 2 holds across an upstream call.
+            async with self._lookup_semaphore:
+                try:
+                    key, envelope = await self._find_cached(
+                        normalized, interval, from_date, to_date, is_index,
+                    )
+                except Exception:
+                    # One symbol's lookup failing is a miss, not a failed
+                    # batch — the gather has no return_exceptions, so a raise
+                    # here would take down every other symbol with it.
+                    logger.warning(
+                        "intraday_cache.lookup_failed symbol=%s", normalized,
+                        exc_info=True,
+                    )
+                    cache_misses.append(sym)
+                    return
             is_live = IntradayCacheKeyBuilder._is_live(to_date)
 
             if envelope is not None:

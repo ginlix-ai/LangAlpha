@@ -1,8 +1,10 @@
 .automations-page {
+  /* Also read by the desktop shell's drag strip (App.css). */
+  --page-inset: clamp(16px, 3vw, 32px);
   display: flex;
   flex-direction: column;
   height: 100%;
-  padding: clamp(16px, 3vw, 32px) clamp(16px, 3vw, 32px);
+  padding: var(--page-inset) var(--page-inset);
   overflow: hidden;
 }
 
@@ -46,7 +48,7 @@
 /* ── Inline form label pattern ─────────────────────── */
 
 .automation-inline-form .form-label {
-  font-size: 11px;
+  font-size: 0.6875rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-weight: 500;

@@ -1,5 +1,6 @@
 import React from 'react';
-import { X, Loader2 } from 'lucide-react';
+import { X } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import {
   PerformanceBarChart,
   AnalystRatingsChart,
@@ -75,8 +76,8 @@ const formatNumber = (num: number | null | undefined): string => {
 function QuoteStat({ label, value }: QuoteStatProps) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}>
-      <span style={{ fontSize: 12, color: TEXT_COLOR, opacity: 0.7 }}>{label}</span>
-      <span style={{ fontSize: 12, color: 'var(--color-text-primary)' }}>{value}</span>
+      <span style={{ fontSize: '0.75rem', color: TEXT_COLOR, opacity: 0.7 }}>{label}</span>
+      <span style={{ fontSize: '0.75rem', color: 'var(--color-text-primary)' }}>{value}</span>
     </div>
   );
 }
@@ -88,17 +89,17 @@ function QuoteSummary({ data }: QuoteSummaryProps) {
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
-        <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--color-text-primary)' }}>
+        <span style={{ fontSize: '1.125rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
           {name || symbol}
         </span>
-        <span style={{ fontSize: 13, color: TEXT_COLOR }}>{symbol}</span>
+        <span style={{ fontSize: '0.8125rem', color: TEXT_COLOR }}>{symbol}</span>
       </div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 10 }}>
-        <span style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-text-primary)' }}>
+        <span style={{ fontSize: '1.375rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
           ${quote.price?.toFixed(2) || 'N/A'}
         </span>
         {quote.change != null && (
-          <span style={{ fontSize: 13, color: quote.change >= 0 ? GREEN : RED }}>
+          <span style={{ fontSize: '0.8125rem', color: quote.change >= 0 ? GREEN : RED }}>
             {quote.change >= 0 ? '+' : ''}{quote.change?.toFixed(2)} ({quote.changePct?.toFixed(2)}%)
           </span>
         )}
@@ -137,7 +138,9 @@ export default function CompanyOverviewPanel({ symbol: _symbol, visible, onClose
 
       {loading && (
         <div className="company-overview-loading">
-          <Loader2 size={16} className="animate-spin" />
+          <span aria-hidden="true" className="flex-shrink-0">
+            <Loader size={16} className="text-current" />
+          </span>
           Loading...
         </div>
       )}

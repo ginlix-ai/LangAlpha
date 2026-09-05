@@ -125,19 +125,20 @@ class TestSubagentCompilerClientInjection:
 # ── Prompt feature gating ─────────────────────────────────────────────────────
 
 
-def _base_path_defn() -> SubagentDefinition:
+def _base_path_defn(tools: list[str] | None = None) -> SubagentDefinition:
     """Definition with no custom prompt → base template + tool_guide render."""
     return SubagentDefinition(
         name="research",
         description="test subagent",
         role_prompt="Do research.",
+        tools=list(tools) if tools is not None else ["finance", "web_search"],
     )
 
 
 class TestSubagentPromptFeatureGating:
-    """The prompt must mirror the tool binding: watch_market is gated out of
-    the finance tool set per user (agent.py), so a subagent prompt advertising
-    it with the flag off would drive calls to a missing tool."""
+    """The prompt must mirror the tool binding: a tool_guide tier the subagent
+    cannot call would drive calls to a tool that is not bound. watch_market is
+    doubly gated — the per-user feature flag (agent.py) on top of the binding."""
 
     def test_watch_market_absent_when_flag_off(self):
         compiler = _compiler(config=_config(features={"market_watch": False}))
@@ -149,7 +150,30 @@ class TestSubagentPromptFeatureGating:
         result = compiler.compile(_base_path_defn())
         assert "watch_market" in result["system_prompt"]
 
+    def test_watch_market_absent_without_the_finance_binding(self):
+        compiler = _compiler(config=_config(features={"market_watch": True}))
+        result = compiler.compile(_base_path_defn(tools=["execute_code"]))
+        assert "watch_market" not in result["system_prompt"]
+
     def test_no_config_fails_closed(self):
         compiler = _compiler()
         result = compiler.compile(_base_path_defn())
         assert "watch_market" not in result["system_prompt"]
+
+    def test_tiers_follow_the_tool_sets(self):
+        """report-builder's binding: no finance, no web, no widgets."""
+        compiler = _compiler(config=_config(features={"market_watch": True}))
+        prompt = compiler.compile(
+            _base_path_defn(tools=["execute_code", "filesystem", "bash"])
+        )["system_prompt"]
+
+        assert "Financial Tools (Direct)" not in prompt
+        assert "get_quote" not in prompt
+        assert "ShowWidget" not in prompt
+
+    def test_finance_tier_present_when_bound(self):
+        compiler = _compiler(config=_config(features={"market_watch": False}))
+        prompt = compiler.compile(_base_path_defn(tools=["finance"]))["system_prompt"]
+
+        assert "Financial Tools (Direct)" in prompt
+        assert "get_quote" in prompt

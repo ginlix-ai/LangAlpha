@@ -52,6 +52,20 @@ def extract_status_code(exc: BaseException) -> int | None:
     return None
 
 
+def is_mid_stream_error(exc: BaseException) -> bool:
+    """Whether the failure was reported inside an already-established stream.
+
+    A provider that answers HTTP 200 and then reports failure as a stream event
+    sets ``mid_stream`` on its exception. Duck-typed rather than keyed to a
+    provider's exception class, so this module stays provider-agnostic and the
+    alternative, matching error prose, never has to be written.
+    """
+    return any(
+        getattr(current, "mid_stream", False) is True
+        for current in _iter_exception_chain(exc)
+    )
+
+
 def is_retryable_error(exc: BaseException, status_code: int | None = None) -> bool:
     """Whether retrying the same model could plausibly succeed.
 

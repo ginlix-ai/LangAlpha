@@ -194,7 +194,7 @@ function PortfolioWatchlistWidget({
             style={{ color: 'var(--color-text-tertiary)' }}
           />
           <span
-            className="text-[10px] font-semibold uppercase tracking-[0.14em]"
+            className="text-[0.625rem] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
             {activeTab === 'watchlist'
@@ -215,7 +215,7 @@ function PortfolioWatchlistWidget({
           <button
             type="button"
             onClick={() => switchTab('watchlist')}
-            className="px-2.5 py-[3px] text-[10.5px] uppercase tracking-wider rounded-full transition-colors"
+            className="px-2.5 py-[3px] text-[0.6563rem] uppercase tracking-wider rounded-full transition-colors"
             style={{
               backgroundColor:
                 activeTab === 'watchlist' ? 'var(--color-bg-card)' : 'transparent',
@@ -234,7 +234,7 @@ function PortfolioWatchlistWidget({
           <button
             type="button"
             onClick={() => switchTab('portfolio')}
-            className="px-2.5 py-[3px] text-[10.5px] uppercase tracking-wider rounded-full transition-colors"
+            className="px-2.5 py-[3px] text-[0.6563rem] uppercase tracking-wider rounded-full transition-colors"
             style={{
               backgroundColor:
                 activeTab === 'portfolio' ? 'var(--color-bg-card)' : 'transparent',

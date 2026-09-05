@@ -194,7 +194,7 @@ const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta: _chartMeta, 
                   display: 'flex',
                   alignItems: 'center',
                   gap: 4,
-                  fontSize: 13,
+                  fontSize: '0.8125rem',
                   color: extType === 'pre' ? EXT_COLOR_PRE : EXT_COLOR_POST,
                 }}
               >

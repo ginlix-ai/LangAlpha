@@ -133,8 +133,10 @@ sampled transactionally, the snapshot algorithm is a revalidation loop:
 - **Socket control frames** (mux-level, cursorless — distinct from in-stream frames):
   `chan_open{chan, lane, mode, started}` when the mux admits a channel (mode `replay`
   for a live run, `drain` for a settled backlog; `started` = ledger started_at epoch
-  ms, the client orders per-task outcome votes by it), and `chan_close{chan, reason}`
-  when it releases one. `chan_close{reason: terminal, outcome}` carries the ledger
+  ms, the client orders per-task outcome votes by it), `chan_caught_up{chan}` once the
+  channel's cursor reaches the stream head recorded at open (the frames before it are
+  backlog the client presents as already rendered; the ones after arrived live), and
+  `chan_close{chan, reason}` when it releases one. `chan_close{reason: terminal, outcome}` carries the ledger
   row's outcome — it is how a channel closes from row truth when the worker died
   between the terminal CAS and the `run_end` append. Other reasons:
   `resync_required` (cursor gap / aged-out stream) and `transport_error`.

@@ -99,22 +99,24 @@ interface ChipPalette {
   shadow: string;
 }
 
-// Frosted chip surfaces tuned to the two chart backgrounds (#000 dark /
-// #FFFCF9 light). The annotation's own color is demoted to a small accent dot
+// Frosted chip surfaces tuned to the two chart backgrounds (#232426 dark /
+// #FFFFFF light). The annotation's own color is demoted to a small accent dot
 // so the label text stays high-contrast ink on whatever palette the agent picks
 // — the single biggest legibility win over stamping raw color on a dark box.
+// Canvas-drawn, so these are literals; they track the bg-card / text-primary
+// tokens and the hairline border weight of the card system.
 const CHIP_PALETTE: Record<AnnotationTheme, ChipPalette> = {
   dark: {
-    bg: 'rgba(20, 22, 27, 0.88)',
+    bg: 'rgba(25, 25, 25, 0.92)',
     border: 'rgba(255, 255, 255, 0.16)',
-    ink: '#F4F4F5',
-    shadow: 'rgba(0, 0, 0, 0.55)',
+    ink: '#E6E6E4',
+    shadow: 'rgba(0, 0, 0, 0.45)',
   },
   light: {
-    bg: 'rgba(255, 252, 249, 0.94)',
-    border: 'rgba(45, 43, 40, 0.16)',
-    ink: '#2D2B28',
-    shadow: 'rgba(45, 43, 40, 0.22)',
+    bg: 'rgba(255, 255, 255, 0.94)',
+    border: 'rgba(31, 31, 30, 0.16)',
+    ink: '#1F1F1E',
+    shadow: 'rgba(31, 31, 30, 0.18)',
   },
 };
 

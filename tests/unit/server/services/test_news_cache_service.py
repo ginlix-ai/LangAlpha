@@ -24,12 +24,17 @@ class _StubCache:
 
     def __init__(self, store: dict[str, dict]):
         self._store = store
+        self.mget_calls = 0
 
     async def scan_keys(self, pattern: str) -> list[str]:
         return list(self._store)
 
     async def get(self, key: str):
         return self._store.get(key)
+
+    async def mget(self, keys: list[str]) -> list:
+        self.mget_calls += 1
+        return [self._store.get(k) for k in keys]
 
 
 @pytest.mark.asyncio
@@ -39,10 +44,13 @@ async def test_get_article_by_id_finds_match(monkeypatch):
         "news:general:20": {"results": [{"id": "zzz"}]},
         "news:tickertick:general:50": {"results": [article]},
     }
-    monkeypatch.setattr(_GET_CACHE, lambda: _StubCache(store))
+    cache = _StubCache(store)
+    monkeypatch.setattr(_GET_CACHE, lambda: cache)
 
     found = await NewsCacheService().get_article_by_id("abc")
     assert found == article
+    # One MGET for the whole scan, not a GET per key.
+    assert cache.mget_calls == 1
 
 
 @pytest.mark.asyncio

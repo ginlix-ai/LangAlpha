@@ -3,18 +3,13 @@
  * Handles events from history replay (SSE stream of past conversations)
  */
 
-import { normalizeAction } from '../../hooks/utils/eventUtils';
 import { isToolResultFailure } from '../subagents/subagentStatus';
+import { isTaskAgentId } from '../../utils/agentId';
+import { deriveTaskSegment, applyTaskSegment, applyLaunchReply } from '../subagents/taskSegmentBuilder';
+import type { SubagentTaskRecord } from '@/types/chat';
 import type { MessageRecord, SetMessages, ToolCallRecord, ToolCallResultRecord, TodoPayload, HtmlWidgetData } from '../../hooks/utils/types';
+import type { PairState } from '../types';
 
-let _steeringIdCounter = 0;
-
-/** Per-pair mutable state tracked during history replay. */
-interface PairState {
-  contentOrderCounter: number;
-  reasoningId: string | null;
-  toolCallId: string | null;
-}
 
 /** Shape of an SSE history event. */
 interface HistoryEvent {
@@ -44,11 +39,7 @@ interface HistorySteeringRefs {
  * Returns true if the event is from a subagent (agent field starts with "task:").
  */
 export function isSubagentHistoryEvent(event: HistoryEvent | null | undefined): boolean {
-  const agent = event?.agent;
-  if (!agent || typeof agent !== 'string') {
-    return false;
-  }
-  return agent.startsWith('task:');
+  return isTaskAgentId(event?.agent);
 }
 
 /** Handles user_message events from history replay. */
@@ -90,6 +81,7 @@ export function handleHistoryUserMessage({
           contentOrderCounter: 0,
           reasoningId: null,
           toolCallId: null,
+          steeringBatches: 0,
         });
       }
       // Map turn_index to the streaming assistant message ID
@@ -103,6 +95,7 @@ export function handleHistoryUserMessage({
       contentOrderCounter: 0,
       reasoningId: null,
       toolCallId: null,
+      steeringBatches: 0,
     });
 
     // Create user message bubble (skip for empty content, HITL resume pairs,
@@ -169,6 +162,7 @@ export function handleHistoryUserMessage({
         contentOrderCounter: 0,
         reasoningId: null,
         toolCallId: null,
+        steeringBatches: 0,
       });
     }
 
@@ -395,7 +389,7 @@ export function handleHistoryToolCalls({ assistantMessageId, toolCalls, pairStat
 
           const toolCallProcesses = { ...((msg.toolCallProcesses as Record<string, Record<string, unknown>>) || {}) };
           const contentSegments = [...((msg.contentSegments as Record<string, unknown>[]) || [])];
-          const subagentTasks = { ...((msg.subagentTasks as Record<string, Record<string, unknown>>) || {}) };
+          const subagentTasks = { ...((msg.subagentTasks as Record<string, SubagentTaskRecord>) || {}) };
 
           // Standard tool_call segment/process
           if (!toolCallProcesses[toolCallId]) {
@@ -421,56 +415,11 @@ export function handleHistoryToolCalls({ assistantMessageId, toolCalls, pairStat
             };
           }
 
-          // If this tool is the Task tool (subagent spawner), also create a subagent_task segment
-          // Backend uses PascalCase "Task"; accept both for compatibility
-          const isTaskTool = toolCall.name === 'task' || toolCall.name === 'Task';
-          const action = normalizeAction((toolCall.args?.action as string) || (toolCall.args?.task_id ? 'resume' : 'init'));
-          const isNewSpawn = action === 'init';
-          if (isTaskTool && toolCallId && isNewSpawn) {
-            const subagentId = toolCallId;
-            // Only add the segment once per subagentId
-            const hasExistingSubagentSegment = contentSegments.some(
-              (s: Record<string, unknown>) => s.type === 'subagent_task' && s.subagentId === subagentId
-            );
-
-            if (!hasExistingSubagentSegment) {
-              contentSegments.push({
-                type: 'subagent_task',
-                subagentId,
-                order: currentOrder,
-              });
-            }
-
-            // Initialize or update subagent task metadata
-            subagentTasks[subagentId] = {
-              ...(subagentTasks[subagentId] || {}),
-              subagentId,
-              description: (toolCall.args?.description as string) || '',
-              prompt: (toolCall.args?.prompt as string) || (toolCall.args?.description as string) || '',
-              type: (toolCall.args?.subagent_type as string) || 'general-purpose',
-              action: 'init',
-              status: 'running',
-            };
-          } else if (isTaskTool && toolCallId && !isNewSpawn) {
-            // Resume/follow-up call — show a new card with "resumed" indicator
-            // Normalize to "task:xxx" format to match floating card keys
-            const rawTargetId = (toolCall.args?.task_id as string) || '';
-            const resumeTargetId = rawTargetId.startsWith('task:') ? rawTargetId : `task:${rawTargetId}`;
-            contentSegments.push({
-              type: 'subagent_task',
-              subagentId: toolCallId,
-              resumeTargetId,
-              order: currentOrder,
-            });
-            subagentTasks[toolCallId] = {
-              subagentId: toolCallId,
-              resumeTargetId,
-              description: (toolCall.args?.description as string) || '',
-              prompt: (toolCall.args?.prompt as string) || (toolCall.args?.description as string) || '',
-              type: (toolCall.args?.subagent_type as string) || 'general-purpose',
-              action,
-              status: 'running',
-            };
+          // Task spawns / resumes and RunWorkflow launches also render an
+          // inline card — same derivation the live stream uses.
+          const derived = deriveTaskSegment(toolCall, toolCallId, currentOrder);
+          if (derived) {
+            applyTaskSegment(derived, toolCallId, contentSegments, subagentTasks);
           }
 
           return {
@@ -504,7 +453,7 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
       if (msg.id !== assistantMessageId) return msg;
 
       const toolCallProcesses = { ...((msg.toolCallProcesses as Record<string, Record<string, unknown>>) || {}) };
-      const subagentTasks = { ...((msg.subagentTasks as Record<string, Record<string, unknown>>) || {}) };
+      const subagentTasks = { ...((msg.subagentTasks as Record<string, SubagentTaskRecord>) || {}) };
 
       const isFailed = isToolResultFailure(result);
 
@@ -527,19 +476,8 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
         return msg;
       }
 
-      // If this toolCallId is associated with a subagent task, store the result.
       if (subagentTasks[toolCallId]) {
-        // Don't set status: 'completed' here — the Task tool returns immediately
-        // after spawning, so its tool_call_result doesn't mean the subagent finished.
-        // Terminal status arrives per task: the replayed artifact stamp (ledger
-        // truth) or a live chan_close via onTaskRunClosed. EXCEPT a failed spawn
-        // (bare "Error: …" result): it has no run, no artifact to stamp and no
-        // channel to close, so this result is its only settle signal.
-        subagentTasks[toolCallId] = {
-          ...subagentTasks[toolCallId],
-          result: result.content,
-          ...(isFailed ? { status: 'error' } : {}),
-        };
+        subagentTasks[toolCallId] = applyLaunchReply(subagentTasks[toolCallId], result);
       }
 
       return {
@@ -576,8 +514,11 @@ export function handleHistorySteeringDelivered({
   const { newMessagesStartIndexRef } = refs;
   const steeringMessages = (event.messages || []) as Array<Record<string, unknown>>;
 
-  // Create user message bubble(s) for each steering message
-  const batchId = ++_steeringIdCounter;
+  // Create user message bubble(s) for each steering message. The batch is
+  // numbered within its pair, never from a process-wide counter: ids that
+  // change on every replay make the same bubbles look new to every id-keyed
+  // consumer (scroll observers, the minimap) each time history reattaches.
+  const batchId = (pairStateByPair.get(pairIndex)?.steeringBatches ?? 0) + 1;
   for (let sIdx = 0; sIdx < steeringMessages.length; sIdx++) {
     const qMsg = steeringMessages[sIdx];
     if (!qMsg.content) continue;
@@ -609,6 +550,7 @@ export function handleHistorySteeringDelivered({
     contentOrderCounter: 0,
     reasoningId: null,
     toolCallId: null,
+    steeringBatches: batchId,
   });
 
   const assistantMessage: MessageRecord = {
@@ -662,7 +604,7 @@ export function handleHistoryTaskArtifactStatus({ toolCallId, taskId, status, se
 
   setMessages((prev: MessageRecord[]) =>
     prev.map((msg: MessageRecord) => {
-      const subagentTasks = msg.subagentTasks as Record<string, Record<string, unknown>> | undefined;
+      const subagentTasks = msg.subagentTasks as Record<string, SubagentTaskRecord> | undefined;
       if (!subagentTasks) return msg;
 
       // Primary: exact match on the card's own Task tool_call_id.

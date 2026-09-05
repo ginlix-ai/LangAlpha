@@ -47,7 +47,10 @@ def ws_mock_db(mock_connection):
     """Patch get_db_connection in the workspace module (its import location)."""
 
     @asynccontextmanager
-    async def _fake():
+    async def _fake(conn=None):
+        if conn is not None:
+            yield conn
+            return
         yield mock_connection
 
     with patch(
@@ -284,21 +287,26 @@ async def test_update_workspace_status_stopped(ws_mock_db, mock_cursor):
 
 @pytest.mark.asyncio
 async def test_update_workspace_status_running(ws_mock_db, mock_cursor):
-    """update_workspace_status with non-stopped status omits stopped_at."""
+    """A status move omits stopped_at, and never touches sandbox_id.
+
+    The binding is owned solely by ``try_bind_workspace_sandbox``'s
+    compare-and-set; a status writer that could also rebind is how a workspace
+    ends up pointing at a sandbox that was already replaced.
+    """
     from src.server.database.workspace import update_workspace_status
 
     row = _workspace_row(status="running")
     mock_cursor.fetchone.return_value = row
 
-    result = await update_workspace_status("ws-1", "running", sandbox_id="sb-1")
+    result = await update_workspace_status("ws-1", "running")
 
     assert result["status"] == "running"
     sql = mock_cursor.execute.call_args[0][0]
-    assert "sandbox_id = %s" in sql
-    # stopped_at should NOT be in the SET clause (it does appear in RETURNING)
-    # Extract just the SET portion of the SQL
+    # stopped_at and sandbox_id should NOT be in the SET clause (both appear in
+    # RETURNING). Extract just the SET portion of the SQL.
     set_clause = sql.split("SET")[1].split("WHERE")[0]
     assert "stopped_at" not in set_clause
+    assert "sandbox_id" not in set_clause
 
 
 @pytest.mark.asyncio

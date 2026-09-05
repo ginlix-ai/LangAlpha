@@ -8,70 +8,125 @@ so only the first report-back streamed and the rest needed a page refresh.
 """
 
 import asyncio
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from src.server.services.report_back.flash.keys import (
+    thread_wake_key,
+    thread_wake_pattern,
+)
+from src.server.services.report_back.flash import wake
+from src.server.services.report_back.flash.wake_listener import ThreadWakeListener
 
 THREADS_MOD = "src.server.app.threads.messaging"
 AUTH_MOD = "src.server.utils.api"
 
 
-def _pubsub_cache(queue):
-    """A cache whose pubsub yields each Redis frame in `queue`, then pings."""
+@pytest.fixture
+def wake_listener():
+    """A fresh demux; the listener is a process-global singleton."""
+    ThreadWakeListener._instance = None
+    inst = ThreadWakeListener.get_instance()
+    yield inst
+    ThreadWakeListener._instance = None
 
-    async def fake_get_message(*_args, **_kwargs):
+
+def _pattern_pubsub(frames, ready):
+    """A pattern subscription: acks each psubscribe, then serves `frames`.
+
+    Frames are withheld until ``ready()``. Pub/sub has no replay, so a wake
+    the listener consumes before the viewer attaches is genuinely gone —
+    that's what the snapshot covers, and it is not what this test is pinning.
+    """
+    state = {"pending_ack": 0}
+
+    async def psubscribe(_pattern):
+        state["pending_ack"] += 1
+
+    async def get_message(ignore_subscribe_messages=False, timeout=None):
         # Yield to the loop so the client reader can drain each frame.
         await asyncio.sleep(0)
-        return queue.pop(0) if queue else None
+        if state["pending_ack"]:
+            state["pending_ack"] -= 1
+            return {
+                "type": "psubscribe",
+                "channel": thread_wake_pattern().encode(),
+                "data": 1,
+            }
+        if frames and ready():
+            return frames.pop(0)
+        await asyncio.sleep(0.01)
+        return None
 
     pubsub = MagicMock()
-    pubsub.subscribe = AsyncMock()
-    pubsub.get_message = fake_get_message
-    pubsub.unsubscribe = AsyncMock()
+    pubsub.psubscribe = AsyncMock(side_effect=psubscribe)
+    pubsub.get_message = get_message
+    pubsub.ping = AsyncMock()
     pubsub.aclose = AsyncMock()
+
+    client = MagicMock()
+    client.pubsub = MagicMock(return_value=pubsub)
+    return client, pubsub
+
+
+def _wake_frame(thread_id: str, payload: bytes) -> dict:
+    return {
+        "type": "pmessage",
+        "channel": thread_wake_key(thread_id).encode(),
+        "data": payload,
+    }
+
+
+@pytest.mark.asyncio
+async def test_watch_forwards_every_wake_on_one_subscription(
+    threads_client, wake_listener
+):
+    # Two report-back wakes, delivered as distinct runs on the same thread.
+    client, pubsub = _pattern_pubsub(
+        [
+            _wake_frame("th-flash", b'{"run_id": "rb-1"}'),
+            _wake_frame("th-flash", b'{"run_id": "rb-2"}'),
+        ],
+        ready=lambda: "th-flash" in wake_listener._subs,
+    )
 
     cache = MagicMock()
     cache.enabled = True
     cache.client = MagicMock()
-    cache.client.pubsub = MagicMock(return_value=pubsub)
-    return cache, pubsub
 
-
-@pytest.mark.asyncio
-async def test_watch_forwards_every_wake_on_one_subscription(threads_client):
-    # Two report-back wakes, delivered as distinct runs on the same thread.
-    queue = [
-        {"type": "message", "data": b'{"run_id": "rb-1"}'},
-        {"type": "message", "data": b'{"run_id": "rb-2"}'},
-    ]
-    cache, pubsub = _pubsub_cache(queue)
-
-    # Once both wakes drain, jump the clock past the 30-min cap so the generator
-    # hits its OWN timeout/break and ends the stream — deterministic, instead of
-    # relying on a client-side cancel of the otherwise-infinite keepalive loop.
-    real_monotonic = time.monotonic
-
-    def fake_monotonic():
-        return real_monotonic() + (0 if queue else 10**9)
-
+    # End the stream server-side on its own max-duration close, rather than
+    # by cancelling the client: the ASGI transport runs the generator inline,
+    # so a client-side break would leave it producing keepalives for 30 min.
     with patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()), patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=cache
-    ), patch("time.monotonic", fake_monotonic):
-        body = ""
-        async with threads_client.stream(
-            "GET", "/api/v1/threads/th-flash/watch"
-        ) as resp:
-            assert resp.status_code == 200
-            async for line in resp.aiter_lines():
-                body += line + "\n"
+    ), patch(
+        "src.server.services.workspace_status_pubsub.get_shared_pubsub_client",
+        AsyncMock(return_value=client),
+    ), patch.object(wake, "WAKE_KEEPALIVE_INTERVAL", 0.05), patch.object(
+        wake, "WAKE_MAX_WATCH_DURATION", 2.0
+    ):
+        wake_listener.start()
+        try:
+            body = ""
+            async with threads_client.stream(
+                "GET", "/api/v1/threads/th-flash/watch"
+            ) as resp:
+                assert resp.status_code == 200
+                async for line in resp.aiter_lines():
+                    body += line + "\n"
+        finally:
+            await wake_listener.stop()
 
     # BOTH wakes arrived on ONE connection (the old `break` would yield only rb-1).
     assert "rb-1" in body
     assert "rb-2" in body
-    # One subscription served the whole chain, torn down on disconnect.
-    pubsub.subscribe.assert_awaited_once()
-    pubsub.unsubscribe.assert_awaited_once()
+    # ONE pattern subscription served the viewer — not one per viewer, which is
+    # what pinned a shared-pool connection per open tab.
+    pubsub.psubscribe.assert_awaited_once_with(thread_wake_pattern())
+    # And the viewer's slot is gone. detach is synchronous, so a disconnect —
+    # which tears the generator down under cancellation — cannot skip it.
+    assert "th-flash" not in wake_listener._subs
 
 
 @pytest.mark.asyncio

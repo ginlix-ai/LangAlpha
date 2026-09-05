@@ -17,7 +17,7 @@
      Single source of truth — MarketScanlines and EdgeGrain read this variable
      at runtime (via derivePalette in loginPaper), so the canvases and the CSS
      never drift. */
-  --login-ember: rgb(255, 168, 92);
+  --login-ember: rgb(233, 149, 74);
   /* Opaque composition: the muted/loss tokens are translucent, so compose each
      over the page color — the dune's stray dots (see EdgeGrain) never print
      through a field, button, or error box. Referenced by the input, buttons,
@@ -38,11 +38,11 @@
   overflow: hidden;
   /* Pinned here so the login renders the same face in every host app —
      without it, text inherits whatever body font the app's tokens set. */
-  font-family: 'Golos Text', 'Inter', system-ui, sans-serif;
+  font-family: 'Sora', 'Geist', 'Noto Sans SC', -apple-system, system-ui, sans-serif;
 }
 
 [data-theme='light'] .login-page {
-  --login-ember: rgb(178, 82, 38);
+  --login-ember: rgb(208, 125, 51);
 }
 
 .login-page__card {
@@ -60,7 +60,7 @@
     0 0 20px rgba(255, 255, 255, 0.04),
     0 0 40px rgba(255, 255, 255, 0.02),
     0 4px 24px rgba(0, 0, 0, 0.15);
-  font-family: 'Golos Text', 'Inter', system-ui, sans-serif;
+  font-family: 'Sora', 'Geist', 'Noto Sans SC', -apple-system, system-ui, sans-serif;
 }
 
 .login-page__card-header {
@@ -79,7 +79,7 @@
 }
 
 .login-page__title {
-  font-family: 'Golos Text', 'Inter', system-ui, sans-serif;
+  font-family: 'Sora', 'Geist', 'Noto Sans SC', -apple-system, system-ui, sans-serif;
   font-size: 1.5rem;
   font-weight: 600;
   letter-spacing: -0.03em;
@@ -110,6 +110,12 @@
 
 .login-page__input {
   width: 100%;
+  /* These are <Input>, so the shared primitive's height lands here too. This
+     surface sets its own type (1rem) and radius and wants the roomier box the
+     console does not; min-height rather than height so it holds whatever the
+     primitive's default becomes next. It is also what keeps the password
+     toggle's 44px touch target from overflowing the field it sits in. */
+  min-height: 2.5rem;
   padding: 0.75rem 1rem;
   font-size: 1rem;
   font-weight: 400;
@@ -140,10 +146,13 @@
   box-shadow: 0 0 0 3px var(--color-border-muted);
 }
 
-/* Keyboard/assistive focus only (:focus-visible never matches mouse clicks):
-   trade the muted halo for the ember so tab position is unmissable. The extra
-   .login-page ancestor outranks the shared Input's Tailwind focus-visible ring. */
-.login-page .login-page__input:focus-visible {
+/* Keyboard/assistive focus only: trade the muted halo above for the ember, so
+   tab position is unmissable. :focus-visible alone does not mean keyboard on a
+   text field -- the browser matches it for a mouse click too, so that a field
+   about to receive typing looks focused -- and the ember fired on every click
+   here for as long as this rule has existed. The origin lib/inputModality.ts
+   stamps is what actually separates the two: a click keeps the muted halo. */
+:root:not([data-pointer-focus]) .login-page__input:focus-visible {
   border-color: var(--login-ember);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--login-ember) 35%, transparent);
 }
@@ -196,12 +205,77 @@
   transform: none;
 }
 
-/* Keyboard focus takes the ember, not the browser default. Mouse focus on
-   inputs keeps the soft halo; their keyboard ring lives with the input rules. */
+/* No ring on this surface's buttons and links. Keyboard focus prints ember
+   instead -- the color this page already reserves for a control that is about
+   to act. Clearing the outline is not optional here: without it the app-wide
+   baseline ring paints in a color this page uses nowhere. Nor is replacing it,
+   since suppressing both would leave the sign-in page with nothing for a
+   keyboard to follow.
+
+   Ember separates from the resting greys by hue more than by luminance, so it
+   carries under 3:1 and a red-green deficiency can flatten it. Every control
+   therefore gets a second signal that still reads with the hue taken out: a
+   heavy underline by default, a fill where there was none on the primary
+   buttons, a doubled edge on the secondary ones, a tinted pad behind the icon
+   toggle.
+
+   The quiet treatment is the default rather than a list of the controls that
+   want it, so a control added later is wrong-looking at worst instead of
+   silently unfocusable. Hover stays ink, so the two states still read apart.
+   Field focus is separate; its halo lives with the input rules above. */
 .login-page button:focus-visible,
 .login-page a:focus-visible {
-  outline: 2px solid var(--login-ember);
-  outline-offset: 2px;
+  outline: none;
+  color: var(--login-ember);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+/* A boxed control has somewhere better to put it than its own label. The inset
+   shadow doubles the border it already wears rather than adding a second ring
+   outside it: a 1px edge going to 2px is the geometry change the underline
+   provides elsewhere, and it lands inside the button's own box, so the row of
+   method buttons does not shift as focus walks it. */
+.login-page__method-btn:focus-visible:not(:disabled),
+.login-page__resend-btn:focus-visible:not(:disabled) {
+  border-color: var(--login-ember);
+  box-shadow: inset 0 0 0 1px var(--login-ember);
+  color: var(--color-text-primary);
+  text-decoration: none;
+}
+
+.login-page__submit:focus-visible:not(:disabled),
+.login-page__method-btn--primary:focus-visible:not(:disabled) {
+  background: var(--login-ember);
+  border-color: var(--login-ember);
+  color: var(--color-bg-page);
+  text-decoration: none;
+}
+
+/* An icon has no text to underline, so its second signal is a tint behind it. */
+.login-page__password-toggle:focus-visible {
+  background: color-mix(in srgb, var(--login-ember) 16%, transparent);
+  border-radius: 0.5rem;
+}
+
+/* Forced colors takes all of the above apart. Backgrounds and borders are
+   re-painted from the OS palette, so the ember fill and the ember edge stop
+   distinguishing a focused button from a resting one, and box-shadow is
+   dropped outright, which is the doubled edge and the field halo. The
+   underline survives -- but the boxed controls are exactly the ones that turn
+   it off. What else survives is the outline this page went out of its way to
+   clear, so put that back for this mode, with no color of its own so the
+   system supplies its focus color, and ungated by device: someone who asked
+   the OS for maximum contrast is the last person to leave without an
+   indicator on a click. */
+@media (forced-colors: active) {
+  .login-page button:focus-visible,
+  .login-page a:focus-visible,
+  .login-page__input:focus-visible {
+    outline: 2px solid;
+    outline-offset: 2px;
+  }
 }
 
 .login-page__legal {
@@ -402,7 +476,7 @@
   height: 12px;
   border: 1px solid var(--color-text-tertiary);
   border-radius: 3px;
-  font-size: 9px;
+  font-size: 0.5625rem;
   line-height: 1;
   color: transparent;
   transition: color 0.2s ease, border-color 0.2s ease;
@@ -725,7 +799,7 @@
 
 .login-page__visual-title {
   margin: 0;
-  font-family: 'Golos Text', 'Inter', system-ui, sans-serif;
+  font-family: 'Sora', 'Geist', 'Noto Sans SC', -apple-system, system-ui, sans-serif;
   font-size: clamp(1.625rem, 2.2vw, 2.5rem);
   font-weight: 600;
   letter-spacing: -0.02em;

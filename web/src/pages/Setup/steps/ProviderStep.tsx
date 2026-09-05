@@ -1,13 +1,15 @@
 import { useState, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Loader2, Plus } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Loader } from '@/components/ui/loader';
 import { ProviderCard } from '@/components/model/ProviderCard';
 import { useModels } from '@/hooks/useModels';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useConfiguredProviders } from '@/hooks/useConfiguredProviders';
 import type { AccessType, ProviderCatalogEntry } from '@/components/model/types';
 import { useTranslation } from 'react-i18next';
+import { modelPrefs } from '@/lib/modelPreferences';
 
 const CUSTOM_PROVIDER_KEY = '__custom__';
 
@@ -44,11 +46,8 @@ export default function ProviderStep() {
   // User's existing custom providers (from preferences)
   const userCustomProviders = useMemo(() => {
     if (!preferences) return [];
-    const prefs = preferences as Record<string, unknown>;
-    const other = (prefs.other_preference ?? {}) as Record<string, unknown>;
-    const cp = other.custom_providers;
-    if (!Array.isArray(cp)) return [];
-    return cp as Array<{ name: string; parent_provider: string; use_response_api?: boolean }>;
+    const cp = modelPrefs(preferences).custom_providers;
+    return Array.isArray(cp) ? cp : [];
   }, [preferences]);
 
   // Set of custom provider names for lookup
@@ -110,7 +109,7 @@ export default function ProviderStep() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-5 w-5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
+        <Loader size={20} className="text-[color:var(--color-text-tertiary)]" />
       </div>
     );
   }

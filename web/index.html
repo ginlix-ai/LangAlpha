@@ -4,25 +4,316 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <!-- This build reserves the strip macOS window buttons float over, so a
+         desktop shell may hide the titlebar and hand the top of the window to
+         it. Read by the shell after load; see watchChrome in desktop/src/main.js.
+
+         A declaration and not something the shell measures: the reservation is
+         only painted once the shell says the titlebar is gone, so measuring it
+         would only find the shell's own last answer. Here in <head> rather than
+         emitted by the bundle so it is also true on the screens a first launch
+         opens on, which are the ones with no sidebar to measure. -->
+    <meta name="langalpha-window-chrome" content="reserves" />
     <script>
       (function(){
-        var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-        document.documentElement.setAttribute('data-theme', t);
+        var d = document.documentElement;
+        // Resolve before stamping: the stored preference may be 'auto', which
+        // is a preference and not a theme — stamping it verbatim matches
+        // neither theme selector, so a light-OS user paints dark until
+        // ThemeProvider's effect corrects it.
+        var stored = localStorage.getItem('theme');
+        var t = (stored === 'light' || stored === 'dark') ? stored
+          : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+        d.setAttribute('data-theme', t);
+        // Same pre-paint reason as the theme: the root font-size multiplier
+        // (tokens.css `html { font-size: calc(100% * var(--app-font-scale)) }`)
+        // must land before first layout, or every rem-sized box reflows once.
+        // Range-checked, not membership-checked — FONT_SCALES lives in the
+        // bundle and this script runs before it.
+        var s = parseFloat(localStorage.getItem('fontScale'));
+        if (s >= 0.9 && s <= 1.1) d.style.setProperty('--app-font-scale', String(s));
+      })();
+    </script>
+    <script>
+      (function () {
+        // Stale-build recovery. A deploy swaps the entire asset manifest, so a
+        // document still open from the previous build asks for
+        // /assets/<oldhash>.js and gets a 404 (the server has to make that 404 honest
+        // instead of serving HTML, which is what used to break the MIME check).
+        // An honest 404 is still a blank page: the entry module never runs.
+        // Nothing inside the bundle can fix that — the bundle is what failed —
+        // so this has to be inline in the document, and it has to be in <head>
+        // ahead of the entry script, or the listener is registered too late to
+        // see it fail.
+        // Twin of the classifier in src/lib/staleBuild.tsx, which owns
+        // everything after the app has mounted. Both must answer "is this
+        // message about a dead build asset" identically, so the matching below
+        // mirrors mentionsBuildAsset() there line for line.
+        var KEY = '__la_asset_recovery__';
+        // Two documents that both failed to boot are enough evidence that
+        // reloading is not the answer. Past that the loop is just sustained
+        // pressure on an origin that is already broken, so stop and say so.
+        var MAX_ATTEMPTS = 2;
+        // One document gets one decision. A deploy kills every asset at once,
+        // so several errors arrive here per document, and the bound has to
+        // ignore the extras. A timestamp window used to do that job, but it
+        // could not tell them apart from the reloaded document failing again —
+        // and the reload lands inside any window worth setting, so it ate the
+        // second attempt and the dead end behind it.
+        var acted = false;
+
+        // Where the build writes its content-hashed output. Recovery depends on
+        // the server answering a missing file under here with a 404: fall back
+        // to index.html instead and the browser gets 200 text/html, refuses to
+        // run it as a module, and the reload below finds the same dead file
+        // again. A third copy of this prefix lives in the serving config that
+        // decides whether a miss 404s at all. ES5 on purpose: a parse error
+        // would disable recovery on exactly the old browsers most likely to be
+        // holding a stale document.
+        var BUILD_PREFIXES = ['/assets/'];
+        var ABSOLUTE_URL = /https?:\/\/[^\s'")]+/g;
+
+        function isBuildAsset(url) {
+          if (!url) return false;
+          try {
+            var u = new URL(url, location.href);
+            if (u.origin !== location.origin) return false;
+            for (var i = 0; i < BUILD_PREFIXES.length; i++) {
+              if (u.pathname.indexOf(BUILD_PREFIXES[i]) === 0) return true;
+            }
+            return false;
+          } catch (e) {
+            return false;
+          }
+        }
+
+        // Anything that is not a plain positive count reads as "no attempt
+        // yet". Storage this code does not own is not worth trusting, and the
+        // two ways it can be wrong fail in opposite directions: a bogus low
+        // value costs one extra reload, a bogus high one would switch recovery
+        // off for the session.
+        function attemptsSoFar() {
+          try {
+            var raw = JSON.parse(sessionStorage.getItem(KEY) || '{}');
+            // Finite integers only. `1e999` parses as Infinity and a fraction
+            // counts up in steps smaller than one, so neither is a plain count
+            // of documents and neither reaches the cap where it should.
+            if (typeof raw.n !== 'number' || !isFinite(raw.n)) return 0;
+            var n = Math.floor(raw.n);
+            return n > 0 ? n : 0;
+          } catch (e) {
+            return 0;
+          }
+        }
+
+        // The reloads did not help. A blank page is the exact failure this file
+        // exists to prevent, so arriving at one silently is the worst version
+        // of it — hand the user something to act on instead. No i18n here: the
+        // bundle that carries it is what failed to load.
+        function showDeadEnd() {
+          var root = document.getElementById('root');
+          if (!root || root.firstChild) return;
+          var zh = (navigator.language || '').indexOf('zh') === 0;
+          root.innerHTML =
+            '<div role="alert" style="display:flex;flex-direction:column;align-items:center;' +
+            'justify-content:center;gap:12px;height:100vh;height:100dvh;padding:0 24px;' +
+            'text-align:center;font:14px/1.5 system-ui,sans-serif;color:#8a8a8a">' +
+            '<p>' + (zh ? '应用未能加载。' : 'The app failed to load.') + '</p>' +
+            '<button type="button" style="font:inherit;padding:8px 16px;min-height:44px;' +
+            'border-radius:8px;border:1px solid currentColor;background:transparent;' +
+            'color:inherit;cursor:pointer">' + (zh ? '重试' : 'Try again') + '</button></div>';
+          var btn = root.getElementsByTagName('button')[0];
+          if (btn) {
+            btn.onclick = function () {
+              try {
+                sessionStorage.removeItem(KEY);
+              } catch (e) {}
+              location.reload();
+            };
+            btn.focus();
+          }
+        }
+
+        function recover(reason) {
+          // Only before the app has mounted. Once it is running, a surprise
+          // reload would throw away whatever the user was in the middle of —
+          // an agent turn streaming for minutes, a half-written message — so
+          // publish the fact and let the app offer the reload instead.
+          if (window.__LA_BOOTED__) {
+            window.__LA_STALE_BUILD__ = reason;
+            try {
+              window.dispatchEvent(new CustomEvent('la:stale-build', { detail: reason }));
+            } catch (e) {}
+            return;
+          }
+          if (acted) return;
+          acted = true;
+          var attempts = attemptsSoFar();
+          if (attempts >= MAX_ATTEMPTS) return showDeadEnd();
+          try {
+            sessionStorage.setItem(KEY, JSON.stringify({ n: attempts + 1 }));
+          } catch (e) {
+            // Blocked or full session storage means no way to count the
+            // attempts, and an unbounded reload loop hammering the origin is
+            // worse than the blank page it is trying to fix. Reloading is off,
+            // but the user still gets the control — returning here is how this
+            // whole file's failure looks, and a blank page is a blank page
+            // whatever the reason for it.
+            return showDeadEnd();
+          }
+          // Only works because the document itself is deliberately not
+          // long-cached, so this refetches it and gets the new asset names with
+          // it. Jittered because the bound is per tab: a bad deploy would
+          // otherwise have every open tab reload in the same second.
+          setTimeout(function () {
+            location.reload();
+          }, Math.random() * 3000);
+        }
+
+        // Capture phase: resource load errors do not bubble.
+        window.addEventListener('error', function (e) {
+          var el = e && e.target;
+          if (!el || el === window) return;
+          // Scripts, and the preload links Vite appends for a lazy chunk.
+          // /assets/ also holds CSS, fonts and images, and a stylesheet or
+          // <img> that blips would otherwise be read as a dead build and
+          // reload the page under a user whose build is current — so the link
+          // branch takes only the two shapes Vite writes a JS preload in, and
+          // it writes them differently depending on where. The ones it appends
+          // at runtime carry as="script", with rel varying because it falls
+          // back to "preload" where modulepreload is unsupported. The ones it
+          // bakes into this document for the entry's own vendor chunks are
+          // rel="modulepreload" with no as at all. Neither shape admits a
+          // stylesheet, font or image: those are rel="stylesheet", or
+          // rel="preload" with some other as.
+          //
+          // That branch is the whole Safari story. Safari's import error names
+          // no URL, so neither the message classifier below nor the one in
+          // staleBuild.tsx can match it, and the flag those fall back to had
+          // nothing setting it: the chunk never becomes a <script>, only a
+          // <link>. Without this the boundary rethrows a dead Safari chunk and
+          // the pane goes blank — the failure this file exists to remove.
+          var rel = el.rel || (el.getAttribute ? el.getAttribute('rel') : null);
+          var as = el.as || (el.getAttribute ? el.getAttribute('as') : null);
+          var url;
+          if (el.tagName === 'SCRIPT') url = el.src;
+          else if (el.tagName === 'LINK' && (rel === 'modulepreload' || as === 'script')) url = el.href;
+          else return;
+          if (isBuildAsset(url)) recover('resource');
+        }, true);
+
+        // Vite fires this when a lazy route's preload 404s. Gated the same way
+        // the error listener above is, and for the same reason the app's own
+        // classifier refuses to match on wording alone: this also fires for a
+        // preload that merely failed to arrive. Ungated, a network blip on a
+        // current build reloads the page pre-boot, and post-boot latches
+        // __LA_STALE_BUILD__ plus a "new version" notice at a user who already
+        // has the newest one — and that latch then reclassifies every later
+        // URL-less chunk error as stale for the rest of the session.
+        //
+        // The payload is the error the import threw, and it names the dep it
+        // could not fetch. No payload, or one naming nothing of ours, is not
+        // evidence of a deploy.
+        window.addEventListener('vite:preloadError', function (e) {
+          var payload = e && e.payload;
+          var message = payload && payload.message ? String(payload.message) : '';
+          if (!message) return;
+          var urls = message.match(ABSOLUTE_URL) || [];
+          for (var i = 0; i < urls.length; i++) {
+            if (isBuildAsset(urls[i])) return recover('preload');
+          }
+          // Vite names a failed CSS dep as a bare path, which is same-origin by
+          // definition. Absolute URLs are stripped first so a cross-origin one
+          // cannot match here through its pathname alone, and the prefix has to
+          // start a path rather than land anywhere in the string — otherwise
+          // this half calls `dist/assets/x.css` stale while the staleBuild.tsx
+          // half does not, and the two disagree about the same message.
+          var bare = message.replace(ABSOLUTE_URL, '');
+          for (var j = 0; j < BUILD_PREFIXES.length; j++) {
+            if (new RegExp('(^|[\\s\'"(])' + BUILD_PREFIXES[j]).test(bare)) {
+              return recover('preload');
+            }
+          }
+        });
+      })();
+    </script>
+    <script>
+      (function () {
+        // The desktop shell's preload has already run, so the bridge is here to
+        // be read. Stamping a class rather than reaching into the bundle keeps
+        // this working when the bundle is what failed.
+        //
+        // `windowChrome` is the shell's answer for this window, and the only
+        // honest one: the frame is decided per window and per install, so macOS
+        // alone does not imply the titlebar is gone. Guessing from the platform
+        // is what reserved a strip under a titlebar that was really there. An
+        // older shell does not send it, and there the platform guess is still
+        // the best available answer.
+        var shell = window.langalphaDesktop;
+        if (!shell) return;
+        var hidden = shell.windowChrome
+          ? shell.windowChrome === 'hidden'
+          : shell.platform === 'darwin';
+        if (hidden) document.documentElement.classList.add('desktop-mac');
       })();
     </script>
     <style>
       @view-transition { navigation: auto; }
       /* color-scheme drives the browser's pre-paint clear color: without it a
-         reload flashes the UA's white canvas before the dark page paints. */
-      html { background: #000000; color-scheme: dark; }
-      html[data-theme="light"] { background: hsl(30 25% 93%); color-scheme: light; }
+         reload flashes the UA's white canvas before the dark page paints.
+         Both values mirror --color-bg-page (tokens.css) — a near-miss here is
+         a visible flash of the wrong ground on every reload. */
+      html { background: #191919; color-scheme: dark; }
+      html[data-theme="light"] { background: #FFFFFF; color-scheme: light; }
+
+      /* macOS desktop shell: `hiddenInset` hands the whole titlebar to the page,
+         so the page owes it a corner the window buttons can float over and a
+         region the window can be dragged by. Here rather than in the bundle for
+         two reasons: it must exist on every route, including the ones with no
+         sidebar (a login screen that reserves nothing tells the shell this build
+         reserves nothing), and a window whose entry chunk never ran still has to
+         be movable.
+
+         Spans the window, because this element is only ever *visible* on a page
+         that has no chrome of its own — the handover below retires it the moment
+         a real strip exists. Those are the login, legal and wizard routes, whose
+         top row is empty, so a titlebar's width of it is free. It was 120px on
+         the reasoning that the rest of the row holds controls, which is true of
+         the app and never true while this is on screen; the window buttons cover
+         most of that 120px, leaving a sliver nobody finds by aiming for it.
+
+         Two mechanisms decide what happens at the top of the window and they are
+         not the same one. Drag regions are collected from the layout tree in
+         preorder and differenced in that order, so the `no-drag` rule in
+         chrome.css, which already names every control in the app, subtracts them
+         from this strip whatever the stacking: z-index is not an input to it,
+         and this element sitting before #root is what puts the app's controls
+         later in that order. Ordinary clicks and text selection are decided by
+         hit testing instead, where a fixed element beats every in-flow element
+         that is not itself positioned, whatever the DOM order says. So the strip
+         declares the region and then takes itself out of hit testing entirely.
+         Without `pointer-events: none` it swallows the clicks of every statically
+         positioned control that scrolls under it, on exactly the chrome-less
+         routes it exists for, and the failure is invisible to the browser suite:
+         those controls still compute `no-drag`, because the region really was
+         subtracted. It was the hit test that ate them. */
+      #window-drag { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 38px; z-index: 0; pointer-events: none; -webkit-app-region: drag; }
+      html.desktop-mac #window-drag { display: block; }
+      /* ...and stands down the moment the sidebar renders its own strip, which is
+         what keeps this from spanning a top row the app fills with its own
+         chrome. A plain div carrying an onClick is not in the `no-drag` list and
+         could not take its clicks back from underneath, so the app's own bars
+         stay the ones that decide. The handover is `:has` rather than a class
+         the app sets, because the condition IS the real strip existing, and
+         asking about it directly cannot drift. */
+      html.desktop-mac:has(.sidebar-window-drag) #window-drag { display: none; }
     </style>
     <link rel="icon" type="image/svg+xml" href="/logo-favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <!-- ONE font request for every family (alphabetical, as css2 requires),
          loaded non-blocking via the media="print" swap. -->
-    <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400..600&family=JetBrains+Mono:wght@400;500;600&family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400..700&family=Sora:wght@400..700&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
     <title>LangAlpha</title>
   </head>
   <body>
@@ -33,6 +324,7 @@
         if (favicon) favicon.href = t === 'light' ? '/logo-favicon.svg' : '/logo-favicon-dark.svg';
       })();
     </script>
+    <div id="window-drag" aria-hidden="true"></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

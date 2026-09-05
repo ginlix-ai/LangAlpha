@@ -8,6 +8,7 @@ import {
   listWatchlistItems,
 } from '../utils/api';
 import { useQuotes, snapshotToStockPrice } from '@/lib/quotes';
+import { registerAuthReset } from '@/lib/authResets';
 import type { StockPrice } from '@/types/market';
 
 export interface WatchlistRow {
@@ -52,6 +53,39 @@ interface ApiError {
   message?: string;
 }
 
+// Last resolved watchlist id — lets the next fetch request the membership in
+// parallel with the watchlist list instead of serializing on it. Persisted so
+// the first dashboard paint after a reload is parallel too. A stale id is
+// harmless: the speculative call is discarded on mismatch or failure and the
+// exact sequential path runs as before.
+const LAST_WATCHLIST_ID_KEY = 'watchlist_last_id';
+
+function readLastWatchlistId(): string | null {
+  try {
+    return localStorage.getItem(LAST_WATCHLIST_ID_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function storeLastWatchlistId(id: string): void {
+  try {
+    localStorage.setItem(LAST_WATCHLIST_ID_KEY, id);
+  } catch {
+    // localStorage unavailable — every fetch stays sequential, as before
+  }
+}
+
+// The speculative id outlives React and is account-scoped: after an account
+// switch it would aim the parallel prefetch at the previous user's watchlist.
+registerAuthReset(() => {
+  try {
+    localStorage.removeItem(LAST_WATCHLIST_ID_KEY);
+  } catch {
+    // localStorage unavailable — nothing was persisted to clear
+  }
+});
+
 /**
  * Shared hook for watchlist data fetching and CRUD operations.
  * Used by both Dashboard and MarketView sidebar.
@@ -69,11 +103,23 @@ export function useWatchlistData() {
   const { data: itemsData = { items: [], currentWatchlistId: null }, isLoading: itemsLoading, refetch: refetchItems } = useQuery<WatchlistItemsData>({
     queryKey: ['watchlistData'],
     queryFn: async (): Promise<WatchlistItemsData> => {
+      const speculativeId = readLastWatchlistId();
+      const speculative = speculativeId
+        ? (listWatchlistItems(speculativeId) as Promise<{ items?: WatchlistItem[] }>).catch(() => null)
+        : null;
+
       const { watchlists } = await listWatchlists() as { watchlists?: Array<{ watchlist_id: string; [key: string]: unknown }> };
       const firstWatchlist = watchlists?.[0];
       const watchlistId = firstWatchlist?.watchlist_id || 'default';
+      storeLastWatchlistId(watchlistId);
 
-      const { items } = await listWatchlistItems(watchlistId) as { items?: WatchlistItem[] };
+      let items: WatchlistItem[] | undefined;
+      if (speculative && speculativeId === watchlistId) {
+        items = (await speculative)?.items;
+      }
+      if (items === undefined) {
+        ({ items } = await listWatchlistItems(watchlistId) as { items?: WatchlistItem[] });
+      }
       return { items: items ?? [], currentWatchlistId: watchlistId };
     },
     refetchInterval: 60000,

@@ -23,12 +23,13 @@ const h = vi.hoisted(() => ({
   handleRejectPTCAgent: vi.fn(),
   handleApproveSecretaryAction: vi.fn(),
   handleRejectSecretaryAction: vi.fn(),
+  handleResumeCreditPause: vi.fn(),
   handleEditMessage: vi.fn(),
   handleRegenerate: vi.fn(),
   handleRetry: vi.fn(),
   handleThumbUp: vi.fn(),
   handleThumbDown: vi.fn(),
-  getFeedbackForMessage: vi.fn(),
+  feedbackByTurn: { 0: { rating: 'thumbs_up' } } as Record<number, unknown>,
   insertNotification: vi.fn(),
   setIsCompacting: vi.fn(),
   stopWorkflow: vi.fn(),
@@ -45,7 +46,10 @@ const api = vi.hoisted(() => ({
 }));
 
 // Capture the props MarketChatPanel hands to MessageList + ChatInput.
-const ml = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
+const ml = vi.hoisted(() => ({
+  props: null as Record<string, unknown> | null,
+  actions: null as Record<string, unknown> | null,
+}));
 const ci = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
 
 vi.mock('@/pages/ChatAgent/hooks/useChatMessages', () => ({
@@ -72,6 +76,7 @@ vi.mock('@/pages/ChatAgent/hooks/useChatMessages', () => ({
     handleRejectPTCAgent: h.handleRejectPTCAgent,
     handleApproveSecretaryAction: h.handleApproveSecretaryAction,
     handleRejectSecretaryAction: h.handleRejectSecretaryAction,
+    handleResumeCreditPause: h.handleResumeCreditPause,
     pendingInterrupt: h.pendingInterrupt,
     pendingRejection: null,
     hasActiveSubagents: false,
@@ -85,16 +90,21 @@ vi.mock('@/pages/ChatAgent/hooks/useChatMessages', () => ({
     handleRetry: h.handleRetry,
     handleThumbUp: h.handleThumbUp,
     handleThumbDown: h.handleThumbDown,
-    getFeedbackForMessage: h.getFeedbackForMessage,
+    feedbackByTurn: h.feedbackByTurn,
   }),
 }));
 
-vi.mock('@/pages/ChatAgent/components/MessageList', () => ({
-  default: (props: Record<string, unknown>) => {
+// The transcript action surface arrives through MessageActionsContext now, so
+// the stand-in reads the provided value from inside the provider.
+vi.mock('@/pages/ChatAgent/components/MessageList', async () => {
+  const { useMessageActions } = await import('@/pages/ChatAgent/components/messageList/MessageActionsContext');
+  function MessageListStub(props: Record<string, unknown>) {
     ml.props = props;
+    ml.actions = useMessageActions() as unknown as Record<string, unknown>;
     return <div data-testid="message-list" />;
-  },
-}));
+  }
+  return { default: MessageListStub };
+});
 
 vi.mock('@/components/ui/chat-input', () => ({
   default: (props: Record<string, unknown>) => {
@@ -125,7 +135,7 @@ const baseProps: PanelProps = {
   interval: '1day',
   mode: 'ptc',
   onModeChange: vi.fn(),
-  workspaces: [{ workspace_id: 'ws-1' }],
+  workspaces: [{ workspace_id: 'ws-1', name: 'Workspace 1' }],
   selectedWorkspaceId: 'ws-1',
   onWorkspaceChange: vi.fn(),
   chartImage: null,
@@ -158,46 +168,60 @@ describe('MarketChatPanel', () => {
     h.threadId = 'thread-xyz';
     h.pendingInterrupt = null;
     ml.props = null;
+    ml.actions = null;
     ci.props = null;
     localStorage.clear();
   });
   afterEach(() => vi.clearAllMocks());
 
-  it('forwards every HITL handler to MessageList so plan/question cards work', () => {
+  it('provides every HITL handler through MessageActionsContext so plan/question cards work', () => {
     renderPanel();
-    const p = ml.props!;
-    expect(p.onApprovePlan).toBe(h.handleApproveInterrupt);
-    expect(p.onRejectPlan).toBe(h.handleRejectInterrupt);
-    expect(p.onAnswerQuestion).toBe(h.handleAnswerQuestion);
-    expect(p.onSkipQuestion).toBe(h.handleSkipQuestion);
-    expect(p.onApproveCreateWorkspace).toBe(h.handleApproveCreateWorkspace);
-    expect(p.onRejectCreateWorkspace).toBe(h.handleRejectCreateWorkspace);
-    expect(p.onApproveStartQuestion).toBe(h.handleApproveStartQuestion);
-    expect(p.onRejectStartQuestion).toBe(h.handleRejectStartQuestion);
-    expect(p.onApprovePTCAgent).toBe(h.handleApprovePTCAgent);
-    expect(p.onRejectPTCAgent).toBe(h.handleRejectPTCAgent);
-    expect(p.onApproveSecretaryAction).toBe(h.handleApproveSecretaryAction);
-    expect(p.onRejectSecretaryAction).toBe(h.handleRejectSecretaryAction);
+    const a = ml.actions!;
+    // The context members are useStableHandler'd (identity must survive every
+    // streamed chunk), so assert delegation, not identity.
+    const wiring: Array<[string, ReturnType<typeof vi.fn>]> = [
+      ['onApprovePlan', h.handleApproveInterrupt],
+      ['onRejectPlan', h.handleRejectInterrupt],
+      ['onAnswerQuestion', h.handleAnswerQuestion],
+      ['onSkipQuestion', h.handleSkipQuestion],
+      ['onApproveCreateWorkspace', h.handleApproveCreateWorkspace],
+      ['onRejectCreateWorkspace', h.handleRejectCreateWorkspace],
+      ['onApproveStartQuestion', h.handleApproveStartQuestion],
+      ['onRejectStartQuestion', h.handleRejectStartQuestion],
+      ['onApprovePTCAgent', h.handleApprovePTCAgent],
+      ['onRejectPTCAgent', h.handleRejectPTCAgent],
+      ['onApproveSecretaryAction', h.handleApproveSecretaryAction],
+      ['onRejectSecretaryAction', h.handleRejectSecretaryAction],
+      ['onResumeCreditPause', h.handleResumeCreditPause],
+    ];
+    for (const [key, spy] of wiring) {
+      expect(typeof a[key]).toBe('function');
+      (a[key] as (arg: unknown) => void)('i1');
+      expect(spy).toHaveBeenCalledWith('i1');
+    }
   });
 
-  it('forwards message-action + feedback handlers to MessageList', () => {
+  it('provides message-action handlers and passes stored feedback as data', () => {
     renderPanel();
-    const p = ml.props!;
-    // Thumbs + feedback lookup are passed straight through.
-    expect(p.onThumbUp).toBe(h.handleThumbUp);
-    expect(p.onThumbDown).toBe(h.handleThumbDown);
-    expect(p.getFeedbackForMessage).toBe(h.getFeedbackForMessage);
+    const a = ml.actions!;
+    // Thumbs address a backend turn, not a bubble id.
+    (a.onThumbUp as (turnIndex: number) => void)(2);
+    expect(h.handleThumbUp).toHaveBeenCalledWith(2);
+    (a.onThumbDown as (t: number, c: string[], m: string | null, k: boolean) => void)(2, ['wrong'], 'note', true);
+    expect(h.handleThumbDown).toHaveBeenCalledWith(2, ['wrong'], 'note', true);
+    // Stored ratings ride as a turn-keyed map on MessageList, not a lookup callback.
+    expect(ml.props!.feedbackByTurn).toBe(h.feedbackByTurn);
     // Edit/regenerate/retry are thin wrappers (they thread the model picker), so
     // assert they're wired and delegate to the hook.
-    expect(typeof p.onEditMessage).toBe('function');
-    (p.onEditMessage as (id: string, c: string) => void)('m1', 'edited');
+    expect(typeof a.onEditMessage).toBe('function');
+    (a.onEditMessage as (id: string, c: string) => void)('m1', 'edited');
     expect(h.handleEditMessage).toHaveBeenCalledWith('m1', 'edited', undefined);
-    (p.onRegenerate as (id: string) => void)('m1');
+    (a.onRegenerate as (id: string) => void)('m1');
     expect(h.handleRegenerate).toHaveBeenCalledWith('m1', undefined);
-    (p.onRetry as () => void)();
+    (a.onRetry as () => void)();
     expect(h.handleRetry).toHaveBeenCalled();
     // PTC mode → no flash deep-link context.
-    expect(p.flashContext).toBeNull();
+    expect(ml.props!.flashContext).toBeNull();
   });
 
   it('wires the stop button to the hook hard-cancel (stopWorkflow)', async () => {

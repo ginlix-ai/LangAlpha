@@ -5,6 +5,10 @@ from typing import Optional, List, Dict, Any, Tuple
 
 from psycopg.rows import dict_row
 
+from src.server.contracts.status import (
+    RAW_LIVE_STATUSES,
+    RAW_TERMINAL_SNAPSHOT_STATUSES,
+)
 from src.server.database import pool
 from src.server.database.conversation import _sql
 from src.server.utils.pg_sanitize import normalize_uuid
@@ -74,6 +78,42 @@ async def get_thread_checkpoint_id(conversation_thread_id: str) -> str | None:
         return None
 
 
+# Latest-attempt lifecycle columns joined onto paged thread rows. Ordered by
+# run_seq — the one monotonic run ordering (turn_index is reused by retries
+# and lowered by branch rewinds). Alias prefix `latest_` keeps the row dict
+# collision-free with thread columns.
+_LATEST_ATTEMPT_LATERAL = """
+    LEFT JOIN LATERAL (
+        SELECT cr.conversation_response_id AS latest_run_id,
+               cr.status AS latest_run_status,
+               cr.cancel_requested_at AS latest_cancel_requested_at,
+               cr.interrupt_reason AS latest_interrupt_reason,
+               cr.run_seq AS latest_run_seq,
+               cr.created_at AS latest_run_started_at
+        FROM conversation_responses cr
+        WHERE cr.conversation_thread_id = t.conversation_thread_id
+        ORDER BY cr.run_seq DESC
+        LIMIT 1
+    ) la ON TRUE
+"""
+
+_LATEST_ATTEMPT_LATERAL_COLS = (
+    "la.latest_run_id, la.latest_run_status, la.latest_cancel_requested_at, "
+    "la.latest_interrupt_reason, la.latest_run_seq, la.latest_run_started_at"
+)
+
+# Exact turn count for a paged row: conversation_queries is one-row-per-turn
+# (unique (thread_id, turn_index)), unlike conversation_responses where
+# retries duplicate turn_index.
+_TURN_COUNT_LATERAL = """
+    LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS turn_count
+        FROM conversation_queries q
+        WHERE q.conversation_thread_id = t.conversation_thread_id
+    ) tc ON TRUE
+"""
+
+
 async def get_workspace_threads(
     workspace_id: str,
     limit: int = 20,
@@ -81,6 +121,7 @@ async def get_workspace_threads(
     sort_by: str = "updated_at",
     sort_order: str = "desc",
     platform_prefix: Optional[str] = None,
+    archived: bool = False,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """Get threads for a workspace with pagination.
 
@@ -88,6 +129,10 @@ async def get_workspace_threads(
     '<prefix>%' (e.g. "market_view" matches "market_view:AAPL" and any future
     "market_view:*" suffixes). Sargable on Postgres btree, but after the
     workspace_id filter this is a tiny scan in practice.
+
+    `archived`: the two views are disjoint — False (default) lists only
+    active threads, True lists only archived ones. Active listings sort
+    pinned-first ahead of the requested sort.
     """
     # Validate sort parameters
     valid_sort_fields = ["created_at", "updated_at", "thread_index"]
@@ -96,6 +141,12 @@ async def get_workspace_threads(
 
     if sort_order.lower() not in ["asc", "desc"]:
         sort_order = "desc"
+
+    archived_filter = (
+        " AND archived_at IS NOT NULL" if archived else " AND archived_at IS NULL"
+    )
+    inner_order = "" if archived else "is_pinned DESC, "
+    outer_order = "" if archived else "t.is_pinned DESC, "
 
     where_extra = ""
     extra_params: List[Any] = []
@@ -111,7 +162,7 @@ async def get_workspace_threads(
                     f"""
                     SELECT COUNT(*) as total
                     FROM conversation_threads
-                    WHERE workspace_id = %s{where_extra}
+                    WHERE workspace_id = %s{archived_filter}{where_extra}
                 """,
                     (workspace_id, *extra_params),
                 )
@@ -119,15 +170,26 @@ async def get_workspace_threads(
                 total_result = await cur.fetchone()
                 total_count = total_result["total"]
 
-                # Get threads
+                # Page the thread rows FIRST, then one lifecycle LATERAL over
+                # the paged set only — bounded by page size, never thread count.
                 query = f"""
-                    SELECT
-                        conversation_thread_id, workspace_id, current_status, msg_type, thread_index,
-                        title, platform, is_shared, created_at, updated_at
-                    FROM conversation_threads
-                    WHERE workspace_id = %s{where_extra}
-                    ORDER BY {sort_by} {sort_order.upper()}
-                    LIMIT %s OFFSET %s
+                    SELECT t.*, tc.turn_count, {_LATEST_ATTEMPT_LATERAL_COLS}
+                    FROM (
+                        SELECT
+                            conversation_thread_id, workspace_id, current_status,
+                            msg_type, thread_index, title, platform, metadata,
+                            is_shared, is_pinned, archived_at,
+                            last_seen_run_seq, created_at, updated_at
+                        FROM conversation_threads
+                        WHERE workspace_id = %s{archived_filter}{where_extra}
+                        ORDER BY {inner_order}{sort_by} {sort_order.upper()},
+                                 conversation_thread_id DESC
+                        LIMIT %s OFFSET %s
+                    ) t
+                    {_TURN_COUNT_LATERAL}
+                    {_LATEST_ATTEMPT_LATERAL}
+                    ORDER BY {outer_order}t.{sort_by} {sort_order.upper()},
+                             t.conversation_thread_id DESC
                 """
                 await cur.execute(query, (workspace_id, *extra_params, limit, offset))
 
@@ -148,6 +210,10 @@ async def get_threads_for_user(
     platform_prefix: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """Get all threads for a user across all workspaces.
+
+    Archived threads are always excluded — the cross-workspace recency view
+    has no archived counterpart (the workspace listing serves that). Pinning
+    does not reorder here either: pin scope is within a workspace.
 
     `platform_prefix`: optional prefix match on `platform` (e.g. "market_view").
     """
@@ -178,20 +244,34 @@ async def get_threads_for_user(
                     SELECT COUNT(*) as total
                     FROM conversation_threads t
                     JOIN workspaces w ON t.workspace_id = w.workspace_id
-                    WHERE w.user_id = %s AND w.status != 'deleted'{where_extra}
+                    WHERE w.user_id = %s AND w.status != 'deleted'
+                      AND t.archived_at IS NULL{where_extra}
                     """,
                     (user_id, *extra_params),
                 )
                 total_result = await cur.fetchone()
                 total_count = total_result["total"] if total_result else 0
 
+                # Page FIRST, then the per-row LATERALs run over the paged
+                # set only (first-query preview + lifecycle columns).
                 query = f"""
-                    SELECT
-                        t.conversation_thread_id, t.workspace_id, t.current_status, t.msg_type, t.thread_index,
-                        t.title, t.platform, t.is_shared, t.created_at, t.updated_at,
-                        fq.content AS first_query_content
-                    FROM conversation_threads t
-                    JOIN workspaces w ON t.workspace_id = w.workspace_id
+                    SELECT t.*, fq.content AS first_query_content,
+                           tc.turn_count, {_LATEST_ATTEMPT_LATERAL_COLS}
+                    FROM (
+                        SELECT
+                            t.conversation_thread_id, t.workspace_id,
+                            t.current_status, t.msg_type, t.thread_index,
+                            t.title, t.platform, t.metadata, t.is_shared,
+                            t.is_pinned, t.archived_at,
+                            t.last_seen_run_seq, t.created_at, t.updated_at
+                        FROM conversation_threads t
+                        JOIN workspaces w ON t.workspace_id = w.workspace_id
+                        WHERE w.user_id = %s AND w.status != 'deleted'
+                          AND t.archived_at IS NULL{where_extra}
+                        ORDER BY {order_by} {sort_order.upper()},
+                                 t.conversation_thread_id DESC
+                        LIMIT %s OFFSET %s
+                    ) t
                     LEFT JOIN LATERAL (
                         SELECT q.content
                         FROM conversation_queries q
@@ -199,9 +279,10 @@ async def get_threads_for_user(
                         ORDER BY q.turn_index ASC
                         LIMIT 1
                     ) fq ON TRUE
-                    WHERE w.user_id = %s AND w.status != 'deleted'{where_extra}
-                    ORDER BY {order_by} {sort_order.upper()}
-                    LIMIT %s OFFSET %s
+                    {_TURN_COUNT_LATERAL}
+                    {_LATEST_ATTEMPT_LATERAL}
+                    ORDER BY t.{sort_by} {sort_order.upper()},
+                             t.conversation_thread_id DESC
                 """
                 await cur.execute(query, (user_id, *extra_params, limit, offset))
                 threads = await cur.fetchall()
@@ -210,6 +291,94 @@ async def get_threads_for_user(
     except Exception as e:
         logger.error(f"Error getting threads for user: {e}")
         raise
+
+
+# Feed snapshot in one statement (v6 §2.2). `owned` is the pre-filter set —
+# every latest attempt the user owns — so `watermark` advances even when both
+# branches come back empty. Branch `live` is UNCAPPED, so absence there proves
+# a run isn't live — for UNARCHIVED threads only: archiving is allowed on a
+# live run (the run survives, the row just leaves the lists), so an archived
+# thread can be absent here while still running. Branch `unseen` is capped by
+# the caller, newest first, so Python only has to notice the overflow row.
+# Archived threads are absent from both; the archive stamps the latest TERMINAL
+# attempt seen (GREATEST no-ops on a live one), so their absence is not
+# truncation.
+_LIFECYCLE_SNAPSHOT_SQL = f"""
+    WITH owned AS (
+        SELECT ct.conversation_thread_id, ct.workspace_id, ct.archived_at,
+               COALESCE(ct.last_seen_run_seq, 0) AS last_seen_run_seq,
+               la.latest_run_id, la.latest_run_status,
+               la.latest_cancel_requested_at,
+               la.latest_interrupt_reason, la.latest_run_seq,
+               la.latest_run_started_at
+        FROM conversation_threads ct
+        JOIN workspaces w ON w.workspace_id = ct.workspace_id
+        JOIN LATERAL (
+            SELECT cr.conversation_response_id AS latest_run_id,
+                   cr.status AS latest_run_status,
+                   cr.cancel_requested_at AS latest_cancel_requested_at,
+                   cr.interrupt_reason AS latest_interrupt_reason,
+                   cr.run_seq AS latest_run_seq,
+                   cr.created_at AS latest_run_started_at
+            FROM conversation_responses cr
+            WHERE cr.conversation_thread_id = ct.conversation_thread_id
+            ORDER BY cr.run_seq DESC
+            LIMIT 1
+        ) la ON TRUE
+        WHERE w.user_id = %s AND w.status != 'deleted'
+    ),
+    watermark AS (
+        SELECT COALESCE(MAX(latest_run_seq), 0) AS as_of_seq FROM owned
+    ),
+    live AS (
+        SELECT 'live' AS branch, o.* FROM owned o
+        WHERE o.archived_at IS NULL
+          AND o.latest_run_status IN ({_sql.sql_literals(RAW_LIVE_STATUSES)})
+    ),
+    unseen AS (
+        SELECT 'unseen' AS branch, o.* FROM owned o
+        WHERE o.archived_at IS NULL
+          AND o.latest_run_status IN (
+              {_sql.sql_literals(RAW_TERMINAL_SNAPSHOT_STATUSES)}
+          )
+          AND o.latest_run_seq > o.last_seen_run_seq
+        ORDER BY o.latest_run_seq DESC
+        LIMIT %s
+    )
+    SELECT wm.as_of_seq, sel.*
+    FROM watermark wm
+    LEFT JOIN LATERAL (
+        SELECT * FROM live
+        UNION ALL
+        SELECT * FROM unseen
+    ) sel ON TRUE
+"""
+
+
+async def get_thread_lifecycle_rows(
+    user_id: str, *, unseen_cap: int = 256
+) -> Tuple[List[Dict[str, Any]], int]:
+    """The feed snapshot's rows plus its watermark, classified in SQL.
+
+    Returns ``(rows, as_of_seq)``. Each row carries a ``branch`` of ``live``
+    or ``unseen``; at most ``unseen_cap + 1`` unseen rows come back so the
+    caller can set the truncation flag. ``as_of_seq`` is read over the
+    unfiltered owned set, so an empty snapshot still advances the client's
+    watermark. One LATERAL per owned thread, backed by
+    ``ix_responses_thread_run_seq``; threads with no runs are excluded (they
+    have no lifecycle to report).
+    """
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                _LIFECYCLE_SNAPSHOT_SQL, (user_id, unseen_cap + 1)
+            )
+            fetched = [dict(r) for r in await cur.fetchall()]
+    if not fetched:
+        return [], 0
+    as_of_seq = int(fetched[0].get("as_of_seq") or 0)
+    # The LEFT JOIN yields one all-NULL row when both branches are empty.
+    return [r for r in fetched if r.get("branch")], as_of_seq
 
 
 async def get_thread_with_summary(
@@ -290,9 +459,9 @@ async def get_thread_by_id(conversation_thread_id: str) -> Optional[Dict[str, An
                 await cur.execute(
                     """
                     SELECT conversation_thread_id, workspace_id, current_status,
-                           msg_type, thread_index, title,
+                           msg_type, thread_index, title, platform, metadata,
                            share_token, is_shared, share_permissions, shared_at,
-                           created_at, updated_at
+                           is_pinned, archived_at, created_at, updated_at
                     FROM conversation_threads
                     WHERE conversation_thread_id = %s
                 """,

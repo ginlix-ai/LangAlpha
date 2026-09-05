@@ -18,13 +18,38 @@
 }
 
 .html-fullscreen-title {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--color-text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+}
+
+/* Breathing room between the widget and the dialog edge. Host-side rather
+   than inside the document, so it stays a constant inset instead of scaling
+   with the magnification below. Widgets only: a served file document brings
+   its own body margins and would double up. */
+.html-fullscreen-frame-pad {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding: 16px 24px 24px;
+}
+
+/* A widget is authored for the chat column, so the dialog magnifies it rather
+   than stretching it: at 1400px the extra width was dead space beside a 768px
+   layout. This is the whole mechanism — Chromium divides a child frame's layout
+   viewport by the zoom on its owner element, so the document lays out at about
+   the column width and renders larger, with no measurement and no script inside
+   it. It also cannot overflow: `flex: 1` resolves in this element's own
+   coordinate space, so the iframe box stays exactly as wide as the pad.
+
+   Widgets only. A served file document is a page in its own right, sized for
+   whatever viewport it gets. */
+.html-fullscreen-frame-pad > .html-fullscreen-frame {
+  zoom: 1.15;
 }
 
 .html-fullscreen-frame {

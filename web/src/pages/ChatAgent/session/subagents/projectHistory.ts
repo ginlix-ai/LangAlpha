@@ -19,6 +19,14 @@ import { countToolCalls } from './subagentMetrics';
 import {
   type SubagentTokenUsage, ZERO_USAGE, extractTokenUsageDelta, accumulateTokenUsage,
 } from '../../utils/tokenUsage';
+import {
+  DEFAULT_SUBAGENT_TYPE,
+  applyWorkflowLifecycle,
+  deriveChildIdentity,
+  isWorkflowRunTerminal,
+  type WorkflowLifecycleFrame,
+  type WorkflowRunState,
+} from './workflowRunState';
 import type { SubagentHistoryData, StreamProcessorRefs, TaskRefs } from '../types';
 import type { SubagentRuntime } from '../runtime';
 
@@ -26,9 +34,15 @@ export function projectSubagentHistory(
   rt: SubagentRuntime,
   subagentHistoryByTaskId: Map<string, SubagentHistoryData>,
 ): void {
+  // Workflow runs whose reduced state names their children (label/type/owner);
+  // backfilled onto the child entries after the loop — a child's own lane
+  // carries anonymous content only, and map iteration order is not chronology.
+  const workflowRunsByTaskId = new Map<string, WorkflowRunState>();
   for (const [taskId, subagentHistory] of subagentHistoryByTaskId.entries()) {
     // Create temporary refs structure for processing
     let currentRunIndex = 0;
+    // Per-task workflow_lifecycle reducer state (workflow run tasks only).
+    let workflowRun: WorkflowRunState | undefined;
     // Per-task token-usage accumulator: backend emits per-call deltas
     // and we sum them into a running total before storing on the
     // SubagentHistoryEntry below.
@@ -175,10 +189,18 @@ export function projectSubagentHistory(
             }
           }
         }
+      } else if (eventType === 'workflow_lifecycle') {
+        workflowRun = applyWorkflowLifecycle(
+          workflowRun,
+          event as unknown as WorkflowLifecycleFrame,
+        );
+      } else if (eventType === 'provenance') {
+        // Table-sourced citation metadata; not part of the transcript.
       } else {
         console.warn('[History] Unhandled subagent event type:', eventType);
       }
     }
+    if (workflowRun) workflowRunsByTaskId.set(taskId, workflowRun);
     
     // Get final messages from temp refs
     const rawMessages = tempSubagentStateRefs[taskId]?.messages || [];
@@ -224,17 +246,19 @@ export function projectSubagentHistory(
       taskId,
       description: taskMetadata?.description || '',
       prompt: taskMetadata?.prompt || taskMetadata?.description || '',
-      type: taskMetadata?.type || 'general-purpose',
+      type: taskMetadata?.type || DEFAULT_SUBAGENT_TYPE,
       messages: finalMessages,
       // Prefer the backend-stamped real status. Absent metadata must
       // NOT read as settled — closure is positive-only, so fall back
       // to 'running' and let /status reconciliation settle it.
       status: taskMetadata?.status || 'running',
       error: taskMetadata?.error,
+      errorType: taskMetadata?.errorType,
       toolCalls: countToolCalls(finalMessages),
       tokenUsage: tempTokenUsage,
       currentTool: '',
       projectedRunStartedMs: taskMetadata?.projectedRunStartedMs,
+      ...(workflowRun ? { workflowRun } : {}),
     };
 
     // Seed persistent subagent state refs from history so that
@@ -245,6 +269,34 @@ export function projectSubagentHistory(
       currentToolCallIdRef: { current: null },
       messages: finalMessages,
       runIndex: currentRunIndex,
+      ...(workflowRun ? { workflowRun } : {}),
     };
+  }
+
+  // Backfill child identity from the reduced workflow runs: label as the
+  // description, the dispatched subagent type, and the owning run's id (the
+  // sidebar hides owner-children; the detail drill-in shows the label).
+  // Also settle the child's status — a child's own lane carries no lifecycle
+  // events, so without this a replayed child reads 'running' forever.
+  for (const [wfTaskId, run] of workflowRunsByTaskId.entries()) {
+    for (const child of run.children) {
+      if (!child.childTaskId) continue;
+      const childEntry = rt.subagentHistoryRef.current?.[`task:${child.childTaskId}`];
+      if (!childEntry) continue;
+      const identity = deriveChildIdentity(child, {
+        description: childEntry.description,
+        type: childEntry.type,
+      });
+      childEntry.description = identity.description;
+      childEntry.type = identity.type;
+      childEntry.ownerTaskId = wfTaskId;
+      if (childEntry.status === 'running') {
+        const settled = identity.status
+          // A settled run with a child never marked done means the child was
+          // torn down with the run (cancel/failure).
+          || (isWorkflowRunTerminal(run.status) ? 'cancelled' : undefined);
+        if (settled) childEntry.status = settled;
+      }
+    }
   }
 }

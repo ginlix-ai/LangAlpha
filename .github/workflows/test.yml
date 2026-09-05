@@ -115,10 +115,58 @@ jobs:
           node-version: 24
       - uses: pnpm/action-setup@v4
         with:
-          version: latest
+          # Pinned to match `packageManager` in web/ and desktop/. `latest` here
+          # meant CI resolved a pnpm the lockfile was never written by, so a
+          # major bump would land as a --frozen-lockfile failure on an unrelated PR.
+          version: 10.18.1
       - run: pnpm install --frozen-lockfile
       - run: pnpm run typecheck
       - run: pnpm vitest run --reporter=verbose
+      # Bundle the app to assert what lands on the critical path; typecheck above
+      # already covers the tsc half of `pnpm build`, so invoke vite directly.
+      #
+      # Build the deployed configuration, not the default one. Two knobs change
+      # what ships, and both are inlined at build time: VITE_HOST_MODE selects
+      # the auth provider, and the Supabase URL/key decide whether the SDK
+      # survives tree-shaking at all — `supabase.ts` guards the client behind
+      # `url && key`, so unset vars fold that to null and drop ~57 kB gz the
+      # real build carries. Placeholders are enough; nothing dials them.
+      - run: pnpm exec vite build
+        env:
+          VITE_HOST_MODE: platform
+          VITE_SUPABASE_URL: https://example.supabase.co
+          VITE_SUPABASE_PUBLISHABLE_KEY: ci-placeholder-key
+      - run: node scripts/check-critical-path.mjs
+
+  # The desktop shell is ~2000 lines of URL policy whose whole job is REFUSING
+  # things: a blob that is not really our origin, a scheme that is not a browser
+  # scheme, a redirect that leaves the app, a config value that is secretly
+  # another host. None of that has a runtime here — the suite runs against a
+  # stub — and none of it fails a typecheck, a build, or the web suite when it
+  # regresses. It just quietly starts allowing what it used to refuse.
+  #
+  # It needs no services and finishes in well under a second, so it is not
+  # conditioned on paths: a `web/index.html` edit can break the window-chrome
+  # contract that lives half in this suite, and that is exactly the change that
+  # would not have matched a `desktop/**` filter.
+  desktop-unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+        with:
+          # Pinned to match `packageManager` in web/ and desktop/. `latest` here
+          # meant CI resolved a pnpm the lockfile was never written by, so a
+          # major bump would land as a --frozen-lockfile failure on an unrelated PR.
+          version: 10.18.1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
 
   frontend-e2e:
     runs-on: ubuntu-latest
@@ -145,7 +193,10 @@ jobs:
           node-version: 24
       - uses: pnpm/action-setup@v4
         with:
-          version: latest
+          # Pinned to match `packageManager` in web/ and desktop/. `latest` here
+          # meant CI resolved a pnpm the lockfile was never written by, so a
+          # major bump would land as a --frozen-lockfile failure on an unrelated PR.
+          version: 10.18.1
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright test
       - uses: actions/upload-artifact@v4

@@ -161,7 +161,7 @@ def test_already_loaded_skill_without_instruction_returns_none():
 
 
 def test_mixed_fresh_and_already_loaded():
-    def fake_load(name, skill_dirs=None, mode=None):
+    def fake_load(name, skill_dirs=None, mode=None, registry=None):
         return f"BODY:{name}"
 
     with (

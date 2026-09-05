@@ -25,6 +25,10 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
 from ptc_agent.agent.middleware.background_subagent.redis_stream import (
     steering_queue_key,
 )
+from ptc_agent.agent.middleware.background_subagent.spawn import (
+    NamespaceUnfenced,
+    TaskRunRefused,
+)
 from ptc_agent.agent.middleware.background_subagent.tools import (
     create_task_output_tool,
 )
@@ -139,7 +143,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             # BEFORE the sweep, so a meta read issued AFTER our push that
             # still says "running" proves the sweep hadn't started — it
             # will collect our entry if the run ends before delivery.
-            stale = task.completed or task.cancelled
+            stale = task.completed
             try:
                 if not stale:
                     from ptc_agent.agent.middleware.background_subagent.redis_stream import (
@@ -212,7 +216,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 exc_info=True,
             )
 
-    async def _admit_task_run(
+    async def admit_task_run(
         self,
         task: BackgroundTask,
         *,
@@ -220,16 +224,26 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         description: str,
         launch_tool_call_id: str,
         parent_run_id: str | None,
-    ) -> str | ToolMessage:
-        """Bear the ledger row for this execution (admission-authoritative).
+        acquire_fence: bool = True,
+    ) -> str:
+        """Fence the task's namespace and bear its ledger row — everything an
+        execution owes before its first spawn side effect. Returns the
+        task_run_id ("" when no ledger is injected).
 
-        Called under the task's namespace guard, before any spawn side
-        effect. Returns the task_run_id, or — after releasing the guard —
-        an error ToolMessage: on conflict the spawn is rejected, and on
-        ledger infra failure it fails closed (a run we cannot record is a
-        run we do not start). No ledger injected → returns "" and the task
-        keeps task_run_id=None.
+        Refusal raises ``TaskRunRefused`` holding nothing: a run we cannot
+        fence or record is a run we do not start, and the fence is released on
+        the way out so no writer is stranded behind it. ``acquire_fence=False``
+        is for a caller already holding it for its own arbitration (resume).
         """
+        if acquire_fence and self.namespace_owner is not None:
+            if not await self._acquire_task_ns(task.task_id):
+                # A fresh task_id is practically uncontended, so this is the
+                # fence itself being unusable (guard session dead) — refuse
+                # rather than spawn an unfenced writer.
+                raise NamespaceUnfenced(
+                    "its checkpoint namespace could not be fenced. Try again"
+                )
+
         ledger = getattr(self.registry, "run_ledger", None)
         if ledger is None:
             return ""
@@ -250,12 +264,8 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 reason=e.reason,
             )
             await self._release_task_ns(task.task_id)
-            return ToolMessage(
-                content=f"Error: could not start {task.display_id} — {e.reason}.",
-                tool_call_id=launch_tool_call_id,
-                name="Task",
-            )
-        except Exception:
+            raise TaskRunRefused(e.reason) from e
+        except Exception as e:
             logger.error(
                 "task-run ledger unavailable; refusing spawn",
                 task_id=task.task_id,
@@ -263,14 +273,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 exc_info=True,
             )
             await self._release_task_ns(task.task_id)
-            return ToolMessage(
-                content=(
-                    f"Error: could not start {task.display_id} — its run "
-                    f"could not be recorded. Try again."
-                ),
-                tool_call_id=launch_tool_call_id,
-                name="Task",
-            )
+            raise TaskRunRefused("its run could not be recorded. Try again") from e
 
     async def _abort_admitted_run(self, task: BackgroundTask, exc: Exception) -> None:
         """Post-INSERT setup failure: settle the just-born row as error
@@ -289,6 +292,12 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             registry=self.registry,
             namespace_owner=self.namespace_owner,
         )
+        # An error settle owes a report-back, but this failure is already on
+        # its way to the agent as the launching call's own reply — the same
+        # "a reply that hands the agent a terminal fate IS the delivery" rule
+        # TaskOutput follows. Without the stamp the executor opens a synthetic
+        # turn to announce a failure the agent was handed synchronously.
+        await self.registry.mark_result_delivered(task)
 
     async def _finalize_cancelled_before_spawn(self, task: BackgroundTask) -> None:
         """A stop won the publish race: the admitted run never spawned (or
@@ -343,12 +352,11 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         would collide on replay), serialized on ``redis_spill_lock`` so a
         stale cleanup delete can't land after them and erase round-2 data.
         """
+        # Clearing the status also unseals: append_captured_event drops
+        # appends while the task reads cancelled (killed streams are final),
+        # and the resumed round is a fresh writer that must not inherit it.
         await self.registry.reclaim_for_resume(task)
-        task.completed = False
-        # Unseal: append_captured_event drops appends while ``cancelled`` is
-        # set (killed streams are final) — the resumed round is a fresh
-        # writer and must not inherit the seal.
-        task.cancelled = False
+        task.terminal_status = None
         # Drop the prior round's settled handles: until the publish fence
         # installs the new writer this is a STARTING task, and a stale done
         # handle would make the cancel paths misread it as a finished writer
@@ -362,12 +370,21 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         # collector hasn't billed the prior run yet, the next completion merges
         # into them so run-1 usage survives the resume. Cleanup drops them only
         # after a successful persist.
-        task.captured_event_seq = 0
-        task.captured_event_count = 0
-        task.captured_event_bytes = 0
         task.redis_write_failed = False
         task.sse_drain_complete = asyncio.Event()
         task.sse_consumer_count = 0
+        # The spool has to be gone BEFORE the sequence restarts at 1, and the
+        # delete has to be known to have happened. A silent failure here leaves
+        # the previous epoch resident under the very ids the next writer is
+        # about to claim; the fenced append then finds a stream it cannot prove
+        # it owns and — correctly — kills the run rather than writing into it.
+        #
+        # So when the delete cannot be confirmed, don't start a new epoch at
+        # all: keep counting where the last one left off. The next write is
+        # then an ordinary append with no destructive step to get wrong, and
+        # the archive ends up a superset of this task's events rather than a
+        # stream two writers disagree about.
+        spool_cleared = True
         if self.registry.thread_id:
             try:
                 from src.utils.cache.redis_cache import get_cache_client
@@ -381,26 +398,48 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                     )
 
                     async with task.redis_spill_lock:
+                        # Best-effort by contract — nothing reads either key as
+                        # an archive, so failing to clear them cannot corrupt a
+                        # replay. They go first so a stream-delete failure does
+                        # not skip them. The legacy List key is a one-release
+                        # backward-compat sweep for pre-cutover workers.
                         await cache.delete(
                             task_meta_key(self.registry.thread_id, task.task_id)
                         )
-                        await cache.delete(
-                            task_stream_key(self.registry.thread_id, task.task_id)
-                        )
-                        # One-release backward-compat sweep for the legacy List
-                        # key written by pre-cutover workers. Safe to drop once
-                        # no worker on the old code path is in rotation.
                         await cache.delete(
                             legacy_task_events_key(
                                 self.registry.thread_id, task.task_id
                             )
                         )
+                        # Raw client, not ``cache.delete``: that helper reports
+                        # a transport failure and an absent key identically, and
+                        # only the former may block the epoch reset.
+                        await cache.client.delete(
+                            task_stream_key(self.registry.thread_id, task.task_id)
+                        )
             except Exception:
+                spool_cleared = False
                 logger.warning(
-                    "Failed to clear Redis spool on resume; replay may include stale events",
+                    "Failed to clear Redis spool on resume; continuing the "
+                    "current event epoch instead of restarting it",
                     task_id=task.task_id,
                     exc_info=True,
                 )
+        # Two independent axes here. The COUNTERS are per-round totals — the
+        # archive completeness gates weigh them against what they recover for
+        # THIS round, so carrying a cumulative count into a round that only
+        # appends its own events would withhold the whole archive. The
+        # SEQUENCE is the stream's identity and only restarts once the old
+        # epoch is proven gone; when it has to carry over, the base records
+        # where this round starts so readers skip the retained epoch instead
+        # of counting it as missing.
+        task.captured_event_count = 0
+        task.captured_event_bytes = 0
+        if spool_cleared:
+            task.captured_event_seq = 0
+            task.captured_event_seq_base = 0
+        else:
+            task.captured_event_seq_base = task.captured_event_seq
         # Reset timestamps so the LLM sees honest staleness for the
         # resumed run, not leftover values from the prior asyncio.Task.
         task.last_checked_at = time.time()
@@ -509,7 +548,10 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 description=description,
                 prompt=description,
                 subagent_type=subagent_type,
-                completed=not running_elsewhere,
+                # A shell for a task settled on another worker: which outcome
+                # it settled with isn't known here, and the ledger is what
+                # TaskOutput reconciles against before reporting either way.
+                terminal_status=None if running_elsewhere else "completed",
                 result_seen=not running_elsewhere,
                 spawned_run_id=(meta or {}).get("spawned_run_id") or None,
                 task_run_id=(meta or {}).get("task_run_id") or None,

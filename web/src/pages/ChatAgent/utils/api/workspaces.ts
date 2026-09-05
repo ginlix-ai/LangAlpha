@@ -2,7 +2,7 @@
  * Workspace management endpoints.
  */
 import { api } from '@/api/client';
-import type { ResourceTier, WorkspaceQuota } from '@/types/api';
+import type { ResourceTier, Workspace, WorkspaceQuota, WorkspacesResponse } from '@/types/api';
 import { baseURL, getAuthHeaders } from './transport';
 
 // The shared axios instance sets no global timeout. Workspace-management ops
@@ -13,8 +13,8 @@ const WORKSPACE_MUTATION_TIMEOUT_MS = 120000;
 
 const WORKSPACE_QUERY_TIMEOUT_MS = 15000;
 
-export async function getWorkspaces(limit: number = 20, offset: number = 0, sortBy: string = 'custom', includeFlash: boolean = false) {
-  const { data } = await api.get('/api/v1/workspaces', {
+export async function getWorkspaces(limit: number = 20, offset: number = 0, sortBy: string = 'custom', includeFlash: boolean = false): Promise<WorkspacesResponse> {
+  const { data } = await api.get<WorkspacesResponse>('/api/v1/workspaces', {
     params: { limit, offset, sort_by: sortBy, ...(includeFlash ? { include_flash: true } : {}) },
   });
   return data;
@@ -32,9 +32,9 @@ export async function deleteWorkspace(workspaceId: string) {
   await api.delete(`/api/v1/workspaces/${id}`);
 }
 
-export async function getWorkspace(workspaceId: string) {
+export async function getWorkspace(workspaceId: string): Promise<Workspace> {
   if (!workspaceId) throw new Error('Workspace ID is required');
-  const { data } = await api.get(`/api/v1/workspaces/${workspaceId}`);
+  const { data } = await api.get<Workspace>(`/api/v1/workspaces/${workspaceId}`);
   return data;
 }
 

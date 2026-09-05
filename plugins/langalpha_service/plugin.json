@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "langalpha-service",
+  "version": "1.0.0",
+  "description": "How the agent runs itself. Scheduled automations and saved workflows, the assistant that coordinates them, and the user memory that carries context between sessions.",
+  "author": {
+    "name": "LangAlpha",
+    "url": "https://langalpha.ai"
+  },
+  "homepage": "https://langalpha.ai",
+  "repository": "https://github.com/ginlix/langalpha",
+  "license": "Apache-2.0",
+  "keywords": [
+    "automation",
+    "workflow",
+    "scheduling",
+    "memory",
+    "platform"
+  ]
+}

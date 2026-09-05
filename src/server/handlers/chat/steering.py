@@ -238,8 +238,8 @@ async def steer_subagent(
         task = None
 
     if task is not None:
-        # 2a. Local task: reject if already completed or cancelled
-        if task.completed or task.cancelled:
+        # 2a. Local task: reject once settled, however it settled
+        if task.completed:
             status = "cancelled" if task.cancelled else "completed"
             raise HTTPException(
                 status_code=409,

@@ -34,6 +34,8 @@ from ptc_agent.config.core import (
 
 
 HANDLER = "src.server.services.llm.config"
+CLIENTS = "src.server.services.llm.clients"
+USER_MODELS = "src.server.services.llm.user_models"
 
 
 def _make_config(**llm_overrides) -> AgentConfig:
@@ -79,8 +81,8 @@ class TestModelPriority:
 
         mock_mc = _mock_model_config()
         with (
-            patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value={}),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{USER_MODELS}.get_model_preference", new_callable=AsyncMock, return_value={}),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -94,11 +96,11 @@ class TestModelPriority:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"preferred_model": "gpt-4o"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -112,11 +114,11 @@ class TestModelPriority:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"preferred_model": "gpt-4o"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(
@@ -133,11 +135,11 @@ class TestModelPriority:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"preferred_model": "gpt-4o"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -159,8 +161,8 @@ class TestModeModelField:
 
         mock_mc = _mock_model_config()
         with (
-            patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value={}),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{USER_MODELS}.get_model_preference", new_callable=AsyncMock, return_value={}),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(
@@ -176,8 +178,8 @@ class TestModeModelField:
 
         mock_mc = _mock_model_config()
         with (
-            patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value={}),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{USER_MODELS}.get_model_preference", new_callable=AsyncMock, return_value={}),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(
@@ -193,11 +195,11 @@ class TestModeModelField:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"preferred_flash_model": "gpt-4o"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(
@@ -219,11 +221,11 @@ class TestOtherModelPreferences:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"compaction_model": "gpt-4o-mini"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -237,11 +239,11 @@ class TestOtherModelPreferences:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"summarization_model": "gpt-4o-mini"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -255,14 +257,14 @@ class TestOtherModelPreferences:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={
                     "compaction_model": "gpt-4o-mini",
                     "summarization_model": "stale-legacy-model",
                 },
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -275,11 +277,11 @@ class TestOtherModelPreferences:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"fetch_model": "gpt-4o-mini"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -292,11 +294,11 @@ class TestOtherModelPreferences:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"fallback_models": ["model-a", "model-b"]},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -310,11 +312,11 @@ class TestOtherModelPreferences:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"compaction_profile": "aggressive"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -331,11 +333,11 @@ class TestOtherModelPreferences:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"compaction_profile": "extended"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -353,11 +355,11 @@ class TestOtherModelPreferences:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"compaction_profile": "relaxed"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -376,11 +378,11 @@ class TestOtherModelPreferences:
         for bad in ("nonsense", "", 123, None, {"aggressive": True}):
             with (
                 patch(
-                    f"{HANDLER}.get_model_preference",
+                    f"{USER_MODELS}.get_model_preference",
                     new_callable=AsyncMock,
                     return_value={"compaction_profile": bad},
                 ),
-                patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+                patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
                 patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
             ):
                 config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -404,11 +406,11 @@ class TestReasoningEffort:
         mock_llm = MagicMock()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"reasoning_effort": "low"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
             patch("src.llms.llm.create_llm", return_value=mock_llm) as mock_create,
         ):
@@ -429,11 +431,11 @@ class TestReasoningEffort:
         mock_llm = MagicMock()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"reasoning_effort": "low"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
             patch("src.llms.llm.create_llm", return_value=mock_llm) as mock_create,
         ):
@@ -459,10 +461,10 @@ class TestBYOKResolution:
         mock_mc = _mock_model_config()
         mock_byok_llm = MagicMock(name="byok-llm-client")
         with (
-            patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value={}),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{USER_MODELS}.get_model_preference", new_callable=AsyncMock, return_value={}),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch(
-                f"{HANDLER}.resolve_byok_llm_client",
+                f"{CLIENTS}.resolve_byok_llm_client",
                 new_callable=AsyncMock,
                 return_value=mock_byok_llm,
             ),
@@ -480,10 +482,10 @@ class TestBYOKResolution:
 
         mock_mc = _mock_model_config()
         with (
-            patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value={}),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{USER_MODELS}.get_model_preference", new_callable=AsyncMock, return_value={}),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch(
-                f"{HANDLER}.resolve_byok_llm_client",
+                f"{CLIENTS}.resolve_byok_llm_client",
                 new_callable=AsyncMock,
             ) as mock_resolve,
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
@@ -504,9 +506,9 @@ class TestBYOKResolution:
 
         mock_mc = _mock_model_config()
         with (
-            patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value={}),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
-            patch(f"{HANDLER}.resolve_byok_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{USER_MODELS}.get_model_preference", new_callable=AsyncMock, return_value={}),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_byok_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(
@@ -534,14 +536,14 @@ class TestOAuthResolution:
         mock_mc = _mock_model_config()
         mock_oauth_llm = MagicMock(name="oauth-llm-client")
         with (
-            patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value={}),
+            patch(f"{USER_MODELS}.get_model_preference", new_callable=AsyncMock, return_value={}),
             patch(
-                f"{HANDLER}.resolve_oauth_llm_client",
+                f"{CLIENTS}.resolve_oauth_llm_client",
                 new_callable=AsyncMock,
                 return_value=mock_oauth_llm,
             ),
             patch(
-                f"{HANDLER}.resolve_byok_llm_client",
+                f"{CLIENTS}.resolve_byok_llm_client",
                 new_callable=AsyncMock,
             ) as mock_byok,
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
@@ -572,13 +574,13 @@ class TestCustomModelFallback:
         mock_mc = _mock_model_config(system_models={"system-default-model", "system-flash-model"})
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"preferred_model": "my-custom-model"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch(
-                f"{HANDLER}.get_custom_model_config",
+                f"{USER_MODELS}.get_custom_model_config",
                 new_callable=AsyncMock,
                 return_value={"name": "my-custom-model", "model_id": "gpt-4o", "provider": "openai"},
             ),
@@ -606,18 +608,18 @@ class TestCustomModelFallback:
         mock_mc = _mock_model_config(system_models={"system-default-model", "system-flash-model"})
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"preferred_model": "K2.6"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch(
-                f"{HANDLER}.get_custom_model_config",
+                f"{USER_MODELS}.get_custom_model_config",
                 new_callable=AsyncMock,
                 return_value={"name": "K2.6", "model_id": "moonshot-v1-8k", "provider": "moonshot"},
             ),
             patch(
-                f"{HANDLER}.resolve_byok_llm_client",
+                f"{CLIENTS}.resolve_byok_llm_client",
                 new_callable=AsyncMock,
                 return_value=None,  # no key stored
             ),
@@ -638,18 +640,18 @@ class TestCustomModelFallback:
         mock_client = MagicMock(name="custom-byok-client")
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"preferred_model": "my-custom"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch(
-                f"{HANDLER}.get_custom_model_config",
+                f"{USER_MODELS}.get_custom_model_config",
                 new_callable=AsyncMock,
                 return_value={"name": "my-custom", "model_id": "gpt-4o", "provider": "openai"},
             ),
             patch(
-                f"{HANDLER}.resolve_byok_llm_client",
+                f"{CLIENTS}.resolve_byok_llm_client",
                 new_callable=AsyncMock,
                 return_value=mock_client,
             ),
@@ -675,13 +677,13 @@ class TestCustomModelFallback:
         mock_client = MagicMock(name="custom-byok-client")
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"preferred_model": "gpt-4o"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch(
-                f"{HANDLER}.get_custom_model_config",
+                f"{USER_MODELS}.get_custom_model_config",
                 new_callable=AsyncMock,
                 return_value={
                     "name": "gpt-4o",
@@ -691,7 +693,7 @@ class TestCustomModelFallback:
                 },
             ),
             patch(
-                f"{HANDLER}.resolve_byok_llm_client",
+                f"{CLIENTS}.resolve_byok_llm_client",
                 new_callable=AsyncMock,
                 return_value=mock_client,
             ),
@@ -710,7 +712,7 @@ class TestCustomModelFallback:
         up to the parent. The wizard stores the key under ``moonshot-coding`` —
         looking it up under ``moonshot`` would falsely raise ``byok_key_required``.
         """
-        from src.server.services.llm.config import _resolve_custom_model_byok
+        from src.server.services.llm.clients import _resolve_custom_model_byok
 
         mc = MagicMock()
         mc.get_parent_provider.return_value = "moonshot"
@@ -727,7 +729,7 @@ class TestCustomModelFallback:
 
         with (
             patch(
-                f"{HANDLER}.get_custom_provider_config",
+                f"{USER_MODELS}.get_custom_provider_config",
                 new_callable=AsyncMock,
                 return_value=None,  # no custom provider, this is a built-in variant
             ),
@@ -756,7 +758,7 @@ class TestCustomModelFallback:
         This covers the flow where the user added a custom model under the
         parent in Settings but their only key is on the coding-plan variant.
         """
-        from src.server.services.llm.config import _resolve_custom_model_byok
+        from src.server.services.llm.clients import _resolve_custom_model_byok
 
         mc = MagicMock()
         # Parent has no further parent — get_parent_provider returns self.
@@ -779,7 +781,7 @@ class TestCustomModelFallback:
 
         with (
             patch(
-                f"{HANDLER}.get_custom_provider_config",
+                f"{USER_MODELS}.get_custom_provider_config",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -820,18 +822,18 @@ class TestCustomModelFallback:
 
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"fallback_models": ["my-fallback"]},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch(
-                f"{HANDLER}.resolve_byok_llm_client",
+                f"{CLIENTS}.resolve_byok_llm_client",
                 new_callable=AsyncMock,
                 side_effect=_byok_side_effect,
             ),
             patch(
-                f"{HANDLER}.get_custom_model_config",
+                f"{USER_MODELS}.get_custom_model_config",
                 new_callable=AsyncMock,
                 return_value=None,  # main model is NOT custom
             ),
@@ -856,9 +858,9 @@ class TestFastMode:
 
         mock_mc = _mock_model_config()
         with (
-            patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value={}),
+            patch(f"{USER_MODELS}.get_model_preference", new_callable=AsyncMock, return_value={}),
             patch(
-                f"{HANDLER}.resolve_oauth_llm_client",
+                f"{CLIENTS}.resolve_oauth_llm_client",
                 new_callable=AsyncMock,
                 return_value=None,
             ) as mock_oauth,
@@ -879,12 +881,12 @@ class TestFastMode:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"fast_mode": True},
             ),
             patch(
-                f"{HANDLER}.resolve_oauth_llm_client",
+                f"{CLIENTS}.resolve_oauth_llm_client",
                 new_callable=AsyncMock,
                 return_value=None,
             ) as mock_oauth,
@@ -895,6 +897,146 @@ class TestFastMode:
             )
         call_kwargs = mock_oauth.call_args
         assert call_kwargs.kwargs.get("service_tier") == "priority"
+
+
+class TestTuningReachesEveryClient:
+    """Each client is tuned against the model it will actually run.
+
+    Resolving once for the composer's pick and reusing the answer is what let a
+    fallback be charged the primary's speed, and what left a subagent running a
+    manifest default while the matrix said otherwise.
+    """
+
+    @staticmethod
+    def _tuning_by_model(mock_oauth):
+        """What each model was offered, keyed by model name."""
+        return {
+            call.args[1]: {
+                "reasoning_effort": call.args[2],
+                "service_tier": call.kwargs.get("service_tier"),
+            }
+            for call in mock_oauth.call_args_list
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_fallback_is_tuned_for_itself_not_for_the_model_it_replaces(
+        self, base_config
+    ):
+        from src.server.services.llm.config import resolve_llm_config
+
+        mock_mc = _mock_model_config(
+            system_models={"system-default-model", "system-flash-model", "spare"}
+        )
+        with (
+            patch(
+                f"{USER_MODELS}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value={
+                    "fallback_models": ["spare"],
+                    "profiles": {
+                        "system-default-model": {"fast_mode": True, "reasoning_effort": "high"},
+                        "spare": {"fast_mode": False, "reasoning_effort": "low"},
+                    },
+                },
+            ),
+            patch(
+                f"{CLIENTS}.resolve_oauth_llm_client",
+                new_callable=AsyncMock,
+                return_value=None,
+            ) as mock_oauth,
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+            # An effort opens the platform-fallback path; what is under test is
+            # what each model was offered, not what the factory builds from it.
+            patch("src.llms.llm.create_llm", return_value=MagicMock()),
+        ):
+            await resolve_llm_config(base_config, "user-1", None, False)
+
+        seen = self._tuning_by_model(mock_oauth)
+        assert seen["system-default-model"] == {
+            "reasoning_effort": "high", "service_tier": "priority",
+        }
+        # The spare said it is not fast. Standing in for a fast model does not
+        # change that, and it must not be billed as though it did.
+        assert seen["spare"] == {"reasoning_effort": "low", "service_tier": None}
+
+    @pytest.mark.asyncio
+    async def test_a_fallback_still_takes_the_turns_own_override(self, base_config):
+        """It stands in for the model the request named, so "harder this turn"
+        follows it across the failover."""
+        from src.server.services.llm.config import resolve_llm_config
+
+        mock_mc = _mock_model_config(
+            system_models={"system-default-model", "system-flash-model", "spare"}
+        )
+        with (
+            patch(
+                f"{USER_MODELS}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value={
+                    "fallback_models": ["spare"],
+                    "profiles": {"spare": {"reasoning_effort": "low"}},
+                },
+            ),
+            patch(
+                f"{CLIENTS}.resolve_oauth_llm_client",
+                new_callable=AsyncMock,
+                return_value=None,
+            ) as mock_oauth,
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+            # An effort opens the platform-fallback path; what is under test is
+            # what each model was offered, not what the factory builds from it.
+            patch("src.llms.llm.create_llm", return_value=MagicMock()),
+        ):
+            await resolve_llm_config(
+                base_config, "user-1", None, False, reasoning_effort="high"
+            )
+
+        assert self._tuning_by_model(mock_oauth)["spare"]["reasoning_effort"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_a_subagent_runs_its_own_models_level_not_the_requests(
+        self, base_config
+    ):
+        """The override names the composer's pick. A subagent pinned elsewhere
+        is a different model, and takes that model's own setting."""
+        from src.server.services.llm.config import resolve_llm_config
+
+        mock_mc = _mock_model_config(
+            system_models={"system-default-model", "system-flash-model", "sub-model"}
+        )
+        sub = MagicMock()
+        sub.model = "sub-model"
+        base_config.subagents.enabled = ["research"]
+
+        with (
+            patch(
+                f"{USER_MODELS}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value={"profiles": {"sub-model": {"reasoning_effort": "medium"}}},
+            ),
+            patch(
+                f"{CLIENTS}.resolve_oauth_llm_client",
+                new_callable=AsyncMock,
+                return_value=None,
+            ) as mock_oauth,
+            patch(
+                "ptc_agent.agent.subagents.registry.SubagentRegistry.get",
+                return_value=sub,
+            ),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+            # An effort opens the platform-fallback path; what is under test is
+            # what each model was offered, not what the factory builds from it.
+            patch("src.llms.llm.create_llm", return_value=MagicMock()),
+        ):
+            await resolve_llm_config(
+                base_config, "user-1", None, False, reasoning_effort="high"
+            )
+
+        seen = self._tuning_by_model(mock_oauth)
+        assert seen["system-default-model"]["reasoning_effort"] == "high"
+        assert seen["sub-model"]["reasoning_effort"] == "medium"
+        # Priority is bought per call; one fast turn must not become N.
+        assert seen["sub-model"]["service_tier"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -917,12 +1059,12 @@ class TestResolveOneFallbackGuard:
 
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"fallback_models": ["oauth-model"]},
             ),
             patch(
-                f"{HANDLER}.resolve_oauth_llm_client",
+                f"{CLIENTS}.resolve_oauth_llm_client",
                 new_callable=AsyncMock,
                 side_effect=_oauth_side_effect,
             ),
@@ -957,17 +1099,17 @@ class TestResolveOneFallbackGuard:
 
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"fallback_models": ["valid-model", "oauth-model"]},
             ),
             patch(
-                f"{HANDLER}.resolve_oauth_llm_client",
+                f"{CLIENTS}.resolve_oauth_llm_client",
                 new_callable=AsyncMock,
                 side_effect=_oauth_side_effect,
             ),
             patch(
-                f"{HANDLER}.resolve_byok_llm_client",
+                f"{CLIENTS}.resolve_byok_llm_client",
                 new_callable=AsyncMock,
                 side_effect=_byok_side_effect,
             ),
@@ -998,11 +1140,11 @@ class TestClassifyModelDirect:
 
     @pytest.mark.asyncio
     async def test_returns_custom_when_user_has_entry(self):
-        from src.server.services.llm.config import classify_model, ModelSource
+        from src.server.services.llm.user_models import ModelSource, classify_model
 
         custom_entry = {"name": "my-model", "model_id": "m1", "provider": "my-provider"}
         with patch(
-            f"{HANDLER}.get_custom_model_config",
+            f"{USER_MODELS}.get_custom_model_config",
             new_callable=AsyncMock,
             return_value=custom_entry,
         ):
@@ -1013,13 +1155,13 @@ class TestClassifyModelDirect:
 
     @pytest.mark.asyncio
     async def test_returns_system_when_only_in_manifest(self):
-        from src.server.services.llm.config import classify_model, ModelSource
+        from src.server.services.llm.user_models import ModelSource, classify_model
 
         system_info = {"provider": "openai", "model_id": "gpt-5.6-sol"}
         mock_mc = MagicMock()
         mock_mc.get_model_config.return_value = system_info
         with (
-            patch(f"{HANDLER}.get_custom_model_config", new_callable=AsyncMock, return_value=None),
+            patch(f"{USER_MODELS}.get_custom_model_config", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             source, cfg = await classify_model("user-1", "gpt-5.6-sol")
@@ -1029,12 +1171,12 @@ class TestClassifyModelDirect:
 
     @pytest.mark.asyncio
     async def test_returns_unknown_when_neither(self):
-        from src.server.services.llm.config import classify_model, ModelSource
+        from src.server.services.llm.user_models import ModelSource, classify_model
 
         mock_mc = MagicMock()
         mock_mc.get_model_config.return_value = None
         with (
-            patch(f"{HANDLER}.get_custom_model_config", new_callable=AsyncMock, return_value=None),
+            patch(f"{USER_MODELS}.get_custom_model_config", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             source, cfg = await classify_model("user-1", "no-such-model")
@@ -1047,14 +1189,14 @@ class TestClassifyModelDirect:
         """When a name appears in BOTH custom and manifest, custom wins.
         Regression guard for the shadow-semantics flip — without it, a user's
         ``gpt-5`` custom entry would be invisible at routing time."""
-        from src.server.services.llm.config import classify_model, ModelSource
+        from src.server.services.llm.user_models import ModelSource, classify_model
 
         custom_entry = {"name": "gpt-5", "model_id": "gpt-5", "provider": "my-openai"}
         mock_mc = MagicMock()
         mock_mc.get_model_config.return_value = {"provider": "openai", "model_id": "gpt-5"}
         with (
             patch(
-                f"{HANDLER}.get_custom_model_config",
+                f"{USER_MODELS}.get_custom_model_config",
                 new_callable=AsyncMock,
                 return_value=custom_entry,
             ),
@@ -1077,10 +1219,8 @@ class TestClassifyModelDedup:
         about (the per-name count is an implementation detail of the STEP-0
         prefetch + per-model primitive resolution).
         """
-        from src.server.services.llm.config import (
-            resolve_llm_config,
-            ModelSource,
-        )
+        from src.server.services.llm.config import resolve_llm_config
+        from src.server.services.llm.user_models import ModelSource
 
         mock_mc = _mock_model_config(
             system_models={"system-default-model", "system-flash-model", "fb-a", "fb-b"}
@@ -1093,13 +1233,13 @@ class TestClassifyModelDedup:
 
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"fallback_models": ["fb-a", "fb-b"]},
             ),
-            patch(f"{HANDLER}.classify_model", classify_mock),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
-            patch(f"{HANDLER}.resolve_byok_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{USER_MODELS}.classify_model", classify_mock),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_byok_llm_client", new_callable=AsyncMock, return_value=None),
             patch(
                 "src.server.database.api_keys.get_byok_configs_for_providers",
                 new_callable=AsyncMock,
@@ -1135,17 +1275,17 @@ class TestStaleModelPreference:
 
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value=pref,
             ),
             patch(
-                f"{HANDLER}.get_custom_model_config",
+                f"{USER_MODELS}.get_custom_model_config",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
             patch(
-                f"{HANDLER}.get_custom_provider_config",
+                f"{USER_MODELS}.get_custom_provider_config",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1172,7 +1312,7 @@ class TestStaleModelPreference:
         mock_upsert.assert_awaited_once()
         kwargs = mock_upsert.await_args.kwargs
         assert kwargs["user_id"] == "user-1"
-        assert kwargs["other_preference"] == {"preferred_model": None}
+        assert kwargs["model_preference"] == {"preferred_model": None}
         # Cache is invalidated twice: once to bust stale cache before the
         # race-safe re-read, once after the write lands.
         assert mock_invalidate.await_count == 2
@@ -1199,17 +1339,17 @@ class TestStaleModelPreference:
 
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value=pref,
             ),
             patch(
-                f"{HANDLER}.get_custom_model_config",
+                f"{USER_MODELS}.get_custom_model_config",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
             patch(
-                f"{HANDLER}.get_custom_provider_config",
+                f"{USER_MODELS}.get_custom_provider_config",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1226,7 +1366,7 @@ class TestStaleModelPreference:
             with pytest.raises(HTTPException):
                 await resolve_llm_config(base_config, "user-1", None, False)
 
-        written = mock_upsert.await_args.kwargs["other_preference"]
+        written = mock_upsert.await_args.kwargs["model_preference"]
         # Stale scalars deleted, fallback list filtered down to only "good-model"
         assert written["preferred_model"] is None
         assert written["fetch_model"] is None
@@ -1250,17 +1390,17 @@ class TestStaleModelPreference:
 
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value=pref,
             ),
             patch(
-                f"{HANDLER}.get_custom_model_config",
+                f"{USER_MODELS}.get_custom_model_config",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
             patch(
-                f"{HANDLER}.get_custom_provider_config",
+                f"{USER_MODELS}.get_custom_provider_config",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1298,22 +1438,22 @@ class TestStaleModelPreference:
 
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={},
             ),
             patch(
-                f"{HANDLER}.get_custom_model_config",
+                f"{USER_MODELS}.get_custom_model_config",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
             patch(
-                f"{HANDLER}.get_custom_provider_config",
+                f"{USER_MODELS}.get_custom_provider_config",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
             patch(
-                f"{HANDLER}.resolve_oauth_llm_client",
+                f"{CLIENTS}.resolve_oauth_llm_client",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1369,16 +1509,16 @@ class TestStaleModelPreference:
 
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new=prefs_sequence,
             ),
             patch(
-                f"{HANDLER}.get_custom_model_config",
+                f"{USER_MODELS}.get_custom_model_config",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
             patch(
-                f"{HANDLER}.get_custom_provider_config",
+                f"{USER_MODELS}.get_custom_provider_config",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
@@ -1439,11 +1579,11 @@ class TestSearchProviderPreference:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"search_provider": "serper"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -1467,11 +1607,11 @@ class TestSearchProviderPreference:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"search_provider": "serper"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -1496,11 +1636,11 @@ class TestSearchProviderPreference:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"search_provider": "serper"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -1525,11 +1665,11 @@ class TestSearchProviderPreference:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"search_provider": "duckduckgo"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -1556,13 +1696,13 @@ class TestSearchProviderPreference:
         mock_byok_llm = MagicMock(name="byok-llm-client")
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"search_provider": "bocha"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch(
-                f"{HANDLER}.resolve_byok_llm_client",
+                f"{CLIENTS}.resolve_byok_llm_client",
                 new_callable=AsyncMock,
                 return_value=mock_byok_llm,
             ),
@@ -1589,11 +1729,11 @@ class TestSearchProviderPreference:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"search_provider": "serper"},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -1616,8 +1756,8 @@ class TestSearchProviderPreference:
 
         mock_mc = _mock_model_config()
         with (
-            patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value={}),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{USER_MODELS}.get_model_preference", new_callable=AsyncMock, return_value={}),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -1642,11 +1782,11 @@ class TestSearchProviderPreference:
         mock_mc = _mock_model_config()
         with (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value={"search_provider": {"engine": "serper"}},
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         ):
             config = await resolve_llm_config(base_config, "user-1", None, False)
@@ -1668,11 +1808,11 @@ class TestSearchDepthPreference:
         mock_mc = _mock_model_config()
         return (
             patch(
-                f"{HANDLER}.get_model_preference",
+                f"{USER_MODELS}.get_model_preference",
                 new_callable=AsyncMock,
                 return_value=prefs,
             ),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         )
 
@@ -1862,8 +2002,8 @@ class TestCrawlFeatureGate:
     def _patches(self, prefs):
         mock_mc = _mock_model_config()
         return (
-            patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value=prefs),
-            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{USER_MODELS}.get_model_preference", new_callable=AsyncMock, return_value=prefs),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
             patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
         )
 

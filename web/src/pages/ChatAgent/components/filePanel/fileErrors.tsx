@@ -88,7 +88,7 @@ export function FileErrorDisplay({ error, onRetry, onDownload }: FileErrorDispla
         {showRetry && onRetry && (
           <button
             className="text-xs px-3 py-1.5 rounded"
-            style={{ background: 'var(--color-accent-soft)', color: 'var(--color-accent-primary)', border: '1px solid var(--color-accent-overlay)' }}
+            style={{ background: 'var(--color-bg-elevated)', color: 'var(--color-text-primary)', border: '1px solid var(--color-border-elevated)' }}
             onClick={onRetry}
           >
             {t('filePanel.error.retry')}
@@ -97,7 +97,7 @@ export function FileErrorDisplay({ error, onRetry, onDownload }: FileErrorDispla
         {showDownload && onDownload && (
           <button
             className="text-xs px-3 py-1.5 rounded"
-            style={{ background: 'var(--color-accent-soft)', color: 'var(--color-accent-primary)', border: '1px solid var(--color-accent-overlay)' }}
+            style={{ background: 'var(--color-bg-elevated)', color: 'var(--color-text-primary)', border: '1px solid var(--color-border-elevated)' }}
             onClick={onDownload}
           >
             {t('filePanel.error.download')}

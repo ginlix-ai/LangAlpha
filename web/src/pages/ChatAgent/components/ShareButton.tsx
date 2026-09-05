@@ -165,7 +165,7 @@ export default function ShareButton({ threadId, initialIsShared = false }: Share
                     <div
                       className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded-md text-xs truncate"
                       style={{
-                        backgroundColor: 'var(--color-bg-tertiary)',
+                        backgroundColor: 'var(--color-bg-input)',
                         color: 'var(--color-text-secondary)',
                       }}
                     >

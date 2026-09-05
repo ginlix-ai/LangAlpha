@@ -6,7 +6,11 @@ quote inside a long string value, causing strict `json.loads` to raise
 through `json_repair` recovers the dominant case.
 """
 
-from src.server.services.runs.sse_producer import _parse_tool_args
+import json
+
+import pytest
+
+from src.server.services.runs.sse_producer import RunSSEProducer, _parse_tool_args
 
 
 class TestParseToolArgs:
@@ -77,3 +81,72 @@ class TestParseToolArgs:
         assert parsed is None
         assert err_repr  # carries the JSONDecodeError message
         assert err_window  # carries bytes around the failure point
+
+
+class TestParseErrorEmission:
+    """A tool call whose args survive neither strict parse nor repair must
+    still be emitted — the graph parses args independently and may run the
+    call, so a dropped event leaves the stream without a card for a
+    tool_call_result that arrives later."""
+
+    def _producer(self):
+        return RunSSEProducer(thread_id="t-parse", run_id="r-parse")
+
+    @staticmethod
+    def _tool_calls_payloads(events):
+        return [
+            json.loads(e.split("data: ", 1)[1].strip())
+            for e in events
+            if "event: tool_calls\n" in e
+        ]
+
+    @pytest.mark.asyncio
+    async def test_unparseable_args_emit_marked_call_not_drop(self):
+        from langchain_core.messages import AIMessageChunk
+
+        producer = self._producer()
+        producer.anthropic_tool_call_state[("agent", 0)] = {
+            "name": "execute_code",
+            "id": "call-broken",
+            "args_accumulated": '"just a string"',  # valid JSON, non-dict: unrepairable
+        }
+        chunk = AIMessageChunk(content="", id="msg-1")
+        chunk.response_metadata = {"stop_reason": "tool_use"}
+
+        events = [e async for e in producer._process_message_chunk(chunk, "agent")]
+
+        payloads = self._tool_calls_payloads(events)
+        assert len(payloads) == 1
+        payload = payloads[0]
+        assert payload["args_parse_error"] is True
+        assert payload["tool_calls"] == [
+            {
+                "name": "execute_code",
+                "args": {},
+                "id": "call-broken",
+                "type": "tool_call",
+            }
+        ]
+        # State cleared so the broken call doesn't leak across turns.
+        assert not producer.anthropic_tool_call_state
+
+    @pytest.mark.asyncio
+    async def test_parseable_args_emit_without_marker(self):
+        from langchain_core.messages import AIMessageChunk
+
+        producer = self._producer()
+        producer.anthropic_tool_call_state[("agent", 0)] = {
+            "name": "execute_code",
+            "id": "call-ok",
+            "args_accumulated": '{"code": "print(1)"}',
+        }
+        chunk = AIMessageChunk(content="", id="msg-2")
+        chunk.response_metadata = {"stop_reason": "tool_use"}
+
+        events = [e async for e in producer._process_message_chunk(chunk, "agent")]
+
+        payloads = self._tool_calls_payloads(events)
+        assert len(payloads) == 1
+        payload = payloads[0]
+        assert "args_parse_error" not in payload
+        assert payload["tool_calls"][0]["args"] == {"code": "print(1)"}

@@ -44,6 +44,30 @@ async def get_subagent_task_status(
     return {"task_id": task_id, "status": detail["status"], "error": detail.get("error")}
 
 
+@router.get("/{thread_id}/tasks/{task_id}/history")
+async def get_subagent_task_history(
+    thread_id: str,
+    task_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,12}$")],
+    x_user_id: CurrentUserId,
+):
+    """On-demand checkpoint transcript for one subagent task.
+
+    Replay only projects lanes for Task-tool launches; workflow children
+    have no launch artifact in the main transcript, so their transcripts —
+    durably checkpointed under ``task:{task_id}`` — are otherwise
+    unreachable after the live stream expires. Returns the same SSE-shaped
+    items replay emits (empty for an unknown or still-running task, whose
+    transcript belongs to its live stream).
+    """
+    await auth_api.require_thread_owner(thread_id, x_user_id)
+    from src.server.services.history.replay.task_lane import (
+        project_task_transcript,
+    )
+
+    items = await project_task_transcript(thread_id, task_id)
+    return {"task_id": task_id, "items": items}
+
+
 @router.get("/{thread_id}/tasks/{task_id}")
 async def stream_subagent_task(
     thread_id: str,
@@ -76,6 +100,19 @@ async def stream_subagent_task(
     )
 
 
+
+
+@router.post("/{thread_id}/tasks/{task_id}/cancel")
+async def cancel_subagent_task(
+    thread_id: str,
+    task_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,12}$")],
+    x_user_id: CurrentUserId,
+):
+    """Stop one background task (e.g. a workflow run) without touching the turn."""
+    await auth_api.require_thread_owner(thread_id, x_user_id)
+    from src.server.services.cancel_dispatch import cancel_subagent_task
+
+    return await cancel_subagent_task(thread_id, task_id)
 
 
 @router.post("/{thread_id}/tasks/{task_id}/messages")

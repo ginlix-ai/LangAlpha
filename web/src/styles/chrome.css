@@ -1,0 +1,149 @@
+/* ============================================
+   Chrome vs document
+   ============================================
+
+   Selection exists to paste. Dragging across a sidebar or a toolbar is someone
+   reaching for the window or overshooting a paragraph, never someone collecting
+   text, so the frame opts out and everything else stays selectable. That is the
+   same shape claude.ai and chatgpt.com ship: measured on both, the page default
+   is `auto` and only chrome switches off, with nothing opting back in.
+
+   Opt back in with `text`, never `auto`: `auto` inside a `none` parent computes
+   to `none`, so an `auto` escape hatch silently does nothing.
+
+   This file is kept identical in the two frontends that can share one desktop
+   window, so a control behaves the same wherever it renders. THIS COPY IS
+   CANONICAL and the account console vendors it; the drift check belongs on that
+   side, because this repo is public and cannot reach the other one.
+
+   Which is why some rules below have no consumer here yet: `.chrome-drag-strip`
+   and the `[data-selectable]` / `deliberate` tiers are the console's, and are
+   carried so the two copies stay byte-identical. They cost nothing until
+   something opts in. The `deliberate` tier additionally needs
+   `initDeliberateSelection()` called from the entry, which langalpha does not
+   do; see that module. */
+
+/* Controls are chrome wherever they render: a label on a target, not a
+   document. Links are deliberately absent, since a citation inside agent
+   output is body text. */
+[data-chrome],
+button,
+[role='button'],
+[role='tab'],
+[role='menuitem'],
+[role='menuitemradio'],
+[role='menuitemcheckbox'],
+[role='option'],
+[role='switch'],
+[role='radio'],
+[role='checkbox'],
+label,
+summary {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Never lock up something the user types into. Chromium allows this without the
+   rule; Safari and Firefox are why it is here. */
+input,
+textarea,
+select,
+[contenteditable='true'] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Documents and copy-worthy atoms: message bodies, viewers, article text, keys,
+   IDs, endpoint URLs, error text. Wins over any chrome around it. */
+[data-selectable],
+.selectable {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* An identifier the product already chose to typeset as code: an API key, a
+   token, a channel address, an endpoint. Copy-worthy by construction, and it
+   spares every one of those call sites an attribute. */
+code,
+kbd,
+samp,
+pre {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* The third state, for values that are worth copying but are not prose: a metric,
+   a price, a plan name. A drag passing through skips them; a drag that starts on
+   them, a double click, or a triple click still selects. Armed by
+   `initDeliberateSelection()` when the pointer arrives with no button held,
+   because `:active` is too late: the browser picks its selection anchor at
+   mousedown, before the style would apply. */
+[data-selectable='deliberate'] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+[data-selectable='deliberate'][data-armed] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* --------------------------------------------
+   Window drag (desktop shell, macOS only)
+   --------------------------------------------
+
+   `titleBarStyle: 'hiddenInset'` hands the whole titlebar to the page, so the
+   page owes the window somewhere to be dragged from. `html.desktop-mac` is
+   stamped by the inline bridge check in index.html, so a browser build lays out
+   and behaves exactly as before.
+
+   A drag region swallows the mouse, so anything interactive inside one has to
+   declare `no-drag` for itself. That is the shape both claude.ai and
+   chatgpt.com ship (`.draggable` with `.no-draggable-children`), and it is why
+   the rule below covers controls and documents rather than trusting nesting. */
+html.desktop-mac [data-chrome~='drag'] {
+  -webkit-app-region: drag;
+}
+
+/* Every selector the chrome block above names, minus `[data-chrome]` itself
+   (that IS the drag region), plus the fields and the two escapes. It has to be a
+   superset: the chrome list is the project's own answer to "what is a control
+   rather than a document", and a control this list forgets is not merely
+   selectable-when-it-should-not-be, it is UNCLICKABLE — a drag region swallows
+   the mouse, and an element cannot win those clicks back from underneath. It
+   fails on the desktop shell only, so ordinary browser QA never sees it. The
+   two lists are asserted against each other in desktop/test/shell.test.js,
+   because the failure is silent in both directions.
+
+   Not coverable from here: a plain div or span carrying an onClick, which is how
+   many shadcn triggers and icon buttons render. Those opt in with
+   `[data-no-drag]`, and inside a drag region they must. */
+html.desktop-mac :is(a, button, input, textarea, select,
+  [role='button'], [role='tab'], [role='menuitem'], [role='menuitemradio'],
+  [role='menuitemcheckbox'], [role='option'], [role='switch'], [role='radio'],
+  [role='checkbox'], label, summary,
+  [contenteditable='true'], [data-selectable], .selectable, [data-no-drag]) {
+  -webkit-app-region: no-drag;
+}
+
+/* A titlebar's worth of height at the top of a column that has no header bar of
+   its own to donate. Deliberately childless and in normal flow: a strip that
+   owns its whole box needs no `no-drag` exceptions, and one that scrolls away
+   with the content can never trap a paragraph underneath a drag region.
+
+   It adds height, so it belongs only in a column that grows with its content,
+   and only after subtracting whatever top padding that column already had.
+   Dropping it into one whose child is `height: 100%` pushes the child down by
+   the strip's own height and the bottom of the page leaves the scroll port. A
+   route that already has a top bar should mark that bar `data-chrome="drag"`
+   instead, which costs no layout at all. */
+.chrome-drag-strip {
+  display: none;
+}
+
+html.desktop-mac .chrome-drag-strip {
+  display: block;
+  height: 38px;
+  flex-shrink: 0;
+  -webkit-app-region: drag;
+}

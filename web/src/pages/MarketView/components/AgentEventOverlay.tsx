@@ -169,7 +169,10 @@ interface AgentEventOverlayProps {
   timeframe: string | null | undefined;
 }
 
-export function AgentEventOverlay({
+// Memoized — mounts alongside the chart, whose data/tick renders shouldn't
+// re-render one Radix Popover tree per event badge. All props are stable refs
+// or primitives.
+export const AgentEventOverlay = React.memo(function AgentEventOverlay({
   chartRef,
   seriesRef,
   chartData,
@@ -288,6 +291,6 @@ export function AgentEventOverlay({
       ))}
     </div>
   );
-}
+});
 
 export default AgentEventOverlay;

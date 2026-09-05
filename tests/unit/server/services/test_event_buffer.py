@@ -13,13 +13,17 @@ from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import redis.exceptions as redis_exceptions
 
 from src.server.services.runs.executor import (
     LocalRunExecutor,
     LocalRunExecution,
     LocalRunStatus,
 )
-from src.server.services.runs.stream_writer import TransportLostError
+from src.server.services.runs.stream_writer import (
+    StreamQuotaExceededError,
+    TransportLostError,
+)
 
 
 def _make_btm(backend: str = "redis") -> LocalRunExecutor:
@@ -59,7 +63,7 @@ class TestBufferEventRedisHappyPath:
 
         mock_cache = MagicMock()
         mock_cache.enabled = True
-        mock_cache.pipelined_event_buffer = AsyncMock(return_value=(True, 1))
+        mock_cache.pipelined_event_buffer = AsyncMock(return_value=None)
 
         with patch(
             "src.server.services.runs.stream_writer.get_cache_client",
@@ -69,16 +73,20 @@ class TestBufferEventRedisHappyPath:
 
         assert mock_cache.pipelined_event_buffer.await_count == 1
         call = mock_cache.pipelined_event_buffer.await_args
-        # Main workflow path is stream-only; persistence comes from
-        # StreamEventAccumulator, not from a separate List.
-        assert "events_key" not in call.kwargs
-        assert call.kwargs["meta_key"] == "workflow:events:meta:thread-1:run-1"
-        assert call.kwargs["stream_key"] == "workflow:stream:thread-1:run-1"
-        assert call.kwargs["last_event_id"] == 42
+        # Stream-only, and no meta hash: persistence comes from
+        # StreamEventAccumulator, and the counter it used to keep was read by
+        # nobody.
+        assert call.args[0] == "workflow:stream:thread-1:run-1"
+        assert "meta_key" not in call.kwargs
+        assert call.kwargs["event_id"] == 42
         # Retention contract: 2x MAXLEN backstop over the quota, no TTL on
         # active writes (attach-grace is stamped at terminal).
         assert call.kwargs["max_size"] == 2000
         assert call.kwargs["ttl"] is None
+        # Not a retry, so the buffer is free to derive the epoch DEL and the
+        # periodic heal from the id. Which of them actually fires is the
+        # buffer's call and is pinned in test_pipelined_event_buffer.
+        assert call.kwargs["bare"] is False
 
     @pytest.mark.asyncio
     async def test_malformed_event_id_is_fatal(self):
@@ -89,7 +97,7 @@ class TestBufferEventRedisHappyPath:
 
         mock_cache = MagicMock()
         mock_cache.enabled = True
-        mock_cache.pipelined_event_buffer = AsyncMock(return_value=(True, 1))
+        mock_cache.pipelined_event_buffer = AsyncMock(return_value=None)
 
         with patch(
             "src.server.services.runs.stream_writer.get_cache_client",
@@ -112,13 +120,17 @@ class TestBufferEventRedisFailureModes:
     """
 
     @pytest.mark.asyncio
-    async def test_pipeline_failure_is_fatal(self):
+    async def test_write_that_never_lands_is_fatal_after_retries(self):
         btm = _make_btm()
         _register_task(btm)
 
         mock_cache = MagicMock()
         mock_cache.enabled = True
-        mock_cache.pipelined_event_buffer = AsyncMock(return_value=(False, 0))
+        mock_cache.pipelined_event_buffer = AsyncMock(
+            side_effect=redis_exceptions.TimeoutError("Timeout reading from redis")
+        )
+        # Tail stays behind the frame we tried to write: it never landed.
+        mock_cache.stream_tail = AsyncMock(return_value=(4, b"earlier", None))
 
         with patch(
             "src.server.services.runs.stream_writer.get_cache_client",
@@ -126,10 +138,10 @@ class TestBufferEventRedisFailureModes:
         ):
             with pytest.raises(TransportLostError):
                 await btm._buffer_event_redis(
-                    "thread-1", "run-1", "id: 1\ndata: lost-if-dropped\n\n"
+                    "thread-1", "run-1", "id: 5\ndata: lost-if-dropped\n\n"
                 )
 
-        assert mock_cache.pipelined_event_buffer.await_count == 1
+        assert mock_cache.pipelined_event_buffer.await_count == 3
 
     @pytest.mark.asyncio
     async def test_cache_client_failure_is_fatal(self):
@@ -173,7 +185,7 @@ class TestBufferEventRedisFailureModes:
 
         mock_cache = MagicMock()
         mock_cache.enabled = True
-        mock_cache.pipelined_event_buffer = AsyncMock(return_value=(True, 1000))
+        mock_cache.pipelined_event_buffer = AsyncMock(return_value=None)
 
         with patch(
             "src.server.services.runs.stream_writer.get_cache_client",
@@ -183,10 +195,7 @@ class TestBufferEventRedisFailureModes:
                 "thread-1", "run-1", "id: 1000\ndata: x\n\n"
             )
 
-            mock_cache.pipelined_event_buffer = AsyncMock(
-                return_value=(True, 1001)
-            )
-            with pytest.raises(TransportLostError, match="quota"):
+            with pytest.raises(StreamQuotaExceededError, match="quota"):
                 await btm._buffer_event_redis(
                     "thread-1", "run-1", "id: 1001\ndata: x\n\n"
                 )

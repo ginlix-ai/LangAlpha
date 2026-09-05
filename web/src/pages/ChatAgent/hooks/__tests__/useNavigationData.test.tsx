@@ -19,9 +19,11 @@ import {
   applyStableOrder,
   applyStableOrderBy,
   resetStableNavOrder,
-  resetSharedWorkspaceThreads,
   bumpThreadNavOrder,
 } from '../useNavigationData';
+import { resetSharedWorkspaceThreads } from '@/lib/navThreadsStore';
+import { isArchivedThreadsKey, patchThreadRows } from '@/lib/threadRowActions';
+import { isCacheOnlyMeta, queryKeys } from '@/lib/queryKeys';
 import { resetNavPrefs, setNavPrefs } from '../../utils/navPrefs';
 
 vi.mock('../../utils/api', () => ({
@@ -29,14 +31,16 @@ vi.mock('../../utils/api', () => ({
   getWorkspaceThreads: vi.fn(),
   reorderWorkspaces: vi.fn(),
   updateWorkspace: vi.fn(),
+  updateThread: vi.fn(),
 }));
 
-import { getWorkspaces, getWorkspaceThreads, reorderWorkspaces, updateWorkspace } from '../../utils/api';
+import { getWorkspaces, getWorkspaceThreads, reorderWorkspaces, updateWorkspace, updateThread } from '../../utils/api';
 
 const mockGetWorkspaces = getWorkspaces as Mock;
 const mockGetWorkspaceThreads = getWorkspaceThreads as Mock;
 const mockReorderWorkspaces = reorderWorkspaces as Mock;
 const mockUpdateWorkspace = updateWorkspace as Mock;
+const mockUpdateThread = updateThread as Mock;
 
 interface TestThread {
   thread_id: string;
@@ -156,6 +160,23 @@ describe('useNavigationData — stable thread ordering', () => {
     await waitFor(() => expect(mockGetWorkspaceThreads).toHaveBeenCalledWith('ws-1', 20, 0));
   });
 
+  it('page-0 observers opt into the lifecycle-feed thaw', async () => {
+    // The other half of this contract lives in refetchCacheOnlyLists
+    // (lib/threadLifecycle/feedClient.ts), which fetches a stale page-0 list
+    // only when an observer vouches for it via meta. Nothing else fails if this
+    // hook stops sending the flag — the tree would just silently stop picking
+    // up background runs — so assert the exact predicate that consumer uses.
+    const { queryClient, idsFor } = setup();
+    await waitFor(() => expect(idsFor('ws-1')).toEqual(['t-3', 't-1', 't-2']));
+
+    const pageZero = queryClient
+      .getQueryCache()
+      .findAll({ queryKey: [...queryKeys.threads.byWorkspace('ws-1'), 10, 0] });
+
+    expect(pageZero).toHaveLength(1);
+    expect(pageZero[0].observers.some((o) => isCacheOnlyMeta(o.options.meta))).toBe(true);
+  });
+
   it('refetch with reshuffled updated_at keeps the frozen order', async () => {
     const { idsFor, queryClient } = setup();
     await waitFor(() => expect(idsFor('ws-1')).toEqual(['t-3', 't-1', 't-2']));
@@ -180,6 +201,34 @@ describe('useNavigationData — stable thread ordering', () => {
     });
 
     await waitFor(() => expect(idsFor('ws-1')).toEqual(['t-new', 't-3', 't-1', 't-2']));
+  });
+
+  it('absorbs a new thread id into the frozen order so a later bump cannot sink it', async () => {
+    // Regression: the frozen order is written from an effect, not during
+    // render. If a newly-seen id were never absorbed, `applyStableOrderBy`
+    // would re-classify it positionally on every render — and the moment an
+    // older frozen thread sorts above it, it drops to the paginated-in tail.
+    const { idsFor, queryClient } = setup();
+    await waitFor(() => expect(idsFor('ws-1')).toEqual(['t-3', 't-1', 't-2']));
+
+    threadsByWs['ws-1'] = threads('t-new', 't-3', 't-1', 't-2');
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    await waitFor(() => expect(idsFor('ws-1')).toEqual(['t-new', 't-3', 't-1', 't-2']));
+
+    // Chatting in an older thread hoists it; the server reshuffles it above
+    // t-new. Without absorption t-new is unknown-and-late → tail.
+    act(() => {
+      bumpThreadNavOrder('ws-1', 't-2');
+    });
+    threadsByWs['ws-1'] = threads('t-2', 't-3', 't-1', 't-new');
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+
+    await waitFor(() => expect(mockGetWorkspaceThreads.mock.calls.length).toBeGreaterThan(2));
+    expect(idsFor('ws-1')).toEqual(['t-2', 't-new', 't-3', 't-1']);
   });
 
   it('a deleted thread id drops out without error', async () => {
@@ -486,7 +535,7 @@ describe('useNavigationData — drag-reorder workspaces', () => {
     return { ...rendered, wsIds };
   }
 
-  it('moves the dragged workspace and persists sequential sort_order without flash', async () => {
+  it('moves the dragged workspace and persists sequential sort_order including flash', async () => {
     const { wsIds, result } = setup();
     await waitFor(() => expect(wsIds().length).toBe(5));
 
@@ -495,11 +544,14 @@ describe('useNavigationData — drag-reorder workspaces', () => {
     });
 
     expect(wsIds()).toEqual(['ws-pin', 'ws-flash', 'ws-3', 'ws-1', 'ws-2']);
+    // Flash's slot is written too — leaving it out ties its sort_order with
+    // a neighbor's and the pinned block reshuffles on every updated_at bump.
     expect(mockReorderWorkspaces).toHaveBeenCalledWith([
       { workspace_id: 'ws-pin', sort_order: 0 },
-      { workspace_id: 'ws-3', sort_order: 1 },
-      { workspace_id: 'ws-1', sort_order: 2 },
-      { workspace_id: 'ws-2', sort_order: 3 },
+      { workspace_id: 'ws-flash', sort_order: 1 },
+      { workspace_id: 'ws-3', sort_order: 2 },
+      { workspace_id: 'ws-1', sort_order: 3 },
+      { workspace_id: 'ws-2', sort_order: 4 },
     ]);
   });
 
@@ -515,7 +567,7 @@ describe('useNavigationData — drag-reorder workspaces', () => {
     expect(mockReorderWorkspaces).not.toHaveBeenCalled();
   });
 
-  it('refuses to move the flash workspace or drop onto it', async () => {
+  it('refuses flash drags across the pin boundary, in both directions', async () => {
     const { wsIds, result } = setup();
     await waitFor(() => expect(wsIds().length).toBe(5));
 
@@ -528,6 +580,42 @@ describe('useNavigationData — drag-reorder workspaces', () => {
     expect(mockReorderWorkspaces).not.toHaveBeenCalled();
   });
 
+  it('lets flash reorder within the pinned block and persists it', async () => {
+    const { wsIds, result } = setup();
+    await waitFor(() => expect(wsIds().length).toBe(5));
+
+    await act(async () => {
+      await result.current.reorderWorkspace('ws-flash', 'ws-pin');
+    });
+
+    expect(wsIds()).toEqual(['ws-flash', 'ws-pin', 'ws-1', 'ws-2', 'ws-3']);
+    expect(mockReorderWorkspaces).toHaveBeenCalledWith([
+      { workspace_id: 'ws-flash', sort_order: 0 },
+      { workspace_id: 'ws-pin', sort_order: 1 },
+      { workspace_id: 'ws-1', sort_order: 2 },
+      { workspace_id: 'ws-2', sort_order: 3 },
+      { workspace_id: 'ws-3', sort_order: 4 },
+    ]);
+  });
+
+  it('lets a pinned workspace take the flash slot and persists it', async () => {
+    const { wsIds, result } = setup();
+    await waitFor(() => expect(wsIds().length).toBe(5));
+
+    await act(async () => {
+      await result.current.reorderWorkspace('ws-pin', 'ws-flash');
+    });
+
+    expect(wsIds()).toEqual(['ws-flash', 'ws-pin', 'ws-1', 'ws-2', 'ws-3']);
+    expect(mockReorderWorkspaces).toHaveBeenCalledWith([
+      { workspace_id: 'ws-flash', sort_order: 0 },
+      { workspace_id: 'ws-pin', sort_order: 1 },
+      { workspace_id: 'ws-1', sort_order: 2 },
+      { workspace_id: 'ws-2', sort_order: 3 },
+      { workspace_id: 'ws-3', sort_order: 4 },
+    ]);
+  });
+
   it('rolls the optimistic order back when persisting fails', async () => {
     const { wsIds, result } = setup();
     await waitFor(() => expect(wsIds().length).toBe(5));
@@ -538,6 +626,114 @@ describe('useNavigationData — drag-reorder workspaces', () => {
     });
 
     expect(wsIds()).toEqual(['ws-pin', 'ws-flash', 'ws-1', 'ws-2', 'ws-3']);
+  });
+});
+
+describe('useNavigationData — pinned-block partition & pin freeze reset', () => {
+  // The server's custom sort: is_pinned DESC, sort_order ASC, updated_at DESC.
+  // It has NO flash ranking — flash competes on those fields like any row.
+  const serverSort = (rows: Record<string, unknown>[]) =>
+    [...rows].sort((a, b) => {
+      if (Boolean(a.is_pinned) !== Boolean(b.is_pinned)) return a.is_pinned ? -1 : 1;
+      if (a.sort_order !== b.sort_order) return (a.sort_order as number) - (b.sort_order as number);
+      return String(b.updated_at).localeCompare(String(a.updated_at));
+    });
+
+  let server: Record<string, unknown>[];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetStableNavOrder();
+    resetSharedWorkspaceThreads();
+    resetNavPrefs();
+    mockGetWorkspaceThreads.mockResolvedValue({ threads: [] });
+    server = [
+      { workspace_id: 'ws-flash', status: 'flash', is_pinned: true, sort_order: 0, updated_at: '2026-01-01' },
+      { workspace_id: 'ws-a', is_pinned: false, sort_order: 0, updated_at: '2026-01-03' },
+      { workspace_id: 'ws-b', is_pinned: false, sort_order: 1, updated_at: '2026-01-02' },
+    ];
+    mockGetWorkspaces.mockImplementation(async () => ({
+      workspaces: serverSort(server).map((w) => ({ ...w })),
+      total: server.length,
+    }));
+    mockUpdateWorkspace.mockImplementation(async (id: string, patch: Record<string, unknown>) => {
+      const w = server.find((s) => s.workspace_id === id);
+      if (w) Object.assign(w, patch);
+    });
+  });
+
+  function setup() {
+    const queryClient = createTestQueryClient();
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const rendered = renderHook(() => useNavigationData('ws-a'), { wrapper });
+    const wsIds = () => rendered.result.current.workspaces.map((ws) => ws.workspace_id);
+    return { ...rendered, wsIds };
+  }
+
+  it('never renders an unpinned workspace above flash, even when the server ranks it higher', async () => {
+    // A flash row without is_pinned falls into the server's unpinned block,
+    // where newer recency puts ws-a above it — the partition must still treat
+    // flash as pinned and keep every unpinned row below it.
+    server[0] = { ...server[0], is_pinned: false };
+    const { wsIds } = setup();
+    await waitFor(() => expect(wsIds().length).toBe(3));
+    expect(wsIds()).toEqual(['ws-flash', 'ws-a', 'ws-b']);
+  });
+
+  it('lets a pinned workspace outrank flash inside the pinned block', async () => {
+    // Flash is always-pinned, not always-first: a pinned row that beats it on
+    // the server sort (sort_order tie, newer updated_at) legitimately renders
+    // above it, while the unpinned rows stay below both.
+    server.push({ workspace_id: 'ws-pin', is_pinned: true, sort_order: 0, updated_at: '2026-01-05' });
+    const { wsIds } = setup();
+    await waitFor(() => expect(wsIds().length).toBe(4));
+    expect(wsIds()).toEqual(['ws-pin', 'ws-flash', 'ws-a', 'ws-b']);
+  });
+
+  it('returns an unpinned workspace to its custom slot instead of freezing the pinned-era order', async () => {
+    // The regression needs the real-world sequence: the OPTIMISTIC render must
+    // commit (pre-consuming the arrangement change and re-freezing the
+    // pre-sort order) BEFORE the server responds and the refetch re-sorts.
+    // A resolved mock lets act() batch both into one render, hiding the bug —
+    // so the update is held on a deferred promise across each toggle.
+    let release: (() => void) | undefined;
+    mockUpdateWorkspace.mockImplementation(async (id: string, patch: Record<string, unknown>) => {
+      await new Promise<void>((r) => { release = r; });
+      const w = server.find((s) => s.workspace_id === id);
+      if (w) Object.assign(w, patch);
+    });
+    const togglePin = async (pinned: boolean) => {
+      let done: Promise<void> = Promise.resolve();
+      await act(async () => {
+        done = result.current.pinWorkspace('ws-b', pinned);
+        // A macrotask, not a microtask: React Query batches cache
+        // notifications past a bare Promise.resolve(), and the optimistic
+        // render MUST commit (recording the arrangement change) before the
+        // server responds for the sequence to match the browser.
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      await act(async () => {
+        release!();
+        await done;
+      });
+    };
+
+    const { wsIds, result } = setup();
+    await waitFor(() => expect(wsIds()).toEqual(['ws-flash', 'ws-a', 'ws-b']));
+
+    // Pin ws-b: the server re-sorts it into the pinned block; the frozen
+    // order must follow the refetch, not keep the optimistic-era snapshot.
+    await togglePin(true);
+    await waitFor(() => expect(wsIds()).toEqual(['ws-flash', 'ws-b', 'ws-a']));
+
+    // Unpin: ws-b must fall back to its sort_order slot BELOW ws-a. The
+    // regression froze the pinned-era order (ws-b first) because the
+    // optimistic patch pre-consumed the arrangement change, so the server's
+    // re-sorted refetch never re-snapshotted.
+    await togglePin(false);
+    await waitFor(() => expect(wsIds()).toEqual(['ws-flash', 'ws-a', 'ws-b']));
   });
 });
 
@@ -625,6 +821,60 @@ describe('useNavigationData — pin & rename workspace', () => {
   });
 });
 
+describe('useNavigationData — pin thread', () => {
+  // Stateful thread "server": the pin path refetches page 0 explicitly, so the
+  // post-commit view has to reflect what the test set as the new server order.
+  let serverThreads: TestThread[];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetStableNavOrder();
+    resetSharedWorkspaceThreads();
+    resetNavPrefs();
+    mockGetWorkspaces.mockResolvedValue({ workspaces: [{ workspace_id: 'ws-1' }], total: 1 });
+    serverThreads = threads('t-3', 't-1', 't-2');
+    mockGetWorkspaceThreads.mockImplementation(async () => ({
+      threads: serverThreads.map((t) => ({ ...t })),
+      total: serverThreads.length,
+    }));
+    mockUpdateThread.mockResolvedValue({});
+  });
+
+  function setup() {
+    const queryClient = createTestQueryClient();
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const rendered = renderHook(() => useNavigationData('ws-1'), { wrapper });
+    const ids = () =>
+      (rendered.result.current.workspaceThreads['ws-1']?.threads ?? []).map((t) => t.thread_id);
+    return { ...rendered, ids };
+  }
+
+  it('pin hoists the row and unpin re-freezes from the refetched order', async () => {
+    const { result, ids } = setup();
+    await waitFor(() => expect(ids()).toEqual(['t-3', 't-1', 't-2']));
+
+    // Pin t-2 — the server re-sorts pinned-first.
+    serverThreads = [{ ...thread('t-2'), is_pinned: true }, thread('t-3'), thread('t-1')];
+    await act(async () => {
+      await result.current.pinThread('ws-1', 't-2', true);
+    });
+    await waitFor(() => expect(ids()).toEqual(['t-2', 't-3', 't-1']));
+    expect(mockUpdateThread).toHaveBeenCalledWith('t-2', { is_pinned: true });
+
+    // Unpin — back to recency order. The pinned-era freeze must be released
+    // AFTER the refetch lands, or t-2 keeps squatting at the top all session.
+    serverThreads = threads('t-3', 't-1', 't-2');
+    await act(async () => {
+      await result.current.pinThread('ws-1', 't-2', false);
+    });
+
+    await waitFor(() => expect(ids()).toEqual(['t-3', 't-1', 't-2']));
+    expect(mockUpdateThread).toHaveBeenLastCalledWith('t-2', { is_pinned: false });
+  });
+});
+
 describe('useNavigationData — thread paging', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -644,7 +894,7 @@ describe('useNavigationData — thread paging', () => {
     );
     const rendered = renderHook(() => useNavigationData('ws-1'), { wrapper });
     const entry = () => rendered.result.current.workspaceThreads['ws-1'];
-    return { ...rendered, entry };
+    return { ...rendered, entry, queryClient };
   }
 
   it('fetches the first page with the configured page size and exposes the total', async () => {
@@ -657,11 +907,14 @@ describe('useNavigationData — thread paging', () => {
     expect(entry()?.total).toBe(2);
   });
 
-  it('loadMoreThreads appends the next page below the already-shown threads', async () => {
-    mockGetWorkspaceThreads.mockImplementation((_wsId: string, _limit: number, offset: number) =>
-      Promise.resolve(offset === 0
+  it('loadMoreThreads re-requests the grown prefix and appends older threads below', async () => {
+    // Show more asks for the CURRENT top shown+page rows (limit 3+10, offset 0),
+    // never an offset page — offset paging assumed the local list was a prefix
+    // of the live server order and died on drift.
+    mockGetWorkspaceThreads.mockImplementation((_wsId: string, limit: number) =>
+      Promise.resolve(limit === 10
         ? { threads: threads('t-3', 't-1', 't-2'), total: 5 }
-        : { threads: threads('t-old-1', 't-old-2'), total: 5 }),
+        : { threads: threads('t-3', 't-1', 't-2', 't-old-1', 't-old-2'), total: 5 }),
     );
     const { entry, result } = setup();
     await waitFor(() => expect(entry()?.threads.length).toBe(3));
@@ -672,20 +925,126 @@ describe('useNavigationData — thread paging', () => {
 
     await waitFor(() => expect(entry()?.threads.length).toBe(5));
     expect(entry()?.threads.map((t) => t.thread_id)).toEqual(['t-3', 't-1', 't-2', 't-old-1', 't-old-2']);
-    expect(mockGetWorkspaceThreads).toHaveBeenLastCalledWith('ws-1', 10, 3);
+    expect(mockGetWorkspaceThreads).toHaveBeenLastCalledWith('ws-1', 13, 0);
   });
 
-  it('loadMoreThreads is single-flight per workspace under a rapid double-tap', async () => {
-    mockGetWorkspaceThreads.mockImplementation((_wsId: string, _limit: number, offset: number) =>
-      Promise.resolve(offset === 0
-        ? { threads: threads('t-3', 't-1', 't-2'), total: 5 }
-        : { threads: threads('t-old-1', 't-old-2'), total: 5 }),
+  it('loadMoreThreads surfaces threads created above a stale head and honors the fresh total', async () => {
+    // The bug this pins: the shown head goes stale (cache-only observers never
+    // refetch) while new threads land above it on the server. Offset paging
+    // returned an all-duplicate page — spinner flash, zero new rows, button
+    // alive forever. The grown prefix carries the new rows (frozen order
+    // surfaces unseen-before-known ids on top) and the authoritative total.
+    mockGetWorkspaceThreads.mockImplementation((_wsId: string, limit: number) =>
+      Promise.resolve(limit === 10
+        ? { threads: threads('t-1', 't-2', 't-3'), total: 6 }
+        : { threads: threads('t-n1', 't-n2', 't-n3', 't-1', 't-2', 't-3'), total: 6 }),
     );
     const { entry, result } = setup();
     await waitFor(() => expect(entry()?.threads.length).toBe(3));
 
-    // Both taps fire before the first resolves. The offset is snapshotted before
-    // the await, so without the guard both would fetch the same offset-3 page.
+    await act(async () => {
+      await result.current.loadMoreThreads('ws-1');
+    });
+
+    await waitFor(() => expect(entry()?.threads.length).toBe(6));
+    expect(entry()?.threads.map((t) => t.thread_id)).toEqual(['t-n1', 't-n2', 't-n3', 't-1', 't-2', 't-3']);
+    expect(entry()?.total).toBe(6);
+  });
+
+  it('loadMoreThreads retires the button via the fresh total when the server list shrank', async () => {
+    // Rows archived from another surface shrink the server list under the
+    // local one. The re-requested prefix returns what actually exists plus the
+    // true total, so `threads.length < total` goes false and the button leaves
+    // instead of no-op flashing forever.
+    mockGetWorkspaceThreads.mockImplementation((_wsId: string, limit: number) =>
+      Promise.resolve(limit === 10
+        ? { threads: threads('t-1', 't-2', 't-3'), total: 6 }
+        : { threads: threads('t-1', 't-2', 't-3'), total: 3 }),
+    );
+    const { entry, result } = setup();
+    await waitFor(() => expect(entry()?.threads.length).toBe(3));
+
+    await act(async () => {
+      await result.current.loadMoreThreads('ws-1');
+    });
+
+    await waitFor(() => expect(entry()?.total).toBe(3));
+    expect(entry()?.threads.map((t) => t.thread_id)).toEqual(['t-1', 't-2', 't-3']);
+  });
+
+  it('loadMoreThreads drops local rows missing from a short (complete) response', async () => {
+    // A row archived in another tab while this one was frozen misses its feed
+    // event (best-effort, no replay) and survives as a store extra. The next
+    // Show more re-requests the grown prefix; a response shorter than the
+    // request IS the complete server list, so a local row missing from it is
+    // genuinely gone and must not be re-appended as a ghost.
+    mockGetWorkspaceThreads.mockImplementation((_wsId: string, limit: number) =>
+      Promise.resolve(
+        limit === 10
+          ? { threads: threads('t-1', 't-2', 't-3'), total: 5 }
+          : limit === 13
+            ? { threads: threads('t-1', 't-2', 't-3', 't-old-1', 't-old-2'), total: 5 }
+            : { threads: threads('t-1', 't-2', 't-3', 't-old-2'), total: 4 },
+      ),
+    );
+    const { entry, result } = setup();
+    await waitFor(() => expect(entry()?.threads.length).toBe(3));
+    await act(async () => {
+      await result.current.loadMoreThreads('ws-1');
+    });
+    await waitFor(() => expect(entry()?.threads.length).toBe(5));
+
+    // t-old-1 was archived elsewhere; the 15-row request comes back with 4.
+    await act(async () => {
+      await result.current.loadMoreThreads('ws-1');
+    });
+
+    await waitFor(() =>
+      expect(entry()?.threads.map((t) => t.thread_id)).toEqual(['t-1', 't-2', 't-3', 't-old-2']));
+    expect(entry()?.total).toBe(4);
+  });
+
+  it('a Show-more row removed via the shared patcher (gallery archive path) leaves the tree', async () => {
+    // The ghost-row regression: ThreadGallery's archive calls bare
+    // patchThreadRows — it has no access to this hook's patchThread. Before
+    // the patcher composed the shared store, the removed row survived as a
+    // store extra and kept rendering in the sidebar until reload.
+    mockGetWorkspaceThreads.mockImplementation((_wsId: string, limit: number) =>
+      Promise.resolve(limit === 10
+        ? { threads: threads('t-1', 't-2', 't-3'), total: 5 }
+        : { threads: threads('t-1', 't-2', 't-3', 't-old-1', 't-old-2'), total: 5 }),
+    );
+    const { entry, result, queryClient } = setup();
+    await waitFor(() => expect(entry()?.threads.length).toBe(3));
+    await act(async () => {
+      await result.current.loadMoreThreads('ws-1');
+    });
+    await waitFor(() => expect(entry()?.threads.length).toBe(5));
+
+    act(() => {
+      patchThreadRows<TestThread>(
+        queryClient,
+        queryKeys.threads.byWorkspace('ws-1'),
+        (rows) => (rows.some((t) => t.thread_id === 't-old-1') ? rows.filter((t) => t.thread_id !== 't-old-1') : rows),
+        { skipKey: isArchivedThreadsKey },
+      );
+    });
+
+    await waitFor(() =>
+      expect(entry()?.threads.map((t) => t.thread_id)).toEqual(['t-1', 't-2', 't-3', 't-old-2']));
+  });
+
+  it('loadMoreThreads is single-flight per workspace under a rapid double-tap', async () => {
+    mockGetWorkspaceThreads.mockImplementation((_wsId: string, limit: number) =>
+      Promise.resolve(limit === 10
+        ? { threads: threads('t-3', 't-1', 't-2'), total: 5 }
+        : { threads: threads('t-3', 't-1', 't-2', 't-old-1', 't-old-2'), total: 5 }),
+    );
+    const { entry, result } = setup();
+    await waitFor(() => expect(entry()?.threads.length).toBe(3));
+
+    // Both taps fire before the first resolves. The limit is snapshotted before
+    // the await, so without the guard both would fetch the same grown prefix.
     await act(async () => {
       await Promise.all([
         result.current.loadMoreThreads('ws-1'),
@@ -693,8 +1052,8 @@ describe('useNavigationData — thread paging', () => {
       ]);
     });
 
-    const offset3Calls = mockGetWorkspaceThreads.mock.calls.filter(([, , offset]) => offset === 3);
-    expect(offset3Calls.length).toBe(1);
+    const grownPrefixCalls = mockGetWorkspaceThreads.mock.calls.filter(([, limit]) => limit === 13);
+    expect(grownPrefixCalls.length).toBe(1);
     await waitFor(() => expect(entry()?.threads.length).toBe(5));
   });
 });

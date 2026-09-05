@@ -7,8 +7,8 @@ Design goals:
 - Proxy all file access through the backend (UI clients never talk to Daytona directly).
 - Auto-start stopped workspaces for write operations.
 - Serve files from PostgreSQL when sandbox is stopped (read-only).
-- Support both virtual paths ("results/foo.txt") and absolute sandbox paths
-  ("/home/workspace/results/foo.txt").
+- Support both virtual paths ("work/task/foo.txt") and absolute sandbox paths
+  ("/home/workspace/work/task/foo.txt").
 - Return virtual paths to clients for a consistent UX.
 
 Endpoints:

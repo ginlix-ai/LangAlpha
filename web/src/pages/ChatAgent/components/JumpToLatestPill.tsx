@@ -13,30 +13,27 @@ interface JumpToLatestPillProps {
 }
 
 /**
- * Floating "jump to latest" affordance shown when the user has scrolled up.
- * Switches to a "N new" style when messages arrive below the fold. Purely
- * presentational — all scroll logic lives in ChatView.
+ * Floating "jump to latest" affordance shown when the user has scrolled up —
+ * a compact icon circle that grows a count when messages arrive below the
+ * fold. Purely presentational — all scroll logic lives in ChatView.
  */
 export default function JumpToLatestPill({ visible, hasNew, newCount = 0, onJump }: JumpToLatestPillProps) {
   const { t } = useTranslation();
   if (!visible) return null;
 
   const showCount = hasNew && newCount > 0;
+  const label = t('chat.jumpToLatest.aria', { defaultValue: 'Scroll to latest message' });
 
   return (
     <button
       type="button"
-      className="jump-to-latest-pill"
+      className={`jump-to-latest-pill${showCount ? ' jump-to-latest-pill--count' : ''}`}
       onClick={onJump}
-      aria-label={t('chat.jumpToLatest.aria', { defaultValue: 'Scroll to latest message' })}
+      aria-label={label}
+      title={label}
     >
       {showCount && <span className="jump-to-latest-pill__count">{newCount}</span>}
-      <span>
-        {showCount
-          ? t('chat.jumpToLatest.newSuffix', { defaultValue: 'new' })
-          : t('chat.jumpToLatest.label', { defaultValue: 'Jump to latest' })}
-      </span>
-      <ArrowDown className="h-3.5 w-3.5" />
+      <ArrowDown className="h-4 w-4" />
     </button>
   );
 }

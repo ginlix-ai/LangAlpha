@@ -12,9 +12,35 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ptc_agent.agent.middleware._message_utils import message_id as _message_id
-from ptc_agent.agent.middleware.skills.registry import SkillMode, get_skill
+from ptc_agent.agent.middleware.skills.registry import (
+    SkillDefinition,
+    SkillMode,
+    _matches_mode,
+    get_skill,
+)
+from ptc_agent.config.agent import host_skill_dirs
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_skill(
+    skill_name: str,
+    mode: SkillMode | None,
+    registry: Optional[dict[str, SkillDefinition]],
+) -> Optional[SkillDefinition]:
+    """Resolve a skill, treating a passed registry as authoritative.
+
+    A passed registry is the per-build truth — feature gates, per-user disables,
+    and user skills already applied — so there is deliberately no fallback to
+    the global registry: a builtin the build dropped must not load through this
+    door.
+    """
+    if registry is not None:
+        skill = registry.get(skill_name)
+        if skill is not None and not _matches_mode(skill, mode):
+            return None
+        return skill
+    return get_skill(skill_name, mode=mode)
 
 
 def loaded_skill_marker(name: str, message_id: str | None = None) -> str:
@@ -58,6 +84,8 @@ def load_skill_content(
     skill_name: str,
     skill_dirs: Optional[list[str]] = None,
     mode: SkillMode | None = None,
+    *,
+    registry: Optional[dict[str, SkillDefinition]] = None,
 ) -> Optional[str]:
     """Load SKILL.md content for a skill from local file system.
 
@@ -70,20 +98,36 @@ def load_skill_content(
                    If not provided, uses project_root/skills.
         mode: Optional agent mode filter. If provided, only loads skills
               whose exposure matches the mode.
+        registry: Per-build registry, authoritative when passed (no global
+              fallback — see ``_resolve_skill``).
 
     Returns:
         Content of SKILL.md as string, or None if not found
     """
-    # Verify skill exists in registry (and matches mode if specified)
-    skill = get_skill(skill_name, mode=mode)
+    skill = _resolve_skill(skill_name, mode, registry)
     if not skill:
         logger.warning(f"Skill '{skill_name}' not found in registry")
         return None
 
-    # Default skill directory: project_root/skills
+    # User-tier skill: its bytes live in exactly one host directory — read it
+    # directly, no search and no Path.cwd() dependence.
+    if skill.source_dir:
+        skill_md_path = Path(skill.source_dir) / skill_name / "SKILL.md"
+        try:
+            return skill_md_path.read_text(encoding="utf-8")
+        except OSError as e:
+            logger.warning(
+                f"Failed to read SKILL.md for '{skill_name}' "
+                f"from {skill_md_path}: {e}"
+            )
+            return None
+
+    # No caller-supplied search path: fall back to the same sources, in the
+    # same order, that a caller holding a config would have passed. A caller
+    # that overrode ``user_skills_dir`` has to pass its own list -- this branch
+    # answers for the ones that have no config to read it from.
     if skill_dirs is None:
-        project_root = Path.cwd()
-        skill_dirs = [str(project_root / "skills")]
+        skill_dirs = [str(d) for d in host_skill_dirs()]
 
     # Search for SKILL.md in each directory (last wins)
     content = None
@@ -112,7 +156,10 @@ def load_skill_content(
 
 
 def build_tool_descriptions(
-    skill_name: str, mode: SkillMode | None = None
+    skill_name: str,
+    mode: SkillMode | None = None,
+    *,
+    registry: Optional[dict[str, SkillDefinition]] = None,
 ) -> Optional[str]:
     """Build formatted tool descriptions for a skill.
 
@@ -121,11 +168,12 @@ def build_tool_descriptions(
     Args:
         skill_name: Name of the skill
         mode: Optional agent mode filter
+        registry: Per-build registry, authoritative when passed
 
     Returns:
         Formatted tool description string, or None if skill has no tools
     """
-    skill = get_skill(skill_name, mode=mode)
+    skill = _resolve_skill(skill_name, mode, registry)
     if not skill or not skill.tools:
         return None
 
@@ -138,6 +186,8 @@ def build_skill_content(
     mode: SkillMode | None = None,
     already_loaded: Optional[set[str]] = None,
     message_id: Optional[str] = None,
+    *,
+    registry: Optional[dict[str, SkillDefinition]] = None,
 ) -> Optional[SkillPrefixResult]:
     """Build skill content for inline injection into the user message.
 
@@ -161,6 +211,8 @@ def build_skill_content(
         message_id: Framework id of the message this content is appended to. Embedded
               in each block's marker so the dedup scanner can verify the marker really
               belongs to that message (see ``loaded_skill_marker``).
+        registry: Per-build registry, authoritative when passed (no global
+              fallback).
 
     Returns:
         SkillPrefixResult with content string and freshly loaded skill names, or
@@ -189,12 +241,16 @@ def build_skill_content(
         # carry per-turn context). The mode re-check keeps this branch consistent
         # with the fresh path below — a stale loaded_skills entry for a skill not
         # exposed in the current mode falls through and is skipped, not injected.
-        if skill_ctx.name in already_loaded and get_skill(skill_ctx.name, mode=mode):
+        if skill_ctx.name in already_loaded and _resolve_skill(
+            skill_ctx.name, mode, registry
+        ):
             if skill_ctx.instruction:
                 instructions.append((skill_ctx.name, skill_ctx.instruction))
             continue
 
-        content = load_skill_content(skill_ctx.name, skill_dirs, mode=mode)
+        content = load_skill_content(
+            skill_ctx.name, skill_dirs, mode=mode, registry=registry
+        )
         if not content:
             logger.warning(f"Skipping skill '{skill_ctx.name}': SKILL.md not found")
             continue
@@ -203,7 +259,7 @@ def build_skill_content(
 
         # Build per-skill block with tool descriptions
         block_parts = [content]
-        tool_desc = build_tool_descriptions(skill_ctx.name, mode=mode)
+        tool_desc = build_tool_descriptions(skill_ctx.name, mode=mode, registry=registry)
         if tool_desc:
             block_parts.append(f"\n**Available tools:**\n{tool_desc}")
             block_parts.append(

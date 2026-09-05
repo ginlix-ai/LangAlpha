@@ -65,3 +65,51 @@ export function createDateFormatter(opts: Intl.DateTimeFormatOptions): (d: Date 
 // `1_500_000 → "1.5M"`. Locale-aware via Intl. Numbers under 1000 render in
 // full; suffix style follows the active locale (en `K`, zh `万`, etc).
 export const compactNumber = createFormatter({ notation: 'compact', maximumFractionDigits: 1 });
+
+function safeRelativeFormat(lang: string): Intl.RelativeTimeFormat {
+  try {
+    return new Intl.RelativeTimeFormat(lang, { numeric: 'auto', style: 'narrow' });
+  } catch {
+    return new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'narrow' });
+  }
+}
+
+const _RELATIVE_STEPS: Array<[Intl.RelativeTimeFormatUnit, number]> = [
+  ['year', 31536000],
+  ['month', 2592000],
+  ['week', 604800],
+  ['day', 86400],
+  ['hour', 3600],
+  ['minute', 60],
+];
+
+/**
+ * Locale-aware relative time — `"5m ago"`, `"yesterday"`, `"in 3d"`, `"昨天"`.
+ * Same memoization + `useTranslation()` contract as the factories above.
+ * Signed, so future timestamps read as future; sub-minute deltas collapse to
+ * the locale's "now" phrasing.
+ *
+ * Missing and unparseable inputs return `''` rather than a plausible-looking
+ * "now" — every call site renders this straight into the DOM, so a bad
+ * timestamp has to read as absent, not as fresh.
+ */
+export const relativeTime = (() => {
+  let lastLocale: string | null = null;
+  let fmt: Intl.RelativeTimeFormat | null = null;
+  return (d: Date | number | string | null | undefined): string => {
+    if (d === null || d === undefined || d === '') return '';
+    const ms = new Date(d).getTime();
+    if (Number.isNaN(ms)) return '';
+    const lang = i18n.language;
+    if (lang !== lastLocale || !fmt) {
+      fmt = safeRelativeFormat(lang);
+      lastLocale = lang;
+    }
+    const seconds = (ms - Date.now()) / 1000;
+    const abs = Math.abs(seconds);
+    for (const [unit, unitSeconds] of _RELATIVE_STEPS) {
+      if (abs >= unitSeconds) return fmt.format(Math.round(seconds / unitSeconds), unit);
+    }
+    return fmt.format(0, 'second');
+  };
+})();

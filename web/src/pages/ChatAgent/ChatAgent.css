@@ -1,6 +1,8 @@
+/* `100%`, not `100vh`: this fills the app shell's content column, which equals
+   the viewport only while nothing else occupies it. */
 .chat-agent-container {
   width: 100%;
-  height: 100vh;
+  height: 100%;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
@@ -8,6 +10,3 @@
   position: relative;
 }
 
-@media (max-width: 767px) {
-  .chat-agent-container { height: 100%; }
-}

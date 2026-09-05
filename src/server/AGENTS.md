@@ -22,7 +22,7 @@ Inside those tiers, the run machinery groups into **domain namespaces**: `app/th
 
 ## Config
 
-`.env` = credentials (DB, API keys) + `HOST_MODE=oss|platform` (in `platform` mode langalpha calls the platform to gate a turn; `oss` runs standalone); `config.yaml` = behavioral settings (`workflow_timeout` 3200s, `sse_keepalive_interval` 15s, CORS `allowed_origins`), read via typed accessors in `src/config/settings.py` (`get_workflow_timeout`, …) — not `os.getenv`.
+`.env` = credentials (DB, API keys) + `HOST_MODE=oss|platform` (in `platform` mode langalpha calls the platform to gate a turn; `oss` runs standalone); `config.yaml` = behavioral settings (`workflow_timeout` 21600s, `sse_keepalive_interval` 15s, CORS `allowed_origins`), read via typed accessors in `src/config/settings.py` (`get_workflow_timeout`, …) — not `os.getenv`.
 
 ## SSE events
 

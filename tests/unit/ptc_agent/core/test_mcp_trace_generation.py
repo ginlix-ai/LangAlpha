@@ -76,11 +76,12 @@ def test_trace_helper_and_imports_present() -> None:
     assert "def _trace_mcp_call(" in code
     assert "import hashlib" in code
     assert "import datetime" in code
-    # Tracing is wired through _finalize_mcp_result (def + both transport calls),
-    # which records only real data — never error payloads.
+    # Tracing is wired through _finalize_mcp_result, which records only real
+    # data — never error payloads. Both transports reach it through the shared
+    # _settle_reply tail, so that is where the per-transport count lives.
     assert "def _finalize_mcp_result(" in code
     assert "_trace_mcp_call(server_name, tool_name, arguments, value)" in code
-    assert code.count("_finalize_mcp_result(") >= 3  # def + stdio + sse call sites
+    assert code.count("_settle_reply(") >= 3  # def + stdio + http call sites
     # The dispatcher no longer traces directly; it routes only.
     assert "_trace_mcp_call(server_name, tool_name, arguments, result)" not in code
 

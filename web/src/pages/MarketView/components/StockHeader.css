@@ -19,18 +19,18 @@
 }
 
 .stock-symbol {
-  font-size: 20px;
+  font-size: 1.25rem;
   font-weight: 600;
   color: var(--color-text-primary);
 }
 
 .stock-name {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--color-text-secondary);
 }
 
 .stock-exchange {
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--color-text-secondary);
   background-color: var(--color-bg-tag);
   padding: 4px 8px;
@@ -42,7 +42,7 @@
 }
 
 .stock-price {
-  font-size: 28px;
+  font-size: 1.75rem;
   font-weight: 600;
   margin-bottom: 4px;
 }
@@ -56,7 +56,7 @@
 }
 
 .stock-change {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 500;
 }
 
@@ -73,7 +73,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-text-secondary);
   position: relative;
   cursor: default;
@@ -85,7 +85,7 @@
   top: calc(100% + 6px);
   left: 0;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 6px 10px;
   border-radius: 6px;
   background: var(--color-bg-elevated);
@@ -110,7 +110,6 @@
 
 .data-source-dot--live {
   background: var(--color-profit);
-  box-shadow: 0 0 4px var(--color-profit);
   animation: pulse-live 2s ease-in-out infinite;
 }
 
@@ -154,13 +153,13 @@
 }
 
 .metric-label {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-text-secondary);
   text-transform: uppercase;
 }
 
 .metric-value {
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--color-text-primary);
   font-weight: 500;
 }
@@ -171,18 +170,19 @@
   gap: 5px;
   margin-top: 6px;
   padding: 3px 10px;
-  font-size: 12px;
-  color: var(--color-accent-primary);
-  background: var(--color-accent-soft);
-  border: 1px solid var(--color-accent-soft);
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 1px solid var(--color-border-default);
   border-radius: 4px;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
 .stock-overview-toggle:hover {
-  background: var(--color-accent-overlay);
-  border-color: var(--color-accent-overlay);
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-elevated);
 }
 
 .metrics-discrepancy-hint {
@@ -192,7 +192,7 @@
   width: 13px;
   height: 13px;
   margin-left: 4px;
-  font-size: 9px;
+  font-size: 0.5625rem;
   font-weight: 600;
   color: var(--color-text-secondary);
   border: 1px solid var(--color-border-default);
@@ -214,7 +214,7 @@
   gap: 5px;
   padding: 2px 8px;
   border-radius: 9999px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 500;
   border: 1px solid var(--color-border-muted);
   color: var(--color-text-secondary);
@@ -247,11 +247,11 @@
   .stock-header { padding: 10px 12px; transition: padding 0.25s ease; }
   .stock-header--compact { padding-bottom: 4px; }
   .stock-header--compact .stock-header-top { margin-bottom: 6px; }
-  .stock-price { font-size: 22px; }
-  .stock-symbol { font-size: 16px; }
+  .stock-price { font-size: 1.375rem; }
+  .stock-symbol { font-size: 1rem; }
   .stock-metrics { grid-template-columns: repeat(4, 1fr); gap: 6px; }
-  .metric-label { font-size: 10px; }
-  .metric-value { font-size: 12px; }
+  .metric-label { font-size: 0.625rem; }
+  .metric-value { font-size: 0.75rem; }
   .metric-item--watchlist {
     grid-column: 3 / -1;
     display: flex;
@@ -274,7 +274,7 @@
     padding: 0;
     border: none;
     background: none;
-    font-size: 11px;
+    font-size: 0.6875rem;
     color: var(--color-text-secondary);
     cursor: pointer;
   }

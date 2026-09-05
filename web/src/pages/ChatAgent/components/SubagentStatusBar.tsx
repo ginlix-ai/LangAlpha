@@ -1,11 +1,14 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { AlertCircle, CheckCircle2, Circle, Loader2, MessageSquarePlus, Send, X, StopCircle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { MessageSquarePlus, Send, X } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import { cn } from '../../../lib/utils';
 import iconRobo from '../../../assets/img/icon-robo.png';
 import iconRoboSing from '../../../assets/img/icon-robo-sing.png';
 import Markdown from './Markdown';
 import { sendSubagentMessage } from '../utils/api';
 import { deriveSubagentStatus } from '../session/subagents/subagentStatus';
+import { SubagentStatusIcon } from './taskStatusUi';
 import './NavigationPanel.css';
 
 interface AgentMessage {
@@ -42,6 +45,7 @@ interface SubagentStatusBarProps {
  * Includes an expandable input for sending instructions to running subagents.
  */
 function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatusBarProps): React.ReactElement | null {
+  const { t } = useTranslation();
   const [inputOpen, setInputOpen] = useState(false);
   const [inputValue, setInputValue] = useState('');
   const [sending, setSending] = useState(false);
@@ -111,46 +115,36 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
   // Can send: subagent is not terminal (running/initializing), with thread + task.
   const canSend = !isTerminal && threadId && taskId != null;
 
-  const getStatusIcon = (): React.ReactElement => {
-    // Terminal outcome wins over the derived current tool: a task reaped
-    // mid-tool-call leaves that call forever "in progress", but the run is
-    // done — it must not still spin.
-    if (isCompleted) {
-      return <CheckCircle2 className="h-4 w-4" style={{ color: 'var(--color-accent-primary)' }} />;
-    }
-    if (isCancelled) {
-      return <StopCircle className="h-4 w-4" style={{ color: 'var(--color-text-tertiary)' }} />;
-    }
-    if (isError) {
-      return <AlertCircle className="h-4 w-4" style={{ color: 'var(--color-danger, #c43d3d)' }} />;
-    }
-    if (derivedCurrentTool || isActive) {
-      return <Loader2 className="h-4 w-4 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />;
-    }
-    return <Circle className="h-4 w-4" style={{ color: 'var(--color-icon-muted)' }} />;
-  };
+  // Terminal outcome wins over the derived current tool: a task reaped
+  // mid-tool-call leaves that call forever "in progress", but the run is
+  // done — it must not still spin. Below terminal, a current tool is itself
+  // liveness, so it promotes a still-silent task to the running treatment.
+  const iconStatus = !isTerminal && derivedCurrentTool ? 'active' : effectiveStatus;
 
+  // Plain terminal/running labels reuse the chat.taskCard.status* vocabulary
+  // (same table STATUS_UI reads) so the bar and the inline cards can't drift;
+  // only the bar-specific composites live under chat.subagentBar.
   const getStatusText = (): string => {
-    // Terminal outcome wins over the derived current tool (see getStatusIcon).
+    // Terminal outcome wins over the derived current tool, as above.
     if (isCompleted) {
       if (agent.toolCalls && agent.toolCalls > 0) {
-        return `Completed (${agent.toolCalls} tool calls)`;
+        return t('chat.subagentBar.completedWithTools', { count: agent.toolCalls });
       }
-      return 'Completed';
+      return t('chat.taskCard.statusCompleted');
     }
     if (isCancelled) {
-      return 'Stopped';
+      return t('chat.taskCard.statusStopped');
     }
     if (isError) {
-      return 'Failed';
+      return t('chat.taskCard.statusFailed');
     }
     if (derivedCurrentTool) {
-      return `Running: ${derivedCurrentTool}`;
+      return t('chat.subagentBar.runningWithTool', { tool: derivedCurrentTool });
     }
     if (isActive) {
-      return 'Running';
+      return t('chat.taskCard.statusRunning');
     }
-    return 'Initializing';
+    return t('chat.subagentBar.initializing');
   };
 
   return (
@@ -176,9 +170,8 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
         >
           <img
             src={isTerminal ? iconRobo : iconRoboSing}
-            alt="Agent"
-            className="h-5 w-5"
-            style={{ filter: 'brightness(0) saturate(100%) invert(100%)' }}
+            alt={t('chat.subagentBar.avatarAlt')}
+            className="h-5 w-5 subagent-avatar-glyph"
           />
         </div>
 
@@ -217,7 +210,7 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
         {/* Right side: status + instruction button stacked */}
         <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
           <div className="flex items-center gap-1.5">
-            {getStatusIcon()}
+            <SubagentStatusIcon status={iconStatus} surface="statusBar" className="h-4 w-4" />
             <span className="text-xs whitespace-nowrap" style={{ color: isCompleted ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)' }}>
               {getStatusText()}
             </span>
@@ -230,40 +223,42 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
               }}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs transition-colors"
               style={{
-                backgroundColor: 'var(--color-accent-soft)',
+                backgroundColor: 'var(--color-bg-elevated)',
                 color: 'var(--color-text-tertiary)',
-                border: '1px solid var(--color-accent-overlay)',
+                border: '1px solid var(--color-border-elevated)',
               }}
               onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => {
-                e.currentTarget.style.backgroundColor = 'var(--color-accent-soft)';
                 e.currentTarget.style.color = 'var(--color-text-primary)';
               }}
               onMouseLeave={(e: React.MouseEvent<HTMLButtonElement>) => {
-                e.currentTarget.style.backgroundColor = 'var(--color-accent-soft)';
                 e.currentTarget.style.color = 'var(--color-text-tertiary)';
               }}
             >
               <MessageSquarePlus className="h-3.5 w-3.5" />
-              <span>Instruct</span>
+              <span>{t('chat.subagentBar.instruct')}</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* Failure reason — the "clue inside" for a Failed card. The status chip
-          alone said Failed with no cause; the ledger's reason lands here. */}
-      {isError && (
+      {/* The "clue inside": the status chip names the outcome, this carries the
+          ledger's reason. A failure shows the box either way; a stop only when
+          it has a reason to show. */}
+      {(isError || (isCancelled && !!agent.error)) && (
         <div
           className="flex items-start gap-2 px-4 py-2.5 rounded-lg"
           style={{
-            backgroundColor: 'var(--color-danger-soft, rgba(196, 61, 61, 0.08))',
-            border: '1px solid var(--color-danger-overlay, rgba(196, 61, 61, 0.25))',
+            backgroundColor: isError ? 'var(--color-loss-soft)' : 'var(--color-bg-tool-card)',
+            border: `1px solid ${isError ? 'var(--color-border-loss)' : 'var(--color-border-muted)'}`,
           }}
         >
-          <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" style={{ color: 'var(--color-danger, #c43d3d)' }} />
+          <SubagentStatusIcon status={effectiveStatus} className="h-4 w-4 flex-shrink-0 mt-0.5" />
           <div className="min-w-0">
-            <div className="text-xs font-medium" style={{ color: 'var(--color-danger, #c43d3d)' }}>
-              This agent stopped with an error
+            <div
+              className="text-xs font-medium"
+              style={{ color: isError ? 'var(--color-icon-danger)' : 'var(--color-text-secondary)' }}
+            >
+              {t(isError ? 'chat.subagentBar.errorHeading' : 'chat.subagentBar.stoppedHeading')}
             </div>
             {agent.error && (
               <div className="text-xs mt-0.5 break-words" style={{ color: 'var(--color-text-tertiary)' }}>
@@ -281,7 +276,7 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
           className="flex items-center gap-2 px-3 py-2 rounded-lg"
           style={{
             backgroundColor: 'var(--color-border-muted)',
-            border: '1px solid var(--color-accent-overlay)',
+            border: '1px solid var(--color-border-elevated)',
           }}
         >
           <input
@@ -290,9 +285,9 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
             value={inputValue}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Add instruction for this agent..."
+            placeholder={t('chat.subagentBar.inputPlaceholder')}
             disabled={sending}
-            className="flex-1 bg-transparent text-sm placeholder-foreground/30 outline-none"
+            className="flex-1 bg-transparent text-sm placeholder-foreground/30"
             style={{ color: 'var(--color-text-primary)' }}
           />
           <div className="flex items-center gap-1">
@@ -320,7 +315,7 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
                 if (inputValue.trim() && !sending) e.currentTarget.style.color = 'var(--color-accent-primary)';
               }}
             >
-              {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              {sending ? <Loader size={16} className="text-current" /> : <Send className="h-4 w-4" />}
             </button>
           </div>
         </div>

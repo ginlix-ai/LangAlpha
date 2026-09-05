@@ -150,10 +150,14 @@ class DockerRuntime(SandboxRuntime):
             pass
         await self._container.delete(force=True)
 
-    async def get_state(self) -> RuntimeState:
-        info = await self._container.show()
+    @staticmethod
+    def _state_from_inspect(info: dict[str, Any]) -> RuntimeState:
+        """Shared by get_state and get_metadata so the unknown-status fallback stays one rule."""
         status = info.get("State", {}).get("Status", "unknown")
         return _DOCKER_STATE_MAP.get(status, RuntimeState.ERROR)
+
+    async def get_state(self) -> RuntimeState:
+        return self._state_from_inspect(await self._container.show())
 
     # -- Execution --
 
@@ -568,14 +572,29 @@ class DockerRuntime(SandboxRuntime):
         raise NotImplementedError("Docker provider does not support archive")
 
     async def get_metadata(self) -> dict[str, Any]:
-        state = await self.get_state()
-        return {
+        """One inspect call serves state, limits and creation time.
+
+        Limits read back as 0 on a container created outside this provider's
+        config, so report nothing rather than a bogus zero. No ``disk`` key —
+        docker sets no size quota, so there is no sandbox-scoped figure to give.
+        """
+        info = await self._container.show()
+        host_config = info.get("HostConfig") or {}
+
+        meta: dict[str, Any] = {
             "id": self._id,
             "working_dir": self._working_dir,
-            "state": state.value,
+            "state": self._state_from_inspect(info).value,
             "dev_mode": self._dev_mode,
             "provider": "docker",
         }
+        if created := info.get("Created"):
+            meta["created_at"] = created
+        if nano_cpus := host_config.get("NanoCpus"):
+            meta["cpu"] = round(nano_cpus / 1e9, 2)
+        if memory := host_config.get("Memory"):
+            meta["memory"] = round(memory / 1024**3, 2)
+        return meta
 
     # -- Internal: tar-based file I/O --
 
@@ -685,6 +704,12 @@ class DockerProvider(SandboxProvider):
             "AutoRemove": False,  # We manage removal ourselves
             "Init": True,  # tini as PID 1 for zombie reaping
         }
+
+        # host.docker.internal resolves natively on Docker Desktop but not on
+        # Linux bridge networks; pin it so the egress relay's default base URL
+        # (see services/egress/reachability.py) works on both.
+        if self._config.network_mode != "none":
+            host_config["ExtraHosts"] = ["host.docker.internal:host-gateway"]
 
         # Publish proxy ports so preview URLs are reachable from the host.
         # Use dynamic host ports (HostPort: "") so multiple containers can

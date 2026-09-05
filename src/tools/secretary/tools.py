@@ -628,6 +628,13 @@ async def ptc_agent(
                         "messages": [{"role": "user", "content": question}],
                         "agent_mode": "ptc",
                         "workspace_id": workspace_id,
+                        # Durable provenance on the thread row. Unconditional —
+                        # unlike origin_flash_thread_id below, which is a
+                        # report-back wiring token, not an initiator record.
+                        "origin": {
+                            "type": "agent",
+                            "id": configurable.get("thread_id"),
+                        },
                         # Ordering hint for finalize hooks: only a WIRED
                         # report-back binds the run to this flash thread's
                         # serialization chain.

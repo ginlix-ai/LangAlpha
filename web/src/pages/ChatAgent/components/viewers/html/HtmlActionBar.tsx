@@ -5,7 +5,8 @@ import { cn } from '@/lib/utils';
 import './HtmlActionBar.css';
 
 interface HtmlActionBarProps {
-  onOpenInNewTab: () => void;
+  /** Omit where a second surface cannot be opened — see HtmlActions.openInNewTab. */
+  onOpenInNewTab?: () => void;
   /** Download/PDF live in a secondary "more" menu. Omit both on surfaces where
    *  they're owned elsewhere (the file toolbar defers to the panel header menu). */
   onDownload?: () => void;
@@ -57,15 +58,17 @@ export default function HtmlActionBar({
           {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
         </button>
       )}
-      <button
-        type="button"
-        className="html-action-btn"
-        onClick={onOpenInNewTab}
-        title={t('filePanel.openInNewTab')}
-        aria-label={t('filePanel.openInNewTab')}
-      >
-        <ExternalLink className="h-4 w-4" />
-      </button>
+      {onOpenInNewTab && (
+        <button
+          type="button"
+          className="html-action-btn"
+          onClick={onOpenInNewTab}
+          title={t('filePanel.openInNewTab')}
+          aria-label={t('filePanel.openInNewTab')}
+        >
+          <ExternalLink className="h-4 w-4" />
+        </button>
+      )}
       {(onDownload || onExportPdf) && (
         <DropdownMenu modal={false}>
           <DropdownMenuTrigger asChild>

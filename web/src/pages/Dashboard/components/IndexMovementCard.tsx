@@ -101,7 +101,7 @@ function IndexCardContent({ index }: { index: IndexData }) {
       </div>
 
       {/* Sparkline chart */}
-      <div className="mt-2 px-1 pb-2 [&_*]:outline-none" style={{ height: 100 }}>
+      <div className="mt-2 px-1 pb-2" style={{ height: 100 }}>
         {chartData.length > 1 ? (
           <ResponsiveContainer width="100%" height={100}>
             <LineChart data={chartData}>
@@ -360,7 +360,7 @@ function IndexSkeleton({ count }: { count: number }) {
               </div>
             </div>
           </div>
-          <div className="mt-2 px-1 pb-2 [&_*]:outline-none" style={{ height: 100 }}>
+          <div className="mt-2 px-1 pb-2" style={{ height: 100 }}>
             <div
               className="w-full h-full rounded"
               style={{ backgroundColor: 'var(--color-border-default)', opacity: 0.3 }}

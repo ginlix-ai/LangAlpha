@@ -94,12 +94,39 @@ export interface ReorderItem {
 
 // --- Thread ---
 
+/** Who initiated a thread; absent origin (or empty metadata) = user-initiated. */
+export interface ThreadOrigin {
+  type: 'agent' | 'automation' | 'system';
+  /** agent → dispatching flash thread id; automation → automation id */
+  id?: string;
+}
+
+export interface ThreadMetadata {
+  origin?: ThreadOrigin;
+  [key: string]: unknown;
+}
+
 export interface Thread {
   workspace_id: string;
   thread_id: string;
   title: string | null;
+  metadata?: ThreadMetadata;
+  /** Pinned threads sort first within their workspace. */
+  is_pinned?: boolean;
+  /** Archive stamp; null/absent = active. Archived rows only appear when explicitly requested. */
+  archived_at?: string | null;
+  /** Turn count (list responses only). */
+  turn_count?: number;
   created_at?: string;
   updated_at?: string;
+  // Lifecycle enrichment (present on list responses for threads with runs).
+  /** Public status of the latest run: running|stopping|recovering|queued|completed|interrupted|failed|cancelled */
+  run_status?: string;
+  interrupt_reason?: string | null;
+  latest_run_seq?: number;
+  latest_run_id?: string | null;
+  last_seen_run_seq?: number;
+  run_started_at?: string | null;
   [key: string]: unknown;
 }
 

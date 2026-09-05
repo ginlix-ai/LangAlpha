@@ -574,6 +574,49 @@ class TestPreviewRedirectEndpoint:
                 )
 
     @pytest.mark.asyncio
+    async def test_acquire_carries_the_row_owner(self, mock_session_for_endpoint):
+        """The redirect is unauthenticated, so the owner can only come from the
+        row already read — an ownerless acquire resolves that user's MCP/OAuth
+        set empty on any session this hit rebuilds."""
+        from httpx import ASGITransport, AsyncClient
+
+        from src.server.app.workspace_sandbox import preview_redirect_router
+        from tests.conftest import create_test_app
+
+        app = create_test_app(preview_redirect_router)
+
+        mock_manager = MagicMock()
+        mock_manager.get_session_for_workspace = AsyncMock(
+            return_value=mock_session_for_endpoint
+        )
+
+        with (
+            patch(
+                "src.server.app.workspace_sandbox.db_get_workspace",
+                AsyncMock(return_value=_make_workspace(status="running")),
+            ),
+            patch("src.server.app.workspace_sandbox.WorkspaceManager") as MockWM,
+            patch(
+                "src.server.app.workspace_sandbox._resolve_preview",
+                AsyncMock(
+                    return_value="https://preview.example.com/signed?token=abc"
+                ),
+            ),
+        ):
+            MockWM.get_instance.return_value = mock_manager
+
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(
+                    "/api/v1/preview/ws-test-001/8080", follow_redirects=False
+                )
+
+        assert resp.status_code == 302
+        acquire = mock_manager.get_session_for_workspace.await_args
+        assert acquire.kwargs["user_id"] == "test-user-123"
+
+    @pytest.mark.asyncio
     async def test_path_suffix_appended(self, mock_session_for_endpoint):
         from httpx import ASGITransport, AsyncClient
 
@@ -670,27 +713,8 @@ class TestPreviewRedirectEndpoint:
 
         mock_manager.get_session_for_workspace = slow_get_session
 
-        with (
-            patch(
-                "src.server.app.workspace_sandbox.db_get_workspace",
-                AsyncMock(return_value=_make_workspace(status="running")),
-            ),
-            patch(
-                "src.server.app.workspace_sandbox.WorkspaceManager"
-            ) as MockWM,
-            # Patch the timeout to be very short for the test
-            patch(
-                "src.server.app.workspace_sandbox._preview_redirect",
-                wraps=None,
-            ) as mock_redirect,
-        ):
-            # Instead of wrapping, we directly test the timeout behavior
-            # by calling the real function with a mocked slow inner resolve
-            pass
-
-        # Better approach: test via the actual endpoint with a patched timeout
-        # We need to make _resolve() take longer than the asyncio.wait_for timeout
-
+        # Test via the actual endpoint with a patched timeout: make _resolve()
+        # take longer than the asyncio.wait_for timeout.
         async def slow_resolve_preview(*args, **kwargs):
             await asyncio.sleep(60)
             return "https://never.reached"

@@ -265,15 +265,22 @@ class TestColdWarmSessionPath:
 
         assert session1 is session2
 
-    async def test_warm_path_zero_db_queries(
+    async def test_warm_path_makes_only_the_narrow_identity_query(
         self, workspace_manager, running_workspace, metrics_collector
     ):
-        """Within sync cooldown, warm path makes zero db_get_workspace calls.
+        """Within sync cooldown, the warm path reads identity and nothing else.
 
         The cold path creates the session inline (Phase 1) and does NOT call
         _record_sync (Phase 2 is skipped).  The second call triggers Phase 2
-        which records the cooldown.  The THIRD call is the true warm path
-        that skips DB entirely.
+        which records the cooldown.  The THIRD call is the true warm path.
+
+        It is no longer zero queries: a cached sandbox handle cannot be served
+        without checking it against the durable binding, or a worker goes on
+        answering from a sandbox that was replaced. What the hot path must still
+        never do is pull the full row, which selects the JSONB config/artifacts
+        columns. Both halves are asserted, because patching only the full-row
+        helper would leave this passing no matter how many identity reads the
+        warm path grew.
         """
         ws_id = str(running_workspace["workspace_id"])
         user_id = running_workspace["user_id"]
@@ -284,20 +291,33 @@ class TestColdWarmSessionPath:
         # Call 2 — triggers Phase 2 re-sync, records cooldown via _record_sync
         await workspace_manager.get_session_for_workspace(ws_id, user_id=user_id)
 
-        # Call 3 (warm) — cooldown active, should skip DB entirely
-        with patch(
-            "src.server.services.workspace_manager.db_get_workspace",
-            new_callable=AsyncMock,
-        ) as mock_db:
+        # Call 3 (warm) — cooldown active
+        from src.server.services import workspace_manager as workspace_manager_module
+
+        real_identity = workspace_manager_module.db_get_workspace_identity
+        with (
+            patch(
+                "src.server.services.workspace_manager.db_get_workspace",
+                new_callable=AsyncMock,
+            ) as mock_full_row,
+            patch(
+                "src.server.services.workspace_manager.db_get_workspace_identity",
+                side_effect=real_identity,
+            ) as spy_identity,
+        ):
             async with metrics_collector.timed(
                 provider=_PROVIDER, category="session", operation="warm_zero_db",
-                test_name="warm_path_zero_db_queries",
+                test_name="warm_path_makes_only_the_narrow_identity_query",
             ):
                 session = await workspace_manager.get_session_for_workspace(
                     ws_id, user_id=user_id
                 )
 
-            mock_db.assert_not_called()
+            mock_full_row.assert_not_called()
+            assert spy_identity.call_count == 1, (
+                f"warm path made {spy_identity.call_count} identity queries, "
+                "expected exactly 1"
+            )
             assert session is not None
 
     async def test_sync_cooldown_respected(

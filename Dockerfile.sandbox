@@ -92,7 +92,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright
 RUN echo 'curl_cffi>=0.14' > /tmp/overrides.txt \
     && uv pip install --system \
     --override /tmp/overrides.txt \
-    mcp fastmcp fastapi \
+    mcp==2.0.0 fastapi \
     pandas requests aiohttp "httpx[http2]" \
     numpy scipy scikit-learn statsmodels \
     yfinance \

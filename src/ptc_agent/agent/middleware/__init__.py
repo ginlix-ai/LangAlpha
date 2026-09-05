@@ -26,6 +26,11 @@ from .plan_mode import (
 # Ask user middleware
 from .ask_user import AskUserMiddleware
 
+# Runtime credit gate (model-boundary spend enforcement). Only the middleware
+# is re-exported: the lease, the lane state and the ContextVar are the gate's
+# own wiring and their callers import them from the module directly.
+from .credit_gate import CreditGateMiddleware
+
 # Tool middleware (argument parsing, error handling, result normalization, leak detection, code validation, empty call retry)
 from .tool import (
     CodeValidationMiddleware,
@@ -114,9 +119,9 @@ from .openai_prompt_caching import (
     OpenAIPromptCachingMiddleware,
 )
 
-# Anthropic thinking-block sanitizer (repairs orphan signature-only blocks)
-from .anthropic_thinking_sanitizer import (
-    AnthropicThinkingSanitizerMiddleware,
+# Cross-provider reasoning sanitizer (origin + shape gates, origin stamping)
+from .reasoning_compat import (
+    ReasoningCompatibilityMiddleware,
 )
 
 # Subagent steering middleware
@@ -141,6 +146,7 @@ __all__ = [
     "create_plan_mode_interrupt_config",
     # Ask user
     "AskUserMiddleware",
+    "CreditGateMiddleware",
     # Multimodal middleware (for read_file image/PDF support)
     "MultimodalMiddleware",
     # Tool middleware
@@ -187,8 +193,8 @@ __all__ = [
     "RuntimeContextMiddleware",
     # OpenAI prompt caching
     "OpenAIPromptCachingMiddleware",
-    # Anthropic thinking sanitizer
-    "AnthropicThinkingSanitizerMiddleware",
+    # Cross-provider reasoning sanitizer
+    "ReasoningCompatibilityMiddleware",
     # Subagent middleware
     "CompiledSubAgent",
     "SubAgent",

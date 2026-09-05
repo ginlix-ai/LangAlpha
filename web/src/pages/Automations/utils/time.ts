@@ -1,28 +1,3 @@
-const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto', style: 'narrow' });
-
-const UNITS: ReadonlyArray<{ unit: Intl.RelativeTimeFormatUnit; ms: number }> = [
-  { unit: 'year', ms: 365.25 * 24 * 60 * 60 * 1000 },
-  { unit: 'month', ms: 30.44 * 24 * 60 * 60 * 1000 },
-  { unit: 'day', ms: 24 * 60 * 60 * 1000 },
-  { unit: 'hour', ms: 60 * 60 * 1000 },
-  { unit: 'minute', ms: 60 * 1000 },
-  { unit: 'second', ms: 1000 },
-];
-
-export function formatRelativeTime(date: string | Date | null | undefined): string {
-  if (!date) return '\u2014';
-  const d = typeof date === 'string' ? new Date(date) : date;
-  const diff = d.getTime() - Date.now();
-
-  for (const { unit, ms } of UNITS) {
-    const value = Math.round(diff / ms);
-    if (Math.abs(value) >= 1 || unit === 'second') {
-      return rtf.format(value, unit);
-    }
-  }
-  return 'just now';
-}
-
 const dtf = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: 'numeric',

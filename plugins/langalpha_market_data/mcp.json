@@ -1,0 +1,54 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "price_data": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "plugins/langalpha_market_data/price_data_mcp_server.py"
+      ],
+      "env": {
+        "FMP_API_KEY": "${FMP_API_KEY}",
+        "GINLIX_DATA_URL": "${GINLIX_DATA_URL}"
+      }
+    },
+    "fundamentals": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "plugins/langalpha_market_data/fundamentals_mcp_server.py"
+      ],
+      "env": {
+        "FMP_API_KEY": "${FMP_API_KEY}"
+      }
+    },
+    "macro": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "plugins/langalpha_market_data/macro_mcp_server.py"
+      ],
+      "env": {
+        "FMP_API_KEY": "${FMP_API_KEY}"
+      }
+    },
+    "options": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "plugins/langalpha_market_data/options_mcp_server.py"
+      ],
+      "env": {
+        "GINLIX_DATA_URL": "${GINLIX_DATA_URL}"
+      }
+    }
+  }
+}

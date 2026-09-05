@@ -25,16 +25,19 @@ logger = logging.getLogger("src.server.handlers.chat_handler")
 # ---------------------------------------------------------------------------
 
 
-async def watch_wakes(cache, flash_thread_id: str):
+def watch_wakes(cache, flash_thread_id: str):
     """Watch report-back wakes with the status slice bound as the snapshot.
 
     The binding lives here, not in ``wake``: the wire-protocol module stays
     free of the read-model, and this composition point supplies it.
+
+    Returns the generator rather than delegating to it with ``async for``:
+    an outer wrapper swallows ``aclose()``, leaving the real generator's
+    cleanup to the async-gen finalizer at some later tick.
     """
-    async for frame in wake.watch_wakes(
+    return wake.watch_wakes(
         cache, flash_thread_id, snapshot_reader=status.read_report_back_slice
-    ):
-        yield frame
+    )
 
 
 # ---------------------------------------------------------------------------

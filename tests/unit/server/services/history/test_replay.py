@@ -1472,19 +1472,19 @@ def _cache_probe(monkeypatch):
         return {}
 
     async def fake_live(thread_id, task_ids):
-        return False
+        return set()
 
     cached: list[str] = []
 
-    async def fake_store(thread_id, tail_checkpoint_id, items):
+    async def fake_store(thread_id, tail_checkpoint_id, fingerprint, items):
         cached.append(tail_checkpoint_id)
 
-    async def fake_delete(thread_id, tail_checkpoint_ids):
+    async def fake_delete(thread_id, turn_keys):
         pass
 
     monkeypatch.setattr(task_lane_module, "resolve_task_details", fake_details)
     monkeypatch.setattr(
-        replay_module.projection_cache, "task_streams_live", fake_live
+        replay_module.projection_cache, "live_task_streams", fake_live
     )
     monkeypatch.setattr(replay_module.projection_cache, "store_turn", fake_store)
     monkeypatch.setattr(replay_module.projection_cache, "delete_turns", fake_delete)
@@ -2885,6 +2885,88 @@ async def test_resumed_run_segments_attribute_to_their_launch_turns(monkeypatch)
     assert chunks == {"one done": 0, "three done": 2}
 
 
+async def test_namespace_signals_ride_the_first_run_only(monkeypatch):
+    # Compaction and fallback signals are namespace-scoped, not per-run: a
+    # task with two claimed segments still emits one set, ahead of both. This
+    # bounds what the shared message-to-SSE conversion may cover — pulling the
+    # signal projections into it would repeat them once per segment.
+    from ptc_agent.agent.middleware.compaction.utils import build_summary_message
+
+    def launch(ordinal, action, prompt):
+        return [
+            AIMessage(
+                content="",
+                id=f"ai-{ordinal}",
+                tool_calls=[{"name": "Task", "args": {}, "id": f"tc-{ordinal}"}],
+            ),
+            ToolMessage(
+                content="dispatched",
+                tool_call_id=f"tc-{ordinal}",
+                name="Task",
+                id=f"tm-{ordinal}",
+                additional_kwargs={
+                    "task_artifact": {
+                        "task_id": "tsk1",
+                        "action": action,
+                        "description": "d",
+                        "prompt": prompt,
+                    }
+                },
+            ),
+        ]
+
+    _mock_reader(
+        monkeypatch,
+        ThreadHistory(
+            thread_id=THREAD,
+            turns=[
+                _turn(0, launch(0, "init", "run one")),
+                _turn(1, launch(1, "resume", "run two")),
+            ],
+        ),
+        task_history=TaskHistory(
+            messages=[
+                HumanMessage(content="run one", id="sub-h-1"),
+                AIMessage(content="one done", id="sub-ai-1"),
+                HumanMessage(content="run two", id="sub-h-2"),
+                AIMessage(content="two done", id="sub-ai-2"),
+            ],
+            new_summarization_event={
+                "summary_message": build_summary_message(
+                    "task summary", None, original_message_count=12
+                ),
+                "cutoff_index": 4,
+            },
+            newly_offloaded_args=2,
+            newly_offloaded_reads=1,
+            new_ui_records=[
+                {
+                    "type": "ui",
+                    "id": "task-fallback",
+                    "name": "model_fallback",
+                    "props": {"from_model": "primary", "to_model": "fallback"},
+                    "metadata": {},
+                }
+            ],
+        ),
+    )
+
+    events = [
+        i["event"]
+        for i in await build_checkpoint_replay_items(
+            THREAD,
+            [_query(0), _query(1, content="r2")],
+            {0: _response(0), 1: _response(1)},
+        )
+        if i["data"].get("agent") == "task:tsk1"
+    ]
+
+    assert events.count("context_window") == 3
+    assert events.count("model_fallback") == 1
+    assert events.count("message_chunk") == 2
+    assert events.index("model_fallback") < events.index("message_chunk")
+
+
 async def test_live_task_final_launch_defers_to_stream(monkeypatch):
     # Tail mode: the launching turn commits while the task still writes, so
     # the namespace already holds the in-flight run's boundary. Replay must
@@ -2982,20 +3064,20 @@ async def test_trailing_salvage_keeps_its_turn_uncacheable(monkeypatch):
         return {}  # settled — no live writer owns the trailing segment
 
     async def fake_live(thread_id, task_ids):
-        return False
+        return set()
 
     stored: list[str | None] = []
     deleted: list[str] = []
 
-    async def fake_store(thread_id, tail_checkpoint_id, items):
+    async def fake_store(thread_id, tail_checkpoint_id, fingerprint, items):
         stored.append(tail_checkpoint_id)
 
-    async def fake_delete(thread_id, tail_checkpoint_ids):
-        deleted.extend(tail_checkpoint_ids)
+    async def fake_delete(thread_id, turn_keys):
+        deleted.extend(tail for tail, _fp in turn_keys)
 
     monkeypatch.setattr(task_lane_module, "resolve_task_details", fake_details)
     monkeypatch.setattr(
-        replay_module.projection_cache, "task_streams_live", fake_live
+        replay_module.projection_cache, "live_task_streams", fake_live
     )
     monkeypatch.setattr(replay_module.projection_cache, "store_turn", fake_store)
     monkeypatch.setattr(replay_module.projection_cache, "delete_turns", fake_delete)
@@ -3051,3 +3133,355 @@ async def test_trailing_salvage_keeps_its_turn_uncacheable(monkeypatch):
     assert salvaged and salvaged[0]["turn_index"] == 0  # last launch's stamps
     assert stored == ["tail-1"]  # the salvage-stamped turn is never stored
     assert deleted == ["tail-0"]  # and any pre-orphan entry is evicted
+
+
+async def test_workflow_launch_replays_ns_ui_snapshot(monkeypatch):
+    """A RunWorkflow launch (action="workflow") has no transcript in its task
+    namespace — only the driver's terminal ui snapshot. Replay must emit that
+    record's frames as workflow_lifecycle events, and must not try to claim
+    transcript segments for the run task."""
+    frames = [
+        {
+            "agent": "task:wf1",
+            "run_id": "wf1",
+            "phase": "run_started",
+            "name": "briefs",
+        },
+        {
+            "agent": "task:wf1",
+            "run_id": "wf1",
+            "phase": "run_completed",
+            "status": "completed",
+        },
+    ]
+    task_artifact = {
+        "task_id": "wf1",
+        "action": "workflow",
+        "description": "d",
+        "task_run_id": "run-w1",
+    }
+    turn_msgs = [
+        AIMessage(
+            content="",
+            id="ai-1",
+            tool_calls=[{"name": "RunWorkflow", "args": {}, "id": "tc-w"}],
+        ),
+        ToolMessage(
+            content="dispatched",
+            tool_call_id="tc-w",
+            name="RunWorkflow",
+            id="tm-1",
+            additional_kwargs={"task_artifact": task_artifact},
+        ),
+    ]
+    _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, turn_msgs)]),
+        task_history=TaskHistory(
+            messages=[],
+            new_ui_records=[
+                {
+                    "type": "ui",
+                    "id": "workflow-run-run-w1",
+                    "name": "workflow_run",
+                    "props": {"task_id": "wf1", "frames": frames},
+                }
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        "src.server.services.history.replay.task_lane.sr_db.list_runs_for_thread",
+        AsyncMock(return_value=[]),
+    )
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0)}
+    )
+
+    lifecycle = [i for i in items if i["event"] == "workflow_lifecycle"]
+    assert [i["data"]["phase"] for i in lifecycle] == [
+        "run_started",
+        "run_completed",
+    ]
+    assert all(i["data"]["agent"] == "task:wf1" for i in lifecycle)
+    # Enriched like every projected item, so the client buckets it correctly.
+    assert all(i["data"]["thread_id"] == THREAD for i in lifecycle)
+
+
+async def test_workflow_launch_terminal_status_follows_ledger(monkeypatch):
+    """The snapshot is stamped before the terminal CAS, so a raced cancel can
+    leave the ledger 'cancelled' under a 'completed' snapshot — replay must
+    surface the ledger's verdict, with the row's failure text."""
+    frames = [
+        {"agent": "task:wf1", "run_id": "wf1", "phase": "run_started"},
+        {
+            "agent": "task:wf1",
+            "run_id": "wf1",
+            "phase": "run_completed",
+            "status": "completed",
+            "error": None,
+        },
+    ]
+    task_artifact = {
+        "task_id": "wf1",
+        "action": "workflow",
+        "description": "d",
+        "task_run_id": "run-w1",
+    }
+    turn_msgs = [
+        AIMessage(
+            content="",
+            id="ai-1",
+            tool_calls=[{"name": "RunWorkflow", "args": {}, "id": "tc-w"}],
+        ),
+        ToolMessage(
+            content="dispatched",
+            tool_call_id="tc-w",
+            name="RunWorkflow",
+            id="tm-1",
+            additional_kwargs={"task_artifact": task_artifact},
+        ),
+    ]
+    _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, turn_msgs)]),
+        task_history=TaskHistory(
+            messages=[],
+            new_ui_records=[
+                {
+                    "type": "ui",
+                    "id": "workflow-run-run-w1",
+                    "name": "workflow_run",
+                    "props": {"task_id": "wf1", "frames": frames},
+                }
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        "src.server.services.history.replay.task_lane.sr_db.list_runs_for_thread",
+        AsyncMock(
+            return_value=[
+                {
+                    "task_run_id": "run-w1",
+                    "status": "cancelled",
+                    "failure": None,
+                    "started_at": None,
+                }
+            ]
+        ),
+    )
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0)}
+    )
+
+    terminal = [
+        i
+        for i in items
+        if i["event"] == "workflow_lifecycle"
+        and i["data"]["phase"] == "run_completed"
+    ]
+    assert len(terminal) == 1
+    assert terminal[0]["data"]["status"] == "cancelled"
+
+
+async def test_workflow_turn_uncacheable_when_ledger_read_fails(monkeypatch):
+    """Ledger-read failure skips workflow status reconciliation; caching that
+    build would freeze the snapshot's own (possibly stale) status for the
+    cache TTL. The turn must rebuild per read until the ledger is readable."""
+    cached = _cache_probe(monkeypatch)
+    frames = [
+        {"agent": "task:wf1", "run_id": "wf1", "phase": "run_started"},
+        {
+            "agent": "task:wf1",
+            "run_id": "wf1",
+            "phase": "run_completed",
+            "status": "completed",
+            "error": None,
+        },
+    ]
+    task_artifact = {
+        "task_id": "wf1",
+        "action": "workflow",
+        "description": "d",
+        "task_run_id": "run-w1",
+    }
+    turn_msgs = [
+        AIMessage(
+            content="",
+            id="ai-1",
+            tool_calls=[{"name": "RunWorkflow", "args": {}, "id": "tc-w"}],
+        ),
+        ToolMessage(
+            content="dispatched",
+            tool_call_id="tc-w",
+            name="RunWorkflow",
+            id="tm-1",
+            additional_kwargs={"task_artifact": task_artifact},
+        ),
+    ]
+    _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, turn_msgs)]),
+        task_history=TaskHistory(
+            messages=[],
+            new_ui_records=[
+                {
+                    "type": "ui",
+                    "id": "workflow-run-run-w1",
+                    "name": "workflow_run",
+                    "props": {"task_id": "wf1", "frames": frames},
+                }
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        "src.server.services.history.replay.task_lane.sr_db.list_runs_for_thread",
+        AsyncMock(side_effect=RuntimeError("ledger down")),
+    )
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0)}
+    )
+
+    # Frames still replay from the snapshot; the build just must not cache.
+    terminal = [
+        i
+        for i in items
+        if i["event"] == "workflow_lifecycle"
+        and i["data"]["phase"] == "run_completed"
+    ]
+    assert len(terminal) == 1
+    assert cached == []
+
+
+async def test_ledger_read_failure_leaves_merge_semantics_alone(monkeypatch):
+    """Cacheability and stored-row resurrection are separate channels. An
+    unreadable ledger costs a rebuild; it must not additionally make the merge
+    treat the lane as one whose run died mid-write, whose unanchored stored
+    rows are then replayed as output no checkpoint holds."""
+    frames = [
+        {"agent": "task:wf1", "run_id": "wf1", "phase": "run_started"},
+        {
+            "agent": "task:wf1",
+            "run_id": "wf1",
+            "phase": "run_completed",
+            "status": "completed",
+            "error": None,
+        },
+    ]
+    turn_msgs = [
+        AIMessage(
+            content="",
+            id="ai-1",
+            tool_calls=[{"name": "RunWorkflow", "args": {}, "id": "tc-w"}],
+        ),
+        ToolMessage(
+            content="dispatched",
+            tool_call_id="tc-w",
+            name="RunWorkflow",
+            id="tm-1",
+            additional_kwargs={
+                "task_artifact": {
+                    "task_id": "wf1",
+                    "action": "workflow",
+                    "description": "d",
+                    "task_run_id": "run-w1",
+                }
+            },
+        ),
+    ]
+    stored = [
+        {
+            "event": "message_chunk",
+            "data": {
+                "agent": "task:wf1",
+                "id": "m-unanchored",
+                "content_type": "text",
+                "content": "unanchored stored row",
+            },
+        }
+    ]
+    _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, turn_msgs)]),
+        task_history=TaskHistory(
+            messages=[],
+            new_ui_records=[
+                {
+                    "type": "ui",
+                    "id": "workflow-run-run-w1",
+                    "name": "workflow_run",
+                    "props": {"task_id": "wf1", "frames": frames},
+                }
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        "src.server.services.history.replay.task_lane.sr_db.list_runs_for_thread",
+        AsyncMock(side_effect=RuntimeError("ledger down")),
+    )
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0, stored)}
+    )
+
+    assert not [
+        i for i in items if i["data"].get("content") == "unanchored stored row"
+    ]
+
+
+async def test_stream_probe_precedes_task_namespace_reads(monkeypatch):
+    """The cache gate trusts prepare()'s PRE-read seal verdict: sealing is
+    monotonic, so "sealed before the read" proves the read saw final state.
+    A post-read probe would let a seal landing in between freeze pre-terminal
+    state for the cache TTL. Pin the ordering (fixed regression)."""
+    from src.server.services.history.replay import task_lane as task_lane_module
+
+    order: list[str] = []
+    task_artifact = {
+        "task_id": "tsk1",
+        "action": "init",
+        "description": "d",
+        "prompt": "run one",
+    }
+    msgs = [
+        AIMessage(
+            content="",
+            id="ai-1",
+            tool_calls=[{"name": "Task", "args": {}, "id": "tc-1"}],
+        ),
+        ToolMessage(
+            content="dispatched",
+            tool_call_id="tc-1",
+            name="Task",
+            id="tm-1",
+            additional_kwargs={"task_artifact": task_artifact},
+        ),
+    ]
+    reader = _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, msgs)]),
+        task_messages=[HumanMessage(content="run one", id="sub-h-1")],
+    )
+    inner = reader.aget_task_history
+
+    async def read_spy(*args, **kwargs):
+        order.append("read")
+        return await inner(*args, **kwargs)
+
+    reader.aget_task_history = read_spy
+
+    async def probe_spy(thread_id, task_ids):
+        order.append("probe")
+        assert task_ids == {"tsk1"}
+        return set()
+
+    monkeypatch.setattr(
+        task_lane_module.projection_cache, "live_task_streams", probe_spy
+    )
+
+    await build_checkpoint_replay_items(THREAD, [_query(0)], {0: _response(0)})
+
+    assert order[0] == "probe"
+    assert "read" in order

@@ -1,12 +1,22 @@
 """Per-turn replay projection cache.
 
 Wire-ready replay items for one settled turn, keyed by the turn's own last
-checkpoint id (its *tail*). The tail exists at persist time and survives
-forks of later turns (edits/regenerates fork new tails → new keys; orphaned
-entries expire by TTL), so entries are immutable — except the interrupted-turn
-refresh: a turn's ``ending_interrupts`` ride the resume boundary created
-later, so the post-persist refresh rebuilds a two-turn window to overwrite
-the previous turn's entry under its unchanged key.
+checkpoint id (its *tail*) **and** a fingerprint of the turn's table-sourced
+replay inputs. The tail exists at persist time and survives forks of later
+turns (edits/regenerates fork new tails → new keys; orphaned entries expire
+by TTL), but it alone does not identify a complete projection: a settled
+turn's stored events, provenance rows and usage row keep being rewritten
+after finalize (the subagent collector's archive drain, atomic
+``context_window`` appends) without ever moving the tail. Folding those
+inputs into the key makes a superseded entry *unreachable* rather than
+merely stale, so no invalidation call has to succeed for correctness — and
+a reader that built from pre-drain state can only ever write its own
+generation's key, never poison the current one.
+
+Entries are therefore immutable, except the interrupted-turn refresh: a
+turn's ``ending_interrupts`` ride the resume boundary created later, so the
+post-persist refresh rebuilds a two-turn window to overwrite the previous
+turn's entry under its unchanged key.
 
 Entries are canonicalized to the wire's JSON form (``default=str``) before
 storing so a cache hit is byte-identical to a fresh projection. Purely an
@@ -14,6 +24,7 @@ optimization: any miss falls back to a full checkpoint rebuild + backfill.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 from typing import Any
@@ -23,9 +34,9 @@ from src.utils.cache.redis_cache import get_cache_client
 
 logger = logging.getLogger(__name__)
 
-# v2: per-run task-namespace projection + task-lane user_message events —
-# v1 entries carry the whole-namespace-at-spawn-turn shape and must not mix.
-_KEY_PREFIX = "replay:turn:v2"
+# v3: fingerprinted keys (v1/v2 entries are tail-only, so a v2 hit could
+# serve a projection built before the turn's archive drain landed).
+_KEY_PREFIX = "replay:turn:v3"
 # Entries beyond this are pathological (widget-heavy legacy stored events);
 # skip caching rather than bloat Redis — replay just rebuilds those threads.
 _MAX_ENTRY_BYTES = 512 * 1024
@@ -39,8 +50,51 @@ _refresh_tasks: dict[str, asyncio.Task[None]] = {}
 _refresh_dirty: set[str] = set()
 
 
-def _key(thread_id: str, tail_checkpoint_id: str) -> str:
-    return f"{_KEY_PREFIX}:{thread_id}:{tail_checkpoint_id}"
+def _key(thread_id: str, tail_checkpoint_id: str, fingerprint: str) -> str:
+    return f"{_KEY_PREFIX}:{thread_id}:{tail_checkpoint_id}:{fingerprint}"
+
+
+def turn_fingerprint(
+    response: dict[str, Any] | None,
+    provenance_rows: list[dict[str, Any]] | None,
+    usage_row: dict[str, Any] | None,
+) -> str:
+    """Digest of the post-finalize-mutable replay inputs the tail can't identify.
+
+    Hashes each source whole rather than a chosen subset of fields: an
+    over-inclusive digest only costs an extra rebuild when something
+    irrelevant changes, while an under-inclusive one silently resurrects the
+    bug this key exists to prevent. The response row is the one source read
+    through a proxy — see ``_response_generation``.
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    for source in (_response_generation(response), provenance_rows, usage_row):
+        digest.update(
+            json.dumps(source, default=str, sort_keys=True).encode("utf-8")
+        )
+        digest.update(b"\x1e")
+    return digest.hexdigest()
+
+
+def _response_generation(
+    response: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """The response row reduced to its identity plus its Postgres row version.
+
+    Every fingerprinted field of a settled turn lives on that one row, so any
+    rewrite — the archive drain replacing ``sse_events``, an atomic
+    ``context_window`` append — lands a new tuple with a new ``xmin``. Reading
+    the version is strictly more inclusive than hashing the columns and costs
+    a tuple-header read, where serializing the megabyte-scale transcript here
+    ran per turn, per replay request, on the event loop. Rows fetched without
+    ``xmin`` keep the whole-row hash.
+    """
+    if not response or "xmin" not in response:
+        return response
+    return {
+        "conversation_response_id": response.get("conversation_response_id"),
+        "xmin": response["xmin"],
+    }
 
 
 def cache_active() -> bool:
@@ -51,16 +105,23 @@ def cache_active() -> bool:
 
 
 async def get_cached_turns(
-    thread_id: str, tail_checkpoint_ids: list[str]
+    thread_id: str, turn_keys: list[tuple[str, str]]
 ) -> dict[str, list[dict[str, Any]] | None]:
-    """Fetch entries for the given tails; None per tail on miss."""
-    keys = [_key(thread_id, t) for t in tail_checkpoint_ids]
+    """Fetch entries for ``(tail, fingerprint)`` pairs; None per tail on miss.
+
+    Keyed by fingerprint, indexed back by tail — callers hold a tail per turn
+    and a fingerprint is only ever derived from it.
+    """
+    keys = [_key(thread_id, tail, fp) for tail, fp in turn_keys]
     values = await get_cache_client().mget(keys)
-    return dict(zip(tail_checkpoint_ids, values))
+    return dict(zip([tail for tail, _ in turn_keys], values))
 
 
 async def store_turn(
-    thread_id: str, tail_checkpoint_id: str | None, items: list[dict[str, Any]]
+    thread_id: str,
+    tail_checkpoint_id: str | None,
+    fingerprint: str,
+    items: list[dict[str, Any]],
 ) -> None:
     """Best-effort write of one turn's wire-ready items."""
     if not tail_checkpoint_id or not cache_active():
@@ -76,7 +137,7 @@ async def store_turn(
             )
             return
         await get_cache_client().set(
-            _key(thread_id, tail_checkpoint_id),
+            _key(thread_id, tail_checkpoint_id, fingerprint),
             json.loads(serialized),
             ttl=get_replay_projection_cache_ttl(),
         )
@@ -84,33 +145,39 @@ async def store_turn(
         logger.warning(f"[ProjectionCache] store failed for {thread_id}: {e}")
 
 
-async def delete_turns(thread_id: str, tail_checkpoint_ids: list[str]) -> None:
+async def delete_turns(thread_id: str, turn_keys: list[tuple[str, str]]) -> None:
     """Best-effort eviction — keeps salvage-bearing turns out of the cache so
     the fast path can't replay them without their trailing salvage."""
-    if not tail_checkpoint_ids or not cache_active():
+    if not turn_keys or not cache_active():
         return
     try:
         client = get_cache_client()
-        for tail_checkpoint_id in tail_checkpoint_ids:
-            await client.delete(_key(thread_id, tail_checkpoint_id))
+        for tail_checkpoint_id, fingerprint in turn_keys:
+            await client.delete(_key(thread_id, tail_checkpoint_id, fingerprint))
     except Exception as e:
         logger.warning(f"[ProjectionCache] delete failed for {thread_id}: {e}")
 
 
-async def task_streams_live(thread_id: str, task_ids: set[str]) -> bool:
-    """True when any task's per-task Redis stream is still unfinalized.
+async def live_task_streams(thread_id: str, task_ids: set[str]) -> set[str]:
+    """The subset of tasks whose per-task Redis stream is still unfinalized.
 
-    A turn whose projected subagent transcript is still growing must not be
-    cached: task-ns writes never move the main-branch tail, so a frozen
-    partial transcript would never self-heal. Only an explicit end sentinel
-    proves terminal here. Missing streams and verification failures count as
-    live (conservative — skip caching rather than freeze a partial).
+    A turn whose projected task state is still growing must not be cached:
+    task-ns writes never move the main-branch tail, so a frozen partial
+    would never self-heal. Only an explicit end sentinel proves terminal
+    here. Missing streams and verification failures count as live
+    (conservative — skip caching rather than freeze a partial).
+
+    Probe BEFORE reading task-namespace state, and gate caching on this
+    pre-read verdict: sealing is monotonic, so "sealed before the read"
+    proves the read saw final state, while a post-read probe can pass for a
+    stream that sealed after the read returned pre-terminal data — freezing
+    it for the cache TTL.
     """
     if not task_ids:
-        return False
+        return set()
     client = get_cache_client().client
     if client is None:
-        return True
+        return set(task_ids)
 
     async def _task_live(task_id: str) -> bool:
         try:
@@ -130,8 +197,9 @@ async def task_streams_live(thread_id: str, task_ids: set[str]) -> bool:
             raw = raw.decode("utf-8", errors="replace")
         return not _is_stream_end_sentinel(raw)
 
-    liveness = await asyncio.gather(*(_task_live(task_id) for task_id in task_ids))
-    return any(liveness)
+    ordered = list(task_ids)
+    liveness = await asyncio.gather(*(_task_live(task_id) for task_id in ordered))
+    return {task_id for task_id, live in zip(ordered, liveness) if live}
 
 
 def _is_stream_end_sentinel(raw: Any) -> bool:

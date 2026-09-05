@@ -89,3 +89,65 @@ class TestIsRetryableError:
         # must not matter.
         exc = Exception("Error code: 500")
         assert is_retryable_error(exc, status_code=400) is False
+
+
+class TestDashScopeFailureStatus:
+    """The adapter's verdict, and the message-regex it is there to pre-empt.
+
+    Every payload below is verbatim from the live provider. Two fields are
+    needed to read them: the code says ``server_error`` for a permanent content
+    block, and the message carries no status at all for an unsupported model.
+    """
+
+    LIVE_TERMINAL = [
+        (
+            "server_error",
+            "<400> InternalError.Algo.DataInspectionFailed: Input text data "
+            "may contain inappropriate content.",
+        ),
+        ("InvalidParameter", "Unsupported model: 'qwen-does-not-exist'"),
+        (
+            "InvalidParameter",
+            "<400> InternalError.Algo.InvalidParameter: The provided URL does "
+            "not appear to be valid.",
+        ),
+    ]
+
+    @staticmethod
+    def _error(code, message):
+        from src.llms.extension.dashscope import ResponsesStreamFailedError, _status_for
+
+        return ResponsesStreamFailedError(
+            f"Responses stream failed ({code}): {message}",
+            code=code,
+            status_code=_status_for(code, message),
+        )
+
+    @pytest.mark.parametrize("code,message", LIVE_TERMINAL)
+    def test_live_terminal_failures_are_not_retried(self, code, message):
+        assert is_retryable_error(self._error(code, message)) is False
+
+    def test_unsupported_model_needs_the_code_not_the_message(self):
+        # The message has no status token, so the regex alone reads this as
+        # retryable and spends the full ladder on a model that cannot exist.
+        code, message = "InvalidParameter", "Unsupported model: 'qwen-does-not-exist'"
+        assert extract_status_code(Exception(message)) is None
+        assert extract_status_code(self._error(code, message)) == 400
+
+    def test_rate_limit_is_not_decided_by_a_number_in_its_own_message(self):
+        exc = self._error("rate_limit_exceeded", "Request quota is 400 tokens per minute")
+        assert extract_status_code(exc) == 429
+        assert is_retryable_error(exc) is True
+
+    @pytest.mark.parametrize(
+        "code,message",
+        [
+            ("server_error", "upstream temporarily unavailable"),
+            ("SomethingUnrecognised", "no digits here"),
+        ],
+    )
+    def test_unknown_verdict_falls_back_to_the_message(self, code, message):
+        # None means "I do not know", which must leave the older guess intact
+        # rather than assert a wrong status.
+        assert self._error(code, message).status_code is None
+        assert is_retryable_error(self._error(code, message)) is True

@@ -35,10 +35,6 @@ vi.mock('../DashboardCustom', () => ({
     return <div data-testid="custom-dashboard" />;
   },
 }));
-vi.mock('../components/NetworkBanner', () => ({
-  __esModule: true,
-  default: () => <div data-testid="network-banner-stub" />,
-}));
 
 import DashboardRouter from '../DashboardRouter';
 
@@ -92,22 +88,6 @@ describe('DashboardRouter', () => {
     expect(getByTestId('classic-dashboard')).toBeInTheDocument();
     expect(queryByTestId('custom-dashboard')).toBeNull();
   });
-
-  it('mounts NetworkBanner above Classic mode', () => {
-    const { getByTestId } = renderRouter(makeClient());
-    expect(getByTestId('network-banner-stub')).toBeInTheDocument();
-    expect(getByTestId('classic-dashboard')).toBeInTheDocument();
-  });
-
-  it('mounts NetworkBanner above Custom mode', () => {
-    prefsState.current = {
-      other_preference: { theme: 'dark', dashboard: { mode: 'custom', widgets: [], layouts: {} } },
-    };
-    const { getByTestId } = renderRouter(makeClient());
-    expect(getByTestId('network-banner-stub')).toBeInTheDocument();
-    expect(getByTestId('custom-dashboard')).toBeInTheDocument();
-  });
-
   it('onModeChange uses fresh queryClient cache snapshot, not stale render-time copy', () => {
     const queryClient = makeClient();
     renderRouter(queryClient);

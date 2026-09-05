@@ -24,7 +24,7 @@
 .html-viewer-tab {
   padding: 4px 10px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-text-tertiary);
   background: transparent;
   border: 1px solid var(--color-border-muted);
@@ -38,7 +38,7 @@
 }
 
 .html-viewer-tab:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
+  outline: 2px solid var(--color-focus-ring);
   outline-offset: 1px;
 }
 
@@ -54,7 +54,10 @@
   min-height: 0;
   width: 100%;
   border: none;
-  background: #ffffff;
+  /* Shows through transparent-bodied documents (widgets mandate a transparent
+     shell) and before the document paints — must follow the app theme, not
+     hardcode white against a dark surface. */
+  background: var(--color-bg-page);
 }
 
 /* Source view — wraps the shared SyntaxHighlighter */

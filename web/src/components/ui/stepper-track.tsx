@@ -214,13 +214,13 @@ export default function StepperList({ items }: { items: AgentPlanItem[] }) {
           <motion.div
             key={item.id}
             className="flex items-center"
-            style={{ gap: 8, padding: "4px 0", fontSize: 13 }}
+            style={{ gap: 8, padding: "4px 0", fontSize: "0.8125rem" }}
             variants={itemVariants}
           >
             <span
               className="flex-shrink-0 text-right"
               style={{
-                fontSize: 10,
+                fontSize: "0.625rem",
                 fontWeight: 600,
                 textTransform: "uppercase",
                 letterSpacing: "0.04em",

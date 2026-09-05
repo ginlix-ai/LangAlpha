@@ -28,17 +28,12 @@ class TestGetInputModalities:
         assert "image" in result
         assert "pdf" in result
 
-    def test_gemini_flash_image_no_pdf(self, model_config):
-        result = model_config.get_input_modalities("gemini-3.1-flash-image")
-        assert "image" in result
-        assert "pdf" not in result
-
     def test_deepseek_text_only(self, model_config):
         result = model_config.get_input_modalities("deepseek-v4-flash")
         assert result == ["text"]
 
-    def test_minimax_text_only(self, model_config):
-        result = model_config.get_input_modalities("minimax-m2.7")
+    def test_glm_text_only(self, model_config):
+        result = model_config.get_input_modalities("glm-5.2")
         assert result == ["text"]
 
     def test_minimax_m3_supports_image(self, model_config):
@@ -47,7 +42,7 @@ class TestGetInputModalities:
         assert "image" in result
 
     def test_moonshot_supports_image_not_pdf(self, model_config):
-        result = model_config.get_input_modalities("kimi-k2.5")
+        result = model_config.get_input_modalities("kimi-k3")
         assert "image" in result
         assert "pdf" not in result
 
@@ -59,16 +54,6 @@ class TestGetInputModalities:
 
     def test_codex_oauth_variant(self, model_config):
         result = model_config.get_input_modalities("gpt-5.6-sol-oauth")
-        assert "image" in result
-        assert "pdf" in result
-
-    def test_doubao_anthropic_variant(self, model_config):
-        result = model_config.get_input_modalities("doubao-seed-2.0-pro-anthropic")
-        assert "image" in result
-        assert "pdf" in result
-
-    def test_dashscope_coding_variant(self, model_config):
-        result = model_config.get_input_modalities("qwen3.5-plus-coding")
         assert "image" in result
         assert "pdf" in result
 

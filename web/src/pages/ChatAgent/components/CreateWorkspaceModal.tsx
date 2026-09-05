@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Upload, FileText, CheckCircle2, Loader2, Circle, AlertCircle } from 'lucide-react';
+import { X, Upload, FileText, CheckCircle2, Circle, AlertCircle } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import { Input } from '../../../components/ui/input';
 import { uploadWorkspaceFile } from '../utils/api';
 import { buildRateLimitError } from '@/utils/rateLimitError';
@@ -530,7 +531,7 @@ function StepRow({ label, status }: StepRowProps) {
       iconClass = 'cwm-step-icon--done';
       break;
     case 'active':
-      icon = <Loader2 className="h-5 w-5 animate-spin" />;
+      icon = <Loader size={20} className="text-current" />;
       iconClass = 'cwm-step-icon--active';
       break;
     case 'error':

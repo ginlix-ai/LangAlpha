@@ -51,7 +51,7 @@ import {
   replayThreadHistory,
 } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';
-import type { AssistantMessage } from '@/types/chat';
+import type { AssistantMessage, UserMessage } from '@/types/chat';
 
 const mockSendStream = sendChatMessageStream as Mock;
 const mockFetchTurns = fetchThreadTurns as Mock;
@@ -224,6 +224,62 @@ describe('useChatMessages – turn index with steering messages', () => {
 
     // Without the fix, turnIndex=3 would exceed backend's 2 turns → "checkpoint data unavailable"
     // With the fix, turnIndex=1 correctly maps to turns[1]
+    expect(result.current.messageError).toBeNull();
+  });
+
+  it('refuses to edit a steering bubble; regenerating the continuation re-runs the whole turn', async () => {
+    // A steering message has no turn identity (no /turns boundary). Editing it
+    // must refuse — the fork would land on the NEXT turn and leave the original
+    // steering text in the agent's context. Regenerating the post-steering
+    // continuation is well-defined: the whole owning turn re-runs from its
+    // input checkpoint (mid-run steering can't be replayed), and truncation
+    // normalizes back to the turn's first bubble so the stale half and the
+    // steering bubble leave the transcript with it.
+    mockTwoTurnsWithSteering(1);
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
+    await settleMountLoad();
+
+    await act(async () => {
+      await result.current.handleSendMessage('hello', false);
+    });
+
+    let steeringUserId: string;
+    let steeringAssistantId: string;
+    await waitFor(() => {
+      const su = result.current.messages.find(
+        (m): m is UserMessage => m.role === 'user' && !!(m as UserMessage).steeringDelivered,
+      );
+      const sa = result.current.messages.find(
+        (m): m is AssistantMessage => m.role === 'assistant' && !!(m as AssistantMessage).isSteering,
+      );
+      expect(su).toBeDefined();
+      expect(sa).toBeDefined();
+      steeringUserId = su!.id;
+      steeringAssistantId = sa!.id;
+    });
+
+    const before = result.current.messages;
+    const sendCalls = mockSendStream.mock.calls.length;
+
+    await act(async () => {
+      await result.current.handleEditMessage(steeringUserId!, 'changed my mind');
+    });
+    expect(result.current.messageError).toMatch(/steering/i);
+    expect(result.current.messages).toBe(before); // no optimistic truncation
+    expect(mockSendStream.mock.calls.length).toBe(sendCalls); // no fork sent
+
+    await act(async () => {
+      await result.current.handleRegenerate(steeringAssistantId!);
+    });
+    await waitFor(() => {
+      expect(mockSendStream.mock.calls.length).toBe(sendCalls + 1);
+    });
+    const after = result.current.messages;
+    // Steering user bubble gone with the re-run, single user message remains.
+    expect(after.some((m) => m.role === 'user' && !!(m as UserMessage).steeringDelivered)).toBe(false);
+    expect(after.filter((m) => m.role === 'user').length).toBe(1);
+    // One fresh assistant bubble for the re-run — pre-steering half replaced too.
+    expect(after.filter((m) => m.role === 'assistant').length).toBe(1);
     expect(result.current.messageError).toBeNull();
   });
 });

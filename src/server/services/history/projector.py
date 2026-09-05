@@ -20,6 +20,9 @@ from typing import Any, Literal
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 
+from ptc_agent.agent.middleware.background_subagent.workflow.emitter import (
+    WORKFLOW_FRAME_FIELDS,
+)
 from ptc_agent.agent.middleware.compaction.utils import parse_summary_message
 from ptc_agent.agent.middleware.tool.argument_parsing import parse_tool_args
 from src.llms.content_utils import extract_content_with_type
@@ -52,6 +55,11 @@ _STEERING_MARKERS = (
 # and the content stamp prefix that mark a live-price injection.
 _MARKET_WATCH_SOURCE = "market_watch"
 _MARKET_WATCH_STAMP_OPEN = "<market-watch>"
+
+# Written by src/server/utils/credit_resume_context.py — the lc_source tag on
+# the record of gate-stopped background tasks injected when a credit-paused
+# turn resumes.
+_CREDIT_GATE_SOURCE = "credit_gate"
 
 _FILE_OPERATION_TOOLS = {"Write", "Edit"}
 _ARTIFACT_FROM_TOOL_MESSAGE = {
@@ -220,7 +228,14 @@ def _sse(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
 
 def _human_message_kind(message: HumanMessage) -> str:
     """Classify a HumanMessage by its injection stamp: ``market-watch``,
-    ``steering``, ``summarization``, or ``plain`` (real user input)."""
+    ``steering``, ``summarization``, ``credit-gate``, or ``plain`` (real
+    user input).
+
+    Every stamp a writer emits must be registered here. ``plain`` is the
+    fallback, and it is load-bearing — it is what ``is_run_boundary_message``
+    treats as a run's opening input, so an unregistered stamp would open a
+    run it only landed inside.
+    """
     kwargs = message.additional_kwargs or {}
     source = kwargs.get("lc_source")
     content = message.content if isinstance(message.content, str) else ""
@@ -232,6 +247,8 @@ def _human_message_kind(message: HumanMessage) -> str:
         return "steering"
     if source == "summarization":
         return "summarization"
+    if source == _CREDIT_GATE_SOURCE:
+        return "credit-gate"
     return "plain"
 
 
@@ -255,9 +272,10 @@ def _project_human_message(message: HumanMessage, agent: str) -> list[HistoryEve
     content = message.content if isinstance(message.content, str) else ""
     kind = _human_message_kind(message)
 
-    if kind == "market-watch":
-        # Live-price stamps are model-facing only — skipping them here keeps
-        # them out of history.
+    if kind in ("market-watch", "credit-gate"):
+        # Model-facing only. Returning here rather than falling through also
+        # keeps them out of a task namespace's ``user-message`` projection,
+        # where the raw reminder would surface as if the user had typed it.
         return []
 
     if kind == "steering":
@@ -581,13 +599,108 @@ def context_signal_items(
     return history_events_to_sse(events, thread_id=thread_id)
 
 
+WORKFLOW_RUN_UI_NAME = "workflow_run"
+
+# Ledger row status → workflow_lifecycle run status. Anything the check
+# constraint allows beyond completed/cancelled (error, interrupted) is a
+# failure from the panel's point of view.
+_LEDGER_TO_RUN_STATUS = {"completed": "completed", "cancelled": "cancelled"}
+
+
+def workflow_run_items(
+    history: Any,
+    *,
+    task_id: str | None = None,
+    ledger_status: str | None = None,
+    ledger_failure: str | None = None,
+) -> list[dict[str, Any]]:
+    """Replay a workflow run's lifecycle frames from its checkpointed ui record.
+
+    ``history`` is the run task's own ``TaskHistory``, not the turn's. The
+    ledger row is the status authority and the snapshot the detail authority,
+    because the driver stamps its terminal frame BEFORE the ledger CAS, which
+    may adopt a different survivor (a raced cancel intent, a wrapper
+    downgrade) — so a terminal ``ledger_status`` overrides a contradicting
+    frame, and a missing snapshot is replaced by a synthesized terminal frame
+    so the panel still settles.
+    """
+    if ledger_failure is not None:
+        ledger_failure = _sanitize_error_text(ledger_failure)
+    items: list[dict[str, Any]] = []
+    saw_terminal_frame = False
+    for record in history.new_ui_records:
+        if record.get("name") != WORKFLOW_RUN_UI_NAME:
+            continue
+        props = record.get("props") or {}
+        frames = props.get("frames")
+        if not isinstance(frames, list):
+            continue
+        for frame in frames:
+            if not isinstance(frame, dict):
+                continue
+            data = _projected_run_frame(frame)
+            if data.get("phase") == "run_completed":
+                saw_terminal_frame = True
+                data = _reconcile_terminal_frame(
+                    data, ledger_status, ledger_failure
+                )
+            items.append({"event": "workflow_lifecycle", "data": data})
+
+    mapped = _mapped_run_status(ledger_status)
+    if mapped is not None and not saw_terminal_frame and task_id is not None:
+        data = {
+            "agent": f"task:{task_id}",
+            "run_id": task_id,
+            "phase": "run_completed",
+            "status": mapped,
+        }
+        # Same invariant the emitter and `_projected_run_frame` hold: the key
+        # rides the frame only when there is an error to report.
+        if ledger_failure:
+            data["error"] = ledger_failure
+        items.append({"event": "workflow_lifecycle", "data": data})
+    return items
+
+
+def _projected_run_frame(frame: dict[str, Any]) -> dict[str, Any]:
+    # The emitter's own field list, not a copy of it: the driver stamps frames
+    # from raw exception text, so replay whitelists rather than passing the
+    # checkpointed dict through, and the whitelist has to be the emitted one.
+    data = {key: frame[key] for key in WORKFLOW_FRAME_FIELDS if key in frame}
+    error_text = frame.get("error")
+    if isinstance(error_text, str):
+        data["error"] = _sanitize_error_text(error_text)
+    return data
+
+
+def _mapped_run_status(ledger_status: str | None) -> str | None:
+    """None while the ledger row is absent or still open — no reconciliation."""
+    if ledger_status is None or ledger_status == "in_progress":
+        return None
+    return _LEDGER_TO_RUN_STATUS.get(ledger_status, "failed")
+
+
+def _reconcile_terminal_frame(
+    data: dict[str, Any], ledger_status: str | None, ledger_failure: str | None
+) -> dict[str, Any]:
+    mapped = _mapped_run_status(ledger_status)
+    if mapped is None or data.get("status") == mapped:
+        return data
+    data["status"] = mapped
+    if mapped != "completed" and not data.get("error"):
+        data["error"] = ledger_failure or f"run ended: {ledger_status}"
+    return data
+
+
 def model_fallback_items(
     thread_id: str, turn: Any, *, agent: str = MAIN_AGENT
 ) -> list[dict[str, Any]]:
     """Project a turn's model_fallback notices from its new ``ui`` records.
 
-    Field whitelist and error sanitization mirror the live handler. ``agent``
-    identifies the namespace being projected (main or ``task:{id}``).
+    The whitelist is every prop ``_emit_fallback`` pushes — narrower than the
+    live handler's list, which also serves transient ``model_retry`` fields
+    that never reach the checkpointed ``ui`` channel. ``agent`` identifies the
+    namespace being projected (main or ``task:{id}``).
     """
     items: list[dict[str, Any]] = []
     for record in turn.new_ui_records:

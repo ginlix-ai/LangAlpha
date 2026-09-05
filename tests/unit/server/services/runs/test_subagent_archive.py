@@ -1,0 +1,412 @@
+"""Tests for ``iter_subagent_events_full`` XRANGE-based collector helper.
+
+Covers:
+- Reads the per-task Redis Stream via XRANGE and decodes the ``b"record"`` field
+- Filters to ``seq <= captured_event_seq`` so late events don't leak in
+- Skips entries without a ``b"record"`` field (sentinels, legacy single-payload)
+- Tolerates malformed JSON in the ``b"record"`` field
+- Surfaces a ``subagent_history_truncated`` warning when the stream is shorter
+  than ``captured_event_seq``
+- No-ops when Redis is disabled or the cache client raises
+"""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from ptc_agent.agent.middleware.background_subagent.registry import (
+    BackgroundTaskRegistry,
+)
+from src.server.services.runs.subagent_archive import (
+    SubagentArchiveReadError,
+    iter_subagent_events_full,
+)
+
+
+def _record(seq: int, agent_id: str, i: int) -> dict:
+    return {
+        "seq": seq,
+        "event": "tool_calls",
+        "data": {"agent": "task:x", "i": i},
+        "agent_id": agent_id,
+    }
+
+
+def _stream_entry(seq: int, record: dict | None = None, *, event_bytes: bytes | None = b"id: x\n\n") -> tuple[bytes, dict[bytes, bytes]]:
+    """Build an XRANGE-shaped (entry_id, fields) pair."""
+    entry_id = f"{seq}-0".encode("utf-8")
+    fields: dict[bytes, bytes] = {}
+    if event_bytes is not None:
+        fields[b"event"] = event_bytes
+    if record is not None:
+        fields[b"record"] = json.dumps(record).encode("utf-8")
+    return entry_id, fields
+
+
+def _make_cache(entries: list[tuple[bytes, dict[bytes, bytes]]] | None) -> MagicMock:
+    fake_cache = MagicMock()
+    fake_cache.enabled = True
+    fake_cache.client = MagicMock()
+    fake_cache.client.xrange = AsyncMock(return_value=entries or [])
+    return fake_cache
+
+
+@pytest.mark.asyncio
+async def test_xrange_yields_records_in_seq_order(monkeypatch) -> None:
+    entries = [_stream_entry(seq, _record(seq, "agent-x", seq - 1)) for seq in range(1, 6)]
+    fake_cache = _make_cache(entries)
+    monkeypatch.setattr(
+        "src.server.services.runs.subagent_archive.get_cache_client",
+        lambda: fake_cache,
+    )
+
+    registry = BackgroundTaskRegistry()
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    # Advance captured_event_seq to match the entries written.
+    task.captured_event_seq = 5
+
+    seqs = [rec["seq"] async for rec in iter_subagent_events_full("thread-x", task)]
+    assert seqs == [1, 2, 3, 4, 5]
+    fake_cache.client.xrange.assert_awaited_once()
+    args, kwargs = fake_cache.client.xrange.call_args
+    # XRANGE(key, min="-", max="+") — accept positional or kwarg call shape.
+    assert args[0] == f"subagent:stream:thread-x:{task.task_id}"
+
+
+@pytest.mark.asyncio
+async def test_filters_seq_above_high_water_snapshot(monkeypatch) -> None:
+    """The producer may XADD entries between the snapshot read and our XRANGE.
+    Only entries with seq <= captured_event_seq at entry are yielded this pass."""
+    entries = [_stream_entry(seq, _record(seq, "agent-x", 0)) for seq in range(1, 6)]
+    fake_cache = _make_cache(entries)
+    monkeypatch.setattr(
+        "src.server.services.runs.subagent_archive.get_cache_client",
+        lambda: fake_cache,
+    )
+
+    registry = BackgroundTaskRegistry()
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.captured_event_seq = 3  # snapshot caps at 3
+
+    seqs = [rec["seq"] async for rec in iter_subagent_events_full("thread-x", task)]
+    assert seqs == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_entries_without_record_field_skipped(monkeypatch) -> None:
+    """Sentinels and any legacy single-payload entries lack ``b"record"`` and
+    are skipped (they don't carry persistable record JSON)."""
+    entries = [
+        _stream_entry(1, _record(1, "agent-x", 0)),
+        # Sentinel-style entry: only b"event", no b"record"
+        (b"2-0", {b"event": b'{"event": "subagent_stream_end"}'}),
+        _stream_entry(3, _record(3, "agent-x", 2)),
+    ]
+    fake_cache = _make_cache(entries)
+    monkeypatch.setattr(
+        "src.server.services.runs.subagent_archive.get_cache_client",
+        lambda: fake_cache,
+    )
+
+    registry = BackgroundTaskRegistry()
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.captured_event_seq = 3
+
+    seqs = [rec["seq"] async for rec in iter_subagent_events_full("thread-x", task)]
+    assert seqs == [1, 3]
+
+
+@pytest.mark.asyncio
+async def test_malformed_record_json_skipped(monkeypatch) -> None:
+    entries = [
+        _stream_entry(1, _record(1, "agent-x", 0)),
+        (b"2-0", {b"event": b"x", b"record": b"{not json"}),
+        _stream_entry(3, _record(3, "agent-x", 2)),
+    ]
+    fake_cache = _make_cache(entries)
+    monkeypatch.setattr(
+        "src.server.services.runs.subagent_archive.get_cache_client",
+        lambda: fake_cache,
+    )
+
+    registry = BackgroundTaskRegistry()
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.captured_event_seq = 3
+
+    seqs = [rec["seq"] async for rec in iter_subagent_events_full("thread-x", task)]
+    assert seqs == [1, 3]
+
+
+@pytest.mark.asyncio
+async def test_empty_high_water_yields_nothing() -> None:
+    """A task with no captured events emits no records and skips the XRANGE."""
+    registry = BackgroundTaskRegistry()
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    # captured_event_seq stays at 0
+
+    out = [rec async for rec in iter_subagent_events_full("thread-x", task)]
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_warns_when_stream_truncated(monkeypatch, caplog) -> None:
+    """If captured_event_seq is higher than the number of recoverable records,
+    surface ``subagent_history_truncated`` so the gap is observable."""
+    entries = [_stream_entry(seq, _record(seq, "agent-x", 0)) for seq in (4, 5)]
+    fake_cache = _make_cache(entries)
+    monkeypatch.setattr(
+        "src.server.services.runs.subagent_archive.get_cache_client",
+        lambda: fake_cache,
+    )
+
+    registry = BackgroundTaskRegistry()
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.captured_event_seq = 5  # expected 5, only 2 recoverable
+
+    import logging
+    caplog.set_level(logging.WARNING)
+    seqs = [rec["seq"] async for rec in iter_subagent_events_full("thread-x", task)]
+
+    assert seqs == [4, 5]
+    truncated = [r for r in caplog.records if "subagent_history_truncated" in r.getMessage()]
+    assert truncated, "expected a subagent_history_truncated warning"
+
+
+@pytest.mark.asyncio
+async def test_redis_disabled_yields_nothing(monkeypatch) -> None:
+    fake_cache = MagicMock()
+    fake_cache.enabled = False
+    fake_cache.client = None
+    monkeypatch.setattr(
+        "src.server.services.runs.subagent_archive.get_cache_client",
+        lambda: fake_cache,
+    )
+
+    registry = BackgroundTaskRegistry()
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.captured_event_seq = 5
+
+    out = [rec async for rec in iter_subagent_events_full("thread-x", task)]
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_xrange_failure_raises_instead_of_yielding_a_prefix(monkeypatch) -> None:
+    # A read failure used to read as "the stream was empty". Callers can't
+    # tell that from a genuinely short archive, so it has to be loud.
+    fake_cache = MagicMock()
+    fake_cache.enabled = True
+    fake_cache.client = MagicMock()
+    fake_cache.client.xrange = AsyncMock(side_effect=RuntimeError("redis blip"))
+    monkeypatch.setattr(
+        "src.server.services.runs.subagent_archive.get_cache_client",
+        lambda: fake_cache,
+    )
+
+    registry = BackgroundTaskRegistry()
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.captured_event_seq = 3
+
+    with pytest.raises(SubagentArchiveReadError):
+        [rec async for rec in iter_subagent_events_full("thread-x", task)]
+
+
+@pytest.mark.asyncio
+async def test_archive_read_is_bounded_and_paged(monkeypatch) -> None:
+    # The unbounded XRANGE topped the SLOWLOG under load. Reads now stop
+    # at the high-water mark and page, and the page loop must terminate on a
+    # SHORT page — waiting for an empty one spins forever when the last full
+    # page lands exactly on the boundary.
+    from src.server.services.runs import subagent_archive
+
+    monkeypatch.setattr(subagent_archive, "_ARCHIVE_PAGE", 2)
+    calls: list[dict] = []
+
+    def _entry(seq: int):
+        return (
+            f"{seq}-0".encode(),
+            {b"record": json.dumps({"seq": seq, "event": "x"}).encode()},
+        )
+
+    pages = [[_entry(1), _entry(2)], [_entry(3), _entry(4)]]
+
+    async def xrange(key, min=None, max=None, count=None):
+        calls.append({"min": min, "max": max, "count": count})
+        return pages.pop(0) if pages else []
+
+    fake_cache = MagicMock()
+    fake_cache.enabled = True
+    fake_cache.client = MagicMock()
+    fake_cache.client.xrange = xrange
+    monkeypatch.setattr(
+        "src.server.services.runs.subagent_archive.get_cache_client",
+        lambda: fake_cache,
+    )
+
+    registry = BackgroundTaskRegistry()
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.captured_event_seq = 4
+
+    out = [rec async for rec in iter_subagent_events_full("thread-x", task)]
+
+    assert [r["seq"] for r in out] == [1, 2, 3, 4]
+    # Bounded at the high-water mark, not "+".
+    assert all(c["max"] == "4-0" and c["count"] == 2 for c in calls)
+    # Second page resumes EXCLUSIVELY past the first page's last entry.
+    assert calls[0]["min"] == "-"
+    assert calls[1]["min"] == "(2-0"
+    # Third call returned empty, ending the loop.
+    assert len(calls) == 3
+
+
+# ---------------------------------------------------------------------------
+# Round bounds: a resume that could not confirm its spool delete keeps the
+# prior round resident under ids <= captured_event_seq_base.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_read_starts_above_the_round_base(monkeypatch) -> None:
+    """Records at or below the base belong to a previous round on a retained
+    stream — the read starts past them instead of re-serving them."""
+    entries = [_stream_entry(seq, _record(seq, "agent-x", 0)) for seq in range(1, 9)]
+    fake_cache = _make_cache(entries)
+    monkeypatch.setattr(
+        "src.server.services.runs.subagent_archive.get_cache_client",
+        lambda: fake_cache,
+    )
+
+    registry = BackgroundTaskRegistry()
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.captured_event_seq = 8
+    task.captured_event_seq_base = 5
+
+    seqs = [rec["seq"] async for rec in iter_subagent_events_full("thread-x", task)]
+    assert seqs == [6, 7, 8]
+    _, kwargs = fake_cache.client.xrange.call_args
+    # Exclusive-start syntax, so entry 5-0 itself is not re-read.
+    assert kwargs["min"] == "(5-0"
+    assert kwargs["max"] == "8-0"
+
+
+@pytest.mark.asyncio
+async def test_high_water_at_the_base_yields_nothing(monkeypatch) -> None:
+    """A resumed round that appended nothing has no records of its own, and
+    the retained prior round is not its to serve."""
+    fake_cache = _make_cache(
+        [_stream_entry(seq, _record(seq, "agent-x", 0)) for seq in range(1, 6)]
+    )
+    monkeypatch.setattr(
+        "src.server.services.runs.subagent_archive.get_cache_client",
+        lambda: fake_cache,
+    )
+
+    registry = BackgroundTaskRegistry()
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.captured_event_seq = 5
+    task.captured_event_seq_base = 5
+
+    out = [rec async for rec in iter_subagent_events_full("thread-x", task)]
+    assert out == []
+    fake_cache.client.xrange.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_truncation_warning_spans_only_the_current_round(
+    monkeypatch, caplog
+) -> None:
+    """``expected`` is the round's span, not the whole stream — otherwise every
+    resumed round reports itself short by the size of the round before it."""
+    entries = [_stream_entry(seq, _record(seq, "agent-x", 0)) for seq in range(1, 9)]
+    fake_cache = _make_cache(entries)
+    monkeypatch.setattr(
+        "src.server.services.runs.subagent_archive.get_cache_client",
+        lambda: fake_cache,
+    )
+
+    registry = BackgroundTaskRegistry()
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.captured_event_seq = 8
+    task.captured_event_seq_base = 5
+
+    import logging
+    caplog.set_level(logging.WARNING)
+    seqs = [rec["seq"] async for rec in iter_subagent_events_full("thread-x", task)]
+
+    assert seqs == [6, 7, 8]
+    assert not [
+        r for r in caplog.records if "subagent_history_truncated" in r.getMessage()
+    ]
+
+
+# ---------------------------------------------------------------------------
+# M6-D: collector retire stamps the run-scoped v2 key
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retire_stamps_the_run_scoped_v2_key():
+    """The v1 keys are task-scoped and need the Lua ownership guard; the v2
+    stream is keyed by the collected run's id, so its retention tightening
+    is unconditional — a stale collector can only ever touch its own run."""
+    from src.server.services.runs import subagent_collection
+
+    cache = MagicMock()
+    cache.enabled = True
+    cache.client = MagicMock()
+    cache.client.eval = AsyncMock(return_value=1)
+    cache.client.expire = AsyncMock(return_value=True)
+
+    await subagent_collection.delete_task_keys_if_owned(
+        cache, "t-1", "abc123", "resp-1", task_run_id="run-9"
+    )
+
+    cache.client.expire.assert_awaited_once_with(
+        "subagent:stream:t-1:run-9",
+        subagent_collection.TASK_STREAM_RETENTION_SECONDS,
+    )
+
+
+@pytest.mark.asyncio
+async def test_retire_without_a_run_id_stamps_nothing_extra():
+    """Pre-ledger tasks have no run-scoped stream to retire."""
+    from src.server.services.runs import subagent_collection
+
+    cache = MagicMock()
+    cache.enabled = True
+    cache.client = MagicMock()
+    cache.client.eval = AsyncMock(return_value=1)
+    cache.client.expire = AsyncMock()
+
+    await subagent_collection.delete_task_keys_if_owned(
+        cache, "t-1", "abc123", "resp-1"
+    )
+
+    cache.client.expire.assert_not_awaited()

@@ -1,16 +1,22 @@
 /*
- * Page-intro modal visual panel — blueprint style lifted from the
- * ginlix-platform landing page: blue radial glow, faint drafting grid, teal
- * pulse accents, mono-labelled product mockups. The panel follows the app
- * theme: near-black blueprint in dark mode, paper-light in light mode. All
- * surface/line colors below are tokens so the scenes render in both.
+ * Page-intro modal visual panel — blueprint style: accent radial glow, faint
+ * drafting grid, teal pulse accents, mono-labelled product mockups. The panel
+ * follows the app theme: near-black blueprint in dark mode, paper-light in
+ * light mode. All surface/line colors below are tokens so the scenes render
+ * in both.
+ *
+ * The structural accent is --primary itself, not a hex of its own. This panel
+ * shipped with a private copy of the brand color and quietly kept the old one
+ * through a rebrand; deriving it means that cannot happen twice, and it drops
+ * the per-theme override the hardcoded pair needed.
  */
 
 .intro-visual {
-  --iv-blue: #5a82d8;
-  --iv-blue-deep: #4161a4;
+  --iv-accent: hsl(var(--primary));
+  /* Both fills that use this carry a white glyph, so it has to stay dark
+     enough to hold one. Mixing toward black keeps it on the accent's hue. */
+  --iv-accent-deep: color-mix(in srgb, hsl(var(--primary)) 62%, #000);
   --iv-teal: #0fedbe;
-  --iv-amber: #ffc400;
   --iv-red: #ff6b6e;
   --iv-edge: rgba(232, 238, 248, 0.55);
   --iv-text: rgba(255, 255, 255, 0.86);
@@ -25,14 +31,14 @@
   --iv-grid: rgba(232, 238, 248, 0.05);
   --iv-mk-bg: rgba(10, 11, 14, 0.82);
   --iv-mk-border: rgba(255, 255, 255, 0.12);
-  --iv-mk-shadow: 0 16px 44px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(90, 130, 216, 0.07);
+  --iv-mk-shadow: 0 16px 44px rgba(0, 0, 0, 0.5), 0 0 0 1px hsl(var(--primary) / 0.07);
   --iv-region-bg: rgba(255, 255, 255, 0.03);
   --iv-ease: cubic-bezier(0.16, 1, 0.3, 1);
 
   position: relative;
   overflow: hidden;
   background:
-    radial-gradient(ellipse 95% 70% at 78% 12%, rgba(65, 97, 164, 0.4), transparent 70%),
+    radial-gradient(ellipse 95% 70% at 78% 12%, hsl(var(--primary) / 0.24), transparent 70%),
     radial-gradient(ellipse 70% 55% at 18% 112%, rgba(15, 237, 190, 0.1), transparent 70%),
     #060709;
   color: var(--iv-text);
@@ -41,7 +47,6 @@
 /* Light theme: paper panel, ink lines, accents darkened for contrast. */
 [data-theme='light'] .intro-visual {
   --iv-teal: #0a9f7c;
-  --iv-amber: #c27c00;
   --iv-red: #d8494c;
   --iv-text: rgba(18, 22, 30, 0.88);
   --iv-text-2: rgba(18, 22, 30, 0.62);
@@ -54,11 +59,11 @@
   --iv-grid: rgba(18, 22, 30, 0.05);
   --iv-mk-bg: rgba(255, 255, 255, 0.9);
   --iv-mk-border: rgba(18, 22, 30, 0.12);
-  --iv-mk-shadow: 0 16px 44px rgba(18, 22, 30, 0.14), 0 0 0 1px rgba(90, 130, 216, 0.08);
+  --iv-mk-shadow: 0 16px 44px rgba(18, 22, 30, 0.14), 0 0 0 1px hsl(var(--primary) / 0.08);
   --iv-region-bg: rgba(18, 22, 30, 0.03);
 
   background:
-    radial-gradient(ellipse 95% 70% at 78% 12%, rgba(90, 130, 216, 0.16), transparent 70%),
+    radial-gradient(ellipse 95% 70% at 78% 12%, hsl(var(--primary) / 0.16), transparent 70%),
     radial-gradient(ellipse 70% 55% at 18% 112%, rgba(10, 159, 124, 0.08), transparent 70%),
     #f4f1ea;
 }
@@ -104,8 +109,8 @@
 }
 
 .intro-mk--accent {
-  border-color: rgba(90, 130, 216, 0.55);
-  box-shadow: var(--iv-mk-shadow), 0 0 18px rgba(90, 130, 216, 0.28);
+  border-color: hsl(var(--primary) / 0.55);
+  box-shadow: var(--iv-mk-shadow), 0 0 18px hsl(var(--primary) / 0.28);
 }
 
 /* A region inside the zoomed-out page wireframe. Dim by default; `--hot`
@@ -117,9 +122,9 @@
 }
 
 .intro-region--hot {
-  border-color: rgba(90, 130, 216, 0.6);
-  background: rgba(90, 130, 216, 0.07);
-  box-shadow: 0 0 14px rgba(90, 130, 216, 0.22);
+  border-color: hsl(var(--primary) / 0.6);
+  background: hsl(var(--primary) / 0.07);
+  box-shadow: 0 0 14px hsl(var(--primary) / 0.22);
 }
 
 .intro-region--dashed {
@@ -187,8 +192,8 @@
 }
 
 .intro-pulse--blue {
-  background: var(--iv-blue);
-  box-shadow: 0 0 0 0 rgba(90, 130, 216, 0.6);
+  background: var(--iv-accent);
+  box-shadow: 0 0 0 0 hsl(var(--primary) / 0.6);
   animation-name: intro-pulse-blue;
 }
 
@@ -206,20 +211,20 @@
 
 @keyframes intro-pulse-blue {
   0% {
-    box-shadow: 0 0 0 0 rgba(90, 130, 216, 0.6);
+    box-shadow: 0 0 0 0 hsl(var(--primary) / 0.6);
   }
   70% {
-    box-shadow: 0 0 0 10px rgba(90, 130, 216, 0);
+    box-shadow: 0 0 0 10px hsl(var(--primary) / 0);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(90, 130, 216, 0);
+    box-shadow: 0 0 0 0 hsl(var(--primary) / 0);
   }
 }
 
 /* One-shot click ripple — fired by the scripted cursor in a scene. */
 .intro-click {
   border-radius: 50%;
-  border: 1.5px solid var(--iv-blue);
+  border: 1.5px solid var(--iv-accent);
   opacity: 0;
   animation: intro-click 0.55s var(--iv-ease) both;
   animation-delay: var(--rv, 0s);

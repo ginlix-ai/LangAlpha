@@ -61,14 +61,14 @@ export function useChartAnnotations(
 
     // 52-week high/low from quote data (real values from FMP quote API)
     if (quoteData) {
-      addLine(quoteData.yearHigh, '52W High', 'rgba(16,185,129,0.5)', LineStyle.Dashed);
-      addLine(quoteData.yearLow, '52W Low', 'rgba(239,68,68,0.5)', LineStyle.Dashed);
+      addLine(quoteData.yearHigh, '52W High', 'rgba(63,185,80,0.5)', LineStyle.Dashed);
+      addLine(quoteData.yearLow, '52W Low', 'rgba(248,81,73,0.5)', LineStyle.Dashed);
     }
 
     // Day range + previous close from quote data
     if (quoteData) {
       addLine(quoteData.dayHigh, 'Day High', 'rgba(34,211,238,0.4)', LineStyle.Dotted);
-      addLine(quoteData.dayLow, 'Day Low', 'rgba(239,68,68,0.4)', LineStyle.Dotted);
+      addLine(quoteData.dayLow, 'Day Low', 'rgba(248,81,73,0.4)', LineStyle.Dotted);
       addLine(quoteData.previousClose, 'Prev Close', 'rgba(139,143,163,0.5)', LineStyle.LargeDashed);
     }
 

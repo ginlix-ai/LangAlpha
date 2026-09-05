@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Globe, Monitor, Loader2 } from 'lucide-react';
+import { Globe, Monitor } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import { useTranslation } from 'react-i18next';
 import {
   Dialog,
@@ -39,18 +40,18 @@ function OptionCard({ icon, title, desc, badge, busy, disabled, onClick }: Optio
       disabled={disabled}
       className="flex items-start gap-3 text-left rounded-lg border p-3 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
       style={{ borderColor: 'var(--color-border-muted)', backgroundColor: 'var(--color-bg-card)' }}
-      onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.borderColor = 'var(--color-accent-primary)'; }}
+      onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.borderColor = 'var(--color-border-elevated)'; }}
       onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--color-border-muted)'; }}
     >
       <span className="mt-0.5 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }}>
-        {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : icon}
+        {busy ? <Loader size={20} className="text-current" /> : icon}
       </span>
       <span className="flex flex-col gap-1 min-w-0">
         <span className="flex items-center gap-2 text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
           {title}
           {badge && (
             <span
-              className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded"
+              className="text-[0.625rem] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded"
               style={{ backgroundColor: 'var(--color-accent-soft)', color: 'var(--color-accent-primary)' }}
             >
               {badge}

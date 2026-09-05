@@ -44,6 +44,8 @@ CHECKPOINT_PROJECTED = {
     "steering_delivered",
     "interrupt",
     "model_fallback",  # ui-channel record pushed by ModelResilienceMiddleware
+    "workflow_lifecycle",  # ui-channel `workflow_run` snapshot upserted by
+    # the workflow driver at terminal; frames re-emitted verbatim on replay
 }
 
 TABLE_SOURCED = {
@@ -70,10 +72,23 @@ LIVE_ONLY = {
     # recomputed from ledger+Redis on every load, never replayed from a store
     "market_watch_update",  # transient stamp notice, accumulate=False; the
     # durable watchlist re-seeds the chip via GET /{thread}/market-watch on replay
+    "thread_created",  # legacy creation SSE branch (POST /threads with
+    # Accept: text/event-stream), never on the run wire; the row itself is the
+    # durable truth (GET /threads/{id}). ⚠️ Deletes together with that branch.
+    "thread_title",  # legacy creation SSE branch: auto-title result; durable
+    # title re-read on every thread list/detail fetch, so never replayed.
+    # ⚠️ Deletes together with that branch (see create.py's shim note).
     "chan_open",  # mux channel lifecycle (thread_stream_mux)
     "chan_close",  # mux channel lifecycle (thread_stream_mux)
     "transport_error",  # mux whole-socket retryable close
     "timeout",  # watch/mux max-duration autoclose (predates mux; single-quoted emit sites evaded the scan)
+    "caught_up",  # backlog/live boundary marker on the run stream, emitted at
+    # the head sampled when a consumer attaches. Transient by construction: it
+    # marks where a batch of replayed events ends, so replaying it would be
+    # meaningless.
+    "chan_caught_up",  # the same boundary per mux channel (thread_stream_mux_v2)
+    "resync_required",  # mux: a channel's cursor fell off its stream, reload
+    # from history; a socket-level instruction, nothing to replay
 }
 
 # KNOWN GAP: survives replay only through persisted sse_events. Before
@@ -95,11 +110,18 @@ _CATEGORIES = {
 _EMIT_PATTERNS = (
     # _format_sse_event("type", ...) — possibly line-wrapped
     re.compile(r'_format_sse_event\(\s*"([a-z_]+)"'),
+    # _sse("type", ...) — the per-module frame helpers
+    re.compile(r'_sse\(\s*"([a-z_]+)"'),
+    # _control("type", ...) — the mux's socket-level control frames
+    re.compile(r'_control\(\s*"([a-z_]+)"'),
     # yield f"event: type\n..." and plain "event: type"
     re.compile(r'"(?:id: [^"]*?\\n)?event: ([a-z_]+)'),
     # replay item dicts: {"event": "type", ...}
     re.compile(r'\{"event": "([a-z_]+)"'),
     re.compile(r'"event": "([a-z_]+)",'),
+    # NAME_EVENT_TYPE = "type": a wire type named by a constant, where the
+    # frame around it is assembled somewhere the patterns above cannot see.
+    re.compile(r'^_?[A-Z][A-Z0-9_]*_EVENT_TYPE\s*=\s*"([a-z_]+)"', re.M),
 )
 
 

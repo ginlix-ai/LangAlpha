@@ -48,8 +48,6 @@ class TestDataclasses:
             stdout="hello",
             stderr="",
             duration=1.5,
-            files_created=["a.py"],
-            files_modified=[],
             execution_id="exec-1",
             code_hash="abc123",
         )
@@ -64,8 +62,6 @@ class TestDataclasses:
             stdout="",
             stderr="error",
             duration=0.1,
-            files_created=[],
-            files_modified=["x.py"],
             execution_id="exec-2",
             code_hash="def456",
             charts=[chart],

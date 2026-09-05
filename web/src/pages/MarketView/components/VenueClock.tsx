@@ -4,10 +4,12 @@
  * Pairs with the chart's market-local time axis — the clock and the axis always
  * agree on whose wall clock is shown.
  */
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { utcOffsetLabel } from '@/lib/utils';
 
-export default function VenueClock({ tz }: { tz: string }) {
+// Memoized: ticks itself once a second; parent chart re-renders shouldn't add
+// extra toLocaleTimeString/Intl work on top.
+export default memo(function VenueClock({ tz }: { tz: string }) {
   const [now, setNow] = useState(() => new Date());
 
   useEffect(() => {
@@ -24,4 +26,4 @@ export default function VenueClock({ tz }: { tz: string }) {
       <span className="venue-clock-offset">{utcOffsetLabel(tz, now)}</span>
     </span>
   );
-}
+});

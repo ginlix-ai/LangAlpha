@@ -3,6 +3,14 @@
    Semantic color tokens + Tailwind theme + base/utilities
    ============================================ */
 
+/* ---------- Root text scale ----------
+   100% inherits the user's browser/OS font-size preference; the app-level
+   setting (FontScaleContext, stamped as --app-font-scale on <html>)
+   multiplies on top, so both compose. Everything sized in rem follows. */
+html {
+  font-size: calc(100% * var(--app-font-scale, 1));
+}
+
 /* ---------- Mobile touch polish ---------- */
 @media (max-width: 767px) {
   /* Disable tap highlight globally on touch devices */
@@ -14,248 +22,380 @@
   /* Utility: contain overscroll inside overlays/drawers */
   .mobile-scroll-contain { overscroll-behavior: contain; }
 
-  /* Prevent iOS Safari auto-zoom on input focus (requires >= 16px font-size) */
-  input, select, textarea { font-size: 16px !important; }
+  /* Prevent iOS Safari auto-zoom on input focus (requires >= 16px font-size);
+     max() keeps inputs growing with the root scale instead of pinning them. */
+  input, select, textarea { font-size: max(16px, 1rem) !important; }
 }
 
 /* ---------- Semantic color tokens (hex/rgba for inline use) ---------- */
 :root {
+  /* Font roles: Sora is the app's voice (chrome, nav, controls); Geist is
+     the reading face for long-form surfaces (conversation, file content).
+     Apply via body default + the .font-content utility. */
+  /* One shared CJK companion (Noto Sans SC, unicode-range sliced by Google
+     Fonts) sits after the Latin faces in both roles: Latin glyphs never reach
+     it, CJK renders identically on every OS instead of PingFang/YaHei. */
+  --font-ui: 'Sora', 'Geist', 'Noto Sans SC', -apple-system, system-ui, sans-serif;
+  --font-content: 'Geist', 'Noto Sans SC', -apple-system, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Menlo', ui-monospace, SFMono-Regular, monospace;
+
   --sidebar-width: 80px;
   --bottom-tab-height: 78px;
 
-  --color-bg-page: #000000;
-  --color-bg-card: #0A0A0A;
-  --color-bg-elevated: #0F0F0F;
-  --color-bg-input: #0A0A0A;
-  --color-bg-tag: #1A1A1A;
-  --color-bg-code: #0F0F0F;
+  /* ---------- Background roles ----------
+     Which fill belongs on which surface. Reach for the role, not a lookalike
+     value — two roles sharing a hex in one theme diverge in the other.
+
+     | token        | surface                                                |
+     |--------------|--------------------------------------------------------|
+     | bg-page      | the app ground: chat page, settings, auth               |
+     | bg-canvas    | ground behind a card grid (dashboard); = page in dark   |
+     | bg-card      | a card/panel sitting on page or canvas                  |
+     | bg-card-hover| hover fill of a clickable card row (solid twin of card) |
+     | bg-tool-card | agent tool/artifact cards inside the transcript         |
+     | bg-elevated  | raised chrome over a card: menus, tooltips, hover sheets |
+     | bg-input     | text inputs, textareas, field-shaped readouts           |
+     | bg-popover   | hex twin of the --popover HSL the Radix/shadcn          |
+     |              | popover + select primitives paint themselves with       |
+
+     ⚠️ Floating surfaces deliberately do NOT share one fill yet: Radix
+     popover/select use --popover, tooltips and menus use bg-elevated, and
+     four dialogs still paint bg-page. Unification is deferred until the three
+     fills are compared side-by-side in both themes — don't converge one of
+     them in isolation.
+
+     Hex twins of the Tailwind/shadcn HSL block below are derived from it
+     (`hsl(var(--x))`) so a palette edit lands in one place; Tailwind needs
+     the bare triplet, inline styles and canvases need a color function. */
+  --color-bg-page: hsl(var(--background));
+  --color-bg-canvas: var(--color-bg-page);
+  --color-bg-card: hsl(var(--card));
+  --color-bg-card-hover: hsl(220 4% 17%);
+  --color-bg-tool-card: #232426;
+  --color-bg-elevated: #2A2B2E;
+  --color-bg-input: hsl(var(--input));
+  --color-bg-popover: hsl(var(--popover));
+  --color-bg-tag: #2A2B2E;
+  --color-bg-code: #1E1F21;
   --color-bg-surface: rgba(255, 255, 255, 0.06);
-  --color-bg-hover: rgba(255, 255, 255, 0.04);
-  --color-bg-subtle: rgba(255, 255, 255, 0.02);
+  --color-bg-hover: rgba(255, 255, 255, 0.05);
+  --color-bg-subtle: rgba(255, 255, 255, 0.03);
   --color-bg-chart-placeholder: #FFFFFF;
   --color-bg-overlay: rgba(0, 0, 0, 0.6);
   --color-bg-overlay-strong: rgba(0, 0, 0, 0.8);
 
   --color-border-muted: rgba(255, 255, 255, 0.08);
-  --color-border-default: #1A1A1A;
-  --color-border-elevated: #1A1A1A;
-  --color-border-subtle: #141414;
-  --color-border-input: #2A2A2A;
+  --color-border-default: #2E3033;
+  --color-border-elevated: #34363A;
+  --color-border-subtle: #26282B;
+  --color-border-input: #34363A;
 
-  --color-text-primary: #FFFFFF;
-  --color-text-secondary: #999999;
-  --color-text-tertiary: rgba(255, 255, 255, 0.6);
-  --color-text-quaternary: rgba(255, 255, 255, 0.35);
-  --color-text-muted: #BBBBBB;
-  --color-text-on-accent: #FFFFFF;
-  --color-icon-muted: #78716C;
-
-  --color-bg-elevated: #1A1A1A;
-  --color-bg-tool-card: #1A1A1A;
+  --color-text-primary: #E6E6E4;
+  --color-text-secondary: #9B9FA6;
+  --color-text-tertiary: rgba(230, 230, 228, 0.62);
+  --color-text-quaternary: rgba(230, 230, 228, 0.36);
+  --color-text-muted: #B9BDC2;
+  /* Ink, not white — the dark accent is a light ember, so white on it lands
+     under 3:1. Anything painted on --color-accent-primary must use this. */
+  --color-text-on-accent: #241505;
+  --color-icon-muted: #8A8F96;
 
   --Labels-Secondary: rgba(255, 255, 255, 0.5);
   --Labels-Tertiary: rgba(255, 255, 255, 0.45);
   --Labels-Quaternary: rgba(255, 255, 255, 0.4);
 
-  --color-accent-primary: #4161A4;
-  --color-accent-soft: rgba(65, 97, 164, 0.2);
-  --color-accent-disabled: rgba(65, 97, 164, 0.5);
-  --color-accent-overlay: rgba(75, 107, 174, 0.5);
-  --color-accent-gradient: linear-gradient(90deg, #4161A4 0%, #7089C0 28.85%, #2A4278 100%);
+  /* Burnished amber — annotation language, never a CTA fill. The solid face
+     is derived from --primary (see the role table); the alpha variants below
+     stay literal because rgba() needs channels, not an hsl() twin. Flat: the
+     old three-stop gradient is retired; the token stays a gradient type
+     because call sites use it as background-image. */
+  --color-accent-primary: hsl(var(--primary));
+  --color-accent-soft: rgba(233, 149, 74, 0.14);
+  --color-accent-disabled: rgba(233, 149, 74, 0.5);
+  /* Open/selected edges + glows. High alpha on purpose: at ~0.5 the amber
+     blends toward muddy brown over charcoal instead of reading as accent. */
+  --color-accent-overlay: rgba(233, 149, 74, 0.75);
+  --color-accent-gradient: linear-gradient(90deg, #E9954A 0%, #E9954A 100%);
 
-  --color-slash-icon: rgb(86, 119, 182);
-  --color-slash-pill-bg: rgba(86, 119, 182, 0.1);
-  --color-slash-pill-border: rgba(86, 119, 182, 0.3);
+  /* Focus ring, for plain CSS files. Derived from --ring so Tailwind's
+     ring-ring and a hand-written box-shadow can never drift apart. */
+  --color-focus-ring: hsl(var(--ring));
 
-  --color-profit: #0FEDBE;
-  --color-profit-soft: rgba(74, 222, 128, 0.2);
-  --color-profit-border: rgba(74, 222, 128, 0.3);
-  --color-profit-border-hover: rgba(15, 237, 190, 0.35);
-  --color-profit-muted: rgba(74, 222, 128, 0.6);
-  --color-loss: #FF383C;
-  --color-loss-soft: rgba(255, 56, 60, 0.1);
-  --color-loss-muted: rgba(255, 56, 60, 0.6);
-  --color-border-loss: rgba(255, 56, 60, 0.3);
+  --color-slash-icon: rgb(233, 149, 74);
+  --color-slash-pill-bg: rgba(233, 149, 74, 0.1);
+  --color-slash-pill-border: rgba(233, 149, 74, 0.28);
 
-  --color-warning: #eab308;
-  --color-warning-soft: rgba(234, 179, 8, 0.12);
-  --color-info: #3b82f6;
-  --color-info-soft: rgba(59, 130, 246, 0.12);
-  --color-success: #22c55e;
-  --color-success-soft: rgba(34, 197, 94, 0.12);
-  --color-accent-light: #7F9BCA;
-  --color-btn-primary-bg: #FFFFFF;
-  --color-btn-primary-text: #1a1b2e;
+  --color-profit: #3FB950;
+  --color-profit-soft: rgba(63, 185, 80, 0.16);
+  --color-profit-border: rgba(63, 185, 80, 0.3);
+  --color-profit-border-hover: rgba(63, 185, 80, 0.35);
+  --color-profit-muted: rgba(63, 185, 80, 0.6);
+  --color-loss: #F85149;
+  --color-loss-soft: rgba(248, 81, 73, 0.12);
+  --color-loss-muted: rgba(248, 81, 73, 0.6);
+  --color-border-loss: rgba(248, 81, 73, 0.3);
+
+  --color-warning: #D8B04C;
+  --color-warning-soft: rgba(216, 176, 76, 0.12);
+  --color-info: #6E9EF7;
+  --color-info-soft: rgba(110, 158, 247, 0.12);
+  --color-success: #3FB950;
+  --color-success-soft: rgba(63, 185, 80, 0.12);
+  --color-accent-light: #F2B67C;
+  --color-btn-primary-bg: #ECECEA;
+  --color-btn-primary-text: #1A1B1D;
+  /* Stop-button hover: the paper send face warmed toward red — hover intent
+     only, never the resting state. */
+  --color-btn-stop-hover-bg: #EAD6D3;
+  --color-btn-stop-hover-fg: #C22A20;
   --color-btn-danger: #dc2626;
   --color-btn-danger-pressed: #991b1b;
   --color-icon-danger: #f87171;
   --color-danger-hover-bg: rgba(239, 68, 68, 0.2);
 
-  --color-status-modified: rgba(251, 191, 36, 0.7);
-  --color-status-modified-border: rgba(251, 191, 36, 0.5);
-  --color-status-modified-glow: rgba(251, 191, 36, 0.25);
+  --color-status-modified: rgba(216, 176, 76, 0.7);
+  --color-status-modified-border: rgba(216, 176, 76, 0.5);
+  --color-status-modified-glow: rgba(216, 176, 76, 0.25);
 
-  --color-dot-grid: rgba(255, 255, 255, 0.14);
+  /* Dot-grid retired from work surfaces — kept barely-visible for empty states. */
+  --color-dot-grid: rgba(255, 255, 255, 0.05);
+
+  /* Identity tiles (Plugins rows): a name hashes to one of these eight muted
+     tints, so every server/skill/plugin keeps a recognizable mark across
+     surfaces. Identity is meaning — the one sanctioned hue system outside
+     accent + semantic colors; fills stay translucent so the tiles annotate
+     rather than brand. */
+  --color-identity-0-bg: hsla(212, 55%, 60%, 0.16);
+  --color-identity-0-fg: hsl(212, 62%, 72%);
+  --color-identity-1-bg: hsla(175, 55%, 52%, 0.16);
+  --color-identity-1-fg: hsl(175, 45%, 60%);
+  --color-identity-2-bg: hsla(132, 50%, 55%, 0.16);
+  --color-identity-2-fg: hsl(132, 40%, 64%);
+  --color-identity-3-bg: hsla(95, 45%, 55%, 0.16);
+  --color-identity-3-fg: hsl(95, 38%, 62%);
+  --color-identity-4-bg: hsla(45, 60%, 55%, 0.16);
+  --color-identity-4-fg: hsl(45, 55%, 64%);
+  --color-identity-5-bg: hsla(15, 60%, 58%, 0.16);
+  --color-identity-5-fg: hsl(15, 60%, 71%);
+  --color-identity-6-bg: hsla(275, 55%, 62%, 0.16);
+  --color-identity-6-fg: hsl(275, 55%, 76%);
+  --color-identity-7-bg: hsla(322, 55%, 60%, 0.16);
+  --color-identity-7-fg: hsl(322, 50%, 72%);
   --color-bg-card-gradient: rgba(255, 255, 255, 0.04);
   --color-bg-card-border: rgba(255, 255, 255, 0.10);
 
   /* ---------- Tailwind/shadcn theme (HSL, no "hsl()" wrapper) ---------- */
-  --background: 0 0% 0%;
-  --foreground: 0 0% 98%;
-  --card: 0 0% 4%;
-  --card-foreground: 0 0% 98%;
-  --popover: 0 0% 0%;
-  --popover-foreground: 0 0% 98%;
-  --primary: 221 43% 45%;
-  --primary-foreground: 0 0% 98%;
-  --secondary: 0 0% 10%;
-  --secondary-foreground: 0 0% 98%;
-  --muted: 0 0% 65%;
-  --muted-foreground: 0 0% 100% / 0.60;
-  --accent: 221 43% 45%;
-  --accent-foreground: 0 0% 98%;
-  --destructive: 0 84% 60%;
+  --background: 0 0% 9.8%;
+  --foreground: 60 4% 90%;
+  --card: 220 4% 14.5%;
+  --card-foreground: 60 4% 90%;
+  --popover: 220 5% 12.4%;
+  --popover-foreground: 60 4% 90%;
+  --primary: 28 78% 60%;
+  --primary-foreground: 28 60% 8%;
+  --secondary: 225 5% 17%;
+  --secondary-foreground: 60 4% 90%;
+  --muted: 218 6% 63%;
+  --muted-foreground: 60 4% 90% / 0.62;
+  --accent: 28 78% 60%;
+  --accent-foreground: 28 60% 8%;
+  --destructive: 3 93% 63%;
   --destructive-foreground: 0 0% 98%;
   --border: 0 0% 100% / 0.08;
-  --input: 0 0% 4%;
-  --ring: 221 43% 45%;
+  --input: 220 4% 14.5%;
+  /* Focus ring is the navy this product carried before the amber. Amber is the
+     active/selected language here, so a ring painted in it reads as "selected"
+     rather than "focused" — which is the whole reason the ring is not the brand
+     color (DESIGN.md). Lightness is set by the *lightest* surface a ring can
+     land on, not the page: at 52% it cleared 3:1 (WCAG 1.4.11) against the
+     sidebar and the cards but came to 2.98:1 on --color-bg-elevated, the menus
+     and tooltips. 55% lands at 3.35:1 there and higher everywhere else. Opaque
+     rather than a wash, so that margin does not move with the backdrop. */
+  --ring: 221 43% 55%;
   --radius: 0.5rem;
-  --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 4px 16px rgba(0, 0, 0, 0.25);
 
-  --bg-main: 0 0% 0%;
-  --bg-panel: 0 0% 3% / 0.75;
+  --bg-main: 0 0% 9.8%;
+  --bg-panel: 220 4% 12.4% / 0.85;
   --border-light: 0 0% 100% / 0.08;
-  --border-card: 0 0% 10%;
-  --color-up: 160 80% 50%;
-  --color-up-soft: 160 80% 50% / 0.16;
-  --color-down: 359 80% 60%;
-  --color-down-soft: 359 80% 60% / 0.16;
-  --accent-fin: 221 43% 45%;
-  --sidebar-bg: 0 0% 0%;
+  --border-card: 225 5% 17%;
+  --color-up: 128 49% 49%;
+  --color-up-soft: 128 49% 49% / 0.16;
+  --color-down: 3 93% 63%;
+  --color-down-soft: 3 93% 63% / 0.16;
+  --accent-fin: 28 78% 60%;
+  --sidebar-bg: 0 0% 12.5%;
   --sidebar-border: 0 0% 100% / 0.08;
   --sidebar-hover: 0 0% 100% / 0.06;
-  --sidebar-active: 221 43% 45% / 0.15;
   --sidebar-icon: 0 0% 100% / 0.60;
-  --sidebar-icon-active: 221 43% 45%;
+  /* Selection is two parts: the glyph darkens to -selected (that's the readable
+     signal) and -indicator paints the edge bar. Split because the accent alone is
+     under the 3:1 floor for a graphical indicator on the light rail. */
+  --sidebar-icon-selected: 0 0% 100%;
+  --sidebar-indicator: 28 78% 60%;
 }
 
 /* ---------- Light theme overrides ---------- */
-/* Warm, refined palette inspired by Claude — cream/beige tones */
+/* Notion-paper: pure-white page, white cards separated by neutral hairline
+   borders (not tonal fills), warm-neutral grays for text. The amber darkens a
+   step from the dark theme (#E9954A → #D07D33) so it holds on white — see
+   --login-ember in Login/LoginPage.css, which owns the auth surface and must
+   stay in step. */
 [data-theme="light"] {
-  --color-bg-page: #F3EEE8;
-  --color-bg-card: #FFFCF9;
-  --color-bg-elevated: #FFFCF9;
-  --color-bg-input: #F0EBE5;
-  --color-bg-tag: rgba(255, 252, 249, 0.75);
-  --color-bg-code: #E8E2DB;
-  --color-bg-surface: #EDE8E2;
+  /* bg-page / bg-card / bg-input / bg-popover are derived from the HSL block
+     below (see the role table in :root) — they need no override here. */
+  /* Warm paper ground so white cards read as raised surfaces instead of
+     border-only outlines on the same white. */
+  --color-bg-canvas: #F5F4F1;
+  /* Chat artifact cards: warm paper fill (inverse of the dashboard pairing —
+     there white cards sit on tinted canvas; here tinted cards sit on the
+     white chat page). The lightweight-charts canvases inside those cards now
+     read this token (MarketDataCharts CANVAS_SOURCES) instead of mirroring
+     it, so they cannot seam. */
+  --color-bg-tool-card: #F5F4F1;
+  --color-bg-card-hover: #FAFAF8;
+  --color-bg-elevated: #F7F7F6;
+  --color-bg-tag: #EFEFED;
+  --color-bg-code: #F4F4F2;
+  --color-bg-surface: #F4F4F2;
   --color-bg-hover: rgba(0, 0, 0, 0.04);
   --color-bg-subtle: rgba(0, 0, 0, 0.02);
-  --color-bg-chart-placeholder: #F3EEE8;
+  --color-bg-chart-placeholder: #FFFFFF;
   --color-bg-overlay: rgba(0, 0, 0, 0.25);
   --color-bg-overlay-strong: rgba(0, 0, 0, 0.45);
 
-  --color-border-muted: rgba(0, 0, 0, 0.08);
-  --color-border-default: #DDD7D0;
-  --color-border-elevated: #D0C9C1;
-  --color-border-subtle: #E8E2DB;
-  --color-border-input: #D0C9C1;
+  --color-border-muted: rgba(31, 31, 30, 0.08);
+  --color-border-default: #E8E8E6;
+  --color-border-elevated: #E3E3E1;
+  --color-border-subtle: #EFEFEE;
+  --color-border-input: #E3E3E1;
 
-  --color-text-primary: #2D2B28;
-  --color-text-secondary: #7A756F;
-  --color-text-tertiary: rgba(45, 43, 40, 0.55);
-  --color-text-quaternary: rgba(45, 43, 40, 0.35);
-  --color-text-muted: #9B958E;
-  --color-text-on-accent: #FFFFFF;
-  --color-icon-muted: #9B958E;
+  --color-text-primary: #1F1F1E;
+  --color-text-secondary: #73726E;
+  --color-text-tertiary: #A3A29E;
+  --color-text-quaternary: #B4B3AF;
+  --color-text-muted: #8C8B87;
+  /* Ink, matching dark — white on the amber is under 3:1 in either theme. */
+  --color-text-on-accent: #241505;
+  --color-icon-muted: #8C8B87;
 
-  --color-bg-elevated: #E8E2DB;
-  --color-bg-tool-card: #FFFCF9;
+  --Labels-Secondary: rgba(31, 31, 30, 0.5);
+  --Labels-Tertiary: rgba(31, 31, 30, 0.45);
+  --Labels-Quaternary: rgba(31, 31, 30, 0.4);
 
-  --Labels-Secondary: rgba(45, 43, 40, 0.5);
-  --Labels-Tertiary: rgba(45, 43, 40, 0.45);
-  --Labels-Quaternary: rgba(45, 43, 40, 0.4);
+  /* Amber, one step darker than dark-theme so it reads on white (the solid
+     face follows the light --primary below). Annotation only — rules,
+     underlines, markers — never a button fill. */
+  --color-accent-soft: rgba(208, 125, 51, 0.10);
+  --color-accent-disabled: rgba(208, 125, 51, 0.5);
+  /* Matches the dark-theme note: high alpha so the edge stays amber, not a
+     chalky wash over paper. */
+  --color-accent-overlay: rgba(208, 125, 51, 0.65);
+  --color-accent-gradient: linear-gradient(90deg, #F8F2EA 0%, #F8F2EA 100%);
 
-  --color-accent-primary: #37528B;
-  --color-accent-soft: rgba(55, 82, 139, 0.10);
-  --color-accent-disabled: rgba(55, 82, 139, 0.35);
-  --color-accent-overlay: rgba(55, 82, 139, 0.25);
-  --color-accent-gradient: linear-gradient(135deg, #EDF1F8 0%, #E0E8F4 50%, #F0EDE3 100%);
+  --color-slash-icon: rgb(208, 125, 51);
+  --color-slash-pill-bg: rgba(208, 125, 51, 0.12);
+  --color-slash-pill-border: rgba(208, 125, 51, 0.35);
 
-  --color-slash-icon: rgb(55, 82, 139);
-  --color-slash-pill-bg: rgba(55, 82, 139, 0.08);
-  --color-slash-pill-border: rgba(55, 82, 139, 0.2);
+  --color-profit: #1A7F37;
+  --color-profit-soft: rgba(26, 127, 55, 0.08);
+  --color-profit-border: rgba(26, 127, 55, 0.15);
+  --color-profit-border-hover: rgba(26, 127, 55, 0.25);
+  --color-profit-muted: rgba(26, 127, 55, 0.5);
+  --color-loss: #CF222E;
+  --color-loss-soft: rgba(207, 34, 46, 0.07);
+  --color-loss-muted: rgba(207, 34, 46, 0.5);
+  --color-border-loss: rgba(207, 34, 46, 0.18);
 
-  --color-profit: #16A34A;
-  --color-profit-soft: rgba(22, 163, 74, 0.08);
-  --color-profit-border: rgba(22, 163, 74, 0.15);
-  --color-profit-border-hover: rgba(22, 163, 74, 0.25);
-  --color-profit-muted: rgba(22, 163, 74, 0.5);
-  --color-loss: #DC2626;
-  --color-loss-soft: rgba(220, 38, 38, 0.07);
-  --color-loss-muted: rgba(220, 38, 38, 0.5);
-  --color-border-loss: rgba(220, 38, 38, 0.18);
-
-  --color-warning: #ca8a04;
-  --color-warning-soft: rgba(202, 138, 4, 0.08);
-  --color-info: #2563eb;
-  --color-info-soft: rgba(37, 99, 235, 0.08);
-  --color-success: #16a34a;
-  --color-success-soft: rgba(22, 163, 74, 0.08);
-  --color-accent-light: #6080B5;
-  --color-btn-primary-bg: #2D2B28;
-  --color-btn-primary-text: #FFFCF9;
+  --color-warning: #B45309;
+  --color-warning-soft: rgba(180, 83, 9, 0.08);
+  --color-info: #4477D4;
+  --color-info-soft: rgba(68, 119, 212, 0.08);
+  --color-success: #1A7F37;
+  --color-success-soft: rgba(26, 127, 55, 0.08);
+  --color-accent-light: #E09A57;
+  /* Confirm/approve buttons in chat — deliberately ink, not the accent, so
+     approving a plan never reads as the same affordance as a brand action. */
+  --color-btn-primary-bg: #1F1D1A;
+  --color-btn-primary-text: #FAF9F7;
+  --color-btn-stop-hover-bg: #3A211E;
+  --color-btn-stop-hover-fg: #F87168;
   --color-btn-danger: #dc2626;
   --color-btn-danger-pressed: #b91c1c;
   --color-icon-danger: #dc2626;
   --color-danger-hover-bg: rgba(220, 38, 38, 0.08);
 
-  --color-status-modified: rgba(202, 138, 4, 0.7);
-  --color-status-modified-border: rgba(202, 138, 4, 0.3);
-  --color-status-modified-glow: rgba(202, 138, 4, 0.15);
+  --color-status-modified: rgba(180, 83, 9, 0.7);
+  --color-status-modified-border: rgba(180, 83, 9, 0.3);
+  --color-status-modified-glow: rgba(180, 83, 9, 0.15);
 
-  --color-dot-grid: rgba(45, 43, 40, 0.08);
+  --color-dot-grid: rgba(31, 31, 30, 0.05);
 
-  --color-bg-card-gradient: rgba(255, 252, 249, 0.75);
-  --color-bg-card-border: rgba(0, 0, 0, 0.06);
+  /* Identity tiles — same hues as dark, tuned for the white page: slightly
+     denser fills, darker monograms. */
+  --color-identity-0-bg: hsla(212, 60%, 45%, 0.12);
+  --color-identity-0-fg: hsl(212, 60%, 38%);
+  --color-identity-1-bg: hsla(175, 55%, 40%, 0.12);
+  --color-identity-1-fg: hsl(175, 60%, 26%);
+  --color-identity-2-bg: hsla(132, 50%, 40%, 0.12);
+  --color-identity-2-fg: hsl(132, 50%, 28%);
+  --color-identity-3-bg: hsla(95, 45%, 40%, 0.12);
+  --color-identity-3-fg: hsl(95, 48%, 27%);
+  --color-identity-4-bg: hsla(45, 70%, 45%, 0.14);
+  --color-identity-4-fg: hsl(45, 80%, 27%);
+  --color-identity-5-bg: hsla(15, 65%, 48%, 0.12);
+  --color-identity-5-fg: hsl(15, 65%, 36%);
+  --color-identity-6-bg: hsla(275, 50%, 50%, 0.12);
+  --color-identity-6-fg: hsl(275, 45%, 40%);
+  --color-identity-7-bg: hsla(322, 55%, 48%, 0.12);
+  --color-identity-7-fg: hsl(322, 55%, 36%);
 
-  /* Tailwind/shadcn HSL — warm cream tones */
-  --background: 30 25% 93%;
-  --foreground: 30 5% 16%;
-  --card: 33 50% 99%;
-  --card-foreground: 30 5% 16%;
+  /* Solid white tile + crisp system hairline — the 75%-white wash the dark
+     theme uses for glass is invisible against the white page. */
+  --color-bg-card-gradient: #ffffff;
+  --color-bg-card-border: #e8e8e6;
+
+  /* Tailwind/shadcn HSL — white page, white bordered cards, burnished amber */
+  --background: 0 0% 100%;
+  --foreground: 60 2% 12%;
+  --card: 0 0% 100%;
+  --card-foreground: 60 2% 12%;
   --popover: 0 0% 100%;
-  --popover-foreground: 30 5% 16%;
-  --primary: 221 43% 38%;
-  --primary-foreground: 0 0% 100%;
-  --secondary: 30 15% 91%;
-  --secondary-foreground: 30 8% 22%;
-  --muted: 30 5% 52%;
-  --muted-foreground: 30 5% 16% / 0.55;
-  --accent: 221 43% 38%;
-  --accent-foreground: 0 0% 100%;
-  --destructive: 0 72% 51%;
+  --popover-foreground: 60 2% 12%;
+  --primary: 28 63% 51%;
+  --primary-foreground: 28 60% 8%;
+  --secondary: 60 3% 94%;
+  --secondary-foreground: 60 2% 20%;
+  --muted: 48 2% 54%;
+  --muted-foreground: 60 2% 12% / 0.55;
+  --accent: 28 63% 51%;
+  --accent-foreground: 28 60% 8%;
+  --destructive: 356 72% 47%;
   --destructive-foreground: 0 0% 100%;
-  --border: 30 10% 16% / 0.08;
-  --input: 30 15% 91%;
-  --ring: 221 43% 38%;
-  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.04), 0 4px 14px rgba(0, 0, 0, 0.06);
+  --border: 60 2% 12% / 0.09;
+  --input: 60 4% 96.5%;
+  /* Same navy as dark, one step down: on paper the lighter face washes out. */
+  --ring: 221 43% 45%;
+  /* Kept tight rather than dropped: floating overlays (AgentEventOverlay,
+     SelectionCommentOverlay, JumpToLatestPill) rely on this to separate from
+     a now-pure-white page — the workspace cards carry their own border. */
+  --shadow-card: 0 1px 2px rgba(31, 29, 26, 0.04), 0 2px 8px rgba(31, 29, 26, 0.05);
 
-  --bg-main: 30 25% 93%;
-  --bg-panel: 33 50% 99% / 0.92;
-  --border-light: 30 10% 16% / 0.08;
-  --border-card: 30 10% 82%;
-  --color-up: 152 69% 31%;
-  --color-up-soft: 152 69% 31% / 0.08;
-  --color-down: 0 72% 51%;
-  --color-down-soft: 0 72% 51% / 0.08;
-  --accent-fin: 221 43% 38%;
-  --sidebar-bg: 33 50% 99%;
-  --sidebar-border: 30 10% 16% / 0.06;
-  --sidebar-hover: 30 10% 16% / 0.04;
-  --sidebar-active: 221 43% 38% / 0.08;
-  --sidebar-icon: 30 5% 16% / 0.45;
-  --sidebar-icon-active: 221 43% 38%;
+  --bg-main: 0 0% 100%;
+  --bg-panel: 0 0% 100% / 0.92;
+  --border-light: 60 2% 12% / 0.08;
+  --border-card: 60 4% 91%;
+  --color-up: 137 66% 30%;
+  --color-up-soft: 137 66% 30% / 0.08;
+  --color-down: 356 72% 47%;
+  --color-down-soft: 356 72% 47% / 0.08;
+  --accent-fin: 28 63% 51%;
+  --sidebar-bg: 60 9% 96.5%;
+  --sidebar-border: 60 2% 12% / 0.07;
+  --sidebar-hover: 60 2% 12% / 0.04;
+  --sidebar-icon: 60 2% 12% / 0.50;
+  --sidebar-icon-selected: 60 2% 12%;
+  --sidebar-indicator: 28 63% 51%;
 }
 
 @layer base {
@@ -266,7 +406,7 @@
 
   body {
     @apply bg-background text-foreground;
-    font-family: 'Golos Text', 'Inter', system-ui, sans-serif;
+    font-family: var(--font-ui);
     margin: 0;
     padding: 0;
     width: 100%;
@@ -281,13 +421,134 @@
     margin: 0;
     padding: 0;
   }
+
+  /* The ring every control gets unless it draws its own. Without a baseline the
+     fallback is Chromium's -- `outline: auto` in a blue this product uses
+     nowhere -- and that was the ring on four out of five controls, the chat
+     transcript included. Lives in the base layer, so a component that does draw
+     its own still wins: a Tailwind `focus-visible:` utility by layer order, a
+     hand-written `.class:focus-visible` by specificity. */
+  :focus-visible {
+    outline: 2px solid var(--color-focus-ring);
+    outline-offset: 2px;
+  }
+
+  /* A text field is the one control the browser matches :focus-visible on for
+     either device. The heuristic is deliberate -- a field about to receive
+     typing has to look focused -- but it means the rule above rings a field
+     the mouse just clicked, where the same click on a button rings nothing.
+     No selector separates the two, so lib/inputModality.ts records how focus
+     arrived and this reads it back. A field the mouse focused keeps the caret
+     and its own border change; a Tab still brings the ring.
+
+     Spelled out type by type because the exemption has to be the narrow set
+     where every key is typing. A checkbox, a range, a number spinner and a
+     date field all take keys that are *commands*, and Chromium starts matching
+     :focus-visible the moment one arrives -- while this record still says
+     pointer, because focus never moved and no focusin fired. Written as
+     `input` those controls go dark under the user's own first keystroke.
+     Anything left off this list keeps a ring on a click, which is the mild
+     half of the trade. `contenteditable` is qualified for the same reason the
+     inputs are: the bare attribute selector also matches
+     `contenteditable="false"`, which is not a field and does not take typing.
+
+     Transparent rather than `none`, which is not a stylistic choice: forced
+     colors repaints every outline in the system palette but cannot paint one
+     that was never drawn, and it drops the box-shadow and normalizes the
+     border a field would otherwise be distinguished by. `none` here leaves a
+     high-contrast user with a clicked field marked by nothing but the caret.
+     A transparent outline is invisible everywhere else and becomes the
+     system's own focus color there -- the same reason Tailwind's
+     `outline-none` compiles to this and not to `outline: none`. */
+  :root[data-pointer-focus] :is(
+    textarea,
+    [contenteditable]:not([contenteditable="false"]),
+    input:not([type]),
+    input[type="text"],
+    input[type="email"],
+    input[type="password"],
+    input[type="search"],
+    input[type="tel"],
+    input[type="url"]
+  ):focus-visible {
+    outline: 2px solid transparent;
+  }
+
+  /* A field that fills a bordered container has nowhere to put a ring of its
+     own. An outline on the field alone cuts across the container's border and
+     leaves whatever else lives in there outside the indicator: the icon on a
+     search pill, the chips already entered on a token field. Mark the container
+     and it rings on the field's behalf.
+
+     Scoped to a direct-child input so a button sharing the container -- a clear
+     affordance, a chip's remove -- still rings itself instead of lighting the
+     whole box. Gated like the rule above and for the same reason: the field
+     inside matches :focus-visible for either device, so ungated this would
+     light the container on a click.
+
+     All three sit behind @supports because only the first of them survives a
+     parser without :has(): taking the ring off the field is a plain selector,
+     while the two rules that put it on the container are dropped as invalid.
+     Split, the fallback is not a ring in the wrong place, it is no ring at
+     all. Together they degrade to the baseline, which rings the field. */
+  @supports selector(:has(*)) {
+    .rings-within > input:focus-visible {
+      outline: none;
+    }
+
+    .rings-within:has(> input:focus-visible) {
+      outline: 2px solid var(--color-focus-ring);
+      outline-offset: 2px;
+    }
+
+    /* Transparent for the reason the field rule above is. */
+    :root[data-pointer-focus] .rings-within:has(> input:focus-visible) {
+      outline: 2px solid transparent;
+    }
+  }
+
+  /* Inside an SVG, Chromium paints its own ring on plain :focus -- it does not
+     gate that on :focus-visible the way it does for HTML, so a mouse click on
+     a chart draws a ring where the same click on a button would not. Take the
+     non-keyboard half away and the pseudo-class above rings the surface on a
+     Tab, exactly like everything else.
+
+     The descendant half is what the visible bug was: recharts stacks its
+     z-index layers as `<g tabindex="-1">`, so a click landing on a bar focuses
+     that layer rather than the surface, which is why the stray ring hugged the
+     bars and left the axis labels outside them. */
+  svg:focus:not(:focus-visible),
+  svg :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  /* A box that clips -- a tab bar that scrolls sideways, a segmented control
+     rounding its children -- eats the outset ring off whichever child sits
+     flush against the clipped edge, and what is left renders as a bar down one
+     side. Mark the clipper and its children ring inward instead. */
+  .clips-focus-ring > :focus-visible {
+    outline-offset: -2px;
+  }
+
+  /* tabindex="-1" is not a tab stop -- it is a landing spot script moves focus
+     to so the next Tab starts there (dialog roots, scroll ports). Chromium
+     carries :focus-visible across that programmatic move (lib/inputModality.ts),
+     so without this the ring draws around an entire dialog. */
+  [tabindex="-1"]:focus-visible {
+    outline: none;
+  }
 }
 
 @layer utilities {
+  /* Reading face for long-form surfaces: conversation transcript, file
+     viewers. Chrome/UI stays on the body default (--font-ui). */
+  .font-content {
+    font-family: var(--font-content);
+  }
+
+  /* Flat — the radial glow washes are retired with the quiet-workspace system. */
   .bg-app {
-    background: radial-gradient(1200px 600px at 20% 0%, rgba(255, 255, 255, 0.03), transparent),
-                radial-gradient(900px 500px at 85% 15%, hsl(var(--primary) / 0.06), transparent),
-                hsl(var(--bg-main));
+    background: hsl(var(--bg-main));
   }
 
   .panel {

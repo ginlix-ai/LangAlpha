@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import { relativeTime } from '@/lib/format';
 import { Globe, ExternalLink } from 'lucide-react';
 import { useWorkspaceId } from '../../contexts/WorkspaceContext';
 import { checkPreviewHealth } from '../../utils/api';
+import { CARD_BG, CARD_BORDER } from './inlineCardsShared';
 
 // Module-level deduplication: share a single in-flight health check per (workspaceId, port)
 const inflightChecks = new Map<string, Promise<{ reachable: boolean; checked_at: number }>>();
@@ -17,8 +20,6 @@ function deduplicatedHealthCheck(workspaceId: string, port: number) {
   return promise;
 }
 
-const CARD_BG = 'var(--color-bg-tool-card)';
-const CARD_BORDER = 'var(--color-border-muted)';
 const TEXT_COLOR = 'var(--color-text-tertiary)';
 const ACCENT = 'var(--color-accent-primary)';
 
@@ -27,16 +28,9 @@ interface InlinePreviewCardProps {
   onClick?: () => void;
 }
 
-function formatTimeAgo(epochSeconds: number): string {
-  const seconds = Math.max(0, Math.floor(Date.now() / 1000 - epochSeconds));
-  if (seconds < 60) return 'just now';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h ago`;
-}
 
 export function InlinePreviewCard({ artifact, onClick }: InlinePreviewCardProps): React.ReactElement | null {
+  useTranslation(); // relativeTime is locale-keyed — re-render on locale switch
   const workspaceId = useWorkspaceId();
   const [health, setHealth] = useState<{ reachable: boolean; checkedAt: number; sandboxStopped?: boolean } | null>(null);
   const [, setTick] = useState(0); // force re-render for "X min ago" updates
@@ -86,13 +80,13 @@ export function InlinePreviewCard({ artifact, onClick }: InlinePreviewCardProps)
     subtitle = 'Checking...';
   } else if (health.reachable) {
     dotColor = '#22c55e';
-    subtitle = `Live \u00b7 checked ${formatTimeAgo(health.checkedAt)}`;
+    subtitle = `Live \u00b7 checked ${relativeTime(health.checkedAt * 1000)}`;
   } else if (health.sandboxStopped) {
     dotColor = '#f59e0b';
-    subtitle = `Sandbox stopped \u00b7 checked ${formatTimeAgo(health.checkedAt)}`;
+    subtitle = `Sandbox stopped \u00b7 checked ${relativeTime(health.checkedAt * 1000)}`;
   } else {
     dotColor = '#9ca3af';
-    subtitle = `Offline \u00b7 checked ${formatTimeAgo(health.checkedAt)}`;
+    subtitle = `Offline \u00b7 checked ${relativeTime(health.checkedAt * 1000)}`;
   }
 
   return (
@@ -118,14 +112,14 @@ export function InlinePreviewCard({ artifact, onClick }: InlinePreviewCardProps)
       <Globe size={16} style={{ color: ACCENT, flexShrink: 0 }} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: 13 }}>
+          <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: '0.8125rem' }}>
             {title}
           </span>
           {port && (
             <span
               style={{
-                fontSize: 10,
-                fontFamily: 'var(--font-mono, monospace)',
+                fontSize: '0.625rem',
+                fontFamily: 'var(--font-mono)',
                 padding: '1px 6px',
                 borderRadius: 10,
                 backgroundColor: 'var(--color-bg-surface)',
@@ -146,7 +140,7 @@ export function InlinePreviewCard({ artifact, onClick }: InlinePreviewCardProps)
             }}
           />
         </div>
-        <div style={{ fontSize: 11, color: TEXT_COLOR, marginTop: 1 }}>
+        <div style={{ fontSize: '0.6875rem', color: TEXT_COLOR, marginTop: 1 }}>
           {subtitle}
         </div>
       </div>

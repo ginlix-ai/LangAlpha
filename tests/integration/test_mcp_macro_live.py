@@ -19,7 +19,7 @@ skip_no_fmp = pytest.mark.skipif(not _has_fmp, reason="FMP_API_KEY not set")
 @skip_no_fmp
 class TestEconomicIndicatorLive:
     async def test_gdp(self):
-        from mcp_servers.macro_mcp_server import get_economic_indicator
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
 
         result = await get_economic_indicator("GDP", limit=5)
         assert "error" not in result, result.get("error")
@@ -29,7 +29,7 @@ class TestEconomicIndicatorLive:
         assert "value" in row
 
     async def test_cpi(self):
-        from mcp_servers.macro_mcp_server import get_economic_indicator
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
 
         result = await get_economic_indicator("CPI", limit=3)
         assert "error" not in result, result.get("error")
@@ -39,7 +39,7 @@ class TestEconomicIndicatorLive:
 @skip_no_fmp
 class TestEconomicCalendarLive:
     async def test_success(self):
-        from mcp_servers.macro_mcp_server import get_economic_calendar
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_calendar
 
         result = await get_economic_calendar(
             from_date="2025-03-01", to_date="2025-03-07",
@@ -53,7 +53,7 @@ class TestEconomicCalendarLive:
 @skip_no_fmp
 class TestTreasuryRatesLive:
     async def test_success(self):
-        from mcp_servers.macro_mcp_server import get_treasury_rates
+        from plugins.langalpha_market_data.macro_mcp_server import get_treasury_rates
 
         result = await get_treasury_rates(
             from_date="2025-03-01", to_date="2025-03-05",
@@ -65,7 +65,7 @@ class TestTreasuryRatesLive:
 @skip_no_fmp
 class TestMarketRiskPremiumLive:
     async def test_success(self):
-        from mcp_servers.macro_mcp_server import get_market_risk_premium
+        from plugins.langalpha_market_data.macro_mcp_server import get_market_risk_premium
 
         result = await get_market_risk_premium()
         assert "error" not in result, result.get("error")
@@ -78,7 +78,7 @@ class TestMarketRiskPremiumLive:
 @skip_no_fmp
 class TestEarningsCalendarLive:
     async def test_success(self):
-        from mcp_servers.macro_mcp_server import get_earnings_calendar
+        from plugins.langalpha_market_data.macro_mcp_server import get_earnings_calendar
 
         result = await get_earnings_calendar(
             from_date="2025-01-27", to_date="2025-01-31",

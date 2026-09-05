@@ -88,5 +88,8 @@ def get_web_search_tool(
     )
 
     return create_logged_tool(
-        tool_fn, name="WebSearch", tracking_name=cap.tracking_key(depth_spec)
+        tool_fn,
+        name="WebSearch",
+        tracking_name=cap.tracking_key(depth_spec),
+        run_metadata={"search_engine": engine, "search_depth": depth_spec.name},
     )

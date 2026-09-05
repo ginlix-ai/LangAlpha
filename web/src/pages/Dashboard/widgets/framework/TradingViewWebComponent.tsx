@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useTheme } from '@/contexts/ThemeContext';
 import { EmbedFallback } from './EmbedFallback';
 import { mapLocaleForTV } from './tvConfig';
+import './tvEmbed.css';
 
 /**
  * Per-element+locale module loader cache. Each TradingView web-component lives
@@ -282,11 +283,10 @@ export function TradingViewWebComponent({
   return (
     <div className={`tv-embed-host flex flex-col h-full ${cardClass} ${className ?? ''}`}>
       <div className="relative flex-1 min-h-0">
-        <div
-          ref={hostRef}
-          className="tv-wc-container w-full h-full"
-          style={{ minHeight: 80 }}
-        />
+        {/* `tv-wc-container` carries the color-scheme reset from tvEmbed.css —
+            see TradingViewEmbed.tsx. The custom element mounts inside it so
+            the reset inherits into the iframe it builds. */}
+        <div ref={hostRef} className="tv-wc-container w-full h-full" style={{ minHeight: 80 }} />
         {status === 'error' && <EmbedFallback onRetry={retry} />}
       </div>
     </div>

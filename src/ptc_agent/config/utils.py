@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from dotenv import load_dotenv
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from ptc_agent.config.core import (
         DaytonaConfig,
@@ -89,7 +91,7 @@ DAYTONA_REQUIRED_FIELDS = [
     "python_version",
 ]
 
-MCP_REQUIRED_FIELDS = ["servers", "tool_discovery_enabled"]
+MCP_REQUIRED_FIELDS = ["tool_discovery_enabled"]
 
 LOGGING_REQUIRED_FIELDS = ["level", "file"]
 
@@ -221,16 +223,51 @@ def create_mcp_config(data: dict[str, Any]) -> MCPConfig:
         Configured MCPConfig object
     """
     from ptc_agent.config.core import MCPConfig, MCPServerConfig
+    from ptc_agent.config.plugins import bundled_mcp_servers
 
     validate_section_fields(data, MCP_REQUIRED_FIELDS, "mcp")
-    # Built-ins from agent_config.yaml are always source="builtin"; an explicit
-    # ``source`` key in YAML is ignored so a config file can't mark a server as
-    # an (untrusted) workspace server. ``headers`` passes through as a model
-    # field (built-ins may declare http/sse headers too).
-    mcp_servers = [
-        MCPServerConfig(**{k: v for k, v in server.items() if k != "source"})
-        for server in data["servers"]
-    ]
+    # The bundles under plugins/ are where the shipped servers are declared;
+    # what is left in YAML is the operator's own list. A name that appears in
+    # both is an override: the YAML keys are laid over the bundled server and
+    # every key left out keeps the shipped value, so switching one off or
+    # retuning one field costs two lines instead of retyping the entry. The
+    # alternative, replacing the whole server, reads the same in the file and
+    # silently drops the command a partial override never restates.
+    #
+    # The merge is one level deep. ``env`` and ``headers`` are replaced whole
+    # rather than key-merged, because an operator pointing a server somewhere
+    # else needs to be able to take a variable away, and a deep merge has no
+    # way to say that.
+    #
+    # A YAML server is always source="builtin"; an explicit ``source`` key is
+    # ignored so a config file can't mark one as an (untrusted) workspace
+    # server. ``headers`` passes through as a model field (built-ins may
+    # declare http/sse headers too).
+    mcp_servers = bundled_mcp_servers()
+    bundled = len(mcp_servers)
+    overridden = 0
+    index = {s.name: i for i, s in enumerate(mcp_servers)}
+    for server in data.get("servers") or []:
+        fields = {k: v for k, v in server.items() if k != "source"}
+        position = index.get(fields.get("name"))
+        if position is None:
+            config = MCPServerConfig(**fields)
+            index[config.name] = len(mcp_servers)
+            mcp_servers.append(config)
+            continue
+        # Re-validate the merged whole rather than model_copy(update=...),
+        # which would write the YAML values in unchecked.
+        base = mcp_servers[position]
+        mcp_servers[position] = MCPServerConfig(**{**base.model_dump(), **fields})
+        overridden += 1
+        logger.info(
+            "agent_config.yaml overrides bundled MCP server %r: %s",
+            base.name, ", ".join(sorted(k for k in fields if k != "name")) or "nothing",
+        )
+    logger.info(
+        "MCP servers configured: %d (%d bundled, %d added, %d overridden)",
+        len(mcp_servers), bundled, len(mcp_servers) - bundled, overridden,
+    )
     return MCPConfig(
         servers=mcp_servers,
         tool_discovery_enabled=data["tool_discovery_enabled"],
@@ -320,6 +357,17 @@ def configure_structlog(level: str = "INFO") -> None:
             # NOTE: ConsoleRenderer formats exceptions itself; do NOT add
             # structlog.processors.format_exc_info upstream of it or structlog
             # warns about double-processing.
-            structlog.dev.ConsoleRenderer(),
+            #
+            # show_locals defaults to True, which writes every frame local into
+            # the log: a single handled `exc_info=True` becomes ~100 lines, and
+            # the locals go out verbatim — sandbox commands, script bodies,
+            # anything holding a token. Log output never passes through
+            # src/server/utils/secret_redactor.py (that covers user-facing file
+            # content), so this was the one path that could print a credential.
+            structlog.dev.ConsoleRenderer(
+                exception_formatter=structlog.dev.RichTracebackFormatter(
+                    show_locals=False
+                )
+            ),
         ],
     )

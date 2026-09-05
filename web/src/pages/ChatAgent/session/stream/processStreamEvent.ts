@@ -7,6 +7,7 @@
 import { isUpstreamHint, type StructuredError } from '@/utils/rateLimitError';
 import { applyAnnotationArtifact } from '@/pages/MarketView/stores/chartAnnotationStore';
 import type { AssistantMessage } from '@/types/chat';
+import { CREDIT_STOP_ERROR_TYPE } from '@/types/sse';
 import { setStoredThreadId } from '../../hooks/utils/threadStorage';
 import { createAssistantMessage, appendMessage, updateMessage } from '../../hooks/utils/messageHelpers';
 import type { HtmlWidgetData } from '../../hooks/utils/types';
@@ -27,6 +28,7 @@ import {
 import {
   isSubagentEvent, handleSubagentMessageChunk, handleSubagentToolCallChunks,
   handleSubagentToolCalls, handleSubagentToolCallResult, handleTaskSteeringAccepted,
+  handleWorkflowLifecycle,
 } from '../subagents/liveEventHandlers';
 import { getOrCreateTaskRefs } from '../streamRefs';
 import { handleMarketWatchUpdate, type MarketWatchState } from '../marketWatchEvents';
@@ -62,6 +64,7 @@ export interface StreamRouterDeps {
  */
 // TODO: type properly — refs should use a proper interface matching StreamRefs from streamEventHandlers
 export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouterDeps, assistantMessageId: string, refs: StreamProcessorRefs, getTaskIdFromEvent: (event: SSEEvent) => string | null, wasInterruptedRef: { current: boolean } | null = null) => {
+  const reconnectOrigin = refs.isReconnect === true;
   const setMessagesForHandlers = rt.setMessages as unknown as (
     updater: (prev: Record<string, unknown>[]) => Record<string, unknown>[]
   ) => void;
@@ -100,7 +103,17 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
   // pending-instruction bubble that taskRefs.messages doesn't (useCardState
   // keeps the longer array), and a failed task may have no assistant
   // message at all — a pushed message survives both.
-  const appendTaskNoticeMessage = (taskId: string, text: string, detail?: string): void => {
+  //
+  // `card` rides the same write rather than taking one of its own: by the time
+  // a terminal notice arrives the card is usually already inactive, and a write
+  // carrying no messages is dropped there as a stale pure-status update. The
+  // messages make this one a content update, which always lands.
+  const appendTaskNoticeMessage = (
+    taskId: string,
+    text: string,
+    detail?: string,
+    card?: Record<string, unknown>,
+  ): void => {
     if (!rt.updateSubagentCard) return;
     const taskRefs = getOrCreateTaskRefs(refs, taskId);
     const order = ++taskRefs.contentOrderCounterRef.current;
@@ -114,10 +127,10 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       toolCallProcesses: {},
     });
     taskRefs.messages = updatedMessages;
-    rt.updateSubagentCard(taskId, { messages: updatedMessages });
+    rt.updateSubagentCard(taskId, { ...card, messages: updatedMessages });
   };
 
-  const processEvent = (event: SSEEvent): void => {
+  const dispatch = (event: SSEEvent): void => {
     const eventType = event.event || 'message_chunk';
 
     // Check if this is a subagent event — filtered from the main chat view
@@ -314,8 +327,10 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
         return [...prev, ...newUserMessages];
       });
 
-      // 3. Create new assistant message placeholder (steering continuation — not a new backend turn)
-      const newAssistantId = `assistant-${Date.now()}`;
+      // 3. Create new assistant message placeholder (steering continuation — not a new backend turn).
+      //    Random suffix: the turn's first bubble uses the same Date.now() scheme,
+      //    and two ids minted in the same millisecond would collide.
+      const newAssistantId = `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       const newAssistant = { ...createAssistantMessage(newAssistantId), isSteering: true };
       rt.setMessages((prev) => appendMessage(prev,newAssistant));
 
@@ -534,6 +549,13 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
               loading: true,
             });
           }
+        } else if (eventType === 'workflow_lifecycle') {
+          handleWorkflowLifecycle({
+            taskId,
+            event: event as unknown as Record<string, unknown>,
+            refs,
+            updateSubagentCard: rt.updateSubagentCard,
+          });
         } else if (eventType === 'steering_delivered') {
           if (event.content) {
             handleTaskSteeringAccepted({
@@ -569,8 +591,24 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
         } else if (eventType === 'error' || event.error) {
           // chan_close carries only the terminal status; the failure reason
           // exists only on this frame — surface it in the task transcript.
+          // This frame is also the only place the task path carries
+          // `error_type`, which is what separates a credit stop (the run was
+          // cut short by the turn's budget) from an actual failure.
           const errMsg = (event.error || event.message || '') as string;
-          appendTaskNoticeMessage(taskId, rt.t('chat.taskErrorNotification'), errMsg || undefined);
+          const stopped = event.error_type === CREDIT_STOP_ERROR_TYPE;
+          // The reason lands on the card as well, because the card is what
+          // the MAIN transcript reads. Without it a background task stopped
+          // for money reads there as a bare "Stopped" — indistinguishable
+          // from one the user ended — while its only explanation sits in a
+          // transcript they have to open the task to see.
+          appendTaskNoticeMessage(
+            taskId,
+            rt.t(stopped ? 'chat.taskStoppedNotification' : 'chat.taskErrorNotification'),
+            errMsg || undefined,
+            errMsg
+              ? { error: errMsg, ...(event.error_type ? { errorType: event.error_type } : {}) }
+              : undefined,
+          );
         }
       }
       return; // Don't process subagent events in main chat view
@@ -759,7 +797,11 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
           pendingTaskToolCallIds.push(...updated);
         }
 
-        if (action === 'init') {
+        // 'workflow' is a RunWorkflow launch: a distinct action (the history
+        // projector claims no checkpoint namespace for it) but identical card
+        // mechanics, and the payload already carries type 'workflow'. Its
+        // progress arrives as workflow_lifecycle events on the same task lane.
+        if (action === 'init' || action === 'workflow') {
           // A duplicate/replayed spawn for a task we already saw settle must
           // resurface with its REAL terminal outcome (completed/cancelled/error),
           // never a blanket 'completed' that would launder a failure as success.
@@ -792,6 +834,18 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
           // retract the observed terminal outcome so the settled-task guards
           // stop skipping it (it is live again under a new run).
           rt.terminalTaskOutcomesRef.current.delete(task_id as string);
+          // The same retraction for WHY it stopped, and it has to reach both
+          // writers rather than just the card below: the telemetry resolver
+          // takes whichever of the two holds a reason, and refreshSubagentCard
+          // copies history's back onto the card on the next open, so clearing
+          // one alone is undone by the other. The ledger agrees on the next
+          // reload, where the task's latest run is the resumed one and carries
+          // no failure at all.
+          const resumedEntry = rt.subagentHistoryRef.current?.[agentId];
+          if (resumedEntry) {
+            resumedEntry.error = undefined;
+            resumedEntry.errorType = undefined;
+          }
           if (rt.updateSubagentCard) {
             // Prefer preserving the original spawn description (already on the card).
             // But after reconnect the card may have been wiped + recreated without a
@@ -805,6 +859,12 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
               type: (type || 'general-purpose') as string,
               status: 'active',
               isActive: true,
+              // The card half of the retraction above. Card state is keyed by
+              // task, and the resume's card shares that key with the one that
+              // stopped, so leaving it set would show the stop notice on a task
+              // actively working.
+              error: undefined,
+              errorType: undefined,
               ...(historyDesc ? { description: historyDesc } : {}),
               ...(historyPrompt ? { prompt: historyPrompt } : {}),
             });
@@ -978,5 +1038,33 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
     }
   };
 
+  const processEvent = (event: SSEEvent): void =>
+    dispatchWithReplayStamp(refs, reconnectOrigin, event, dispatch);
+
   return processEvent;
+};
+
+/**
+ * Dispatch a mux frame with the stamp its channel asks for. A frame marked
+ * `_replay` existed before the channel opened, so a processor born on a
+ * reconnect (its bag flipped live once the main backlog flushed) folds it
+ * as history. A processor born on a send ignores the mark: there a task's
+ * replay from 0 is its whole, fresh transcript.
+ */
+export const dispatchWithReplayStamp = (
+  refs: { isReconnect?: boolean },
+  reconnectOrigin: boolean,
+  event: SSEEvent,
+  dispatch: (event: SSEEvent) => void,
+): void => {
+  if (event._replay !== true || !reconnectOrigin || refs.isReconnect) {
+    dispatch(event);
+    return;
+  }
+  refs.isReconnect = true;
+  try {
+    dispatch(event);
+  } finally {
+    refs.isReconnect = false;
+  }
 };

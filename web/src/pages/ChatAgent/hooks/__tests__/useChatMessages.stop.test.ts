@@ -72,7 +72,9 @@ function findReasoning(msg: AssistantMessage | undefined) {
 describe('useChatMessages — stopWorkflow (hard stop)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockCancel.mockResolvedValue({ success: true });
+    // The real envelope: `cancelled` + a `state` naming why, when it did
+    // nothing. (`{ success: true }` was never a shape this endpoint returned.)
+    mockCancel.mockResolvedValue({ cancelled: true, message: 'Cancellation signal sent.' });
   });
 
   /**
@@ -281,6 +283,57 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
     await act(async () => { await send.catch(() => undefined); });
   });
 
+  it('warns when the cancel answered 200 but stopped nothing live', async () => {
+    // The dangerous no-op: the run we named was gone (rewound row, stale id)
+    // while the thread stayed busy. Nothing was stopped, yet the promise
+    // resolved — and the teardown above already made the UI look stopped, so
+    // silence here would leave the client claiming a stop that never happened
+    // while the run keeps spending model and sandbox time.
+    mockCancel.mockResolvedValue({
+      cancelled: false,
+      state: 'another_run_active',
+      message: 'A run is active on this thread but the one to stop is gone.',
+    });
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-stop', 'th-stop'));
+    const { hang, send } = await startHangingSendWithReasoning(result);
+
+    await act(async () => {
+      await result.current.stopWorkflow();
+    });
+
+    // One attempt: the POST succeeded, so there is nothing to retry.
+    expect(mockCancel).toHaveBeenCalledTimes(1);
+    expect(toastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ variant: 'destructive', description: 'chat.stopFailed' }),
+    );
+
+    hang.resolve({ disconnected: false, aborted: true });
+    await act(async () => { await send.catch(() => undefined); });
+  });
+
+  it.each(['already_finished', 'no_active_run'])(
+    'stays quiet when a %s cancel had nothing to stop',
+    async (state) => {
+      // Both mean the turn was already over — the user got what they asked
+      // for. Warning here would fire on every stop that races its own
+      // teardown, which is the common case, and train the toast to be ignored.
+      mockCancel.mockResolvedValue({ cancelled: false, state, message: 'nothing to cancel' });
+
+      const { result } = renderHookWithProviders(() => useChatMessages('ws-stop', 'th-stop'));
+      const { hang, send } = await startHangingSendWithReasoning(result);
+
+      await act(async () => {
+        await result.current.stopWorkflow();
+      });
+
+      expect(toastMock).not.toHaveBeenCalled();
+
+      hang.resolve({ disconnected: false, aborted: true });
+      await act(async () => { await send.catch(() => undefined); });
+    },
+  );
+
   it('an aborted stream is swallowed — no error banner, no double cleanup', async () => {
     const { result } = renderHookWithProviders(() => useChatMessages('ws-stop', 'th-stop'));
     const { hang, send } = await startHangingSendWithReasoning(result);
@@ -313,6 +366,7 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
       onEvent({ event: 'metadata', thread_id: 'th-stop', run_id: 'run-1' });
       onEvent({ event: 'message_chunk', role: 'assistant', agent: 'main', content_type: 'reasoning_signal', content: 'start' });
       onEvent({ event: 'message_chunk', role: 'assistant', agent: 'main', content_type: 'reasoning', content: 'resuming...' });
+      onEvent({ event: 'caught_up' });
       return hang.promise;
     });
 

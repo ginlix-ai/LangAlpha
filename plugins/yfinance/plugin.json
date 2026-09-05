@@ -1,0 +1,47 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "yfinance",
+  "version": "1.0.0",
+  "description": "Yahoo Finance as four servers: price history with dividends and splits, financial statements and valuations, analyst and insider data, and the market screener with sector and calendar views.",
+  "author": {
+    "name": "LangAlpha",
+    "url": "https://langalpha.ai"
+  },
+  "homepage": "https://langalpha.ai",
+  "repository": "https://github.com/ranaroussi/yfinance",
+  "license": "Apache-2.0",
+  "keywords": [
+    "yahoo-finance",
+    "market-data",
+    "screener",
+    "analyst-estimates",
+    "dividends"
+  ],
+  "extensions": {
+    "ai.langalpha": {
+      "icon": "finance.yahoo.com",
+      "servers": {
+        "yf_price": {
+          "description": "Yahoo Finance price history, dividends, and splits data",
+          "instruction": "Use for historical OHLCV price data, dividend history, stock splits, and multi-stock price comparisons. Returns large time series ideal for code-based analysis.",
+          "tool_exposure_mode": "summary"
+        },
+        "yf_market": {
+          "description": "Yahoo Finance market status, search, screener, calendars, sectors",
+          "instruction": "Use for ticker search, stock screening (custom and predefined), earnings calendars, market status, and sector/industry analysis. Best for market-wide discovery and screening.",
+          "tool_exposure_mode": "summary"
+        },
+        "yf_fundamentals": {
+          "description": "Yahoo Finance financial statements, earnings, company info, and valuations",
+          "instruction": "Use for income statements, balance sheets, cash flow, earnings data, company info, and valuation comparisons across multiple stocks. Returns structured financial data ideal for fundamental analysis.",
+          "tool_exposure_mode": "summary"
+        },
+        "yf_analysis": {
+          "description": "Yahoo Finance analyst data, holdings, insiders, news, and ESG",
+          "instruction": "Use for analyst recommendations, price targets, upgrades/downgrades, earnings estimates, institutional/mutual fund holders, insider transactions, news, and ESG sustainability scores.",
+          "tool_exposure_mode": "summary"
+        }
+      }
+    }
+  }
+}

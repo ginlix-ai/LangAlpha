@@ -251,6 +251,7 @@ async def test_get_user_with_preferences(user_mock_db, mock_cursor):
         "investment_preference": {},
         "agent_preference": {},
         "other_preference": {},
+        "model_preference": {},
         "pref_created_at": now,
         "pref_updated_at": now,
     }

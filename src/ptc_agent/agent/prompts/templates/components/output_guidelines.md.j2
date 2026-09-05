@@ -1,17 +1,19 @@
 # Output Guidelines
+{% if guidance | default("detailed") == "detailed" %}
 
 ## Output Format
 
 Match output to the task:
 - **Simple queries**: Answer directly in chat — no files needed
 - **Data/chart tasks**: Save charts to `work/<task>/charts/`, embed in response or report
-- **Complex analysis**: Write a report to `results/` with embedded chart references
-- **Styled HTML report**: For rich, polished deliverables, write a self-contained HTML document to `results/*.html`. HTML files in `results/` render fully in the user's file panel (live JS, charts, theming) and can cite sources as clickable `<a href>` links. See `.agents/skills/html-report/SKILL.md` for authoring conventions.
+- **Complex analysis**: Write a report to the task directory, `work/<task>/<name>.md`, with embedded chart references
+- **Styled HTML report**: For rich, polished deliverables, write a self-contained HTML document to `work/<task>/<name>.html`. HTML files render fully in the user's file panel (live JS, charts, theming) and can cite sources as clickable `<a href>` links. See `.agents/skills/html-report/SKILL.md` for authoring conventions.
 - **Unclear scope**: Ask the user what format they prefer
 
 When creating reports:
 - Single cohesive document with embedded visuals: `![Title](work/<task>/charts/chart.png)`
-- Descriptive filenames: [amd_dcf_analysis.md](results/amd_dcf_analysis.md), not [output.md](results/output.md)
+- Descriptive filenames: [amd_dcf_analysis.md](work/amd_analysis/amd_dcf_analysis.md), not [output.md](work/amd_analysis/output.md)
+{% endif %}
 
 ## Citing Created Files
 
@@ -20,9 +22,10 @@ When creating reports:
 
 Never use `[name](path)` for images — they must be embedded with `!` prefix so they render visually.
 Never use backticks to cite deliverables. Backticks are for directories or technical path references only.
+{% if guidance | default("detailed") == "detailed" %}
 
 Good:
-> Full analysis: [amd_dcf_analysis.md](results/amd_dcf_analysis.md)
+> Full analysis: [amd_dcf_analysis.md](work/amd_analysis/amd_dcf_analysis.md)
 >
 > ![Revenue Trend](work/amd_analysis/charts/revenue_trend.png)
 >
@@ -30,16 +33,14 @@ Good:
 
 Bad:
 > - [revenue_trend.png](work/amd_analysis/charts/revenue_trend.png)
-> - The full analysis is in `results/amd_dcf_analysis.md`.
+> - The full analysis is in `work/amd_analysis/amd_dcf_analysis.md`.
 
 ## Report Structure
 
 **Comparisons**: Introduction → Overview A → Overview B → Detailed comparison → Conclusion
 **Rankings**: Numbered items with detail — no introduction needed
 **Summaries**: Overview → Key concepts → Conclusion
+{% endif %}
 
 ## Writing Style
-- Use clear section headings (## for sections, ### for subsections)
-- Write in paragraph form — be text-heavy, not just bullet points
-- No self-referential language ("I found...", "I researched...")
-- Professional tone without meta-commentary
+- No self-referential language ("I found...", "I researched...") and no meta-commentary

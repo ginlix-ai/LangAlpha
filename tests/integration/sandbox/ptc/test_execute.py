@@ -44,11 +44,14 @@ class TestExecute:
         assert "OK" in ls_result.stdout
 
     async def test_execute_with_file_creation(self, shared_sandbox):
-        """Code that creates files should report files_created."""
+        """A write through the sandbox filesystem succeeds and is readable back."""
         result = await shared_sandbox.execute(
-            "with open('results/test_output.txt', 'w') as f: f.write('data')"
+            "import pathlib; p = pathlib.Path('work/exec_probe'); p.mkdir(parents=True, "
+            "exist_ok=True); (p / 'out.txt').write_text('data'); "
+            "print((p / 'out.txt').read_text())"
         )
         assert result.success is True
+        assert "data" in result.stdout
 
     async def test_execute_increments_counter(self, shared_sandbox):
         initial = shared_sandbox.execution_count

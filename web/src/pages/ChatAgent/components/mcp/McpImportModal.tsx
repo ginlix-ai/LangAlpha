@@ -1,5 +1,6 @@
 import React, { useDeferredValue, useMemo, useState } from 'react';
-import { X, Loader2, Download, CheckCircle2, AlertTriangle, KeyRound } from 'lucide-react';
+import { X, Download, CheckCircle2, AlertTriangle, KeyRound } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
 import { parseMcpServersJson } from './mcpImport';
 import { formatApiErrorDetail, type McpImportResult, type McpImportResultRow } from '../../utils/api';
 
@@ -108,11 +109,11 @@ export function McpImportModal({ onClose, onImport, onImported }: McpImportModal
                 placeholder={PLACEHOLDER}
                 rows={12}
                 spellCheck={false}
-                className="w-full px-3 py-2 text-xs rounded-md bg-transparent outline-none font-mono resize-none"
+                className="w-full px-3 py-2 text-xs rounded-md bg-transparent font-mono resize-none"
                 style={{ color: 'var(--color-text-primary)', border: '1px solid var(--color-border-muted)' }}
               />
               {text.trim() && (
-                <div className="text-[11px]" style={{ color: preview.error ? 'var(--color-loss)' : 'var(--color-text-tertiary)' }}>
+                <div className="text-[0.6875rem]" style={{ color: preview.error ? 'var(--color-loss)' : 'var(--color-text-tertiary)' }}>
                   {preview.error
                     ? preview.error
                     : `Found ${preview.servers.length} server${preview.servers.length === 1 ? '' : 's'}` +
@@ -148,9 +149,9 @@ export function McpImportModal({ onClose, onImport, onImported }: McpImportModal
               onClick={handleImport}
               disabled={!canImport}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors disabled:opacity-50"
-              style={{ color: 'var(--color-text-on-accent)', backgroundColor: 'var(--color-accent-primary)' }}
+              style={{ color: 'var(--color-btn-primary-text)', backgroundColor: 'var(--color-btn-primary-bg)' }}
             >
-              {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+              {importing ? <Loader size={14} className="text-current" /> : <Download className="h-3.5 w-3.5" />}
               Import{parseableCount > 0 ? ` ${parseableCount}` : ''}
             </button>
           )}
@@ -179,7 +180,7 @@ function ImportResultView({ result }: { result: McpImportResult }) {
 
       {result.secrets_created.length > 0 && (
         <div
-          className="flex items-start gap-1.5 text-[11px] p-2 rounded"
+          className="flex items-start gap-1.5 text-[0.6875rem] p-2 rounded"
           style={{ backgroundColor: 'var(--color-bg-card)', color: 'var(--color-text-secondary)' }}
         >
           <KeyRound className="h-3.5 w-3.5 mt-0.5 shrink-0" />
@@ -207,13 +208,13 @@ function ImportResultView({ result }: { result: McpImportResult }) {
                 {r.name}
               </span>
               {r.renamed && (
-                <span className="text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>
+                <span className="text-[0.625rem]" style={{ color: 'var(--color-text-tertiary)' }}>
                   (from {r.original_name})
                 </span>
               )}
             </div>
             <span
-              className="shrink-0 text-[10px]"
+              className="shrink-0 text-[0.625rem]"
               style={{ color: ok(r.status) ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)' }}
               title={r.error || r.reason || ''}
             >

@@ -5,13 +5,17 @@ The wire contract is v1-identical: content frames render exactly the string
 surface; ``run_end`` closes; the seq cursor resumes exclusively.
 """
 
+import asyncio
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.server.handlers.chat import task_run_sse_reader as reader_mod
 from src.server.handlers.chat.task_run_sse_reader import (
     _record_to_v1_sse,
+    _resolve_task_run_id,
     stream_task_run_sse,
 )
 
@@ -153,3 +157,82 @@ class TestStreamLoop:
         ):
             frames = await _collect(stream_task_run_sse("t1", "ab12"))
         assert frames == ["legacy-frame"]
+
+
+@pytest.fixture
+def resolve_env(monkeypatch):
+    """Stub the three resolution sources; each test overrides what it needs.
+
+    Defaults answer "nothing known yet" so the poll loop keeps rounding until
+    its deadline decides.
+    """
+    import src.server.database.runs.subagent_runs as sr_db
+
+    async def no_task(thread_id, task_id):
+        return None
+
+    monkeypatch.setattr(sr_db, "get_task", no_task)
+    monkeypatch.setattr(reader_mod, "_STARTUP_POLL", 0.01)
+    monkeypatch.setattr(reader_mod, "_STARTUP_TIMEOUT", 0.05)
+
+    store = MagicMock()
+    store.get_registry = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        reader_mod.BackgroundRegistryStore,
+        "get_instance",
+        classmethod(lambda cls: store),
+    )
+    monkeypatch.setattr(reader_mod, "read_task_meta", AsyncMock(return_value=None))
+    return sr_db
+
+
+class TestResolveDeadline:
+    @pytest.mark.asyncio
+    async def test_hung_ledger_read_cannot_overshoot_the_budget(
+        self, resolve_env, monkeypatch
+    ):
+        """A wedged ``get_task`` must expire on the budget, not on TCP keepalives.
+
+        There is no ``statement_timeout``, so an unbounded per-round await
+        would hold the request ~110 s past the deadline (connect_timeout +
+        keepalive teardown) before the loop-top check ever ran again.
+        """
+
+        async def hang(thread_id, task_id):
+            await asyncio.sleep(3600)
+
+        monkeypatch.setattr(resolve_env, "get_task", hang)
+
+        started = time.monotonic()
+        run_id = await asyncio.wait_for(
+            _resolve_task_run_id("t1", "ab12"), timeout=5.0
+        )
+        elapsed = time.monotonic() - started
+
+        assert run_id is None  # same fallback as running the rounds out
+        assert elapsed < 1.0, f"resolution overshot its 0.05s budget: {elapsed}s"
+
+    @pytest.mark.asyncio
+    async def test_expiry_and_round_exhaustion_share_the_fallback(self, resolve_env):
+        assert await _resolve_task_run_id("t1", "ab12") is None
+
+    @pytest.mark.asyncio
+    async def test_ledger_row_still_resolves_inside_the_window(
+        self, resolve_env, monkeypatch
+    ):
+        async def get_task(thread_id, task_id):
+            return {"latest_run_id": "r1"}
+
+        monkeypatch.setattr(resolve_env, "get_task", get_task)
+        assert await _resolve_task_run_id("t1", "ab12") == "r1"
+
+    @pytest.mark.asyncio
+    async def test_meta_resolution_still_wins_inside_the_window(
+        self, resolve_env, monkeypatch
+    ):
+        monkeypatch.setattr(
+            reader_mod,
+            "read_task_meta",
+            AsyncMock(return_value={"task_run_id": "r2"}),
+        )
+        assert await _resolve_task_run_id("t1", "ab12") == "r2"

@@ -432,15 +432,10 @@ class TestPlatformVariantFiltering:
 # ---------------------------------------------------------------------------
 
 
-_EMBEDDING_KEYS = {"embedding-small", "embedding-large", "embedding-cn"}
-_CHAT_MODELS = {k: v for k, v in _MODELS.items() if k not in _EMBEDDING_KEYS}
-
 
 class TestModelsManifestIntegrity:
-    """Every model in models.json must have a valid provider and model_id.
-
-    Non-embedding models must also declare input_modalities.
-    """
+    """Every model in models.json must have a valid provider, model_id, and
+    input_modalities."""
 
     @pytest.mark.parametrize("model_key", list(_MODELS.keys()))
     def test_model_has_model_id(self, model_key):
@@ -459,9 +454,9 @@ class TestModelsManifestIntegrity:
             f"which is not defined in providers.json"
         )
 
-    @pytest.mark.parametrize("model_key", list(_CHAT_MODELS.keys()))
+    @pytest.mark.parametrize("model_key", list(_MODELS.keys()))
     def test_chat_model_has_input_modalities(self, model_key):
-        entry = _CHAT_MODELS[model_key]
+        entry = _MODELS[model_key]
         modalities = entry.get("input_modalities")
         assert modalities and isinstance(modalities, list), (
             f"Chat model '{model_key}' is missing input_modalities"

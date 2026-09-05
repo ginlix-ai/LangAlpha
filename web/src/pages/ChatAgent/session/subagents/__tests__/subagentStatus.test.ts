@@ -6,7 +6,28 @@
  * detail view contradicted its inline chip's "Running".
  */
 import { describe, it, expect } from 'vitest';
-import { deriveSubagentStatus, normalizeWireStatus } from '../subagentStatus';
+import {
+  deriveSubagentStatus,
+  isToolResultFailure,
+  normalizeWireStatus,
+} from '../subagentStatus';
+
+describe('isToolResultFailure', () => {
+  it('matches the bare failure ToolMessage case-insensitively', () => {
+    // A failed spawn opens no channel — this signal alone must settle the
+    // card, for both the "Error: " convention and persisted "ERROR: " turns
+    // (pre-normalization RunWorkflow).
+    expect(isToolResultFailure({ content: 'Error: could not start Task-x' })).toBe(true);
+    expect(isToolResultFailure({ content: "ERROR: Provide exactly one of 'script', 'script_path', or 'workflow'." })).toBe(true);
+    expect(isToolResultFailure({ content: '  error: lowercase too' })).toBe(true);
+  });
+
+  it('never flags results with artifacts or non-error content', () => {
+    expect(isToolResultFailure({ content: 'Error: x', artifact: { task_id: 't1' } })).toBe(false);
+    expect(isToolResultFailure({ content: 'dispatched ok' })).toBe(false);
+    expect(isToolResultFailure({ content: ['Error: x'] })).toBe(false);
+  });
+});
 
 describe('normalizeWireStatus', () => {
   it('passes terminal display statuses through', () => {

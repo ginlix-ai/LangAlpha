@@ -149,20 +149,18 @@ class TestLoadFromDictOptionalSections:
     def test_no_agent_section(self):
         """Missing agent section uses defaults."""
         config = load_from_dict(_full_config_dict())
-        assert config.enable_view_image is True
         assert config.background_auto_wait is False
 
     def test_agent_section_with_values(self):
-        data = _full_config_dict(agent={"enable_view_image": False, "background_auto_wait": True})
+        data = _full_config_dict(agent={"background_auto_wait": True})
         config = load_from_dict(data)
-        assert config.enable_view_image is False
         assert config.background_auto_wait is True
 
     def test_agent_section_none(self):
         """YAML sections with only comments parse as None."""
         data = _full_config_dict(agent=None)
         config = load_from_dict(data)
-        assert config.enable_view_image is True
+        assert config.background_auto_wait is False
 
     def test_no_skills_section(self):
         config = load_from_dict(_full_config_dict())
@@ -173,7 +171,6 @@ class TestLoadFromDictOptionalSections:
         data = _full_config_dict(skills={
             "enabled": False,
             "user_skills_dir": "/custom/skills",
-            "project_skills_dir": "my-skills",
             "sandbox_skills_base": "/sandbox/skills",
         })
         config = load_from_dict(data)

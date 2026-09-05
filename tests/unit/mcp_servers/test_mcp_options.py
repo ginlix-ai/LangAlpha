@@ -14,7 +14,7 @@ import pytest
 
 from .conftest import assert_error, assert_ok_envelope
 
-_MOD = "mcp_servers.options_mcp_server"
+_MOD = "plugins.langalpha_market_data.options_mcp_server"
 
 _OPT = "O:AAPL260618C00220000"
 
@@ -56,7 +56,7 @@ def _ensure(mod, value: bool):
 class TestGetOptionsChain:
     @pytest.mark.asyncio
     async def test_no_ginlix_client(self):
-        import mcp_servers.options_mcp_server as mod
+        import plugins.langalpha_market_data.options_mcp_server as mod
 
         with _ensure(mod, False):
             result = await mod.get_options_chain("AAPL")
@@ -65,7 +65,7 @@ class TestGetOptionsChain:
 
     @pytest.mark.asyncio
     async def test_success(self):
-        import mcp_servers.options_mcp_server as mod
+        import plugins.langalpha_market_data.options_mcp_server as mod
 
         fetch = AsyncMock(return_value={"results": [_CONTRACT]})
         with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_chain", new=fetch):
@@ -80,7 +80,7 @@ class TestGetOptionsChain:
 
     @pytest.mark.asyncio
     async def test_upstream_error(self):
-        import mcp_servers.options_mcp_server as mod
+        import plugins.langalpha_market_data.options_mcp_server as mod
 
         fetch = AsyncMock(return_value={"error": "Failed to fetch options chain: boom"})
         with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_chain", new=fetch):
@@ -90,7 +90,7 @@ class TestGetOptionsChain:
 
     @pytest.mark.asyncio
     async def test_not_found_from_status_code(self):
-        import mcp_servers.options_mcp_server as mod
+        import plugins.langalpha_market_data.options_mcp_server as mod
 
         fetch = AsyncMock(return_value={"error": "ginlix-data error (404): unknown ticker"})
         with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_chain", new=fetch):
@@ -106,7 +106,7 @@ class TestGetOptionsChain:
 class TestGetOptionsPrices:
     @pytest.mark.asyncio
     async def test_unsupported_interval(self):
-        import mcp_servers.options_mcp_server as mod
+        import plugins.langalpha_market_data.options_mcp_server as mod
 
         result = await mod.get_options_prices(_OPT, "2025-01-01", "2025-01-31", interval="3min")
         assert_error(result, "unsupported_interval", symbol=_OPT)
@@ -114,7 +114,7 @@ class TestGetOptionsPrices:
 
     @pytest.mark.asyncio
     async def test_no_ginlix_client(self):
-        import mcp_servers.options_mcp_server as mod
+        import plugins.langalpha_market_data.options_mcp_server as mod
 
         with _ensure(mod, False):
             result = await mod.get_options_prices(_OPT, "2025-01-01", "2025-01-31")
@@ -123,7 +123,7 @@ class TestGetOptionsPrices:
 
     @pytest.mark.asyncio
     async def test_success_ascending_and_underlying_currency(self):
-        import mcp_servers.options_mcp_server as mod
+        import plugins.langalpha_market_data.options_mcp_server as mod
 
         fetch = AsyncMock(return_value=list(_OPT_ROWS_DESC))
         with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_prices", new=fetch):
@@ -140,7 +140,7 @@ class TestGetOptionsPrices:
 
     @pytest.mark.asyncio
     async def test_interval_alias_normalized(self):
-        import mcp_servers.options_mcp_server as mod
+        import plugins.langalpha_market_data.options_mcp_server as mod
 
         fetch = AsyncMock(return_value=list(_OPT_ROWS_DESC))
         with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_prices", new=fetch):
@@ -152,7 +152,7 @@ class TestGetOptionsPrices:
     @pytest.mark.asyncio
     async def test_weekly_supported(self):
         """Options prices serve the full canonical vocab (incl. 1week)."""
-        import mcp_servers.options_mcp_server as mod
+        import plugins.langalpha_market_data.options_mcp_server as mod
 
         fetch = AsyncMock(return_value=list(_OPT_ROWS_DESC))
         with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_prices", new=fetch):
@@ -162,7 +162,7 @@ class TestGetOptionsPrices:
 
     @pytest.mark.asyncio
     async def test_error_dict_maps_to_rate_limited(self):
-        import mcp_servers.options_mcp_server as mod
+        import plugins.langalpha_market_data.options_mcp_server as mod
 
         fetch = AsyncMock(return_value={"error": "ginlix-data error (429): slow down"})
         with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_prices", new=fetch):
@@ -178,14 +178,14 @@ class TestGetOptionsPrices:
 class TestGetOptionsSnapshot:
     @pytest.mark.asyncio
     async def test_no_tickers(self):
-        import mcp_servers.options_mcp_server as mod
+        import plugins.langalpha_market_data.options_mcp_server as mod
 
         result = await mod.get_options_snapshot("   ")
         assert_error(result, "invalid_argument")
 
     @pytest.mark.asyncio
     async def test_no_ginlix_client(self):
-        import mcp_servers.options_mcp_server as mod
+        import plugins.langalpha_market_data.options_mcp_server as mod
 
         with _ensure(mod, False):
             result = await mod.get_options_snapshot(_OPT)
@@ -194,7 +194,7 @@ class TestGetOptionsSnapshot:
 
     @pytest.mark.asyncio
     async def test_success_single_underlying(self):
-        import mcp_servers.options_mcp_server as mod
+        import plugins.langalpha_market_data.options_mcp_server as mod
 
         canned = {"count": 1, "data": [_SNAP], "source": "ginlix-data"}
         fetch = AsyncMock(return_value=canned)
@@ -210,7 +210,7 @@ class TestGetOptionsSnapshot:
 
     @pytest.mark.asyncio
     async def test_currency_omitted_when_underlying_unresolvable(self):
-        import mcp_servers.options_mcp_server as mod
+        import plugins.langalpha_market_data.options_mcp_server as mod
 
         canned = {"count": 0, "data": [], "source": "ginlix-data"}
         fetch = AsyncMock(return_value=canned)
@@ -223,7 +223,7 @@ class TestGetOptionsSnapshot:
 
     @pytest.mark.asyncio
     async def test_upstream_error(self):
-        import mcp_servers.options_mcp_server as mod
+        import plugins.langalpha_market_data.options_mcp_server as mod
 
         fetch = AsyncMock(return_value={"error": "Failed to fetch options snapshot: boom"})
         with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_snapshot", new=fetch):

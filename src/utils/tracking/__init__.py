@@ -18,7 +18,6 @@ from .core import (
     get_tracker,
     serialize_agent_message,
     renumber_agent_index,
-    add_cost_to_token_usage,
     calculate_cost_from_per_call_records,
 )
 
@@ -52,7 +51,6 @@ __all__ = [
     'get_tracker',
     'serialize_agent_message',
     'renumber_agent_index',
-    'add_cost_to_token_usage',
     'calculate_cost_from_per_call_records',
     # Decorators
     'track_messages',

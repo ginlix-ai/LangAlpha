@@ -114,7 +114,7 @@ export function WatchlistRowItem({ item, index, marketStatus, onDelete }: Watchl
           </div>
           {hasQuote && extType && extPct != null && (
             <div
-              className="text-[10px] mt-0.5 text-center flex items-center justify-center gap-0.5"
+              className="text-[0.625rem] mt-0.5 text-center flex items-center justify-center gap-0.5"
               style={{ color: extColor }}
             >
               {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
@@ -246,7 +246,7 @@ export function PortfolioRowItem({
           </div>
           {hasQuote && extType && extPct != null && (
             <div
-              className="text-[10px] mt-0.5 text-center flex items-center justify-center gap-0.5"
+              className="text-[0.625rem] mt-0.5 text-center flex items-center justify-center gap-0.5"
               style={{ color: extColor }}
             >
               {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}

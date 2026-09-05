@@ -18,16 +18,10 @@ from ptc_agent.config.core import MCPServerConfig
 BUILTIN_ONLY_SNAPSHOT = (
     "\nmarket: Market data tools\n"
     "  Instructions: Use for stock prices and fundamentals.\n"
-    "  - Module: tools/market.py\n"
     "  - Tools: 1 tool available\n"
-    "  - Import: from tools.market import <tool_name>\n"
-    "  - Documentation: tools/docs/market/*.md\n"
     "\nfilings: SEC filings\n"
-    "  Module: tools/filings.py\n"
     "  Available tools:\n"
-    "    - search(query: string, limit: int = 10) -> list: Search filings.\n"
-    "\n**Note**: Check `tools/docs/{server_name}/{tool_name}.md` for exact "
-    "function signatures before use."
+    "    - search(query: string, limit: int = 10) -> list: Search filings."
 )
 
 

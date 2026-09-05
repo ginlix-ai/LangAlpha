@@ -121,7 +121,7 @@ async def classify_reconnect(
         if task_info is not None:
             return run_id or task_info.run_id
         raise HTTPException(
-            status_code=404, detail=f"Workflow {thread_id} not found"
+            status_code=404, detail=f"No active turn on thread {thread_id}"
         )
 
     if run["status"] == "in_progress":

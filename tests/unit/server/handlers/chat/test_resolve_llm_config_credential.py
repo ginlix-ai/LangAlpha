@@ -22,6 +22,8 @@ from ptc_agent.config.agent import (
 )
 
 HANDLER = "src.server.services.llm.config"
+USER_MODELS = "src.server.services.llm.user_models"
+CLIENTS = "src.server.services.llm.clients"
 
 
 def _make_config(*, compaction=None, fetch=None, fallback=None, subagents_enabled=None):
@@ -41,6 +43,7 @@ class _FakeClient:
 
     def __init__(self, label):
         self.label = label
+        self.metadata: dict | None = None
 
     def model_copy(self):
         c = _FakeClient(self.label)
@@ -57,33 +60,33 @@ def _common_patches(
     is_byok_active_val=False,
 ):
     """Bundle the standard patch set. ``classify_source`` is a ModelSource."""
-    from src.server.services.llm.config import ModelSource
+    from src.server.services.llm.user_models import ModelSource
 
     src = classify_source if classify_source is not None else ModelSource.SYSTEM
 
     patches = [
         patch(
-            f"{HANDLER}.classify_model",
+            f"{USER_MODELS}.classify_model",
             new_callable=AsyncMock,
             return_value=(src, {}),
         ),
         patch(
-            f"{HANDLER}.get_custom_provider_config",
+            f"{USER_MODELS}.get_custom_provider_config",
             new_callable=AsyncMock,
             return_value=None,
         ),
         patch(
-            f"{HANDLER}.get_model_preference",
+            f"{USER_MODELS}.get_model_preference",
             new_callable=AsyncMock,
             return_value={},
         ),
         patch(
-            f"{HANDLER}.resolve_oauth_llm_client",
+            f"{CLIENTS}.resolve_oauth_llm_client",
             new_callable=AsyncMock,
             return_value=oauth,
         ),
         patch(
-            f"{HANDLER}.resolve_byok_llm_client",
+            f"{CLIENTS}.resolve_byok_llm_client",
             new_callable=AsyncMock,
             return_value=byok,
         ),
@@ -168,7 +171,8 @@ async def test_non_byok_no_reasoning_is_none():
 @pytest.mark.asyncio
 async def test_byok_on_system_model_is_byok_source():
     """Orthogonality: BYOK key on a SYSTEM-catalog model → cred=BYOK."""
-    from src.server.services.llm.config import ModelSource, resolve_llm_config
+    from src.server.services.llm.config import resolve_llm_config
+    from src.server.services.llm.user_models import ModelSource
 
     byok_client = _FakeClient("byok")
     with _entered(_common_patches(byok=byok_client, classify_source=ModelSource.SYSTEM)):
@@ -216,14 +220,14 @@ async def test_byok_main_copied_into_keyless_role():
 
     with (
         patch(
-            f"{HANDLER}.classify_model",
+            f"{USER_MODELS}.classify_model",
             new_callable=AsyncMock,
-            return_value=(__import__(HANDLER, fromlist=["ModelSource"]).ModelSource.SYSTEM, {}),
+            return_value=(__import__(USER_MODELS, fromlist=["ModelSource"]).ModelSource.SYSTEM, {}),
         ),
-        patch(f"{HANDLER}.get_custom_provider_config", new_callable=AsyncMock, return_value=None),
-        patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value={}),
-        patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
-        patch(f"{HANDLER}.resolve_byok_llm_client", side_effect=_byok),
+        patch(f"{USER_MODELS}.get_custom_provider_config", new_callable=AsyncMock, return_value=None),
+        patch(f"{USER_MODELS}.get_model_preference", new_callable=AsyncMock, return_value={}),
+        patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+        patch(f"{CLIENTS}.resolve_byok_llm_client", side_effect=_byok),
         patch("src.server.database.api_keys.is_byok_active", new_callable=AsyncMock, return_value=True),
         patch("src.server.database.api_keys.get_byok_configs_for_providers", new_callable=AsyncMock, return_value={}),
         patch("src.llms.llm.create_llm", return_value=None),
@@ -271,14 +275,14 @@ async def test_is_byok_none_self_resolves():
     byok = AsyncMock(return_value=None)
     with (
         patch(
-            f"{HANDLER}.classify_model",
+            f"{USER_MODELS}.classify_model",
             new_callable=AsyncMock,
-            return_value=(__import__(HANDLER, fromlist=["ModelSource"]).ModelSource.SYSTEM, {}),
+            return_value=(__import__(USER_MODELS, fromlist=["ModelSource"]).ModelSource.SYSTEM, {}),
         ),
-        patch(f"{HANDLER}.get_custom_provider_config", new_callable=AsyncMock, return_value=None),
-        patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value={}),
-        patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
-        patch(f"{HANDLER}.resolve_byok_llm_client", byok),
+        patch(f"{USER_MODELS}.get_custom_provider_config", new_callable=AsyncMock, return_value=None),
+        patch(f"{USER_MODELS}.get_model_preference", new_callable=AsyncMock, return_value={}),
+        patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+        patch(f"{CLIENTS}.resolve_byok_llm_client", byok),
         patch("src.server.database.api_keys.is_byok_active", is_byok_active),
         patch("src.server.database.api_keys.get_byok_configs_for_providers", new_callable=AsyncMock, return_value={}),
         patch("src.llms.llm.create_llm", return_value=None),
@@ -295,7 +299,7 @@ async def test_is_byok_none_self_resolves():
 
 
 def test_role_registry_compaction_fetch_and_subagents():
-    from src.server.services.llm.config import LLMRole, role_registry
+    from src.server.services.llm.clients import LLMRole, role_registry
 
     cfg = _make_config(compaction="cm", fetch="fm")
     sub_with_model = MagicMock()
@@ -304,7 +308,7 @@ def test_role_registry_compaction_fetch_and_subagents():
     sub_no_model.model = None
     subagent_defs = {"research": sub_with_model, "writer": sub_no_model}
 
-    roles = role_registry(cfg, ["research", "writer"], subagent_defs)
+    roles = role_registry(cfg, ["research", "writer"], subagent_defs, {})
     keys = [r.key for r in roles]
 
     assert "compaction" in keys
@@ -315,21 +319,63 @@ def test_role_registry_compaction_fetch_and_subagents():
     assert all(isinstance(r, LLMRole) for r in roles)
 
 
+def test_role_registry_gives_each_role_its_own_models_effort():
+    """A level set on a model is a fact about that model wherever it runs.
+
+    The role list is where that gets attached, because it is the last point
+    that still knows which model each slot is for.
+    """
+    from src.server.services.llm.clients import role_registry
+
+    cfg = _make_config(compaction="cm", fetch="fm")
+    sub = MagicMock()
+    sub.model = "sub-model"
+    model_pref = {
+        "reasoning_effort": "low",
+        "profiles": {"sub-model": {"reasoning_effort": "high"}},
+    }
+
+    roles = {
+        r.key: r for r in role_registry(cfg, ["research"], {"research": sub}, model_pref)
+    }
+
+    # The subagent's model carries a profile; the other two fall to the account.
+    assert roles["subagent:research"].reasoning_effort == "high"
+    assert roles["compaction"].reasoning_effort == "low"
+    assert roles["fetch"].reasoning_effort == "low"
+
+
+def test_role_registry_buys_no_priority_tier():
+    """Priority is bought per call, so one fast turn must not become N.
+
+    Decided rather than overlooked: the field exists on the role and is left
+    unset here, which is the one place to change it.
+    """
+    from src.server.services.llm.clients import role_registry
+
+    cfg = _make_config(compaction="cm", fetch="fm")
+    model_pref = {"fast_mode": True, "profiles": {"cm": {"fast_mode": True}}}
+
+    roles = role_registry(cfg, [], {}, model_pref)
+
+    assert [r.service_tier for r in roles] == [None, None]
+
+
 def test_role_registry_skips_missing_compaction_fetch():
-    from src.server.services.llm.config import role_registry
+    from src.server.services.llm.clients import role_registry
 
     cfg = _make_config()  # no compaction, no fetch
-    roles = role_registry(cfg, [], {})
+    roles = role_registry(cfg, [], {}, {})
     assert roles == []
 
 
 def test_role_registry_unknown_enabled_name_skipped():
     """An enabled subagent absent from subagent_defs is skipped (no raise)."""
-    from src.server.services.llm.config import role_registry
+    from src.server.services.llm.clients import role_registry
 
     cfg = _make_config(compaction="cm")
     # 'ghost' is enabled but not in defs (registry.get() returned None → absent)
-    roles = role_registry(cfg, ["ghost"], {})
+    roles = role_registry(cfg, ["ghost"], {}, {})
     keys = [r.key for r in roles]
     assert keys == ["compaction"]
     assert "subagent:ghost" not in keys

@@ -1,0 +1,107 @@
+/* Every rule a PDF export needs, for both routes that produce one.
+ *
+ * `printToPDF` renders the whole document, so an export has to be the only thing
+ * left in the flow or the app paginates behind it as blank pages. Which node IS
+ * the export depends on the route:
+ *
+ *   .export-pdf-host   the live React portal, printed in place by the browser
+ *   #export-pdf-root   a detached copy the app builds, printed by the shell
+ *
+ * The shell route also reflows the live document partway through, which unmounts
+ * React's tree — so what it prints is a plain node the app parks off-screen and
+ * removes itself (see lib/shellPdf.ts). Both routes are here rather than in the
+ * surfaces that use them, because during a shell save BOTH nodes are in the body
+ * and only a single file can state which one wins.
+ */
+
+.export-pdf-host,
+#export-pdf-root {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  /* A4 content width: (210 - 2×15)mm × 96/25.4. Laid out at the width it will
+     be printed at, so a widget that reports its own height reports the right
+     one. */
+  width: 680px;
+}
+
+@media print {
+  /* Gated on an export node actually being present, so a plain Ctrl+P of the app
+     is left exactly as it was. The app is a fixed scroll box — `body { overflow:
+     hidden }` at viewport height — so without the unclip the document is one
+     screen tall and the export stops after a single page with the rest cut off.
+     index.html declares the app `dark`, and a dark scheme paints the UA's own
+     canvas under everything, page margins included; `background` alone does not
+     undo it. */
+  html:has(#export-pdf-root),
+  body:has(#export-pdf-root) {
+    height: auto !important;
+    overflow: visible !important;
+    position: static !important;
+    color-scheme: light !important;
+    background: #ffffff !important;
+    /* react-remove-scroll, under every Radix dialog, writes an inline
+       `padding-right` on <body> worth exactly one scrollbar so the page does not
+       shift when the dialog locks scrolling. Inline, so it survives into print,
+       where the report then lays out that much narrower than the width it was
+       measured and paginated at and sits off-centre inside the A4 margins. Only
+       reachable where scrollbars take space, which is most of the world outside
+       macOS defaults. */
+    padding: 0 !important;
+  }
+
+  /* Shell route. The live portal, if one exists, is just another body child to
+     drop: the snapshot is what gets printed. */
+  body:has(#export-pdf-root) > *:not(#export-pdf-root) {
+    display: none !important;
+  }
+
+  #export-pdf-root {
+    position: static !important;
+    left: auto !important;
+    width: 100% !important;
+    display: block !important;
+  }
+
+  /* Browser route, stated as the absence of a snapshot rather than left to
+     specificity to settle. The two modes are mutually exclusive by selector, so
+     neither rule set has to out-score the other and the report cannot land
+     twice. Neither matches inside react-to-print's iframe, which holds only the
+     source node. */
+  body:has(.export-pdf-host):not(:has(#export-pdf-root)) > *:not(.export-pdf-host) {
+    display: none !important;
+  }
+
+  body:has(.export-pdf-host):not(:has(#export-pdf-root)) .export-pdf-host {
+    position: static !important;
+    left: auto !important;
+    width: 100% !important;
+    display: block !important;
+  }
+
+  /* ExportPreviewModal.css carries an ungated `body * { visibility: hidden }`
+     and restores visibility only for `.markdown-print-content`. That is the
+     mechanism the react-to-print iframe relies on, so it has to stay, but a
+     stylesheet is loaded for the life of the document: once the user has opened
+     the export preview once, that rule applies to every later print. A report
+     export carries the class it names and survives; a widget export is an
+     iframe that does not, so it was hidden — display and width restored below,
+     visibility never, which prints a correctly paginated blank page.
+
+     Stated for both roots so neither depends on what the other stylesheet
+     happens to name. */
+  #export-pdf-root, #export-pdf-root *,
+  .export-pdf-host, .export-pdf-host * {
+    visibility: visible !important;
+  }
+
+  /* A widget prints as an iframe, and its box is the printed area: Chromium
+     paginates the content inside across pages, but only as far as the box
+     reaches. The height is set from the widget's own measurement before the
+     render (see widgetPdf.ts); this only stops a stylesheet from clipping it. */
+  #export-pdf-root iframe {
+    display: block !important;
+    width: 100% !important;
+    border: 0 !important;
+  }
+}

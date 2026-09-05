@@ -1,11 +1,11 @@
 import React from 'react';
+import { relativeTime } from '@/lib/format';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Loader2,
   Plus,
   AlertCircle,
   Info,
@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
   DropdownMenuItem,
 } from '@/components/ui/dropdown-menu';
+import { Loader } from '@/components/ui/loader';
 import { queryKeys } from '@/lib/queryKeys';
 import { getWorkspaceThreads } from '../../ChatAgent/utils/api';
 
@@ -41,21 +42,6 @@ interface MarketChatHistoryButtonProps {
   onStartNewChat: () => void;
 }
 
-function formatRelative(iso: string | undefined): string {
-  if (!iso) return '';
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return '';
-  const diffMs = Date.now() - then;
-  const minutes = Math.floor(diffMs / 60_000);
-  if (minutes < 1) return 'now';
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d`;
-  if (days < 30) return `${Math.floor(days / 7)}w`;
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
 
 function threadLabel(thread: ThreadRecord, untitled: string): string {
   if (thread.title && thread.title.trim()) return thread.title;
@@ -127,9 +113,6 @@ export default function MarketChatHistoryButton({
                 ? 'var(--color-accent-primary)'
                 : 'var(--color-text-tertiary)',
               opacity: hasActive ? 1 : 0.35,
-              boxShadow: hasActive
-                ? '0 0 0 2px color-mix(in srgb, var(--color-accent-primary) 22%, transparent)'
-                : 'none',
             }}
           />
           <span
@@ -179,7 +162,7 @@ export default function MarketChatHistoryButton({
         {/* Eyebrow label with hairline */}
         <div className="flex items-center gap-2 px-3 pt-3 pb-1.5">
           <span
-            className="text-[10px] font-semibold uppercase"
+            className="text-[0.625rem] font-semibold uppercase"
             style={{
               color: 'var(--color-text-tertiary)',
               letterSpacing: '0.14em',
@@ -193,7 +176,7 @@ export default function MarketChatHistoryButton({
           />
           {total > 0 && (
             <span
-              className="text-[10px] tabular-nums"
+              className="text-[0.625rem] tabular-nums"
               style={{
                 color: 'var(--color-text-tertiary)',
                 fontVariantNumeric: 'tabular-nums',
@@ -211,14 +194,14 @@ export default function MarketChatHistoryButton({
                 e.preventDefault();
                 e.stopPropagation();
               }}
-              className="inline-flex items-center justify-center h-4 w-4 rounded-full transition-opacity opacity-60 hover:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30"
+              className="inline-flex items-center justify-center h-4 w-4 rounded-full transition-opacity opacity-60 hover:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               <Info className="h-3 w-3" />
             </button>
             <span
               role="tooltip"
-              className="pointer-events-none absolute right-0 top-full mt-1.5 w-60 rounded-md px-2.5 py-2 text-[11px] leading-snug opacity-0 translate-y-[-2px] transition-all duration-150 group-hover/hint:opacity-100 group-hover/hint:translate-y-0 group-focus-within/hint:opacity-100 group-focus-within/hint:translate-y-0"
+              className="pointer-events-none absolute right-0 top-full mt-1.5 w-60 rounded-md px-2.5 py-2 text-[0.6875rem] leading-snug opacity-0 translate-y-[-2px] transition-all duration-150 group-hover/hint:opacity-100 group-hover/hint:translate-y-0 group-focus-within/hint:opacity-100 group-focus-within/hint:translate-y-0"
               style={{
                 backgroundColor: 'var(--color-bg-elevated)',
                 color: 'var(--color-text-secondary)',
@@ -250,7 +233,9 @@ export default function MarketChatHistoryButton({
               className="flex items-center justify-center gap-2 px-3 py-8 text-xs"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
-              <Loader2 className="h-3 w-3 animate-spin" />
+              <span aria-hidden="true" className="flex-shrink-0">
+                <Loader size={12} className="text-current" />
+              </span>
               <span style={{ letterSpacing: '0.04em' }}>{t('marketView.chatHistory.loading')}</span>
             </div>
           )}
@@ -319,14 +304,14 @@ export default function MarketChatHistoryButton({
                 </span>
                 {thread.updated_at && (
                   <span
-                    className="text-[11px] flex-shrink-0 mt-[1px]"
+                    className="text-[0.6875rem] flex-shrink-0 mt-[1px]"
                     style={{
                       color: 'var(--color-text-tertiary)',
                       fontVariantNumeric: 'tabular-nums',
                       letterSpacing: '0.02em',
                     }}
                   >
-                    {formatRelative(thread.updated_at)}
+                    {relativeTime(thread.updated_at)}
                   </span>
                 )}
               </DropdownMenuItem>
@@ -358,7 +343,7 @@ export default function MarketChatHistoryButton({
             </button>
 
             <span
-              className="text-[11px] tabular-nums select-none"
+              className="text-[0.6875rem] tabular-nums select-none"
               style={{
                 color: 'var(--color-text-tertiary)',
                 fontVariantNumeric: 'tabular-nums',

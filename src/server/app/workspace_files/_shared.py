@@ -24,6 +24,10 @@ from ptc_agent.core.paths import (
 )
 from src.server.services.workspace_manager import WorkspaceManager
 from src.server.services import user_data_io
+from src.server.utils.error_sanitization import (
+    sandbox_unreachable_detail,
+    single_line,
+)
 from src.observability import safe_record, workspace_fs_bytes
 
 logger = logging.getLogger(__name__)
@@ -187,18 +191,30 @@ async def _acquire_sandbox(workspace_id: str, user_id: str) -> Any:
     try:
         session = await manager.get_session_for_workspace(workspace_id, user_id=user_id)
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Sandbox not ready: {e}") from None
+        # Same wording as the app-level SandboxGoneError/SandboxTransientError
+        # handler: the file panel categorizes on this string, and the "starting"
+        # sub-case has to survive the boundary — which is exactly what
+        # sandbox_unreachable_detail preserves while dropping the raw text.
+        logger.warning(
+            f"Sandbox unreachable for workspace {workspace_id}: {single_line(str(e))}"
+        )
+        raise HTTPException(
+            status_code=503, detail=sandbox_unreachable_detail(e)
+        ) from None
 
     sandbox = getattr(session, "sandbox", None)
     if sandbox is None:
-        raise HTTPException(status_code=503, detail="Sandbox not available")
+        raise HTTPException(
+            status_code=503,
+            detail="Sandbox is not reachable: no sandbox attached to the session",
+        )
     return sandbox
 
 
 def _to_client_path(sandbox: Any, absolute_path: str) -> str:
     """Convert an absolute sandbox path into a virtual client path.
 
-    The CLI and web UX prefer paths like "results/foo.txt" (no leading slash),
+    The CLI and web UX prefer paths like "work/task/foo.txt" (no leading slash),
     while still preserving true absolute /tmp paths.
     """
 

@@ -1,4 +1,5 @@
 import { createBrowserClient, type CookieOptions } from '@supabase/ssr';
+import { authFetch } from './authFetch';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -46,6 +47,7 @@ function writeCookie(name: string, value: string, options: CookieOptions = {}) {
 export const supabase: SupabaseClient | null =
   supabaseUrl && supabaseKey
     ? createBrowserClient(supabaseUrl, supabaseKey, {
+        global: { fetch: authFetch },
         cookieOptions: {
           name: 'langalpha-auth',
           path: '/',

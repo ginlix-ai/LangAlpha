@@ -5,9 +5,11 @@ This module provides Pydantic models for retrieving and displaying
 historical workflow states from LangGraph checkpoints.
 """
 
-from typing import Optional, List, Dict, Any, Literal
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
+
+from src.llms.reasoning import ReasoningLevel
 
 
 def serialize_message(message: Any) -> Dict[str, Any]:
@@ -464,5 +466,5 @@ class RetryRequest(BaseModel):
         description="Model override for the retry attempt (the chat input's "
         "current selection); None = per-user default.",
     )
-    reasoning_effort: Optional[Literal["low", "medium", "high", "xhigh"]] = Field(None)
+    reasoning_effort: Optional[ReasoningLevel] = Field(None)
     fast_mode: Optional[bool] = Field(None)

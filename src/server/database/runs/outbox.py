@@ -1,174 +1,34 @@
 """Hook outbox (SQL layer) — durable post-commit effects of run finalize.
 
-``build_finalize_jobs`` is the one decision table mapping a run's
-CAS-adopted final status to its hook jobs; ``finalize_run`` applies it via
-``build_finalize_jobs_from_run_row`` as the DEFAULT, so no finalize path
-can skip required effects (I5). ``enqueue_hooks`` writes the rows on the
-finalize transaction; the claim/ack/nack trio is the lease protocol the
-``HookOutboxDrainer`` runs (committed claims, per-ordering-key FIFO,
-expired-lease reclaim as crash recovery, effect-before-ack retry safety).
+``enqueue_hooks`` writes the rows the decision table in ``hook_jobs`` returns,
+on the finalize transaction; the claim/ack/nack trio is the lease protocol the
+``HookOutboxDrainer`` runs (committed claims, per-ordering-key FIFO, expired-
+lease reclaim as crash recovery, effect-before-ack retry safety).
 """
 
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Optional
 
 from psycopg.rows import dict_row
 
 from src.server.database import pool
+# Re-exported so the hook_jobs split stays invisible to every call site.
+from src.server.database.runs.hook_jobs import (  # noqa: F401
+    BurstReleasePayload,
+    HookJob,
+    NeedsInputWakePayload,
+    ReportBackPayload,
+    UserFeedPayload,
+    WatchClearPayload,
+    build_finalize_jobs,
+    build_finalize_jobs_from_run_row,
+)
 from src.server.utils.pg_sanitize import SafeJson
 
 # Advisory-lock class (int32) for per-ordering-key claim serialization.
 # The two-int lock form is a separate keyspace from the WriterGuard's
 # single-bigint locks, so no domain interference is possible.
 _OKEY_LOCK_CLASS = 0x484F4F4B  # 'HOOK'
-
-
-@dataclass
-class HookJob:
-    """One outbox row: a post-commit effect that must survive a crash."""
-
-    hook_type: str
-    idempotency_key: str
-    payload: Dict[str, Any] = field(default_factory=dict)
-    ordering_key: Optional[str] = None
-
-
-# Payload contracts between the decision table below and the executors in
-# services.hook_outbox. Rows round-trip through JSONB, so these are the
-# documented shape, not a runtime guarantee.
-
-
-class BurstReleasePayload(TypedDict):
-    user_id: str
-    slot_id: str
-
-
-class ReportBackPayload(TypedDict):
-    ptc_thread_id: str
-    dispatch_gen: Optional[str]
-
-
-class NeedsInputWakePayload(TypedDict):
-    ptc_thread_id: str
-
-
-class WatchClearPayload(TypedDict):
-    ptc_thread_id: str
-    user_id: Optional[str]
-    error_wake: bool
-    dispatch_gen: Optional[str]
-
-
-def build_finalize_jobs(
-    *,
-    run_id: str,
-    thread_id: str,
-    msg_type: str,
-    user_id: Optional[str] = None,
-    burst_slot_id: Optional[str] = None,
-    report_back_ptc_thread_id: Optional[str] = None,
-    origin_flash_thread_id: Optional[str] = None,
-    origin_dispatch_gen: Optional[str] = None,
-) -> Callable[[str], List[HookJob]]:
-    """The one decision table mapping a run's final status to its hook jobs.
-
-    Returned callable is invoked inside the finalize transaction with the
-    CAS-adopted final status (a durable cancel may have overridden the
-    requested one). One ordering rule: every report-back-lifecycle job keys
-    on the WATCHING flash thread (START-stamped ``origin_flash_thread_id``;
-    a report-back flash run IS that thread, so its own ``thread_id`` lands
-    in the same chain) — all completions reporting into one flash thread
-    serialize strictly, across any number of drainer workers, and a
-    completed run's report_back can never be overtaken by a later
-    watch_clear. Runs without a flash origin fall back to their own
-    thread_id. Pure and synchronous — it runs inside the finalize
-    transaction and must not do I/O.
-    """
-
-    def _jobs(final_status: str) -> List[HookJob]:
-        jobs: List[HookJob] = []
-        is_ptc = msg_type == "ptc"
-        rb_ptc = report_back_ptc_thread_id or thread_id
-        okey = origin_flash_thread_id or thread_id
-
-        if user_id and burst_slot_id:
-            jobs.append(
-                HookJob(
-                    hook_type="burst_release",
-                    idempotency_key=f"{run_id}:burst_release",
-                    payload=BurstReleasePayload(
-                        user_id=user_id, slot_id=burst_slot_id
-                    ),
-                )
-            )
-
-        if final_status == "completed" and is_ptc:
-            jobs.append(
-                HookJob(
-                    hook_type="report_back",
-                    idempotency_key=f"{run_id}:report_back",
-                    payload=ReportBackPayload(
-                        ptc_thread_id=thread_id,
-                        dispatch_gen=origin_dispatch_gen,
-                    ),
-                    ordering_key=okey,
-                )
-            )
-        elif final_status == "interrupted" and is_ptc:
-            jobs.append(
-                HookJob(
-                    hook_type="needs_input_wake",
-                    idempotency_key=f"{run_id}:needs_input_wake",
-                    payload=NeedsInputWakePayload(ptc_thread_id=thread_id),
-                    ordering_key=okey,
-                )
-            )
-
-        if final_status in ("error", "cancelled") or (
-            final_status == "completed"
-            and not is_ptc
-            and report_back_ptc_thread_id
-        ):
-            # error/cancelled: tear down any watch this run held open (a
-            # dispatched PTC directly, a report-back flash run via its
-            # origin id). completed flash WITH an origin id: consumption
-            # clear — the report-back summary landed, release the watch.
-            jobs.append(
-                HookJob(
-                    hook_type="watch_clear",
-                    idempotency_key=f"{run_id}:watch_clear",
-                    payload=WatchClearPayload(
-                        ptc_thread_id=rb_ptc,
-                        user_id=user_id,
-                        error_wake=final_status in ("error", "cancelled"),
-                        dispatch_gen=origin_dispatch_gen,
-                    ),
-                    ordering_key=okey,
-                )
-            )
-        return jobs
-
-    return _jobs
-
-
-def build_finalize_jobs_from_run_row(
-    run: Dict[str, Any],
-) -> Callable[[str], List[HookJob]]:
-    """Factory from the durable row alone: everything the decision table
-    needs was stamped into run metadata at START. This is finalize_run's
-    DEFAULT — no finalize path can skip required terminal effects (I5)."""
-    meta = run.get("metadata") or {}
-    return build_finalize_jobs(
-        run_id=str(run["conversation_response_id"]),
-        thread_id=str(run["conversation_thread_id"]),
-        msg_type=meta.get("msg_type") or "ptc",
-        user_id=meta.get("user_id"),
-        burst_slot_id=meta.get("burst_slot_id"),
-        report_back_ptc_thread_id=meta.get("report_back_ptc_thread_id"),
-        origin_flash_thread_id=meta.get("origin_flash_thread_id"),
-        origin_dispatch_gen=meta.get("origin_dispatch_gen"),
-    )
 
 
 async def enqueue_hooks(

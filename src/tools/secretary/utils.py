@@ -58,7 +58,7 @@ def _qualify_file_paths(text: str, workspace_id: str) -> str:
     """Rewrite relative file paths in markdown links to __wsref__/{workspace_id}/path.
 
     Transforms:
-        [report.md](results/report.md) → [report.md](__wsref__/{wid}/results/report.md)
+        [report.md](work/t/report.md) → [report.md](__wsref__/{wid}/work/t/report.md)
         ![chart](work/t/charts/r.png)  → ![chart](__wsref__/{wid}/work/t/charts/r.png)
 
     Uses a path-based prefix instead of a protocol (ws://) because HTML sanitizers

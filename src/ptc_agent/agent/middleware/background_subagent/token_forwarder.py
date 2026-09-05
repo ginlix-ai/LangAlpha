@@ -9,6 +9,7 @@ from langchain_core.messages import BaseMessage
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
 )
+from ptc_agent.agent.middleware.background_subagent.outcomes import Outcome
 from src.llms.content_utils import extract_reasoning_summary_index
 from src.server.utils.content_normalizer import normalize_text_content
 
@@ -247,7 +248,9 @@ class _SubagentTokenForwarder:
         try:
             await self.registry.append_captured_event(
                 self.tool_call_id,
-                self._error_record(str(exc) or repr(exc), type(exc).__name__),
+                self._error_record(
+                    str(exc) or repr(exc), Outcome.from_exception(exc).error_type
+                ),
             )
         except Exception:
             logger.warning(

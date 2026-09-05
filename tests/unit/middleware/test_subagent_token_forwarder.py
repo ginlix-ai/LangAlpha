@@ -292,6 +292,30 @@ async def test_forward_error_appends_error_record():
 
 
 @pytest.mark.asyncio
+async def test_forward_error_uses_the_declared_spelling_not_the_class_name():
+    """A credit stop reaches the frontend as ``credit_stop``, never
+    ``CreditStopError``.
+
+    The regression: this frame was built with ``type(exc).__name__``, so the
+    wire carried the class name while the frontend matched the contract
+    spelling. Nothing failed - the stop just rendered as a failure, and the
+    "task stopped" copy was unreachable in every locale.
+    """
+    from ptc_agent.agent.middleware.credit_gate import CreditStopError
+    from src.server.contracts.status import CREDIT_STOP_ERROR_TYPE
+
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry)
+    fw = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc")
+
+    await fw.forward_error(CreditStopError("out of credits"))
+
+    record = next(e for e in task._test_records if e["event"] == "error")
+    assert record["data"]["error_type"] == CREDIT_STOP_ERROR_TYPE
+    assert record["data"]["error_type"] != "CreditStopError"
+
+
+@pytest.mark.asyncio
 async def test_forward_error_absorbs_registry_failure():
     """If append_captured_event raises (degraded Redis), forward_error must
     not propagate — it is always called inside an existing exception flow
@@ -340,25 +364,11 @@ async def test_arun_subagent_streaming_emits_error_event_on_exception(monkeypatc
     fake_subagent.astream = fake_astream
 
     tool = sa._create_task_tool(
-        default_model=MagicMock(),
-        default_tools=[],
-        default_middleware=[],
-        default_interrupt_on=None,
-        subagents=[],
-        general_purpose_agent=False,
+        subagent_graphs={"general-purpose": fake_subagent},
         registry=registry,
         checkpointer=None,
     )
     coroutine = tool.coroutine
-    closure_vars = {
-        cell_name: cell.cell_contents
-        for cell_name, cell in zip(
-            coroutine.__code__.co_freevars,
-            coroutine.__closure__ or (),
-        )
-    }
-    sg = closure_vars["subagent_graphs"]
-    sg["general-purpose"] = fake_subagent
 
     runtime = MagicMock()
     runtime.state = {"messages": []}
@@ -552,25 +562,11 @@ async def test_atask_pipeline_forwards_messages_chunks_to_registry(monkeypatch):
     fake_subagent.astream = fake_astream
 
     tool = sa._create_task_tool(
-        default_model=MagicMock(),
-        default_tools=[],
-        default_middleware=[],
-        default_interrupt_on=None,
-        subagents=[],
-        general_purpose_agent=False,
+        subagent_graphs={"general-purpose": fake_subagent},
         registry=registry,
         checkpointer=None,
     )
     coroutine = tool.coroutine
-    closure_vars = {
-        cell_name: cell.cell_contents
-        for cell_name, cell in zip(
-            coroutine.__code__.co_freevars,
-            coroutine.__closure__ or (),
-        )
-    }
-    sg = closure_vars["subagent_graphs"]
-    sg["general-purpose"] = fake_subagent
 
     runtime = MagicMock()
     runtime.state = {"messages": []}
@@ -749,25 +745,11 @@ async def test_atask_pipeline_forwards_custom_events_to_registry(monkeypatch):
     fake_subagent.astream = fake_astream
 
     tool = sa._create_task_tool(
-        default_model=MagicMock(),
-        default_tools=[],
-        default_middleware=[],
-        default_interrupt_on=None,
-        subagents=[],
-        general_purpose_agent=False,
+        subagent_graphs={"general-purpose": fake_subagent},
         registry=registry,
         checkpointer=None,
     )
     coroutine = tool.coroutine
-    closure_vars = {
-        cell_name: cell.cell_contents
-        for cell_name, cell in zip(
-            coroutine.__code__.co_freevars,
-            coroutine.__closure__ or (),
-        )
-    }
-    sg = closure_vars["subagent_graphs"]
-    sg["general-purpose"] = fake_subagent
 
     runtime = MagicMock()
     runtime.state = {"messages": []}

@@ -6,7 +6,7 @@ and adds server-specific infrastructure config loading.
 
 Config Files:
 - config.yaml: Infrastructure settings (server, Redis, background tasks, logging, CORS)
-- agent_config.yaml: Agent capabilities (LLM, MCP, tools, crawler, web_fetch, embedding, security)
+- agent_config.yaml: Agent capabilities (LLM, MCP, tools, crawler, web_fetch, security)
 """
 
 import logging

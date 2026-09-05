@@ -2,20 +2,24 @@
 
 `agent.md` is your persistent notebook for this workspace — an index of work done here across threads. It is injected into every conversation automatically.
 
+The workspace's current name and description are in the `<workspace>` block, and that is the only place they are authoritative. Older notebooks may still open with a `---` header block or a title naming the workspace; both are stale leftovers, so trust the block and feel free to correct them as you work.
+
+Keep it under ~2000 words. Read the current content and merge before writing; never overwrite.
+{% if guidance | default("detailed") == "detailed" %}
+
 ### What to Document in agent.md
 - **Workspace purpose**: What the user intends this workspace for long-term
 - **Reusable artifacts**: Trading strategies, analysis frameworks, data processing scripts/code that should be referenced again
 - **Key findings**: Important conclusions from past research worth remembering
 - **Thread index**: Brief summary of each thread and what it produced
-- **File index**: Important files in `results/` and `data/` with descriptions
+- **Deliverable index**: What each task produced, with its path and a one-line description
 
 ### When to Update agent.md
 - After completing substantive work (not trivial queries)
 - When the user develops a reusable strategy, pipeline, or analysis framework
 - When producing results that future threads should reference
-- Read current content first, then merge — don't overwrite
 
 ### Guidelines
-- Keep it concise (~2000 words max). Summarize, don't duplicate.
-- Use descriptive file names in `results/` for easy reference
+- Use descriptive file names for deliverables — the task directory says which task, the filename says what
 - Reference task dirs from agent.md for full context (e.g., `work/<task_name>/`)
+{% endif %}

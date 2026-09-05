@@ -6,6 +6,7 @@ import structlog
 from langchain_core.tools import BaseTool, tool
 
 from ptc_agent.agent.backends.sandbox import SandboxBackend
+from ptc_agent.core.paths import MEMO_USER_DIR, MEMORY_USER_DIR, MEMORY_WORKSPACE_DIR
 
 logger = structlog.get_logger(__name__)
 
@@ -14,14 +15,14 @@ logger = structlog.get_logger(__name__)
 # dropping writes on the sandbox (which would also let the agent fabricate
 # fake memos invisible to the UI).
 _MEMORY_PATH_MARKERS: tuple[str, ...] = (
-    ".agents/user/memory/",
-    ".agents/workspace/memory/",
-    ".agents/user/memo/",
+    f"{MEMORY_USER_DIR}/",
+    f"{MEMORY_WORKSPACE_DIR}/",
+    f"{MEMO_USER_DIR}/",
 )
 
 _MEMORY_ROUTE_ERROR = (
-    "ERROR: Store-backed paths (.agents/user/memory/**, .agents/workspace/memory/**, "
-    ".agents/user/memo/**) are managed by the long-term memory/memo system and "
+    f"ERROR: Store-backed paths ({MEMORY_USER_DIR}/**, {MEMORY_WORKSPACE_DIR}/**, "
+    f"{MEMO_USER_DIR}/**) are managed by the long-term memory/memo system and "
     "are NOT on the workspace filesystem. Use the Write, Edit, Read, Glob, or "
     "Grep file tools for these paths so they route to the store. Memo paths are "
     "additionally read-only to the agent — ask the user to upload via the memo "
@@ -62,18 +63,19 @@ def create_execute_bash_tool(backend: SandboxBackend, thread_id: str = "") -> Ba
         NOT for: reading/writing/editing files - use Read/Write/Edit tools instead
 
         Args:
-            command: The bash command to execute
+            command: The bash command to execute. Quote paths containing spaces.
             description: Brief description (5-10 words, active voice)
             timeout: Milliseconds (default: 120000, max: 600000)
-            run_in_background: Run asynchronously (default: False)
+            run_in_background: Run asynchronously (default: False). Use it for
+                anything likely to outlast the timeout — a backtest, a bulk pull
+                across many tickers, a dashboard server you need to keep alive.
             working_dir: Working directory (default: /home/workspace)
 
         Returns:
-            Command output (stdout/stderr), or ERROR message. The artifact carries
-            ``mcp_trace`` (provenance for MCP calls made by scripts run here) and
-            never enters the LLM context.
+            Combined stdout and stderr, or an ERROR message.
 
-        Paths: Quote paths with spaces. Use /home/workspace/ for workspace files.
+        With run_in_background=True it returns a command_id instead of output; read
+        that with BashOutput.
         """
         # Bash cannot reach the store-backed memory tier.
         if _command_touches_memory(command):

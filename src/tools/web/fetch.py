@@ -24,7 +24,9 @@ from src.llms import LLM, format_llm_content, make_api_call, maybe_disable_strea
 from src.tools.web.inhouse.sitemap import get_sitemap_summary
 from src.tools.decorators import log_io
 from src.tools.web.router import FetchRouter
+from src.observability import stamp_run
 from src.tools.web.types import (
+    FetchAttempt,
     FetchRequest,
     FetchResponse,
     FetchResult,
@@ -130,7 +132,7 @@ class FetchService:
                         results[url] = FetchResult(url=url, markdown=cached, source="cache")
 
         remaining = [u for u in urls if u not in results]
-        providers_tried: List[str] = []
+        attempts: List[FetchAttempt] = []
         provider: Optional[str] = None
 
         if remaining and req.max_age_seconds != -1:
@@ -142,7 +144,7 @@ class FetchService:
                     max_age_seconds=req.max_age_seconds,
                 )
             )
-            providers_tried = resp.providers_tried
+            attempts = resp.attempts
             provider = resp.provider
             for result in resp.results:
                 results[result.url] = result
@@ -168,7 +170,7 @@ class FetchService:
                 )
 
         ordered = [results[u] for u in urls]
-        return FetchResponse(results=ordered, provider=provider, providers_tried=providers_tried)
+        return FetchResponse(results=ordered, provider=provider, attempts=attempts)
 
 
 _fetch_service: Optional[FetchService] = None
@@ -361,6 +363,7 @@ async def web_fetch(
             url = result.url
             artifact["url"] = url
             artifact["provider"] = response.provider
+            artifact["attempts"] = [str(a) for a in response.attempts]
             artifact["source"] = result.source
 
             if result.error is not None:
@@ -410,11 +413,25 @@ async def web_fetch(
 
 # Create async tool using StructuredTool.from_function with coroutine
 async def _web_fetch_tool_impl(
-    url: Annotated[str, "The URL to fetch content from"],
-    prompt: Annotated[str, "The prompt to run on the fetched content"],
+    url: Annotated[str, "A fully-formed URL. HTTP is upgraded to HTTPS automatically."],
+    prompt: Annotated[str, "What information to extract from the page."],
 ) -> tuple[str, dict]:
-    """Delegate to web_fetch(); the agent-facing contract is ``description``."""
-    return await web_fetch(url=url, prompt=prompt)
+    """Delegate to web_fetch(); the agent-facing contract is ``description``.
+
+    Stamps here rather than inside web_fetch() because this is the one point
+    every branch — native excerpts, empty page, per-URL error, catch-all —
+    passes through on its way out of the tool run.
+    """
+    content, artifact = await web_fetch(url=url, prompt=prompt)
+    provider = artifact.get("provider")
+    stamp_run(
+        tags=[f"fetch_provider:{provider}"] if provider else None,
+        fetch_provider=provider,
+        fetch_attempts=artifact.get("attempts") or None,
+        fetch_source=artifact.get("source"),
+        fetch_error=artifact.get("error"),
+    )
+    return content, artifact
 
 
 # Apply decorator and create tool
@@ -424,28 +441,17 @@ web_fetch_tool = StructuredTool.from_function(
     coroutine=_decorated_impl,
     name="WebFetch",
     response_format="content_and_artifact",
-    description="""Fetches content from a specified URL and processes it using an AI model.
+    description="""Fetches a URL and answers a question about its content using a small, fast model.
 
-Takes a URL and a prompt as input. Fetches the URL content, converts to
-markdown, then processes the content with the prompt using a small,
-fast model. Returns the model's response about the content.
+Handles regular web pages (tiered fetching with anti-bot bypass), PDFs,
+YouTube transcripts and X/Twitter posts. Run several in parallel when you
+need more than one page.
 
-Supports multiple content types with dedicated extractors:
-- Regular web pages: tiered HTML fetching with anti-bot bypass
-- URL-based PDF files: text extraction (no LLM needed for parsing)
-- YouTube videos: transcript extraction with timestamps
-- X/Twitter posts: tweet text, media, and engagement stats
+Returns:
+    The model's answer to your prompt, not the raw page. Long content is
+    summarised, and when the answer is not on the page you get alternative
+    URLs from the site's sitemap instead.
 
-
-Usage notes:
-- Run multiple in parallel if needed
-- The URL must be a fully-formed valid URL
-- HTTP URLs will be automatically upgraded to HTTPS
-- The prompt should describe what information you want to extract from the page
-- Results may be summarized if the content is very large
-- If the requested information is not found, the tool will suggest alternative
-  URLs from the site's sitemap that might contain the information
-- When a URL redirects to a different host, the tool will inform you and
-  provide the redirect URL. You should then make a new request with the
-  redirect URL to fetch the content.""",
+A URL that redirects to a different host returns the redirect URL rather than
+content; call again with that URL.""",
 )

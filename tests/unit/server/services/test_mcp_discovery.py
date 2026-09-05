@@ -22,6 +22,7 @@ from src.server.services import mcp_discovery
 from src.server.services.mcp_discovery import (
     MAX_SCHEMA_CHARS_PER_SERVER,
     MAX_TOOLS_PER_SERVER,
+    ToolSnapshotIndex,
     _stale_server_names as _real_stale_server_names,
     discover_and_cache,
     mcp_discovery_fingerprint,
@@ -161,6 +162,109 @@ class TestSanitizeDescription:
 
 
 # ---------------------------------------------------------------------------
+# sanitize_discovered_tools — malformed schema containers
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeMalformedSchema:
+    """A schema container the cache accepts is one wrapper generation will
+    walk: a non-dict ``properties`` crashed codegen with an AttributeError,
+    and codegen has no per-server isolation — one bad remote tool wedged the
+    whole workspace's asset sync."""
+
+    @pytest.mark.parametrize(
+        "schema",
+        [{"properties": []}, {"properties": "oops"}, {"properties": 3}],
+    )
+    def test_non_dict_properties_skipped(self, schema):
+        kept, skipped = sanitize_discovered_tools([_tool("bad", input_schema=schema), _tool("ok")])
+
+        assert [t["name"] for t in kept] == ["ok"]
+        assert skipped == [("bad", "input_schema properties is not a JSON object")]
+
+    @pytest.mark.parametrize("schema", [[], ["a"], "oops", 3, True])
+    def test_non_dict_input_schema_skipped(self, schema):
+        kept, skipped = sanitize_discovered_tools([_tool("bad", input_schema=schema), _tool("ok")])
+
+        assert [t["name"] for t in kept] == ["ok"]
+        assert skipped == [("bad", "input_schema is not a JSON object")]
+
+    def test_absent_schema_becomes_an_empty_object(self):
+        kept, skipped = sanitize_discovered_tools([{"name": "ok", "description": "d"}])
+
+        assert skipped == []
+        assert kept[0]["input_schema"] == {}
+
+    def test_well_formed_schema_passes_through_verbatim(self):
+        schema = {
+            "type": "object",
+            "properties": {"ticker": {"type": "string"}},
+            "required": ["ticker"],
+        }
+        kept, skipped = sanitize_discovered_tools([_tool("quote", input_schema=schema)])
+
+        assert skipped == []
+        assert kept[0]["input_schema"] == schema
+
+
+# ---------------------------------------------------------------------------
+# sanitize_discovered_tools — unusable REQUIRED params
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeRequiredParams:
+    """Codegen drops a param whose name can't become an identifier. If that
+    param is REQUIRED the wrapper ships permanently uncallable while the UI
+    advertises the tool healthy — so the tool is dropped at discovery."""
+
+    def test_unsalvageable_required_param_skips_the_tool(self):
+        schema = {
+            "properties": {"名前": {"type": "string"}},
+            "required": ["名前"],
+        }
+        kept, skipped = sanitize_discovered_tools([_tool("bad", input_schema=schema), _tool("ok")])
+
+        assert [t["name"] for t in kept] == ["ok"]
+        name, reason = skipped[0]
+        assert name == "bad"
+        # The offending param is named so the UI can say which one.
+        assert "名前" in reason
+        assert "not a valid Python identifier" in reason
+
+    def test_unsalvageable_optional_param_keeps_the_tool(self):
+        # Optional params are droppable: every required arg still reaches the
+        # server, so the tool stays callable.
+        schema = {
+            "properties": {"ticker": {"type": "string"}, "名前": {"type": "string"}},
+            "required": ["ticker"],
+        }
+        kept, skipped = sanitize_discovered_tools([_tool("t", input_schema=schema)])
+
+        assert [t["name"] for t in kept] == ["t"]
+        assert skipped == []
+
+    def test_colliding_required_params_keep_the_tool(self):
+        # 'foo-bar' and 'foo.bar' both sanitize to 'foo_bar' — salvageable by
+        # the codegen de-duplication, so discovery must NOT drop the tool.
+        schema = {
+            "properties": {"foo-bar": {"type": "string"}, "foo.bar": {"type": "string"}},
+            "required": ["foo-bar", "foo.bar"],
+        }
+        kept, skipped = sanitize_discovered_tools([_tool("t", input_schema=schema)])
+
+        assert [t["name"] for t in kept] == ["t"]
+        assert skipped == []
+
+    def test_keyword_required_param_keeps_the_tool(self):
+        # 'class' sanitizes to 'class_' (wire key preserved at codegen).
+        schema = {"properties": {"class": {"type": "string"}}, "required": ["class"]}
+        kept, skipped = sanitize_discovered_tools([_tool("t", input_schema=schema)])
+
+        assert [t["name"] for t in kept] == ["t"]
+        assert skipped == []
+
+
+# ---------------------------------------------------------------------------
 # sanitize_discovered_tools — total-schema-size cap (skip, not truncate)
 # ---------------------------------------------------------------------------
 
@@ -216,7 +320,7 @@ class TestSanitizeSizeCap:
 class TestDiscoverAndCacheNoSandbox:
     async def test_sandbox_none_marks_every_server_pending(self, monkeypatch):
         upsert = AsyncMock(side_effect=lambda *a, **k: {"row": a})
-        monkeypatch.setattr(mcp_discovery.mcp_db, "upsert_tool_schemas", upsert)
+        monkeypatch.setattr(mcp_discovery, "upsert_tool_schemas", upsert)
 
         servers = [_server("srv_a"), _server("srv_b")]
         rows = await discover_and_cache("ws-1", None, servers)
@@ -229,7 +333,7 @@ class TestDiscoverAndCacheNoSandbox:
 
     async def test_sandbox_without_discover_attr_marks_pending(self, monkeypatch):
         upsert = AsyncMock(return_value={"ok": True})
-        monkeypatch.setattr(mcp_discovery.mcp_db, "upsert_tool_schemas", upsert)
+        monkeypatch.setattr(mcp_discovery, "upsert_tool_schemas", upsert)
 
         # An old sandbox object that predates the discovery driver.
         sandbox = SimpleNamespace()  # no discover_user_mcp_schemas attribute
@@ -250,7 +354,7 @@ class TestDiscoverAndCacheNoSandbox:
 class TestDiscoverAndCacheDriverRaises:
     async def test_driver_exception_marks_every_server_error(self, monkeypatch):
         upsert = AsyncMock(return_value={"ok": True})
-        monkeypatch.setattr(mcp_discovery.mcp_db, "upsert_tool_schemas", upsert)
+        monkeypatch.setattr(mcp_discovery, "upsert_tool_schemas", upsert)
 
         async def boom(_servers):
             raise RuntimeError("sandbox exploded")
@@ -277,7 +381,7 @@ class TestDiscoverAndCacheDriverRaises:
 class TestDiscoverAndCachePerServer:
     async def test_missing_result_for_one_server_is_isolated(self, monkeypatch):
         upsert = AsyncMock(return_value={"ok": True})
-        monkeypatch.setattr(mcp_discovery.mcp_db, "upsert_tool_schemas", upsert)
+        monkeypatch.setattr(mcp_discovery, "upsert_tool_schemas", upsert)
 
         # Driver returns an OK result for srv_a but nothing for srv_b.
         async def discover(_servers):
@@ -314,7 +418,7 @@ class TestDiscoverAndCachePerServer:
 
     async def test_error_status_result_persisted_with_error_text(self, monkeypatch):
         upsert = AsyncMock(return_value={"ok": True})
-        monkeypatch.setattr(mcp_discovery.mcp_db, "upsert_tool_schemas", upsert)
+        monkeypatch.setattr(mcp_discovery, "upsert_tool_schemas", upsert)
 
         async def discover(_servers):
             return {
@@ -335,7 +439,7 @@ class TestDiscoverAndCachePerServer:
 
     async def test_error_result_missing_error_field_uses_default_text(self, monkeypatch):
         upsert = AsyncMock(return_value={"ok": True})
-        monkeypatch.setattr(mcp_discovery.mcp_db, "upsert_tool_schemas", upsert)
+        monkeypatch.setattr(mcp_discovery, "upsert_tool_schemas", upsert)
 
         async def discover(_servers):
             # A non-ok status with no 'error' key falls back to a default.
@@ -390,6 +494,49 @@ class TestStaleServerNames:
         stale = await _real_stale_server_names("ws", [_cfg("bad")])
         assert stale == {"bad"}
 
+    async def test_inherited_servers_check_the_user_catalog(self, monkeypatch):
+        """Inherited (source='user') results must validate against the owner's
+        Connectors catalog — the old workspace-only lookup dropped EVERY
+        inherited discovery as "deleted", so they never left pending."""
+        monkeypatch.setattr(
+            mcp_discovery.mcp_db, "list_workspace_servers",
+            AsyncMock(return_value=[]),
+        )
+        monkeypatch.setattr(
+            mcp_discovery.mcp_db, "list_enabled_user_servers",
+            AsyncMock(return_value=[
+                {"name": "kept", "transport": "stdio", "command": "npx"},
+                {"name": "edited", "transport": "stdio", "command": "uvx"},
+            ]),
+        )
+        monkeypatch.setattr(
+            "src.server.database.workspace.get_workspace",
+            AsyncMock(return_value={"workspace_id": "ws", "user_id": "u1"}),
+        )
+        stale = await _real_stale_server_names(
+            "ws",
+            [
+                _cfg("kept", source="user"),
+                _cfg("edited", source="user"),
+                _cfg("deleted", source="user"),
+            ],
+        )
+        assert stale == {"edited", "deleted"}
+
+    async def test_inherited_falls_back_stale_without_an_owner(self, monkeypatch):
+        """No workspace row (or no user_id on it) ⇒ the catalog can't be
+        checked; dropping the result is the safe arm."""
+        monkeypatch.setattr(
+            mcp_discovery.mcp_db, "list_workspace_servers",
+            AsyncMock(return_value=[]),
+        )
+        monkeypatch.setattr(
+            "src.server.database.workspace.get_workspace",
+            AsyncMock(return_value=None),
+        )
+        stale = await _real_stale_server_names("ws", [_cfg("inh", source="user")])
+        assert stale == {"inh"}
+
 
 @pytest.mark.asyncio
 class TestDiscoverAndCacheStaleGuard:
@@ -397,7 +544,7 @@ class TestDiscoverAndCacheStaleGuard:
         self, monkeypatch
     ):
         upsert = AsyncMock()
-        monkeypatch.setattr(mcp_discovery.mcp_db, "upsert_tool_schemas", upsert)
+        monkeypatch.setattr(mcp_discovery, "upsert_tool_schemas", upsert)
 
         async def _stale(workspace_id, servers):
             return {"acme"}
@@ -421,7 +568,7 @@ class TestDiscoverAndCacheStaleGuard:
             upserted.append(server_name)
             return {"server_name": server_name, **kw}
 
-        monkeypatch.setattr(mcp_discovery.mcp_db, "upsert_tool_schemas", _upsert)
+        monkeypatch.setattr(mcp_discovery, "upsert_tool_schemas", _upsert)
 
         async def _stale(workspace_id, servers):
             return {"edited"}
@@ -443,7 +590,7 @@ class TestDiscoverAndCacheStaleGuard:
 
     async def test_pending_path_dropped_when_stale(self, monkeypatch):
         upsert = AsyncMock()
-        monkeypatch.setattr(mcp_discovery.mcp_db, "upsert_tool_schemas", upsert)
+        monkeypatch.setattr(mcp_discovery, "upsert_tool_schemas", upsert)
 
         async def _stale(workspace_id, servers):
             return {"acme"}
@@ -523,3 +670,90 @@ class TestDiscoveryFingerprint:
         assert mcp_discovery_fingerprint(
             self._srv(discovery_uses_secrets=False)
         ) != mcp_discovery_fingerprint(self._srv(discovery_uses_secrets=True))
+
+    def test_ignores_the_resolve_time_oauth_binding(self):
+        """The whole user-tier cache rides on this exemption.
+
+        The Connectors catalog hashes a RAW row (no connection bound); the
+        resolver hashes the same server annotated with its
+        ``oauth_connection_id``. If that churned the hash, every OAuth server's
+        snapshot would read as stale forever — permanently 'pending', never any
+        tools.
+        """
+        bare = self._srv(source="user")
+        bound = self._srv(source="user", oauth_connection_id="conn-1")
+        assert mcp_discovery_fingerprint(bare) == mcp_discovery_fingerprint(bound)
+
+
+# ---------------------------------------------------------------------------
+# ToolSnapshotIndex — hash gate + tier precedence
+# ---------------------------------------------------------------------------
+
+
+class TestToolSnapshotIndex:
+    """One acceptance rule for every snapshot consumer: current fingerprint
+    only, user tier first for inherited servers."""
+
+    def _srv(self, name="acme", **kw):
+        base = dict(name=name, transport="stdio", command="npx", source="workspace")
+        base.update(kw)
+        return MCPServerConfig(**base)
+
+    def _row(self, server, *, status="ok", tools=(), config_hash=None):
+        return {
+            "server_name": server.name,
+            "status": status,
+            "tools": list(tools),
+            "config_hash": (
+                config_hash
+                if config_hash is not None
+                else mcp_discovery_fingerprint(server)
+            ),
+        }
+
+    def test_hash_gate_rejects_a_stale_snapshot(self):
+        srv = self._srv()
+        index = ToolSnapshotIndex(
+            workspace_rows=[self._row(srv, config_hash="older-config")]
+        )
+        assert index.snapshot(srv) is None
+
+    def test_error_snapshot_is_returned_but_not_ok(self):
+        # The effective list needs the error row (to show why); consumers that
+        # serve tools must not get it.
+        srv = self._srv()
+        index = ToolSnapshotIndex(workspace_rows=[self._row(srv, status="error")])
+        assert index.snapshot(srv) is not None
+        assert index.ok(srv) is None
+
+    def test_inherited_server_prefers_the_user_tier(self):
+        srv = self._srv(source="user")
+        index = ToolSnapshotIndex(
+            workspace_rows=[self._row(srv, tools=[_tool("stale")])],
+            user_rows=[self._row(srv, tools=[_tool("fresh")])],
+        )
+        assert [t["name"] for t in index.ok(srv)["tools"]] == ["fresh"]
+
+    def test_rejected_user_row_does_not_fall_through_to_the_workspace_tier(self):
+        # The workspace snapshot of an OAuth server is OAuth-blind and can
+        # outlive a disconnect — serving it after the user tier said "error"
+        # is exactly the staleness the precedence exists to prevent.
+        srv = self._srv(source="user")
+        index = ToolSnapshotIndex(
+            workspace_rows=[self._row(srv, tools=[_tool("stale")])],
+            user_rows=[self._row(srv, status="error")],
+        )
+        assert index.ok(srv) is None
+
+    def test_inherited_server_falls_back_when_the_user_tier_has_no_match(self):
+        srv = self._srv(source="user")
+        index = ToolSnapshotIndex(
+            workspace_rows=[self._row(srv, tools=[_tool("in_sandbox")])],
+            user_rows=[self._row(srv, config_hash="older-config")],
+        )
+        assert [t["name"] for t in index.ok(srv)["tools"]] == ["in_sandbox"]
+
+    def test_workspace_server_never_reads_the_user_tier(self):
+        srv = self._srv()
+        index = ToolSnapshotIndex(user_rows=[self._row(srv, tools=[_tool("x")])])
+        assert index.snapshot(srv) is None

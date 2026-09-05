@@ -9,6 +9,12 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import File, UploadFile
 from pydantic import BaseModel
+from src.llms.preferences import (
+    MOVED_MODEL_KEYS,
+    TUNING_FIELDS,
+    TuningError,
+    validate_tuning,
+)
 from src.utils.storage import get_public_url, upload_bytes
 
 from src.server.auth.jwt_bearer import get_current_auth_info, AuthInfo
@@ -258,7 +264,15 @@ async def get_preferences(user_id: CurrentUserId):
 
 def _validate_custom_models(custom_models: list, custom_providers: list | None = None) -> None:
     """Validate custom_models list before persisting. Raises HTTPException 400 on invalid data."""
+    from ptc_agent.agent.prompts.guidance import VALID_GUIDANCE
+
     from src.llms.llm import LLM, CUSTOM_MODEL_NAME_RE
+    from src.llms.model_spec import reasoning_block
+    from src.llms.reasoning import (
+        REASONING_LEVELS,
+        ReasoningSurfaceError,
+        validate_surface,
+    )
 
     if not isinstance(custom_models, list):
         raise HTTPException(status_code=400, detail="custom_models must be a list")
@@ -324,13 +338,22 @@ def _validate_custom_models(custom_models: list, custom_providers: list | None =
                 detail=f"custom_models[{idx}]: provider '{provider}' is not a known BYOK-eligible or custom provider",
             )
 
-        for field in ("parameters", "extra_body"):
+        for field in ("parameters", "extra_body", "reasoning"):
             val = cm.get(field)
             if val is not None and not isinstance(val, dict):
                 raise HTTPException(
                     status_code=400,
                     detail=f"custom_models[{idx}]: {field} must be a JSON object",
                 )
+
+        # Rejected here rather than at request time: an unknown write path is
+        # accepted by the vendor and ignored, so the entry would render an
+        # effort control that reports a level and sends nothing.
+        if isinstance(cm.get("reasoning"), dict) and cm["reasoning"]:
+            try:
+                validate_surface(f"custom_models[{idx}]", cm["reasoning"])
+            except ReasoningSurfaceError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         modalities = cm.get("input_modalities")
         if modalities is not None:
@@ -348,6 +371,49 @@ def _validate_custom_models(custom_models: list, custom_providers: list | None =
             # Ensure "text" is always present
             if "text" not in modalities:
                 cm["input_modalities"] = ["text"] + modalities
+
+        # A custom model has no manifest entry, so these are the only place it
+        # can declare what it honors. Without them every custom model resolves
+        # to the fail-safe guidance level and gets no effort selector at all.
+        guidance = cm.get("prompt_guidance")
+        if guidance is not None and guidance not in VALID_GUIDANCE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"custom_models[{idx}]: prompt_guidance must be one of {sorted(VALID_GUIDANCE)}",
+            )
+
+        # Either shape: a `reasoning` block, or the flat keys entries saved
+        # before it existed still carry. Whichever it used is written back to,
+        # which is why the shapes are read apart here rather than through
+        # `reasoning_block`: its normalized view cannot say which key to
+        # rewrite. Empty means unused, on the same terms as that function.
+        block = cm.get("reasoning")
+        declared = block if isinstance(block, dict) and block else cm
+        efforts_key = "efforts" if declared is not cm else "reasoning_efforts"
+        default_key = "default" if declared is not cm else "reasoning_effort_default"
+
+        efforts = declared.get(efforts_key)
+        if efforts is not None:
+            if not isinstance(efforts, list) or any(e not in REASONING_LEVELS for e in efforts):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"custom_models[{idx}]: {efforts_key} must be a list drawn from {list(REASONING_LEVELS)}",
+                )
+            # Store in canonical order so the UI renders a ladder, not the
+            # order the client happened to send.
+            declared[efforts_key] = [lv for lv in REASONING_LEVELS if lv in set(efforts)]
+
+        # An entry shadowing a built-in inherits that model's ladder, so a
+        # default may name a level this entry does not list itself.
+        effective_efforts = declared.get(efforts_key)
+        if effective_efforts is None:
+            effective_efforts = reasoning_block(mc.get_model_config(name)).get("efforts") or []
+        default_effort = declared.get(default_key)
+        if default_effort is not None and default_effort not in effective_efforts:
+            raise HTTPException(
+                status_code=400,
+                detail=f"custom_models[{idx}]: {default_key} must be one of {sorted(effective_efforts)}",
+            )
 
 
 def _validate_custom_providers(custom_providers: list) -> None:
@@ -390,6 +456,111 @@ def _validate_custom_providers(custom_providers: list) -> None:
 
 _VALID_OUTPUT_FORMATS = {"markdown", "html"}
 
+# The keys that moved out of ``other_preference``. Read on input only, to
+# re-route a stale client's write; drop with the resolver's legacy read.
+LEGACY_MODEL_KEYS = frozenset(MOVED_MODEL_KEYS)
+
+def _tuning_400(exc: TuningError) -> HTTPException:
+    """The 400 for a tuning value the stored shape does not allow.
+
+    ``TuningError`` already leads its message with the offending field, so the
+    detail does not repeat ``exc.field``.
+    """
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+def _effective_model_preference(stored: dict, patch: dict) -> dict:
+    """The column as it will look once this patch lands, one level deep.
+
+    A cross-key invariant has to hold on the merged state: a patch that only
+    deletes a provider names no model at all, so checking the request body alone
+    lets it through and leaves a dangling reference behind it.
+    """
+    merged = dict(stored)
+    for key, value in patch.items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _validate_model_tuning(model_pref: dict, effective: dict) -> None:
+    """Check tuning on both levels — account-wide and per model. Raises 400.
+
+    The account level is checked against the global vocabulary because it is
+    chosen with no model in hand and clamped per model at resolve time; a
+    profile is checked against its own model's ladder, which is the whole point
+    of the per-model layer.
+    """
+    from src.llms.model_spec import canonical_reasoning_efforts, reasoning_block
+    from src.server.services.llm.user_models import model_entry
+
+    try:
+        validate_tuning(model_pref, where="model_preference")
+
+        profiles = model_pref.get("profiles")
+        if profiles is None:
+            return
+        if not isinstance(profiles, dict):
+            raise HTTPException(
+                status_code=400, detail="profiles must be an object keyed by model name"
+            )
+
+        for model, profile in profiles.items():
+            if profile is None:  # deletes the model's profile
+                continue
+            if not isinstance(profile, dict):
+                raise HTTPException(
+                    status_code=400, detail=f"profiles[{model}] must be an object"
+                )
+            # Anything outside the tuning set is a typo that would sit in the
+            # row forever doing nothing, so it is rejected at the boundary.
+            unknown = set(profile) - set(TUNING_FIELDS)
+            if unknown:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"profiles[{model}]: unknown settings {sorted(unknown)}; "
+                           f"allowed: {sorted(TUNING_FIELDS)}",
+                )
+            # One entry, resolved the way the resolver resolves it: a custom
+            # model shadows a built-in of the same name, so reading the
+            # manifest first would check a shadowed ladder the turn never runs.
+            entry = model_entry(effective, model) or {}
+            efforts = list(canonical_reasoning_efforts(reasoning_block(entry).get("efforts")))
+            validate_tuning(profile, where=f"profiles[{model}]", reasoning_efforts=efforts)
+    except TuningError as exc:
+        raise _tuning_400(exc) from exc
+
+
+def _clear_unhonored_efforts(
+    model_pref: dict, effective: dict, stored_profiles: dict | None
+) -> None:
+    """Drop stored efforts the changed catalog no longer offers, in this write.
+
+    ``custom_models`` is the one thing that can narrow a ladder under a profile
+    the patch never mentions, and nothing else revisits those, so the level
+    would sit in Settings naming a step no turn runs.
+    """
+    from src.llms.model_spec import canonical_reasoning_efforts, reasoning_block
+    from src.server.services.llm.user_models import model_entry
+
+    # Merged by hand: ``_effective_model_preference`` replaces ``profiles``
+    # wholesale, so a patch carrying its own would hide the stored ones this
+    # exists to reach.
+    merged = {**(stored_profiles or {}), **(model_pref.get("profiles") or {})}
+    for model, profile in merged.items():
+        if not isinstance(profile, dict):
+            continue  # already a delete
+        effort = profile.get("reasoning_effort")
+        if effort is None:
+            continue
+        entry = model_entry(effective, model) or {}
+        if effort in canonical_reasoning_efforts(reasoning_block(entry).get("efforts")):
+            continue
+        patch = model_pref.setdefault("profiles", {})
+        patch[model] = {**(patch.get(model) or {}), "reasoning_effort": None}
+
 
 def _validate_agent_preference(agent_pref: dict) -> None:
     """Validate agent_preference before persisting. Raises HTTPException 400 on invalid data."""
@@ -418,32 +589,48 @@ async def update_preferences(
 
     # Convert Pydantic models to dicts for JSONB storage.
     # Use exclude_unset=True (not exclude_none=True) so explicitly-sent null
-    # values are preserved — _split_updates_and_deletes uses None to signal
-    # key deletion from the JSONB column.
+    # values are preserved — the DB layer reads None as a key deletion.
     risk_pref = request.risk_preference.model_dump(exclude_unset=True) if request.risk_preference else None
     investment_pref = request.investment_preference.model_dump(exclude_unset=True) if request.investment_preference else None
     agent_pref = request.agent_preference.model_dump(exclude_unset=True) if request.agent_preference else None
     other_pref = request.other_preference.model_dump(exclude_unset=True) if request.other_preference else None
+    model_pref = request.model_preference.model_dump(exclude_unset=True) if request.model_preference else None
 
-    # Validate custom_providers BEFORE custom_models (models may reference providers)
-    if other_pref and "custom_providers" in other_pref:
-        custom_providers = other_pref["custom_providers"]
-        if custom_providers is not None:
-            _validate_custom_providers(custom_providers)
+    # The model keys live in their own column now. A client still
+    # sending them under other_preference is honored for one release so an old
+    # tab does not silently drop the user's settings on the floor.
+    if other_pref:
+        legacy = {k: other_pref.pop(k) for k in list(other_pref) if k in LEGACY_MODEL_KEYS}
+        if legacy:
+            model_pref = {**legacy, **(model_pref or {})}
 
-    # Validate custom_models if present in other_preference
-    if other_pref and "custom_models" in other_pref:
-        custom_models = other_pref["custom_models"]
-        if custom_models is not None:
-            # Resolve custom_providers for validation:
-            # - If in this request → use them (even if empty/null → means being deleted)
-            # - Otherwise → load existing from DB
-            if "custom_providers" in other_pref:
-                cp_for_validation = other_pref.get("custom_providers") or []
-            else:
-                existing = await db_get_user_preferences(user_id)
-                cp_for_validation = (existing or {}).get("other_preference", {}).get("custom_providers") or []
-            _validate_custom_models(custom_models, cp_for_validation)
+    if model_pref:
+        stored = await db_get_user_preferences(user_id)
+        stored_model_pref = (stored or {}).get("model_preference") or {}
+        effective = _effective_model_preference(stored_model_pref, model_pref)
+
+        # Providers before models: a model names the provider it runs on.
+        if model_pref.get("custom_providers") is not None:
+            _validate_custom_providers(model_pref["custom_providers"])
+
+        # Checked against the merged catalog rather than the request, because a
+        # patch that only drops a provider names no model and would otherwise
+        # skip this. ``effective`` holds the request's own list by reference, so
+        # the normalization this does still reaches the row.
+        if "custom_models" in model_pref or "custom_providers" in model_pref:
+            _validate_custom_models(
+                effective.get("custom_models") or [],
+                effective.get("custom_providers") or [],
+            )
+
+        _validate_model_tuning(model_pref, effective)
+
+        # After validation, so a bad level in the patch still gets its 400 and
+        # only levels already in the row are cleared.
+        if "custom_models" in model_pref:
+            _clear_unhonored_efforts(
+                model_pref, effective, stored_model_pref.get("profiles")
+            )
 
     # Validate search_provider / search_depth if present (None = key deletion,
     # allowed). Shape validation only — tier gating happens at resolve time.
@@ -487,13 +674,17 @@ async def update_preferences(
     if agent_pref:
         _validate_agent_preference(agent_pref)
 
-    preferences = await upsert_user_preferences(
-        user_id=user_id,
-        risk_preference=risk_pref,
-        investment_preference=investment_pref,
-        agent_preference=agent_pref,
-        other_preference=other_pref,
-    )
+    try:
+        preferences = await upsert_user_preferences(
+            user_id=user_id,
+            risk_preference=risk_pref,
+            investment_preference=investment_pref,
+            agent_preference=agent_pref,
+            other_preference=other_pref,
+            model_preference=model_pref,
+        )
+    except TuningError as exc:
+        raise _tuning_400(exc) from exc
 
     await invalidate_user_prefs_cache(user_id)
     await invalidate_user_profile_cache(user_id)

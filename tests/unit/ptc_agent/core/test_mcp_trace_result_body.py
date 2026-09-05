@@ -203,17 +203,15 @@ def test_aggregate_guard_counter_is_per_module_instance(
     assert ns2["_result_body_emitted_bytes"] == 0
 
 
-def test_generated_client_interpolates_budget_and_counter() -> None:
-    """The aggregate guard logic + caps are interpolated from the canonical
-    constants — guards against a codegen regression that drops the budget."""
-    code = _render()
-    assert f"_RESULT_BODY_MAX_BYTES = {RESULT_BODY_MAX_BYTES}" in code
-    assert (
-        f"_RESULT_BODY_TRACE_BUDGET_BYTES = {RESULT_BODY_TRACE_BUDGET_BYTES}"
-        in code
-    )
-    assert "_result_body_emitted_bytes = 0" in code
+def test_generated_client_applies_budget_and_counter() -> None:
+    """The caps flow from the canonical constants through the config epilogue
+    into the module state — guards against a codegen regression that drops the
+    budget."""
+    ns = _exec_module(_render())
+    assert ns["_RESULT_BODY_MAX_BYTES"] == RESULT_BODY_MAX_BYTES
+    assert ns["_RESULT_BODY_TRACE_BUDGET_BYTES"] == RESULT_BODY_TRACE_BUDGET_BYTES
+    assert ns["_result_body_emitted_bytes"] == 0
     # The guard reads the running sum against the budget before emitting a body.
     assert (
-        "_result_body_emitted_bytes < _RESULT_BODY_TRACE_BUDGET_BYTES" in code
+        "_result_body_emitted_bytes < _RESULT_BODY_TRACE_BUDGET_BYTES" in _render()
     )

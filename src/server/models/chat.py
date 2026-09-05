@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from src.server.models.additional_context import AdditionalContext
 
+from src.llms.reasoning import ReasoningLevel
+
 # Roles the chat path can VALIDLY persist into the ``messages`` channel. The
 # chat path writes ``{"role", "content"}`` dicts straight in; under DeltaChannel
 # that raw write is stored BEFORE the reducer runs, so a role must clear TWO bars:
@@ -214,6 +216,21 @@ class ChatMessage(BaseModel):
 # =============================================================================
 
 
+class ThreadOrigin(BaseModel):
+    """Who initiated a thread — stored under the thread's metadata['origin'].
+
+    'agent' = spawned by another agent (id = dispatching flash thread id),
+    'automation' = scheduled/triggered run (id = automation id), 'system' =
+    set aside for platform-initiated threads. The label is advisory —
+    client-supplied, not authenticated, and nothing branches on it.
+    User-initiated threads carry no origin at all rather than an explicit
+    'user' entry.
+    """
+
+    type: Literal["agent", "automation", "system"]
+    id: Optional[str] = Field(default=None, max_length=100)
+
+
 class ChatRequest(BaseModel):
     """Request model for streaming chat endpoint."""
 
@@ -315,11 +332,13 @@ class ChatRequest(BaseModel):
     )
 
     # Reasoning effort override (optional - defaults to model's configured level)
-    # xhigh is honored only by Anthropic adaptive thinking (Opus 4.7+); other
-    # providers clamp it to high in src/llms/reasoning.py.
-    reasoning_effort: Optional[Literal["low", "medium", "high", "xhigh"]] = Field(
+    # The full canonical vocabulary, not a subset: a level the chosen model does
+    # not declare is clamped in LLM.__init__, which is the only layer that can
+    # see the model's enum. Narrowing here instead turns an unsupported level
+    # into a 422 the caller cannot act on.
+    reasoning_effort: Optional[ReasoningLevel] = Field(
         default=None,
-        description="Override reasoning effort for this request (low/medium/high/xhigh)",
+        description="Override reasoning effort for this request.",
     )
 
     fast_mode: Optional[bool] = Field(
@@ -362,10 +381,11 @@ class ChatRequest(BaseModel):
         description="Report-back dispatch generation token. Internal use only.",
     )
 
-    # Internal: structural recursion gate for synthetic notification turns.
-    # A task report-back turn is built WITHOUT the subagent machinery
-    # (no Task/TaskOutput tools), so it can never spawn background work
-    # whose completion would notify again.
+    # Internal: build this turn's agent without the subagent machinery
+    # (no Task/TaskOutput tools). Task report-back turns deliberately do
+    # NOT set it — TaskOutput is their retrieval path; re-announce
+    # recursion is prevented by the outbox's ledger arbitration
+    # (result_delivered_at), not structurally.
     disable_subagents: Optional[bool] = Field(
         default=None,
         description="Build this turn's agent without subagent tools. "
@@ -398,9 +418,18 @@ class ChatRequest(BaseModel):
         default=None,
         pattern=r"^[a-z_]+(:[A-Z0-9][A-Z0-9.-]*)?$",
         max_length=50,
-        description="Origin/platform identifier. Examples: 'web', "
+        description="Surface the chat originated from. Examples: 'web', "
         "'market_view:AAPL', 'market_view:002851.SZ', 'telegram', 'slack', "
-        "'discord', 'feishu'.",
+        "'discord', 'feishu'. Absent for system-initiated threads (see origin).",
+    )
+    # Orthogonal to platform: platform = which user surface, origin = who
+    # initiated. Absent origin = user-initiated (the common case is never
+    # written). Only affects the caller's own thread labeling, so it is
+    # accepted from any client without gating.
+    origin: Optional["ThreadOrigin"] = Field(
+        default=None,
+        description="Thread initiator provenance, recorded at thread creation "
+        "(ignored for existing threads). Absent = user-initiated.",
     )
 
 

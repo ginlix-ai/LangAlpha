@@ -4,4 +4,5 @@ export interface Preferences {
   investment_preference?: Record<string, unknown>;
   agent_preference?: Record<string, unknown>;
   other_preference?: Record<string, unknown>;
+  model_preference?: Record<string, unknown>;
 }

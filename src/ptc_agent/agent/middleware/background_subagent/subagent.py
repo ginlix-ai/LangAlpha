@@ -137,20 +137,23 @@ _EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response"}
 
 TASK_TOOL_DESCRIPTION = """Launch a subagent for complex, multi-step tasks.
 
+Use for: Complex tasks, isolated research, context-heavy operations.
+NOT for: Simple 1-2 tool operations (do directly).
+
 Args:
-    description: Short 1-2 sentence summary of the task (displayed as title)
-    prompt: Detailed instructions for the subagent to execute
-    subagent_type: Agent type to use
-    action: "init" (new task, default), "update" (instruct running task), "resume" (resume completed task)
-    task_id: Required for "update" and "resume" actions
+    description: Short 1-2 sentence title shown on the task card. Think commit subject line.
+    prompt: The subagent's complete instructions. It sees nothing of this conversation, so include all the context, data and expected output format it needs.
+    subagent_type: Which subagent to use (e.g. "general-purpose"). Required for "init".
+    action: "init" (new task, default), "update" (instruct a running task), "resume" (continue a completed or stopped task from its checkpoint, with its prior context intact)
+    task_id: The target task's short alphanumeric ID. Required for "update" and "resume".
 
-Usage:
-- Use for: Complex tasks, isolated research, context-heavy operations
-- NOT for: Simple 1-2 tool operations (do directly)
-- Parallel: Launch multiple agents in single message for concurrent tasks
-- Results: Subagent returns final report only (intermediate steps hidden)
+Returns:
+    A task ID immediately, not the subagent's work. The subagent runs
+    autonomously and reports only its final result; intermediate steps stay
+    hidden.
 
-The subagent works autonomously. Provide clear, complete instructions in the prompt."""
+Keep working. The report arrives through TaskOutput once a completion
+notification names the task."""
 
 
 def _get_subagents(
@@ -228,149 +231,159 @@ def _get_subagents(
     return agents, subagent_descriptions
 
 
+async def arun_subagent_streaming(
+    subagent: Runnable,
+    state: dict,
+    config: dict,
+    *,
+    registry: BackgroundTaskRegistry | None,
+    tool_call_id: str | None = None,
+) -> dict:
+    """Drive the subagent through ``astream`` with combined ``values``,
+    ``messages``, and ``custom`` modes; return the final state.
+
+    ``values`` mode yields full state snapshots; the last one is the
+    tool's return value. ``messages`` mode yields per-token
+    ``AIMessageChunk`` deltas forwarded to the registry as
+    ``message_chunk`` records for per-task SSE granularity. ``custom``
+    mode surfaces ``get_stream_writer()`` events emitted from inside the
+    subagent (e.g. compaction's ``context_window`` token_usage / summarize
+    / offload signals) which would otherwise die at the astream boundary.
+
+    ``tool_call_id`` identifies the BackgroundTask for event forwarding;
+    when omitted it falls back to the ContextVar set by the Task-tool
+    interception path.
+    """
+    last_state: dict | None = None
+    forwarder: _SubagentTokenForwarder | None = None
+    bg_task = None
+
+    if registry is not None:
+        tool_call_id = tool_call_id or current_background_tool_call_id.get()
+        if tool_call_id:
+            bg_task = registry.get_by_tool_call_id(tool_call_id)
+            if bg_task is not None:
+                forwarder = _SubagentTokenForwarder(
+                    registry,
+                    tool_call_id,
+                    f"task:{bg_task.task_id}",
+                )
+
+    try:
+        async for mode, data in subagent.astream(
+            state, config, stream_mode=["values", "messages", "custom"]
+        ):
+            # Root symmetry (retention contract): once the spill circuit
+            # opens, every further frame widens the hole in the replay
+            # archive — abort the graph instead of completing a run
+            # whose stream is torn.
+            if bg_task is not None and bg_task.redis_write_failed:
+                raise TransportLostError(
+                    "transport_lost: subagent event spill failed; "
+                    "aborting so the run finalizes instead of "
+                    "completing with a torn stream"
+                )
+            if mode == "values":
+                last_state = data
+            elif mode == "messages" and forwarder is not None:
+                # ``messages`` data is ``(message_chunk, metadata)``.
+                # The metadata carries ``langgraph_node`` which lets the
+                # forwarder drop tool-internal LLM chunks. Duck-typed (no
+                # isinstance) so mocks and any future BaseMessage subclasses
+                # pass.
+                if isinstance(data, tuple):
+                    # Symmetric guards: production LangGraph emits
+                    # 2-tuples for ``messages`` mode, but defending
+                    # both indices keeps an upstream contract change
+                    # from raising IndexError out of the iterator.
+                    chunk = data[0] if len(data) > 0 else None
+                    chunk_meta = data[1] if len(data) > 1 else None
+                else:
+                    chunk = data
+                    chunk_meta = None
+                if chunk is not None and hasattr(chunk, "content"):
+                    try:
+                        await forwarder.forward(chunk, chunk_meta)
+                    except Exception as exc:
+                        # Token forwarding must never break the subagent.
+                        logger.debug(
+                            "Subagent token forwarding failed",
+                            error=str(exc),
+                        )
+            elif mode == "custom" and forwarder is not None:
+                try:
+                    await forwarder.forward_custom(data)
+                except Exception as exc:
+                    logger.debug(
+                        "Subagent custom-event forwarding failed",
+                        error=str(exc),
+                    )
+    except Exception as exc:
+        # Spill an ``error`` SSE record so per-task consumers can tell a
+        # crashed subagent apart from a clean completion. ``asyncio.CancelledError``
+        # (BaseException) skips this path on purpose — cancellation is an
+        # orderly stop, not a content-level error; the registry's ``cancelled``
+        # flag already distinguishes it.
+        if forwarder is not None:
+            await forwarder.forward_error(exc)
+        raise
+    finally:
+        if forwarder is not None:
+            try:
+                await forwarder.finalize()
+            except Exception:
+                pass
+
+    return last_state if last_state is not None else {}
+
+
+def return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
+    """Convert a subagent's final state into the parent-facing ToolMessage Command."""
+    # Validate that the result contains a 'messages' key
+    if "messages" not in result:
+        error_msg = (
+            "CompiledSubAgent must return a state containing a 'messages' key. "
+            "Custom StateGraphs used with CompiledSubAgent should include 'messages' "
+            "in their state schema to communicate results back to the main agent."
+        )
+        raise ValueError(error_msg)
+
+    state_update = {
+        k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS
+    }
+    # Strip trailing whitespace to prevent API errors with Anthropic
+    message_text = (
+        result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+    )
+    return Command(
+        update={
+            **state_update,
+            "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)],
+        }
+    )
+
+
 def _create_task_tool(
     *,
-    default_model: str | BaseChatModel,
-    default_tools: Sequence[BaseTool | Callable | dict[str, Any]],
-    default_middleware: list[AgentMiddleware] | None,
-    default_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
-    subagents: list[SubAgent | CompiledSubAgent],
-    general_purpose_agent: bool,
+    subagent_graphs: dict[str, Any],
     task_description: str = TASK_TOOL_DESCRIPTION,
     registry: BackgroundTaskRegistry | None = None,
     checkpointer: Any | None = None,
 ) -> BaseTool:
-    """Build a StructuredTool that dispatches Task tool calls to compiled subagents."""
-    subagent_graphs, _subagent_descriptions = _get_subagents(
-        default_model=default_model,
-        default_tools=default_tools,
-        default_middleware=default_middleware,
-        default_interrupt_on=default_interrupt_on,
-        subagents=subagents,
-        general_purpose_agent=general_purpose_agent,
-        checkpointer=checkpointer,
-    )
+    """Build a StructuredTool that dispatches Task tool calls to compiled subagents.
+
+    ``subagent_graphs`` are pre-compiled via ``_get_subagents`` by the caller
+    (``SubAgentMiddleware``) so the Task tool and any direct dispatch path
+    invoke the same graph instances.
+    """
 
     async def _arun_subagent_streaming(
         subagent: Runnable,
         state: dict,
         config: dict,
     ) -> dict:
-        """Drive the subagent through ``astream`` with combined ``values``,
-        ``messages``, and ``custom`` modes; return the final state.
-
-        ``values`` mode yields full state snapshots; the last one is the
-        tool's return value. ``messages`` mode yields per-token
-        ``AIMessageChunk`` deltas forwarded to the registry as
-        ``message_chunk`` records for per-task SSE granularity. ``custom``
-        mode surfaces ``get_stream_writer()`` events emitted from inside the
-        subagent (e.g. compaction's ``context_window`` token_usage / summarize
-        / offload signals) which would otherwise die at the astream boundary.
-        """
-        last_state: dict | None = None
-        forwarder: _SubagentTokenForwarder | None = None
-        bg_task = None
-
-        if registry is not None:
-            tool_call_id = current_background_tool_call_id.get()
-            if tool_call_id:
-                bg_task = registry.get_by_tool_call_id(tool_call_id)
-                if bg_task is not None:
-                    forwarder = _SubagentTokenForwarder(
-                        registry,
-                        tool_call_id,
-                        f"task:{bg_task.task_id}",
-                    )
-
-        try:
-            async for mode, data in subagent.astream(
-                state, config, stream_mode=["values", "messages", "custom"]
-            ):
-                # Root symmetry (retention contract): once the spill circuit
-                # opens, every further frame widens the hole in the replay
-                # archive — abort the graph instead of completing a run
-                # whose stream is torn.
-                if bg_task is not None and bg_task.redis_write_failed:
-                    raise TransportLostError(
-                        "transport_lost: subagent event spill failed; "
-                        "aborting so the run finalizes instead of "
-                        "completing with a torn stream"
-                    )
-                if mode == "values":
-                    last_state = data
-                elif mode == "messages" and forwarder is not None:
-                    # ``messages`` data is ``(message_chunk, metadata)``.
-                    # The metadata carries ``langgraph_node`` which lets the
-                    # forwarder drop tool-internal LLM chunks. Duck-typed (no
-                    # isinstance) so mocks and any future BaseMessage subclasses
-                    # pass.
-                    if isinstance(data, tuple):
-                        # Symmetric guards: production LangGraph emits
-                        # 2-tuples for ``messages`` mode, but defending
-                        # both indices keeps an upstream contract change
-                        # from raising IndexError out of the iterator.
-                        chunk = data[0] if len(data) > 0 else None
-                        chunk_meta = data[1] if len(data) > 1 else None
-                    else:
-                        chunk = data
-                        chunk_meta = None
-                    if chunk is not None and hasattr(chunk, "content"):
-                        try:
-                            await forwarder.forward(chunk, chunk_meta)
-                        except Exception as exc:
-                            # Token forwarding must never break the subagent.
-                            logger.debug(
-                                "Subagent token forwarding failed",
-                                error=str(exc),
-                            )
-                elif mode == "custom" and forwarder is not None:
-                    try:
-                        await forwarder.forward_custom(data)
-                    except Exception as exc:
-                        logger.debug(
-                            "Subagent custom-event forwarding failed",
-                            error=str(exc),
-                        )
-        except Exception as exc:
-            # Spill an ``error`` SSE record so per-task consumers can tell a
-            # crashed subagent apart from a clean completion. ``asyncio.CancelledError``
-            # (BaseException) skips this path on purpose — cancellation is an
-            # orderly stop, not a content-level error; the registry's ``cancelled``
-            # flag already distinguishes it.
-            if forwarder is not None:
-                await forwarder.forward_error(exc)
-            raise
-        finally:
-            if forwarder is not None:
-                try:
-                    await forwarder.finalize()
-                except Exception:
-                    pass
-
-        return last_state if last_state is not None else {}
-
-    def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
-        # Validate that the result contains a 'messages' key
-        if "messages" not in result:
-            error_msg = (
-                "CompiledSubAgent must return a state containing a 'messages' key. "
-                "Custom StateGraphs used with CompiledSubAgent should include 'messages' "
-                "in their state schema to communicate results back to the main agent."
-            )
-            raise ValueError(error_msg)
-
-        state_update = {
-            k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS
-        }
-        # Strip trailing whitespace to prevent API errors with Anthropic
-        message_text = (
-            result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
-        )
-        return Command(
-            update={
-                **state_update,
-                "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)],
-            }
+        return await arun_subagent_streaming(
+            subagent, state, config, registry=registry
         )
 
     def _validate_and_prepare_state(
@@ -500,7 +513,7 @@ def _create_task_tool(
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        return return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
         description: Annotated[
@@ -627,7 +640,7 @@ def _create_task_tool(
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        return return_command_with_state_update(result, runtime.tool_call_id)
 
     return StructuredTool.from_function(
         name="Task",
@@ -718,13 +731,20 @@ class SubAgentMiddleware(AgentMiddleware):
     ) -> None:
         super().__init__()
         self.system_prompt = system_prompt
-        task_tool = _create_task_tool(
+        # Compiled once and shared: the Task tool and any direct dispatch
+        # path (e.g. the workflow driver) must invoke the SAME graph
+        # instances so model resolution and middleware wiring are identical.
+        self.subagent_graphs, _ = _get_subagents(
             default_model=default_model,
             default_tools=default_tools or [],
             default_middleware=default_middleware,
             default_interrupt_on=default_interrupt_on,
             subagents=subagents or [],
             general_purpose_agent=general_purpose_agent,
+            checkpointer=checkpointer,
+        )
+        task_tool = _create_task_tool(
+            subagent_graphs=self.subagent_graphs,
             task_description=task_description,
             registry=registry,
             checkpointer=checkpointer,

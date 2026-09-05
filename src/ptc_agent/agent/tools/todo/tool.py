@@ -23,7 +23,8 @@ def TodoWrite(
     """Replace the agent's todo list with the provided collection.
 
     Each call fully replaces the previous list. The tool has no read interface,
-    so track the list in memory and pass the complete set every time.
+    so track the list in memory and pass the complete set every time. Mark an
+    item `completed` as soon as it is done rather than batching.
 
     Args:
         todos: Full replacement of the todo list. Pass the ENTIRE collection every

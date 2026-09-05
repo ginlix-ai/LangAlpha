@@ -41,15 +41,12 @@ IMAGE_MD_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _CAPTURE_TIMEOUT_SECONDS = 30.0
 
 
-def is_sandbox_image_path(path: str, work_dir: str = "/home/workspace") -> bool:
+def is_sandbox_image_path(path: str) -> bool:
     """Check if path is a sandbox-relative image (not an external URL)."""
     if path.startswith(("http://", "https://", "//", "data:")):
         return False
-    work_dir_prefix = work_dir.rstrip("/") + "/"
-    normalized = (
-        path.replace(work_dir_prefix, "") if path.startswith(work_dir_prefix) else path
-    )
-    ext = normalized.rsplit(".", 1)[-1].lower() if "." in normalized else ""
+    basename = path.rsplit("/", 1)[-1]
+    ext = basename.rsplit(".", 1)[-1].lower() if "." in basename else ""
     return ext in IMAGE_EXTS
 
 
@@ -66,22 +63,20 @@ async def capture_sandbox_images(
 
     Per-path captures run concurrently; each failure is logged and simply
     absent from the returned map (callers leave unmapped paths untouched).
+
+    Paths go to ``normalize_path`` exactly as the agent wrote them: it already
+    resolves every spelling, and it is the only thing that knows an absolute
+    path may name an allowed root outside the work dir (``/tmp``, matplotlib's
+    default savefig target). Folding to a work-dir-relative form first would
+    re-root those under the work dir and the image would vanish.
     """
-    work_dir_prefix = sandbox.working_dir.rstrip("/") + "/"
 
     async def _capture_one(path: str) -> tuple[str, str] | None:
         try:
-            normalized = (
-                path.replace(work_dir_prefix, "")
-                if path.startswith(work_dir_prefix)
-                else path
-            )
-            content = await sandbox.adownload_file_bytes(
-                sandbox.normalize_path(normalized)
-            )
+            content = await sandbox.adownload_file_bytes(sandbox.normalize_path(path))
             if not content:
                 return None
-            basename = normalized.rsplit("/", 1)[-1]
+            basename = path.rsplit("/", 1)[-1]
             key = image_storage_key(
                 thread_id, hashlib.sha256(content).hexdigest(), basename
             )
@@ -110,11 +105,11 @@ def rewrite_image_paths(text: str, url_map: dict[str, str]) -> str:
     return IMAGE_MD_RE.sub(replacer, text)
 
 
-def _collect_sandbox_paths(messages: list[Any], work_dir: str) -> set[str]:
+def _collect_sandbox_paths(messages: list[Any]) -> set[str]:
     paths: set[str] = set()
     for text in _iter_text_segments(messages):
         for match in IMAGE_MD_RE.finditer(text):
-            if is_sandbox_image_path(match.group(2), work_dir):
+            if is_sandbox_image_path(match.group(2)):
                 paths.add(match.group(2))
     return paths
 
@@ -202,7 +197,7 @@ class ImageCaptureMiddleware(AgentMiddleware):
         sandbox = getattr(self._session, "sandbox", None)
         if sandbox is None or not is_storage_enabled():
             return None
-        paths = _collect_sandbox_paths(messages, sandbox.working_dir)
+        paths = _collect_sandbox_paths(messages)
         if not paths:
             return None
 

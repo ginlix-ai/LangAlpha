@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 import structlog
 
@@ -21,8 +21,46 @@ logger = structlog.get_logger(__name__)
 LOCK_FILE_VERSION = 1
 LOCK_FILENAME = "skills-lock.json"
 
+# sourceType stamped on user-tier skills the server materializes and syncs.
+# ``owner`` says whose *content* a skill is (never destroy user content);
+# ``sourceType`` says who owns the *bytes*: server-managed entries have a DB
+# source of truth, so the sync may replace or prune them like platform skills.
+MANAGED_SOURCE_TYPE = "langalpha-user"
+
+
+def is_agent_installed(entry: SkillLockEntry) -> bool:
+    """Installed by the agent inside the sandbox — no server-side source of
+    truth, so the sync may never replace or remove it."""
+    return entry.get("owner") == "user" and entry.get("sourceType") != MANAGED_SOURCE_TYPE
+
+
+def is_linked(entry: SkillLockEntry) -> bool:
+    """Two-way synced with a workspace-tier DB row.
+
+    The reconciler is the sole writer of linked entries and their skill dirs;
+    the generic upload/prune path must treat them like agent-installed content
+    and never touch them.
+    """
+    sync = entry.get("sync")
+    return bool(sync and sync.get("linkedSkillId"))
+
 
 # --- Types ---
+
+
+class SkillSyncState(TypedDict, total=False):
+    """Two-way sync tracking ref stored on a linked lock entry.
+
+    The git analogy: the sandbox dir is the working copy, the DB row is the
+    remote, and this block is the tracking ref — each side is compared only
+    against its own recorded base, so no cross-environment hash is needed.
+    """
+
+    linkedSkillId: str  # noqa: N815 — user_skills row UUID
+    syncedTreeHash: str  # noqa: N815 — sandbox tree hash at last sync
+    syncedDbHash: str  # noqa: N815 — row content_hash at last sync
+    lastFailedSync: dict[str, Any]  # noqa: N815 — {treeHash, dbHash, kind}
+    statCache: dict[str, list]  # noqa: N815 — relpath → [mtime_ns, size, ctime_ns, sha256]
 
 
 class SkillLockEntry(TypedDict):
@@ -40,6 +78,7 @@ class SkillLockEntry(TypedDict):
     allowed_tools: list[str]
     installedAt: str  # noqa: N815 — ISO 8601
     updatedAt: str  # noqa: N815 — ISO 8601
+    sync: NotRequired[SkillSyncState]
 
 
 class SkillsLockFile(TypedDict):
@@ -147,20 +186,24 @@ def parse_skills_lock(content: str) -> dict[str, SkillLockEntry]:
 
 
 def merge_lock_files(
-    platform_entries: dict[str, SkillLockEntry],
+    authoritative_entries: dict[str, SkillLockEntry],
     existing_lock: dict[str, SkillLockEntry] | None,
 ) -> SkillsLockFile:
-    """Merge platform entries into an existing lock file.
+    """Merge server-authoritative entries into an existing lock file.
 
     Rules:
-    - Platform entries overwrite existing platform entries.
-    - User entries (``owner: "user"``) are always preserved.
-    - Stale platform entries (present in existing lock but not in
-      ``platform_entries``) are purged.
-    - New platform entries are added.
+    - Authoritative entries (platform + server-managed user tier) overwrite
+      their existing counterparts.
+    - Agent-installed and linked (two-way synced workspace) entries are always
+      preserved — the reconciler is the sole writer of linked entries, and the
+      physical delivery view keeps workspace names out of the authoritative
+      set, so the two can never collide.
+    - Stale authoritative entries (present in existing lock but not in
+      ``authoritative_entries``) are purged — for a managed user skill this is
+      exactly when its row was deleted or disabled in the DB.
 
     Args:
-        platform_entries: Current platform skills (authoritative).
+        authoritative_entries: Current platform + managed skills (authoritative).
         existing_lock: Previously downloaded lock entries, or None for fresh sandbox.
 
     Returns:
@@ -168,14 +211,14 @@ def merge_lock_files(
     """
     merged: dict[str, SkillLockEntry] = {}
 
-    # Preserve user-installed skills from existing lock
+    # Preserve agent-installed and reconciler-owned skills from existing lock
     if existing_lock:
         for name, entry in existing_lock.items():
-            if entry.get("owner") == "user":
+            if is_agent_installed(entry) or is_linked(entry):
                 merged[name] = entry
 
-    # Add/overwrite all current platform entries
-    merged.update(platform_entries)
+    # Add/overwrite all current authoritative entries
+    merged.update(authoritative_entries)
 
     return SkillsLockFile(version=LOCK_FILE_VERSION, skills=merged)
 

@@ -1,119 +1,115 @@
 import { describe, it, expect } from 'vitest';
 import { buildRateLimitError } from '../rateLimitError';
 
+// Deliberately not a host we operate. The portal URL is injected
+// (`VITE_PLATFORM_URL`), so a neutral origin here is what proves it: a fixture
+// naming our own deployment would still pass if the value were hardcoded.
+const PORTAL = 'https://account.example.com';
+const PORTAL_LINKS = [
+  {
+    url: `${PORTAL}/plans`,
+    label: 'Manage plan',
+    labelKey: 'chat.errorLinkManagePlan',
+    external: true,
+  },
+  {
+    url: `${PORTAL}/usage`,
+    label: 'View usage',
+    labelKey: 'chat.errorLinkViewUsage',
+    external: true,
+  },
+];
+
 describe('buildRateLimitError', () => {
-  it('returns message + link for credit_limit when platformUrl is set', () => {
+  it('forwards the quota service message verbatim', () => {
+    const result = buildRateLimitError(
+      {
+        type: 'credit_limit',
+        used_credits: 80,
+        credit_limit: 100,
+        message: 'Daily credit limit reached (80/100 credits). Resets at midnight.',
+      },
+      PORTAL,
+    );
+    expect(result.message).toBe('Daily credit limit reached (80/100 credits). Resets at midnight.');
+    expect(result.links).toEqual(PORTAL_LINKS);
+  });
+
+  it('forwards the message for a limit type it has never heard of', () => {
+    // The point of the whole file: a new limit type on the quota service needs
+    // no change here, and gets the same two CTAs.
+    const result = buildRateLimitError(
+      { type: 'some_future_limit', message: 'A limit we do not know about yet.' },
+      PORTAL,
+    );
+    expect(result.message).toBe('A limit we do not know about yet.');
+    expect(result.links).toEqual(PORTAL_LINKS);
+  });
+
+  it('does not reconstruct copy from the numeric fields', () => {
+    // The counts still ride along for callers that want them, but a denial that
+    // arrives without a message gets the generic line, never a sentence
+    // assembled here out of used/limit.
     const result = buildRateLimitError(
       { type: 'credit_limit', used_credits: 80, credit_limit: 100 },
-      'https://ginlix.ai/account',
+      PORTAL,
     );
-    expect(result.message).toBe('Daily credit limit reached (80/100 credits). Resets at midnight UTC.');
-    expect(result.link).toEqual({
-      url: 'https://ginlix.ai/account/plans',
-      label: 'Upgrade plan',
-    });
+    expect(result.message).toBe('Rate limit exceeded. Please try again later.');
   });
 
-  it('routes monthly_credit_limit to /plans with an upgrade CTA', () => {
-    const result = buildRateLimitError(
-      { type: 'monthly_credit_limit' },
-      'https://ginlix.ai/account',
-    );
-    expect(result.link).toEqual({
-      url: 'https://ginlix.ai/account/plans',
-      label: 'Upgrade plan',
-    });
+  it('marks the CTA external even when platformUrl is a same-origin path', () => {
+    // The default. A path-shaped portal URL is same-origin and shaped exactly
+    // like one of our routes, so without the flag the router swallows the click
+    // and the CTA does nothing.
+    const result = buildRateLimitError({ type: 'monthly_credit_limit' }, '/account');
+    expect(result.links).toEqual([
+      {
+        url: '/account/plans',
+        label: 'Manage plan',
+        labelKey: 'chat.errorLinkManagePlan',
+        external: true,
+      },
+      {
+        url: '/account/usage',
+        label: 'View usage',
+        labelKey: 'chat.errorLinkViewUsage',
+        external: true,
+      },
+    ]);
   });
 
-  it('routes permanent_credit_limit to /plans with a top-up CTA', () => {
-    const result = buildRateLimitError(
-      { type: 'permanent_credit_limit' },
-      'https://ginlix.ai/account',
-    );
-    expect(result.link).toEqual({
-      url: 'https://ginlix.ai/account/plans',
-      label: 'Top up',
-    });
+  it('omits links when no portal is configured', () => {
+    expect(buildRateLimitError({ type: 'credit_limit', message: 'Denied.' }).links).toBeUndefined();
+    expect(buildRateLimitError({ type: 'credit_limit', message: 'Denied.' }, null).links).toBeUndefined();
   });
 
-  it('returns message without link for credit_limit when platformUrl is not set', () => {
-    const result = buildRateLimitError(
-      { type: 'credit_limit', used_credits: 80, credit_limit: 100 },
-    );
-    expect(result.message).toBe('Daily credit limit reached (80/100 credits). Resets at midnight UTC.');
-    expect(result.link).toBeUndefined();
-  });
-
-  it('returns message without link for credit_limit when platformUrl is null', () => {
-    const result = buildRateLimitError(
-      { type: 'credit_limit', used_credits: 50, credit_limit: 50 },
-      null,
-    );
-    expect(result.message).toContain('Daily credit limit reached');
-    expect(result.link).toBeUndefined();
-  });
-
-  it('returns workspace_limit message with no link', () => {
-    const result = buildRateLimitError(
-      { type: 'workspace_limit', current: 3, limit: 3 },
-      'https://ginlix.ai/account',
-    );
-    expect(result.message).toBe('Active workspace limit reached (3/3). Stop or delete an existing workspace to free up a slot.');
-    expect(result.link).toBeUndefined();
-  });
-
-  it('returns burst_limit message', () => {
-    const result = buildRateLimitError(
-      { type: 'burst_limit' },
-      'https://ginlix.ai/account',
-    );
+  it('keeps our own copy for burst_limit, and offers no portal link', () => {
+    // This one is ours: raised by this service's concurrency gate, and nothing
+    // on the account portal clears it.
+    const result = buildRateLimitError({ type: 'burst_limit' }, PORTAL);
     expect(result.message).toBe('Too many concurrent requests. Please wait a moment.');
-    expect(result.link).toBeUndefined();
+    expect(result.links).toBeUndefined();
   });
 
-  it('renders the outstanding balance and links to /plans for negative_balance', () => {
+  it('ignores a quota service message for burst_limit', () => {
+    const result = buildRateLimitError({ type: 'burst_limit', message: 'not ours to say' }, PORTAL);
+    expect(result.message).toBe('Too many concurrent requests. Please wait a moment.');
+  });
+
+  it('offers no portal link when the service is down', () => {
+    // service_unavailable is the quota service's misconfiguration guard, not a
+    // cap. "Manage plan" here invites the user to buy their way out of an outage.
     const result = buildRateLimitError(
-      { type: 'negative_balance', outstanding_debt: 42 },
-      'https://ginlix.ai/account',
+      { type: 'service_unavailable', message: 'Service temporarily unavailable. Please try again shortly.' },
+      PORTAL,
     );
-    expect(result.message).toBe(
-      'Outstanding balance of 42 credits from prior platform usage. Top up to clear the debt and continue.',
-    );
-    expect(result.link).toEqual({
-      url: 'https://ginlix.ai/account/plans',
-      label: 'Top up',
-    });
+    expect(result.message).toBe('Service temporarily unavailable. Please try again shortly.');
+    expect(result.links).toBeUndefined();
   });
 
-  it('falls back to backend message for negative_balance when outstanding_debt is absent (legacy cached path)', () => {
-    const result = buildRateLimitError(
-      { type: 'negative_balance', message: 'Outstanding credit balance. Please add credits to continue.' },
-      'https://ginlix.ai/account',
-    );
-    expect(result.message).toBe('Outstanding credit balance. Please add credits to continue.');
-    expect(result.link).toEqual({
-      url: 'https://ginlix.ai/account/plans',
-      label: 'Top up',
-    });
-  });
-
-  it('uses the generic next-step copy when negative_balance has neither number nor message', () => {
-    const result = buildRateLimitError({ type: 'negative_balance' });
-    expect(result.message).toBe('Outstanding credit balance. Top up to clear the debt and continue.');
-    expect(result.link).toBeUndefined();
-  });
-
-  it('falls back to info.message for unknown types', () => {
-    const result = buildRateLimitError(
-      { type: 'unknown', message: 'Custom rate limit message' },
-    );
-    expect(result.message).toBe('Custom rate limit message');
-    expect(result.link).toBeUndefined();
-  });
-
-  it('falls back to generic message when no type or message', () => {
+  it('falls back to a generic message when there is no type or message', () => {
     const result = buildRateLimitError({});
     expect(result.message).toBe('Rate limit exceeded. Please try again later.');
-    expect(result.link).toBeUndefined();
+    expect(result.links).toBeUndefined();
   });
 });

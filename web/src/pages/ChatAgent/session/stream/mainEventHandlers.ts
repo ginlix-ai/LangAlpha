@@ -4,13 +4,13 @@
  * `setMessages`; subagent (task-namespace) events never enter this module.
  */
 
-import { normalizeAction } from '../../hooks/utils/eventUtils';
 import { isToolResultFailure } from '../subagents/subagentStatus';
+import { deriveTaskSegment, applyTaskSegment, applyLaunchReply } from '../subagents/taskSegmentBuilder';
 import type { MessageRecord, SetMessages, ToolCallRecord, ToolCallResultRecord, TodoPayload, HtmlWidgetData } from '../../hooks/utils/types';
 import type { ProvenanceEvent } from '@/types/sse';
-import type { ProvenanceRecord } from '@/types/chat';
+import type { ProvenanceRecord, SubagentTaskRecord } from '@/types/chat';
 import { provenanceEventToRecord, provenanceRecordKey } from './provenance';
-import { extractLastReasoningTitle } from '../streamRefs';
+import { extractLastReasoningTitle, nextArrivalSeq } from '../streamRefs';
 import type { StreamRefs, ToolCallChunkRecord } from '../streamRefs';
 
 /**
@@ -30,6 +30,10 @@ export function handleReasoningSignal({ assistantMessageId, signalContent, refs,
   eventId?: number | null;
 }): boolean {
   const { contentOrderCounterRef, currentReasoningIdRef } = refs;
+  // Stamped on arrival, not inside the updater: React runs the updater after
+  // a reconnect flush has already flipped the bag live, and a completion the
+  // backlog carried must still fold on arrival rather than take a live turn.
+  const completedAt = refs.isReconnect ? 1 : Date.now();
 
   if (signalContent === 'start') {
     // Reasoning process has started - create new reasoning process
@@ -83,7 +87,7 @@ export function handleReasoningSignal({ assistantMessageId, signalContent, refs,
               isReasoning: false,
               reasoningComplete: true,
               reasoningTitle: null,
-              _completedAt: refs.isReconnect ? 1 : Date.now(),
+              _completedAt: completedAt,
             };
           }
 
@@ -138,6 +142,7 @@ export function handleReasoningContent({ assistantMessageId, content, refs, setM
         return {
           ...msg,
           reasoningProcesses,
+          arrivalSeq: nextArrivalSeq(msg),
         };
       })
     );
@@ -215,6 +220,7 @@ export function handleTextContent({ assistantMessageId, content, finishReason, r
           content: accumulatedText,
           contentType: 'text',
           isStreaming: true,
+          arrivalSeq: nextArrivalSeq(msg),
         };
       })
     );
@@ -252,21 +258,17 @@ export function handleToolCalls({ assistantMessageId, toolCalls, finishReason: _
   eventId?: number | null;
 }): boolean {
   const { contentOrderCounterRef } = refs;
+  // Same arrival-time rule as the reasoning stamp: read before the updater.
+  const createdAt = refs.isReconnect ? 1 : Date.now();
 
   if (!toolCalls || !Array.isArray(toolCalls)) {
     return false;
   }
 
-  // Track creation times outside React state so handleToolCallResult can read them synchronously
-  if (!refs._toolCreatedAt) refs._toolCreatedAt = {};
-
   toolCalls.forEach((toolCall: ToolCallRecord, toolIndex: number) => {
     const toolCallId = toolCall.id;
 
     if (toolCallId) {
-      if (!refs.isReconnect && !refs._toolCreatedAt![toolCallId]) {
-        refs._toolCreatedAt![toolCallId] = Date.now();
-      }
       setMessages((prev: MessageRecord[]) =>
         prev.map((msg: MessageRecord) => {
           if (msg.id !== assistantMessageId) return msg;
@@ -293,7 +295,7 @@ export function handleToolCalls({ assistantMessageId, toolCalls, finishReason: _
               toolCallResult: null,
               isInProgress: true,
               isComplete: false,
-              _createdAt: refs.isReconnect ? 1 : Date.now(),
+              _createdAt: createdAt,
               order: currentOrder,
             };
           } else {
@@ -306,55 +308,12 @@ export function handleToolCalls({ assistantMessageId, toolCalls, finishReason: _
             };
           }
 
-          // If this tool is the Task tool (subagent spawner), also create a subagent_task segment
-          // Mirrors historyEventHandlers.js logic for consistency
-          const subagentTasks = { ...((msg.subagentTasks as Record<string, Record<string, unknown>>) || {}) };
-          const isTaskTool = toolCall.name === 'task' || toolCall.name === 'Task';
-          const action = normalizeAction((toolCall.args?.action as string) || (toolCall.args?.task_id ? 'resume' : 'init'));
-          const isNewSpawn = action === 'init';
-          if (isTaskTool && toolCallId && isNewSpawn) {
-            const subagentId = toolCallId;
-            const hasExistingSubagentSegment = contentSegments.some(
-              (s: Record<string, unknown>) => s.type === 'subagent_task' && s.subagentId === subagentId
-            );
-
-            if (!hasExistingSubagentSegment) {
-              contentSegments.push({
-                type: 'subagent_task',
-                subagentId,
-                order: currentOrder,
-              });
-            }
-
-            subagentTasks[subagentId] = {
-              ...(subagentTasks[subagentId] || {}),
-              subagentId,
-              description: (toolCall.args?.description as string) || '',
-              prompt: (toolCall.args?.prompt as string) || (toolCall.args?.description as string) || '',
-              type: (toolCall.args?.subagent_type as string) || 'general-purpose',
-              action: 'init',
-              status: 'running',
-            };
-          } else if (isTaskTool && toolCallId && !isNewSpawn) {
-            // Resume/follow-up call — show a new card with "resumed" indicator
-            // Normalize to "task:xxx" format to match floating card keys
-            const rawTargetId = (toolCall.args?.task_id as string) || '';
-            const resumeTargetId = rawTargetId.startsWith('task:') ? rawTargetId : `task:${rawTargetId}`;
-            contentSegments.push({
-              type: 'subagent_task',
-              subagentId: toolCallId,
-              resumeTargetId,
-              order: currentOrder,
-            });
-            subagentTasks[toolCallId] = {
-              subagentId: toolCallId,
-              resumeTargetId,
-              description: (toolCall.args?.description as string) || '',
-              prompt: (toolCall.args?.prompt as string) || (toolCall.args?.description as string) || '',
-              type: (toolCall.args?.subagent_type as string) || 'general-purpose',
-              action,
-              status: 'running',
-            };
+          // Task spawns / resumes and RunWorkflow launches also render an
+          // inline card — same derivation history replay uses.
+          const subagentTasks = { ...((msg.subagentTasks as Record<string, SubagentTaskRecord>) || {}) };
+          const derived = deriveTaskSegment(toolCall, toolCallId, currentOrder);
+          if (derived) {
+            applyTaskSegment(derived, toolCallId, contentSegments, subagentTasks);
           }
 
           return {
@@ -404,7 +363,7 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
       const isFailed = isToolResultFailure(result);
 
       // Track subagent task status updates
-      const subagentTasks = { ...((msg.subagentTasks as Record<string, Record<string, unknown>>) || {}) };
+      const subagentTasks = { ...((msg.subagentTasks as Record<string, SubagentTaskRecord>) || {}) };
 
       if (toolCallProcesses[toolCallId]) {
         toolCallProcesses[toolCallId] = {
@@ -425,18 +384,8 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
         return msg;
       }
 
-      // If this toolCallId is associated with a subagent task, store the tool call result.
-      // A SUCCESSFUL Task returns immediately ("Task-N started in background") while the
-      // subagent keeps running, so its result is NOT terminal — real completion comes via
-      // the per-task SSE stream closing. But a FAILED spawn (admission/setup error — a bare
-      // "Error: …" result) never produces a task artifact or a channel, so no chan_close
-      // will ever arrive to settle it; stamp it 'error' here or the placeholder spins forever.
       if (subagentTasks[toolCallId]) {
-        subagentTasks[toolCallId] = {
-          ...subagentTasks[toolCallId],
-          toolCallResult: result.content,
-          ...(isFailed ? { status: 'error' } : {}),
-        };
+        subagentTasks[toolCallId] = applyLaunchReply(subagentTasks[toolCallId], result);
       }
 
       return { ...msg, toolCallProcesses, subagentTasks };
@@ -685,7 +634,7 @@ export function handleToolCallChunks({ assistantMessageId, chunks, setMessages }
           firstSeenAt: existing.firstSeenAt,
         };
 
-        return { ...msg, pendingToolCallChunks: pending };
+        return { ...msg, pendingToolCallChunks: pending, arrivalSeq: nextArrivalSeq(msg) };
       })
     );
   });

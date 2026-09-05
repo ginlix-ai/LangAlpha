@@ -7,11 +7,17 @@ the composition point (core) binds it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import random
 import time
 
 from src.server.services.report_back.flash.keys import thread_wake_key
+from src.server.services.report_back.flash.wake_listener import (
+    ThreadWakeListener,
+    WakeSubscription,
+)
 
 # Same hard-coded logger name request_prep uses — existing log routing keys off it.
 logger = logging.getLogger("src.server.handlers.chat_handler")
@@ -33,6 +39,18 @@ SNAPSHOT_EVENT = "watch_snapshot"
 WAKE_KEEPALIVE_INTERVAL = 45  # seconds between keepalive comment frames
 WAKE_MAX_WATCH_DURATION = 30 * 60  # auto-close an abandoned watch after 30 min
 
+# How long a viewer waits for the per-worker listener to prove its
+# registration before closing and letting the client resubscribe.
+_LIVE_TIMEOUT_S = 5.0
+
+# Upper bound on the pre-resync stagger.
+_RESYNC_JITTER_S = 2.0
+
+# A listener that stays down this long is not a blip. Viewers close so the
+# client resubscribes; each close drives a /status reconcile, and the paced
+# resubscribe caps at ~30s — that is the backstop, not a polling loop.
+_DEAD_LISTENER_S = 30.0
+
 
 async def publish_wake(
     cache,
@@ -51,8 +69,8 @@ async def publish_wake(
     so the client treats it as a /status-refresh nudge); a consumption clear
     carries ``{thread_id, cleared: true}`` (the watcher reconciles and drops
     its pending chip without waiting for the status backstop). Swallows
-    publish failures — a dropped nudge degrades to the client's ``/status``
-    poll.
+    publish failures — a dropped nudge degrades to the client's close-driven
+    ``/status`` reconcile.
     """
     if not (cache and getattr(cache, "client", None)):
         logger.warning(
@@ -78,10 +96,13 @@ async def publish_wake(
 async def watch_wakes(cache, flash_thread_id: str, *, snapshot_reader):
     """Yield SSE frames for a flash thread's report-back wake subscription.
 
-    Owns the pub/sub lifecycle, ``WAKE_EVENT`` frame format, keepalives, and the
-    max-duration auto-close so the ``/watch`` route stays a thin auth wrapper.
-    Forwards EVERY wake, not just the first: N concurrent PTCs' report-backs
-    arrive as separate runs and must all be delivered on the one connection.
+    Owns the ``WAKE_EVENT`` frame format, keepalives, and the max-duration
+    auto-close so the ``/watch`` route stays a thin auth wrapper. Forwards
+    EVERY wake, not just the first: N concurrent PTCs' report-backs arrive as
+    separate runs and must all be delivered on the one connection.
+
+    The Redis subscription itself belongs to the per-worker
+    ``ThreadWakeListener``; this generator holds nothing but a queue.
     """
     if not (
         cache
@@ -91,70 +112,82 @@ async def watch_wakes(cache, flash_thread_id: str, *, snapshot_reader):
         yield 'event: error\ndata: {"error": "watch unavailable"}\n\n'
         return
 
-    channel = thread_wake_key(flash_thread_id)
-    pubsub = cache.client.pubsub()
+    listener = ThreadWakeListener.get_instance()
+    sub = listener.attach(flash_thread_id)
+    if sub is None:
+        yield 'event: error\ndata: {"error": "watch unavailable"}\n\n'
+        return
     started_at = time.monotonic()
     try:
-        await pubsub.subscribe(channel)
-        # subscribe() only WRITES the command; the registration is proven only
-        # by a frame coming back (the confirmation, or a message — which only
-        # a registered subscriber receives). Snapshotting without that proof
+        # Registration is proven once per process, not once per viewer — but
+        # it is still proven. Snapshotting against an unregistered pattern
         # recreates the very window the snapshot exists to close (a wake
-        # published during registration missing both the buffer and the
-        # slice), so an unproven subscribe CLOSES the stream instead — the
-        # client's paced resubscribe retries. A raced-in wake is held and
-        # delivered right behind the snapshot.
-        early_wake = None
-        registered = False
-        try:
-            ack = await pubsub.get_message(
-                ignore_subscribe_messages=False, timeout=1.0
-            )
-            if ack is not None:
-                registered = True
-                if ack.get("type") == "message":
-                    early_wake = ack
-        except Exception:
+        # published during registration missing both the queue and the
+        # slice), so an unproven subscription CLOSES the stream instead and
+        # the client's paced resubscribe retries.
+        if not await listener.wait_live(_LIVE_TIMEOUT_S):
             logger.warning(
-                f"[RB_WAKE] Subscribe-ack wait failed for thread "
-                f"{flash_thread_id}",
-                exc_info=True,
-            )
-        if not registered:
-            logger.warning(
-                f"[RB_WAKE] Subscribe unconfirmed for thread "
-                f"{flash_thread_id}; closing watch (client will resubscribe)"
+                f"[RB_WAKE] Wake listener not live; closing watch for thread "
+                f"{flash_thread_id} (client will resubscribe)"
             )
             return
-        # Snapshot AFTER subscribing: a wake published during the slice read
-        # waits in the pub/sub buffer and is delivered right behind it, so the
-        # subscriber sees state-then-deltas with no gap in either order.
-        try:
-            snapshot = await snapshot_reader(flash_thread_id)
-            yield f'event: {SNAPSHOT_EVENT}\ndata: {json.dumps(snapshot)}\n\n'
-        except Exception:
-            logger.warning(
-                f"[RB_WAKE] Snapshot read failed for thread {flash_thread_id}",
-                exc_info=True,
-            )
+        # Attach happened before this point without awaiting, so a wake
+        # published during the slice read is already queued and is delivered
+        # right behind the snapshot: state-then-deltas with no gap in either
+        # order.
+        resync = False
         while True:
             if time.monotonic() - started_at > WAKE_MAX_WATCH_DURATION:
                 yield 'event: timeout\ndata: {}\n\n'
-                break
-            if early_wake is not None:
-                msg, early_wake = early_wake, None
-            else:
-                msg = await pubsub.get_message(
-                    ignore_subscribe_messages=True,
-                    timeout=WAKE_KEEPALIVE_INTERVAL,
+                return
+
+            if resync:
+                # One listener reconnect re-arms every viewer in the process
+                # at once; jitter keeps them from re-reading in lockstep.
+                await asyncio.sleep(random.uniform(0.0, _RESYNC_JITTER_S))
+                if not await listener.wait_live(_LIVE_TIMEOUT_S):
+                    return
+            # Cleared BEFORE the read, so a reconnect *during* it re-arms and
+            # we snapshot again — a wasted read, never a missed one.
+            sub.needs_resync = False
+            try:
+                snapshot = await snapshot_reader(flash_thread_id)
+            except Exception:
+                logger.warning(
+                    f"[RB_WAKE] Snapshot read failed for thread {flash_thread_id}",
+                    exc_info=True,
                 )
-            if msg and msg["type"] == "message":
-                data = msg["data"]
-                if isinstance(data, bytes):
-                    data = data.decode("utf-8")
-                yield f'event: {WAKE_EVENT}\ndata: {data}\n\n'
+                if resync:
+                    # Deltas were lost and the state that would have replaced
+                    # them didn't arrive. Resuming here leaves the client
+                    # silently stale; close and let it resubscribe.
+                    return
             else:
-                yield ': ping\n\n'
+                yield f'event: {SNAPSHOT_EVENT}\ndata: {json.dumps(snapshot)}\n\n'
+
+            while not sub.needs_resync:
+                if time.monotonic() - started_at > WAKE_MAX_WATCH_DURATION:
+                    yield 'event: timeout\ndata: {}\n\n'
+                    return
+                try:
+                    item = await asyncio.wait_for(
+                        sub.queue.get(), timeout=WAKE_KEEPALIVE_INTERVAL
+                    )
+                except asyncio.TimeoutError:
+                    dark = listener.dark_for()
+                    if dark > _DEAD_LISTENER_S:
+                        logger.error(
+                            f"[RB_WAKE] Listener dark for {dark:.0f}s; closing "
+                            f"watch for thread {flash_thread_id}"
+                        )
+                        return
+                    yield ': ping\n\n'
+                    continue
+                if item is WakeSubscription.NUDGE:
+                    continue
+                yield f'event: {WAKE_EVENT}\ndata: {item}\n\n'
+            resync = True
     finally:
-        await pubsub.unsubscribe(channel)
-        await pubsub.aclose()
+        # Synchronous, so cancellation cannot interrupt it half-done — and
+        # there is no Redis resource behind it to leak either way.
+        listener.detach(sub)

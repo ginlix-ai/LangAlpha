@@ -109,7 +109,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: Thumb
           onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setComment(e.target.value)}
           placeholder="Tell us more about the issue..."
           rows={3}
-          className="w-full rounded-lg px-3 py-2.5 text-sm resize-none outline-none mb-2"
+          className="w-full rounded-lg px-3 py-2.5 text-sm resize-none mb-2"
           style={{
             backgroundColor: 'var(--color-bg-page)',
             color: 'var(--color-text-primary)',
@@ -122,7 +122,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: Thumb
           className="rounded-lg pl-2.5 pr-3 py-2.5 cursor-pointer"
           style={{
             backgroundColor: 'var(--color-bg-surface)',
-            border: `1px solid ${consentHumanReview ? 'var(--color-accent-primary)' : 'var(--color-border-muted)'}`,
+            border: `1px solid ${consentHumanReview ? 'var(--color-border-elevated)' : 'var(--color-border-muted)'}`,
           }}
           onClick={() => setConsentHumanReview(!consentHumanReview)}
         >
@@ -167,7 +167,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: Thumb
               ].filter(Boolean).join(' ');
               onReportWithAgent(instruction);
             }}
-            onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => e.currentTarget.style.borderColor = 'var(--color-accent-primary)'}
+            onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => e.currentTarget.style.borderColor = 'var(--color-border-elevated)'}
             onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => e.currentTarget.style.borderColor = 'var(--color-border-muted)'}
           >
             <MessageSquareWarning
@@ -179,7 +179,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: Thumb
                 Ask agent to self-report
               </span>
               <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>
-                The agent will reflect on what went wrong, diagnose the root cause, and file a GitHub issue via <code style={{ color: 'var(--color-accent-primary)', fontSize: '11px' }}>/self-improve</code>.
+                The agent will reflect on what went wrong, diagnose the root cause, and file a GitHub issue via <code style={{ color: 'var(--color-accent-primary)', fontSize: '0.6875rem' }}>/self-improve</code>.
               </p>
             </div>
           </div>

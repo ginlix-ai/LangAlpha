@@ -23,18 +23,18 @@ import pytest
 
 from ptc_agent.core.tool_generator import ToolFunctionGenerator
 
-# Server key → module under mcp_servers/. Imported lazily in _all_tools() so a
+# Server key → the module its bundle ships. Imported lazily in _all_tools() so a
 # broken server surfaces as a contained test failure, not a module-wide
 # collection error that also takes down the pin gate.
 _SERVERS = {
-    "price_data": "price_data_mcp_server",
-    "options": "options_mcp_server",
-    "fundamentals": "fundamentals_mcp_server",
-    "macro": "macro_mcp_server",
-    "yf_price": "yf_price_mcp_server",
-    "yf_market": "yf_market_mcp_server",
-    "yf_analysis": "yf_analysis_mcp_server",
-    "yf_fundamentals": "yf_fundamentals_mcp_server",
+    "price_data": "plugins.langalpha_market_data.price_data_mcp_server",
+    "options": "plugins.langalpha_market_data.options_mcp_server",
+    "fundamentals": "plugins.langalpha_market_data.fundamentals_mcp_server",
+    "macro": "plugins.langalpha_market_data.macro_mcp_server",
+    "yf_price": "plugins.yfinance.yf_price_mcp_server",
+    "yf_market": "plugins.yfinance.yf_market_mcp_server",
+    "yf_analysis": "plugins.yfinance.yf_analysis_mcp_server",
+    "yf_fundamentals": "plugins.yfinance.yf_fundamentals_mcp_server",
 }
 
 # Target is ~800 chars (AGENT_CONTRACT.md); the hard cap leaves slight headroom.
@@ -50,14 +50,14 @@ def _all_tools() -> tuple[list[tuple[str, str, str, dict]], dict[str, str]]:
     errors: dict[str, str] = {}
     for server_name, module_name in _SERVERS.items():
         try:
-            module = importlib.import_module(f"mcp_servers.{module_name}")
+            module = importlib.import_module(module_name)
             tools = asyncio.run(module.mcp.list_tools())
         except Exception as e:  # noqa: BLE001
             errors[server_name] = repr(e)
             continue
         for tool in tools:
             entries.append(
-                (server_name, tool.name, tool.description or "", tool.inputSchema)
+                (server_name, tool.name, tool.description or "", tool.input_schema)
             )
     return entries, errors
 

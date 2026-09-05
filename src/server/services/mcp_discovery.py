@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from ptc_agent.config.core import MCPServerConfig
@@ -18,16 +19,30 @@ from ptc_agent.core.mcp_sanitize import (
     discovery_affecting_payload,
     sanitize_tool_name,
     sanitize_tool_text,
+    unsalvageable_required_params,
 )
 
 from src.server.database import mcp_servers as mcp_db
+from src.server.database.mcp_tool_schemas import upsert_tool_schemas
+from src.server.services.mcp_identity import bounded_identity
 
 logger = logging.getLogger(__name__)
 
 # Discovery-boundary caps for hostile/buggy servers (plan §6). The prompt-side
 # detailed-mode caps live in the formatter; these bound what we cache at all.
-MAX_TOOLS_PER_SERVER = 64
-MAX_SCHEMA_CHARS_PER_SERVER = 200_000
+#
+# So neither bounds prompt cost, which is what makes them cheap to raise: a
+# server over the formatter's caps renders as a summary either way, and what
+# these actually size is the cached JSON and the wrapper module a sandbox gets.
+#
+# Sized against what brokers and data vendors really ship, not a round number.
+# Going over is not graceful degradation -- the cut is by list position, so a
+# server one tool past the cap loses whichever capability it happened to
+# enumerate last. moomoo publishes 88 tools, and the old cap of 64 silently
+# took its entire paper-trading suite along with news, insider and short
+# interest data, none of which anything on screen could explain.
+MAX_TOOLS_PER_SERVER = 128
+MAX_SCHEMA_CHARS_PER_SERVER = 400_000
 
 
 def mcp_discovery_fingerprint(server: MCPServerConfig) -> str:
@@ -48,10 +63,71 @@ def mcp_discovery_fingerprint(server: MCPServerConfig) -> str:
     Because only the ``${vault:NAME}`` ref STRING is hashed, changing a secret's
     VALUE never churns this hash — vault mutations instead invalidate explicitly
     (version bump + snapshot purge for secret-dependent servers; see
-    ``src/server/app/vault.py``).
+    ``src/server/services/vault_invalidation.py``).
     """
     payload = discovery_affecting_payload(server, include_identity=False)
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def ok_snapshot(row: dict[str, Any]) -> bool:
+    """Acceptance predicate for consumers that may only serve real tools."""
+    return row.get("status") == "ok"
+
+
+class ToolSnapshotIndex:
+    """Hash-gated view over the two discovery-snapshot tiers.
+
+    A cached snapshot may be served only if it was discovered under the
+    server's CURRENT ``mcp_discovery_fingerprint`` — an unrelated mutation
+    leaves that hash untouched (cache hit), the server's own edit does not
+    (miss ⇒ re-verify). Which tier answers is also fixed here: an inherited
+    (``source='user'``) server reads its USER-tier snapshot first, because the
+    host-side OAuth discovery that writes it is purged on disconnect and
+    refreshed on connect, whereas the per-workspace snapshot's fingerprint is
+    OAuth-blind and can outlive a disconnect/reconnect. The tier is chosen by
+    which one HAS a matching snapshot, before any status filter, so a rejected
+    user-tier row never falls through to a stale workspace one.
+
+    Rows are supplied by the caller (each lane already reads what it needs);
+    the index owns only the acceptance rule.
+    """
+
+    def __init__(
+        self,
+        *,
+        workspace_rows: Iterable[dict[str, Any]] = (),
+        user_rows: Iterable[dict[str, Any]] = (),
+    ) -> None:
+        self._workspace = {(r["server_name"], r.get("config_hash")): r for r in workspace_rows}
+        self._user = {(r["server_name"], r.get("config_hash")): r for r in user_rows}
+
+    def snapshot(
+        self,
+        server: MCPServerConfig,
+        *,
+        accept: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> dict[str, Any] | None:
+        """The current-config snapshot for ``server``, or None.
+
+        ``accept`` further filters the row the tier precedence selected (e.g.
+        ok-only, or a freshness window); a rejected row reads as no snapshot.
+        """
+        key = (server.name, mcp_discovery_fingerprint(server))
+        tiers = (
+            (self._user, self._workspace)
+            if getattr(server, "source", None) == "user"
+            else (self._workspace,)
+        )
+        for tier in tiers:
+            row = tier.get(key)
+            if row is None:
+                continue
+            return row if (accept is None or accept(row)) else None
+        return None
+
+    def ok(self, server: MCPServerConfig) -> dict[str, Any] | None:
+        """The current-config snapshot for ``server`` iff discovery succeeded."""
+        return self.snapshot(server, accept=ok_snapshot)
 
 
 def sanitize_discovered_tools(
@@ -64,6 +140,13 @@ def sanitize_discovered_tools(
     whose names cannot become a legal identifier or that collide after
     sanitization, sanitizes description text, and enforces count/size caps.
     Returns ``(kept, skipped)`` where skipped entries are ``(name, reason)``.
+
+    The schema container is validated here, not downstream: a malformed
+    ``input_schema`` (or ``properties``) reaches wrapper generation as an
+    AttributeError that has no per-server isolation, so one hostile server
+    would wedge a whole workspace's asset sync. A tool whose REQUIRED param
+    name is unsalvageable is dropped for the opposite reason — codegen would
+    emit it, minus that param, as a permanently uncallable wrapper.
     """
     kept: list[dict[str, Any]] = []
     skipped: list[tuple[str, str]] = []
@@ -78,13 +161,29 @@ def sanitize_discovered_tools(
         if sanitized in seen:
             skipped.append((name, f"sanitized name {sanitized!r} collides with another tool"))
             continue
+        raw_schema = tool.get("input_schema")
+        if raw_schema is None:
+            raw_schema = {}
+        if not isinstance(raw_schema, dict):
+            skipped.append((name, "input_schema is not a JSON object"))
+            continue
+        properties = raw_schema.get("properties")
+        if properties is not None and not isinstance(properties, dict):
+            skipped.append((name, "input_schema properties is not a JSON object"))
+            continue
+        if bad_required := unsalvageable_required_params(raw_schema):
+            joined = ", ".join(repr(p) for p in bad_required)
+            skipped.append(
+                (name, f"required parameter {joined} is not a valid Python identifier")
+            )
+            continue
         if len(kept) >= MAX_TOOLS_PER_SERVER:
             skipped.append((name, f"server exceeds {MAX_TOOLS_PER_SERVER}-tool cap"))
             continue
         entry = {
             "name": name,
             "description": sanitize_tool_text(tool.get("description")),
-            "input_schema": tool.get("input_schema") or {},
+            "input_schema": raw_schema,
         }
         entry_chars = len(json.dumps(entry, ensure_ascii=False))
         if total_chars + entry_chars > MAX_SCHEMA_CHARS_PER_SERVER:
@@ -101,25 +200,49 @@ async def _stale_server_names(
 ) -> set[str]:
     """Servers whose CURRENT DB config no longer matches their kick-time state.
 
-    A name is stale when its row is gone (deleted mid-discovery) or its
-    recomputed fingerprint differs (edited mid-discovery). Malformed rows
+    A name is stale when its row is gone (deleted/disabled mid-discovery) or
+    its recomputed fingerprint differs (edited mid-discovery). Malformed rows
     count as stale — dropping a result is always safe; clobbering is not.
+    Workspace-origin servers check ``workspace_mcp_servers``; inherited
+    (``source='user'``) servers check the owner's Plugins catalog — their
+    results cache under this workspace like any other, so the guard must know
+    both tiers or every inherited discovery would be dropped as "deleted".
     """
-    from src.server.services.mcp_config import workspace_row_to_server_config
+    from src.server.database.workspace import get_workspace
+    from src.server.services.mcp_config import (
+        user_row_to_server_config,
+        workspace_row_to_server_config,
+    )
 
     rows = {
         r["name"]: r
         for r in await mcp_db.list_workspace_servers(workspace_id)
         if r.get("source") == "workspace"
     }
+    user_rows: dict[str, dict[str, Any]] = {}
+    if any(getattr(s, "source", None) == "user" for s in servers):
+        workspace = await get_workspace(workspace_id)
+        user_id = (workspace or {}).get("user_id")
+        if user_id:
+            user_rows = {
+                r["name"]: r
+                for r in await mcp_db.list_enabled_user_servers(str(user_id))
+            }
     stale: set[str] = set()
     for server in servers:
-        row = rows.get(server.name)
+        inherited = getattr(server, "source", None) == "user"
+        row = (user_rows if inherited else rows).get(server.name)
         if row is None:
             stale.add(server.name)
             continue
         try:
-            current_fp = mcp_discovery_fingerprint(workspace_row_to_server_config(row))
+            current = (
+                # oauth_connection_id is fingerprint-exempt, so None is fine.
+                user_row_to_server_config(row)
+                if inherited
+                else workspace_row_to_server_config(row)
+            )
+            current_fp = mcp_discovery_fingerprint(current)
         except Exception:  # noqa: BLE001
             stale.add(server.name)
             continue
@@ -155,7 +278,7 @@ async def discover_and_cache(
             if server.name in stale:
                 continue
             rows.append(
-                await mcp_db.upsert_tool_schemas(
+                await upsert_tool_schemas(
                     workspace_id, server.name, mcp_discovery_fingerprint(server),
                     status="pending",
                 )
@@ -186,7 +309,7 @@ async def discover_and_cache(
         }
         if result.get("status") != "ok":
             rows.append(
-                await mcp_db.upsert_tool_schemas(
+                await upsert_tool_schemas(
                     workspace_id,
                     server.name,
                     fingerprint,
@@ -197,7 +320,7 @@ async def discover_and_cache(
             continue
         kept, skipped = sanitize_discovered_tools(result.get("tools") or [])
         rows.append(
-            await mcp_db.upsert_tool_schemas(
+            await upsert_tool_schemas(
                 workspace_id,
                 server.name,
                 fingerprint,
@@ -206,6 +329,7 @@ async def discover_and_cache(
                 observed_meta={
                     "tool_count": len(kept),
                     "skipped": [list(item) for item in skipped],
+                    "server_info": bounded_identity(result.get("server_info")),
                 },
             )
         )

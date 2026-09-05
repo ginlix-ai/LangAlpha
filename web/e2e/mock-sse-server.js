@@ -122,8 +122,11 @@ const server = http.createServer(async (req, res) => {
     lines.push('', '');
     res.write(lines.join('\n'));
 
-    if (i < scenario.events.length - 1 && scenario.delay > 0) {
-      await new Promise((r) => setTimeout(r, scenario.delay));
+    // An event may carry its own `delayAfter` (ms) to shape timing around
+    // a single gap without slowing the whole stream.
+    const wait = ev.delayAfter ?? scenario.delay;
+    if (i < scenario.events.length - 1 && wait > 0) {
+      await new Promise((r) => setTimeout(r, wait));
     }
   }
   res.end();

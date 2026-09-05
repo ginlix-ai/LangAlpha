@@ -131,14 +131,15 @@ class LargeResultEvictionMiddleware(AgentMiddleware):
     async def _aprocess_large_message(
         self,
         message: ToolMessage,
-    ) -> tuple[ToolMessage, dict | None]:
-        """Async version of _process_large_message.
+    ) -> ToolMessage:
+        """Evict an oversized tool result to a file, leaving a pointer in its place.
 
-        Uses async backend methods to avoid sync calls in async context.
+        Returns the message untouched when eviction is off, the result fits, or
+        the write failed — the model sees the original rather than losing it.
         """
         # Early exit if eviction not configured
         if not self._tool_token_limit_before_evict:
-            return message, None
+            return message
 
         # Convert content to string once for both size check and eviction
         if (
@@ -158,7 +159,7 @@ class LargeResultEvictionMiddleware(AgentMiddleware):
             len(content_str)
             <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict
         ):
-            return message, None
+            return message
 
         # Write content to filesystem using async method
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
@@ -167,7 +168,7 @@ class LargeResultEvictionMiddleware(AgentMiddleware):
         # opt out of protocol's create-only default.
         result = await self.backend.awrite(file_path, content_str, overwrite=True)
         if result is None or result.error:
-            return message, None
+            return message
 
         # Create preview showing head and tail of the result
         content_sample = _create_content_preview(content_str)
@@ -185,51 +186,37 @@ class LargeResultEvictionMiddleware(AgentMiddleware):
         )
         if hasattr(message, 'artifact') and message.artifact is not None:
             kwargs['artifact'] = message.artifact
-        processed_message = ToolMessage(**kwargs)
-        return processed_message, result.files_update
+        return ToolMessage(**kwargs)
 
     async def _aintercept_large_tool_result(
         self, tool_result: ToolMessage | Command, runtime: ToolRuntime
     ) -> ToolMessage | Command:
-        """Async version of _intercept_large_tool_result."""
+        """Swap oversized results for pointers, in a bare message or inside a Command."""
         if isinstance(tool_result, ToolMessage):
-            processed_message, files_update = await self._aprocess_large_message(
-                tool_result
-            )
-            return (
-                Command(
-                    update={
-                        "files": files_update,
-                        "messages": [processed_message],
-                    }
-                )
-                if files_update is not None
-                else processed_message
-            )
+            return await self._aprocess_large_message(tool_result)
 
         if isinstance(tool_result, Command):
             update = tool_result.update
             if update is None:
                 return tool_result
             command_messages = update.get("messages", [])
-            accumulated_file_updates = dict(update.get("files", {}))
             processed_messages = []
             for message in command_messages:
                 if not isinstance(message, ToolMessage):
                     processed_messages.append(message)
                     continue
-
-                processed_message, files_update = await self._aprocess_large_message(
-                    message
+                processed_messages.append(
+                    await self._aprocess_large_message(message)
                 )
-                processed_messages.append(processed_message)
-                if files_update is not None:
-                    accumulated_file_updates.update(files_update)
             return Command(
                 update={
                     **update,
                     "messages": processed_messages,
-                    "files": accumulated_file_updates,
+                    # Copied, and defaulted in when the tool sent no files key —
+                    # eviction contributes nothing here (the write is the
+                    # backend's own business), but a Command that arrived
+                    # without `files` has always left with an empty one.
+                    "files": dict(update.get("files", {})),
                 }
             )
         raise AssertionError(

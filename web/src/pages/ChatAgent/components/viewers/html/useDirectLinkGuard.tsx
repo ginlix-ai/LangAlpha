@@ -20,19 +20,22 @@ import {
  * user gesture and isn't blocked.
  *
  * Returns the click handler to wire to the button and the dialog node to render.
+ * An absent `open` (the surface has nowhere to open — see HtmlActions) answers
+ * with an absent handler, so the guard never has to be asked about it twice.
  */
-export function useDirectLinkGuard(open: () => void, guard: boolean) {
+export function useDirectLinkGuard(open: (() => void) | undefined, guard: boolean) {
   const { t } = useTranslation();
   const [confirming, setConfirming] = useState(false);
 
   const request = useCallback(() => {
+    if (!open) return;
     if (guard) setConfirming(true);
     else open();
   }, [guard, open]);
 
   const confirm = useCallback(() => {
     setConfirming(false);
-    open();
+    open?.();
   }, [open]);
 
   const dialog = (
@@ -60,7 +63,7 @@ export function useDirectLinkGuard(open: () => void, guard: boolean) {
             type="button"
             onClick={confirm}
             className="px-4 py-1.5 rounded text-sm font-medium hover:opacity-90"
-            style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
+            style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
           >
             {t('filePanel.openInNewTab')}
           </button>
@@ -69,5 +72,5 @@ export function useDirectLinkGuard(open: () => void, guard: boolean) {
     </Dialog>
   );
 
-  return { request, dialog };
+  return { request: open ? request : undefined, dialog };
 }

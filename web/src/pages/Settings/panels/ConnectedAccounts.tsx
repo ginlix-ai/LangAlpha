@@ -256,7 +256,7 @@ export function ConnectedAccounts() {
                   <span className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>ChatGPT Codex</span>
                   {codexOAuthStatus.connected && codexOAuthStatus.plan_type && (
                     <span
-                      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium"
+                      className="inline-flex items-center px-1.5 py-0.5 rounded text-[0.625rem] font-medium"
                       style={{ backgroundColor: 'var(--color-success-soft)', color: 'var(--color-success)' }}
                     >
                       {codexOAuthStatus.plan_type}
@@ -289,10 +289,10 @@ export function ConnectedAccounts() {
                   type="button"
                   onClick={handleCodexConnectClick}
                   disabled={isConnectingCodex}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-opacity hover:opacity-90"
                   style={{
-                    backgroundColor: isConnectingCodex ? 'var(--color-accent-disabled)' : 'var(--color-accent-primary)',
-                    color: 'var(--color-text-on-accent)',
+                    backgroundColor: isConnectingCodex ? 'var(--color-bg-elevated)' : 'var(--color-btn-primary-bg)',
+                    color: isConnectingCodex ? 'var(--color-text-tertiary)' : 'var(--color-btn-primary-text)',
                   }}
                 >
                   <Link2 className="h-3 w-3" />
@@ -371,7 +371,7 @@ export function ConnectedAccounts() {
                   <span className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>Claude Code</span>
                   {claudeOAuthStatus.connected && claudeOAuthStatus.plan_type && (
                     <span
-                      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium"
+                      className="inline-flex items-center px-1.5 py-0.5 rounded text-[0.625rem] font-medium"
                       style={{ backgroundColor: 'var(--color-success-soft)', color: 'var(--color-success)' }}
                     >
                       {claudeOAuthStatus.plan_type}
@@ -404,10 +404,10 @@ export function ConnectedAccounts() {
                   type="button"
                   onClick={handleClaudeConnectClick}
                   disabled={isConnectingClaude}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-opacity hover:opacity-90"
                   style={{
-                    backgroundColor: isConnectingClaude ? 'var(--color-accent-disabled)' : 'var(--color-accent-primary)',
-                    color: 'var(--color-text-on-accent)',
+                    backgroundColor: isConnectingClaude ? 'var(--color-bg-elevated)' : 'var(--color-btn-primary-bg)',
+                    color: isConnectingClaude ? 'var(--color-text-tertiary)' : 'var(--color-btn-primary-text)',
                   }}
                 >
                   <Link2 className="h-3 w-3" />
@@ -435,10 +435,10 @@ export function ConnectedAccounts() {
                   type="button"
                   onClick={handleClaudeCallbackSubmit}
                   disabled={isSubmittingClaudeCallback || !claudeCallbackInput.trim()}
-                  className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+                  className="px-3 py-1.5 rounded-md text-xs font-medium transition-opacity hover:opacity-90"
                   style={{
-                    backgroundColor: isSubmittingClaudeCallback ? 'var(--color-accent-disabled)' : 'var(--color-accent-primary)',
-                    color: 'var(--color-text-on-accent)',
+                    backgroundColor: isSubmittingClaudeCallback ? 'var(--color-bg-elevated)' : 'var(--color-btn-primary-bg)',
+                    color: isSubmittingClaudeCallback ? 'var(--color-text-tertiary)' : 'var(--color-btn-primary-text)',
                   }}
                 >
                   {isSubmittingClaudeCallback ? t('common.loading', 'Loading...') : t('common.submit', 'Submit')}
@@ -521,15 +521,15 @@ export function ConnectedAccounts() {
             </div>
 
             {/* Disclaimer */}
-            <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--color-bg-sunken, var(--color-bg-card))', border: '1px solid var(--color-border-muted)' }}>
+            <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--color-bg-subtle)', border: '1px solid var(--color-border-muted)' }}>
               <div className="flex gap-2 items-start">
                 <Shield className="h-4 w-4 flex-shrink-0 mt-0.5" style={{ color: 'var(--color-text-tertiary)' }} />
                 <div>
                   <p className="text-xs font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>{t('settings.codexSecurityTitle')}</p>
-                  <p className="text-[11px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
+                  <p className="text-[0.6875rem] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
                     {t('settings.codexSecurityDesc')}
                   </p>
-                  <p className="text-[11px] leading-relaxed mt-1.5" style={{ color: 'var(--color-text-tertiary)' }}>
+                  <p className="text-[0.6875rem] leading-relaxed mt-1.5" style={{ color: 'var(--color-text-tertiary)' }}>
                     {t('settings.codexDisclaimerDesc')}
                   </p>
                 </div>
@@ -551,8 +551,8 @@ export function ConnectedAccounts() {
             <button
               type="button"
               onClick={handleCodexConnect}
-              className="px-4 py-1.5 rounded text-sm font-medium hover:opacity-90 flex items-center gap-1.5"
-              style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
+              className="px-4 py-1.5 rounded text-sm font-medium transition-opacity hover:opacity-90 flex items-center gap-1.5"
+              style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
             >
               <ExternalLink className="h-3.5 w-3.5" />
               {t('settings.codexProceed')}
@@ -605,15 +605,15 @@ export function ConnectedAccounts() {
             </div>
 
             {/* Disclaimer */}
-            <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--color-bg-sunken, var(--color-bg-card))', border: '1px solid var(--color-border-muted)' }}>
+            <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--color-bg-subtle)', border: '1px solid var(--color-border-muted)' }}>
               <div className="flex gap-2 items-start">
                 <Shield className="h-4 w-4 flex-shrink-0 mt-0.5" style={{ color: 'var(--color-text-tertiary)' }} />
                 <div>
                   <p className="text-xs font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>{t('settings.claudeSecurityTitle', 'Security & Privacy')}</p>
-                  <p className="text-[11px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
+                  <p className="text-[0.6875rem] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
                     {t('settings.claudeSecurityDesc', 'Your tokens are encrypted at rest. We use them only to make API calls on your behalf.')}
                   </p>
-                  <p className="text-[11px] leading-relaxed mt-1.5" style={{ color: 'var(--color-text-tertiary)' }}>
+                  <p className="text-[0.6875rem] leading-relaxed mt-1.5" style={{ color: 'var(--color-text-tertiary)' }}>
                     {t('settings.claudeDisclaimerDesc', 'Usage will count against your Anthropic subscription. You can disconnect at any time.')}
                   </p>
                 </div>
@@ -635,8 +635,8 @@ export function ConnectedAccounts() {
             <button
               type="button"
               onClick={handleClaudeConnect}
-              className="px-4 py-1.5 rounded text-sm font-medium hover:opacity-90 flex items-center gap-1.5"
-              style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
+              className="px-4 py-1.5 rounded text-sm font-medium transition-opacity hover:opacity-90 flex items-center gap-1.5"
+              style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
             >
               <ExternalLink className="h-3.5 w-3.5" />
               {t('settings.claudeProceed', 'Open claude.ai')}

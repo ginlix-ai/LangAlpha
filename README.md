@@ -5,7 +5,7 @@
   <br>
   LangAlpha is built to help interpret financial markets and support investment decisions.
   <br><br>
-  <img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+" />
+  <img src="https://img.shields.io/badge/python-3.13+-blue.svg" alt="Python 3.13+" />
   <a href="https://github.com/langchain-ai/langchain"><img src="https://img.shields.io/badge/LangChain-1c3c3c?logo=langchain&logoColor=white" alt="LangChain" /></a>
   <img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License" />
 </p>
@@ -21,8 +21,7 @@
   <a href="src/server/">Backend</a> &bull;
   <a href="web/">Web</a> &bull;
   <a href="libs/ptc-cli/">TUI</a> &bull;
-  <a href="skills/">Skills</a> &bull;
-  <a href="mcp_servers/">MCP</a>
+  <a href="plugins/">Plugins</a>
 </p>
 
 <p align="center">

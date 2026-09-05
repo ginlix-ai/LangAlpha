@@ -11,7 +11,7 @@ set up your environment and submit changes.
 
 - Docker and Docker Compose
 
-For running on your host instead of containers (optional): Python 3.12+ with
+For running on your host instead of containers (optional): Python 3.13+ with
 [uv](https://docs.astral.sh/uv/), and Node.js 22+ with pnpm.
 
 ## Quick Start

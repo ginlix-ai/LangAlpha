@@ -60,7 +60,7 @@ def _types(jobs):
 class TestBuildFinalizeJobs:
     def test_completed_ptc_gets_burst_release_and_report_back(self):
         jobs = _jobs("completed")
-        assert _types(jobs) == ["burst_release", "report_back"]
+        assert _types(jobs) == ["burst_release", "report_back", "user_feed"]
         rb = next(j for j in jobs if j.hook_type == "report_back")
         assert rb.payload == {"ptc_thread_id": "ptc-1", "dispatch_gen": None}
         # No flash origin stamped -> falls back to the run's own thread.
@@ -82,7 +82,7 @@ class TestBuildFinalizeJobs:
 
     def test_interrupted_ptc_gets_needs_input_wake(self):
         jobs = _jobs("interrupted")
-        assert _types(jobs) == ["burst_release", "needs_input_wake"]
+        assert _types(jobs) == ["burst_release", "needs_input_wake", "user_feed"]
         wake = next(j for j in jobs if j.hook_type == "needs_input_wake")
         assert wake.payload == {"ptc_thread_id": "ptc-1"}
         assert wake.ordering_key == "ptc-1"
@@ -90,7 +90,7 @@ class TestBuildFinalizeJobs:
     @pytest.mark.parametrize("status", ["error", "cancelled"])
     def test_failed_run_gets_watch_clear_with_error_wake(self, status):
         jobs = _jobs(status)
-        assert _types(jobs) == ["burst_release", "watch_clear"]
+        assert _types(jobs) == ["burst_release", "user_feed", "watch_clear"]
         wc = next(j for j in jobs if j.hook_type == "watch_clear")
         assert wc.payload["error_wake"] is True
         assert wc.payload["ptc_thread_id"] == "ptc-1"
@@ -111,11 +111,40 @@ class TestBuildFinalizeJobs:
 
     def test_completed_flash_never_reports_back(self):
         jobs = _jobs("completed", thread_id="flash-1", msg_type="flash")
-        assert _types(jobs) == ["burst_release"]
+        assert _types(jobs) == ["burst_release", "user_feed"]
 
     def test_interrupted_flash_never_wakes(self):
         jobs = _jobs("interrupted", thread_id="flash-1", msg_type="flash")
-        assert _types(jobs) == ["burst_release"]
+        assert _types(jobs) == ["burst_release", "user_feed"]
+
+    def test_user_feed_rides_every_finalize_with_a_user(self):
+        """run_settled is the at-least-once push behind the thread-lifecycle
+        feed: PUBLIC status vocabulary, interrupt_reason only when
+        interrupted, no ordering_key (independent per run)."""
+        settled = next(
+            j for j in _jobs("error", run_seq=42, workspace_id="ws-1")
+            if j.hook_type == "user_feed"
+        )
+        assert settled.idempotency_key == "run-1:user_feed"
+        assert settled.ordering_key is None
+        assert settled.payload == {
+            "user_id": "u-1",
+            "thread_id": "ptc-1",
+            "workspace_id": "ws-1",
+            "run_id": "run-1",
+            "run_seq": 42,
+            "status": "failed",
+            "interrupt_reason": None,
+        }
+        interrupted = next(
+            j
+            for j in _jobs("interrupted", interrupt_reason="ask_user")
+            if j.hook_type == "user_feed"
+        )
+        assert interrupted.payload["status"] == "interrupted"
+        assert interrupted.payload["interrupt_reason"] == "ask_user"
+        # No user -> no feed to publish to.
+        assert "user_feed" not in _types(_jobs("completed", user_id=None))
 
     def test_no_user_or_slot_skips_burst_release(self):
         assert "burst_release" not in _types(_jobs("completed", user_id=None))
@@ -128,7 +157,11 @@ class TestBuildFinalizeJobs:
         ON CONFLICT DO NOTHING makes the effect exactly-once per run."""
         a = {j.idempotency_key for j in _jobs("error")}
         b = {j.idempotency_key for j in _jobs("error")}
-        assert a == b == {"run-1:burst_release", "run-1:watch_clear"}
+        assert a == b == {
+            "run-1:burst_release",
+            "run-1:user_feed",
+            "run-1:watch_clear",
+        }
 
     def test_from_run_row_rebuilds_from_start_stamped_metadata(self):
         factory = build_finalize_jobs_from_run_row(
@@ -144,7 +177,7 @@ class TestBuildFinalizeJobs:
             }
         )
         jobs = factory("error")
-        assert _types(jobs) == ["burst_release", "watch_clear"]
+        assert _types(jobs) == ["burst_release", "user_feed", "watch_clear"]
         wc = next(j for j in jobs if j.hook_type == "watch_clear")
         assert wc.payload["ptc_thread_id"] == "ptc-7"
         assert wc.payload["user_id"] == "u-7"

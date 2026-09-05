@@ -8,14 +8,13 @@
  * Both animate in cqh (the component is a size container), which keeps the
  * sweep spanning the actual component height in both variants.
  *
- * The ember values mirror the login surface's --login-ember so the loader
- * reads as the same material (that token is scoped to the login chunk, so
- * it is redeclared here for the main bundle). */
+ * The ember derives from the global accent token so the loader can never
+ * drift from the login surface's material when the palette moves. */
 
 .page-loading {
   /* Dark-theme accents; light overrides below. */
-  --pl-ember: rgb(255, 168, 92);
-  --pl-glow: rgba(255, 168, 92, 0.35);
+  --pl-ember: var(--color-accent-primary);
+  --pl-glow: color-mix(in srgb, var(--color-accent-primary) 35%, transparent);
   --pl-wall-opacity: 0.14;
 
   position: relative;
@@ -32,8 +31,8 @@
 }
 
 [data-theme='light'] .page-loading {
-  --pl-ember: rgb(178, 82, 38);
-  --pl-glow: rgba(178, 82, 38, 0.18);
+  /* --pl-ember follows the accent token's own theme flip. */
+  --pl-glow: color-mix(in srgb, var(--color-accent-primary) 18%, transparent);
   --pl-wall-opacity: 0.2;
 }
 
@@ -49,8 +48,8 @@
 .page-loading__wall,
 .page-loading__scan-inner {
   padding: 10px 14px;
-  font-family: var(--font-family-mono, ui-monospace, 'SF Mono', Menlo, monospace);
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
   line-height: 1.55;
   white-space: pre;
 }
@@ -106,7 +105,7 @@
 
 .page-loading__label {
   margin: 0;
-  font-size: 13px;
+  font-size: 0.8125rem;
   letter-spacing: 0.05em;
   color: var(--color-text-secondary);
 }

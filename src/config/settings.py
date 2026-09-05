@@ -12,7 +12,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from src.config.core import get_infrastructure_config
-from src.config.models import NewsPollConfig
+from src.config.models import NewsPollConfig, WorkflowOrchestrationConfig
 
 # Re-export env-var constants for backward compatibility
 from src.config.env import (  # noqa: F401
@@ -62,9 +62,20 @@ def get_workflow_timeout() -> int:
     return get_infrastructure_config().workflow_timeout
 
 
+def get_workflow_orchestration_config() -> WorkflowOrchestrationConfig:
+    """Caps and timeouts for RunWorkflow programmatic subagent runs."""
+    return get_infrastructure_config().workflow
+
+
 def get_sse_keepalive_interval() -> float:
     """SSE keepalive interval in seconds."""
     return get_infrastructure_config().sse_keepalive_interval
+
+
+def get_prompt_guidance_default() -> str | None:
+    """Deployment-pinned prompt scaffolding level, or None for 'auto'."""
+    guidance = get_infrastructure_config().prompt.guidance
+    return None if guidance == "auto" else guidance
 
 
 # =============================================================================
@@ -217,6 +228,46 @@ def get_redis_max_connections() -> int:
                 parsed,
             )
     return get_infrastructure_config().redis.max_connections
+
+
+def get_redis_stream_max_connections() -> int:
+    """Pool size for blocking stream readers. Env REDIS_STREAM_MAX_CONNECTIONS."""
+    return _env_pool_size(
+        "REDIS_STREAM_MAX_CONNECTIONS",
+        default=get_infrastructure_config().redis.stream_max_connections,
+        ceiling=10000,
+    )
+
+
+def get_redis_pubsub_max_connections() -> int:
+    """Pool size for long-lived subscriptions. Env REDIS_PUBSUB_MAX_CONNECTIONS."""
+    return _env_pool_size(
+        "REDIS_PUBSUB_MAX_CONNECTIONS",
+        default=get_infrastructure_config().redis.pubsub_max_connections,
+        ceiling=10000,
+    )
+
+
+def get_redis_pool_timeout() -> float:
+    """Seconds a caller queues for a free cache connection. Env REDIS_POOL_TIMEOUT.
+
+    Converts "no slot right now" from an instant error that kills a turn into
+    a short wait — safe only because every long-held connection moved off the
+    cache pool.
+    """
+    raw = os.getenv("REDIS_POOL_TIMEOUT")
+    if raw:
+        try:
+            parsed = float(raw)
+        except ValueError:
+            logger.warning("REDIS_POOL_TIMEOUT=%r is not a number; using config", raw)
+        else:
+            if 0 < parsed <= 60:
+                return parsed
+            logger.warning(
+                "REDIS_POOL_TIMEOUT=%s outside (0, 60]; using config", parsed
+            )
+    return get_infrastructure_config().redis.pool_timeout
 
 
 def get_redis_socket_timeout() -> int:
@@ -530,13 +581,17 @@ def get_langsmith_metadata(
     locale: Optional[str] = None,
     timezone: Optional[str] = None,
     llm_model: Optional[str] = None,
-    reasoning_effort: Optional[str] = None,
-    fast_mode: Optional[bool] = None,
     plan_mode: bool = False,
-    is_byok: bool = False,
     platform: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build LangSmith metadata dict for a workflow run (omits None values)."""
+    """Build LangSmith metadata dict for a workflow run (omits None values).
+
+    Turn identity only. How the model was tuned for a call — effort, guidance,
+    compaction preset, billing — is stamped on the client in ``LLM.get_llm``
+    and lands on the LLM run, because a subagent inherits this dict wholesale
+    while running a different model. ``llm_model`` stays as the turn's own
+    selection, which is a different question from what any one call hit.
+    """
     metadata = {}
 
     if user_id:
@@ -553,14 +608,8 @@ def get_langsmith_metadata(
         metadata["timezone"] = timezone
     if llm_model:
         metadata["llm_model"] = llm_model
-    if reasoning_effort:
-        metadata["reasoning_effort"] = reasoning_effort
-    if fast_mode is not None:
-        metadata["fast_mode"] = fast_mode
     if plan_mode:
         metadata["plan_mode"] = plan_mode
-    if is_byok:
-        metadata["is_byok"] = is_byok
     if platform:
         metadata["platform"] = platform
 

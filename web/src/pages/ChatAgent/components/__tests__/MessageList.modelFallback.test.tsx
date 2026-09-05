@@ -1,5 +1,5 @@
 /**
- * Model-fallback divider rendering in MessageContentSegments (textOnly mode):
+ * Model-fallback divider rendering in MessageContentSegments:
  * the expandable error detail — a "View error" toggle (not "View summary")
  * reveals the failed model's error text in the panel below the divider.
  * (The switch-to-working-model action lives in ChatView's suggestion pill,
@@ -100,7 +100,6 @@ const baseProps = {
   subagentTasks: {},
   hasError: false,
   isAssistant: true,
-  textOnly: true,
 } satisfies Partial<SegmentsProps>;
 
 function fallbackSeg(order: number, toModel: string, over: Record<string, unknown> = {}) {

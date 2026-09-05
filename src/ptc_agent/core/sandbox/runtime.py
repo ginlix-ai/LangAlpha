@@ -35,6 +35,21 @@ class SandboxGoneError(RuntimeError):
         super().__init__(full_msg)
 
 
+class SandboxFailureKind(str, Enum):
+    """What a failed sandbox operation actually means.
+
+    Exists so callers never have to infer "the file isn't there" from "the call
+    didn't work". ``UNKNOWN`` is a first-class outcome, not a fallback bucket:
+    a status-less transport failure is genuinely undecidable from the exception
+    alone and must be confirmed against the runtime rather than guessed at.
+    """
+
+    PATH_ABSENT = "path_absent"  # positively identified per-path not-found
+    SANDBOX_GONE = "sandbox_gone"  # the sandbox itself is not there
+    TRANSIENT = "transient"  # transport-level, may succeed on retry
+    UNKNOWN = "unknown"  # undecidable — never treat as absence
+
+
 class RuntimeState(str, Enum):
     """Possible states of a sandbox runtime."""
 
@@ -322,3 +337,26 @@ class SandboxProvider(ABC):
         Providers should override to classify provider-specific errors.
         """
         return False
+
+    def classify_error(self, exc: Exception) -> SandboxFailureKind:
+        """Classify *exc* into a failure kind for callers to act on.
+
+        Providers should override with SDK-specific structured signals (status
+        codes, machine-readable error codes) — never message matching, which
+        breaks silently when a vendor rewords a string. Beyond the two cases
+        below the default cannot tell, so everything else is honestly
+        ``UNKNOWN``.
+
+        ``FileNotFoundError`` is the one absence signal a provider can raise
+        without an SDK of its own, and it is checked before
+        ``is_transient_error`` because that is a message scan: a path like
+        ``/data/connection.log`` would otherwise read as a connection fault.
+        Without it, a provider that cannot say "this path is missing" sends
+        every genuine miss to the liveness probe, which finds the sandbox alive
+        and reports a transient — turning an ordinary 404 into a 503.
+        """
+        if isinstance(exc, FileNotFoundError):
+            return SandboxFailureKind.PATH_ABSENT
+        if self.is_transient_error(exc):
+            return SandboxFailureKind.TRANSIENT
+        return SandboxFailureKind.UNKNOWN

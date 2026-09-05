@@ -34,9 +34,6 @@ def create_bash_output_tool(backend: SandboxBackend) -> BaseTool:
 
         Returns:
             Status and output of the background command, or confirmation of stop.
-            The artifact carries ``mcp_trace`` (provenance for MCP calls a
-            backgrounded script made, surfaced once when the command finishes)
-            and never enters the LLM context.
         """
         try:
             if action == "stop":

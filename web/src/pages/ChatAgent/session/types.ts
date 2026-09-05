@@ -8,6 +8,7 @@ import type React from 'react';
 import type { ChatMessage } from '@/types/chat';
 import type { ActionRequest, ToolCallData } from '@/types/sse';
 import type { SubagentTokenUsage } from '../utils/tokenUsage';
+import type { StreamRefs } from './streamRefs';
 
 // --- Internal types for useChatMessages ---
 
@@ -56,6 +57,9 @@ interface SSEEvent {
   role?: string;
   turn_index?: number;
   _eventId?: number | string;
+  // Set by the thread mux on a frame from a channel still replaying the
+  // backlog that existed when it opened; cleared by chan_caught_up.
+  _replay?: boolean;
   timestamp?: string | number;
   metadata?: Record<string, unknown>;
   tool_calls?: ToolCallData[];
@@ -158,9 +162,12 @@ interface SubagentHistoryEntry {
   type: string;
   messages: Record<string, unknown>[];
   status: string;
-  /** Ledger failure reason, present only for an errored task. Surfaced in the
-   *  detail view header so a "Failed" card explains why. */
+  /** Ledger failure reason, present for any task that settled with one — a
+   *  stop as well as a failure. Surfaced in the detail view header and on the
+   *  inline card, so neither a "Failed" nor a "Stopped" card is unexplained. */
   error?: string;
+  /** That reason's machine spelling (``credit_stop``, ``transport_lost``, …). */
+  errorType?: string;
   toolCalls: number;
   tokenUsage: SubagentTokenUsage;
   currentTool: string;
@@ -168,6 +175,12 @@ interface SubagentHistoryEntry {
    *  projection contained — the run-level watermark the mux drain guard
    *  filters against. */
   projectedRunStartedMs?: number;
+  /** Reduced workflow-run progress, present only for a workflow run task
+   *  (type 'workflow'), rebuilt from replayed workflow_lifecycle events. */
+  workflowRun?: import('./subagents/workflowRunState').WorkflowRunState;
+  /** Owning workflow run's agent id, present only for a workflow child —
+   *  such tasks are hidden from the sidebar and reached via the run's card. */
+  ownerTaskId?: string;
 }
 
 /** Per-task ref state used by stream handlers.
@@ -178,6 +191,8 @@ interface TaskRefs {
   currentToolCallIdRef: { current: string | null };
   messages: Record<string, unknown>[];
   runIndex: number;
+  /** Live accumulator for a workflow run task's workflow_lifecycle reducer. */
+  workflowRun?: import('./subagents/workflowRunState').WorkflowRunState;
 }
 
 /** History interrupt info stored during replay. */
@@ -200,27 +215,23 @@ interface SubagentHistoryData {
   type?: string;
   /** Backend-stamped real task status from replayed task artifacts (running|completed|cancelled). */
   status?: string;
-  /** Backend-stamped ledger failure reason, present only for an errored task. */
+  /** Backend-stamped ledger failure reason, present for any task that
+   *  settled with one — a stop as well as a failure. */
   error?: string;
+  /** The reason's machine spelling (``credit_stop``, ``transport_lost``, …). */
+  errorType?: string;
   /** Build-time stamp: start (epoch ms) of the newest run whose transcript
    *  the projection actually claimed — NOT the ledger's latest run, which
    *  can still be executing and deliberately excluded from the payload. */
   projectedRunStartedMs?: number;
 }
 
-/** Refs passed to createStreamEventProcessor and its processEvent closure. */
-interface StreamProcessorRefs {
-  contentOrderCounterRef: { current: number };
-  currentReasoningIdRef: { current: string | null };
-  currentToolCallIdRef: { current: string | null };
+/** Refs passed to createStreamEventProcessor and its processEvent closure:
+ *  the handler-facing bag plus the fields only the main stream carries. */
+interface StreamProcessorRefs extends StreamRefs {
   steeringAtOrderRef?: { current: number | null };
-  updateTodoListCard?: ((data: Record<string, unknown>, isNew: boolean) => void) | undefined;
-  isNewConversation?: boolean;
-  subagentStateRefs?: Record<string, TaskRefs>;
   updateSubagentCard?: ((agentId: string, data: Record<string, unknown>) => void);
-  isReconnect?: boolean;
   unresolvedHistoryInterruptRef?: React.MutableRefObject<HistoryInterruptInfo[]>;
-  [key: string]: unknown;
 }
 
 /** Pair state tracked per turn_index during history replay. */
@@ -228,6 +239,8 @@ interface PairState {
   contentOrderCounter: number;
   reasoningId: string | null;
   toolCallId: string | null;
+  /** Steering batches delivered in this pair so far. It keys the ids of the bubbles a batch adds, so a replay mints the same ids as the last one. */
+  steeringBatches: number;
 }
 
 

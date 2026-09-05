@@ -5,6 +5,8 @@ import type { EmailOtpType } from '@supabase/supabase-js';
 import { useAuth } from '../../contexts/AuthContext';
 import { isPlatformMode, APP_ENTRY_PATH } from '../../config/hostMode';
 import { authErrorMessage } from '../../lib/authErrors';
+import { useShellHandoff } from './useShellHandoff';
+import ShellHandoff from './ShellHandoff';
 import PasswordInput from './PasswordInput';
 import PasswordStrength from './PasswordStrength';
 import { validatePasswordPair, MIN_PASSWORD_LENGTH } from './passwordRequirements';
@@ -32,10 +34,14 @@ function ResetPassword() {
   const [linkCheck, setLinkCheck] = useState<'checking' | 'no-token' | 'verified' | 'failed'>(
     'checking'
   );
+  const { handingOff, continueHere } = useShellHandoff();
   const ranRef = useRef(false);
 
   useEffect(() => {
     if (!isPlatformMode) return;
+    // The app is redeeming this one. Bail BEFORE claiming the run, so pressing
+    // "continue in this browser" can still take it back.
+    if (handingOff) return;
     // verifyOtp consumes the single-use token — never run it twice (StrictMode).
     if (ranRef.current) return;
     ranRef.current = true;
@@ -55,7 +61,7 @@ function ResetPassword() {
         setLinkCheck('failed');
       }
     })();
-  }, [verifyEmailOtp]);
+  }, [verifyEmailOtp, handingOff]);
 
   if (!isPlatformMode) {
     return <Navigate to={APP_ENTRY_PATH} replace />;
@@ -83,7 +89,9 @@ function ResetPassword() {
   };
 
   let body: React.ReactNode;
-  if (!isInitialized || linkCheck === 'checking' || (linkCheck === 'verified' && !isLoggedIn)) {
+  if (handingOff) {
+    body = <ShellHandoff onContinueHere={continueHere} />;
+  } else if (!isInitialized || linkCheck === 'checking' || (linkCheck === 'verified' && !isLoggedIn)) {
     body = <p className="login-page__status-text">{t('common.loading')}</p>;
   } else if (linkCheck === 'failed' || !isLoggedIn) {
     body = (

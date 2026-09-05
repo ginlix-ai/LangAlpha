@@ -149,7 +149,7 @@ function QuoteHero({ d, asOf, asOfTs }: { d: QuoteDisplay; asOf?: string; asOfTs
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: sz.gap, marginBottom: 4, flexWrap: 'wrap' }}>
-        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: isMobile ? 13 : 15 }}>{d.symbol}</span>
+        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: isMobile ? '0.8125rem' : '0.9375rem' }}>{d.symbol}</span>
         {d.name && (
           <span style={{ fontSize: sz.rowFs, color: TEXT_COLOR, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {d.name}
@@ -176,12 +176,12 @@ function QuoteHero({ d, asOf, asOfTs }: { d: QuoteDisplay; asOf?: string; asOfTs
       </div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: isMobile ? 8 : 10, marginBottom: d.extPrice != null ? 2 : sz.sectionMb }}>
         {d.price != null && (
-          <span style={{ fontSize: isMobile ? 18 : 22, fontWeight: 700, color: 'var(--color-text-primary)', ...TABULAR }}>
+          <span style={{ fontSize: isMobile ? '1.125rem' : '1.375rem', fontWeight: 700, color: 'var(--color-text-primary)', ...TABULAR }}>
             {fmtQuotePrice(d.price)}
           </span>
         )}
         {d.changePct != null && (
-          <span style={{ fontSize: isMobile ? 12 : 14, color, fontWeight: 500, ...TABULAR }}>
+          <span style={{ fontSize: isMobile ? '0.75rem' : '0.875rem', color, fontWeight: 500, ...TABULAR }}>
             {d.change != null ? `${fmtSigned(d.change)} (${formatPct(d.changePct)})` : formatPct(d.changePct)}
           </span>
         )}

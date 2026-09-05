@@ -53,7 +53,7 @@ export default function MarketWatchChip({ symbols, lastUpdate, onClick }: Market
         onClick={onClick}
         title={title}
         aria-label={t('chat.marketWatch.chipAction', { defaultValue: 'Open live market watch' })}
-        className="inline-flex items-center gap-2 self-start rounded-full px-3 py-1 text-xs cursor-pointer outline-none transition-colors bg-[var(--color-border-muted)] text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="inline-flex items-center gap-2 self-start rounded-full px-3 py-1 text-xs cursor-pointer outline-none transition-colors bg-[var(--color-border-muted)] text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] focus-visible:ring-2 focus-visible:ring-ring"
       >
         {dot}
         <span role="status" aria-live="polite">

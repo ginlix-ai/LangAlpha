@@ -20,8 +20,15 @@ from ptc_agent.agent.middleware.background_subagent.redis_stream import (
     run_stream_key,
 )
 from src.server.services.background_registry_store import BackgroundRegistryStore
-from src.server.handlers.chat.run_stream_reader import _XREAD_COUNT, _xread_block_ms
-from src.utils.cache.redis_cache import get_cache_client
+from src.server.handlers.chat.xread_tuning import (
+    XREAD_COUNT,
+    XREAD_ERROR_BACKOFF_S,
+    XREAD_EXHAUSTION_BACKOFF_S,
+    xread_block_ms,
+    xread_wait_timeout_s,
+)
+from src.utils.cache.redis_cache import get_cache_client, is_pool_exhaustion
+from src.utils.cache import stream_pool
 
 # Same hard-coded logger name request_prep uses — existing log routing keys off it.
 logger = logging.getLogger("src.server.handlers.chat_handler")
@@ -43,39 +50,49 @@ async def _resolve_task_run_id(thread_id: str, task_id: str) -> Optional[str]:
     from src.server.database.runs import subagent_runs as sr_db
 
     registry_store = BackgroundRegistryStore.get_instance()
-    waited = 0.0
-    while True:
-        try:
-            task_row = await sr_db.get_task(thread_id, task_id)
-        except Exception:
-            task_row = None
-        if task_row and task_row.get("latest_run_id"):
-            return str(task_row["latest_run_id"])
+    # Wall-clock deadline: every round awaits a DB read and a Redis read, and
+    # summing only the sleeps let the bound overrun by the time those took.
+    # It also bounds the awaits themselves: the ledger read runs with no
+    # statement_timeout, so one wedged connection would otherwise hold the
+    # request until TCP keepalives declare the peer dead — ~110 s past a 30 s
+    # budget. Expiry means the same thing as running the rounds out: None.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _STARTUP_TIMEOUT
+    try:
+        async with asyncio.timeout_at(deadline):
+            while True:
+                try:
+                    task_row = await sr_db.get_task(thread_id, task_id)
+                except Exception:
+                    task_row = None
+                if task_row and task_row.get("latest_run_id"):
+                    return str(task_row["latest_run_id"])
 
-        local = None
-        try:
-            registry = await registry_store.get_registry(thread_id)
-            if registry is not None:
-                local = await registry.get_task_by_task_id(task_id)
-        except Exception:
-            local = None
-        run_id = getattr(local, "task_run_id", None)
-        if run_id:
-            return str(run_id)
+                local = None
+                try:
+                    registry = await registry_store.get_registry(thread_id)
+                    if registry is not None:
+                        local = await registry.get_task_by_task_id(task_id)
+                except Exception:
+                    local = None
+                run_id = getattr(local, "task_run_id", None)
+                if run_id:
+                    return str(run_id)
 
-        meta = await read_task_meta(thread_id, task_id)
-        if meta is not None:
-            meta_run = meta.get("task_run_id") or ""
-            if meta_run:
-                return meta_run
-            return None
-        if local is not None:
-            return None
+                meta = await read_task_meta(thread_id, task_id)
+                if meta is not None:
+                    meta_run = meta.get("task_run_id") or ""
+                    if meta_run:
+                        return meta_run
+                    return None
+                if local is not None:
+                    return None
 
-        if waited >= _STARTUP_TIMEOUT:
-            return None
-        await asyncio.sleep(_STARTUP_POLL)
-        waited += _STARTUP_POLL
+                if loop.time() >= deadline:
+                    return None
+                await asyncio.sleep(_STARTUP_POLL)
+    except TimeoutError:
+        return None
 
 
 def _record_to_v1_sse(record: dict, thread_id: str, task_id: str) -> str:
@@ -134,8 +151,16 @@ async def stream_task_run_sse(
         )
         return
 
+    # Blocking reads live on the dedicated reader pool, not the cache pool.
+    reader = await stream_pool.get_stream_reader_client(cache)
+    if reader is None:
+        logger.warning(
+            "[task_run_sse] no stream-reader pool for %s/%s", thread_id, task_id
+        )
+        return
+
     stream_key = run_stream_key(thread_id, run_id).encode("utf-8")
-    block_ms = _xread_block_ms()
+    block_ms = xread_block_ms()
     # v2 entries carry auto XADD ids; the v1 seq cursor filters on the
     # payload's seq instead of mapping onto an explicit entry id.
     cursor: bytes = b"0"
@@ -156,12 +181,12 @@ async def stream_task_run_sse(
     while True:
         try:
             result = await asyncio.wait_for(
-                cache.client.xread(
+                reader.xread(
                     {stream_key: cursor},
                     block=block_ms,
-                    count=_XREAD_COUNT,
+                    count=XREAD_COUNT,
                 ),
-                timeout=(block_ms / 1000.0) + 2.0,
+                timeout=xread_wait_timeout_s(),
             )
         except asyncio.TimeoutError:
             yield ":keepalive\n\n"
@@ -178,7 +203,11 @@ async def stream_task_run_sse(
             )
             if await _settled():
                 return
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(
+                XREAD_EXHAUSTION_BACKOFF_S
+                if is_pool_exhaustion(exc)
+                else XREAD_ERROR_BACKOFF_S
+            )
             continue
 
         if not result:

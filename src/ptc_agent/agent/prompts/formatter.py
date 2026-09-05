@@ -8,7 +8,7 @@ import structlog
 from typing import Any
 
 from ptc_agent.core.mcp_sanitize import (
-    is_user_server,
+    is_untrusted_server,
     sanitize_tool_name,
     sanitize_tool_text,
 )
@@ -22,8 +22,9 @@ TOOL_SUMMARY_TEMPLATE = """
 
 TOOL_ITEM_TEMPLATE = "  - {tool_name}({parameters}) -> {return_type}: {description}"
 
-# Hard caps for untrusted (source='workspace') server-level text rendered into
-# the prompt. Match the API write-time caps so a user can't balloon the prompt.
+# Hard caps for untrusted (source 'workspace' or 'user') server-level text
+# rendered into the prompt. Match the API write-time caps so a user can't
+# balloon the prompt.
 WORKSPACE_DESCRIPTION_MAX_LEN = 512
 WORKSPACE_INSTRUCTION_MAX_LEN = 1024
 
@@ -37,7 +38,7 @@ WORKSPACE_DETAILED_MAX_CHARS = 8000
 
 def _is_workspace_source(config: Any) -> bool:
     """True when ``config`` is an untrusted user-provided (workspace) server."""
-    return bool(config) and is_user_server(config)
+    return bool(config) and is_untrusted_server(config)
 
 
 def _safe_tool_name(name: Any, *, workspace: bool) -> str:
@@ -193,12 +194,9 @@ def _format_tool_summary_per_server(
     if not lines:
         return "\nNo MCP servers configured."
 
-    summary = "\n".join(lines)
-
-    # Brief reminder to check docs for signatures
-    note = "\n\n**Note**: Check `tools/docs/{server_name}/{tool_name}.md` for exact function signatures before use."
-
-    return f"{summary}{note}"
+    # The read-the-doc-first rule is stated once by the component that renders
+    # this summary, so it is not repeated per server here.
+    return "\n".join(lines)
 
 
 def _server_header_lines(server_name: str, config: Any) -> list:
@@ -237,10 +235,10 @@ def _format_server_brief(server_name: str, tools: list, config: Any) -> list:
     tools_word = "tool" if tool_count == 1 else "tools"
 
     lines = _server_header_lines(server_name, config)
-    lines.append(f"  - Module: tools/{server_name}.py")
+    # Module path, import form and docs path are all derivable from the server
+    # name, so the component states the convention once instead of three lines
+    # per server.
     lines.append(f"  - Tools: {tool_count} {tools_word} available")
-    lines.append(f"  - Import: from tools.{server_name} import <tool_name>")
-    lines.append(f"  - Documentation: tools/docs/{server_name}/*.md")
 
     return lines
 
@@ -257,7 +255,6 @@ def _format_server_detailed(server_name: str, tools: list, config: Any) -> list:
         List of formatted lines
     """
     lines = _server_header_lines(server_name, config)
-    lines.append(f"  Module: tools/{server_name}.py")
     lines.append("  Available tools:")
 
     workspace = _is_workspace_source(config)
@@ -338,12 +335,9 @@ def _format_tool_summary_brief(
     if not lines:
         return "\nNo MCP servers configured."
 
-    summary = "\n".join(lines)
-
-    # Brief reminder to check docs for signatures
-    note = "\n\n**Note**: Check `tools/docs/{server_name}/{tool_name}.md` for exact function signatures before use."
-
-    return f"{summary}{note}"
+    # The read-the-doc-first rule is stated once by the component that renders
+    # this summary, so it is not repeated per server here.
+    return "\n".join(lines)
 
 
 def _format_tool_summary_detailed(

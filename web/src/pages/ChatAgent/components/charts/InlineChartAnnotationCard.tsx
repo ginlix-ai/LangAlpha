@@ -42,6 +42,7 @@ import { describeAnnotationVisual } from '@/pages/MarketView/utils/annotationGeo
 import { useWorkspaceId } from '../../contexts/WorkspaceContext';
 import { useChartSurface } from '../../contexts/ChartSurfaceContext';
 import { AnnotationPreviewChart } from './AnnotationPreviewChart';
+import { CARD_BG, CARD_BORDER } from './inlineCardsShared';
 
 // Lazy: the surface pulls in the whole MarketView chart stack (lightweight-charts,
 // html2canvas, TradingView). Keep it out of the chat bundle until a chart opens.
@@ -51,11 +52,13 @@ const MarketChartSurface = lazy(() =>
   })),
 );
 
-const CARD_BG = 'var(--color-bg-tool-card)';
-const CARD_BORDER = 'var(--color-border-muted)';
 const TEXT_COLOR = 'var(--color-text-tertiary)';
 const ACCENT = 'var(--color-accent-primary)';
 const ACCENT_SOFT = 'var(--color-accent-soft)';
+const FOCUS_RING = 'var(--color-focus-ring)';
+
+const RESTING_SHADOW = '0 1px 2px rgba(0,0,0,0.05), 0 16px 36px -18px rgba(0,0,0,0.5)';
+const RAISED_SHADOW = '0 2px 6px rgba(0,0,0,0.06), 0 26px 50px -20px rgba(0,0,0,0.6)';
 
 // Centered overlay for the chart's loading / empty states.
 const CENTERED: React.CSSProperties = {
@@ -109,8 +112,11 @@ export function InlineChartAnnotationCard({
 
   // Stage-2 modal open state (standalone ChatAgent page only).
   const [open, setOpen] = useState(false);
-  // Card hover drives the CTA fill (glass → accent).
+  // The card lifts for either device; only a keyboard also gets a ring, since
+  // the rounded corners mean the outline is suppressed and drawn as a shadow.
   const [hover, setHover] = useState(false);
+  const [keyboardFocus, setKeyboardFocus] = useState(false);
+  const raised = hover || keyboardFocus;
 
   // Resting-card price preview: cached bars for this symbol/timeframe. Skipped
   // inside MarketView (chartPresent) where the card collapses to a chip.
@@ -187,7 +193,7 @@ export function InlineChartAnnotationCard({
           border: `1px solid ${accented ? ACCENT : CARD_BORDER}`,
           borderRadius: 999,
           padding: '6px 12px',
-          fontSize: 12,
+          fontSize: '0.75rem',
           color: TEXT_COLOR,
           cursor: 'pointer',
           transition: 'border-color 0.15s',
@@ -253,47 +259,30 @@ export function InlineChartAnnotationCard({
             setOpen(true);
           }
         }}
-        onMouseEnter={(e) => {
-          setHover(true);
-          e.currentTarget.style.borderColor = ACCENT;
-          e.currentTarget.style.transform = 'translateY(-2px)';
-          e.currentTarget.style.boxShadow =
-            '0 2px 6px rgba(0,0,0,0.06), 0 26px 50px -20px rgba(0,0,0,0.6)';
-        }}
-        onMouseLeave={(e) => {
-          setHover(false);
-          e.currentTarget.style.borderColor = CARD_BORDER;
-          e.currentTarget.style.transform = 'none';
-          e.currentTarget.style.boxShadow =
-            '0 1px 2px rgba(0,0,0,0.05), 0 16px 36px -18px rgba(0,0,0,0.5)';
-        }}
-        // Keyboard focus needs a visible ring (outline is suppressed for the
-        // rounded card). Gate on :focus-visible so a mouse click stays clean.
-        onFocus={(e) => {
-          if (!e.currentTarget.matches(':focus-visible')) return;
-          setHover(true);
-          e.currentTarget.style.borderColor = ACCENT;
-          e.currentTarget.style.transform = 'translateY(-2px)';
-          e.currentTarget.style.boxShadow =
-            `0 0 0 2px ${ACCENT}, 0 2px 6px rgba(0,0,0,0.06), 0 26px 50px -20px rgba(0,0,0,0.6)`;
-        }}
-        onBlur={(e) => {
-          setHover(false);
-          e.currentTarget.style.borderColor = CARD_BORDER;
-          e.currentTarget.style.transform = 'none';
-          e.currentTarget.style.boxShadow =
-            '0 1px 2px rgba(0,0,0,0.05), 0 16px 36px -18px rgba(0,0,0,0.5)';
-        }}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        // :focus-visible is the only thing that answers whether a keyboard
+        // brought focus here; the ring stays off a click. The colour is the
+        // shared focus token rather than the accent, which reads as selected.
+        onFocus={(e) => setKeyboardFocus(e.currentTarget.matches(':focus-visible'))}
+        onBlur={() => setKeyboardFocus(false)}
         style={{
           position: 'relative',
           background: CARD_BG,
-          border: `1px solid ${CARD_BORDER}`,
+          border: `1px solid ${keyboardFocus ? FOCUS_RING : raised ? ACCENT : CARD_BORDER}`,
           borderRadius: 20,
           overflow: 'hidden',
           cursor: 'pointer',
-          outline: 'none',
+          // The ring is a shadow, because the card's 20px corners want one that
+          // follows them. Forced colors drops shadows, so the keyboard state
+          // also carries a transparent outline: invisible here, painted in the
+          // system's focus color there, and the only indicator left in it.
+          outline: keyboardFocus ? '2px solid transparent' : 'none',
           userSelect: 'none',
-          boxShadow: '0 1px 2px rgba(0,0,0,0.05), 0 16px 36px -18px rgba(0,0,0,0.5)',
+          transform: raised ? 'translateY(-2px)' : 'none',
+          boxShadow: keyboardFocus
+            ? `0 0 0 2px ${FOCUS_RING}, ${RAISED_SHADOW}`
+            : raised ? RAISED_SHADOW : RESTING_SHADOW,
           transition: 'border-color 0.16s, box-shadow 0.16s, transform 0.16s',
         }}
       >
@@ -301,7 +290,7 @@ export function InlineChartAnnotationCard({
         <div style={{ position: 'relative', height: plotHeight }}>
           {barsLoading ? (
             <div style={CENTERED}>
-              <span style={{ fontSize: 12, color: TEXT_COLOR }}>
+              <span style={{ fontSize: '0.75rem', color: TEXT_COLOR }}>
                 {t('chat.chartAnnotationCard.loadingChart')}
               </span>
             </div>
@@ -324,7 +313,7 @@ export function InlineChartAnnotationCard({
                 }}
               >
                 <LineChart size={26} style={{ opacity: 0.5 }} />
-                <span style={{ fontSize: 12 }}>
+                <span style={{ fontSize: '0.75rem' }}>
                   {t('chat.chartAnnotationCard.previewUnavailable')}
                 </span>
               </span>
@@ -373,7 +362,7 @@ export function InlineChartAnnotationCard({
           >
             <span
               style={{
-                fontSize: 21,
+                fontSize: '1.3125rem',
                 fontWeight: 700,
                 color: 'var(--color-text-primary)',
                 letterSpacing: '-0.01em',
@@ -382,7 +371,7 @@ export function InlineChartAnnotationCard({
               {symbol}
             </span>
             {lastClose != null && (
-              <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-text-primary)' }}>
+              <span style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
                 ${lastClose.toLocaleString('en-US', {
                   minimumFractionDigits: 2,
                   maximumFractionDigits: 2,
@@ -395,7 +384,7 @@ export function InlineChartAnnotationCard({
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: 3,
-                  fontSize: 13,
+                  fontSize: '0.8125rem',
                   fontWeight: 600,
                   color: trendColor,
                 }}
@@ -423,7 +412,7 @@ export function InlineChartAnnotationCard({
               position: 'absolute',
               top: 16,
               right: 16,
-              fontSize: 11,
+              fontSize: '0.6875rem',
               fontWeight: 700,
               letterSpacing: '0.03em',
               color: TEXT_COLOR,
@@ -467,7 +456,7 @@ export function InlineChartAnnotationCard({
                       display: 'inline-flex',
                       alignItems: 'center',
                       gap: 6,
-                      fontSize: 11.5,
+                      fontSize: '0.7188rem',
                       fontWeight: 600,
                       color: 'var(--color-text-secondary)',
                     }}
@@ -489,12 +478,12 @@ export function InlineChartAnnotationCard({
                 ))}
               </AnimatePresence>
               {extraCount > 0 && (
-                <span style={{ fontSize: 11.5, fontWeight: 600, color: TEXT_COLOR }}>+{extraCount}</span>
+                <span style={{ fontSize: '0.7188rem', fontWeight: 600, color: TEXT_COLOR }}>+{extraCount}</span>
               )}
             </div>
           )}
 
-          {/* Bottom-right — CTA (glass → accent on hover). */}
+          {/* Bottom-right — CTA (glass → accent whenever the card is raised). */}
           <span
             style={{
               position: 'absolute',
@@ -503,21 +492,21 @@ export function InlineChartAnnotationCard({
               display: 'inline-flex',
               alignItems: 'center',
               gap: 7,
-              fontSize: 13,
+              fontSize: '0.8125rem',
               fontWeight: 600,
               padding: '9px 15px',
               borderRadius: 11,
               backdropFilter: 'blur(8px)',
-              background: hover ? ACCENT : GLASS_BG,
-              border: `1px solid ${hover ? 'transparent' : GLASS_BORDER}`,
-              color: hover ? '#fff' : 'var(--color-text-primary)',
+              background: raised ? ACCENT : GLASS_BG,
+              border: `1px solid ${raised ? 'transparent' : GLASS_BORDER}`,
+              color: raised ? '#fff' : 'var(--color-text-primary)',
               transition: 'background 0.16s, color 0.16s, border-color 0.16s',
             }}
           >
             {t('chat.chartAnnotationCard.openAnnotatedChart')}
             <ArrowRight
               size={14}
-              style={{ transform: hover ? 'translateX(3px)' : 'none', transition: 'transform 0.16s' }}
+              style={{ transform: raised ? 'translateX(3px)' : 'none', transition: 'transform 0.16s' }}
             />
           </span>
         </div>
@@ -572,7 +561,7 @@ export function InlineChartAnnotationCard({
                   border: `1px solid ${CARD_BORDER}`,
                   background: ACCENT_SOFT,
                   color: ACCENT,
-                  fontSize: 12,
+                  fontSize: '0.75rem',
                   fontWeight: 600,
                   cursor: 'pointer',
                   whiteSpace: 'nowrap',
@@ -614,7 +603,7 @@ export function InlineChartAnnotationCard({
                         alignItems: 'center',
                         justifyContent: 'center',
                         height: '100%',
-                        fontSize: 13,
+                        fontSize: '0.8125rem',
                         color: TEXT_COLOR,
                       }}
                     >

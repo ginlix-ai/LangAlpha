@@ -15,7 +15,7 @@ export interface ByokProvider {
   use_response_api?: boolean;
 }
 
-export type SdkType = 'openai' | 'anthropic' | 'gemini' | 'codex' | 'deepseek' | 'qwq';
+export type SdkType = 'openai' | 'anthropic' | 'gemini' | 'codex' | 'deepseek' | 'qwq' | 'dashscope';
 
 export interface RegionVariant {
   provider: string;

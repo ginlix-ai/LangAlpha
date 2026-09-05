@@ -47,18 +47,20 @@ async def watch_market(
     symbols: Optional[List[str]] = None,
     action: Literal["watch", "unwatch"] = "watch",
 ) -> str:
-    """
-    Start or stop watching tickers for live price updates during this conversation.
+    """Start or stop watching tickers for live price updates during this conversation.
 
     Use for intraday-sensitive tasks (fast-moving stock, trading decision,
-    live market event). Watched symbols get automatic `<market-watch>` price
-    updates before/inside your turns, so manual get_quote pulls are usually
-    unnecessary for them.
+    live market event).
 
     Args:
         symbols: Ticker symbols (e.g. ["NVDA", "TSLA"]). Required to watch;
             with action="unwatch", omit to stop watching everything.
         action: "watch" (default) to start watching, "unwatch" to stop.
+
+    Returns:
+        A confirmation, not prices. Watched symbols then arrive on their own as
+        `<market-watch>` updates before and inside your turns, so manual
+        get_quote pulls are usually unnecessary for them.
     """
     thread_id = _thread_id(config)
     if not thread_id:

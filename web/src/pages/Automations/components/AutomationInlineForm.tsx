@@ -205,7 +205,7 @@ export default function AutomationInlineForm({
   });
 
   const { data: wsData } = useWorkspaces({ limit: 100 });
-  const workspaces = (wsData as { workspaces?: WorkspaceOption[] })?.workspaces ?? [];
+  const workspaces: WorkspaceOption[] = wsData?.workspaces ?? [];
 
   const set = (key: keyof FormState) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement> | string) =>
     setForm((f) => ({ ...f, [key]: typeof e === 'string' ? e : e.target.value }));
@@ -569,7 +569,8 @@ export default function AutomationInlineForm({
           <Button
             type="submit"
             disabled={loading}
-            style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
+            className="transition-opacity hover:opacity-90"
+            style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
           >
             {loading ? t('common.saving') : isEdit ? t('automation.saveChanges') : t('common.create')}
           </Button>

@@ -74,6 +74,11 @@ class WebError:
     # Whether the PROVIDER (not the target page) is at fault — drives circuit
     # breaker accounting. Target-side 429/5xx must not open a provider breaker.
     provider_fault: Optional[bool] = None
+    # The provider's own name for the failure, kept when normalizing discards
+    # it. PROVIDER_ERROR is a bucket: a dead domain and our own queue
+    # overflowing both land in it, so a label built from the type alone cannot
+    # tell a trace reader which of the two happened.
+    native_kind: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.retryable is None:
@@ -170,13 +175,34 @@ class FetchResult:
         return self.error is None
 
 
+@dataclass(frozen=True)
+class FetchAttempt:
+    """What one provider in the chain did with the URLs it was offered.
+
+    ``outcome`` is ``ok``/``partial``, or what ended the attempt — the
+    provider's own name for the failure where it has one, else the normalized
+    type. That is the difference between "firecrawl was tried" and "firecrawl
+    429'd", which is what makes a silent fallback legible after the fact.
+    """
+
+    provider: str
+    outcome: str
+
+    def __str__(self) -> str:
+        return f"{self.provider}:{self.outcome}"
+
+
 @dataclass
 class FetchResponse:
     """Order-preserving results for a FetchRequest, plus routing telemetry."""
 
     results: List[FetchResult] = field(default_factory=list)
     provider: Optional[str] = None
-    providers_tried: List[str] = field(default_factory=list)
+    attempts: List[FetchAttempt] = field(default_factory=list)
+
+    @property
+    def providers_tried(self) -> List[str]:
+        return [a.provider for a in self.attempts]
 
 
 @dataclass(frozen=True)

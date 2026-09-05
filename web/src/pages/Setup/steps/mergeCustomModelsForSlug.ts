@@ -12,13 +12,11 @@
  * Used by ConnectStep.handleCustomSave so re-entering "Add new custom provider"
  * with an existing slug doesn't wipe the user's pre-existing entries.
  */
-export interface CustomModelEntry {
-  name: string;
-  model_id?: string;
-  provider: string;
-  input_modalities?: string[];
-  [key: string]: unknown;
-}
+// One shape, declared where the stored bag is described. A second copy here
+// let the wizard build an entry the rest of the app could not read back.
+export type { CustomModelEntry } from '@/components/model/types';
+
+import type { CustomModelEntry } from '@/components/model/types';
 
 export interface MergeInput {
   /** Current ``custom_models`` array from preferences (all slugs). */

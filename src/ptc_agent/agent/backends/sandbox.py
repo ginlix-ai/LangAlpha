@@ -225,7 +225,15 @@ class SandboxBackend(SandboxBackendProtocol):
             if reserved is None:
                 return WriteResult(error=f"Failed to reserve '{normalized_path}'")
 
-        ok = await self.sandbox.awrite_file_text(normalized_path, content)
+        try:
+            ok = await self.sandbox.awrite_file_text(normalized_path, content)
+        except Exception as exc:
+            # A sandbox failure has to come back as a tool error, like every
+            # other method here. The large-result eviction middleware writes
+            # through this path from *outside* the tool-error middleware, so an
+            # exception escaping here is never caught and kills the whole turn.
+            logger.exception("Failed to write file", path=normalized_path)
+            return WriteResult(error=f"write_failed: {exc}")
         if not ok:
             return WriteResult(error=f"Failed to write to '{normalized_path}'")
 
@@ -246,19 +254,32 @@ class SandboxBackend(SandboxBackendProtocol):
     ) -> EditResult:
         """Edit a file by exact-string replacement."""
         normalized_path = self._normalize_path(file_path)
-        result = await self.sandbox.aedit_file_text(
-            normalized_path,
-            old_string,
-            new_string,
-            replace_all=replace_all,
-        )
+        try:
+            result = await self.sandbox.aedit_file_text(
+                normalized_path,
+                old_string,
+                new_string,
+                replace_all=replace_all,
+            )
+        except Exception as exc:
+            logger.exception("Failed to edit file", path=normalized_path)
+            return EditResult(error=f"edit_failed: {exc}")
         if not result.get("success"):
             return EditResult(error=str(result.get("error", "Edit failed")))
 
         occurrences = int(result.get("occurrences", 1))
         content = None
         if self.operation_callback:
-            content = await self.sandbox.aread_file_text(normalized_path)
+            try:
+                content = await self.sandbox.aread_file_text(normalized_path)
+            except Exception:
+                # The edit is already committed. Now that a read raises instead
+                # of returning None, letting this escape would fail the whole
+                # tool call over a snapshot the callback can do without.
+                logger.warning(
+                    "Could not read back edited file for the operation callback",
+                    path=normalized_path,
+                )
         self._invoke_operation_callback(
             "edit_file",
             normalized_path,
@@ -359,9 +380,12 @@ class SandboxBackend(SandboxBackendProtocol):
                 if content is None:
                     return FileDownloadResponse(path=p, error="file_not_found")
                 return FileDownloadResponse(path=p, content=content)
-            except Exception:
+            except Exception as exc:
+                # Never report a sandbox failure as file_not_found: the agent
+                # reads that as "this file does not exist" and moves on, quietly
+                # building on missing data instead of retrying.
                 logger.exception("Failed to download file", path=p)
-                return FileDownloadResponse(path=p, error="file_not_found")
+                return FileDownloadResponse(path=p, error=f"read_failed: {exc}")
 
         return await asyncio.gather(*[_download_one(p) for p in paths])
 
@@ -375,9 +399,13 @@ class SandboxBackend(SandboxBackendProtocol):
                 if ok:
                     return FileUploadResponse(path=path)
                 return FileUploadResponse(path=path, error="permission_denied")
-            except Exception:
+            except Exception as exc:
+                # Mirrors the download path: never report a sandbox failure as a
+                # per-path verdict. "permission_denied" reads to the agent as
+                # "this path is not writable", so it stops trying instead of
+                # retrying something that was only ever temporarily unreachable.
                 logger.exception("Failed to upload file", path=path)
-                return FileUploadResponse(path=path, error="permission_denied")
+                return FileUploadResponse(path=path, error=f"write_failed: {exc}")
 
         return await asyncio.gather(*[_upload_one(p, c) for p, c in files])
 
@@ -560,7 +588,7 @@ class SandboxBackend(SandboxBackendProtocol):
         """Execute Python code in the sandbox (Jupyter-style).
 
         Distinct from `aexecute` (shell) — returns rich `ExecutionResult`
-        with stdout/files_created/charts.
+        with stdout/charts/mcp_trace.
         """
         return await self.sandbox.execute(code, thread_id=thread_id)
 

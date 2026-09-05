@@ -49,8 +49,4 @@ export interface ReadyAttachment {
   preview: string | null;
 }
 
-export interface Workspace {
-  workspace_id: string;
-  name: string;
-  [key: string]: unknown;
-}
+export type { Workspace } from '@/types/api';

@@ -23,6 +23,25 @@ vi.mock('@/lib/supabase', () => ({
   supabase: null,
 }));
 
+// The watch loop rotates its own token on a 401, so these have to be steerable.
+// Defaults match the unmocked behaviour under `supabase: null`: no header, and
+// nothing to rotate to.
+const authMocks = vi.hoisted(() => ({
+  getAuthHeaders: vi.fn<() => Promise<Record<string, string>>>(async () => ({})),
+  refreshAccessToken: vi.fn<(refused: string | null) => Promise<string | null>>(async () => null),
+}));
+// `bearerTokenOf` comes from the real module: it is the pure header parser the
+// 401 path hands its argument through, so a stub here would only be asserting
+// this file's own idea of what a Bearer header looks like.
+vi.mock('@/lib/authToken', async (importActual) => ({
+  ...(await importActual<typeof import('@/lib/authToken')>()),
+  getAuthHeaders: () => authMocks.getAuthHeaders(),
+  refreshAccessToken: (refused: string | null) => authMocks.refreshAccessToken(refused),
+  getAccessToken: async () => null,
+  publishSession: () => {},
+  clearAuthToken: () => {},
+}));
+
 import { api } from '@/api/client';
 import {
   getWorkspaces,
@@ -54,6 +73,11 @@ const mockDelete = api.delete as Mock;
 describe('ChatAgent API utilities', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // `clearAllMocks` clears calls but keeps implementations, so a test that
+    // steers these would otherwise steer every test after it. Back to the
+    // unmocked behaviour under `supabase: null`: no header, nothing to rotate to.
+    authMocks.getAuthHeaders.mockResolvedValue({});
+    authMocks.refreshAccessToken.mockResolvedValue(null);
   });
 
   describe('getWorkspaces', () => {
@@ -539,6 +563,103 @@ describe('ChatAgent API utilities', () => {
       expect(onClosed).toHaveBeenCalledTimes(1);
     });
 
+    it('rotates the token a 401 refused, then re-subscribes with the new one', async () => {
+      // `fetch` does not throw on an HTTP status, so a 401 never reaches the
+      // loop's catch and never spends one of its retries. Without this branch
+      // the subscription ends on the first auth failure and the caller's paced
+      // re-subscribe re-presents the same refused token every cycle.
+      const encoder = new TextEncoder();
+      const queue = ['event: workflow_started\ndata: {"run_id":"rb-1"}\n\n'];
+      const reader = {
+        read: vi.fn(async () => queue.length === 0
+          ? { done: true, value: undefined }
+          : { done: false, value: encoder.encode(queue.shift()!) }),
+        cancel: vi.fn(async () => {}),
+      };
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({ ok: false, status: 401, body: null })
+        .mockResolvedValue({ ok: true, status: 200, body: { getReader: () => reader } });
+      global.fetch = fetchMock as unknown as typeof fetch;
+      authMocks.getAuthHeaders
+        .mockResolvedValueOnce({ Authorization: 'Bearer T' })
+        .mockResolvedValue({ Authorization: 'Bearer U' });
+      authMocks.refreshAccessToken.mockResolvedValue('U');
+
+      const onResubscribed = vi.fn();
+      const payload = await new Promise<{ run_id?: string | null } | undefined>((resolve) => {
+        watchThread('flash-1', resolve, undefined, onResubscribed);
+      });
+
+      // Rotated against the token that request actually carried, not whatever
+      // the cache holds by the time the 401 lands.
+      expect(authMocks.refreshAccessToken).toHaveBeenCalledTimes(1);
+      expect(authMocks.refreshAccessToken).toHaveBeenCalledWith('T');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(payload).toEqual({ run_id: 'rb-1', needs_input: null, cleared: false });
+      // The re-subscribe is a recovery, so the caller gets its catch-up signal.
+      expect(onResubscribed).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not spend a network retry on the token rotation', async () => {
+      // The rotation rides the same loop, so without an allowance for it a
+      // subscription that hit one 401 would face a flaky network with one retry
+      // instead of MAX_RETRIES. `authRetried` caps the allowance at one.
+      vi.useFakeTimers();
+      try {
+        const fetchMock = vi.fn()
+          .mockResolvedValueOnce({ ok: false, status: 401, body: null })
+          .mockRejectedValue(new Error('network down'));
+        global.fetch = fetchMock as unknown as typeof fetch;
+        authMocks.getAuthHeaders.mockResolvedValue({ Authorization: 'Bearer T' });
+        authMocks.refreshAccessToken.mockResolvedValue('U');
+
+        const closed = new Promise<void>((resolve) => {
+          watchThread('flash-1', () => {}, () => resolve());
+        });
+        await vi.advanceTimersByTimeAsync(30_000);
+        await closed;
+
+        // The refused subscribe, then the full MAX_RETRIES + 1 network attempts.
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('ends the subscription when the 401 cannot be rotated away', async () => {
+      // Cooling down after a rate limit, signed out, or the force floor. Retrying
+      // in-loop would re-present the refused token; ending lets the caller's
+      // paced re-subscribe own the backoff instead.
+      const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 401, body: null });
+      global.fetch = fetchMock as unknown as typeof fetch;
+      authMocks.getAuthHeaders.mockResolvedValue({ Authorization: 'Bearer T' });
+      authMocks.refreshAccessToken.mockResolvedValue(null);
+
+      const onClosed = vi.fn();
+      await new Promise<void>((resolve) => {
+        watchThread('flash-1', () => {}, () => { onClosed(); resolve(); });
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(onClosed).toHaveBeenCalledTimes(1);
+    });
+
+    it('spends at most one rotation per subscription', async () => {
+      // A token the server keeps refusing must not turn the retry budget into a
+      // burst of rotations.
+      const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 401, body: null });
+      global.fetch = fetchMock as unknown as typeof fetch;
+      authMocks.getAuthHeaders.mockResolvedValue({ Authorization: 'Bearer T' });
+      authMocks.refreshAccessToken.mockResolvedValue('still-refused');
+
+      await new Promise<void>((resolve) => {
+        watchThread('flash-1', () => {}, resolve);
+      });
+
+      expect(authMocks.refreshAccessToken).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
     it('does NOT invoke onClosed after a caller-initiated abort', async () => {
       // A deliberate teardown (stopReportBackWatch .abort()) already cleaned up;
       // firing onClosed there would clobber a freshly re-armed watch's abort ref.
@@ -850,5 +971,55 @@ describe('ChatAgent API utilities', () => {
       expect(formatApiErrorDetail(new Error('network'))).toBe('network');
       expect(formatApiErrorDetail({})).toBe('Request failed');
     });
+  });
+});
+
+// The composer sends the tuning it is displaying, not the raw stored override,
+// because a tuning write is optimistic and not awaited. `false` and a cleared
+// level are answers, so the builder has to emit them: `resolve_turn_tuning`
+// reads `fast_mode if fast_mode is not None else tuning.fast_mode`, and an
+// omitted key sends the turn back to the row the pending write is replacing.
+describe('sendChatMessageStream — per-turn tuning is explicit', () => {
+  let originalFetch: typeof global.fetch;
+
+  beforeEach(() => {
+    originalFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      body: {
+        getReader: () => ({
+          read: vi.fn().mockResolvedValue({ done: true, value: undefined }),
+        }),
+      },
+    });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  const send = async (effort: string | null, fast: boolean | null) => {
+    await sendChatMessageStream(
+      'hi', 'ws-1', 't-1', [], false, () => {}, null, 'ptc',
+      'en-US', 'America/New_York', null, null, 'gpt-5.5', effort, fast,
+    );
+    const [, opts] = (global.fetch as Mock).mock.calls[0];
+    return JSON.parse(opts.body) as Record<string, unknown>;
+  };
+
+  it('sends an explicit fast_mode false rather than dropping it', async () => {
+    expect(await send('low', false)).toMatchObject({ fast_mode: false, reasoning_effort: 'low' });
+  });
+
+  it('still sends fast_mode true', async () => {
+    expect(await send(null, true)).toMatchObject({ fast_mode: true });
+  });
+
+  it('omits both only when the turn names neither', async () => {
+    const body = await send(null, null);
+    expect(body.fast_mode).toBeUndefined();
+    expect(body.reasoning_effort).toBeUndefined();
   });
 });

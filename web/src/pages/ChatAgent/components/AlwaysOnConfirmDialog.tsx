@@ -12,7 +12,8 @@ import { Button } from '@/components/ui/button';
 import type { Workspace } from '@/types/api';
 
 interface AlwaysOnConfirmDialogProps {
-  target: Workspace | null;
+  /** Only name + status are read — narrowed so nav-tree rows open this without a cast. */
+  target: Partial<Pick<Workspace, 'name' | 'status'>> | null;
   onClose: () => void;
   onConfirm: () => void;
   busy: boolean;

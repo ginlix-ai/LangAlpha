@@ -1,0 +1,4 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/9.9.9/plugin.schema.json",
+  "name": "future"
+}

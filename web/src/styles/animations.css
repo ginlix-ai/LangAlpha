@@ -3,9 +3,10 @@
    Used across Dashboard, ChatAgent, SharedChat
    ============================================ */
 
-/* === Title font (Playfair Display) === */
+/* === Title font (display face = the UI voice, Sora) === */
 .title-font {
-  font-family: 'Playfair Display', serif;
+  font-family: var(--font-ui);
+  letter-spacing: -0.01em;
 }
 
 /* === Staggered fade-up entrance === */

@@ -120,14 +120,14 @@ function ThreadRow({
       )}
       <span className="flex-1 min-w-0 flex flex-col gap-0.5 overflow-hidden">
         <span
-          className="text-[13px] truncate leading-tight"
+          className="text-[0.8125rem] truncate leading-tight"
           style={{ color: 'var(--color-text-primary)' }}
         >
           {title}
         </span>
         {workspaceLabel ? (
           <span
-            className="text-[10px] uppercase tracking-wider truncate"
+            className="text-[0.625rem] uppercase tracking-wider truncate"
             style={{ color: 'var(--color-text-tertiary)', opacity: 0.85 }}
           >
             {workspaceLabel}
@@ -136,7 +136,7 @@ function ThreadRow({
       </span>
       {timeStr ? (
         <span
-          className="text-[10.5px] dashboard-mono uppercase tracking-wider tabular-nums flex-shrink-0 transition-colors self-start pt-[2px]"
+          className="text-[0.6563rem] dashboard-mono uppercase tracking-wider tabular-nums flex-shrink-0 transition-colors self-start pt-[2px]"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
           {timeStr}
@@ -176,7 +176,7 @@ function BucketSection({
         }}
       >
         <span
-          className="text-[9.5px] font-semibold uppercase tracking-[0.16em]"
+          className="text-[0.5938rem] font-semibold uppercase tracking-[0.16em]"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
           {label}
@@ -186,7 +186,7 @@ function BucketSection({
           style={{ backgroundColor: 'var(--color-border-muted)' }}
         />
         <span
-          className="text-[10px] dashboard-mono tabular-nums"
+          className="text-[0.625rem] dashboard-mono tabular-nums"
           style={{ color: 'var(--color-text-tertiary)', opacity: 0.7 }}
         >
           {String(threads.length).padStart(2, '0')}
@@ -232,7 +232,7 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
 
   const workspaceMap = useMemo(() => {
     const map = new Map<string, Workspace>();
-    (wsListData?.workspaces ?? []).forEach((ws: Workspace) => {
+    (wsListData?.workspaces ?? []).forEach((ws) => {
       if (ws.workspace_id) map.set(ws.workspace_id, ws);
     });
     return map;
@@ -365,7 +365,7 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
             style={{ color: 'var(--color-text-tertiary)' }}
           />
           <span
-            className="text-[10px] font-semibold uppercase tracking-[0.14em]"
+            className="text-[0.625rem] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
             {t('dashboard.widgets.recentThreads.header')}
@@ -383,7 +383,7 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
             if (viewAllTarget === '/chat') clearChatSession();
             navigate(viewAllTarget);
           }}
-          className="group flex items-center gap-1 text-[11px] uppercase tracking-wider transition-colors"
+          className="group flex items-center gap-1 text-[0.6875rem] uppercase tracking-wider transition-colors"
           style={{ color: 'var(--color-text-tertiary)' }}
           onMouseEnter={(e) => {
             e.currentTarget.style.color = 'var(--color-text-primary)';
@@ -427,7 +427,7 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
                 {t('dashboard.widgets.recentThreads.empty')}
               </div>
               <div
-                className="text-[11px]"
+                className="text-[0.6875rem]"
                 style={{ color: 'var(--color-text-tertiary)' }}
               >
                 {t('dashboard.widgets.recentThreads.emptyHint')}

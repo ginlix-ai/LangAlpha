@@ -526,8 +526,9 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
           }
           // Consumption clear: the backend affirmatively says pending state
           // was just torn down. Reconcile NOW (no register-delay — nothing is
-          // coming); /status idle then drops the chip sub-second instead of
-          // riding the 60s backstop.
+          // coming); /status idle then drops the chip sub-second. Nothing else
+          // would: the stream stays open, so there is no close-driven
+          // reconcile to ride, and the re-subscribe backoff caps at 30s.
           if (payload?.cleared) {
             await reconcile('wake');
             return;

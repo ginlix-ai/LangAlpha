@@ -19,6 +19,7 @@ from src.server.handlers.chat.thread_stream_mux_v2 import (
     _load_pending,
     _store_pending,
 )
+from tests.unit.redis_mock_pipeline import attach_pipeline
 
 SR_DB = "src.server.database.runs.subagent_runs"
 STARTED = datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc)
@@ -68,6 +69,9 @@ async def test_pending_store_writes_hash_and_refreshes_ttl():
     cache = MagicMock()
     cache.client.hset = AsyncMock()
     cache.client.expire = AsyncMock()
+    # Both commands ride one pipeline now; the assertions below still pin the
+    # commands themselves, which is the contract that matters.
+    attach_pipeline(cache.client)
     await _store_pending(cache, "t-1", "run-1", "task:abc")
     cache.client.hset.assert_awaited_once_with(
         "mux2:pending:t-1", "run-1", "task:abc"

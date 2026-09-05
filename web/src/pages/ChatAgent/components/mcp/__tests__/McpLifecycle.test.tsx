@@ -42,6 +42,34 @@ describe('McpLifecycle — terminal pills', () => {
   });
 });
 
+describe('McpLifecycle — OAuth-bound inherited rows', () => {
+  it('a broken OAuth connection shows the OAuth pill, never "Verifying…"', () => {
+    // The stuck-state regression: after a user-level disconnect the row comes
+    // back pending with a running sandbox, but no in-workspace discovery can
+    // ever run for an OAuth server — the verify track would spin forever.
+    render(
+      <McpLifecycle status="pending" enabled origin="user" checking={false} synced={false} sandboxRunning oauthStatus="revoked" />,
+    );
+    expect(screen.getByTestId('oauth-status-revoked')).toBeInTheDocument();
+    expect(screen.queryByTestId('mcp-lifecycle')).not.toBeInTheDocument();
+  });
+
+  it('a connected OAuth row without a snapshot reads as plain Pending, not Verifying', () => {
+    render(
+      <McpLifecycle status="pending" enabled origin="user" checking={false} synced={false} sandboxRunning oauthStatus="connected" />,
+    );
+    expect(screen.getByTestId('mcp-status-pending')).toBeInTheDocument();
+    expect(screen.queryByTestId('mcp-lifecycle')).not.toBeInTheDocument();
+  });
+
+  it('disabled beats a broken OAuth connection (the row is off in this workspace)', () => {
+    render(
+      <McpLifecycle status="disabled" enabled={false} origin="user" checking={false} synced={false} sandboxRunning oauthStatus="revoked" />,
+    );
+    expect(screen.getByTestId('mcp-status-disabled')).toBeInTheDocument();
+  });
+});
+
 describe('McpLifecycle — progressing track', () => {
   it('shows "Verifying…" while a probe is in flight', () => {
     render(<McpLifecycle status="pending" enabled origin="workspace" checking synced={false} sandboxRunning />);

@@ -22,12 +22,12 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 4px 10px;
   cursor: pointer;
   border-radius: 6px;
   margin: 1px 6px;
   transition: background-color 0.15s ease;
-  min-height: 32px;
+  min-height: 28px;
 }
 
 .nav-panel-row:hover {
@@ -41,6 +41,44 @@
 
 .nav-panel-row-active:hover {
   background-color: var(--color-border-muted);
+}
+
+/* Hover action overlay (pin/archive) — floats over the title's tail so
+   revealing the buttons never reflows the text. Only visible while the row
+   is hovered. The row's hover tint (--color-border-muted) is translucent, so
+   masking the text needs TWO stacked gradients in the same geometry: solid
+   page bg underneath, the tint on top — reproducing exactly what the hovered
+   row (plain or active — they share the tint) looks like, opaque where the
+   buttons sit, with the title fading out through the leading edge. */
+.nav-panel-row-actions {
+  position: absolute;
+  /* Full row height to the pill's right edge — a right-side radius matching
+     the row's own corner clips the opaque mask along the pill, so there's no
+     visible seam between overlay and row background. */
+  right: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 0 6px 6px 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 26px;
+  padding-right: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+  background:
+    linear-gradient(to right, transparent, var(--color-border-muted) 20px),
+    linear-gradient(to right, transparent, var(--color-bg-page) 20px);
+}
+
+.nav-panel-row-active .nav-panel-row-actions {
+  border-radius: 0 8px 8px 0;
+}
+
+.nav-panel-row:hover .nav-panel-row-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* Agent group — visually nested under thread with a left guide line.
@@ -92,8 +130,10 @@
    expanded section distorting in place. Override the panel's right border (the
    chip is free-floating) and give it a lifted shadow. */
 .nav-panel-drag-chip {
-  width: 300px;
-  max-width: 90vw;
+  /* Compact lift pill: hug the icon + name, never outgrow the row it left
+     (a fixed 300px used to make the chip visibly wider than the sidebar). */
+  width: fit-content;
+  max-width: 240px;
   border: 1px solid var(--color-border-muted);
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
@@ -134,4 +174,13 @@
 @media (max-width: 767px) {
   .nav-panel-row { min-height: 44px; padding: 10px 16px; }
   .nav-panel-agent-row { min-height: 44px; padding: 10px 16px; }
+}
+
+/* Subagent avatar glyph: solid white on the charcoal tile; light theme flips
+   it to a solid dark glyph — a forced-white PNG vanishes on the paper fills. */
+.subagent-avatar-glyph {
+  filter: brightness(0) saturate(100%) invert(100%);
+}
+[data-theme='light'] .subagent-avatar-glyph {
+  filter: brightness(0) saturate(100%);
 }

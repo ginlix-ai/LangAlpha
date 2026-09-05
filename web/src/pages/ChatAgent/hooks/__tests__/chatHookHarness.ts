@@ -17,7 +17,7 @@ export function apiMockModule<T extends Record<string, unknown>>(overrides = {} 
     sendChatMessageStream: vi.fn(),
     sendRetryStream: vi.fn(),
     sendHitlResponse: vi.fn(),
-    cancelWorkflow: vi.fn().mockResolvedValue({ success: true }),
+    cancelWorkflow: vi.fn().mockResolvedValue({ cancelled: true, message: 'ok' }),
     replayThreadHistory: vi.fn().mockResolvedValue(undefined),
     getWorkflowStatus: vi.fn().mockResolvedValue({ can_reconnect: false, status: 'completed' }),
     getReportBackStatus: vi.fn().mockResolvedValue({ pending_report_back: false, report_back_run_id: null }),

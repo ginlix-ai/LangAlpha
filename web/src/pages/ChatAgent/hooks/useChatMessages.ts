@@ -11,19 +11,23 @@ import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { useUser } from '@/hooks/useUser';
 import { sendChatMessageStream, sendRetryStream, getWorkflowStatus, sendHitlResponse, fetchThreadTurns, cancelWorkflow } from '../utils/api';
+import { useLocalRunPublisher } from '@/lib/threadLifecycle/useLocalRunPublisher';
 import { peekThreadMux } from '../session/stream/threadStreamMux';
 import type { WorkflowStatusResponse } from '../utils/api';
+import type { CancelOutcome } from '../utils/cancelOutcome';
 // Imported from the dependency-free signal module (not `../utils/api`) so this
 // keeps decoding wire status even in the hook tests that fully mock `../utils/api`.
 import { shouldArmForStatus } from '../utils/reportBackSignal';
 import { useReportBackWatch } from './useReportBackWatch';
 import { useChatFeedback } from './useChatFeedback';
 import { toast } from '@/components/ui/use-toast';
-import { buildRateLimitError, type StructuredError } from '@/utils/rateLimitError';
+import { buildRateLimitError, type ErrorLinkSpec, type StructuredError } from '@/utils/rateLimitError';
 import { getStoredThreadId, setStoredThreadId } from './utils/threadStorage';
 import { type SubagentTokenUsage, ZERO_USAGE } from '../utils/tokenUsage';
 import { computeSteeringBoundary } from '../session/stream/steeringRollback';
+import { isSteeringContinuation, isSteeringUserMessage } from '../components/messageList/messagePredicates';
 import { bumpThreadNavOrder } from './useNavigationData';
+import { ensureThreadId } from '../session/threadCreation';
 export { removeStoredThreadId } from './utils/threadStorage';
 import { createUserMessage, createAssistantMessage, createNotificationMessage, appendMessage, updateMessage, type AttachmentMeta } from './utils/messageHelpers';
 import type { AssistantMessage, UserMessage } from '@/types/chat';
@@ -41,14 +45,18 @@ import { useMarketWatch } from './useMarketWatch';
 import type {
   MessageRecord, TokenUsage, PendingInterrupt, PendingRejection,
   SSEEvent, ModelOptions, OffloadBatch, SubagentHistoryEntry, TaskRefs,
-  HistoryInterruptInfo,
+  HistoryInterruptInfo, StreamProcessorRefs,
   ModelStatus, FallbackSuggestion,
 } from '../session/types';
-import { SECRETARY_ACTION_TYPES } from '../session/interrupts/buckets';
+import { SECRETARY_ACTION_TYPES, setCardStatus } from '../session/interrupts/buckets';
+import { beginResume, restoreCreditPausePending, type CreditPauseResumeRefs } from '../session/interrupts/creditPauseResume';
 export type { ModelStatus, FallbackSuggestion } from '../session/types';
 import type { ChatSessionRuntime } from '../session/runtime';
 import { projectSubagentHistory } from '../session/subagents/projectHistory';
 import { createSubagentMuxController, getTaskIdFromEvent } from '../session/subagents/muxSink';
+import {
+  hydrateTaskTranscript, type TaskTranscriptMeta,
+} from '../session/subagents/hydrateTaskTranscript';
 import { loadConversationHistory as replayConversationHistory } from '../session/history/replayHistory';
 import { createStreamEventProcessor, type StreamRouterDeps } from '../session/stream/processStreamEvent';
 import {
@@ -98,6 +106,7 @@ export function useChatMessages(
   const [isLoadingHistory, setIsLoadingHistory] = useState(
     () => !!(initialThreadId && initialThreadId !== '__default__')
   );
+
   const [hasActiveSubagents, setHasActiveSubagents] = useState(false);  // Subagent streams open after main agent finished
   // false | 'starting' (generic cold start) | 'archived' (slow ~90s restore from cold storage).
   // Widen this union when backend adds a new sandbox_state discriminator.
@@ -234,6 +243,22 @@ export function useChatMessages(
   // React can't dedup by id. Cleared on real thread switches (see line ~682)
   // and on load failure (the catch path below) so retries still work.
   const historyLoadedKeyRef = useRef<string | null>(null);
+  // Counts `online` events. The retry listener below can only bump
+  // reloadTrigger when no load is in flight, and a request issued against a
+  // dead link does not always fail fast enough to be out of the way — so the
+  // load itself re-checks this counter and re-fires when the link returned
+  // underneath it. Without that, the one `online` we get is dropped and the
+  // "it will catch up" message never comes true.
+  const onlineRetryEpochRef = useRef(0);
+  // Monotonic ownership token for this hook's stream session, bumped wherever a
+  // new turn takes it and wherever navigation gives it up. A reconnect retry
+  // outlives the turn that started it — it can sit in an offline slice for
+  // minutes — and every signal it could otherwise key off is reused: the next
+  // send clears wasStoppedRef, currentRunIdRef is null between that send and
+  // its metadata frame, and threadIdRef is back to its original value after a
+  // there-and-back navigation. Only a value that never goes backwards can tell
+  // "still my session" from "someone else's".
+  const sessionEpochRef = useRef(0);
 
   // Track all LLM models used in this thread (ordered, deduplicated)
   const [threadModels, setThreadModels] = useState<string[]>([]);
@@ -255,7 +280,7 @@ export function useChatMessages(
 
   const releaseStreamOwnership = () => releaseOwnership(runtime);
 
-  const { handleThumbUp, handleThumbDown, getFeedbackForMessage, loadFeedback } = useChatFeedback(threadId, messages);
+  const { handleThumbUp, handleThumbDown, feedbackByTurn, loadFeedback } = useChatFeedback(threadId);
 
   // Track if history replay found an unresolved interrupt (skip reconnection in that case)
   const historyHasUnresolvedInterruptRef = useRef(false);
@@ -289,6 +314,9 @@ export function useChatMessages(
   // steering handler can detect when a POST was routed as a new turn
   // (race: status flipped terminal between isLoading check and POST land).
   const currentRunIdRef = useRef<string | null>(null);
+  // Local-layer run-liveness publish (declared here so it sits below the
+  // run-id ref it reads).
+  useLocalRunPublisher(threadId, isLoading, currentRunIdRef);
   // Highest turn_index this view has RENDERED, compared against
   // /status.latest_turn_index by the reactivation staleness check (a run that
   // finished while this cached view was hidden is terminal — can_reconnect is
@@ -426,22 +454,27 @@ export function useChatMessages(
     isNewConversation?: boolean;
     isReconnect?: boolean;
     withUnresolvedInterrupt?: boolean;
-  } = {}) => ({
-    contentOrderCounterRef,
-    currentReasoningIdRef,
-    currentToolCallIdRef,
-    steeringAtOrderRef,
-    updateTodoListCard: updateTodoListCard || undefined,
-    isNewConversation: o.isNewConversation ?? false,
-    subagentStateRefs: subagentStateRefsRef.current,
-    updateSubagentCard: !updateSubagentCard
-      ? (() => {})
-      : o.isReconnect
-        ? (agentId: string, data: Record<string, unknown>) => updateSubagentCard(agentId, { ...data, isReconnect: true })
-        : updateSubagentCard,
-    ...(o.isReconnect ? { isReconnect: true } : {}),
-    ...(o.withUnresolvedInterrupt ? { unresolvedHistoryInterruptRef } : {}),
-  });
+  } = {}): StreamProcessorRefs => {
+    const refs: StreamProcessorRefs = {
+      contentOrderCounterRef,
+      currentReasoningIdRef,
+      currentToolCallIdRef,
+      steeringAtOrderRef,
+      updateTodoListCard: updateTodoListCard || undefined,
+      isNewConversation: o.isNewConversation ?? false,
+      subagentStateRefs: subagentStateRefsRef.current,
+      updateSubagentCard: updateSubagentCard || (() => {}),
+      ...(o.isReconnect ? { isReconnect: true } : {}),
+      ...(o.withUnresolvedInterrupt ? { unresolvedHistoryInterruptRef } : {}),
+    };
+    // Read at call time: a reconnect flips the bag live once its backlog is
+    // applied, and the cards it updates after that are live too.
+    if (updateSubagentCard && o.isReconnect) {
+      refs.updateSubagentCard = (agentId: string, data: Record<string, unknown>) =>
+        updateSubagentCard(agentId, refs.isReconnect ? { ...data, isReconnect: true } : data);
+    }
+    return refs;
+  };
 
   // Per-task running total of token usage. Backend emits per-call deltas via
   // `context_window/token_usage` events; we sum here. The ref is the source
@@ -473,6 +506,7 @@ export function useChatMessages(
     mainStreamAbortRef,
     isReconnectingOwnerRef,
     wasStoppedRef,
+    sessionEpochRef,
     backgroundReconnectRef,
     setIsReconnecting,
     onFileArtifact,
@@ -602,6 +636,19 @@ export function useChatMessages(
         currentThreadId !== newThreadId;
 
       if (currentThreadId !== newThreadId) {
+        // Any change of the resolved id relinquishes whatever session the old
+        // one owned, so the token moves here rather than inside the narrower
+        // isThreadSwitch below: that predicate excludes '__default__' on either
+        // side, and a workspace with no stored thread resolves to exactly that,
+        // so an A → '__default__' → A trip would leave a parked reconnect retry
+        // looking at its own thread with an epoch it still matches, free to
+        // resume alongside the reconnect the return trip already started (two
+        // readers on one run, mainStreamAbortRef pointing at whichever
+        // registered last). Deliberately wider than it strictly needs to be:
+        // over-invalidating only makes a stale retry give up, which is the safe
+        // direction, and no retry can be running under a '__default__' id
+        // anyway (the loop breaks on one immediately).
+        sessionEpochRef.current += 1;
         setThreadId(newThreadId);
       }
 
@@ -637,6 +684,23 @@ export function useChatMessages(
         // Interrupt cards belong to the thread we're leaving; the next thread's
         // replay repopulates this from its persisted interrupt events.
         renderedInterruptIdsRef.current.clear();
+        // So does the answer board. Left behind, thread A's unanswered id keeps
+        // failing B's `every(id => collected[id])` batch gate, so B's own
+        // interrupt is collected but never resumed: the card holds a disabled
+        // spinner until a full reload. Its only other clears sit on paths a
+        // thread switch does not take.
+        pendingInterruptIdsRef.current.clear();
+        collectedHitlResponsesRef.current = {};
+        // And the two state slots the board arms. Their only other clears sit
+        // on answering or rejecting, which a thread switch also does not take,
+        // so thread A's leftovers act on B: a live `pendingInterrupt` disables
+        // B's composer outright, and a live `pendingRejection` turns B's next
+        // ordinary message into rejection feedback carrying A's interrupt id.
+        // A credit pause is the case that makes this ordinary rather than
+        // exotic — resolving one means leaving to buy credits, so wandering off
+        // to another thread with it unanswered is the expected way to meet it.
+        setPendingInterrupt(null);
+        setPendingRejection(null);
       }
     }
   }, [workspaceId, initialThreadId]);
@@ -749,6 +813,7 @@ export function useChatMessages(
       // (active_tasks above all) reflects the world at this instant, and the
       // mux attach may lag it by the whole history load.
       const snapshotAtMs = Date.now();
+      const onlineEpochAtStart = onlineRetryEpochRef.current;
       const status: WorkflowStatusResponse = await getWorkflowStatus(threadId).catch((statusErr: unknown) => {
         console.log('[Reconnect] Could not check workflow status:', (statusErr as Error).message);
         return { can_reconnect: false, status: 'error' } as WorkflowStatusResponse;
@@ -785,6 +850,26 @@ export function useChatMessages(
           ...(status.recent_report_back_run_ids ?? []),
           ...replayedRunIdsRef.current,
         ]);
+      }
+
+      // The link can come back mid-load, and the `online` that would normally
+      // re-fire this was dropped by the in-flight guard on the listener below —
+      // nothing else will, because a link that returns does not fire `online` a
+      // second time. Two shapes need the re-fire. A failed replay is the
+      // obvious one. The other is subtler: the status probe and the replay are
+      // deliberately sequential, so the link can return BETWEEN them, leaving a
+      // probe that failed against the dead link (`status: 'error'`, the
+      // client-only sentinel synthesized by the catch above) paired with a
+      // replay that succeeded against the live one. Trusting that snapshot's
+      // can_reconnect:false would leave an active turn unattached until the
+      // next navigation. Re-running is safe either way: the replay strips its
+      // own history bubbles before rebuilding, so it is not additive.
+      if (
+        onlineRetryEpochRef.current !== onlineEpochAtStart &&
+        (!loadOk || status.status === 'error')
+      ) {
+        setReloadTrigger((n) => n + 1);
+        return;
       }
 
       // Arm the report-back watch BEFORE the reconnect branch below, so it runs
@@ -856,6 +941,13 @@ export function useChatMessages(
           } else if (intInfo.type === 'delete_workspace' || intInfo.type === 'stop_workspace' || intInfo.type === 'delete_thread') {
             setPendingInterrupt({
               type: intInfo.type,
+              interruptId: intInfo.interruptId,
+              assistantMessageId: intInfo.assistantMessageId,
+              proposalId: intInfo.proposalId,
+            });
+          } else if (intInfo.type === 'credit_pause') {
+            setPendingInterrupt({
+              type: 'credit_pause',
               interruptId: intInfo.interruptId,
               assistantMessageId: intInfo.assistantMessageId,
               proposalId: intInfo.proposalId,
@@ -941,9 +1033,46 @@ export function useChatMessages(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, threadId, reloadTrigger]);
 
+  // Opening a thread while offline fails its history load and tells the user it
+  // will catch up when the link returns. Nothing else makes that true: the
+  // banner clearing is the only other reaction to `online`, so without this the
+  // conversation stays stale until the user navigates away and back. The load
+  // effect deliberately leaves historyLoadedKeyRef clear on a failed load
+  // precisely so a reloadTrigger bump re-fires it.
+  useEffect(() => {
+    const retryFailedLoad = () => {
+      // Record the arrival before any guard can drop it — a load already in
+      // flight consumes this on its way out if it fails.
+      onlineRetryEpochRef.current += 1;
+      if (!workspaceId || !threadId || threadId === '__default__') return;
+      // A live stream owns the catch-up: the reconnect loop is itself waiting
+      // on this same `online`, and a history reload would fight it.
+      if (historyLoadingRef.current || isStreamingRef.current) return;
+      // A matching key means the last load succeeded — there is nothing stale
+      // to catch up, and re-firing would replay the thread for no reason.
+      if (historyLoadedKeyRef.current === `${workspaceId}::${threadId}::${reloadTrigger}`) return;
+      setReloadTrigger((n) => n + 1);
+    };
+    window.addEventListener('online', retryFailedLoad);
+    return () => window.removeEventListener('online', retryFailedLoad);
+  }, [workspaceId, threadId, reloadTrigger]);
+
   // The report-back watch survives thread navigation (so a flash report-back and a
   // live PTC stream coexist); useReportBackWatch owns its own unmount-time
   // teardown, so the thread-load effect above deliberately doesn't touch it.
+
+  // Leaving ChatAgent entirely gives up the session the same way navigating
+  // between threads does, but nothing above notices: the route changes without
+  // the resolved thread id changing, so a reconnect retry parked in an offline
+  // slice would still match every ownership check and open a reader into a hook
+  // nobody is rendering. Coming back mounts a fresh hook that reconnects on its
+  // own, and Stop reaches only that one, so the orphan runs to the end of the
+  // turn unabortable. Its own effect rather than the thread-load cleanup above,
+  // which also fires on every reloadTrigger bump and would abandon retries that
+  // are still legitimately ours.
+  useEffect(() => () => {
+    sessionEpochRef.current += 1;
+  }, []);
 
   /**
    * Subagent mux settlement (sink, positive per-task closure, drain dedup)
@@ -1159,18 +1288,30 @@ export function useChatMessages(
     // (d) Tell the backend to hard-cancel: one retry, then a visible error
     // toast so a failed cancel doesn't silently diverge UI from backend.
     if (tid && tid !== '__default__') {
+      let outcome: CancelOutcome | null = null;
       try {
-        await cancelWorkflow(tid, stoppedRunId);
+        outcome = await cancelWorkflow(tid, stoppedRunId);
       } catch (firstErr) {
-        // Log the first failure — when both attempts fail the toast only
-        // reflects the second, so a degraded-network first error would
-        // otherwise vanish from diagnostics.
+        // Log the first failure — the toast below reflects only the final
+        // state, so a degraded-network first error would otherwise vanish
+        // from diagnostics.
         console.warn('[stopWorkflow] cancel failed, retrying once:', firstErr);
         try {
-          await cancelWorkflow(tid, stoppedRunId);
+          outcome = await cancelWorkflow(tid, stoppedRunId);
         } catch {
-          toast({ description: t('chat.stopFailed'), variant: 'destructive' });
+          // Both attempts failed; `outcome` stays null and the toast fires.
         }
+      }
+
+      // A 200 is not proof of a stop, so an unreachable endpoint and an
+      // honest "stopped nothing" get the same treatment. `another_run_active`
+      // means the run we named was gone while the thread stayed busy — the
+      // turn the user just stopped may still be spending model and sandbox
+      // time, and the client already tore its own streaming state down above,
+      // so saying nothing would leave the two sides silently diverged. The
+      // remaining no-op states genuinely had nothing left to stop.
+      if (!outcome || outcome.state === 'another_run_active') {
+        toast({ description: t('chat.stopFailed'), variant: 'destructive' });
       }
     }
   };
@@ -1275,6 +1416,7 @@ export function useChatMessages(
       // This demoted POST is now the active main turn; clear the stopped guard
       // and register its controller so stopWorkflow can abort it.
       wasStoppedRef.current = false;
+      sessionEpochRef.current += 1;
       backgroundReconnectRef.current = false;
       mainStreamAbortRef.current = steeringAbort;
       const refs = buildStreamRefs();
@@ -1483,7 +1625,7 @@ export function useChatMessages(
     currentPlanModeRef.current = planMode;
 
     // Store model options so HITL resume can forward them
-    lastModelOptionsRef.current = { model: model || null, reasoningEffort: reasoningEffort || null, fastMode: fastMode || null };
+    lastModelOptionsRef.current = { model: model || null, reasoningEffort: reasoningEffort || null, fastMode: fastMode ?? null };
 
     // Intercept: if a plan was rejected, route this message as rejection feedback
     if (pendingRejection) {
@@ -1550,6 +1692,7 @@ export function useChatMessages(
     // re-activate its card. The map is cleared only on a full history-backed reset.
     // Clear the stopped guard so a fresh send can finalize again on stop.
     wasStoppedRef.current = false;
+    sessionEpochRef.current += 1;
     backgroundReconnectRef.current = false;
     // This send opens a NEW backend turn rendered in-view; advance the
     // watermark so the next reactivation's staleness check doesn't mistake
@@ -1586,10 +1729,27 @@ export function useChatMessages(
     });
     currentMessageRef.current = assistantMessageId;
 
+    const created = await ensureThreadId({
+      threadId,
+      workspaceId,
+      message,
+      agentMode,
+      platform,
+      queryClient,
+      threadIdRef,
+      setThreadId,
+      wasStoppedRef,
+      signal: abortController.signal,
+    });
+    // Stopped during the pre-create round-trip: stopWorkflow already finalized
+    // the UI — starting the run now would resurrect it.
+    if (created.aborted) return;
+    const effectiveThreadId = created.threadId;
+
     // One request_key per logical send, reused if this exact send is
     // retransmitted after a lost response (fingerprint match) — see
     // createRequestKeyTracker.
-    const requestKey = requestKeyRef.current.take(`send|${threadId}|${message}`);
+    const requestKey = requestKeyRef.current.take(`send|${effectiveThreadId}|${message}`);
     let wasDisconnected = false;
     const wasInterruptedRef = { current: false };
     try {
@@ -1602,7 +1762,7 @@ export function useChatMessages(
       const result = await sendChatMessageStream(
         message,
         workspaceId,
-        threadId,
+        effectiveThreadId,
         [],
         planMode,
         processEvent,
@@ -1611,7 +1771,7 @@ export function useChatMessages(
         userLocale, userTimezone, undefined, undefined,
         model || null,
         reasoningEffort || null,
-        fastMode || null,
+        fastMode ?? null,
         platform,
         // Latch run_id AND the server-assigned thread_id from Content-Location
         // BEFORE the first SSE body byte. run_id closes the reconnect race
@@ -1702,13 +1862,13 @@ export function useChatMessages(
               }
               setMessageError({
                 message: (errorInfo.message as string) || (err as Error).message || 'An error occurred.',
-                link: errorInfo.link as { url: string; label: string },
+                links: [errorInfo.link as ErrorLinkSpec],
               });
               setMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
             } else if (errObj.status === 403) {
               setMessageError({
                 message: (err as Error).message || 'Access denied.',
-                link: { url: '/setup/method', label: 'Configure providers' },
+                links: [{ url: '/setup/method', label: 'Configure providers' }],
               });
               setMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
             } else {
@@ -1787,11 +1947,28 @@ export function useChatMessages(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCompacting]);
 
+  /** The credit pause this resume is answering, so the stream can settle its
+   *  status. Held in a ref because the settle happens in stream callbacks. */
+  const resumingCreditPauseRef = useRef<string | null>(null);
+  const creditPauseRefs = useRef<CreditPauseResumeRefs>({
+    pauseId: resumingCreditPauseRef,
+    pendingInterruptIds: pendingInterruptIdsRef,
+    collectedHitlResponses: collectedHitlResponsesRef,
+    sessionEpoch: sessionEpochRef,
+    setMessages,
+  }).current;
+
   /**
-   * Resumes an interrupted workflow with an HITL response (approve or reject).
+   * Resumes an interrupted turn with an HITL response (approve or reject).
    * Follows the same pattern as handleSendMessage but sends messages: [] with hitl_response.
    */
   const resumeWithHitlResponse = useCallback(async (hitlResponse: Record<string, { decisions: Array<{ type: string; message?: string }> }>, planMode: boolean = false) => {
+    // Ahead of beginResume, so the settler's fence captures this run's own
+    // epoch rather than the previous one (which it would already fail).
+    sessionEpochRef.current += 1;
+    const settleResume = beginResume(creditPauseRefs);
+    let admitted = false;
+
     setPendingInterrupt(null);
     pendingInterruptIdsRef.current.clear();
     collectedHitlResponsesRef.current = {};
@@ -1852,6 +2029,11 @@ export function useChatMessages(
         (runId) => {
           requestKeyRef.current.clear();
           currentRunIdRef.current = runId;
+          // The backend opened a run, so the resume was admitted. Settled here
+          // rather than left to the `finally` because this is the first moment
+          // "Resumed" is true, and the wait is visible on the card.
+          admitted = true;
+          settleResume(true);
         },
         abortController.signal,
         requestKey,
@@ -1873,6 +2055,8 @@ export function useChatMessages(
       if (result?.disconnected) {
         console.log('[HITL] Stream disconnected, attempting reconnect');
         wasDisconnected = true;
+        // A dropped link, not a refusal: the run is live and reconnect owns it.
+        admitted = true;
         attemptReconnectAfterDisconnect(assistantMessageId);
         return;
       }
@@ -1888,6 +2072,7 @@ export function useChatMessages(
         );
         markTranscriptPersisted();
       }
+      admitted = true;
     } catch (err: unknown) {
       if ((err as Error)?.name === 'AbortError' || wasStoppedRef.current) {
         return;
@@ -1896,19 +2081,49 @@ export function useChatMessages(
       // accepted (its response was lost) — adopt that run instead of erroring.
       if (adoptDuplicateRun(err, assistantMessageId)) {
         wasDisconnected = true;
+        // Accepted, just not by this attempt — the pause is genuinely answered.
+        admitted = true;
         return;
       }
-      console.error('[HITL] Error resuming workflow:', err);
-      setMessageError((err as Error).message || 'Failed to resume workflow');
-      setMessages((prev) =>
-        updateMessage(prev,assistantMessageId, (msg) => ({
-          ...msg,
-          content: msg.content || 'Failed to resume workflow. Please try again.',
-          isStreaming: false,
-          error: true,
-        }))
-      );
+      // 429 and 503 are both the quota service answering rather than a failure
+      // to reach it, and it authors the copy the banner renders. Stacking a
+      // generic red bubble under that reads as a second, unrelated fault, so
+      // the turn settles empty and MessageList hides it.
+      const errObj = err as Record<string, unknown>;
+      if (errObj.status === 429 || errObj.status === 503) {
+        // Only a 429 carries `rateLimitInfo`; the transport routes every other
+        // structured detail into `errorInfo`. Reading just the first left a 503
+        // with an empty object, which loses the outage copy and — because the
+        // suppression keys off `type` — offers "Manage plan" to someone who
+        // cannot reach the service to spend anything.
+        const info = (errObj.rateLimitInfo ||
+          errObj.errorInfo ||
+          {}) as Record<string, unknown>;
+        const platformUrl = (import.meta.env.VITE_PLATFORM_URL as string | undefined) || '/account';
+        setMessageError(buildRateLimitError(info, platformUrl));
+        setMessages((prev) =>
+          updateMessage(prev,assistantMessageId, (msg) => ({
+            ...msg,
+            isStreaming: false,
+          }))
+        );
+      } else {
+        console.error('[HITL] Error resuming turn:', err);
+        setMessageError((err as Error).message || 'Failed to resume this turn');
+        setMessages((prev) =>
+          updateMessage(prev,assistantMessageId, (msg) => ({
+            ...msg,
+            content: msg.content || 'Failed to resume this turn. Please try again.',
+            isStreaming: false,
+            error: true,
+          }))
+        );
+      }
     } finally {
+      // A refusal, abort or stop leaves `admitted` false: restore the interrupt
+      // board and put the card back so a top-up can retry. Already-settled
+      // paths are a no-op, so a run that did open is never reverted.
+      settleResume(admitted);
       if (mainStreamAbortRef.current === abortController) {
         mainStreamAbortRef.current = null;
       }
@@ -1994,9 +2209,15 @@ export function useChatMessages(
     collectedHitlResponsesRef.current[interruptId] = response;
     const pending = pendingInterruptIdsRef.current;
     const collected = collectedHitlResponsesRef.current;
+    // Returns whether a resume actually went out. A turn can hold several
+    // interrupts and this batches them, so one answer is often not enough;
+    // a caller that optimistically flipped its card has to know that, or the
+    // card sits in an in-flight state no stream will ever settle.
     if (pending.size > 0 && [...pending].every((id) => collected[id])) {
       resumeWithHitlResponse({ ...collected }, planMode);
+      return true;
     }
+    return false;
   }, [resumeWithHitlResponse]);
 
   const handleAnswerQuestion = useCallback((answer: string, questionId: string, interruptId: string) => {
@@ -2063,15 +2284,7 @@ export function useChatMessages(
   // Shared helper: update a proposal's status within an AssistantMessage.
   // Used by all HITL approve/reject handlers below.
   const resolveProposal = useCallback((proposalKey: string, pid: string, status: string) => {
-    setMessages((prev) =>
-      prev.map((m) => {
-        if (m.role !== 'assistant') return m;
-        const msg = m as AssistantMessage;
-        const proposals = (msg as unknown as Record<string, Record<string, Record<string, unknown>>>)[proposalKey];
-        if (!proposals?.[pid]) return m;
-        return { ...msg, [proposalKey]: { ...proposals, [pid]: { ...proposals[pid], status } } };
-      })
-    );
+    setMessages((prev) => setCardStatus(prev, proposalKey, pid, status));
   }, []);
 
   const handleApproveCreateWorkspace = useCallback(() => {
@@ -2163,6 +2376,31 @@ export function useChatMessages(
     resumeWithHitlResponse({ [pendingInterrupt.interruptId!]: { decisions: [{ type: 'reject' }] } }, false);
   }, [pendingInterrupt, resumeWithHitlResponse, resolveProposal]);
 
+  // --- Credit pause resume ---
+  // Approve is the only decision: the gate's interrupt() discards the resume
+  // value and re-checks the verdict itself, so there is nothing to answer —
+  // resuming IS the answer. Admission re-runs the quota check and can refuse
+  // with a 429 that opens no turn at all, so the click only moves the card to
+  // `resuming`; the stream settles it either way. The card supplies its own ids
+  // (single-slot pendingInterrupt would misroute after a reload).
+  const handleResumeCreditPause = useCallback((pauseId: string, interruptId: string) => {
+    if (!pauseId || !interruptId) return;
+    resumingCreditPauseRef.current = pauseId;
+    resolveProposal('creditPauses', pauseId, 'resuming');
+    const resumed = collectHitlResponseAndMaybeResume(
+      interruptId,
+      { decisions: [{ type: 'approve' }] },
+    );
+    if (!resumed) {
+      // Another interrupt in this turn is still unanswered, so nothing was
+      // sent and no stream will settle this card. Put it back rather than
+      // leave a disabled spinner the user can only clear by reloading — and
+      // keep the reference, because the batch this answer joined dispatches
+      // later and its settler is what moves the card to `resumed`.
+      restoreCreditPausePending(creditPauseRefs);
+    }
+  }, [collectHitlResponseAndMaybeResume, resolveProposal, creditPauseRefs]);
+
   const insertNotification = useCallback(
     (text: string, variant: 'info' | 'success' | 'warning' = 'info', detail?: string) => {
       setMessages((prev) => appendMessage(prev, createNotificationMessage(text, variant, detail)));
@@ -2217,6 +2455,7 @@ export function useChatMessages(
     // projection, and a re-run spawns fresh task ids — stale evidence for the
     // old ids is harmless, while wiping it could un-settle a live-closed sibling.
     wasStoppedRef.current = false;
+    sessionEpochRef.current += 1;
     backgroundReconnectRef.current = false;
     acquireStreamOwnership(threadId);
 
@@ -2298,7 +2537,7 @@ export function useChatMessages(
             processEvent,
             modelOptions.model || null,
             modelOptions.reasoningEffort || null,
-            modelOptions.fastMode || null,
+            modelOptions.fastMode ?? null,
             latchRunId,
             abortController.signal,
             requestKey,
@@ -2318,7 +2557,7 @@ export function useChatMessages(
             forkFromTurn,
             modelOptions.model || null,
             modelOptions.reasoningEffort || null,
-            modelOptions.fastMode || null,
+            modelOptions.fastMode ?? null,
             platform,
             latchRunId,
             abortController.signal,
@@ -2402,9 +2641,19 @@ export function useChatMessages(
     const msgIndex = messages.findIndex((m) => m.id === messageId);
     if (msgIndex === -1) return;
 
+    // Steering bubbles are mid-turn injections with no boundary in /turns —
+    // an edit fork would land on the NEXT turn and leave the original
+    // steering text in the agent's context. The UI hides the pencil for
+    // them; this guards every other caller.
+    const editTarget = messages[msgIndex];
+    if (isSteeringUserMessage(editTarget)) {
+      setMessageError("Steering messages can't be edited");
+      return;
+    }
+
     // Count non-steering assistant messages before this user message to get turn_index.
     // Excludes steering assistant messages (mid-turn continuations) which don't map to backend turns.
-    const turnIndex = messages.slice(0, msgIndex).filter((m) => m.role === 'assistant' && !m.isSteering).length;
+    const turnIndex = messages.slice(0, msgIndex).filter((m) => m.role === 'assistant' && !isSteeringContinuation(m)).length;
 
     // Immediate visual feedback: truncate, show edited message + loading placeholder.
     // Save snapshot so we can restore on failure.
@@ -2448,7 +2697,24 @@ export function useChatMessages(
 
     // Count non-steering assistant messages up to and including this one to get turn_index.
     // Excludes steering assistant messages (mid-turn continuations) which don't map to backend turns.
-    const turnIndex = messages.slice(0, msgIndex + 1).filter((m) => m.role === 'assistant' && !m.isSteering).length - 1;
+    const turnIndex = messages.slice(0, msgIndex + 1).filter((m) => m.role === 'assistant' && !isSteeringContinuation(m)).length - 1;
+
+    // A steered turn renders as several bubbles (pre-steering half + isSteering
+    // continuations) but has only one regenerate: the whole turn re-runs from
+    // its input checkpoint, without the mid-run steering. Normalize truncation
+    // back to the turn's first bubble so the stale halves and the steering
+    // bubbles leave the transcript together with the re-run.
+    let truncateIndex = msgIndex;
+    const regenTarget = messages[msgIndex];
+    if (isSteeringContinuation(regenTarget)) {
+      for (let i = msgIndex - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role === 'assistant' && !isSteeringContinuation(m)) {
+          truncateIndex = i;
+          break;
+        }
+      }
+    }
 
     // Immediate visual feedback: truncate at the assistant message, show loading placeholder.
     // Save snapshot so we can restore on failure.
@@ -2457,7 +2723,7 @@ export function useChatMessages(
     setMessageError(null);
     setFallbackSuggestion(null);
     setMessages((prev) => [
-      ...prev.slice(0, msgIndex),
+      ...prev.slice(0, truncateIndex),
       createAssistantMessage(`assistant-pending-${Date.now()}`),
     ]);
 
@@ -2470,8 +2736,8 @@ export function useChatMessages(
     }
 
     const checkpointId = turnsData.turns[turnIndex].regenerate_checkpoint_id;
-    // Truncate at the assistant message (keep everything before it, including user msg)
-    await streamFromCheckpoint(null, checkpointId, msgIndex, turnIndex, modelOptions);
+    // Truncate at the turn's first assistant bubble (keep everything before it, including user msg)
+    await streamFromCheckpoint(null, checkpointId, truncateIndex, turnIndex, modelOptions);
   }, [messages, getTurnCheckpoints, streamFromCheckpoint]);
 
   /**
@@ -2556,6 +2822,7 @@ export function useChatMessages(
     handleRejectPTCAgent,
     handleApproveSecretaryAction,
     handleRejectSecretaryAction,
+    handleResumeCreditPause,
     tokenUsage,
     isShared,
     insertNotification,
@@ -2564,7 +2831,7 @@ export function useChatMessages(
     handleRetry,
     handleThumbUp,
     handleThumbDown,
-    getFeedbackForMessage,
+    feedbackByTurn,
     // Resolve subagentId (e.g. toolCallId from segment) to stable agent_id for card operations.
     resolveSubagentIdToAgentId: (subagentId: string) =>
       toolCallIdToTaskIdMapRef.current.get(subagentId) || subagentId,
@@ -2575,5 +2842,7 @@ export function useChatMessages(
       const data = subagentHistoryRef.current?.[agentId];
       return data ? { ...data, agentId } : null;
     },
+    hydrateTaskTranscript: (subagentId: string, meta?: TaskTranscriptMeta) =>
+      hydrateTaskTranscript(runtime, threadId, subagentId, meta),
   };
 }

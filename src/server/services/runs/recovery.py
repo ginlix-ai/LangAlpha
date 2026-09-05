@@ -22,6 +22,7 @@ import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.config.settings import get_recovery_scan_interval
+from src.server.database.runs import credit_ledger
 from src.server.database.runs import subagent_runs as sr_db
 from src.server.database.runs import lifecycle as tl_db
 
@@ -37,12 +38,19 @@ SALVAGE_MAX_EVENTS = 5000
 STOP_GRACE = 30.0
 
 
+# Scans between billing-settle sweeps. The sweep's own grace window is 30
+# minutes, so anything short of that is timely; this keeps an idle fleet from
+# issuing two table-wide UPDATEs per worker every scan interval.
+_SETTLE_SWEEP_EVERY_N_SCANS = 10
+
+
 class RecoveryScanner:
     _instance: Optional["RecoveryScanner"] = None
 
     def __init__(self) -> None:
         self._loop_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
+        self._sweep_tick = 0
 
     @classmethod
     def get_instance(cls) -> "RecoveryScanner":
@@ -141,6 +149,15 @@ class RecoveryScanner:
         # cascade-orphaned task rows sit unnoticed, so the heal must not be
         # conditional on there being open runs to recover.
         await self.heal_task_chains()
+
+        # Same reasoning for billing settle: a terminal row whose settle stamp
+        # never landed sits unnoticed precisely when nothing is running. But
+        # it is two unbounded UPDATEs over both hot run tables, fired by every
+        # worker, and its grace window is 30 minutes — so every scan is far
+        # more often than the work can possibly warrant.
+        self._sweep_tick += 1
+        if self._sweep_tick % _SETTLE_SWEEP_EVERY_N_SCANS == 1:
+            await self.settle_abandoned_usage()
 
         if not open_runs and not open_task_runs:
             return 0
@@ -582,3 +599,33 @@ class RecoveryScanner:
         except Exception:
             logger.error("[RecoveryScanner] task chain heal failed", exc_info=True)
             return {"rewound": 0, "deleted": 0}
+
+    async def settle_abandoned_usage(self) -> Dict[str, int]:
+        """Degraded billing settle for terminal rows no settle path will reach.
+
+        The normal settles are transactional (the finalize CAS for response
+        rows, the collector txn for task runs whatever status they finalized
+        on); what lands here is the leftovers — a completed child whose
+        parent died before collecting, or a row finalized by pre-gate code
+        during a rolling deploy. Settling stamps the row out of the in-flight
+        aggregate while leaving the heartbeated value in place as the last
+        durable observation of what the run spent; without this, a dead run's
+        heartbeat would count against its user forever. The grace interval
+        gives a live collector first claim on its transactional settle; both
+        updates are idempotent, so concurrent workers sweeping is harmless.
+        """
+        settled = {"responses": 0, "task_runs": 0}
+        try:
+            settled["responses"] = await credit_ledger.settle_abandoned("run")
+            settled["task_runs"] = await credit_ledger.settle_abandoned("task")
+            if settled["responses"] or settled["task_runs"]:
+                logger.warning(
+                    f"[RecoveryScanner] degraded-settled abandoned usage: "
+                    f"responses={settled['responses']} "
+                    f"task_runs={settled['task_runs']}"
+                )
+        except Exception:
+            logger.error(
+                "[RecoveryScanner] abandoned usage settle failed", exc_info=True
+            )
+        return settled

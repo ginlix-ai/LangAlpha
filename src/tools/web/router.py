@@ -30,6 +30,7 @@ import asyncio
 import logging
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass
 from importlib import import_module
 from typing import Dict, List, Optional, Protocol, Tuple
@@ -45,6 +46,7 @@ from src.tools.web.manifest import (
     get_web_provider_spec,
 )
 from src.tools.web.types import (
+    FetchAttempt,
     FetchRequest,
     FetchResponse,
     FetchResult,
@@ -67,6 +69,22 @@ _INHOUSE_URL_PATTERNS = re.compile(
 def _needs_inhouse(url: str) -> bool:
     host = (urlparse(url).netloc or "").lower().split(":")[0]
     return bool(host and _INHOUSE_URL_PATTERNS.search(host))
+
+
+def _attempt_outcome(provider: str, results: List[FetchResult]) -> FetchAttempt:
+    """Summarize one provider's attempt. All-failed reports the dominant error,
+    so a fallback records why it happened, not just that it did — preferring the
+    provider's own name for it, since the normalized type buckets a dead target
+    and a broken provider into the same ``provider_error``."""
+    ok = sum(1 for r in results if r.ok)
+    if ok == len(results):
+        return FetchAttempt(provider, "ok")
+    if ok:
+        return FetchAttempt(provider, "partial")
+    kinds = Counter(
+        (r.error.native_kind or r.error.type.value) for r in results if r.error
+    )
+    return FetchAttempt(provider, kinds.most_common(1)[0][0] if kinds else "failed")
 
 
 class FetchAdapter(Protocol):
@@ -134,7 +152,7 @@ def build_chain(providers: List[str]) -> List["_ChainEntry"]:
                 provider=spec,
                 capability=cap,
                 adapter=builder(),
-                breaker=CircuitBreaker(),
+                breaker=CircuitBreaker(name=f"fetch:{name}"),
             )
         )
     return entries
@@ -263,7 +281,7 @@ class FetchRouter:
         last_error: Dict[str, FetchResult] = {}
         pending: List[str] = list(dict.fromkeys(req.urls))  # de-dupe, keep order
         anti_bot: set = set()
-        providers_tried: List[str] = []
+        attempts: List[FetchAttempt] = []
         first_ok_provider: Optional[str] = None
         # Without a usable in-house entry, forced URLs degrade to ordinary
         # routing rather than failing outright.
@@ -310,9 +328,8 @@ class FetchRouter:
             if entry.breaker.is_open():
                 logger.debug("fetch: skipping %s (breaker open)", entry.adapter.name)
                 continue
-            providers_tried.append(entry.adapter.name)
-
             results = await self._attempt(entry, urls_now, req, anti_bot)
+            attempts.append(_attempt_outcome(entry.adapter.name, results))
 
             any_ok = False
             for result in results:
@@ -335,7 +352,9 @@ class FetchRouter:
                 # its breaker. Per-URL failures (timeouts, anti_bot, and
                 # target-side 429/5xx) don't: a down target site must not
                 # open the shared provider breaker.
-                await entry.breaker.record_failure()
+                await entry.breaker.record_failure(
+                    reason="; ".join(str(r.error) for r in results if r.error)
+                )
 
             pending = [u for u in pending if u not in final]
             if not pending:
@@ -356,5 +375,5 @@ class FetchRouter:
         return FetchResponse(
             results=[final[u] for u in req.urls if u in final],
             provider=first_ok_provider,
-            providers_tried=providers_tried,
+            attempts=attempts,
         )

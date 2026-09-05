@@ -1,69 +1,67 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { AlertCircle, CheckCircle2, Clock, KeyRound, MinusCircle, HelpCircle } from 'lucide-react';
-import type { McpStatus } from '../../utils/api';
+import { StatusPill } from './McpPrimitives';
+import type { McpOauthStatus, McpStatus } from '../../utils/api';
 
 /**
- * The terminal status pill for an effective MCP server row.
+ * Status pills for MCP server rows — the two vocabularies mapped onto the one
+ * shared `StatusPill` shape so the Plugins page and the workspace tab stay
+ * pixel-identical:
  *
- * - connected  → green
- * - error      → red (the row also surfaces the error text)
- * - needs_secret → amber (the row offers a "Set up NAME" affordance)
- * - pending    → gray ("waiting for discovery — start the workspace or test connection")
- * - disabled   → muted
- * - unknown    → muted fallback
- *
- * In-flight states (verifying / applying) are not rendered here — `McpLifecycle`
- * owns the progressing track and delegates to this pill only for terminal
- * states.
+ * - `McpStatusPill` — per-workspace lifecycle terminal states (connected /
+ *   error / needs_secret / pending / disabled / unknown). In-flight states are
+ *   not rendered here — `McpLifecycle` owns the progressing track and
+ *   delegates to this pill only for terminal states.
+ * - `McpOauthPill` — the user-level OAuth connection state of a user-tier
+ *   server (connected / needs_reauth / refresh_ambiguous / revoked).
  */
 
-interface StatusMeta {
-  label: string;
+interface PillMeta {
+  labelKey: string;
   color: string;
   bg: string;
   icon: React.ComponentType<{ className?: string }>;
 }
 
-const STATUS_META: Record<McpStatus, StatusMeta> = {
+const STATUS_META: Record<McpStatus, PillMeta> = {
   connected: {
-    label: 'Connected',
+    labelKey: 'mcp.status.connected',
     color: 'var(--color-profit)',
     bg: 'var(--color-profit-soft)',
     icon: CheckCircle2,
   },
   error: {
-    label: 'Error',
+    labelKey: 'mcp.status.error',
     color: 'var(--color-loss)',
     bg: 'var(--color-loss-soft)',
     icon: AlertCircle,
   },
   needs_secret: {
-    label: 'Needs secret',
-    color: 'var(--color-warning, #d97706)',
+    labelKey: 'mcp.status.needsSecret',
+    color: 'var(--color-warning)',
     bg: 'var(--color-warning-soft)',
     icon: KeyRound,
   },
   pending: {
-    label: 'Pending',
+    labelKey: 'mcp.status.pending',
     color: 'var(--color-text-tertiary)',
-    bg: 'var(--color-bg-default)',
+    bg: 'var(--color-bg-tag)',
     icon: Clock,
   },
   disabled: {
-    label: 'Disabled',
+    labelKey: 'mcp.status.disabled',
     color: 'var(--color-text-tertiary)',
-    bg: 'var(--color-bg-default)',
+    bg: 'var(--color-bg-tag)',
     icon: MinusCircle,
   },
   unknown: {
-    label: 'Unknown',
+    labelKey: 'mcp.status.unknown',
     color: 'var(--color-text-tertiary)',
-    bg: 'var(--color-bg-default)',
+    bg: 'var(--color-bg-tag)',
     icon: HelpCircle,
   },
 };
-
-const PENDING_HINT = 'Waiting for discovery — start the workspace or test connection';
 
 interface McpStatusPillProps {
   /** The effective status from the backend. A disabled row overrides to `disabled`. */
@@ -72,19 +70,70 @@ interface McpStatusPillProps {
 }
 
 export function McpStatusPill({ status, enabled }: McpStatusPillProps) {
+  const { t } = useTranslation();
   // A disabled row always reads as muted regardless of its last-known status.
   const effective: McpStatus = enabled ? status : 'disabled';
   const meta = STATUS_META[effective] ?? STATUS_META.unknown;
-  const Icon = meta.icon;
   return (
-    <span
-      className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded font-medium"
-      style={{ color: meta.color, backgroundColor: meta.bg }}
-      title={effective === 'pending' ? PENDING_HINT : undefined}
-      data-testid={`mcp-status-${effective}`}
-    >
-      <Icon className="h-3 w-3" />
-      {meta.label}
-    </span>
+    <StatusPill
+      icon={meta.icon}
+      label={t(meta.labelKey)}
+      color={meta.color}
+      bg={meta.bg}
+      title={effective === 'pending' ? t('mcp.status.pendingHint') : undefined}
+      testid={`mcp-status-${effective}`}
+    />
+  );
+}
+
+const OAUTH_META: Record<McpOauthStatus, PillMeta> = {
+  connected: {
+    labelKey: 'plugins.oauth.connected',
+    color: 'var(--color-profit)',
+    bg: 'var(--color-profit-soft)',
+    icon: CheckCircle2,
+  },
+  needs_reauth: {
+    labelKey: 'plugins.oauth.needsReauth',
+    color: 'var(--color-warning)',
+    bg: 'var(--color-warning-soft)',
+    icon: AlertCircle,
+  },
+  refresh_ambiguous: {
+    labelKey: 'plugins.oauth.refreshAmbiguous',
+    color: 'var(--color-warning)',
+    bg: 'var(--color-warning-soft)',
+    icon: AlertCircle,
+  },
+  revoked: {
+    labelKey: 'plugins.oauth.revoked',
+    color: 'var(--color-text-tertiary)',
+    bg: 'var(--color-bg-tag)',
+    icon: MinusCircle,
+  },
+};
+
+/**
+ * The i18n key naming an OAuth status, or null when there is no connection (or
+ * a status this build doesn't know). Reading it off `OAUTH_META` is the point:
+ * that record is exhaustive over `McpOauthStatus`, so a new status is a compile
+ * error here instead of a surface that quietly labels it nothing.
+ */
+export function oauthLabelKey(status: McpOauthStatus | null | undefined): string | null {
+  return (status && OAUTH_META[status]?.labelKey) || null;
+}
+
+export function McpOauthPill({ status }: { status: McpOauthStatus }) {
+  const { t } = useTranslation();
+  const meta = OAUTH_META[status];
+  if (!meta) return null;
+  return (
+    <StatusPill
+      icon={meta.icon}
+      label={t(meta.labelKey)}
+      color={meta.color}
+      bg={meta.bg}
+      testid={`oauth-status-${status}`}
+    />
   );
 }

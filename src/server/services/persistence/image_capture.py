@@ -34,8 +34,6 @@ async def capture_and_rewrite_images(
     if not is_storage_enabled() or not sse_events:
         return 0
 
-    work_dir = sandbox.working_dir
-
     # Collect all unique sandbox image paths from text message_chunks
     image_paths: set[str] = set()
     for evt in sse_events:
@@ -46,7 +44,7 @@ async def capture_and_rewrite_images(
             continue
         content = data.get("content", "")
         for match in IMAGE_MD_RE.finditer(content):
-            if is_sandbox_image_path(match.group(2), work_dir):
+            if is_sandbox_image_path(match.group(2)):
                 image_paths.add(match.group(2))
 
     if not image_paths:

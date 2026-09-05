@@ -76,7 +76,7 @@ services:
       - ${DOCKER_HOST_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
       - ./config.yaml:/app/config.yaml
       - ./mcp_servers:/app/mcp_servers
-      - ./skills:/app/skills
+      - ./plugins:/app/plugins
       - ./scripts:/app/scripts
       - ./alembic.ini:/app/alembic.ini
       - ./migrations:/app/migrations

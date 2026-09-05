@@ -1,5 +1,6 @@
 import React from 'react';
 import { currencySymbol } from '@/lib/bars';
+import type { ValueStore } from '@/lib/valueStore';
 import './CrosshairTooltip.css';
 
 interface TooltipData {
@@ -13,12 +14,18 @@ interface TooltipData {
   rsiValue?: number | null;
 }
 
+export interface CrosshairTooltipState {
+  visible: boolean;
+  x: number;
+  y: number;
+  data: TooltipData | null;
+}
+
 interface CrosshairTooltipProps {
   visible: boolean;
   x: number;
   y: number;
   data: TooltipData | null;
-  enabledMaPeriods: number[];
   containerWidth?: number;
   containerHeight?: number;
   /** ISO currency code — prefixes O/H/L/C with its symbol when provided. */
@@ -27,7 +34,7 @@ interface CrosshairTooltipProps {
   decimals?: number;
 }
 
-function CrosshairTooltip({ visible, x, y, data, enabledMaPeriods: _enabledMaPeriods, containerWidth, containerHeight, currency, decimals }: CrosshairTooltipProps) {
+function CrosshairTooltip({ visible, x, y, data, containerWidth, containerHeight, currency, decimals }: CrosshairTooltipProps) {
   if (!visible || !data) return null;
 
   const isUp = data.close >= data.open;
@@ -98,3 +105,38 @@ function CrosshairTooltip({ visible, x, y, data, enabledMaPeriods: _enabledMaPer
 }
 
 export default React.memo(CrosshairTooltip);
+
+interface CrosshairTooltipLayerProps {
+  store: ValueStore<CrosshairTooltipState>;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  currency?: string;
+  decimals?: number;
+}
+
+/**
+ * Subscribes to the crosshair store so per-mousemove updates re-render only
+ * this leaf, not the chart component that owns the lightweight-charts
+ * subscription. All props are identity-stable — the memo shields the layer
+ * from parent re-renders while the store drives its own.
+ */
+export const CrosshairTooltipLayer = React.memo(function CrosshairTooltipLayer({
+  store,
+  containerRef,
+  currency,
+  decimals,
+}: CrosshairTooltipLayerProps) {
+  const state = React.useSyncExternalStore(store.subscribe, store.get);
+  return (
+    <CrosshairTooltip
+      visible={state.visible}
+      x={state.x}
+      y={state.y}
+      data={state.data}
+      containerWidth={containerRef.current?.clientWidth}
+      containerHeight={containerRef.current?.clientHeight}
+      currency={currency}
+      decimals={decimals}
+    />
+  );
+});
+

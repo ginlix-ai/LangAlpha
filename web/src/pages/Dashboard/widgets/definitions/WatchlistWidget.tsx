@@ -91,7 +91,7 @@ function WatchlistWidget({ instance }: WidgetRenderProps<WatchlistConfig>) {
             style={{ color: 'var(--color-text-tertiary)' }}
           />
           <span
-            className="text-[10px] font-semibold uppercase tracking-[0.14em]"
+            className="text-[0.625rem] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
             {t('dashboard.widgets.watchlist.header')}

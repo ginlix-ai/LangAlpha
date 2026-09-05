@@ -5,12 +5,15 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { queryKeys } from '../../lib/queryKeys';
-import { getWorkspaceThreads, getThread } from './utils/api';
+import { getThread } from './utils/api';
+import { threadGalleryQuery } from './utils/threadGalleryQuery';
 import { getChatSession } from './hooks/utils/chatSessionRestore';
 import { useChatViewCache } from './hooks/useChatViewCache';
+import { useActiveThreadPublisher } from '@/lib/threadLifecycle/useActiveThreadPublisher';
 import { useWarmWorkspaceSandbox } from './hooks/useWarmWorkspaceSandbox';
 import { warmWorkspace } from './utils/warmWorkspace';
 import { isValidUuid } from './utils/uuid';
+import { shouldLeaveThreadRoute } from './utils/threadRouteGuard';
 import ChatView from './components/ChatView';
 import './ChatAgent.css';
 
@@ -72,6 +75,11 @@ function ChatAgent(): React.ReactElement | null {
   // absent so they never reach workspace routes or API calls.
   const urlWorkspaceId = isValidUuid(rawUrlWorkspaceId) ? rawUrlWorkspaceId : undefined;
   const stateWorkspaceId = state?.workspaceId && isValidUuid(state.workspaceId) ? state.workspaceId : null;
+
+  // The route-level threadId is what the user is actually looking at — publish
+  // it so a run finishing on the visible thread never gets an unseen dot, and
+  // opening a finished thread stamps the durable seen cursor.
+  useActiveThreadPublisher(threadId);
 
   // Detect browser-initiated navigation (iOS swipe-back, Android back button).
   // When popstate triggers navigation, iOS Safari already shows its own page
@@ -142,12 +150,11 @@ function ChatAgent(): React.ReactElement | null {
     }
   }, [resolvedThread]);
 
-  // Redirect on non-403 thread lookup errors
   useEffect(() => {
-    if (threadError && !accessDenied) {
+    if (shouldLeaveThreadRoute(needsThreadLookup, threadError, accessDenied)) {
       navigate('/chat', { replace: true });
     }
-  }, [threadError, accessDenied, navigate]);
+  }, [needsThreadLookup, threadError, accessDenied, navigate]);
 
   // __default__ with lost state — redirect
   useEffect(() => {
@@ -281,14 +288,12 @@ function ChatAgent(): React.ReactElement | null {
   }, [navigate, state]);
 
   /**
-   * Prefetch thread data on workspace card hover
+   * Prefetch thread data on workspace card hover. Must go through the SAME
+   * infinite query the gallery mounts — a finite payload on that key reads
+   * back as `data.pages === undefined` and ghosts the whole list.
    */
   const prefetchThreads = useCallback((wsId: string) => {
-    queryClient.prefetchQuery({
-      queryKey: queryKeys.threads.byWorkspace(wsId),
-      queryFn: () => getWorkspaceThreads(wsId),
-      staleTime: 30_000,
-    });
+    queryClient.prefetchInfiniteQuery(threadGalleryQuery(wsId, false));
   }, [queryClient]);
 
   // Determine view key for AnimatePresence transitions (gallery views only)
@@ -323,16 +328,16 @@ function ChatAgent(): React.ReactElement | null {
 
   // Access denied overlay (shown on top of everything)
   const accessDeniedContent = threadId && accessDenied ? (
-    <div style={{ position: 'absolute', inset: 0, zIndex: 10, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 12, color: 'var(--text-secondary, #888)', padding: 24, backgroundColor: 'var(--color-bg-page, #0a0a0a)' }}>
+    <div style={{ position: 'absolute', inset: 0, zIndex: 10, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 12, color: 'var(--color-text-secondary)', padding: 24, backgroundColor: 'var(--color-bg-page)' }}>
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5 }}>
         <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
         <path d="M7 11V7a5 5 0 0 1 10 0v4" />
       </svg>
-      <div style={{ fontSize: 16, fontWeight: 500, color: 'var(--text-primary, #ccc)' }}>{t('chat.accessDeniedTitle')}</div>
-      <div style={{ fontSize: 14 }}>{t('chat.accessDeniedDesc')}</div>
+      <div style={{ fontSize: '1rem', fontWeight: 500, color: 'var(--color-text-primary)' }}>{t('chat.accessDeniedTitle')}</div>
+      <div style={{ fontSize: '0.875rem' }}>{t('chat.accessDeniedDesc')}</div>
       <button
         onClick={() => navigate('/chat', { replace: true })}
-        style={{ marginTop: 8, padding: '8px 20px', borderRadius: 8, border: '1px solid var(--border-color, #333)', background: 'transparent', color: 'var(--text-primary, #ccc)', cursor: 'pointer', fontSize: 14 }}
+        style={{ marginTop: 8, padding: '8px 20px', borderRadius: 8, border: '1px solid var(--color-border-default)', background: 'transparent', color: 'var(--color-text-primary)', cursor: 'pointer', fontSize: '0.875rem' }}
       >
         {t('chat.goToChats')}
       </button>

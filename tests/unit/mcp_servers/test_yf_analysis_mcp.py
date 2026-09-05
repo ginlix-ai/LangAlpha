@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from mcp_servers.yf_analysis_mcp_server import (
+from plugins.yfinance.yf_analysis_mcp_server import (
     get_analyst_price_targets,
     get_analyst_recommendations,
     get_earnings_estimates,
@@ -31,7 +31,7 @@ from .conftest import assert_error, assert_ok_envelope
 
 @pytest.fixture
 def mock_ticker():
-    with patch("mcp_servers.yf_analysis_mcp_server.yf.Ticker") as mock_cls:
+    with patch("plugins.yfinance.yf_analysis_mcp_server.yf.Ticker") as mock_cls:
         stock = MagicMock()
         mock_cls.return_value = stock
         yield stock

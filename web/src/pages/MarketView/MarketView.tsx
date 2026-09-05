@@ -11,7 +11,8 @@ import MarketChatPanel from './components/MarketChatPanel';
 import MarketSidebarPanel from './components/MarketSidebarPanel';
 import { INTERVALS } from './utils/chartConstants';
 import { useMarketChat } from './hooks/useMarketChat';
-import { getWorkspaces } from '../ChatAgent/utils/api';
+import { useWorkspaces } from '@/hooks/useWorkspaces';
+import type { Workspace } from '@/types/api';
 import { attachmentsToContexts } from '../ChatAgent/utils/fileUpload';
 import { motion, AnimatePresence } from 'framer-motion';
 import CompanyOverviewPanel from './components/CompanyOverviewPanel';
@@ -50,12 +51,10 @@ interface AttachmentItem {
   preview?: string | null;
 }
 
-interface Workspace {
-  workspace_id: string;
-  name?: string;
-  status?: string;
-  [key: string]: unknown;
-}
+// Stable identity for the pre-data render, so the reconcile effect's
+// `workspaces` dependency doesn't change on every render before the fetch
+// lands. React Query's structural sharing covers the loaded case.
+const EMPTY_WORKSPACES: Workspace[] = [];
 
 // TODO: type properly once overview API response shape is formalized
 interface OverviewData {
@@ -147,7 +146,6 @@ function MarketViewInner() {
     const stored = loadPref<string>('mode', 'fast');
     return stored === 'ptc' ? 'ptc' : 'fast';
   });
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(
     () => loadPref<string | null>('selectedWorkspaceId', null),
   );
@@ -344,28 +342,48 @@ function MarketViewInner() {
     return chartSelections.some((s) => isConfirmedFor(s, sym, tf));
   }, [chartSelections, selectedStock, selectedInterval]);
 
-  // Fetch workspaces for the workspace selector (PTC mode)
+  // Workspaces for the selector (PTC mode). The shared query, not a local
+  // fetch — a rename elsewhere invalidates this key, and a copy in local state
+  // would keep showing the old name until the page remounts. The list is
+  // already PTC-only: this key carries includeFlash=false, and the server
+  // filters flash rows out of that response.
+  // refetchOnMount 'always': the reconcile below only accepts a fetch that
+  // happened during this mount, and the 30s staleTime would otherwise serve a
+  // remount from cache with no request at all, so the check would never run.
+  const { data: workspacesData, isFetchedAfterMount, isSuccess } = useWorkspaces({
+    limit: 50,
+    refetchOnMount: 'always',
+  });
+  const workspaces = workspacesData?.workspaces ?? EMPTY_WORKSPACES;
+
+  // Reconcile the restored selection against the list, once per mount. If the
+  // selected workspace is gone (deleted between visits), drop back to a clean
+  // default state — Flash mode + new chat — instead of silently picking a
+  // different PTC workspace the user didn't ask for. Resolve both decisions
+  // before calling either setter so neither updater runs a side effect on the
+  // other piece of state.
+  //
+  // Gated on a successful fetch that happened during this mount, not merely on
+  // data being present: the query has a 30s staleTime, so a remount inside
+  // that window is served from cache synchronously and a workspace deleted
+  // elsewhere is still in that copy. `isFetchedAfterMount` also flips on an
+  // error update, hence `isSuccess` — a failed list load must not read as
+  // "your workspace is gone" and clear the selection.
+  //
+  // Once per mount, deliberately. Absence from this list does not mean
+  // deleted: it is one page of 50 ordered by recency, so an idle selection
+  // falls off it on its own as other workspaces get activity. Re-running on
+  // every refetch would clear the selection mid-session on a window focus, and
+  // MarketChatPanel reads a workspace change as a scope change the user made
+  // and discards the open thread.
+  const reconciledRef = useRef(false);
   useEffect(() => {
-    let cancelled = false;
-    getWorkspaces(50, 0)
-      .then((data: Record<string, unknown>) => {
-        if (cancelled) return;
-        const list = ((data.workspaces || []) as Workspace[]).filter((ws) => ws.status !== 'flash');
-        setWorkspaces(list);
-        // Reconcile selectedWorkspaceId against the fresh list. If the stored
-        // id is gone (workspace deleted between visits), drop back to a clean
-        // default state — Flash mode + new chat — instead of silently picking
-        // a different PTC workspace the user didn't ask for. Resolve both
-        // decisions before calling either setter so neither updater runs
-        // a side effect on the other piece of state.
-        const storedId = loadPref<string | null>('selectedWorkspaceId', null);
-        const stillValid = storedId && list.some((ws) => ws.workspace_id === storedId);
-        if (storedId && !stillValid) setMode('fast');
-        if (!stillValid) setSelectedWorkspaceId(list[0]?.workspace_id ?? null);
-      })
-      .catch(() => { });
-    return () => { cancelled = true; };
-  }, []);
+    if (reconciledRef.current || !isFetchedAfterMount || !isSuccess) return;
+    reconciledRef.current = true;
+    if (selectedWorkspaceId && workspaces.some((ws) => ws.workspace_id === selectedWorkspaceId)) return;
+    if (selectedWorkspaceId) setMode('fast');
+    setSelectedWorkspaceId(workspaces[0]?.workspace_id ?? null);
+  }, [isFetchedAfterMount, isSuccess, workspaces, selectedWorkspaceId]);
 
   const handleCaptureChart = useCallback(async () => {
     if (!chartRef.current) return;
@@ -641,7 +659,7 @@ function MarketViewInner() {
               isLoading={isLoading}
               mode={mode}
               onModeChange={setMode as any}
-              workspaces={workspaces as any}
+              workspaces={workspaces}
               selectedWorkspaceId={selectedWorkspaceId}
               onWorkspaceChange={setSelectedWorkspaceId}
               onCaptureChart={handleCaptureChartForContext}

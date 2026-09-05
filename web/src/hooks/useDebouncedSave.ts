@@ -35,8 +35,11 @@ export function useDebouncedSave(
       clearTimeout(savedTimerRef.current);
       savedTimerRef.current = null;
     }
-    if (!mountedRef.current) { runningRef.current = false; pendingRef.current = false; return; }
-    setStatus('saving');
+    // The save itself must outlive unmount. `flush()` from a cleanup is the last
+    // chance to persist a pending edit, and React clears `mountedRef` first —
+    // this hook's own cleanup is registered before the caller's. Only the status
+    // updates are gated on still being mounted.
+    if (mountedRef.current) setStatus('saving');
     try {
       await saveFnRef.current();
       if (!mountedRef.current) return;

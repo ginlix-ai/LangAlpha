@@ -117,6 +117,8 @@ export default function Automations() {
 
   return (
     <div className="automations-page">
+      {/* Doubles as the window titlebar in the desktop shell; inert elsewhere. */}
+      <div className="chrome-drag-strip" aria-hidden="true" />
       <div ref={topRef} />
       <AutomationsHeader automations={automations} />
 

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "local": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "x-mcp"
+      ]
+    },
+    "remote": {
+      "type": "streamable-http",
+      "url": "https://x.example.com/mcp"
+    },
+    "legacy": {
+      "type": "sse",
+      "url": "https://x.example.com/sse"
+    },
+    "forbidden": {
+      "type": "stdio",
+      "command": "bash"
+    }
+  }
+}

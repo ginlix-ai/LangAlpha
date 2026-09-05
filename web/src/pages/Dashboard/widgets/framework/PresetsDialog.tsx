@@ -30,26 +30,26 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
         <DialogHeader className="flex flex-row items-start justify-between gap-4">
           <div>
             <div
-              className="text-[11px] font-semibold uppercase tracking-[0.08em] mb-1.5"
+              className="text-[0.6875rem] font-semibold uppercase tracking-[0.08em] mb-1.5"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               {t('dashboard.widgets.presetsDialog.eyebrow')}
             </div>
             <DialogTitle
-              className="text-[28px] leading-tight tracking-tight"
+              className="text-[1.75rem] leading-tight tracking-tight"
               style={{ color: 'var(--color-text-primary)', fontWeight: 600 }}
             >
               {t('dashboard.widgets.presetsDialog.title')}
             </DialogTitle>
             <DialogDescription
-              className="mt-2 text-[13px] max-w-[64ch]"
+              className="mt-2 text-[0.8125rem] max-w-[64ch]"
               style={{ color: 'var(--color-text-secondary)' }}
             >
               {t('dashboard.widgets.presetsDialog.description')}
             </DialogDescription>
           </div>
           <div
-            className="flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-full border flex-shrink-0"
+            className="flex items-center gap-1.5 text-[0.6875rem] px-2 py-1 rounded-full border flex-shrink-0"
             style={{
               backgroundColor: 'var(--color-accent-soft)',
               borderColor: 'var(--color-accent-primary)',
@@ -87,11 +87,11 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
               >
                 {preset.popular && (
                   <span
-                    className="absolute top-3 right-3 text-[10px] px-2 py-0.5 rounded-full border flex items-center gap-1"
+                    className="absolute top-3 right-3 text-[0.625rem] px-2 py-0.5 rounded-full border flex items-center gap-1"
                     style={{
-                      backgroundColor: '#F3E6CA',
-                      color: '#9A6A1E',
-                      borderColor: '#E0CC9B',
+                      backgroundColor: 'var(--color-bg-tag)',
+                      color: 'var(--color-text-secondary)',
+                      borderColor: 'var(--color-border-muted)',
                     }}
                   >
                     <Star size={9} fill="currentColor" /> {t('dashboard.widgets.presetsDialog.popularBadge')}
@@ -101,13 +101,13 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <span
-                        className="text-[22px] leading-tight"
+                        className="text-[1.375rem] leading-tight"
                         style={{ color: 'var(--color-text-primary)', fontWeight: 600 }}
                       >
                         {t(preset.nameKey)}
                       </span>
                       <span
-                        className="text-[10px] px-2 py-0.5 rounded-full border"
+                        className="text-[0.625rem] px-2 py-0.5 rounded-full border"
                         style={{
                           backgroundColor: 'var(--color-bg-subtle)',
                           borderColor: 'var(--color-border-muted)',
@@ -118,7 +118,7 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
                       </span>
                     </div>
                     <p
-                      className="text-[12.5px] leading-relaxed"
+                      className="text-[0.7813rem] leading-relaxed"
                       style={{ color: 'var(--color-text-secondary)' }}
                     >
                       {t(preset.descriptionKey)}
@@ -138,7 +138,7 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
                   {preset.pillKeys.map((key) => (
                     <span
                       key={key}
-                      className="text-[10px] px-2 py-0.5 rounded-full border"
+                      className="text-[0.625rem] px-2 py-0.5 rounded-full border"
                       style={{
                         backgroundColor: 'var(--color-bg-subtle)',
                         borderColor: 'var(--color-border-muted)',
@@ -149,7 +149,7 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
                     </span>
                   ))}
                 </div>
-                <div className="mt-3 flex items-center justify-between text-[11.5px]">
+                <div className="mt-3 flex items-center justify-between text-[0.7188rem]">
                   <span style={{ color: 'var(--color-text-tertiary)' }}>
                     {t('dashboard.widgets.presetsDialog.bestWhen', {
                       bestFor: t(preset.bestForKey),
@@ -157,7 +157,7 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
                   </span>
                   <button
                     type="button"
-                    className="h-8 px-3 rounded-md text-[12px] whitespace-nowrap flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                    className="h-8 px-3 rounded-md text-[0.75rem] whitespace-nowrap flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
                     style={{
                       backgroundColor: 'var(--color-text-primary)',
                       color: 'var(--color-bg-card)',

@@ -30,7 +30,7 @@ def _make_completed_task(task_id: str = "abc123") -> BackgroundTask:
         subagent_type="general-purpose",
         agent_id="general-purpose",
     )
-    task.completed = True
+    task.terminal_status = "completed"
     task.result = {"messages": []}
     # Pretend the prior run captured events
     task.captured_event_seq = 7
@@ -53,6 +53,7 @@ async def test_reset_for_resume_deletes_stream_and_meta_keys():
     cache = MagicMock()
     cache.enabled = True
     cache.delete = AsyncMock()
+    cache.client.delete = AsyncMock()
 
     with patch(
         "src.utils.cache.redis_cache.get_cache_client",
@@ -62,10 +63,14 @@ async def test_reset_for_resume_deletes_stream_and_meta_keys():
 
     deleted_keys = [call.args[0] for call in cache.delete.await_args_list]
     assert "subagent:events:meta:thread-x:abc123" in deleted_keys
-    assert "subagent:stream:thread-x:abc123" in deleted_keys
     # Legacy List key gets a one-release backward-compat DEL so resumes that
     # cross a rolling deploy don't leave pre-cutover RPUSH state behind.
     assert "subagent:events:thread-x:abc123" in deleted_keys
+    # The stream goes through the RAW client: ``cache.delete`` reports a
+    # transport failure and an absent key identically, and only the former may
+    # block the epoch reset below.
+    stream_deletes = [call.args[0] for call in cache.client.delete.await_args_list]
+    assert stream_deletes == ["subagent:stream:thread-x:abc123"]
 
 
 @pytest.mark.asyncio
@@ -79,6 +84,7 @@ async def test_reset_for_resume_resets_seq_counters_after_redis_clear():
     cache = MagicMock()
     cache.enabled = True
     cache.delete = AsyncMock()
+    cache.client.delete = AsyncMock()
 
     with patch(
         "src.utils.cache.redis_cache.get_cache_client",
@@ -91,6 +97,9 @@ async def test_reset_for_resume_resets_seq_counters_after_redis_clear():
     assert task.captured_event_seq == 0
     assert task.captured_event_count == 0
     assert task.captured_event_bytes == 0
+    # A cleared spool has no prior round left to skip, so the round floor
+    # goes back to the start of the stream.
+    assert task.captured_event_seq_base == 0
     assert task.redis_write_failed is False
 
 
@@ -102,11 +111,12 @@ async def test_reset_for_resume_unseals_cancelled_task():
     registry = BackgroundTaskRegistry(thread_id="thread-x")
     middleware = BackgroundSubagentMiddleware(registry=registry, enabled=True)
     task = _make_completed_task()
-    task.cancelled = True
+    task.terminal_status = "cancelled"
 
     cache = MagicMock()
     cache.enabled = True
     cache.delete = AsyncMock()
+    cache.client.delete = AsyncMock()
 
     with patch(
         "src.utils.cache.redis_cache.get_cache_client",
@@ -134,6 +144,7 @@ async def test_reset_for_resume_nulls_writer_handles():
     cache = MagicMock()
     cache.enabled = True
     cache.delete = AsyncMock()
+    cache.client.delete = AsyncMock()
 
     with patch(
         "src.utils.cache.redis_cache.get_cache_client",
@@ -147,8 +158,8 @@ async def test_reset_for_resume_nulls_writer_handles():
 
 @pytest.mark.asyncio
 async def test_reset_for_resume_redis_failure_does_not_raise():
-    """Cache failure during cleanup must not crash the resume path —
-    the new run still proceeds; replay may include stale events."""
+    """Cache failure during cleanup must not crash the resume path — the new
+    run still proceeds."""
     registry = BackgroundTaskRegistry(thread_id="thread-x")
     middleware = BackgroundSubagentMiddleware(registry=registry, enabled=True)
     task = _make_completed_task()
@@ -156,6 +167,7 @@ async def test_reset_for_resume_redis_failure_does_not_raise():
     cache = MagicMock()
     cache.enabled = True
     cache.delete = AsyncMock(side_effect=RuntimeError("redis down"))
+    cache.client.delete = AsyncMock()
 
     with patch(
         "src.utils.cache.redis_cache.get_cache_client",
@@ -163,9 +175,51 @@ async def test_reset_for_resume_redis_failure_does_not_raise():
     ):
         await middleware._reset_task_for_resume(task)
 
-    # Counters still reset even though Redis cleanup failed
-    assert task.captured_event_seq == 0
     assert task.completed is False
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_stream_delete_keeps_the_current_epoch():
+    """An unclearable spool must NOT restart the sequence at 1.
+
+    Resetting on an unconfirmed delete is what leaves a prior epoch resident
+    under the ids the next writer claims: the fenced append then finds a tail
+    past its own id, cannot prove it owns the stream, and kills the run.
+    Keeping the counter makes the next write an ordinary append with no epoch
+    DEL to replay — and the retained round is fenced off by the seq base, not
+    by a carried-over count.
+    """
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    middleware = BackgroundSubagentMiddleware(registry=registry, enabled=True)
+    task = _make_completed_task()
+
+    cache = MagicMock()
+    cache.enabled = True
+    cache.delete = AsyncMock()
+    cache.client.delete = AsyncMock(side_effect=RuntimeError("redis down"))
+
+    with patch(
+        "src.utils.cache.redis_cache.get_cache_client",
+        return_value=cache,
+    ):
+        await middleware._reset_task_for_resume(task)
+
+    # The resume still proceeds — only the epoch restart is withheld.
+    assert task.completed is False
+    assert task.redis_write_failed is False
+    assert task.captured_event_seq == 7
+    # The prior round stays on the stream, so the new round starts above it.
+    assert task.captured_event_seq_base == 7
+    # ...but the per-round totals still zero: they are what the archive
+    # completeness gates weigh against THIS round's recovered records, and a
+    # carried-over count is what withholds a resumed round's whole archive.
+    assert task.captured_event_count == 0
+    assert task.captured_event_bytes == 0
+    # The best-effort keys are still cleared: they precede the stream delete
+    # precisely so its failure cannot skip them.
+    deleted_keys = [call.args[0] for call in cache.delete.await_args_list]
+    assert "subagent:events:meta:thread-x:abc123" in deleted_keys
+    assert "subagent:events:thread-x:abc123" in deleted_keys
 
 
 @pytest.mark.asyncio
@@ -179,6 +233,7 @@ async def test_reset_for_resume_skips_redis_when_no_thread_id():
     cache = MagicMock()
     cache.enabled = True
     cache.delete = AsyncMock()
+    cache.client.delete = AsyncMock()
 
     with patch(
         "src.utils.cache.redis_cache.get_cache_client",

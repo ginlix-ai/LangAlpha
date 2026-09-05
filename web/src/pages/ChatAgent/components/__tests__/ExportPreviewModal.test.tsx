@@ -15,9 +15,24 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
-vi.mock('react-to-print', () => ({
-  useReactToPrint: () => vi.fn(),
+// Hoisted, so the same handle the component calls is the one the assertions
+// read: `vi.mock` factories run before any module-level `const` in this file.
+const { printMock, renderToPdfMock, printOptions } = vi.hoisted(() => ({
+  printMock: vi.fn(),
+  // The options react-to-print was configured with, so the browser path's own
+  // filename is observable: the hook is mocked, so nothing else can see them.
+  printOptions: { current: null as { documentTitle?: string } | null },
+  renderToPdfMock: vi.fn(),
 }));
+
+vi.mock('react-to-print', () => ({
+  useReactToPrint: (options: { documentTitle?: string }) => {
+    printOptions.current = options;
+    return printMock;
+  },
+}));
+
+vi.mock('@/lib/shellPdf', () => ({ renderToPdf: renderToPdfMock }));
 
 // Render Dialog inline (no portal) so Testing Library can find its children.
 vi.mock('@/components/ui/dialog', () => ({
@@ -360,5 +375,79 @@ describe('ExportPreviewModal', () => {
     expect(presetSelect).toHaveValue('');
     // The "Custom" option text
     expect(screen.getByText('filePanel.custom')).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — the shell save path
+// ---------------------------------------------------------------------------
+
+// Four answers from the shell and only one of them means "print in the browser
+// instead". The rule is documented at both call sites and was pinned at
+// neither: narrowing the guard so a dismissed save dialog counts as a failure
+// reopens a dialog the user just closed, which is the one response that reads
+// as the app not listening.
+describe('ExportPreviewModal — save', () => {
+  const saveButton = () =>
+    screen.getByText('filePanel.saveAsPdf').closest('button') as HTMLButtonElement;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    renderToPdfMock.mockResolvedValue({ saved: true });
+  });
+
+  const outcomes: Array<[string, unknown, boolean]> = [
+    ['saved', { saved: true }, false],
+    ['canceled', { canceled: true }, false],
+    ['error', { error: 'no printer' }, true],
+    ['no shell at all (null)', null, true],
+  ];
+
+  for (const [label, answer, fallsBack] of outcomes) {
+    it(`${fallsBack ? 'falls back to browser print' : 'stays put'} on ${label}`, async () => {
+      renderToPdfMock.mockResolvedValue(answer);
+      renderModal();
+
+      fireEvent.click(saveButton());
+
+      await waitFor(() => expect(renderToPdfMock).toHaveBeenCalledTimes(1));
+      expect(renderToPdfMock).toHaveBeenCalledWith(expect.any(Function), 'report');
+      await waitFor(() => expect(printMock).toHaveBeenCalledTimes(fallsBack ? 1 : 0));
+    });
+  }
+
+  it('suggests a filename, not the workspace path it was handed', async () => {
+    // FilePanel passes the selected path as `fileName`, and the shell flattens a
+    // separator rather than reading a path out of a name: unstripped, the save
+    // dialog opened on `results-q3.md.pdf`. The served export already takes the
+    // basename and drops the extension, and this is the same answer.
+    renderToPdfMock.mockResolvedValue({ saved: true });
+    renderModal({ fileName: 'results/q3 report.md' });
+
+    fireEvent.click(saveButton());
+
+    await waitFor(() =>
+      expect(renderToPdfMock).toHaveBeenCalledWith(expect.any(Function), 'q3 report'),
+    );
+    // And the same name on the browser path, which takes it from `document.title`
+    // and so saved every report as the app's own name until this was passed.
+    expect(printOptions.current?.documentTitle).toBe('q3 report');
+  });
+
+  it('reports the wait on the button, because cloning a long report freezes the tab', async () => {
+    let release: (v: unknown) => void = () => {};
+    renderToPdfMock.mockReturnValue(new Promise((r) => { release = r; }));
+    renderModal();
+
+    fireEvent.click(saveButton());
+
+    // Without this the control stays live throughout and a second click is
+    // swallowed by the re-entry guard, which shows nothing: the button reads as
+    // dead rather than as busy.
+    await waitFor(() => expect(screen.getByText('filePanel.pdfGenerating')).toBeInTheDocument());
+    expect(screen.getByText('filePanel.pdfGenerating').closest('button')).toBeDisabled();
+
+    release({ saved: true });
+    await waitFor(() => expect(saveButton()).not.toBeDisabled());
   });
 });

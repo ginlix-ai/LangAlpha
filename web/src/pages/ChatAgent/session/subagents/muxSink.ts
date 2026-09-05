@@ -5,9 +5,15 @@
  * and never via a sweep over siblings.
  */
 
-import type { AssistantMessage, SubagentTask } from '@/types/chat';
+import type { AssistantMessage } from '@/types/chat';
 import { getThreadMux, type ThreadMuxSink } from '../stream/threadStreamMux';
-import { isTerminalStatus, normalizeWireStatus } from './subagentStatus';
+import {
+  isTerminalStatus,
+  normalizeWireStatus,
+  type SubagentTerminalStatus,
+} from './subagentStatus';
+import { settleWorkflowRunFromClosure } from './liveEventHandlers';
+import { isTaskAgentId, taskIdFromAgentId } from '../../utils/agentId';
 import type { SSEEvent } from '../types';
 import type { SubagentRuntime } from '../runtime';
 
@@ -21,7 +27,7 @@ export function getTaskIdFromEvent(event: SSEEvent): string | null {
   // e.g., agent = "task:pkyRHQ" → taskId = "task:pkyRHQ"
   // This is the agent_id used as key throughout the frontend.
   const agent = event?.agent;
-  if (!agent || typeof agent !== 'string' || !agent.startsWith('task:')) {
+  if (!isTaskAgentId(agent)) {
     if (import.meta.env.DEV) {
       console.warn('[Stream] Subagent event without task: agent field:', event);
     }
@@ -53,7 +59,7 @@ export function createSubagentMuxController(rt: SubagentRuntime, deps: SubagentM
    * keeps an earlier cancelled/error stamp from being painted over. */
   const setInlineSubagentTaskStatus = (
     agentId: string,
-    status: SubagentTask['status'],
+    status: SubagentTerminalStatus,
   ) => {
     rt.setMessages((prev) => {
       let anyChanged = false;
@@ -106,7 +112,7 @@ export function createSubagentMuxController(rt: SubagentRuntime, deps: SubagentM
       // transcript. Live (non-drain) frames always flow.
       if (ev._drain === true) {
         const agentId = typeof ev.agent === 'string' ? ev.agent : '';
-        const shortId = agentId.startsWith('task:') ? agentId.slice(5) : '';
+        const shortId = taskIdFromAgentId(agentId) ?? '';
         const hist = rt.subagentHistoryRef.current?.[agentId];
         if (isSettledTask(shortId)) {
           return;
@@ -141,6 +147,16 @@ export function createSubagentMuxController(rt: SubagentRuntime, deps: SubagentM
       if (rt.updateSubagentCard) {
         rt.updateSubagentCard(`task:${shortTaskId}`, { status, isActive: false });
       }
+      // A workflow run reads its own lifecycle state ahead of the card status,
+      // so the stamp above is invisible to it. When the lane closed without a
+      // terminal lifecycle frame — the driver died with its worker — settle it
+      // from the ledger outcome the closure carried.
+      settleWorkflowRunFromClosure({
+        taskId: `task:${shortTaskId}`,
+        outcome,
+        subagentStateRefs: rt.subagentStateRefsRef.current,
+        updateSubagentCard: rt.updateSubagentCard,
+      });
       // Flip ONLY the just-closed task's inline chips, with its real outcome.
       // Positive closure per task — never a sweep over siblings: a sibling
       // with no open channel is not terminal (its chan_open may simply not

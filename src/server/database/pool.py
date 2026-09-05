@@ -8,8 +8,10 @@ Every app-data module reaches Postgres through ``get_db_connection``.
 import logging
 from contextlib import asynccontextmanager
 
+import anyio
 from psycopg_pool import AsyncConnectionPool
 
+from src.config.env import DB_SSLMODE
 from src.config.settings import get_conversation_pool_max
 
 logger = logging.getLogger(__name__)
@@ -17,6 +19,22 @@ logger = logging.getLogger(__name__)
 # Module-level connection pool cache for conversation database operations
 # This ensures we reuse connections across operations, reducing connection overhead
 _conversation_db_pool_cache = {}
+
+# Warn once per process, not once per connection — plaintext is the norm for a
+# local Postgres and a per-connection warning would drown the log.
+_warned_plaintext = False
+
+
+def _warn_if_plaintext(conn) -> None:
+    """Surface an unencrypted session so `prefer` can't downgrade silently."""
+    global _warned_plaintext
+    if _warned_plaintext or DB_SSLMODE != "prefer" or conn.pgconn.ssl_in_use:
+        return
+    _warned_plaintext = True
+    logger.warning(
+        "Postgres session is unencrypted — the server did not offer TLS "
+        "(DB_SSLMODE=prefer). Set DB_SSLMODE=require to fail closed instead."
+    )
 
 
 def get_db_connection_string() -> str:
@@ -32,6 +50,7 @@ def get_db_connection_string() -> str:
         DB_NAME: Database name (default: postgres)
         DB_USER: Database user (default: postgres)
         DB_PASSWORD: Database password (default: postgres)
+        DB_SSLMODE: TLS mode (default: prefer)
     """
     import os
 
@@ -43,8 +62,7 @@ def get_db_connection_string() -> str:
     db_user = os.getenv("DB_USER", "postgres")
     db_password = os.getenv("DB_PASSWORD", "postgres")
 
-    sslmode = "require" if "supabase.com" in db_host else "disable"
-    return f"postgresql://{quote_plus(db_user)}:{quote_plus(db_password)}@{db_host}:{db_port}/{db_name}?sslmode={sslmode}"
+    return f"postgresql://{quote_plus(db_user)}:{quote_plus(db_password)}@{db_host}:{db_port}/{db_name}?sslmode={DB_SSLMODE}"
 
 
 def _on_reconnect_failed(pool):
@@ -64,6 +82,7 @@ async def _configure_postgres_connection(conn):
     """
     conn.prepare_threshold = 0  # Disable prepared statements
     await conn.set_autocommit(True)  # Set autocommit at creation
+    _warn_if_plaintext(conn)
     logger.debug(
         "Configured conversation DB connection with prepare_threshold=0, autocommit=True"
     )
@@ -108,7 +127,7 @@ def get_or_create_pool() -> AsyncConnectionPool:
 
 
 @asynccontextmanager
-async def get_db_connection():
+async def get_db_connection(conn=None):
     """
     Shared database connection context manager using connection pooling.
 
@@ -116,6 +135,12 @@ async def get_db_connection():
     - Uses connection pool for efficient connection reuse
     - Prepared statements disabled (prepare_threshold=0)
     - Autocommit mode enabled (configured at pool creation)
+
+    Pass an already-acquired ``conn`` to yield it unchanged instead of checking
+    out a second pool slot — that is how a write joins a caller's transaction,
+    and how statements stay on an advisory-lock holder's session (a nested
+    fresh acquire would tie up two slots per caller and can stall on pool
+    timeout under load).
 
     IMPORTANT:
     - Pool must be opened during server startup (in app.py lifespan)
@@ -125,6 +150,10 @@ async def get_db_connection():
                 await cur.execute("SELECT * FROM table")
     - Do NOT modify connection after acquisition - causes pool to discard it.
     """
+    if conn is not None:
+        yield conn
+        return
+
     pool = get_or_create_pool()
 
     # Pool should already be open from startup
@@ -140,10 +169,12 @@ async def get_db_connection():
         try:
             yield conn
         finally:
-            # Ensure connection is in proper state before returning to pool
-            # This prevents "closing returned connection: ACTIVE/INTRANS" warnings
-            # when CancelledError or other exceptions interrupt async context cleanup
+            # Reached when CancelledError or another exception interrupts async
+            # context cleanup: bring the connection back to a state the pool can
+            # reuse, or failing that stop the server working for a caller that
+            # is already gone.
             import psycopg.pq
+            from psycopg import capabilities
 
             status = conn.info.transaction_status
             if status != psycopg.pq.TransactionStatus.IDLE:
@@ -154,19 +185,35 @@ async def get_db_connection():
                 )
                 try:
                     if status == psycopg.pq.TransactionStatus.ACTIVE:
-                        # Query in progress - cancel it to prevent pool warnings
-                        # ACTIVE means a query is executing but hasn't completed
-                        logger.debug(
-                            "Connection in ACTIVE state, cancelling pending query"
-                        )
-                        # Cancel the query on the server side
-                        await conn.cancel()
-                        # Give the cancellation a moment to process
-                        import asyncio
-
-                        await asyncio.sleep(0.01)
-                        # Now rollback to clean state
-                        await conn.rollback()
+                        # The query is still on the wire with its result
+                        # unconsumed, so nothing can be sent on this connection
+                        # from here - the pool closes and replaces ACTIVE
+                        # connections. All that is left worth doing is telling
+                        # the server to stop working for a caller that is gone.
+                        #
+                        # Shielded because an anyio parent scope (every SSE
+                        # response body runs in one) re-delivers the caller's
+                        # cancellation at every await, which would kill this at
+                        # its first one - and CancelledError is not an
+                        # Exception, so the handler below would never see it.
+                        #
+                        # Only cancel_safe on libpq 17+ honours its timeout;
+                        # older builds fall back to a blocking PQcancel with no
+                        # deadline, which must never run inside a shield. That
+                        # timeout is the only bound here - any await added to
+                        # this branch needs one of its own.
+                        if capabilities.has_cancel_safe():
+                            logger.debug(
+                                "Connection in ACTIVE state, cancelling pending query "
+                                "and returning it to the pool for replacement"
+                            )
+                            with anyio.CancelScope(shield=True):
+                                await conn.cancel_safe(timeout=2.0)
+                        else:
+                            logger.debug(
+                                "Connection in ACTIVE state, returning it to the pool "
+                                "for replacement (libpq too old for a bounded cancel)"
+                            )
                     elif status in (
                         psycopg.pq.TransactionStatus.INTRANS,
                         psycopg.pq.TransactionStatus.INERROR,
@@ -175,14 +222,14 @@ async def get_db_connection():
                         logger.debug(f"Connection in {status.name} state, rolling back")
                         await conn.rollback()
 
-                    # Verify we're now idle
-                    final_status = conn.info.transaction_status
-                    if final_status == psycopg.pq.TransactionStatus.IDLE:
-                        logger.debug("Connection successfully reset to IDLE state")
-                    else:
-                        logger.warning(
-                            f"Connection still not IDLE after cleanup (status: {final_status.name})"
-                        )
+                        final_status = conn.info.transaction_status
+                        if final_status == psycopg.pq.TransactionStatus.IDLE:
+                            logger.debug("Connection successfully reset to IDLE state")
+                        else:
+                            logger.warning(
+                                f"Connection still not IDLE after rollback "
+                                f"(status: {final_status.name})"
+                            )
                 except Exception as cleanup_error:
                     logger.error(
                         f"Error during connection state cleanup: {cleanup_error}",

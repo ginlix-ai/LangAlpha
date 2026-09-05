@@ -176,6 +176,9 @@ _UPSTREAM_MODULE_PREFIXES: tuple[str, ...] = (
     "google.generativeai",
     "cohere",
     "httpx",
+    # Our own wrappers around a provider stream. They quote the provider and
+    # are raised fresh rather than chained, so nothing below would match them.
+    "src.llms.extension",
     # LangChain wrappers — their exceptions may not chain through the raw SDK
     # when the wrapper normalizes errors, so match them directly.
     "langchain_openai",
@@ -576,7 +579,7 @@ class RunSSEProducer:
                             "warning",
                             {
                                 "thread_id": self.thread_id,
-                                "message": f"Workflow approaching timeout ({int(elapsed_time)}s / {self.workflow_timeout}s)",
+                                "message": f"Turn approaching timeout ({int(elapsed_time)}s / {self.workflow_timeout}s)",
                                 "type": "timeout_warning",
                                 "elapsed_seconds": int(elapsed_time),
                                 "timeout_seconds": self.workflow_timeout,
@@ -594,7 +597,7 @@ class RunSSEProducer:
                             "error",
                             {
                                 "thread_id": self.thread_id,
-                                "error": f"Workflow timeout after {int(elapsed_time)} seconds",
+                                "error": f"Turn timed out after {int(elapsed_time)} seconds",
                                 "type": "timeout_error",
                                 "elapsed_seconds": int(elapsed_time),
                                 "timeout_seconds": self.workflow_timeout,
@@ -953,22 +956,17 @@ class RunSSEProducer:
             try:
                 from src.server.services.persistence.usage import UsagePersistenceService
 
-                # Get token tracking from callback (already stored in self.token_callback)
+                # Snapshot under the tracker's lock: background subagent writers
+                # can still be appending records as the turn winds down.
                 per_call_records = None
                 if self.token_callback:
-                    per_call_records = self.token_callback.per_call_records
+                    per_call_records = self.token_callback.get_per_call_records()
 
                 # Get tool usage (non-destructive read, can be called multiple times)
                 tool_usage = self.get_tool_usage()
 
                 # Calculate credits if we have usage data
                 if per_call_records or tool_usage:
-                    # Calculate token usage for display
-                    token_usage = {}
-                    if per_call_records:
-                        from src.utils.tracking import calculate_cost_from_per_call_records
-                        token_usage = calculate_cost_from_per_call_records(per_call_records)
-
                     # Calculate total credits using same logic as persistence
                     credit_service = UsagePersistenceService(
                         thread_id=self.thread_id,
@@ -976,8 +974,12 @@ class RunSSEProducer:
                         user_id="temp"
                     )
 
+                    # One pricing pass, reused for the display payload. The
+                    # authoritative pass runs again at finalize (coordinator's
+                    # usage writer) against whatever records exist by then.
+                    token_usage = {}
                     if per_call_records:
-                        await credit_service.track_llm_usage(per_call_records)
+                        token_usage = await credit_service.track_llm_usage(per_call_records)
 
                     if tool_usage:
                         credit_service.record_tool_usage_batch(tool_usage)
@@ -1084,8 +1086,8 @@ class RunSSEProducer:
             )
             return False
 
-    def _derive_interrupt_reason(self) -> str:
-        """Classify the buffered interrupt: user question vs plan review."""
+    def _derive_interrupt_reason(self) -> Optional[str]:
+        """Classify the buffered interrupt into the ledger's reason column."""
         from src.server.contracts.status import classify_interrupt_reason
 
         return classify_interrupt_reason(
@@ -1538,18 +1540,18 @@ class RunSSEProducer:
                     raw_args = state["args_accumulated"]
                     parsed_args, err_repr, err_window = _parse_tool_args(raw_args)
 
-                    if parsed_args is None:
+                    args_parse_error = parsed_args is None
+                    if args_parse_error:
                         logger.error(
                             f"[TOOL_CALL_PARSE_ERROR] agent={agent_name} provider={provider_type} "
                             f"name={state.get('name')} args_length={len(raw_args)} "
                             f"error={err_repr} window={err_window!r}"
                         )
-                        # Clear state so the broken call doesn't leak across turns.
-                        if provider_type == "response_api":
-                            self.function_call_state.pop(state_key, None)
-                        else:  # anthropic
-                            self.anthropic_tool_call_state.pop(state_key, None)
-                        continue
+                        # The graph parses args independently and may still run this
+                        # call — dropping the event leaves the stream without a card
+                        # for a call whose tool_call_result arrives later. Emit with
+                        # empty args so the call stays addressable by id.
+                        parsed_args = {}
 
                     try:
                         # id field differs by provider: "call_id" for Response API, "id" for Anthropic.
@@ -1569,6 +1571,8 @@ class RunSSEProducer:
                             "tool_calls": tool_calls,
                             "finish_reason": finish_reason,
                         }
+                        if args_parse_error:
+                            tool_calls_message["args_parse_error"] = True
 
                         logger.debug(
                             f"[TOOL_CALLS_COMPLETE] agent={agent_name} provider={provider_type} "

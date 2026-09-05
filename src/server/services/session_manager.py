@@ -11,6 +11,9 @@ from typing import Optional
 from ptc_agent.config import AgentConfig
 from ptc_agent.core.session import Session, SessionManager
 
+from src.server.database.workspace import get_workspace as db_get_workspace
+from src.server.services.user_skills import sandbox_skill_sync_params
+
 logger = logging.getLogger(__name__)
 
 
@@ -159,9 +162,20 @@ class SessionService:
                 )
                 reusing_sandbox = sandbox_id is not None
                 try:
+                    # This path has no caller user in scope (the graph's
+                    # session provider passes only the workspace id), so the
+                    # user-skill tier keys off the workspace owner.
+                    workspace = await db_get_workspace(workspace_id)
+                    owner_id = workspace.get("user_id") if workspace else None
+                    user_skill_params = await sandbox_skill_sync_params(
+                        owner_id,
+                        self.config.skills.sandbox_skills_base,
+                        workspace_id=workspace_id,
+                    )
                     result = await session.sandbox.sync_sandbox_assets(
                         skill_dirs=skill_dirs,
                         reusing_sandbox=reusing_sandbox,
+                        **user_skill_params,
                     )
                     if result.refreshed_modules:
                         logger.info(

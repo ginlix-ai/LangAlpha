@@ -25,6 +25,7 @@ import { provenanceDisplayKey, countDedupedSources, type ProvenanceRecord } from
 import type { ProvenanceSourceType } from '@/types/sse';
 import { AnimatedTabs } from '@/components/ui/animated-tabs';
 import { workspaceRelativePath } from '@/pages/ChatAgent/utils/agentPaths';
+import { isTaskAgentId } from '@/pages/ChatAgent/utils/agentId';
 import { Favicon } from './Favicon';
 import './SourcesPanel.css';
 
@@ -62,7 +63,7 @@ const CARD_CHROME =
   'flex items-center gap-2.5 rounded-lg border px-2.5 text-left outline-none cursor-pointer ' +
   'border-[var(--color-border-muted)] bg-[var(--color-bg-card)] ' +
   'hover:border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] ' +
-  'focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]';
+  'focus-visible:ring-2 focus-visible:ring-ring';
 
 const TERTIARY = { color: 'var(--color-text-tertiary)' as const };
 
@@ -152,11 +153,6 @@ function formatTimestamp(ts?: string): string {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return ts;
   return d.toLocaleString();
-}
-
-/** `task:<id>` agent attribution → true. */
-function isSubagentRecord(agent?: string): boolean {
-  return typeof agent === 'string' && agent.startsWith('task:');
 }
 
 /** "mcp_tool" → "Mcp Tool": humanize an unmapped enum for the i18n fallback. */
@@ -449,7 +445,7 @@ export default function SourcesPanel({
                 onClick={() => toggleGroup(group.type)}
                 aria-expanded={!collapsed}
                 aria-label={`${groupLabel} — ${t(collapsed ? 'chat.sources.expand' : 'chat.sources.collapse')}`}
-                className="mb-1.5 flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left outline-none transition-colors hover:bg-[var(--color-bg-subtle)] focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                className="mb-1.5 flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left outline-none transition-colors hover:bg-[var(--color-bg-subtle)] focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {collapsed ? (
                   <ChevronRight className="h-3.5 w-3.5 flex-shrink-0" style={TERTIARY} />
@@ -464,7 +460,7 @@ export default function SourcesPanel({
                 </span>
                 <span
                   data-testid={`group-count-${group.type}`}
-                  className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium"
+                  className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium"
                   style={{ backgroundColor: 'var(--color-border-muted)', color: 'var(--color-text-tertiary)' }}
                 >
                   {group.rows.length}
@@ -528,7 +524,7 @@ function SourceCardBody({
       </span>
       {subagent && (
         <span
-          className="inline-flex flex-shrink-0 items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium"
+          className="inline-flex flex-shrink-0 items-center rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium"
           style={{ backgroundColor: 'var(--color-accent-soft)', color: 'var(--color-accent-primary)' }}
         >
           {t('chat.sources.subagent')}
@@ -603,7 +599,7 @@ function SourceRow({
           record={record}
           title={title}
           subtitle={subtitle}
-          subagent={isSubagentRecord(record.agent)}
+          subagent={isTaskAgentId(record.agent)}
           trailing={<ViewChevron />}
         />
       </button>
@@ -770,7 +766,7 @@ function SourceDeck({
           !fanned && isTop ? (
             <span className="inline-flex flex-shrink-0 items-center gap-1">
               <span
-                className="inline-flex items-center justify-center rounded-full px-1 text-[10px] font-medium"
+                className="inline-flex items-center justify-center rounded-full px-1 text-[0.625rem] font-medium"
                 style={{
                   minWidth: 16,
                   height: 16,
@@ -818,7 +814,7 @@ function SourceDeck({
                 record={r}
                 title={collapsedFront ? frontLabel : cardTitle}
                 subtitle={subtitle}
-                subagent={isSubagentRecord(r.agent)}
+                subagent={isTaskAgentId(r.agent)}
                 trailing={trailing}
               />
             )}
@@ -835,7 +831,7 @@ function SectionLabel({ children }: { children: React.ReactNode }): React.ReactE
   return (
     <div className="mb-2 flex items-center gap-2.5">
       <span
-        className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.12em]"
+        className="whitespace-nowrap text-[0.625rem] font-semibold uppercase tracking-[0.12em]"
         style={TERTIARY}
       >
         {children}
@@ -910,14 +906,14 @@ function SourceDetailDialog({
             <div className="flex min-w-0 flex-1 flex-col gap-1">
               <div className="flex items-center gap-2">
                 <span
-                  className="truncate text-[10px] font-semibold uppercase tracking-[0.12em]"
+                  className="truncate text-[0.625rem] font-semibold uppercase tracking-[0.12em]"
                   style={TERTIARY}
                 >
                   {typeLabel}
                 </span>
-                {record && isSubagentRecord(record.agent) && (
+                {record && isTaskAgentId(record.agent) && (
                   <span
-                    className="inline-flex flex-shrink-0 items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium"
+                    className="inline-flex flex-shrink-0 items-center rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium"
                     style={{ backgroundColor: 'var(--color-accent-soft)', color: 'var(--color-accent-primary)' }}
                   >
                     {t('chat.sources.subagent')}
@@ -943,11 +939,11 @@ function SourceDetailDialog({
           <button
             type="button"
             onClick={handleOpen}
-            className="group inline-flex w-fit items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium outline-none transition-all hover:gap-2 focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="group inline-flex w-fit items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium outline-none transition-all hover:gap-2 focus-visible:ring-2 focus-visible:ring-ring"
             style={{
-              backgroundColor: 'var(--color-accent-soft)',
-              borderColor: 'var(--color-accent-soft)',
-              color: 'var(--color-accent-primary)',
+              backgroundColor: 'var(--color-bg-elevated)',
+              borderColor: 'var(--color-border-elevated)',
+              color: 'var(--color-text-primary)',
             }}
           >
             {canOpenLink ? <ExternalLink className="h-3.5 w-3.5" /> : <FileText className="h-3.5 w-3.5" />}

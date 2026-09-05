@@ -10,6 +10,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Query
 
 from src.config.env import PDF_RENDER_INTERNAL_BASE
+from src.server.utils.error_sanitization import single_line
 from src.server.utils.http_headers import content_disposition
 from fastapi.responses import Response
 
@@ -20,7 +21,6 @@ from src.server.utils.secret_redactor import get_redactor, get_vault_secrets_for
 from src.utils.mime import resolve_content_type
 
 from ._shared import (
-    _acquire_sandbox,
     _is_text_content_type,
     _is_utf8,
     _get_work_dir,
@@ -40,8 +40,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 #
 # Gives `.html` deliverables true served semantics: a document served at
-# `/wsfiles/{ws}/results/report.html` can reference `charts/foo.png` and the
-# browser resolves it relatively to `/wsfiles/{ws}/results/charts/foo.png`.
+# `/wsfiles/{ws}/work/task/report.html` can reference `charts/foo.png` and the
+# browser resolves it relatively to `/wsfiles/{ws}/work/task/charts/foo.png`.
 # The workspace UUID (128-bit) is the access credential, mirroring the
 # `preview_redirect_router` posture: uniform 404 for missing/unauthorized,
 # and never wake a stopped sandbox (denial-of-wallet protection).
@@ -60,9 +60,15 @@ wsfiles_router = APIRouter(prefix="/api/v1", tags=["Workspace File Serving"])
 _WSFILES_CACHE_CONTROL = "private, max-age=60"
 
 # Content-Security-Policy for served reports. Two jobs:
-#   1. `sandbox allow-scripts` forces an opaque origin even though the iframe
+#   1. The `sandbox` directive forces an opaque origin even though the iframe
 #      loads via `src=`, so agent/prompt-injected HTML can never reach app
-#      cookies/localStorage.
+#      cookies/localStorage. The popup tokens exist for embedded links: the
+#      viewer-injected click handler (below) opens external links via
+#      window.open(..., 'noopener'), and without the escape token the new tab
+#      would inherit the sandbox — opaque origin, no cookies, so real sites'
+#      bot checks break. A noopener'd external tab is the same reach a chat
+#      markdown link already has. (The header intersects with the iframe's
+#      sandbox attribute; both carry the tokens.)
 #   2. The source directives cap egress to the html-report skill's CDN
 #      allowlist. `connect-src 'none'` is the load-bearing block: no
 #      fetch/XHR/beacon/websocket, so a prompt-injected report cannot exfiltrate
@@ -72,7 +78,7 @@ _WSFILES_CACHE_CONTROL = "private, max-age=60"
 # server splices an inline theme-sync script for `?inject=theme`. Google Fonts
 # stays allowed for the CJK web-font path (Noto Sans SC/JP/KR -> tofu without it).
 _WSFILES_CSP = (
-    "sandbox allow-scripts; "
+    "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox; "
     "default-src 'none'; "
     "script-src 'self' 'unsafe-inline' "
     "https://cdnjs.cloudflare.com https://cdn.jsdelivr.net "
@@ -87,11 +93,14 @@ _WSFILES_CSP = (
     "form-action 'none'"
 )
 
-# Theme-sync script spliced after <head> when `?inject=theme` is set. Listens
-# for `widget:themeUpdate` postMessages and applies the `--color-*` custom
-# properties to :root via a dedicated style element. The payload field (`css`,
-# a `--color-x: value;` block) and message type match the inline-widget theme
-# protocol the parent already speaks (useHtmlSandbox.pushTheme).
+# Viewer-embed script spliced after <head> when `?inject=theme` is set. Two
+# jobs: (1) theme sync — listens for `widget:themeUpdate` postMessages and
+# applies the `--color-*` custom properties to :root via a dedicated style
+# element (payload matches the inline-widget protocol the parent speaks,
+# useHtmlSandbox.pushTheme); (2) link routing — a plain <a href> would
+# navigate the sandboxed IFRAME itself (where the target has no cookies and
+# bot checks break), so external links open via window.open(..., 'noopener')
+# while same-host links keep in-frame navigation (multi-file reports).
 _THEME_INJECTION = (
     '<meta name="color-scheme" content="light dark">'
     "<script>(function(){"
@@ -103,7 +112,18 @@ _THEME_INJECTION = (
     "window.addEventListener('message',function(e){"
     "var d=e&&e.data;"
     "if(!d||d.type!=='widget:themeUpdate'||!d.css)return;"
-    "apply(d.css);});})();</script>"
+    "apply(d.css);});"
+    "document.addEventListener('click',function(e){"
+    "if(e.defaultPrevented)return;"
+    "var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;"
+    "if(!a)return;"
+    "var href=a.getAttribute('href')||'';"
+    "if(href.charAt(0)==='#')return;"
+    "if(!/^https?:/i.test(a.href)){e.preventDefault();return;}"
+    "if(a.host===location.host)return;"
+    "e.preventDefault();"
+    "window.open(a.href,'_blank','noopener,noreferrer');});"
+    "})();</script>"
 )
 
 
@@ -170,41 +190,49 @@ async def _resolve_serve_bytes(
     """Resolve raw bytes + content type for a file, sandbox-first with DB fallback.
 
     Returns ``(content, content_type)`` or ``None`` when the file is missing.
-    Live bytes are read only when the sandbox is already warm in this worker
-    (``has_ready_session``); otherwise — including a stale ``running`` DB row
-    whose Daytona sandbox has auto-stopped — this falls back to the persisted
-    DB record. This keeps the unauthenticated route from ever waking or
-    recovering a sandbox (denial-of-wallet) from a UUID-only request.
+    Live bytes are read only from a session this worker already holds *and*
+    that still matches the row's binding; anything else — a replaced sandbox, a
+    stale ``running`` row whose sandbox auto-stopped, a cold worker — falls back
+    to the persisted DB record. This keeps the unauthenticated route from ever
+    waking or recovering a sandbox (denial-of-wallet) from a UUID-only request.
     """
     extension_mime = _guess_content_type(normalized_path)
 
-    # Live read only from an already-warm sandbox; short-circuit so the manager
-    # singleton is consulted only on the running path. A stale 'running' DB row
-    # whose Daytona sandbox auto-stopped has no warm session → DB fallback.
+    # Live read only from an already-warm sandbox, resolved in one shot so the
+    # handle is fenced against the row's binding: a session bound to a replaced
+    # sandbox must read as "not warm" here. Going through the acquisition path
+    # instead would retire that handle and re-attach — which is correct for an
+    # authenticated caller and exactly wrong for this route, since it starts or
+    # provisions a sandbox from a UUID-only request. A stale 'running' row whose
+    # sandbox auto-stopped has no warm session either → DB fallback.
     status = workspace.get("status")
-    warm = (
-        status == "running"
-        and WorkspaceManager.get_instance().has_ready_session(workspace_id)
+    session = (
+        WorkspaceManager.get_instance().get_session_if_ready(
+            workspace_id, expected_sandbox_id=workspace.get("sandbox_id")
+        )
+        if status == "running"
+        else None
     )
-    if not warm:
-        return await _db_fallback_bytes(workspace_id, normalized_path, extension_mime)
-
-    # Warm sandbox — read live bytes without any Daytona start/reconnect. If
-    # the session died between has_ready_session() above and here (TOCTOU),
-    # _acquire_sandbox raises 503; absorb it and fall back to the DB record so
-    # the route keeps its uniform-404 posture instead of leaking a 503 that
-    # would confirm the workspace UUID is valid.
-    try:
-        sandbox = await _acquire_sandbox(workspace_id, workspace.get("user_id") or "")
-    except HTTPException:
+    sandbox = getattr(session, "sandbox", None) if session else None
+    if sandbox is None:
         return await _db_fallback_bytes(workspace_id, normalized_path, extension_mime)
     candidate, error = sandbox.validate_and_normalize_path(normalized_path)
     if error:
         return None
     try:
         content = await sandbox.adownload_file_bytes(candidate)
-    except RuntimeError:
-        return None
+    except RuntimeError as e:
+        # Deliberate residual: an unreachable sandbox is indistinguishable from a
+        # missing file on this route. It is unauthenticated, so distinguishing
+        # them (503 vs 404) would confirm that a guessed workspace UUID is real.
+        # Fall back to the persisted copy first so the common case still serves.
+        # Warning, not debug: the response deliberately hides the cause, which
+        # makes this line the only place it survives.
+        logger.warning(
+            f"Sandbox read failed for workspace {workspace_id}; "
+            f"serving the persisted copy instead: {single_line(str(e))}"
+        )
+        return await _db_fallback_bytes(workspace_id, normalized_path, extension_mime)
     if content is None:
         return None
     client_path = _to_client_path(sandbox, candidate)

@@ -349,6 +349,9 @@ def build_web_search_tool(
             time_range: Filter by recency - 'h' (hour), 'd' (day), 'w' (week), 'm' (month), 'y' (year)
             geographic_location: Country code (e.g., 'us', 'cn', 'uk')
             language: Language code (e.g., 'en', 'zh-cn')
+
+        Returns:
+            Ranked results as titles, snippets and URLs — not full page text.
         """
         try:
             api = _get_api_wrapper()

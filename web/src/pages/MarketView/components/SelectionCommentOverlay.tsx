@@ -60,7 +60,10 @@ interface ComposerLayout {
   top: number;
 }
 
-export function SelectionCommentOverlay({
+// Memoized — all props are stable refs or primitives; pin/composer updates
+// arrive through the selection store subscription, not through the parent
+// chart's renders.
+export const SelectionCommentOverlay = React.memo(function SelectionCommentOverlay({
   chartRef,
   seriesRef,
   symbol,
@@ -329,7 +332,7 @@ export function SelectionCommentOverlay({
           onPointerDown={(e) => e.stopPropagation()}
         >
           <span className="selection-pin selection-pin--composer">{composer.n}</span>
-          <div className="selection-composer-pill">
+          <div className="selection-composer-pill clips-focus-ring">
             <input
               ref={inputRef}
               className="selection-composer-input"
@@ -363,6 +366,6 @@ export function SelectionCommentOverlay({
       )}
     </div>
   );
-}
+});
 
 export default SelectionCommentOverlay;

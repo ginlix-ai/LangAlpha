@@ -20,7 +20,11 @@ Covers the behaviors that survived the cutover:
 - manual-mutation stop (ThreadMutationRunner.request_stop, v4 2.4) returns
   early and stamps no run intent — local cancel and cross-worker signal alike;
 - idle thread (no active run) stamps no intent — thread not mislabeled;
-- an already-terminal run answers an honest "already finished".
+- an already-terminal run answers an honest "already finished";
+- a cancel that stopped nothing splits on liveness: `no_active_run` when the
+  thread is idle (benign — nothing to stop), `another_run_active` when a run
+  is still live (the stop the user asked for did not happen). The live run is
+  reported, never cancelled as a fallback.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -264,8 +268,12 @@ async def test_cancel_idle_thread_stamps_no_intent_but_runs_safety_net():
 
     # Nothing was running to cancel → honest "not cancelled".
     assert result["cancelled"] is False
+    assert result["state"] == "no_active_run"
     # No mislabel: no run to stamp, so request_run_cancel is never called.
-    get_active_run.assert_awaited_once_with("t-1")
+    # Read twice: once to resolve a target, once to answer "did this cancel
+    # leave something running?" — a fresh read, since the first is stale by
+    # the time the dispatch has finished.
+    assert get_active_run.await_count == 2
     request_run_cancel.assert_not_awaited()
     # No target run → no registry action at all (never a thread-wide wipe).
     registry_store.cancel_and_clear.assert_not_awaited()
@@ -385,3 +393,294 @@ async def test_remote_run_cancel_never_wipes_local_registry():
     registry_store.cancel_run_tasks.assert_awaited_once_with(
         "t-1", "run-REMOTE", force=True
     )
+
+
+@pytest.mark.asyncio
+async def test_stale_run_id_with_a_live_run_says_nothing_was_cancelled():
+    """A run_id that no longer resolves (rewound row, wrong id) while the
+    thread still has a live run stopped nothing the user asked for — and the
+    caller cannot tell that from an idle thread without being told, because
+    the client tears its own streaming state down before this answers.
+
+    The live run must NOT be cancelled as a fallback: that is the cross-turn
+    hazard the run_id parameter exists to prevent. Only the named run is ever
+    the target of the safety net.
+    """
+    from src.server.services.cancel_dispatch import cancel_workflow
+
+    patches, registry_store, _manager, _runner, get_active_run, _intent = (
+        _patch_common(
+            manager_cancel_returns=False,
+            has_active_returns=False,
+            active_run=_active_run("run-LIVE"),
+            intent_state="not_found",
+        )
+    )
+    for p in patches:
+        p.start()
+    try:
+        result = await cancel_workflow("t-1", "run-GONE")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert result["cancelled"] is False
+    assert result["state"] == "another_run_active"
+    get_active_run.assert_awaited_once_with("t-1")
+    # Scoped to the named run only — the live one is reported, never touched.
+    registry_store.cancel_run_tasks.assert_awaited_once_with(
+        "t-1", "run-GONE", force=True
+    )
+    registry_store.cancel_and_clear.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_run_id_on_an_idle_thread_is_just_no_active_run():
+    """The same unresolvable run_id with nothing live is benign: there was
+    nothing to stop, which is what `no_active_run` says. Splitting these two
+    is the whole point — a client that warned on both would cry wolf on every
+    stop that raced its own turn's teardown."""
+    from src.server.services.cancel_dispatch import cancel_workflow
+
+    patches, _registry_store, _manager, _runner, get_active_run, _intent = (
+        _patch_common(
+            manager_cancel_returns=False,
+            has_active_returns=False,
+            active_run=None,
+            intent_state="not_found",
+        )
+    )
+    for p in patches:
+        p.start()
+    try:
+        result = await cancel_workflow("t-1", "run-GONE")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert result["cancelled"] is False
+    assert result["state"] == "no_active_run"
+    get_active_run.assert_awaited_once_with("t-1")
+
+
+@pytest.mark.asyncio
+async def test_pre_start_window_still_reports_a_dispatched_cancel():
+    """`not_found` WITH a successful local signal is the pre-START window —
+    the placeholder cancel took, so this is a real stop and must not be
+    demoted to a no-op by the liveness check."""
+    from src.server.services.cancel_dispatch import cancel_workflow
+
+    patches, _registry_store, _manager, _runner, get_active_run, _intent = (
+        _patch_common(
+            manager_cancel_returns=True,
+            has_active_returns=False,
+            active_run=_active_run("run-LIVE"),
+            intent_state="not_found",
+        )
+    )
+    for p in patches:
+        p.start()
+    try:
+        result = await cancel_workflow("t-1", "run-PENDING")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert result["cancelled"] is True
+    assert "state" not in result
+    get_active_run.assert_not_awaited()
+
+
+# --- cancel_subagent_task (targeted single-task stop) ---------------------
+
+
+def _patch_task_cancel(
+    *,
+    local_cancel_returns: bool,
+    active_task_run: dict | None = None,
+    latest_statuses: dict | None = None,
+    intent_state: str = "requested",
+):
+    """Patch the collaborators of cancel_dispatch.cancel_subagent_task."""
+    registry_store = MagicMock()
+    registry_store.cancel_task = AsyncMock(return_value=local_cancel_returns)
+
+    get_active_task_run = AsyncMock(return_value=active_task_run)
+    get_latest_run_statuses = AsyncMock(return_value=latest_statuses or {})
+    request_task_run_cancel = AsyncMock(
+        return_value={"state": intent_state, "run": active_task_run or {}}
+    )
+    publish_cancel_nudge = AsyncMock()
+
+    patches = [
+        patch(
+            f"{REGISTRY_STORE_MOD}.BackgroundRegistryStore.get_instance",
+            return_value=registry_store,
+        ),
+        patch(
+            "src.server.database.runs.subagent_runs.get_active_task_run",
+            new=get_active_task_run,
+        ),
+        patch(
+            "src.server.database.runs.subagent_runs.get_latest_run_statuses",
+            new=get_latest_run_statuses,
+        ),
+        patch(
+            "src.server.database.runs.subagent_runs.request_task_run_cancel",
+            new=request_task_run_cancel,
+        ),
+        patch(
+            "src.server.services.runs.cancel.publish_cancel_nudge",
+            new=publish_cancel_nudge,
+        ),
+    ]
+    return (
+        patches,
+        registry_store,
+        get_active_task_run,
+        request_task_run_cancel,
+        publish_cancel_nudge,
+    )
+
+
+@pytest.mark.asyncio
+async def test_task_cancel_local_owner_short_circuits():
+    """When this worker owns the writer the registry cancel is the whole
+    story — no ledger reads, no cross-worker nudge."""
+    from src.server.services.cancel_dispatch import cancel_subagent_task
+
+    patches, registry_store, get_active, _intent, nudge = _patch_task_cancel(
+        local_cancel_returns=True
+    )
+    for p in patches:
+        p.start()
+    try:
+        result = await cancel_subagent_task("t-1", "abc123")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert result["cancelled"] is True
+    registry_store.cancel_task.assert_awaited_once_with("t-1", "abc123")
+    get_active.assert_not_awaited()
+    nudge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_task_cancel_foreign_owner_stamps_intent_and_nudges():
+    from src.server.services.cancel_dispatch import cancel_subagent_task
+
+    patches, _store, _get_active, intent, nudge = _patch_task_cancel(
+        local_cancel_returns=False,
+        active_task_run={"task_run_id": "tr-9"},
+    )
+    for p in patches:
+        p.start()
+    try:
+        result = await cancel_subagent_task("t-1", "abc123")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert result["cancelled"] is True
+    intent.assert_awaited_once_with("tr-9", thread_id="t-1")
+    nudge.assert_awaited_once_with("t-1", None, task_id="abc123")
+
+
+@pytest.mark.asyncio
+async def test_task_cancel_settled_task_answers_already_finished():
+    from src.server.services.cancel_dispatch import cancel_subagent_task
+
+    patches, _store, _get_active, intent, nudge = _patch_task_cancel(
+        local_cancel_returns=False,
+        active_task_run=None,
+        latest_statuses={"abc123": "completed"},
+    )
+    for p in patches:
+        p.start()
+    try:
+        result = await cancel_subagent_task("t-1", "abc123")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert result["cancelled"] is False
+    assert result["state"] == "already_finished"
+    intent.assert_not_awaited()
+    nudge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_task_cancel_unknown_task_is_honest():
+    from src.server.services.cancel_dispatch import cancel_subagent_task
+
+    patches, _store, _get_active, _intent, nudge = _patch_task_cancel(
+        local_cancel_returns=False, active_task_run=None
+    )
+    for p in patches:
+        p.start()
+    try:
+        result = await cancel_subagent_task("t-1", "nosuch")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert result["cancelled"] is False
+    assert result["state"] == "task_not_found"
+    nudge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_task_cancel_terminal_cas_race_answers_already_finished():
+    """The intent CAS losing to the task's own finalize is not an error —
+    the task is done, say so, and skip the nudge."""
+    from src.server.services.cancel_dispatch import cancel_subagent_task
+
+    patches, _store, _get_active, _intent, nudge = _patch_task_cancel(
+        local_cancel_returns=False,
+        active_task_run={"task_run_id": "tr-9"},
+        intent_state="already_terminal",
+    )
+    for p in patches:
+        p.start()
+    try:
+        result = await cancel_subagent_task("t-1", "abc123")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert result["cancelled"] is False
+    assert result["state"] == "already_finished"
+    nudge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_failure_does_not_put_infrastructure_text_on_the_wire():
+    """A ledger or transport exception names hosts, queries and sometimes
+    credential fragments. The log keeps it; the authenticated caller gets a
+    fixed string (src/server/AGENTS.md: sanitize before the wire).
+    """
+    from fastapi import HTTPException
+
+    from src.server.services.cancel_dispatch import cancel_workflow
+
+    secret = "could not connect to db-prod-7.internal?password=hunter2"
+    (
+        patches, _registry_store, _manager, _runner, get_active_run, _intent,
+    ) = _patch_common(manager_cancel_returns=True, active_run=_active_run())
+    get_active_run.side_effect = RuntimeError(secret)
+
+    for p in patches:
+        p.start()
+    try:
+        with pytest.raises(HTTPException) as caught:
+            await cancel_workflow("thread-x")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert caught.value.status_code == 500
+    assert secret not in str(caught.value.detail)
+    assert "db-prod-7" not in str(caught.value.detail)
+    # Still says which operation failed — a fixed string, not a bare 500.
+    assert "Failed to cancel the turn" in str(caught.value.detail)

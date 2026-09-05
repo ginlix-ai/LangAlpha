@@ -1,0 +1,30 @@
+import { useTranslation } from 'react-i18next';
+import { useWorkspaces } from '@/hooks/useWorkspaces';
+import type { ScopeWorkspace } from '../components/ScopeControl';
+
+/**
+ * The user's workspaces as the Plugins page consumes them: scope-control
+ * options with a display name already resolved, plus the id → name lookup the
+ * deck headers read.
+ */
+
+export interface WorkspaceOptions {
+  workspaces: ScopeWorkspace[];
+  nameById: Map<string, string>;
+}
+
+export function useWorkspaceOptions(): WorkspaceOptions {
+  const { t } = useTranslation();
+  const { data } = useWorkspaces({ limit: 100 });
+
+  const rows = data?.workspaces ?? [];
+  const workspaces: ScopeWorkspace[] = rows.map((w) => ({
+    id: w.workspace_id,
+    name: w.name || t('plugins.scope.unknownWorkspace'),
+  }));
+
+  return {
+    workspaces,
+    nameById: new Map(workspaces.map((w) => [w.id, w.name])),
+  };
+}

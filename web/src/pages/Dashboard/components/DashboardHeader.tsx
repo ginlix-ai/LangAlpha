@@ -140,10 +140,14 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
 
   return (
     <>
+      {/* Doubles as titlebar in the desktop shell. The search field and the
+          buttons declare no-drag for themselves, so it is the space between
+          them that moves the window. */}
       <div
+        data-chrome="drag"
         className="sticky top-0 z-30 flex items-center justify-between px-4 sm:px-6 py-3"
         style={{
-          backgroundColor: 'var(--color-bg-page)',
+          backgroundColor: 'var(--color-bg-canvas)',
           borderBottom: '1px solid var(--color-border-muted)',
           backdropFilter: 'blur(12px)',
           WebkitBackdropFilter: 'blur(12px)',
@@ -289,8 +293,8 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
                   onClick={() => layoutToggle.onEditModeChange?.(!layoutToggle.editMode)}
                   className="p-2 rounded-md transition-colors"
                   style={{
-                    color: layoutToggle.editMode ? 'var(--color-text-on-accent)' : 'var(--color-text-secondary)',
-                    backgroundColor: layoutToggle.editMode ? 'var(--color-accent-primary)' : 'transparent',
+                    color: layoutToggle.editMode ? 'var(--color-btn-primary-text)' : 'var(--color-text-secondary)',
+                    backgroundColor: layoutToggle.editMode ? 'var(--color-btn-primary-bg)' : 'transparent',
                   }}
                   aria-label={t(layoutToggle.editMode ? 'dashboard.layoutToggle.exitEditLayout' : 'dashboard.layoutToggle.editLayout')}
                   title={t(layoutToggle.editMode ? 'dashboard.layoutToggle.exitEditLayout' : 'dashboard.layoutToggle.editLayout')}
@@ -332,21 +336,25 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
                   {t('dashboard.contactMessage')}
                 </p>
                 {((import.meta.env.VITE_CONTACT_EMAILS as string) || '').split(',').filter(Boolean).map((email: string, idx: number, arr: string[]) => (
-                  <div
+                  <a
                     key={email}
+                    href={`mailto:${email.trim()}`}
+                    // An anchor, not a div with an onClick: this row is a link,
+                    // and the element brings focus, Enter activation and the
+                    // browser's own address menu with it. It also sits inside the
+                    // header's drag region, which chrome.css exempts by element,
+                    // and `a` is on that list where a bare div is not: as a div
+                    // the shell read a click on the row as dragging the window.
                     className="flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer transition-colors hover:opacity-80"
                     style={{ backgroundColor: 'var(--color-bg-input)', marginBottom: idx < arr.length - 1 ? '8px' : undefined }}
-                    onClick={() => {
-                      window.location.href = `mailto:${email.trim()}`;
-                      setShowHelpPopover(false);
-                    }}
+                    onClick={() => setShowHelpPopover(false)}
                   >
                     <Mail className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
                     <div className="min-w-0">
                       <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{t('dashboard.classic.emailLabel')}</p>
                       <p className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{email.trim()}</p>
                     </div>
-                  </div>
+                  </a>
                 ))}
               </div>
             )}

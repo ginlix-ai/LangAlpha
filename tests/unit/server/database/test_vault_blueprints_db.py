@@ -33,8 +33,8 @@ def vault_mock_db(mock_cursor):
     conn.cursor = _cursor_cm
 
     @asynccontextmanager
-    async def _fake_connection():
-        yield conn
+    async def _fake_connection(conn_in=None):
+        yield conn_in if conn_in is not None else conn
 
     with patch(
         "src.server.database.vault_secrets.get_db_connection",

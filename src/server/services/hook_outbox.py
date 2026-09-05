@@ -38,6 +38,8 @@ MAX_CONCURRENT_JOBS = 10
 # share so a burst of tail completions can't starve flash report-backs and
 # cheap wakes. Excluded types stay unclaimed but still head their chains.
 TASK_RB_INFLIGHT_QUOTA = 3
+# How long shutdown waits for the loop, and then for its in-flight jobs.
+STOP_GRACE = 10.0
 # Terminal-row retention: far beyond every read-back window (done-recents
 # recovery, dead-revive ceiling ≈ a day, idempotency re-observation).
 RETENTION_SECONDS = 7 * 24 * 3600.0
@@ -139,19 +141,37 @@ class HookOutboxDrainer:
     def __init__(self) -> None:
         self._task: Optional[asyncio.Task] = None
         self._nudge = asyncio.Event()
+        self._stopping = asyncio.Event()
         # task -> hook_type, so per-type quotas can count in-flight work.
         self._inflight: Dict[asyncio.Task, str] = {}
         self._next_purge = 0.0
 
     def start(self) -> None:
         if self._task is None or self._task.done():
+            self._stopping.clear()
             self._task = asyncio.create_task(self._loop(), name="hook-outbox-drainer")
 
     async def stop(self) -> None:
+        """Wind the loop down by flag, escalating to cancellation only on grace.
+
+        Cancellation alone is not a reliable stop signal here. One await that
+        absorbs a ``CancelledError`` and returns normally — psycopg's pool wait
+        does exactly that on the claim query — leaves the task permanently
+        ``cancelling()``, and ``asyncio.wait_for`` then reads every *later*
+        cancel as its own timeout expiring and converts it to ``TimeoutError``.
+        The loop becomes uncancellable, and an unbounded ``await self._task``
+        hangs shutdown until the deploy's grace period SIGKILLs the worker
+        mid-run. The flag can't be swallowed, and the waits below are bounded
+        so no single wedged await can hold the process.
+        """
+        self._stopping.set()
+        self._nudge.set()  # wake the poll immediately rather than after 5s
         if self._task is not None:
-            self._task.cancel()
             try:
-                await self._task
+                await asyncio.wait_for(self._task, timeout=STOP_GRACE)
+            except (TimeoutError, asyncio.TimeoutError):
+                # wait_for already cancelled it on the way out.
+                logger.warning("[HookOutbox] drainer exceeded stop grace")
             except asyncio.CancelledError:
                 pass
             except Exception:
@@ -165,7 +185,10 @@ class HookOutboxDrainer:
         for task in inflight:
             task.cancel()
         if inflight:
-            await asyncio.gather(*inflight, return_exceptions=True)
+            try:
+                await asyncio.wait(inflight, timeout=STOP_GRACE)
+            except Exception:
+                pass
         self._inflight.clear()
 
     def nudge(self) -> None:
@@ -174,7 +197,7 @@ class HookOutboxDrainer:
 
     async def _loop(self) -> None:
         legacy_swept = False
-        while True:
+        while not self._stopping.is_set():
             if not legacy_swept:
                 try:
                     for sweep in _STARTUP_SWEEPS:

@@ -1,174 +1,75 @@
-"""MCP Server Registry - Connect to and manage external MCP servers."""
+"""MCP Server Registry - Connect to and manage external MCP servers.
+
+Connection lifecycle only. Schema translation lives in :mod:`mcp_schema`,
+failure diagnosis in :mod:`mcp_diagnostics`, and the per-workspace composite in
+:mod:`mcp_composite`; all three are re-exported here because this module is the
+documented import surface.
+"""
 
 import asyncio
 import os
-import threading
-from collections import deque
 from types import TracebackType
 from typing import Any
 
-import httpx
 import structlog
-from mcp import ClientSession, StdioServerParameters
+from mcp import StdioServerParameters
+from mcp.client import Client
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamable_http_client
+
+# The SDK's own httpx factory (sse_client's default); no public re-export yet.
+from mcp.shared._httpx_utils import create_mcp_http_client
 
 from ptc_agent.config.core import CoreConfig, MCPServerConfig
 from src.observability.tracing import tracer as _otel_tracer
 
+from .mcp_composite import SchemaOnlyRegistry, build_composite_registry
+from .mcp_diagnostics import StderrTail, classify_startup_failure
+from .mcp_schema import MCPToolInfo, client_identity
+
 logger = structlog.get_logger(__name__)
 
-
-class _StderrTail:
-    """Bounded in-memory tail of an MCP subprocess's stderr.
-
-    ``errlog`` reaches ``subprocess.Popen`` as the child's stderr, so it must
-    be a real file descriptor: a pipe drained by a daemon thread into a
-    bounded deque. Steady-state server chatter never reaches our logs; on a
-    connection failure :meth:`tail` recovers the crash output that would
-    otherwise surface only as an opaque "Connection closed".
-    """
-
-    def __init__(self, max_lines: int = 80) -> None:
-        self._lines: deque[str] = deque(maxlen=max_lines)
-        read_fd, write_fd = os.pipe()
-        self.writer = os.fdopen(write_fd, "w")
-        self._reader = os.fdopen(read_fd, "r", errors="replace")
-        # The drain thread lives for the connection's whole lifetime (not just
-        # connect): it copies subprocess stderr into the deque until EOF.
-        self._thread = threading.Thread(target=self._drain, daemon=True)
-        self._thread.start()
-
-    def _drain(self) -> None:
-        # The thread owns the read end: EOF arrives once every write end
-        # (ours and the exited subprocess's dup) is closed.
-        with self._reader:
-            for line in self._reader:
-                self._lines.append(line.rstrip("\n"))
-
-    def tail(self, *, drain: bool = False) -> str:
-        """Snapshot of the captured lines.
-
-        Pass ``drain=True`` on the failure path to close the writer and join
-        the drain thread first, so the read can't race the daemon thread still
-        appending the subprocess's dying output into the bounded deque.
-        """
-        if drain:
-            self.close()
-            self._thread.join(timeout=0.25)
-        return "\n".join(list(self._lines))
-
-    def close(self) -> None:
-        try:
-            self.writer.close()
-        except OSError:
-            pass
-
-
-class MCPToolInfo:
-    """Snapshot of a single tool's schema as reported by its MCP server."""
-
-    def __init__(
-        self,
-        name: str,
-        description: str,
-        input_schema: dict[str, Any],
-        server_name: str,
-    ) -> None:
-        self.name = name
-        self.description = description
-        self.input_schema = input_schema
-        self.server_name = server_name
-
-    def get_parameters(self) -> dict[str, Any]:
-        """Return ``{param_name: {type, description, required, default}}`` from input_schema."""
-        params = {}
-
-        if "properties" in self.input_schema:
-            required_params = self.input_schema.get("required", [])
-
-            for param_name, param_info in self.input_schema["properties"].items():
-                params[param_name] = {
-                    "type": param_info.get("type", "any"),
-                    "description": param_info.get("description", ""),
-                    "required": param_name in required_params,
-                    "default": param_info.get("default"),
-                }
-
-        return params
-
-    def _extract_return_type_from_description(self) -> str:
-        """Extract return type hint from description's Returns: section.
-
-        Returns:
-            Type hint string (e.g., "dict", "list[dict]") or "Any" if not found
-        """
-        import re
-
-        if not self.description:
-            return "Any"
-
-        # Look for common type indicators after "Returns:"
-        match = re.search(
-            r"Returns?:\s*\n?\s*(\w+(?:\[[\w,\s]+\])?)",
-            self.description,
-            re.IGNORECASE
-        )
-
-        if match:
-            type_str = match.group(1).lower()
-            type_map = {
-                "dict": "dict",
-                "dictionary": "dict",
-                "list": "list",
-                "array": "list",
-                "str": "str",
-                "string": "str",
-                "int": "int",
-                "integer": "int",
-                "float": "float",
-                "number": "float",
-                "bool": "bool",
-                "boolean": "bool",
-            }
-            return type_map.get(type_str, "Any")
-
-        return "Any"
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary.
-
-        Returns:
-            Dictionary representation
-        """
-        return_type = self._extract_return_type_from_description()
-        return {
-            "name": self.name,
-            "description": self.description,
-            "parameters": self.get_parameters(),
-            "server_name": self.server_name,
-            "return_type": return_type,
-        }
+__all__ = [
+    "MCPRegistry",
+    "MCPServerConnector",
+    "MCPToolInfo",
+    "SchemaOnlyRegistry",
+    "build_composite_registry",
+    "classify_startup_failure",
+    "clear_global_registry",
+    "get_global_registry",
+    "set_global_registry",
+]
 
 
 class MCPServerConnector:
     """Connector for an individual MCP server.
 
-    Uses nested async with pattern following MCP SDK best practices.
-    The connector acts as an async context manager that keeps the
-    stdio_client and ClientSession contexts alive.
+    A background task holds the transport + ``Client`` contexts alive for the
+    connection's lifetime; ``Client`` (mode="auto") negotiates the protocol era
+    per connection — ``server/discover`` probe with legacy ``initialize``
+    fallback.
     """
 
     def __init__(self, config: MCPServerConfig) -> None:
         self.config = config
-        self.session: ClientSession | None = None
+        self.session: Client | None = None
         self.tools: list[MCPToolInfo] = []
+        # The server's own business card from the handshake, as the wire spelled
+        # it, so a builtin and a sandbox-discovered server hand the UI the same
+        # shape. Survives disconnect for the same reason ``tools`` does: this
+        # process asked once at startup and the answer is what it serves.
+        self.server_info: dict[str, Any] | None = None
 
         # Background task management
         self._connection_task: asyncio.Task | None = None
         self._ready: asyncio.Event = asyncio.Event()
         self._disconnect_event: asyncio.Event = asyncio.Event()
         self._connection_error: Exception | None = None
+        # Human diagnosis of a startup failure; connect_all logs this instead
+        # of the exception's opaque TaskGroup repr.
+        self.failure_reason: str | None = None
 
         logger.debug("Initialized MCPServerConnector", server=config.name)
 
@@ -191,15 +92,10 @@ class MCPServerConnector:
     })
 
     def _prepare_env(self) -> dict[str, str]:
-        """Prepare environment variables by expanding placeholders.
+        """Safe base vars plus the server's declared ``env:``, placeholders expanded.
 
-        Starts from a safe subset of os.environ (not the full environment)
-        to prevent leaking host secrets to MCP server subprocesses.
-        Servers that need specific env vars must declare them in their
-        config's `env:` block.
-
-        Returns:
-            Dictionary with safe base vars + expanded declared env vars
+        Starts from a safe subset of os.environ (not the full environment) to
+        prevent leaking host secrets to MCP server subprocesses.
         """
         base_env = {k: os.environ[k] for k in self._SAFE_ENV_VARS if k in os.environ}
 
@@ -269,79 +165,74 @@ class MCPServerConnector:
 
         return self
 
+    def _resolve_headers(self) -> dict[str, str] | None:
+        """Config headers with ``${VAR}`` values expanded; None when empty."""
+        if not self.config.headers:
+            return None
+        return {k: os.path.expandvars(v) for k, v in self.config.headers.items()}
+
+    async def _serve(self, client: Client, *, retry_discovery: bool = False) -> None:
+        """Discover tools, signal readiness, and hold the connection open."""
+        self.session = client
+        self.server_info = client_identity(client)
+        if retry_discovery:
+            await self._discover_tools_with_retry()
+        else:
+            await self._discover_tools()
+
+        logger.debug(
+            "MCP connection established",
+            server=self.config.name,
+            transport=self.config.transport,
+        )
+
+        # Signal that connection is ready, then keep contexts alive until
+        # disconnect is signaled.
+        self._ready.set()
+        await self._disconnect_event.wait()
+
+        logger.debug(
+            "MCP connection disconnect signaled",
+            server=self.config.name,
+        )
+
     async def _run_connection(self) -> None:
         """Background task that maintains the nested async with contexts.
 
-        This follows MCP SDK best practices by using proper nested async with
-        statements within a single task, ensuring contexts are entered and
-        exited in LIFO order within the same task.
+        Contexts are entered and exited in LIFO order within this single task
+        (MCP SDK best practice); the transport variants differ only in how the
+        stream contexts are built.
         """
-        stderr_capture: _StderrTail | None = None
+        stderr_capture: StderrTail | None = None
         try:
             if self.config.transport == "http":
-                # HTTP transport - use direct JSON-RPC over HTTP POST
                 url = self._expand_url()
                 if not url:
                     msg = f"URL required for HTTP transport: {self.config.name}"
                     raise ValueError(msg)
 
-                # HTTP transport doesn't use ClientSession - we make direct requests
-                self._http_url = url
-                self._http_client = httpx.AsyncClient(timeout=60.0)
-                self._message_id = 0
-
-                # Discover tools via HTTP
-                await self._discover_tools_http()
-
-                logger.debug(
-                    "MCP HTTP connection established",
-                    server=self.config.name,
-                )
-
-                # Signal that connection is ready
-                self._ready.set()
-
-                # Keep alive until disconnect
-                await self._disconnect_event.wait()
-
-                # Cleanup
-                await self._http_client.aclose()
-
-                logger.debug(
-                    "MCP HTTP connection disconnect signaled",
-                    server=self.config.name,
-                )
+                # Custom headers ride on a preconfigured httpx client;
+                # streamable_http_client takes no headers of its own.
+                async with create_mcp_http_client(headers=self._resolve_headers()) as http_client:
+                    async with Client(
+                        streamable_http_client(url, http_client=http_client)
+                    ) as client:
+                        await self._serve(client)
 
             elif self.config.transport == "sse":
-                # SSE transport - use URL-based connection
                 url = self._expand_url()
                 if not url:
                     msg = f"URL required for SSE transport: {self.config.name}"
                     raise ValueError(msg)
 
-                async with sse_client(url) as (read_stream, write_stream), ClientSession(read_stream, write_stream) as session:
-                    self.session = session
+                # SSE connections need discovery retry due to endpoint event
+                # timing. Headers are resolved exactly as on the http arm — an
+                # authenticated SSE server 401s without them.
+                async with Client(
+                    sse_client(url, headers=self._resolve_headers())
+                ) as client:
+                    await self._serve(client, retry_discovery=True)
 
-                    # Initialize and discover tools
-                    # SSE connections need retry due to endpoint event timing
-                    await self.session.initialize()
-                    await self._discover_tools_with_retry()
-
-                    logger.debug(
-                        "MCP SSE connection established",
-                        server=self.config.name,
-                    )
-
-                    # Signal that connection is ready
-                    self._ready.set()
-
-                    # Keep contexts alive until disconnect is signaled
-                    await self._disconnect_event.wait()
-
-                    logger.debug(
-                        "MCP SSE connection disconnect signaled",
-                        server=self.config.name,
-                    )
             else:
                 # Stdio transport (default) - use command-based connection
                 if not self.config.command:
@@ -352,31 +243,11 @@ class MCPServerConnector:
                     env=self._prepare_env(),
                 )
 
-                # Proper nested async with pattern (MCP SDK best practice)
-                stderr_capture = _StderrTail()
-                async with stdio_client(server_params, errlog=stderr_capture.writer) as (read_stream, write_stream):
-                    async with ClientSession(read_stream, write_stream) as session:
-                        self.session = session
-
-                        # Initialize and discover tools
-                        await self.session.initialize()
-                        await self._discover_tools()
-
-                        logger.debug(
-                            "MCP connection contexts established",
-                            server=self.config.name,
-                        )
-
-                        # Signal that connection is ready
-                        self._ready.set()
-
-                        # Keep contexts alive until disconnect is signaled
-                        await self._disconnect_event.wait()
-
-                        logger.debug(
-                            "MCP connection disconnect signaled",
-                            server=self.config.name,
-                        )
+                stderr_capture = StderrTail()
+                async with Client(
+                    stdio_client(server_params, errlog=stderr_capture.writer)
+                ) as client:
+                    await self._serve(client)
 
         except Exception as e:
             # Store error and signal ready so __aenter__ can raise it
@@ -393,11 +264,14 @@ class MCPServerConnector:
                 # subprocess's traceback into the deque.
                 stderr_tail = stderr_capture.tail(drain=True)
 
+            self.failure_reason = classify_startup_failure(e, stderr_tail) or str(e)
+
             logger.error(
                 "Failed to connect to MCP server",
                 server=self.config.name,
                 error=str(e),
                 error_type=type(e).__name__,
+                diagnosis=self.failure_reason,
                 traceback=error_details,
                 stderr_tail=stderr_tail or None,
             )
@@ -422,7 +296,7 @@ class MCPServerConnector:
                 tool_info = MCPToolInfo(
                     name=tool.name,
                     description=tool.description or "",
-                    input_schema=tool.inputSchema or {},
+                    input_schema=tool.input_schema or {},
                     server_name=self.config.name,
                 )
                 self.tools.append(tool_info)
@@ -446,99 +320,11 @@ class MCPServerConnector:
         finally:
             span.end()
 
-    async def _discover_tools_http(self) -> None:
-        """Discover available tools via HTTP transport."""
-        try:
-            self._message_id += 1
-            request = {
-                "jsonrpc": "2.0",
-                "id": self._message_id,
-                "method": "tools/list",
-                "params": {}
-            }
-
-            response = await self._http_client.post(
-                self._http_url,
-                json=request,
-                headers={"Content-Type": "application/json"}
-            )
-            response.raise_for_status()
-            result = response.json()
-
-            if "error" in result:
-                msg = f"MCP error: {result['error']}"
-                raise RuntimeError(msg)
-
-            tools_data = result.get("result", {}).get("tools", [])
-            self.tools = []
-
-            for tool in tools_data:
-                tool_info = MCPToolInfo(
-                    name=tool.get("name", ""),
-                    description=tool.get("description", ""),
-                    input_schema=tool.get("inputSchema", {}),
-                    server_name=self.config.name,
-                )
-                self.tools.append(tool_info)
-
-            logger.debug(
-                "Discovered tools via HTTP",
-                server=self.config.name,
-                tool_count=len(self.tools),
-            )
-
-        except Exception as e:
-            logger.error(
-                "Failed to discover tools via HTTP",
-                server=self.config.name,
-                error=str(e),
-            )
-            raise
-
-    async def _call_tool_http(self, tool_name: str, arguments: dict[str, Any]) -> Any:
-        """Call a tool via HTTP transport.
-
-        Args:
-            tool_name: Name of the tool
-            arguments: Tool arguments
-
-        Returns:
-            Tool result
-        """
-        self._message_id += 1
-        request = {
-            "jsonrpc": "2.0",
-            "id": self._message_id,
-            "method": "tools/call",
-            "params": {
-                "name": tool_name,
-                "arguments": arguments
-            }
-        }
-
-        response = await self._http_client.post(
-            self._http_url,
-            json=request,
-            headers={"Content-Type": "application/json"}
-        )
-        response.raise_for_status()
-        result = response.json()
-
-        if "error" in result:
-            msg = f"MCP tool call failed: {result['error']}"
-            raise RuntimeError(msg)
-
-        return result.get("result", {})
-
     async def _discover_tools_with_retry(self, *, max_retries: int = 3) -> None:
-        """Discover tools with retry logic for SSE connections.
+        """Discover tools with exponential backoff, for SSE only.
 
-        SSE connections may have timing issues where the endpoint event
-        hasn't been received yet. This method retries tool discovery
-        with exponential backoff.
-
-        Args:
-            max_retries: Maximum number of retry attempts
+        An SSE connection can be usable before its endpoint event arrives, so
+        the first list_tools may legitimately come back empty.
         """
         for attempt in range(max_retries):
             try:
@@ -570,62 +356,6 @@ class MCPServerConnector:
                     error=str(e),
                 )
                 await asyncio.sleep(wait_time)
-
-    async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
-        """Call a tool on this server.
-
-        Args:
-            tool_name: Name of the tool
-            arguments: Tool arguments
-
-        Returns:
-            Tool result
-        """
-        logger.debug(
-            "Calling MCP tool",
-            server=self.config.name,
-            tool=tool_name,
-            arguments=arguments,
-        )
-
-        try:
-            if self.config.transport == "http":
-                result = await self._call_tool_http(tool_name, arguments)
-                logger.debug("MCP tool call completed", server=self.config.name, tool=tool_name)
-
-                # HTTP returns dict directly; unwrap text content when present.
-                if isinstance(result, dict) and "content" in result:
-                    content = result["content"]
-                    if isinstance(content, list) and len(content) > 0:
-                        content_item = content[0]
-                        if isinstance(content_item, dict) and "text" in content_item:
-                            return content_item["text"]
-                return result
-
-            # SSE/stdio transport uses session
-            if not self.session:
-                raise RuntimeError("Not connected to server")
-
-            result = await self.session.call_tool(tool_name, arguments)
-
-            logger.debug("MCP tool call completed", server=self.config.name, tool=tool_name)
-
-            if hasattr(result, "content") and result.content and len(result.content) > 0:
-                content_item = result.content[0]
-                if hasattr(content_item, "text"):
-                    return content_item.text
-                return str(content_item)
-
-            return str(result)
-
-        except Exception as e:
-            logger.error(
-                "MCP tool call failed",
-                server=self.config.name,
-                tool=tool_name,
-                error=str(e),
-            )
-            raise
 
     async def __aexit__(
         self,
@@ -684,6 +414,16 @@ class MCPRegistry:
     # may leak (process exit reaps them).
     FREEZE_TIMEOUT_S = 10.0
 
+    async def _exit_all_connectors(self) -> None:
+        """Exit every connector context in parallel, absorbing their failures."""
+        await asyncio.gather(
+            *[
+                connector.__aexit__(None, None, None)
+                for connector in self.connectors.values()
+            ],
+            return_exceptions=True,
+        )
+
     async def freeze(self) -> None:
         """Terminate stdio subprocesses while preserving each connector's ``tools``.
 
@@ -695,14 +435,7 @@ class MCPRegistry:
 
         try:
             await asyncio.wait_for(
-                asyncio.gather(
-                    *[
-                        connector.__aexit__(None, None, None)
-                        for connector in self.connectors.values()
-                    ],
-                    return_exceptions=True,
-                ),
-                timeout=self.FREEZE_TIMEOUT_S,
+                self._exit_all_connectors(), timeout=self.FREEZE_TIMEOUT_S
             )
         except asyncio.TimeoutError:
             logger.warning(
@@ -759,18 +492,19 @@ class MCPRegistry:
         # contains a server with empty tools. Pre-refactor, a per-workspace
         # registry would retry on next workspace start; post-refactor, one bad
         # boot would otherwise degrade the process for its lifetime.
-        failed: list[tuple[str, Exception]] = []
+        failed: list[tuple[str, str]] = []
         for name, result in zip(connector_names, results, strict=True):
             if isinstance(result, Exception):
-                failed.append((name, result))
-                self.connectors.pop(name, None)
+                connector = self.connectors.pop(name, None)
+                reason = getattr(connector, "failure_reason", None) or str(result)
+                failed.append((name, reason))
 
         if failed:
             logger.warning(
                 "Some MCP servers failed to connect; dropped from registry",
                 error_count=len(failed),
                 failed_servers=[name for name, _ in failed],
-                errors=[str(exc) for _, exc in failed],
+                errors=[reason for _, reason in failed],
             )
 
         logger.debug("MCP servers connected", servers=list(self.connectors.keys()))
@@ -782,14 +516,7 @@ class MCPRegistry:
 
         logger.info("Disconnecting from all MCP servers")
 
-        await asyncio.gather(
-            *[
-                connector.__aexit__(None, None, None)
-                for connector in self.connectors.values()
-            ],
-            return_exceptions=True,
-        )
-
+        await self._exit_all_connectors()
         self.connectors.clear()
 
     async def _force_disconnect_all(self) -> None:
@@ -802,71 +529,18 @@ class MCPRegistry:
         if not self.connectors:
             return
 
-        await asyncio.gather(
-            *[
-                connector.__aexit__(None, None, None)
-                for connector in self.connectors.values()
-            ],
-            return_exceptions=True,
-        )
+        await self._exit_all_connectors()
         self.connectors.clear()
 
     def get_all_tools(self) -> dict[str, list[MCPToolInfo]]:
         """Return tools grouped by server name."""
-        tools_by_server = {}
-
-        for server_name, connector in self.connectors.items():
-            tools_by_server[server_name] = connector.tools
-
-        return tools_by_server
+        return {name: c.tools for name, c in self.connectors.items()}
 
     def get_tool_info(self, server_name: str, tool_name: str) -> MCPToolInfo | None:
-        """Get information about a specific tool.
-
-        Args:
-            server_name: Name of the server
-            tool_name: Name of the tool
-
-        Returns:
-            Tool info or None if not found
-        """
         connector = self.connectors.get(server_name)
         if not connector:
             return None
-
-        for tool in connector.tools:
-            if tool.name == tool_name:
-                return tool
-
-        return None
-
-    async def call_tool(
-        self,
-        server_name: str,
-        tool_name: str,
-        arguments: dict[str, Any],
-    ) -> Any:
-        """Call a tool on a specific server.
-
-        Args:
-            server_name: Name of the server
-            tool_name: Name of the tool
-            arguments: Tool arguments
-
-        Returns:
-            Tool result
-        """
-        if self._frozen:
-            raise RuntimeError(
-                "call_tool unsupported on frozen MCPRegistry; "
-                "route MCP calls via the sandbox-side cohort."
-            )
-        connector = self.connectors.get(server_name)
-        if not connector:
-            msg = f"Server not found: {server_name}"
-            raise ValueError(msg)
-
-        return await connector.call_tool(tool_name, arguments)
+        return next((t for t in connector.tools if t.name == tool_name), None)
 
     async def __aenter__(self) -> "MCPRegistry":
         """Async context manager entry."""
@@ -915,179 +589,3 @@ def clear_global_registry() -> None:
     """Drop the process-global registry reference."""
     global _GLOBAL_REGISTRY
     _GLOBAL_REGISTRY = None
-
-
-# ---------------------------------------------------------------------------
-# Per-workspace composite registry (append-only over the frozen built-ins).
-# ---------------------------------------------------------------------------
-#
-# A workspace's effective MCP set = the process-global built-ins (taken
-# verbatim, never round-tripped through the discovery cache) PLUS the
-# workspace's user-configured servers, whose tool schemas come from the
-# sanitized discovery snapshot. User servers have NO host code path: their
-# tools execute only inside the sandbox, so any host-side ``call_tool`` raises.
-#
-# A zero-user-server workspace short-circuits to the built-in registry object
-# itself (identity), which is what keeps such workspaces byte-identical to the
-# pre-change behavior (manifest hash + prompt summary unchanged).
-
-
-class _SchemaConfig:
-    """Minimal ``CoreConfig``-shaped view exposing the effective ``mcp.servers``.
-
-    Duck-types only the ``.mcp`` attribute consumers read off a registry's
-    ``.config`` (``.mcp.servers`` and ``.mcp.tool_exposure_mode``). Built-in
-    config objects are reused verbatim; only the server list is the merged
-    built-ins + user servers.
-    """
-
-    def __init__(self, builtin_config: CoreConfig, servers: list[MCPServerConfig]) -> None:
-        self._builtin_config = builtin_config
-        self.mcp = builtin_config.mcp.model_copy(update={"servers": servers})
-
-    def __getattr__(self, name: str) -> Any:
-        # Defer every other attribute to the built-in CoreConfig so the composite
-        # remains a faithful stand-in (e.g. ``.filesystem``, ``.sandbox``).
-        return getattr(self._builtin_config, name)
-
-
-class SchemaOnlyRegistry:
-    """Duck-typed ``MCPRegistry`` over built-in connectors + user-server schemas.
-
-    Read-only: built-in tools come straight from the frozen global registry's
-    connectors; user-server tools are wrapped ``MCPToolInfo`` from the sanitized
-    discovery cache. Host-side execution (``call_tool``) of a user server is
-    never permitted — those tools run only inside the sandbox.
-    """
-
-    def __init__(
-        self,
-        builtin_registry: "MCPRegistry",
-        user_servers: list[MCPServerConfig],
-        tool_schemas: dict[str, list[dict]],
-        disabled_builtin_names: frozenset[str] = frozenset(),
-    ) -> None:
-        self._builtin_registry = builtin_registry
-        self._user_names = frozenset(s.name for s in user_servers)
-        # Built-ins a workspace turned off: excluded from get_all_tools(),
-        # connectors, and the effective config so the agent neither sees nor can
-        # call them (a disable-marker must take effect at runtime, not just in
-        # the resolver).
-        self._disabled_builtin_names = frozenset(disabled_builtin_names)
-        # User-server tools, in deterministic per-server order, wrapped as
-        # MCPToolInfo so every downstream reader (codegen, formatter, hash) sees
-        # the same shape as a built-in. Original tool names are preserved;
-        # codegen re-sanitizes them.
-        self._user_tools: dict[str, list[MCPToolInfo]] = {}
-        for server in user_servers:
-            schemas = tool_schemas.get(server.name)
-            if not schemas:
-                # Pending/error server: contributes config (so the prompt can
-                # mention it) but zero tools.
-                continue
-            self._user_tools[server.name] = [
-                MCPToolInfo(
-                    name=schema.get("name", ""),
-                    description=schema.get("description", "") or "",
-                    input_schema=schema.get("input_schema") or {},
-                    server_name=server.name,
-                )
-                for schema in schemas
-            ]
-        # Effective config: enabled built-ins (verbatim, minus disabled) + user
-        # servers, so the formatter sees each user server's
-        # description/instruction/source and never a workspace-disabled built-in.
-        effective_builtins = [
-            s
-            for s in builtin_registry.config.mcp.servers
-            if s.name not in self._disabled_builtin_names
-        ]
-        effective_servers = [*effective_builtins, *user_servers]
-        self.config = _SchemaConfig(builtin_registry.config, effective_servers)
-
-    @property
-    def frozen(self) -> bool:
-        """Always frozen — a schema-only snapshot has no live subprocesses."""
-        return True
-
-    @property
-    def connectors(self) -> dict[str, "MCPServerConnector"]:
-        """Built-in connectors ONLY — user servers have no host connector, ever.
-
-        Workspace-disabled built-ins are excluded so a disabled built-in's
-        connector is neither visible nor callable.
-        """
-        connectors = self._builtin_registry.connectors
-        if not self._disabled_builtin_names:
-            return connectors
-        return {
-            name: conn
-            for name, conn in connectors.items()
-            if name not in self._disabled_builtin_names
-        }
-
-    def get_all_tools(self) -> dict[str, list[MCPToolInfo]]:
-        """Enabled built-in tools (minus disabled), then user-server tools."""
-        tools_by_server: dict[str, list[MCPToolInfo]] = {
-            name: tools
-            for name, tools in self._builtin_registry.get_all_tools().items()
-            if name not in self._disabled_builtin_names
-        }
-        tools_by_server.update(self._user_tools)
-        return tools_by_server
-
-    def get_tool_info(self, server_name: str, tool_name: str) -> MCPToolInfo | None:
-        """Look up a tool by server + name across built-ins and user servers."""
-        if server_name in self._disabled_builtin_names:
-            return None
-        if server_name in self._user_tools:
-            for tool in self._user_tools[server_name]:
-                if tool.name == tool_name:
-                    return tool
-            return None
-        return self._builtin_registry.get_tool_info(server_name, tool_name)
-
-    async def call_tool(
-        self,
-        server_name: str,
-        tool_name: str,
-        arguments: dict[str, Any],
-    ) -> Any:
-        """Reject host-side execution of user-server tools; delegate built-ins."""
-        if server_name in self._disabled_builtin_names:
-            raise RuntimeError(
-                f"Built-in MCP server {server_name!r} is disabled for this workspace."
-            )
-        if server_name in self._user_names:
-            raise RuntimeError(
-                f"Host-side call_tool is not supported for user MCP server "
-                f"{server_name!r}; user-server tools execute only inside the "
-                f"sandbox."
-            )
-        return await self._builtin_registry.call_tool(server_name, tool_name, arguments)
-
-
-def build_composite_registry(
-    builtin_registry: "MCPRegistry",
-    user_servers: list[MCPServerConfig],
-    tool_schemas: dict[str, list[dict]],
-    disabled_builtin_names: frozenset[str] = frozenset(),
-) -> Any:
-    """Append user-server schemas onto the frozen built-in registry.
-
-    ``user_servers`` are ``source='workspace'``, enabled, in resolver order
-    (built-ins config-order, then user servers alphabetical). ``tool_schemas``
-    maps a server name to its sanitized ``[{name, description, input_schema}]``
-    snapshot; only ``status='ok'`` servers appear. ``disabled_builtin_names``
-    are built-ins a workspace turned off — excluded from tools/connectors/config
-    so the agent can't see or call them at runtime.
-
-    When there are NO user servers AND no disabled built-ins, the built-in
-    registry is returned UNCHANGED (identity), keeping clean workspaces
-    byte-identical downstream.
-    """
-    if not user_servers and not disabled_builtin_names:
-        return builtin_registry
-    return SchemaOnlyRegistry(
-        builtin_registry, user_servers, tool_schemas, disabled_builtin_names
-    )

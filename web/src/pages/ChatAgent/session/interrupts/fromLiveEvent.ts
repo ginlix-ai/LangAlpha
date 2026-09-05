@@ -7,6 +7,8 @@
 
 import type { AssistantMessage } from '@/types/chat';
 import { updateMessage } from '../../hooks/utils/messageHelpers';
+import { setCardStatus } from './buckets';
+import { buildCreditPauseState } from './creditPauseCard';
 import type { SSEEvent, StreamProcessorRefs } from '../types';
 import type { StreamRuntime } from '../runtime';
 
@@ -192,6 +194,36 @@ export function projectLiveInterrupt(
     rt.pendingInterruptIdsRef.current.add(event.interrupt_id!);
     rt.setPendingInterrupt({
       type: actionType,
+      interruptId: event.interrupt_id,
+      assistantMessageId,
+      proposalId,
+    });
+  } else if (actionType === 'credit_pause') {
+    // --- Credit pause interrupt ---
+    const proposalId = event.interrupt_id!;
+    const pauseState = buildCreditPauseState(actionRequests[0], event.interrupt_id!);
+    const order = event._eventId != null ? Number(event._eventId) : ++refs.contentOrderCounterRef.current;
+
+    // A re-raise is the pause saying it was never consumed, whatever the resume
+    // looked like from the client: admission opens a run either way, so the card
+    // was already flipped to `resumed`. Put that card back rather than writing a
+    // pending entry onto this bubble, which the suppression above leaves with no
+    // segment to render it — the pause would otherwise sit unanswerable, and the
+    // status is what history replays.
+    rt.setMessages((prev) =>
+      interruptAlreadyRendered
+        ? setCardStatus(prev, 'creditPauses', proposalId, 'pending')
+        : updateMessage(prev,assistantMessageId, (m) => { if (m.role !== 'assistant') return m; const msg = m as AssistantMessage; return {
+            ...msg,
+            contentSegments: appendCardSegment(msg.contentSegments, { type: 'credit_pause', proposalId, order }),
+            creditPauses: { ...(msg.creditPauses || {}), [proposalId]: pauseState },
+            isStreaming: false,
+          }; })
+    );
+
+    rt.pendingInterruptIdsRef.current.add(event.interrupt_id!);
+    rt.setPendingInterrupt({
+      type: 'credit_pause',
       interruptId: event.interrupt_id,
       assistantMessageId,
       proposalId,

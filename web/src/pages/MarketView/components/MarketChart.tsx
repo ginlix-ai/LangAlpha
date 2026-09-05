@@ -35,7 +35,9 @@ import {
 import type { ChartDataPoint as ChartConstDataPoint } from '../utils/chartConstants';
 import { ExtendedHoursBgPrimitive } from '../utils/extendedHoursBg';
 import { useTheme } from '@/contexts/ThemeContext';
-import CrosshairTooltip from './CrosshairTooltip';
+import { Loader } from '@/components/ui/loader';
+import { CrosshairTooltipLayer, type CrosshairTooltipState } from './CrosshairTooltip';
+import { createValueStore, type ValueStore } from '@/lib/valueStore';
 import TradingViewWidget from './TradingViewWidget';
 import { TradingViewAttribution } from '@/pages/Dashboard/widgets/framework/TradingViewAttribution';
 import { useChartAnnotations } from '../hooks/useChartAnnotations';
@@ -63,22 +65,6 @@ interface ChartDataBar {
   low: number;
   close: number;
   volume: number;
-}
-
-interface TooltipState {
-  visible: boolean;
-  x: number;
-  y: number;
-  data: {
-    time: number;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    volume?: number;
-    maValues: Record<number, number>;
-    rsiValue: number | null;
-  } | null;
 }
 
 interface OverlayVisibility {
@@ -269,8 +255,12 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   useOnClickOutside(intervalsDropdownRef, () => setIntervalsOpen(false), intervalsOpen);
   useOnClickOutside(viewDropdownRef, () => setViewOpen(false), viewOpen);
 
-  // Crosshair tooltip state
-  const [tooltipState, setTooltipState] = useState<TooltipState>({ visible: false, x: 0, y: 0, data: null });
+  // Crosshair tooltip state — external store, not useState: the crosshair
+  // fires per raw mousemove, and a setState here re-renders this entire
+  // component per pixel. Only CrosshairTooltipLayer subscribes.
+  const tooltipStoreRef = useRef<ValueStore<CrosshairTooltipState> | null>(null);
+  tooltipStoreRef.current ??= createValueStore<CrosshairTooltipState>({ visible: false, x: 0, y: 0, data: null });
+  const tooltipStore = tooltipStoreRef.current;
 
   // Refs for stable callbacks (avoid stale closures)
   const enabledMaPeriodsRef = useRef(DEFAULT_ENABLED_MA);
@@ -366,7 +356,7 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   );
 
   // --- Series markers via hook (earnings + grades + agent markers) ---
-  useChartOverlays(candlestickSeriesRef, chartDataForHooks as any, earningsData as any, overlayData as any, overlayVisibility as any, symbol, agentMarkers);
+  useChartOverlays(candlestickSeriesRef, chartDataForHooks as any, earningsData as any, overlayData as any, overlayVisibility as any, symbol, agentMarkers, theme as 'dark' | 'light');
 
   // --- User chart selection (region / price level → agent) ---
   // Keep the selection primitive's theme in sync.
@@ -1340,12 +1330,12 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     // Subscribe to crosshair move for tooltip
     chart.subscribeCrosshairMove((param: MouseEventParams) => {
       if (!param.time || !param.point) {
-        setTooltipState((prev) => prev.visible ? { visible: false, x: 0, y: 0, data: null } : prev);
+        if (tooltipStore.get().visible) tooltipStore.set({ visible: false, x: 0, y: 0, data: null });
         return;
       }
       const candleData = param.seriesData.get(candlestickSeriesRef.current) as any;
       if (!candleData) {
-        setTooltipState((prev) => prev.visible ? { visible: false, x: 0, y: 0, data: null } : prev);
+        if (tooltipStore.get().visible) tooltipStore.set({ visible: false, x: 0, y: 0, data: null });
         return;
       }
 
@@ -1364,7 +1354,7 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
       const candleTime = (candleData.time ?? param.time) as number;
       const rsiVal = rsiDataMapRef.current.get(candleTime) ?? null;
 
-      setTooltipState({
+      tooltipStore.set({
         visible: true,
         x: param.point.x,
         y: param.point.y,
@@ -2313,14 +2303,9 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
               ref={chartContainerRef}
               className="chart-wrapper"
             >
-              <CrosshairTooltip
-                visible={tooltipState.visible}
-                x={tooltipState.x}
-                y={tooltipState.y}
-                data={tooltipState.data}
-                enabledMaPeriods={enabledMaPeriods}
-                containerWidth={chartContainerRef.current?.clientWidth}
-                containerHeight={chartContainerRef.current?.clientHeight}
+              <CrosshairTooltipLayer
+                store={tooltipStore}
+                containerRef={chartContainerRef}
                 currency={displayCurrency.code}
                 decimals={displayCurrency.decimals}
               />
@@ -2366,7 +2351,7 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
               )}
               {scrollLoading && (
                 <div className="chart-scroll-loading">
-                  <div className="chart-scroll-loading-spinner" />
+                  <Loader size={16} label="Loading history" style={{ color: 'var(--color-text-secondary)' }} />
                 </div>
               )}
             </div>
@@ -2389,7 +2374,7 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
 
           {/* ---- Bottom bar: viewing-window presets + venue clock (TradingView-style) ---- */}
           <div className="chart-bottom-bar">
-            <div className="chart-range-selector">
+            <div className="chart-range-selector clips-focus-ring">
               {RANGE_PRESETS.map((preset) => (
                 <button
                   key={preset.key}

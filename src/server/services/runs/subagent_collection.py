@@ -10,87 +10,22 @@ narrow callables.
 """
 
 import asyncio
-import json
 import logging
 import time
-from typing import Any, AsyncIterator, Callable, Optional
+from typing import Any, Callable, Optional
 
 from src.config.settings import (
     get_sse_drain_timeout,
     get_subagent_collector_timeout,
     get_subagent_orphan_collector_timeout,
 )
+from src.server.services.runs.subagent_archive import (
+    SubagentArchiveReadError,
+    iter_subagent_events_full,
+)
 from src.utils.cache.redis_cache import get_cache_client
 
 logger = logging.getLogger(__name__)
-
-
-async def iter_subagent_events_full(
-    thread_id: str, task
-) -> AsyncIterator[dict]:
-    """Yield every captured record for a subagent in seq order."""
-    if task is None or not thread_id:
-        return
-
-    high_water = int(getattr(task, "captured_event_seq", 0) or 0)
-    if high_water <= 0:
-        return
-
-    try:
-        cache = get_cache_client()
-    except Exception as exc:
-        logger.warning(
-            "[SubagentCollector] Failed to obtain cache client for "
-            f"task {getattr(task, 'task_id', '?')}: {exc}"
-        )
-        return
-    if cache is None or not getattr(cache, "enabled", False) or cache.client is None:
-        return
-
-    sa_stream_key = f"subagent:stream:{thread_id}:{task.task_id}"
-    try:
-        entries = await cache.client.xrange(sa_stream_key, min="-", max="+")
-    except Exception as exc:
-        logger.warning(
-            f"[SubagentCollector] XRANGE failed for {sa_stream_key}: {exc}"
-        )
-        return
-
-    yielded = 0
-    for entry_id, fields in entries or []:
-        try:
-            seq_part = entry_id.decode("utf-8") if isinstance(entry_id, bytes) else entry_id
-            seq = int(seq_part.split("-", 1)[0])
-        except (ValueError, AttributeError):
-            continue
-        if seq <= 0 or seq > high_water:
-            continue
-        raw = fields.get(b"record")
-        if raw is None:
-            continue
-        try:
-            payload = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-            record = json.loads(payload)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            continue
-        if not isinstance(record, dict):
-            continue
-        yielded += 1
-        yield record
-
-    expected = high_water
-    if yielded < expected:
-        logger.warning(
-            "subagent_history_truncated",
-            extra={
-                "thread_id": thread_id,
-                "task_id": getattr(task, "task_id", None),
-                "expected": expected,
-                "recovered": yielded,
-                "missing": expected - yielded,
-                "redis_write_failed": bool(getattr(task, "redis_write_failed", False)),
-            },
-        )
 
 
 def record_to_persist_event(record: dict, thread_id: str) -> dict:
@@ -207,13 +142,20 @@ async def replay_owned_task_events(
     )
     buffered: list[dict] = []
     eligible = 0
-    async for record in iter_subagent_events_full(thread_id, task):
-        if task.collector_response_id != response_id:
-            return False  # stolen mid-replay: the resume owns the archive
-        if record.get("run") not in allowed:
-            continue  # another round's record (cross-worker resume)
-        eligible += 1
-        buffered.append(record_to_persist_event(record, thread_id))
+    try:
+        async for record in iter_subagent_events_full(thread_id, task):
+            if task.collector_response_id != response_id:
+                return False  # stolen mid-replay: the resume owns the archive
+            if record.get("run") not in allowed:
+                continue  # another round's record (cross-worker resume)
+            eligible += 1
+            buffered.append(record_to_persist_event(record, thread_id))
+    except SubagentArchiveReadError as exc:
+        logger.error(
+            f"[SubagentCollector] Archive read failed for task "
+            f"{getattr(task, 'task_id', '?')}; withholding partial archive: {exc}"
+        )
+        return False
     if eligible != expected:
         logger.error(
             f"[SubagentCollector] Incomplete stream recovery for task "
@@ -238,12 +180,7 @@ def _mark_settled(task, writer: asyncio.Task) -> None:
     """Adopt a done writer's result onto its (already fence-checked) task."""
     if task.completed:
         return
-    task.completed = True
-    try:
-        task.result = writer.result()
-    except Exception as e:
-        task.error = str(e)
-        task.result = {"success": False, "error": str(e)}
+    task.adopt_writer_outcome(writer)
 
 
 def _settle_finished(tasks: list, response_id: str) -> None:
@@ -291,6 +228,60 @@ async def _replay_settled(
     return ok
 
 
+async def _claim_owner_children(
+    thread_id: str,
+    parent,
+    response_id: str,
+    tasks: list,
+    pending: dict,
+) -> list:
+    """Claim a settled task's owner-children into this collection.
+
+    Workflow children register while the driver runs — after the turn's
+    terminal claim sweep — so no sweep ever saw the late ones; the parent's
+    settle is the first moment the full child set exists. The registry claims
+    them under its own lock (same gate as the sweep); here we fold live
+    writers into the wait set and hand already-settled children back for the
+    caller's replay loop. One level suffices: children are plain subagents
+    and never own children of their own.
+    """
+    from src.server.services.background_registry_store import BackgroundRegistryStore
+
+    bg_registry = await BackgroundRegistryStore.get_instance().get_registry(
+        thread_id
+    )
+    if bg_registry is None:
+        return []
+    claimed = await bg_registry.claim_owner_children(parent.task_id, response_id)
+    settled = []
+    for child in claimed:
+        tasks.append(child)
+        writer = child.asyncio_task
+        if writer is not None and writer.done():
+            _mark_settled(child, writer)
+            settled.append(child)
+        elif child.is_pending and writer is not None:
+            pending[writer] = child
+    return settled
+
+
+async def _claim_settled_parents(
+    thread_id: str, tasks: list, response_id: str, pending: dict
+) -> None:
+    """Entry-path mirror of the adopt-time claim: a parent can settle
+    between the turn's terminal claim sweep and collection start, entering
+    already completed — the wait loop never adopts it, so its owner-children
+    must be claimed here. Snapshot: the claim appends children to ``tasks``.
+    """
+    for task in [
+        t for t in tasks
+        if t.collector_response_id == response_id and t.completed
+    ]:
+        await _claim_owner_children(
+            thread_id, task, response_id, tasks, pending
+        )
+
+
 async def _adopt_settled_batch(
     done: set,
     pending: dict,
@@ -298,6 +289,7 @@ async def _adopt_settled_batch(
     response_id: str,
     out: list[dict],
     *,
+    tasks: list,
     log_label: str | None = None,
 ) -> bool:
     """Pop finished writers, adopt their results, replay their events.
@@ -313,6 +305,12 @@ async def _adopt_settled_batch(
             continue  # stolen between settle and this wake
         _mark_settled(task, writer)
         settled_now.append(task)
+    for task in list(settled_now):
+        settled_now.extend(
+            await _claim_owner_children(
+                thread_id, task, response_id, tasks, pending
+            )
+        )
     for task in settled_now:
         if task.collector_response_id != response_id:
             continue
@@ -405,6 +403,7 @@ async def collect_subagent_results_for_turn(
         ]
 
         pending = _owned_pending(tasks, response_id)
+        await _claim_settled_parents(thread_id, tasks, response_id, pending)
 
         all_subagent_events: list[dict] = []
         # Tracks whether the LATEST archive write landed. Cleanup retires
@@ -446,7 +445,8 @@ async def collect_subagent_results_for_turn(
                 break
 
             if not await _adopt_settled_batch(
-                done, pending, thread_id, response_id, all_subagent_events
+                done, pending, thread_id, response_id, all_subagent_events,
+                tasks=tasks,
             ):
                 persist_ok = False
             persist_ok = await _persist_if_any(
@@ -628,6 +628,7 @@ async def collect_orphaned_subagent_results(
 
         _settle_finished(tasks, response_id)
         pending = _owned_pending(tasks, response_id)
+        await _claim_settled_parents(thread_id, tasks, response_id, pending)
 
         persist_ok = await _replay_settled(
             thread_id, tasks, response_id, pending, all_subagent_events
@@ -683,7 +684,8 @@ async def collect_orphaned_subagent_results(
 
                 if not await _adopt_settled_batch(
                     done, pending, thread_id, response_id,
-                    all_subagent_events, log_label="OrphanCollector",
+                    all_subagent_events, tasks=tasks,
+                    log_label="OrphanCollector",
                 ):
                     persist_ok = False
                 persist_ok = await _persist_if_any(
@@ -770,27 +772,7 @@ async def spawn_subagent_collector(
     bg_registry = await bg_store.get_registry(thread_id)
     if not bg_registry:
         return
-    tasks_to_collect = []
-    # Hold the registry lock during claim so two concurrent collectors
-    # (e.g., orphan from prior turn + current turn) can't both observe
-    # collector_response_id is None for the same task and double-claim.
-    async with bg_registry._lock:
-        for t in bg_registry._tasks.values():
-            if t.collector_response_id:
-                continue
-            # Filter by spawned_run_id: only claim subagents spawned
-            # by THIS turn. None matches as a compat shim for tasks
-            # registered before run_id stamping shipped.
-            if t.spawned_run_id is not None and t.spawned_run_id != run_id:
-                continue
-            if (
-                t.is_pending
-                or t.captured_event_count > 0
-                or t.per_call_records
-                or t.tool_usage
-            ):
-                t.collector_response_id = response_id
-                tasks_to_collect.append(t)
+    tasks_to_collect = await bg_registry.claim_run_subagents(run_id, response_id)
     if tasks_to_collect and workspace_id and user_id:
         handler = metadata.get("handler")
         sse_events = handler.get_sse_events() if handler else []
@@ -898,6 +880,7 @@ async def persist_subagent_usage(
     is_byok: bool = False,
 ) -> None:
     """Persist each subagent's token usage as a separate row with msg_type='task'."""
+    from ptc_agent.agent.middleware.background_subagent.registry import take_task_usage
     from src.server.services.persistence.usage import UsagePersistenceService
     from src.server.services.background_registry_store import BackgroundRegistryStore
 
@@ -908,27 +891,12 @@ async def persist_subagent_usage(
     # usage exactly once — no double-persist across the resume window.
     bg_registry = await BackgroundRegistryStore.get_instance().get_registry(thread_id)
 
-    def _claim_owned_usage() -> list[tuple[Any, list, dict]]:
-        out: list[tuple[Any, list, dict]] = []
-        for task in tasks:
-            if task.collector_response_id != response_id:
-                continue
-            if not (task.per_call_records or task.tool_usage):
-                continue
-            records = task.per_call_records
-            tool_usage = task.tool_usage
-            task.per_call_records = []
-            task.tool_usage = {}
-            out.append((task, records, tool_usage))
-        return out
-
     if bg_registry is not None:
-        async with bg_registry._lock:
-            claimed = _claim_owned_usage()
+        claimed = await bg_registry.take_owned_usage(tasks, response_id)
     else:
-        # Registry gone (thread teardown) — tasks still carry their claim,
-        # and the claim body has no awaits, so it's atomic without the lock.
-        claimed = _claim_owned_usage()
+        # Registry gone (thread teardown) — the tasks still carry their claim,
+        # and the take has no awaits, so it is atomic without the lock.
+        claimed = take_task_usage(tasks, response_id)
 
     if not claimed:
         return
@@ -936,7 +904,7 @@ async def persist_subagent_usage(
     persisted_count = 0
     persisted_records = 0
 
-    for task, records, tool_usage in claimed:
+    for task, records, tool_usage, settle_run_id in claimed:
         try:
             usage_service = UsagePersistenceService(
                 thread_id=thread_id,
@@ -957,12 +925,30 @@ async def persist_subagent_usage(
                 usage_service._token_usage["agent_id"] = task.agent_id
                 usage_service._token_usage["subagent_type"] = task.subagent_type
 
-            await usage_service.persist_usage(
+            # settle_task_run_id makes the usage insert and the ledger's
+            # billing-settle stamp one transaction; on failure (False) the
+            # row stays countable for the recovery sweep to degraded-settle.
+            persisted = await usage_service.persist_usage(
                 response_id=response_id,
                 msg_type="task",
                 status="completed",
                 is_byok=is_byok,
+                settle_task_run_id=settle_run_id,
             )
+            if not persisted:
+                # The records left task memory before this call, so a swallowed
+                # False loses them outright: the ledger row stays countable for
+                # the sweep to degraded-settle, but no billing row will ever be
+                # written for this task. Counting it as persisted would report
+                # the loss as a success.
+                logger.error(
+                    "[SubagentUsage] usage persist reported failure for task "
+                    "%s in thread_id=%s; %d record(s) are unrecoverable",
+                    task.task_id,
+                    thread_id,
+                    len(records),
+                )
+                continue
             persisted_count += 1
             persisted_records += len(records)
 

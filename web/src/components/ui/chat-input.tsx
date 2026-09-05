@@ -1,32 +1,43 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import {
-  Plus, ArrowUp, X, FileText, Loader2, Archive, Square,
-  ScrollText, Radar, ChartCandlestick, Zap, FileStack, ChevronDown, ChevronRight, FolderOpen, TextSelect,
-  Check, Brain, Flame, Rocket, CircleHelp,
-  Mic, MicOff, Sparkles,
+  Plus, ArrowUp, X, FileText, Archive, Square, ClipboardList,
+  ChartCandlestick, TextSelect, MoreHorizontal, Mic, MicOff,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 import { TokenUsageRing, type TokenUsageData } from './token-usage-ring';
 import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
-  DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuSeparator,
 } from './dropdown-menu';
+import { Loader } from './loader';
 import { usePreferences } from '@/hooks/usePreferences';
+import { useEffectiveTuning, useModelProfileWriter } from '@/hooks/useModelProfile';
 import { useFeatureEnabled } from '@/hooks/useFeatures';
 import { useAllModels } from '@/hooks/useAllModels';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { areModelsCompatible, deriveQuickAccessModels, type ModelMetadata } from './chat-input.models';
-import { supportsXhighEffort } from '@/lib/modelCapabilities';
-import { getSkills, getModelMetadata } from '../../pages/ChatAgent/utils/api';
+import { deriveQuickAccessModels } from './chat-input.models';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import './chat-input.css';
-import type { MentionedFile, ModelOptions, ReadyAttachment, SlashCommand, Workspace } from './chat-input.types';
-import { BUILTIN_SLASH_COMMANDS, getModelDisplayName, getSlashCommandIcon, slashRank } from './chat-input.helpers';
-import { ChatInputWidgetDeck, FilePreviewCard, PillToggle } from './chat-input.parts';
+import type { ModelOptions, ReadyAttachment, SlashCommand, Workspace } from './chat-input.types';
+import { getSlashCommandIcon, isLargePaste } from './chat-input.helpers';
+import { effortLabelFor } from '@/lib/modelTuning';
+import type { ModelProfile } from '@/lib/modelTuning';
+import {
+  ChatInputWidgetDeck, FilePreviewCard, MentionAutocompleteList, SlashCommandList,
+} from './chat-input.parts';
+import { ChatInputModelMenu, ModelTriggerMeasure } from './chat-input.modelMenu';
+import { useToolbarItems } from './chat-input.toolbar';
+import {
+  useToolbarFold, CONTAINER_BORDER, CONTAINER_PX, GROUP_GAP, ICON_BUTTON_W, TOKEN_RING_W, TOOLBAR_GAP,
+} from './chat-input.useToolbarFold';
+import { useMentions } from './chat-input.useMentions';
+import { useSlashCommands } from './chat-input.useSlashCommands';
 import { speechSupported, useVoiceInput } from './chat-input.useVoiceInput';
 import { useFileAttachments } from './chat-input.useFileAttachments';
+import { modelPrefs, modelProfile } from '@/lib/modelPreferences';
+
+/** Autosize cap for the composer textarea; past this the box scrolls. */
+const MAX_TEXTAREA_HEIGHT = 200;
 
 
 export interface ChatInputHandle {
@@ -91,7 +102,6 @@ export interface ChatInputProps {
 
 /* --- MAIN COMPONENT --- */
 
-
 const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput({
   onSend,
   disabled = false,
@@ -135,13 +145,16 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   const isMobile = useIsMobile();
   const { preferences } = usePreferences();
   const marketWatchEnabled = useFeatureEnabled('market_watch');
-  const { validModelNames } = useAllModels();
+  const { validModelNames, metadata: modelMetadata } = useAllModels();
   const otherPref = (preferences as Record<string, Record<string, unknown>> | null)?.other_preference;
   const starredModels = Array.isArray(otherPref?.starred_models)
     ? (otherPref.starred_models as unknown[]).filter((m): m is string => typeof m === 'string')
     : [];
-  const preferredModel = (otherPref?.preferred_model as string | undefined) || null;
-  const preferredFlashModel = (otherPref?.preferred_flash_model as string | undefined) || null;
+  // Model routing moved to its own bucket; starred_models above did not,
+  // so the two reads deliberately differ.
+  const mPref = modelPrefs(preferences);
+  const preferredModel = mPref.preferred_model || null;
+  const preferredFlashModel = mPref.preferred_flash_model || null;
   const [message, setMessage] = useState('');
   const { attachedFiles, setAttachedFiles, isDragging, handleFiles, removeFile, onDragOver, onDragLeave, onDrop, handlePaste } = useFileAttachments({ mode });
   const [planMode, setPlanMode] = useState(false);
@@ -155,13 +168,32 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   const modePreferredModel = mode === 'fast' ? (preferredFlashModel || preferredModel) : preferredModel;
   const effectiveInitialModel = initialModel || modePreferredModel;
   const [selectedModel, setSelectedModel] = useState<string | null>(effectiveInitialModel);
-  const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
-  const [fastMode, setFastMode] = useState(false);
-  const [showMoreModels, setShowMoreModels] = useState(false);
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
 
-  const [modelMetadata, setModelMetadata] = useState<ModelMetadata>({});
-  const navigate = useNavigate();
+  // Per-model tuning is an account preference, not a device one: the server
+  // resolves ``profiles[<model>]`` for turns this input never starts (schedules,
+  // automations, subagent role models). ``null`` clears a field; the server
+  // merges per model, so siblings and this model's other fields survive.
+  const { writeProfile: writeModelProfile } = useModelProfileWriter();
+
+  // Both controls read the account profile straight through, with no local
+  // copy: a failed write rolls the cache back and the pill follows it, instead
+  // of naming a level the next scheduled turn will not run.
+  const { profile: modelTuningProfile, efforts: reasoningEfforts, inherited, effective } =
+    useEffectiveTuning(selectedModel);
+  // The raw override, which is what the effort menu needs: it renders "Default"
+  // from the absence of one. The fast-mode toggle has no such state, so it
+  // reads the resolved value below.
+  const reasoningEffort = modelTuningProfile.reasoning_effort ?? null;
+  const inheritedEffort = inherited.reasoning_effort;
+  // The resolved value, which is what a send carries. Tuning writes are
+  // optimistic and not awaited, so between picking Default and the PUT landing
+  // the composer already reads as cleared while the row still holds the old
+  // level. Sending the raw override omits a cleared level and lets the server
+  // resolve against the row the write is still replacing, so the turn runs a
+  // setting the screen no longer shows. Sending what is displayed cannot
+  // disagree with it.
+  const resolvedEffort = effective.reasoning_effort;
+  const resolvedFastMode = effective.fast_mode;
 
   // Sync selectedModel when initialModel or preferredModel changes
   useEffect(() => {
@@ -174,14 +206,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     onModelChange?.(selectedModel);
   }, [selectedModel, onModelChange]);
 
-  // Fetch model metadata for compatibility checking (eager prefetch, resolves instantly after first load)
-  useEffect(() => { getModelMetadata().then((d: Record<string, unknown>) => setModelMetadata(d as typeof modelMetadata)).catch(() => { }); }, []);
-
   const isCodexModel = selectedModel ? modelMetadata[selectedModel]?.sdk === 'codex' : false;
-  const supportsXhigh = supportsXhighEffort(selectedModel);
-
-  // @file mention state
-  const [mentionedFiles, setMentionedFiles] = useState<MentionedFile[]>([]);
 
   // Widget context deck state. Snapshots arrive via ContextBus.attach (when
   // the user clicks "+" on any widget on the page) or via addWidgetSnapshot
@@ -190,24 +215,28 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   // show the same deck.
   const [widgetSnapshots, setWidgetSnapshots] = useState<WidgetContextSnapshot[]>([]);
   const [deckFanned, setDeckFanned] = useState(false);
-  const [showAutocomplete, setShowAutocomplete] = useState(false);
-  const [autocompleteQuery, setAutocompleteQuery] = useState('');
-  const [activeIndex, setActiveIndex] = useState(0);
-  const [mentionStart, setMentionStart] = useState(-1);
 
-  // /slash command state
-  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
-  const [showSlashMenu, setShowSlashMenu] = useState(false);
-  const [slashQuery, setSlashQuery] = useState('');
-  const [slashActiveIndex, setSlashActiveIndex] = useState(0);
-  const [slashStart, setSlashStart] = useState(-1);
-  const [skills, setSkills] = useState<Array<{ command?: string; name: string; description?: string }>>([]);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
 
-  // Fetch skills filtered by agent mode (re-fetches when mode changes; cached per mode in api.js)
-  const skillsMode = mode === 'fast' ? 'flash' : 'ptc';
-  useEffect(() => {
-    getSkills(skillsMode).then((s: unknown[]) => setSkills(s as typeof skills)).catch(() => { });
-  }, [skillsMode]);
+  // @file mentions and /slash commands — trigger detection, filtering,
+  // selection and menu keyboard navigation live in these two machines. Both
+  // return fresh objects each render, so hooks below depend on the individual
+  // (memoized) members rather than the machine itself.
+  const mentions = useMentions({ textareaRef, message, setMessage, workspaceFiles });
+  // The workspace context scopes the slash menu: inside a workspace the
+  // enabled-skill list is the workspace-effective one (workspace-scoped
+  // skills included, its disables applied).
+  const slash = useSlashCommands({ textareaRef, message, setMessage, mode, workspaceId: selectedWorkspaceId });
+  const {
+    mentionedFiles, setMentionedFiles, pruneRemoved: pruneMentions, detectTrigger: detectMention,
+    close: closeMentions, reset: resetMentions, handleKeyDown: mentionKeyDown, open: mentionsOpen,
+  } = mentions;
+  const {
+    slashCommands, pruneRemoved: pruneSlash, detectTrigger: detectSlash,
+    close: closeSlash, reset: resetSlash, handleKeyDown: slashKeyDown,
+  } = slash;
 
   // Voice input (speech recognition) — see chat-input.useVoiceInput.
   const { isListening, toggleListening, stopListening } = useVoiceInput({ message, setMessage, isLoading });
@@ -218,7 +247,12 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   // Expose addContext method for external callers (e.g. FilePanel, message selection)
   useImperativeHandle(ref, () => ({
     getModelOptions() {
-      return { model: selectedModel, reasoningEffort, fastMode, marketWatch: effectiveMarketWatch };
+      return {
+        model: selectedModel,
+        reasoningEffort: resolvedEffort,
+        fastMode: resolvedFastMode,
+        marketWatch: effectiveMarketWatch,
+      };
     },
     addContext({ path, snippet, label, lineStart, lineEnd, lineCount, source }) {
       if (snippet) {
@@ -257,18 +291,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     setModel(model) {
       if (model) setSelectedModel(model);
     },
-  }), [selectedModel, reasoningEffort, fastMode, effectiveMarketWatch]);
-
-  // Workspace dropdown
-  const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false);
-  const workspaceMenuRef = useRef<HTMLDivElement>(null);
-  const workspaceBtnRef = useRef<HTMLButtonElement>(null);
-
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const autocompleteRef = useRef<HTMLDivElement>(null);
-  const slashMenuRef = useRef<HTMLDivElement>(null);
-  const chatContainerRef = useRef<HTMLDivElement>(null);
+  }), [selectedModel, resolvedEffort, resolvedFastMode, effectiveMarketWatch, setMentionedFiles]);
 
   // Subscribe to ContextBus so this input mirrors the global widget-context
   // deck. Multiple chat inputs can be visible simultaneously (hero card +
@@ -301,8 +324,6 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     return off;
   }, []);
 
-  const hasModeToggle = mode !== undefined && onModeChange !== undefined;
-
   // Prefill support
   useEffect(() => {
     if (prefillMessage) {
@@ -311,33 +332,59 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     }
   }, [prefillMessage, onClearPrefill]);
 
-  // Load per-model reasoning effort from localStorage
+  // These picks used to be device-local, which meant server-started turns never
+  // saw them. Lift what this device still holds into the account profile, then
+  // drop the keys. Per field, not per record: a profile that already carries one
+  // of the two must not strand the other. And the keys are this value's only
+  // copy until the write lands, so they go only once it has.
+  const liftedModelRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!selectedModel) { setReasoningEffort(null); return; }
-    const saved = localStorage.getItem(`reasoning_effort:${selectedModel}`);
-    setReasoningEffort(saved || null);
-  }, [selectedModel]);
+    // The model's own row has to be in hand first: `reasoningEfforts` reads
+    // empty both while the catalog loads and for a model that declares no
+    // ladder, and the clamp below wants opposite answers for the two.
+    const meta = selectedModel ? modelMetadata[selectedModel] : undefined;
+    if (!selectedModel || !preferences || !meta || liftedModelRef.current === selectedModel) return;
+    liftedModelRef.current = selectedModel;
 
-  // Persist reasoning effort per model
-  useEffect(() => {
-    if (!selectedModel) return;
-    if (reasoningEffort) localStorage.setItem(`reasoning_effort:${selectedModel}`, reasoningEffort);
-    else localStorage.removeItem(`reasoning_effort:${selectedModel}`);
-  }, [reasoningEffort, selectedModel]);
+    const profile = modelProfile(preferences, selectedModel);
+    const storedEffort = localStorage.getItem(`reasoning_effort:${selectedModel}`);
+    const storedFast = localStorage.getItem(`fast_mode:${selectedModel}`) === 'true';
+    const lift: ModelProfile = {};
+    // These keys predate per-model ladders, when one fixed list of levels was
+    // offered for every model, so a device may hold a level this model never
+    // declared. The account rejects it and a run would drop it anyway, so it
+    // is discarded with the keys rather than lifted.
+    if (storedEffort && reasoningEfforts.includes(storedEffort) && profile.reasoning_effort === undefined) {
+      lift.reasoning_effort = storedEffort;
+    }
+    if (storedFast && profile.fast_mode === undefined) lift.fast_mode = true;
 
-  // Load per-model fast mode from localStorage
-  useEffect(() => {
-    if (!selectedModel) { setFastMode(false); return; }
-    const saved = localStorage.getItem(`fast_mode:${selectedModel}`);
-    setFastMode(saved === 'true');
-  }, [selectedModel]);
+    const dropDeviceKeys = () => {
+      localStorage.removeItem(`reasoning_effort:${selectedModel}`);
+      localStorage.removeItem(`fast_mode:${selectedModel}`);
+    };
+    if (Object.keys(lift).length > 0) {
+      // No release of the guard on failure: the write moves `preferences`
+      // twice, so re-entry is immediate and a rejection would resubmit itself
+      // without bound. A failed lift keeps its device keys and is retried on
+      // the next mount or model switch.
+      writeModelProfile(selectedModel, lift, { onSuccess: dropDeviceKeys });
+    } else {
+      dropDeviceKeys();
+    }
+  }, [selectedModel, preferences, writeModelProfile, modelMetadata, reasoningEfforts]);
 
-  // Persist fast mode per model
-  useEffect(() => {
-    if (!selectedModel) return;
-    if (fastMode) localStorage.setItem(`fast_mode:${selectedModel}`, 'true');
-    else localStorage.removeItem(`fast_mode:${selectedModel}`);
-  }, [fastMode, selectedModel]);
+  const handleReasoningEffortChange = useCallback((effort: string | null) => {
+    if (selectedModel) writeModelProfile(selectedModel, { reasoning_effort: effort });
+  }, [selectedModel, writeModelProfile]);
+
+  const handleFastModeChange = useCallback((fast: boolean) => {
+    // Both states are explicit. `null` here would mean "inherit", which this
+    // toggle cannot express — and on an account defaulting to fast it would
+    // delete the override and snap straight back to fast. Clearing is the
+    // per-model matrix's job, where Default is its own option.
+    if (selectedModel) writeModelProfile(selectedModel, { fast_mode: fast });
+  }, [selectedModel, writeModelProfile]);
 
   // Reset isStopping once both a running turn and a compaction have finished.
   useEffect(() => {
@@ -350,245 +397,52 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     onStop?.();
   }, [isStopping, onStop]);
 
-  // Auto-resize textarea
+  // Auto-resize textarea; past the cap the box scrolls (overflow-y-auto).
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px';
+      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, MAX_TEXTAREA_HEIGHT) + 'px';
     }
   }, [message]);
 
-  // Close workspace menu on click outside
-  useEffect(() => {
-    if (!showWorkspaceMenu) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (workspaceBtnRef.current?.contains(e.target as Node)) return;
-      if (workspaceMenuRef.current && !workspaceMenuRef.current.contains(e.target as Node)) {
-        setShowWorkspaceMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showWorkspaceMenu]);
-
-  // --- @File Mention Autocomplete ---
-  const filteredMentionFiles = useMemo(() => {
-    if (!showAutocomplete) return [];
-    const query = autocompleteQuery.toLowerCase();
-    const dirPriority: Record<string, number> = { '': 0, results: 1, data: 2 };
-    return workspaceFiles
-      .filter((f) => f.toLowerCase().includes(query))
-      .sort((a, b) => {
-        const da = a.includes('/') ? a.slice(0, a.indexOf('/')) : '';
-        const db = b.includes('/') ? b.slice(0, b.indexOf('/')) : '';
-        const pa = dirPriority[da] ?? 3;
-        const pb = dirPriority[db] ?? 3;
-        if (pa !== pb) return pa - pb;
-        return a.localeCompare(b);
-      })
-      .slice(0, 10);
-  }, [workspaceFiles, autocompleteQuery, showAutocomplete]);
-
-  useEffect(() => {
-    setActiveIndex(0);
-  }, [filteredMentionFiles.length]);
-
-  // --- /Slash Command Autocomplete ---
-  const filteredSlashCommands = useMemo(() => {
-    if (!showSlashMenu) return [];
-    const query = slashQuery.toLowerCase();
-    const items: SlashCommand[] = [
-      ...skills.filter((s) => s.command).map((s) => ({ type: 'skill', name: s.command!, skillName: s.name, description: t(`chat.slashCommand.${s.command}Desc`, { defaultValue: s.description }) })),
-      ...BUILTIN_SLASH_COMMANDS.map((c) => ({ ...c, description: t(`chat.slashCommand.${c.name}Desc`) })),
-    ];
-    return items
-      .filter((item) => !slashCommands.some((c) => c.name === item.name))
-      // Fuzzy-match on command name + aliases only — never the description.
-      // Matching the description surfaces irrelevant commands (e.g. /subagent
-      // for "comp" because its blurb says "...complete this task"); skills and
-      // builtins follow the same name-based rule.
-      .filter((item) => {
-        if (!query) return true;
-        if (item.name.toLowerCase().includes(query)) return true;
-        if (item.aliases?.some((a: string) => a.toLowerCase().includes(query))) return true;
-        return false;
-      })
-      // Rank: prefix (char-by-char from the start) matches before substring-only
-      // matches; within a tier, system/service commands (/compact, /offload,
-      // /subagent) outrank skills. So `/d` puts /dcf-model (prefix) above
-      // /offload (a system command matching "d" only mid-word), while `/comp`
-      // puts /compact above /comps-analysis (both prefix → system wins). Combined
-      // score (lower = earlier): prefix+system 0, prefix+skill 1, substr+system
-      // 2, substr+skill 3. Array.sort is stable, preserving within-tier order;
-      // sort before slice so a high-rank match never falls off the top-10.
-      .sort((a, b) => slashRank(a, query) - slashRank(b, query))
-      .slice(0, 10);
-  }, [skills, showSlashMenu, slashQuery, slashCommands, t]);
-
-  useEffect(() => {
-    setSlashActiveIndex(0);
-  }, [filteredSlashCommands.length]);
+  // Large text pastes condense into a pill (snippet-mention mechanics) instead
+  // of flooding the draft. File pastes keep priority — handlePaste prevents
+  // default when it takes the clipboard.
+  const handleTextareaPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    handlePaste(e);
+    if (e.defaultPrevented) return;
+    const text = e.clipboardData.getData('text/plain');
+    if (!isLargePaste(text)) return;
+    e.preventDefault();
+    const lineCount = text.split('\n').length;
+    setMentionedFiles((prev) => {
+      if (prev.some((f) => f.source === 'paste' && f.snippet === text)) return prev;
+      return [...prev, { path: '', snippet: text, label: t('context.pastedLines', { count: lineCount }), lineCount, source: 'paste' }];
+    });
+  }, [handlePaste, setMentionedFiles, t]);
 
   // Detect @ and / triggers on input change
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     setMessage(val);
-
-    // Remove pills whose /{command} or @mention text was deleted from the textarea
-    setSlashCommands((prev) => prev.filter((cmd) => val.includes(`/${cmd.name}`)));
-    setMentionedFiles((prev) => prev.filter((f) => f.snippet || val.includes(`@${f.path}`)));
-
     const cursorPos = e.target.selectionStart;
 
-    // Detect / trigger for slash commands
-    let slashIdx = -1;
-    for (let i = cursorPos - 1; i >= 0; i--) {
-      const ch = val[i];
-      if (ch === '/') {
-        if (i === 0 || /\s/.test(val[i - 1])) {
-          slashIdx = i;
-        }
-        break;
-      }
-      if (/\s/.test(ch)) break;
-    }
+    // Pills whose /{command} or @mention text was deleted go with it
+    pruneSlash(val);
+    pruneMentions(val);
 
-    if (slashIdx >= 0) {
-      const partial = val.slice(slashIdx + 1, cursorPos);
-      setSlashStart(slashIdx);
-      setSlashQuery(partial);
-      setShowSlashMenu(true);
-      // Close @mention when /slash is active
-      setShowAutocomplete(false);
-      setMentionStart(-1);
-      setAutocompleteQuery('');
-      return;
-    } else {
-      setShowSlashMenu(false);
-      setSlashStart(-1);
-      setSlashQuery('');
-    }
+    // A live /slash trigger wins: the two menus never show at once.
+    if (detectSlash(val, cursorPos)) closeMentions();
+    else detectMention(val, cursorPos);
+  }, [pruneSlash, pruneMentions, detectSlash, detectMention, closeMentions]);
 
-    // Detect @ trigger for file mentions
-    let atIdx = -1;
-    for (let i = cursorPos - 1; i >= 0; i--) {
-      const ch = val[i];
-      if (ch === '@') {
-        if (i === 0 || /\s/.test(val[i - 1])) {
-          atIdx = i;
-        }
-        break;
-      }
-      if (/\s/.test(ch)) break;
-    }
-
-    if (atIdx >= 0) {
-      const partial = val.slice(atIdx + 1, cursorPos);
-      setMentionStart(atIdx);
-      setAutocompleteQuery(partial);
-      setShowAutocomplete(true);
-    } else {
-      setShowAutocomplete(false);
-      setMentionStart(-1);
-      setAutocompleteQuery('');
-    }
-  }, []);
-
-  const selectFile = useCallback((filePath: string) => {
-    if (mentionStart < 0) return;
-    const cursorPos = textareaRef.current?.selectionStart ?? message.length;
-    const before = message.slice(0, mentionStart);
-    const after = message.slice(cursorPos);
-    const newMessage = before + '@' + filePath + ' ' + after;
-    setMessage(newMessage);
-
-    setMentionedFiles((prev) => {
-      if (prev.some((f) => f.path === filePath)) return prev;
-      return [...prev, { path: filePath }];
-    });
-
-    setShowAutocomplete(false);
-    setMentionStart(-1);
-    setAutocompleteQuery('');
-
-    setTimeout(() => {
-      if (textareaRef.current) {
-        const newCursorPos = before.length + 1 + filePath.length + 1;
-        textareaRef.current.focus();
-        textareaRef.current.setSelectionRange(newCursorPos, newCursorPos);
-      }
-    }, 0);
-  }, [mentionStart, message]);
-
-  const removeMention = useCallback((path: string, label?: string, snippet?: string) => {
-    setMentionedFiles((prev) => prev.filter((f) => {
-      if (snippet) return !(f.snippet === snippet && f.path === path);
-      if (label) return !(f.path === path && f.label === label);
-      return !(f.path === path && !f.label);
-    }));
-    // Also remove @path text from textarea
-    setMessage((prev) => prev.replace(new RegExp(`(^|\\s)@${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`), '$1$2').trim());
-  }, []);
-
-  const selectSlashCommand = useCallback((cmd: SlashCommand) => {
-    if (slashStart < 0) return;
-    const cursorPos = textareaRef.current?.selectionStart ?? message.length;
-    const before = message.slice(0, slashStart);
-    const after = message.slice(cursorPos);
-
-    // All commands — including system actions like /compact — insert a pill and
-    // defer execution to send. Nothing fires on mere selection; handleSend
-    // dispatches action pills via onAction when the user actually sends.
-    const inserted = `/${cmd.name} `;
-    const newMsg = before + inserted + after;
-    setMessage(newMsg);
-    setShowSlashMenu(false);
-    setSlashStart(-1);
-    setSlashQuery('');
-    setSlashCommands((prev) => {
-      if (prev.some((c) => c.name === cmd.name)) return prev;
-      return [...prev, cmd];
-    });
-    const newCursor = before.length + inserted.length;
-    setTimeout(() => {
-      if (textareaRef.current) {
-        textareaRef.current.focus();
-        textareaRef.current.setSelectionRange(newCursor, newCursor);
-      }
-    }, 0);
-  }, [slashStart, message]);
-
-  const removeSlashCommand = useCallback((name: string) => {
-    setSlashCommands((prev) => prev.filter((c) => c.name !== name));
-    // Also remove /{command} text from textarea
-    setMessage((prev) => prev.replace(new RegExp(`(^|\\s)/${name}(\\s|$)`), '$1$2').trim());
-  }, []);
-
-  // Scroll active autocomplete item into view
-  useEffect(() => {
-    if (!showAutocomplete || !autocompleteRef.current) return;
-    const items = autocompleteRef.current.querySelectorAll('.mention-autocomplete-item');
-    if (items[activeIndex]) {
-      items[activeIndex].scrollIntoView({ block: 'nearest' });
-    }
-  }, [activeIndex, showAutocomplete]);
-
-  // Scroll active slash menu item into view
-  useEffect(() => {
-    if (!showSlashMenu || !slashMenuRef.current) return;
-    const items = slashMenuRef.current.querySelectorAll('.mention-autocomplete-item');
-    if (items[slashActiveIndex]) {
-      items[slashActiveIndex].scrollIntoView({ block: 'nearest' });
-    }
-  }, [slashActiveIndex, showSlashMenu]);
-
-  // Close autocomplete on blur
+  // Close both autocompletes on blur
   const handleBlur = useCallback(() => {
     setTimeout(() => {
-      setShowAutocomplete(false);
-      setShowSlashMenu(false);
+      closeMentions();
+      closeSlash();
     }, 200);
-  }, []);
+  }, [closeMentions, closeSlash]);
 
   // --- Send ---
   const hasContent = message.trim() || attachedFiles.length > 0 || !!chartImage || mentionedFiles.some((f) => f.snippet) || widgetSnapshots.length > 0 || hasExternalContext;
@@ -605,16 +459,14 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       // Fully reset the draft, same as a normal send — an action must not leave
       // staged attachments / mentions / widget context behind for the next turn.
       setMessage('');
-      setSlashCommands([]);
+      resetSlash();
       attachedFiles.forEach((f) => { if (f.preview) URL.revokeObjectURL(f.preview); });
       setAttachedFiles([]);
-      setMentionedFiles([]);
+      resetMentions();
       if (widgetSnapshots.length > 0) {
         ContextBus.clear();
       }
       setDeckFanned(false);
-      setShowAutocomplete(false);
-      setShowSlashMenu(false);
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto';
       }
@@ -637,6 +489,9 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
         if (f.source === 'chat') {
           return `\n<details>\n<summary>[${t('context.fromAgentResponse')}]</summary>\n\n\`\`\`\n${f.snippet}\n\`\`\`\n</details>`;
         }
+        if (f.source === 'paste') {
+          return `\n<details>\n<summary>[${t('context.pastedText')}]</summary>\n\n\`\`\`\n${f.snippet}\n\`\`\`\n</details>`;
+        }
         const lineInfo = f.lineStart != null
           ? ` (lines ${f.lineStart}-${f.lineEnd}, ${f.lineCount} line${f.lineCount !== 1 ? 's' : ''})`
           : '';
@@ -646,16 +501,16 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     }
     onSend(finalMessage, planMode, readyAttachments, slashCommands, {
       model: selectedModel,
-      reasoningEffort,
-      fastMode,
+      reasoningEffort: resolvedEffort,
+      fastMode: resolvedFastMode,
       marketWatch: effectiveMarketWatch,
       widgetSnapshots: widgetSnapshots.length ? widgetSnapshots : undefined,
     });
     setMessage('');
     attachedFiles.forEach(f => { if (f.preview) URL.revokeObjectURL(f.preview); });
     setAttachedFiles([]);
-    setMentionedFiles([]);
-    setSlashCommands([]);
+    resetMentions();
+    resetSlash();
     // Clear widget deck on send. Other mounted chat inputs hear the same
     // clear via ContextBus so the deck empties everywhere — single source
     // of truth.
@@ -663,12 +518,12 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       ContextBus.clear();
     }
     setDeckFanned(false);
-    setShowAutocomplete(false);
-    setShowSlashMenu(false);
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [hasContent, disabled, message, planMode, effectiveMarketWatch, attachedFiles, setAttachedFiles, onSend, onAction, mentionedFiles, slashCommands, selectedModel, reasoningEffort, fastMode, widgetSnapshots, t]);
+  }, [hasContent, disabled, message, planMode, effectiveMarketWatch, attachedFiles, setAttachedFiles, onSend, onAction,
+    mentionedFiles, resetMentions, slashCommands, resetSlash,
+    selectedModel, resolvedEffort, resolvedFastMode, widgetSnapshots, t]);
 
   // --- Keyboard & Language Detection ---
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -678,55 +533,12 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       stopListening();
     }
 
-    // Slash command menu keyboard navigation
-    if (showSlashMenu && filteredSlashCommands.length > 0) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setSlashActiveIndex((prev) => (prev + 1) % filteredSlashCommands.length);
-        return;
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSlashActiveIndex((prev) => (prev - 1 + filteredSlashCommands.length) % filteredSlashCommands.length);
-        return;
-      }
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault();
-        selectSlashCommand(filteredSlashCommands[slashActiveIndex]);
-        return;
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        setShowSlashMenu(false);
-        return;
-      }
-    }
+    // An open autocomplete owns the navigation keys (slash menu first — it
+    // suppresses the mention menu while active).
+    if (slashKeyDown(e)) return;
+    if (mentionKeyDown(e)) return;
 
-    // @mention autocomplete keyboard navigation
-    if (showAutocomplete && filteredMentionFiles.length > 0) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setActiveIndex((prev) => (prev + 1) % filteredMentionFiles.length);
-        return;
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setActiveIndex((prev) => (prev - 1 + filteredMentionFiles.length) % filteredMentionFiles.length);
-        return;
-      }
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault();
-        selectFile(filteredMentionFiles[activeIndex]);
-        return;
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        setShowAutocomplete(false);
-        return;
-      }
-    }
-
-    if (e.key === 'Enter' && !showAutocomplete) {
+    if (e.key === 'Enter' && !mentionsOpen) {
       // Cmd/Ctrl+Enter inserts a newline at the cursor (browsers suppress this by default)
       if (e.metaKey || e.ctrlKey) {
         e.preventDefault();
@@ -747,30 +559,51 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
         handleSend();
       }
     }
+  }, [slashKeyDown, mentionKeyDown, mentionsOpen, handleSend, isListening, stopListening, message]);
 
-    if (e.key === 'Escape' && showAutocomplete) {
-      setShowAutocomplete(false);
-    }
-  }, [showSlashMenu, filteredSlashCommands, slashActiveIndex, selectSlashCommand, showAutocomplete, filteredMentionFiles, activeIndex, selectFile, handleSend, isListening, stopListening, message]);
+  /* --- Progressive toolbar folding ---
+   *
+   * The labeled toggles fold into a ⋯ overflow menu only when the measured row
+   * can't hold them — whatever fits stays inline, the rest overflows in
+   * declaration (priority) order. Widths come from a hidden measure row that
+   * renders the SAME components, so any locale / workspace name / model label
+   * is measured, never guessed. */
+  const toolbarItems = useToolbarItems({
+    mode, onModeChange, ptcDisabledReason,
+    planMode, setPlanMode, watchMode, setWatchMode, marketWatchEnabled,
+    workspaces, selectedWorkspaceId, onWorkspaceChange,
+  });
 
-  // Workspace selector helpers
-  const selectedWorkspaceName = useMemo(() => {
-    if (!workspaces || !selectedWorkspaceId) return 'Workspace';
-    const ws = workspaces.find((w) => w.workspace_id === selectedWorkspaceId);
-    return ws?.name || 'Workspace';
-  }, [workspaces, selectedWorkspaceId]);
-
-  const showWorkspaceSelector = hasModeToggle && mode === 'ptc' && workspaces && workspaces.length > 0;
+  const ringVisible = !!(tokenUsage && tokenUsage.threshold > 0 && tokenUsage.total > 0);
+  const micReserved = speechSupported && !!otherPref?.voice_input_enabled;
+  const { measureRowRef, fold } = useToolbarFold({
+    containerRef: chatContainerRef,
+    items: toolbarItems,
+    // The model pill is measured too, but it isn't foldable.
+    measureKey: `${selectedModel}|${resolvedEffort}|${resolvedFastMode && isCodexModel}`,
+    // Left of the first pill: container border + px-3, the attach button, and
+    // the optional ring / chart-capture button (see the action bar below).
+    fixedLeft: CONTAINER_BORDER + CONTAINER_PX + ICON_BUTTON_W
+      + (ringVisible ? TOOLBAR_GAP + TOKEN_RING_W : 0)
+      + (onCaptureChart ? TOOLBAR_GAP + ICON_BUTTON_W : 0),
+    // Right group: the model pill (measured), the mic, and send/stop. Mic
+    // reserve ignores isLoading on purpose — the fold set must not jump when a
+    // turn starts and the mic hides.
+    rightReserve: (widths) => GROUP_GAP + (widths.model ?? 0)
+      + (micReserved ? TOOLBAR_GAP + ICON_BUTTON_W : 0)
+      + TOOLBAR_GAP + ICON_BUTTON_W,
+  });
+  const inlineItems = toolbarItems.filter((i) => fold.inline.has(i.id));
+  const foldedItems = toolbarItems.filter((i) => fold.folded.includes(i.id));
 
   /** Quick-access models for both the desktop submenu and mobile inline expand */
   const moreModelsItems = useMemo(
     () => deriveQuickAccessModels({
-      preferredModel, preferredFlashModel, starredModels,
-      validModelNames, initialModel, selectedModel, modelMetadata,
+      preferredModel, preferredFlashModel, starredModels, validModelNames,
       // Don't repeat models already shown in the primary (selected + thread) section.
       excludeModels: [selectedModel, ...threadModelsProp].filter((m): m is string => !!m),
     }),
-    [preferredModel, preferredFlashModel, starredModels, validModelNames, initialModel, selectedModel, modelMetadata, threadModelsProp],
+    [preferredModel, preferredFlashModel, starredModels, validModelNames, selectedModel, threadModelsProp],
   );
 
   return (
@@ -783,7 +616,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       {/* Main Container */}
       <div
         ref={chatContainerRef}
-        className={`chat-input-container flex flex-col items-stretch transition-all duration-200 relative z-10 rounded-2xl cursor-text border border-[hsl(var(--primary))] bg-[var(--color-bg-card)] ${isListening ? 'recording' : ''}`}
+        className={`chat-input-container flex flex-col items-stretch transition-all duration-200 relative z-10 rounded-2xl cursor-text border border-[var(--color-border-input)] bg-[var(--color-bg-card)] ${isListening ? 'recording' : ''}`}
         onClick={() => textareaRef.current?.focus()}
       >
         {isListening && (
@@ -840,7 +673,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                   <span>/{cmd.name}</span>
                   <button
                     className="mention-pill-remove"
-                    onClick={(e) => { e.stopPropagation(); removeSlashCommand(cmd.name); }}
+                    onClick={(e) => { e.stopPropagation(); slash.removeCommand(cmd.name); }}
                     title="Remove"
                   >
                     <X className="h-2.5 w-2.5" />
@@ -849,22 +682,30 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
               ))}
               {mentionedFiles.map((f, idx) => {
                 const isSnippet = !!f.snippet;
+                const isPaste = f.source === 'paste';
                 const name = isSnippet ? f.label : f.path.split('/').pop();
                 const pillKey = (f.path || '') + '::' + (f.label || '') + '::' + idx;
+                // Snippet tooltips preview, not mirror — a condensed paste can
+                // be tens of KB and title= renders it all.
+                const tooltip = isSnippet
+                  ? (f.snippet!.length > 500 ? f.snippet!.slice(0, 500) + '…' : f.snippet)
+                  : f.path;
                 return (
                   <div
                     key={pillKey}
                     className={`mention-pill ${isSnippet ? 'mention-pill-snippet' : ''}`}
-                    title={isSnippet ? f.snippet : f.path}
+                    title={tooltip}
                   >
-                    {isSnippet
-                      ? <TextSelect className="h-3 w-3 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
-                      : <FileText className="h-3 w-3 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
+                    {isPaste
+                      ? <ClipboardList className="h-3 w-3 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
+                      : isSnippet
+                        ? <TextSelect className="h-3 w-3 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
+                        : <FileText className="h-3 w-3 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
                     }
                     <span>{name}</span>
                     <button
                       className="mention-pill-remove"
-                      onClick={(e) => { e.stopPropagation(); removeMention(f.path, f.label, f.snippet); }}
+                      onClick={(e) => { e.stopPropagation(); mentions.removeMention(f.path, f.label, f.snippet); }}
                       title="Remove"
                     >
                       <X className="h-2.5 w-2.5" />
@@ -899,62 +740,25 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
             </div>
           )}
 
-          {/* Autocomplete dropdown (above textarea) */}
-          {showAutocomplete && (
-            <div className="mention-autocomplete" ref={autocompleteRef}>
-              {filteredMentionFiles.length === 0 ? (
-                <div className="mention-autocomplete-empty">
-                  {workspaceFiles.length === 0 ? 'No files available' : 'No matching files'}
-                </div>
-              ) : (
-                filteredMentionFiles.map((filePath, idx) => {
-                  const name = filePath.split('/').pop();
-                  const dir = filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : '';
-                  return (
-                    <div
-                      key={filePath}
-                      className={`mention-autocomplete-item ${idx === activeIndex ? 'active' : ''}`}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        selectFile(filePath);
-                      }}
-                      onMouseEnter={() => setActiveIndex(idx)}
-                    >
-                      <FileText className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-                      <span className="file-name">{name}</span>
-                      {dir && <span className="file-path">{dir}/</span>}
-                    </div>
-                  );
-                })
-              )}
-            </div>
+          {/* Autocomplete dropdowns (above textarea) */}
+          {mentionsOpen && (
+            <MentionAutocompleteList
+              listRef={mentions.listRef}
+              files={mentions.filtered}
+              activeIndex={mentions.activeIndex}
+              hasWorkspaceFiles={workspaceFiles.length > 0}
+              onSelect={mentions.selectFile}
+              onHover={mentions.setActiveIndex}
+            />
           )}
-
-          {/* Slash command dropdown */}
-          {showSlashMenu && (
-            <div className="mention-autocomplete" ref={slashMenuRef}>
-              {filteredSlashCommands.length === 0 ? (
-                <div className="mention-autocomplete-empty">
-                  {t('chat.slashCommand.noMatching')}
-                </div>
-              ) : (
-                filteredSlashCommands.map((cmd, idx) => (
-                  <div
-                    key={cmd.name}
-                    className={`mention-autocomplete-item ${idx === slashActiveIndex ? 'active' : ''}`}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      selectSlashCommand(cmd);
-                    }}
-                    onMouseEnter={() => setSlashActiveIndex(idx)}
-                  >
-                    {getSlashCommandIcon(cmd, "h-4 w-4 flex-shrink-0 slash-cmd-icon")}
-                    <span className="slash-cmd-name">/{cmd.name}</span>
-                    <span className="slash-cmd-desc">{cmd.description}</span>
-                  </div>
-                ))
-              )}
-            </div>
+          {slash.open && (
+            <SlashCommandList
+              listRef={slash.listRef}
+              commands={slash.filtered}
+              activeIndex={slash.activeIndex}
+              onSelect={slash.selectCommand}
+              onHover={slash.setActiveIndex}
+            />
           )}
 
           {/* Textarea */}
@@ -963,7 +767,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
               ref={textareaRef}
               value={message}
               onChange={handleChange}
-              onPaste={handlePaste}
+              onPaste={handleTextareaPaste}
               onKeyDown={handleKeyDown}
               onBlur={handleBlur}
               onCompositionStart={() => {
@@ -973,7 +777,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                 }
               }}
               placeholder={isListening ? "" : placeholder}
-              className={`w-full bg-transparent border-0 outline-none text-[var(--color-text-primary)] ${isMobile ? 'text-base' : 'text-sm'} placeholder:text-[var(--color-text-tertiary)] resize-none overflow-hidden leading-relaxed block transition-opacity duration-300 ${isListening ? 'opacity-20' : 'opacity-100'}`}
+              className={`font-content w-full bg-transparent border-0 text-[var(--color-text-primary)] ${isMobile ? 'text-base' : 'text-sm'} placeholder:text-[var(--color-text-tertiary)] resize-none overflow-y-auto leading-relaxed block transition-opacity duration-300 ${isListening ? 'opacity-20' : 'opacity-100'}`}
               rows={minRows}
               disabled={disabled}
               style={{ minHeight: `${minRows * 1.5}em` }}
@@ -982,12 +786,14 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
 
           {/* Action Bar */}
           <div className="flex gap-2 w-full items-center">
-            {/* Left Tools */}
-            <div className="relative flex-1 flex items-center shrink min-w-0 gap-1">
+            {/* Left Tools — min-width:auto (no min-w-0) on purpose: the group's
+                min-content floor makes the RIGHT group absorb any over-squeeze
+                (model label truncates) instead of the groups overlapping. */}
+            <div className="relative flex-1 flex items-center shrink gap-1">
               {/* Attach Button */}
               <button
                 onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
-                className="inline-flex items-center justify-center h-8 w-8 rounded-lg transition-colors text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5 active:scale-95"
+                className="inline-flex flex-none items-center justify-center h-8 w-8 rounded-lg transition-colors text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5 active:scale-95"
                 type="button"
                 aria-label="Attach file"
               >
@@ -995,7 +801,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
               </button>
 
               {/* Token Usage Ring */}
-              {tokenUsage && tokenUsage.threshold > 0 && tokenUsage.total > 0 && (
+              {ringVisible && tokenUsage && (
                 <TokenUsageRing tokenUsage={tokenUsage} />
               )}
 
@@ -1003,7 +809,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
               {onCaptureChart && (
                 <button
                   onClick={(e) => { e.stopPropagation(); onCaptureChart(); }}
-                  className="inline-flex items-center justify-center h-8 w-8 rounded-lg transition-colors text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5 active:scale-95"
+                  className="inline-flex flex-none items-center justify-center h-8 w-8 rounded-lg transition-colors text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5 active:scale-95"
                   type="button"
                   title="Attach chart screenshot"
                   aria-label="Capture chart"
@@ -1012,343 +818,91 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                 </button>
               )}
 
-              {/* Mode Toggle (fast/ptc) */}
-              {hasModeToggle && (() => {
-                const ptcBlocked = mode === 'fast' && !!ptcDisabledReason;
-                return (
-                  <button
-                    className="inline-flex items-center rounded-full border-none"
-                    style={{
-                      gap: '6px',
-                      padding: '6px 10px',
-                      fontSize: '13px',
-                      fontWeight: 500,
-                      background: 'transparent',
-                      color: ptcBlocked ? 'var(--color-text-quaternary, #9ca3af)' : 'var(--color-text-muted, #8b8fa3)',
-                      border: '1px solid transparent',
-                      cursor: ptcBlocked ? 'not-allowed' : 'pointer',
-                      opacity: ptcBlocked ? 0.6 : 1,
-                      transition: 'background 0.2s, color 0.2s, border-color 0.2s',
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (ptcBlocked) return;
-                      onModeChange(mode === 'fast' ? 'ptc' : 'fast');
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!ptcBlocked) e.currentTarget.style.background = 'var(--color-border-muted)';
-                    }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                    type="button"
-                    aria-disabled={ptcBlocked || undefined}
-                    title={
-                      ptcBlocked
-                        ? ptcDisabledReason!
-                        : mode === 'fast'
-                          ? 'Flash — quick answer using flash model'
-                          : 'PTC — full agent with workspace and tools'
-                    }
+              {/* Foldable toggles — whatever fits, in priority order */}
+              {inlineItems.map((item) => (
+                <React.Fragment key={item.id}>{item.inline({})}</React.Fragment>
+              ))}
+
+              {/* ⋯ overflow — only the toggles that didn't fit inline. The
+                  amber dot marks a folded-but-active toggle. */}
+              {foldedItems.length > 0 && (
+                <DropdownMenu modal={false}>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      className="relative inline-flex flex-none items-center justify-center h-8 w-8 rounded-lg transition-colors text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5 data-[state=open]:bg-foreground/5 data-[state=open]:text-[var(--color-text-muted)]"
+                      onClick={(e) => e.stopPropagation()}
+                      type="button"
+                      title={t('chat.moreTools', { defaultValue: 'More tools' })}
+                      aria-label={t('chat.moreTools', { defaultValue: 'More tools' })}
+                    >
+                      <MoreHorizontal className="w-4 h-4" />
+                      {foldedItems.some((item) => item.active) && (
+                        <span
+                          className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full"
+                          style={{ background: 'var(--color-accent-primary)' }}
+                        />
+                      )}
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    align="start"
+                    side={dropdownDirection === 'down' ? 'bottom' : 'top'}
+                    className="w-52"
+                    container={isMobile ? chatContainerRef.current : undefined}
                   >
-                    {mode === 'fast' ? <Zap className="h-4 w-4" /> : <FileStack className="h-4 w-4" />}
-                    <span>{mode === 'fast' ? 'Flash' : 'PTC'}</span>
-                  </button>
-                );
-              })()}
-
-              {/* Workspace Selector */}
-              {showWorkspaceSelector && (
-                <div className="relative" ref={workspaceMenuRef}>
-                  <button
-                    ref={workspaceBtnRef}
-                    className="inline-flex items-center rounded-full border-none cursor-pointer"
-                    style={{
-                      gap: '4px',
-                      padding: '6px 10px',
-                      fontSize: '13px',
-                      fontWeight: 500,
-                      background: showWorkspaceMenu ? 'var(--color-accent-soft)' : 'transparent',
-                      color: showWorkspaceMenu ? 'var(--color-accent-light)' : 'var(--color-text-muted, #8b8fa3)',
-                      border: showWorkspaceMenu ? '1px solid var(--color-accent-overlay)' : '1px solid transparent',
-                      transition: 'background 0.2s, color 0.2s, border-color 0.2s',
-                    }}
-                    onClick={(e) => { e.stopPropagation(); setShowWorkspaceMenu((v) => !v); }}
-                    onMouseEnter={(e) => {
-                      if (!showWorkspaceMenu) e.currentTarget.style.background = 'var(--color-border-muted)';
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!showWorkspaceMenu) e.currentTarget.style.background = 'transparent';
-                    }}
-                    type="button"
-                    title="Select workspace"
-                  >
-                    <FolderOpen className="h-4 w-4" />
-                    <span className="max-w-[100px] truncate">{selectedWorkspaceName}</span>
-                    <ChevronDown className="h-3 w-3" />
-                  </button>
-                  {showWorkspaceMenu && (
-                    <div className="workspace-dropdown workspace-dropdown-up">
-                      {workspaces.map((ws) => (
-                        <div
-                          key={ws.workspace_id}
-                          className={`workspace-dropdown-item ${ws.workspace_id === selectedWorkspaceId ? 'active' : ''}`}
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            onWorkspaceChange?.(ws.workspace_id);
-                            setShowWorkspaceMenu(false);
-                          }}
-                        >
-                          <FolderOpen className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-                          <span>{ws.name}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                    {foldedItems.map((item, idx) => (
+                      <React.Fragment key={item.id}>
+                        {idx > 0 && foldedItems[idx - 1].group !== item.group && <DropdownMenuSeparator />}
+                        {item.menu()}
+                      </React.Fragment>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )}
 
-              {/* Plan Mode Toggle — shown when no mode toggle (PTC enforced) OR mode === 'ptc' */}
-              {(!hasModeToggle || mode === 'ptc') && (
-                <PillToggle
-                  active={planMode}
-                  onToggle={() => setPlanMode(!planMode)}
-                  icon={ScrollText}
-                  label={t('chat.pills.plan')}
-                  title={t('chat.pills.planTitle')}
-                  activeClass="plan-mode-toggle-active"
-                />
-              )}
-
-              {/* Market Watch Toggle — shown alongside Plan (PTC enforced OR mode === 'ptc'),
-                  gated behind the market_watch feature flag. */}
-              {(!hasModeToggle || mode === 'ptc') && marketWatchEnabled && (
-                <PillToggle
-                  active={watchMode}
-                  onToggle={() => setWatchMode(!watchMode)}
-                  icon={Radar}
-                  label={t('chat.pills.watch')}
-                  title={t('chat.pills.watchTitle')}
-                  activeClass="watch-mode-toggle-active"
-                />
-              )}
+              {/* Hidden measure row — the SAME components rendered geometry-only
+                  (no handlers, menus, or aria state), so the fold budget can
+                  never drift from what actually paints. */}
+              <div
+                ref={measureRowRef}
+                aria-hidden
+                className="invisible pointer-events-none absolute top-0 -left-[9999px] flex items-center gap-1 whitespace-nowrap"
+              >
+                {toolbarItems.filter((i) => i.visible).map((item) => (
+                  <span key={item.id} data-measure={item.id}>{item.inline({ measureOnly: true })}</span>
+                ))}
+                <span data-measure="model">
+                  <ModelTriggerMeasure selectedModel={selectedModel} effortLabel={effortLabelFor(t, resolvedEffort)} fastMode={resolvedFastMode} isCodexModel={isCodexModel} />
+                </span>
+              </div>
             </div>
 
             {/* Right Tools */}
             <div className="flex flex-row items-center min-w-0 gap-1">
-              {/* Model Selector — show if there's anything to pick (quick-access
-                  list or current selection), or if the user has stars to manage
-                  even when they all filter out (keeps the settings link reachable). */}
-              {(moreModelsItems.length > 0 || starredModels.length > 0 || selectedModel) && (
-                <DropdownMenu modal={false} open={modelMenuOpen} onOpenChange={(open) => { setModelMenuOpen(open); if (!open) setShowMoreModels(false); }}>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      className="model-selector-trigger inline-flex items-center gap-1 rounded-full cursor-pointer py-1.5 px-2.5 text-[13px] font-medium border border-transparent transition-colors outline-none"
-                      onClick={(e) => e.stopPropagation()}
-                      type="button"
-                      title="Select model"
-                    >
-                      <span className="max-w-[120px] truncate">{getModelDisplayName(selectedModel) || 'Model'}</span>
-                      {fastMode && isCodexModel && <Rocket className="h-3 w-3" style={{ color: 'var(--color-accent-light)' }} />}
-                      <ChevronDown className="h-3 w-3" />
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent
-                    align="end"
-                    side={dropdownDirection === 'down' ? 'bottom' : 'top'}
-                    className="w-60"
-                    container={isMobile ? chatContainerRef.current : undefined}
-                    data-click-outside-ignore
-                    onClick={(e) => e.stopPropagation()}
-                    style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-muted)' }}
-                  >
-                    {/* Thread models */}
-                    {(() => {
-                      const primaryModels: string[] = threadModelsProp.length > 0
-                        ? [...new Set([...threadModelsProp, selectedModel].filter((m): m is string => !!m))]
-                        : [selectedModel].filter((m): m is string => !!m);
-                      return primaryModels
-                        .filter((m: string) => !initialModel || areModelsCompatible(selectedModel, m, modelMetadata))
-                        .map((m: string) => (
-                          <DropdownMenuItem
-                            key={m}
-                            onSelect={() => setSelectedModel(m)}
-                            className="text-[13px] justify-between"
-                            style={{ color: 'var(--color-text-primary)' }}
-                          >
-                            <span>{getModelDisplayName(m)}</span>
-                            {m === selectedModel && <Check className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />}
-                          </DropdownMenuItem>
-                        ));
-                    })()}
-                    <DropdownMenuSeparator style={{ backgroundColor: 'var(--color-border-muted)' }} />
-                    {/* Reasoning effort (custom control — not a menu item, won't close on click) */}
-                    <div className="model-effort-section">
-                      <span className="model-effort-label">{t('chat.modelSelector.reasoningEffort')}</span>
-                      <div className="model-effort-toggle">
-                        {([
-                          ['low', Zap, t('chat.modelSelector.effortLow')],
-                          ['medium', Brain, t('chat.modelSelector.effortMedium')],
-                          ['high', Flame, t('chat.modelSelector.effortHigh')],
-                          ...(supportsXhigh ? [['xhigh', Sparkles, t('chat.modelSelector.effortXhigh')]] as const : []),
-                        ] as const).map(([level, Icon, label]) => (
-                          <button
-                            key={level}
-                            className={`model-effort-btn ${level === reasoningEffort ? 'active' : ''}`}
-                            onMouseDown={(e) => {
-                              e.preventDefault();
-                              setReasoningEffort(level === reasoningEffort ? null : level);
-                            }}
-                            title={label}
-                          >
-                            <Icon className="h-3.5 w-3.5" />
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    {/* Fast mode (Codex only — custom control, won't close on click) */}
-                    {isCodexModel && (
-                      <div className="model-effort-section">
-                        <span className="model-effort-label">
-                          <Rocket className="h-3.5 w-3.5" style={{ marginRight: 4, verticalAlign: '-2px', display: 'inline' }} />
-                          {t('chat.modelSelector.fastMode')}
-                          <span className="fast-mode-help-wrap">
-                            <CircleHelp className="fast-mode-help-icon" />
-                            <span className="fast-mode-help-tooltip">{t('chat.modelSelector.fastModeHelpLine1')}<br />{t('chat.modelSelector.fastModeHelpLine2')}</span>
-                          </span>
-                        </span>
-                        <button
-                          className={`fast-mode-switch ${fastMode ? 'active' : ''}`}
-                          onMouseDown={(e) => { e.preventDefault(); setFastMode((v) => !v); }}
-                          title={t('chat.modelSelector.fastModeDesc')}
-                          role="switch"
-                          aria-checked={fastMode}
-                        >
-                          <span className="fast-mode-switch-thumb" />
-                        </button>
-                      </div>
-                    )}
-                    <DropdownMenuSeparator style={{ backgroundColor: 'var(--color-border-muted)' }} />
-                    {/* More models — desktop: sub-menu flyout, mobile: inline toggle with onMouseDown (same pattern as effort buttons) */}
-                    {isMobile ? (
-                      <>
-                        {/* Toggle trigger — onMouseDown fires after pointerup on mobile, avoiding Radix's pointer sequence race */}
-                        <div
-                          className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer rounded-sm transition-colors hover:bg-accent/15"
-                          style={{ color: 'var(--color-text-tertiary)' }}
-                          role="menuitem"
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            setShowMoreModels((v) => !v);
-                          }}
-                        >
-                          <span>{t('chat.modelSelector.moreModels')}</span>
-                          <ChevronRight className={`h-3.5 w-3.5 transition-transform ${showMoreModels ? 'rotate-90' : ''}`} />
-                        </div>
-                        {/* Model items — plain divs (not DropdownMenuItems) to avoid Collection registration changes */}
-                        <div className={showMoreModels ? '' : 'hidden'}>
-                          {moreModelsItems.length > 0 ? (
-                            moreModelsItems.map((m) => (
-                              <div
-                                key={m}
-                                className="relative flex w-full cursor-default select-none items-center justify-between rounded-sm px-3 py-2 pl-6 text-[13px] outline-none transition-colors hover:bg-accent/15"
-                                style={{ color: 'var(--color-text-primary)' }}
-                                role="menuitem"
-                                onMouseDown={(e) => {
-                                  e.preventDefault();
-                                  setSelectedModel(m);
-                                  setModelMenuOpen(false);
-                                }}
-                              >
-                                <span>{getModelDisplayName(m)}</span>
-                                {m === selectedModel && <Check className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />}
-                              </div>
-                            ))
-                          ) : (
-                            <div
-                              className="relative flex w-full cursor-default select-none items-center rounded-sm px-3 py-2 pl-6 text-xs outline-none transition-colors hover:bg-accent/15"
-                              style={{ color: 'var(--color-text-tertiary)' }}
-                              role="menuitem"
-                              onMouseDown={(e) => {
-                                e.preventDefault();
-                                navigate('/settings?tab=model');
-                                setModelMenuOpen(false);
-                              }}
-                            >
-                              {t('chat.modelSelector.configureModels')}
-                            </div>
-                          )}
-                        </div>
-                      </>
-                    ) : (
-                      <DropdownMenuSub>
-                        <DropdownMenuSubTrigger
-                          className="text-xs justify-between"
-                          style={{ color: 'var(--color-text-tertiary)' }}
-                        >
-                          <span className="flex-1">{t('chat.modelSelector.moreModels')}</span>
-                          <ChevronRight className="h-3.5 w-3.5" />
-                        </DropdownMenuSubTrigger>
-                        <DropdownMenuSubContent
-                          className="w-60"
-                          data-click-outside-ignore
-                          collisionPadding={{ top: 8, right: 8, bottom: 60, left: 8 }}
-                          style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-muted)' }}
-                        >
-                          {moreModelsItems.length > 0 ? (
-                            moreModelsItems.map((m) => (
-                              <DropdownMenuItem
-                                key={m}
-                                onSelect={() => setSelectedModel(m)}
-                                className="text-[13px] justify-between"
-                                style={{ color: 'var(--color-text-primary)' }}
-                              >
-                                <span>{getModelDisplayName(m)}</span>
-                                {m === selectedModel && <Check className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />}
-                              </DropdownMenuItem>
-                            ))
-                          ) : (
-                            <DropdownMenuItem
-                              onSelect={() => navigate('/settings?tab=model')}
-                              className="text-xs"
-                              style={{ color: 'var(--color-text-tertiary)' }}
-                            >
-                              {t('chat.modelSelector.configureModels')}
-                            </DropdownMenuItem>
-                          )}
-                        </DropdownMenuSubContent>
-                      </DropdownMenuSub>
-                    )}
-                    {isMobile ? (
-                      <div
-                        className="relative flex w-full cursor-default select-none items-center rounded-sm px-3 py-2 text-xs outline-none transition-colors hover:bg-accent/15"
-                        style={{ color: 'var(--color-text-tertiary)' }}
-                        role="menuitem"
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          navigate('/settings?tab=model');
-                          setModelMenuOpen(false);
-                        }}
-                      >
-                        {t('chat.modelSelector.manageModels')}
-                      </div>
-                    ) : (
-                      <DropdownMenuItem
-                        onSelect={() => navigate('/settings?tab=model')}
-                        className="text-xs"
-                        style={{ color: 'var(--color-text-tertiary)' }}
-                      >
-                        {t('chat.modelSelector.manageModels')}
-                      </DropdownMenuItem>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
+              <ChatInputModelMenu
+                selectedModel={selectedModel}
+                onSelectModel={setSelectedModel}
+                threadModels={threadModelsProp}
+                validModelNames={validModelNames}
+                moreModelsItems={moreModelsItems}
+                hasStarredModels={starredModels.length > 0}
+                reasoningEffort={reasoningEffort}
+                inheritedEffort={inheritedEffort}
+                onReasoningEffortChange={handleReasoningEffortChange}
+                fastMode={resolvedFastMode}
+                onFastModeChange={handleFastModeChange}
+                isCodexModel={isCodexModel}
+                reasoningEfforts={reasoningEfforts}
+                dropdownDirection={dropdownDirection}
+                containerRef={chatContainerRef}
+              />
               {/* Voice Input Button (Show only if enabled in user settings) */}
               {speechSupported && !isLoading && !!otherPref?.voice_input_enabled && (
                 <div className="flex items-center">
                   <button
                     onClick={(e) => { e.stopPropagation(); toggleListening(); }}
                     disabled={disabled}
-                    className={`inline-flex items-center justify-center h-8 w-8 rounded-xl transition-all active:scale-95 mic-button ${isListening ? 'recording' : 'text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5'}`}
+                    className={`inline-flex flex-none items-center justify-center h-8 w-8 rounded-xl transition-all active:scale-95 mic-button ${isListening ? 'recording' : 'text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5'}`}
                     type="button"
                     title={isListening ? t('chat.voice.stop') : t('chat.voice.start')}
                     aria-label={isListening ? t('chat.voice.stop') : t('chat.voice.start')}
@@ -1366,8 +920,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                   interrupt it; the Enter-key send path stays open for queuing. */}
               {(isLoading || isCompacting) && onStop ? (
                 <button
-                  className="w-8 h-8 rounded-xl flex items-center justify-center transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                  style={{ backgroundColor: isStopping ? 'var(--color-btn-danger-pressed)' : 'var(--color-btn-danger)', color: 'var(--color-text-on-accent)' }}
+                  className="stop-button w-8 h-8 flex-none rounded-xl flex items-center justify-center transition-colors disabled:cursor-not-allowed"
                   onClick={(e) => { e.stopPropagation(); handleStop(); }}
                   disabled={isStopping}
                   title={isStopping ? t('chat.stopping') : t('chat.stop')}
@@ -1375,7 +928,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                   type="button"
                 >
                   {isStopping ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <Loader size={16} label={t('chat.stopping')} className="text-current" />
                   ) : (
                     <Square className="h-4 w-4" fill="currentColor" />
                   )}
@@ -1384,10 +937,10 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                 <button
                   onClick={(e) => { e.stopPropagation(); handleSend(); }}
                   disabled={!hasContent || disabled}
-                  className="inline-flex items-center justify-center h-8 w-8 rounded-xl transition-colors active:scale-95 disabled:cursor-default"
+                  className="inline-flex flex-none items-center justify-center h-8 w-8 rounded-xl transition-colors active:scale-95 disabled:cursor-default"
                   style={{
-                    backgroundColor: !hasContent || disabled ? 'var(--color-accent-disabled)' : 'var(--color-accent-primary)',
-                    color: !hasContent || disabled ? 'var(--color-text-tertiary)' : 'var(--color-text-on-accent)',
+                    backgroundColor: !hasContent || disabled ? 'var(--color-bg-elevated)' : 'var(--color-btn-primary-bg)',
+                    color: !hasContent || disabled ? 'var(--color-text-quaternary)' : 'var(--color-btn-primary-text)',
                   }}
                   type="button"
                   aria-label="Send message"
@@ -1426,4 +979,8 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   );
 });
 
-export default ChatInput;
+// Memoized: ChatView re-renders on every streamed chunk, and without the memo
+// the whole composer subtree (model menu, attachment deck, autocomplete) rides
+// along. Effective only while ChatView keeps the callback props identity-stable
+// (latest-ref pattern there) — keystrokes stay internal state either way.
+export default React.memo(ChatInput);

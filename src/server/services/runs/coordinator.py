@@ -163,6 +163,16 @@ class RunCoordinator:
         from src.server.services import writer_guard as wg
 
         metadata = {"msg_type": msg_type, **(run_metadata or {})}
+        # START-stamp identity onto the durable row: finalize/recovery paths
+        # build the user-feed event from row metadata alone, with no in-process
+        # context surviving a crash (user_id names the channel, workspace_id
+        # scopes the client-side list invalidation). Unconditional: the
+        # authenticated principal must never lose to a caller-supplied
+        # run_metadata key — that value names the publish channel.
+        if user_id:
+            metadata["user_id"] = user_id
+        if workspace_id:
+            metadata["workspace_id"] = workspace_id
 
         guard = None
         if wg.guard_enabled():
@@ -181,6 +191,7 @@ class RunCoordinator:
                     query=query,
                     fork=fork,
                     metadata=metadata,
+                    user_id=user_id,
                     conn=guard.conn if guard is not None else None,
                 )
             handle = RunHandle(
@@ -195,13 +206,45 @@ class RunCoordinator:
                 started_at=row["created_at"],
                 guard=guard,
             )
-            # Announce the durably-born run on the thread's control lane so an
-            # attached mux admits the main-lane channel push-style (best-effort).
+            # Two independent post-commit announcements, in parallel:
+            # - control lane: an attached mux admits the main-lane channel
+            #   push-style. Unbounded — the mux has no root-run recovery scan
+            #   yet, so a lost announce is a real gap worth waiting out.
+            # - user feed: best-effort spinner hint; a miss degrades to a late
+            #   spinner via the feed's DB reconcile, never a stuck state
+            #   (unlike run_settled, which rides the outbox). Time-bounded, and
+            #   a timeout is swallowed HERE so it can't reach the guard-release
+            #   below and fail the turn over a hint.
             from src.server.services.thread_control_stream import (
                 announce_run_started,
             )
+            from src.server.services.thread_lifecycle_feed import (
+                publish_run_started,
+            )
 
-            await announce_run_started(thread_id, run_id)
+            async def _feed_hint_bounded() -> None:
+                try:
+                    await asyncio.wait_for(
+                        publish_run_started(
+                            user_id=metadata.get("user_id"),
+                            thread_id=thread_id,
+                            workspace_id=metadata.get("workspace_id"),
+                            run_id=run_id,
+                            run_seq=row.get("run_seq"),
+                        ),
+                        timeout=1.0,
+                    )
+                except TimeoutError:
+                    logger.warning(
+                        "run_started feed hint timed out (thread=%s run=%s)",
+                        thread_id,
+                        run_id,
+                    )
+
+            await asyncio.gather(
+                announce_run_started(thread_id, run_id),
+                _feed_hint_bounded(),
+            )
         except BaseException:
             # Covers post-commit failures too (incl. CancelledError from the
             # announce await): releasing the guard here is what lets the
@@ -409,9 +452,9 @@ class RunCoordinator:
         """
         error_frame = {
             "thread_id": thread_id,
-            "content": "background workflow failed",
+            "content": "background turn failed",
             "error_type": "background_failure",
-            "error": error_text or "background workflow failed",
+            "error": error_text or "background turn failed",
         }
         try:
             result = await self.finalize_detached_run(
@@ -419,7 +462,7 @@ class RunCoordinator:
                 run_id,
                 RunOutcome(
                     status="error",
-                    errors=[error_text or "background workflow failed"],
+                    errors=[error_text or "background turn failed"],
                     metadata={"recovery": "dispatch_consumer_crash"},
                 ),
                 error_frame=error_frame,

@@ -186,6 +186,7 @@ export interface RecoveryRuntime {
   mainStreamAbortRef: Ref<AbortController | null>;
   isReconnectingOwnerRef: Ref<AbortController | null>;
   wasStoppedRef: Ref<boolean>;
+  sessionEpochRef: Ref<number>;
   backgroundReconnectRef: Ref<boolean>;
   pendingMuxResyncRef: Ref<boolean>;
   // stable containers, ref-current reads — shared with other lanes

@@ -13,9 +13,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.server.services.llm.config import _resolve_custom_model_byok
+from src.server.services.llm.clients import _resolve_custom_model_byok
 
 H = "src.server.services.llm.config"
+USER_MODELS = "src.server.services.llm.user_models"
+CLIENTS = "src.server.services.llm.clients"
 DBK = "src.server.database.api_keys"
 
 
@@ -35,7 +37,7 @@ def _patches(provider_def, key=None):
         return provider_def if name == provider_def["name"] else None
 
     return (
-        patch(f"{H}.get_custom_provider_config", new_callable=AsyncMock, side_effect=get_cp),
+        patch(f"{USER_MODELS}.get_custom_provider_config", new_callable=AsyncMock, side_effect=get_cp),
         patch(f"{DBK}.get_byok_config_for_provider", new_callable=AsyncMock, return_value=key),
         patch(f"{DBK}.get_byok_configs_for_providers", new_callable=AsyncMock, return_value={}),
     )
@@ -91,6 +93,28 @@ async def test_openai_parent_does_not_rewrite_or_force_response_api():
     # Provider unchanged → from_custom_config sees {} → sdk defaults to openai,
     # use_response_api stays False (the safe gateway default).
     assert out["provider"] == "my-openai-gw"
+    assert "_use_response_api" not in out
+
+
+@pytest.mark.asyncio
+async def test_dashscope_parent_does_not_rewrite_or_force_response_api():
+    """A DashScope parent is OpenAI-shaped, so it gets the gateway treatment too.
+
+    DashScope's manifest entry declares ``sdk: "dashscope"`` to route built-in
+    Qwen models at their own client, but a custom provider under that parent is
+    still someone's own endpoint. Rewriting it would inherit the manifest's
+    ``use_response_api`` and session-cache header, putting a gateway that only
+    speaks ``/chat/completions`` onto ``/responses`` with no way to opt out.
+    """
+    provider_def = {"name": "my-qwen-gw", "parent_provider": "vendor-parent"}
+    custom_model = {"name": "eval-model", "model_id": "some-model", "provider": "my-qwen-gw"}
+    mc = _mock_mc("dashscope", parent_extra={"use_response_api": True})
+
+    p1, p2, p3 = _patches(provider_def)
+    with p1, p2, p3:
+        byok, base_url, out = await _resolve_custom_model_byok("u", "eval-model", dict(custom_model), mc)
+
+    assert out["provider"] == "my-qwen-gw"
     assert "_use_response_api" not in out
 
 

@@ -12,6 +12,7 @@ import pytest
 
 from ptc_agent.agent.middleware.background_subagent.registry import TaskRunRejected
 from src.server.services.subagent_run_coordinator import SubagentRunCoordinator
+from tests.unit.redis_mock_pipeline import attach_pipeline
 
 COORD_SRDB = "src.server.services.subagent_run_coordinator.sr_db"
 CACHE = "src.utils.cache.redis_cache.get_cache_client"
@@ -28,6 +29,9 @@ def _cache(*, enabled: bool = True, xadd_fails: bool = False, tail=None):
     )
     cache.client.expire = AsyncMock(return_value=True)
     cache.client.xrevrange = AsyncMock(return_value=tail or [])
+    # The control-lane announce batches xadd+expire into one pipeline; the
+    # shim replays them onto these mocks so assertions stay on the commands.
+    attach_pipeline(cache.client)
     return cache
 
 
@@ -239,3 +243,71 @@ async def test_announce_failure_is_swallowed(monkeypatch):
     monkeypatch.setattr(CACHE, lambda: _cache(xadd_fails=True))
 
     await tcs.announce_run_started("t-1", "root-run-1")  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_lane_open_failure_marks_its_own_result_delivered(monkeypatch):
+    """The rejection raised here becomes the launching call's own reply, and
+    a reply that hands the agent a run's terminal fate IS the delivery.
+    Unstamped, the report-back executor still thinks a notification is owed
+    and opens a synthetic turn to re-announce a failure the agent already has.
+    """
+    monkeypatch.setattr(f"{COORD_SRDB}.start_task_run", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(
+        f"{COORD_SRDB}.finalize_task_run_idempotent",
+        AsyncMock(return_value={"applied": True, "run": _row(status="error")}),
+    )
+    delivered = AsyncMock(return_value=True)
+    monkeypatch.setattr(f"{COORD_SRDB}.mark_result_delivered", delivered)
+    monkeypatch.setattr(CACHE, lambda: _cache(xadd_fails=True))
+
+    with pytest.raises(TaskRunRejected):
+        await SubagentRunCoordinator("t-1").start_task_run(
+            task_id="abc123", cause="init"
+        )
+
+    delivered.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_unsettled_row_is_not_marked_delivered(monkeypatch):
+    """No settle, no delivery to claim: the scanner still owes this row a
+    terminal status, and stamping one it never reached would strand it.
+    """
+    monkeypatch.setattr(f"{COORD_SRDB}.start_task_run", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(
+        f"{COORD_SRDB}.finalize_task_run_idempotent",
+        AsyncMock(side_effect=RuntimeError("db down")),
+    )
+    delivered = AsyncMock(return_value=True)
+    monkeypatch.setattr(f"{COORD_SRDB}.mark_result_delivered", delivered)
+    monkeypatch.setattr(CACHE, lambda: _cache(xadd_fails=True))
+
+    with pytest.raises(TaskRunRejected):
+        await SubagentRunCoordinator("t-1").start_task_run(
+            task_id="abc123", cause="init"
+        )
+
+    delivered.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_delivery_stamp_does_not_swallow_the_rejection(monkeypatch):
+    """A missed stamp costs one redundant notification. Letting it replace the
+    refusal would cost the launch failure its own reply, which is worse.
+    """
+    monkeypatch.setattr(f"{COORD_SRDB}.start_task_run", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(
+        f"{COORD_SRDB}.finalize_task_run_idempotent",
+        AsyncMock(return_value={"applied": True, "run": _row(status="error")}),
+    )
+    monkeypatch.setattr(
+        f"{COORD_SRDB}.mark_result_delivered",
+        AsyncMock(side_effect=RuntimeError("db down")),
+    )
+    monkeypatch.setattr(CACHE, lambda: _cache(xadd_fails=True))
+
+    with pytest.raises(TaskRunRejected):
+        await SubagentRunCoordinator("t-1").start_task_run(
+            task_id="abc123", cause="init"
+        )

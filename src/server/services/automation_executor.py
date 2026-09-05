@@ -12,13 +12,15 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
+from fastapi import HTTPException
+
 from src.server.database import automation as auto_db
 from src.server.models.automation import PriceTriggerConfig, RetriggerMode
 from src.server.database.api_keys import is_byok_active
 from src.server.database.oauth_tokens import has_any_oauth_token
 from src.server.database.workspace import get_or_create_flash_workspace
 from src.server.dependencies.usage_limits import enforce_credit_limit
-from src.server.models.chat import ChatMessage, ChatRequest
+from src.server.models.chat import ChatMessage, ChatRequest, ThreadOrigin
 from src.server.services.webhook_client import WebhookClient
 from src.observability import automation_executions, safe_add
 from src.observability.tracing import hash_id as _obs_hash_id, tracer as _otel_tracer
@@ -36,6 +38,50 @@ class AutomationExecutor:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
+
+    async def _precreate_titled_thread(
+        self,
+        automation: Dict[str, Any],
+        thread_id: str,
+        workspace_id: str,
+        agent_mode: str,
+    ) -> None:
+        """Pre-create the run's thread titled "<automation name> — <date>".
+
+        Automation runs bypass POST /threads, so without this the thread would be
+        born inside ensure_thread_exists with the raw instruction as title (then
+        LLM-retitled). A stable name+date reads better for recurring runs. Never
+        raises — on failure the run proceeds and the ensure path creates the row.
+        """
+        name = (automation.get("name") or "").strip()
+        if not name:
+            return  # no name to stamp — let the ensure path LLM-title it
+        try:
+            from zoneinfo import ZoneInfo
+
+            from src.server.database.conversation import create_thread
+
+            try:
+                tz = ZoneInfo(automation.get("timezone") or "UTC")
+            except Exception:
+                tz = timezone.utc
+            run_date = datetime.now(tz).strftime("%Y-%m-%d")
+            await create_thread(
+                conversation_thread_id=thread_id,
+                workspace_id=workspace_id,
+                current_status="completed",
+                msg_type=agent_mode,
+                thread_index=None,
+                title=f"{name} — {run_date}"[:255],
+                metadata={
+                    "origin": {
+                        "type": "automation",
+                        "id": str(automation["automation_id"]),
+                    }
+                },
+            )
+        except Exception as e:
+            logger.warning(f"[AUTOMATION_EXEC] Thread pre-create failed: {e}")
 
     async def _fire_webhook(
         self,
@@ -64,7 +110,8 @@ class AutomationExecutor:
 
         Steps:
         1. Mark execution as running
-        2. Resolve workspace (flash auto-creates, ptc validates)
+        2. Resolve workspace (flash auto-creates; ptc uses the stored id,
+           whose ownership was verified when the automation was written)
         3. Determine thread_id (new or continue)
         4. Build ChatRequest and invoke agent workflow
         5. Drain the async generator
@@ -111,10 +158,11 @@ class AutomationExecutor:
             has_byok, has_oauth = await asyncio.gather(
                 is_byok_active(user_id), has_any_oauth_token(user_id)
             )
-            # has_cred drives the credit gate (BYOK negative-balance vs platform
-            # daily-credit). The workflow's is_byok only controls whether the
-            # BYOK ladder is attempted, so it keys off has_byok alone — passing
-            # has_cred would fire a futile BYOK prefetch for OAuth-only users.
+            # has_cred is what the credit gate reports: an OAuth turn pays its
+            # own vendor bill just as a BYOK one does. The workflow's is_byok is
+            # a different question — whether to attempt the BYOK ladder — so it
+            # keys off has_byok alone, or an OAuth-only user gets a futile
+            # BYOK prefetch.
             has_cred = has_byok or has_oauth
             await enforce_credit_limit(user_id, byok=has_cred)
 
@@ -144,6 +192,9 @@ class AutomationExecutor:
                         automation_id, user_id,
                         conversation_thread_id=thread_id,
                     )
+                await self._precreate_titled_thread(
+                    automation, thread_id, workspace_id, agent_mode
+                )
 
             # ─── Build ChatRequest ─────────────────────────────────
             additional_context = automation.get("additional_context")
@@ -156,6 +207,7 @@ class AutomationExecutor:
                 ],
                 llm_model=automation.get("llm_model"),
                 additional_context=additional_context,
+                origin=ThreadOrigin(type="automation", id=str(automation_id)),
             )
 
             # ─── Invoke agent workflow ─────────────────────────────
@@ -265,6 +317,13 @@ class AutomationExecutor:
             _exec_span.set_attribute("status", "success")
 
         except Exception as e:
+            # A 503 here is our own outage, not this automation's fault — the
+            # credit gate fails closed when the quota service gives no verdict.
+            # The run is still recorded as failed, but it must not count toward
+            # auto-disable, or a quota-service restart landing on a schedule
+            # window would quietly switch off a user's automation.
+            ours_not_theirs = isinstance(e, HTTPException) and e.status_code == 503
+
             error_msg = f"{type(e).__name__}: {str(e)[:500]}"
             logger.error(
                 f"[AUTOMATION_EXEC] Execution failed: "
@@ -283,7 +342,13 @@ class AutomationExecutor:
             # Increment failure count (may auto-disable). A credit-gate 429 from
             # enforce_credit_limit lands here too — intentionally counted as a
             # failure so a persistently zero-credit automation auto-disables.
-            await auto_db.increment_failure_count(automation_id)
+            if ours_not_theirs:
+                logger.warning(
+                    f"[AUTOMATION_EXEC] Not counting a strike against "
+                    f"automation_id={automation_id}: the failure was ours"
+                )
+            else:
+                await auto_db.increment_failure_count(automation_id)
 
             # Restore price automations from 'executing' to 'active' on failure
             # (increment_failure_count may have set 'disabled' — only restore if still 'executing')

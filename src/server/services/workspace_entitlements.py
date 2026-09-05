@@ -20,6 +20,7 @@ from src.server.database.workspace import (
     get_workspace as db_get_workspace,
     set_workspace_always_on as db_set_workspace_always_on,
     set_workspace_resource_tier as db_set_workspace_resource_tier,
+    try_claim_workspace_for_replacement,
     update_workspace_status,
 )
 from src.server.database.workspace_file import (
@@ -288,39 +289,70 @@ class WorkspaceEntitlementsMixin:
                     # Recreate in place — mirrors the sandbox-migration path.
                     logger.info(f"Recreating workspace {workspace_id} at tier {tier!r}")
                     # Strict: the sandbox is about to be destroyed, so a missed
-                    # backup here is data loss, not a degraded sync.
-                    await self._backup_files_to_db(workspace_id, strict=True)
+                    # backup here is data loss, not a degraded sync. Pinned to the
+                    # locked sandbox id — a session bound to an already-superseded
+                    # sandbox would snapshot the wrong filesystem over the DB copy.
+                    await self._backup_files_to_db(
+                        workspace_id,
+                        strict=True,
+                        expected_sandbox_id=locked_sandbox_id,
+                    )
                     if is_downgrade:
-                        # Checked post-backup (fresh DB sizes), pre-teardown — the
-                        # live sandbox is untouched, so a failure aborts cleanly.
+                        # Checked post-backup (fresh DB sizes), pre-claim — the
+                        # live sandbox is untouched and the row still advertises
+                        # running/<old id>, so a rejection aborts cleanly instead
+                        # of stranding the workspace mid-replacement.
                         await self._assert_disk_fits(workspace_id, target_disk)
-                    # Tear the old sandbox down via the canonical teardown, then
-                    # force-evict the SessionManager entry: cleanup_session skips
-                    # its own pop when session.cleanup() raised, so the immediate
-                    # _recover_sandbox get_session below must not return the stale
-                    # broken session.
-                    await self._clear_session(workspace_id)
-                    SessionManager.remove_session(workspace_id)
-                    # Belt-and-braces: if cleanup raised before deleting the
-                    # sandbox, destroy it by id (mirrors the stopped path) so a
-                    # half-torn-down sandbox can't keep running and billing.
-                    try:
-                        await self._destroy_sandbox(locked_sandbox_id)
-                    except Exception as e:
-                        logger.debug(
-                            f"Old sandbox {locked_sandbox_id} already gone: {e}"
+                    # Durably fence the replacement BEFORE teardown. The lock above
+                    # is a per-process asyncio.Lock, so without this the row keeps
+                    # advertising running/<old id> while that sandbox is deleted —
+                    # and a request on another worker would attach to it, fail, and
+                    # race us into provisioning a duplicate.
+                    if not await try_claim_workspace_for_replacement(
+                        workspace_id, locked_sandbox_id
+                    ):
+                        raise RuntimeError(
+                            "Workspace changed while preparing the spec change; "
+                            "retry"
                         )
+                    # Everything past the claim runs under a compensator. The row
+                    # now reads 'starting' and only this task can release it;
+                    # leaving through any other exit strands the workspace
+                    # permanently unstartable, because the start path claims from
+                    # 'stopped', never from 'starting'. Scoping this to the
+                    # _recover_sandbox call alone left the teardown steps —
+                    # themselves failure-prone — outside the net.
                     try:
+                        # Tear the old sandbox down via the canonical teardown,
+                        # then force-evict the SessionManager entry:
+                        # cleanup_session skips its own pop when session.cleanup()
+                        # raised, so the _recover_sandbox below must not return
+                        # the stale broken session.
+                        await self._clear_session(workspace_id)
+                        SessionManager.remove_session(workspace_id)
+                        # Belt-and-braces: if cleanup raised before deleting the
+                        # sandbox, destroy it by id (mirrors the stopped path) so
+                        # a half-torn-down sandbox can't keep running.
+                        try:
+                            await self._destroy_sandbox(locked_sandbox_id)
+                        except Exception as e:
+                            logger.debug(
+                                f"Old sandbox {locked_sandbox_id} already gone: {e}"
+                            )
                         await self._recover_sandbox(
                             workspace_id, user_id, self.config.to_core_config()
                         )
-                    except Exception:
-                        # Old sandbox is already torn down but the files are
-                        # safely backed up — mark the row 'stopped' so the next
-                        # start self-heals (claim → restart → SandboxGone →
-                        # recover). 'error' would be terminal: the start path
-                        # refuses it outright. The outer except still reverts
-                        # the tier.
+                    except (Exception, asyncio.CancelledError):
+                        # Files are safely backed up — mark the row 'stopped' so
+                        # the next start self-heals (claim → restart →
+                        # SandboxGone → recover). 'error' would be terminal: the
+                        # start path refuses it outright. The outer except still
+                        # reverts the tier.
+                        #
+                        # CancelledError is caught explicitly because it is a
+                        # BaseException: a client disconnect or a shutdown
+                        # landing mid-replacement would otherwise skip this and
+                        # strand the row in 'starting', which no start can claim.
                         await update_workspace_status(
                             workspace_id=workspace_id, status="stopped"
                         )
@@ -344,7 +376,11 @@ class WorkspaceEntitlementsMixin:
                         f"Cannot change spec while workspace is {locked_status!r}; "
                         "wait for the current operation to finish"
                     )
-        except Exception:
+        except (Exception, asyncio.CancelledError):
+            # Same reason the inner handler names CancelledError: it is a
+            # BaseException, so a plain `except Exception` would let a
+            # cancellation land with the row already stamped at the new tier
+            # the recreate never reached.
             await db_set_workspace_resource_tier(workspace_id, current_tier_name)
             raise
 
@@ -446,8 +482,12 @@ class WorkspaceEntitlementsMixin:
 
         # Files only persist to the DB on stop/delete, so flush a running source
         # before the copy or the new workspace would miss in-sandbox changes.
+        # We already hold the row, so hand the durable id over rather than
+        # making the backup re-read it.
         if source["status"] == "running":
-            await self._backup_files_to_db(source_id)
+            await self._backup_files_to_db(
+                source_id, expected_sandbox_id=source.get("sandbox_id")
+            )
 
         source_tier = source.get("resource_tier") or "standard"
 

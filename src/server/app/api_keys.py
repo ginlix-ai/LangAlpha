@@ -135,14 +135,17 @@ def _format_response(
 
 
 async def _get_custom_providers(user_id: str) -> list:
-    """Load user-defined sub-providers from other_preference.custom_providers."""
-    from src.server.database.user import get_user_preferences
+    """Load user-defined sub-providers from ``custom_providers``.
 
-    prefs = await get_user_preferences(user_id)
-    if not prefs:
-        return []
-    other = prefs.get("other_preference") or {}
-    return other.get("custom_providers") or []
+    Goes through the resolver's merged read because the key moved into
+    ``model_preference``: reading ``other_preference`` alone returns empty
+    for every migrated user, which drops their custom providers out of this
+    response and out of every client that builds a provider list from it.
+    """
+    from src.server.services.llm.user_models import get_model_preference
+
+    model_pref = await get_model_preference(user_id)
+    return model_pref.get("custom_providers") or []
 
 
 @router.get("/api/v1/users/me/api-keys")
@@ -771,7 +774,11 @@ def _build_provider_catalog() -> list[dict]:
                 "display_name": config.get_display_name(k),
                 "access_type": inf.get("access_type", "api_key"),
                 "brand_key": brand,
-                "byok_eligible": inf.get("byok_eligible", False),
+                # Eligible unless a provider says otherwise, the same default
+                # ``get_byok_eligible_providers`` reads it with. Defaulting to False
+                # here reported ten real providers as ineligible, the local three
+                # among them, while the resolver was happily accepting keys for them.
+                "byok_eligible": inf.get("byok_eligible", True),
                 "region": inf.get("region", "intl"),
                 "sdk": inf.get("sdk"),
                 "base_url": (inf.get("base_url") or "").replace("{HOST_IP}", HOST_IP) or None,
@@ -806,6 +813,7 @@ async def list_models():
     No auth required — this is public configuration info.
     Includes provider_catalog for wizard provider selection.
     """
+    from src.config.settings import get_prompt_guidance_default
     from src.llms.llm import get_configured_llm_models, LLM
     from src.server.app import setup
     from src.tools.web.manifest import (
@@ -856,6 +864,10 @@ async def list_models():
             "summarization_model": (llm_cfg.compaction or "") if llm_cfg else "",
             "fetch_model": (llm_cfg.fetch or "") if llm_cfg else "",
             "fallback_models": (llm_cfg.fallback or []) if llm_cfg else [],
+            # Null for "auto". A pin sits between the account value and the
+            # model's own declaration when a turn resolves guidance, so the
+            # client cannot name what "Default" will do without it.
+            "prompt_guidance": get_prompt_guidance_default(),
         },
         "compaction_profiles": COMPACTION_PROFILES,
         "search_providers": search_providers,

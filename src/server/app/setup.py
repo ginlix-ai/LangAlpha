@@ -23,6 +23,7 @@ if sys.platform == "win32":
 # ============================================================================
 # Imports and Global Variables
 # ============================================================================
+import importlib
 import logging
 import os
 import certifi
@@ -33,11 +34,13 @@ os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
 
 from ptc_agent.core.sandbox.platform_secrets import PlatformSecretError
+from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 from src.config.logging_config import configure_logging
 from src.config.settings import (
     get_allowed_origins,
@@ -46,6 +49,10 @@ from src.observability import init_otel, init_otel_runtime, shutdown_otel_runtim
 from src.server.services.runs.executor import LocalRunExecutor
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.server.utils.api import find_malformed_route_ids  # TEMP (malformed-id-diag)
+from src.server.utils.error_sanitization import (
+    sandbox_unreachable_detail,
+    single_line,
+)
 
 # Phase 1: install fork-safe class-level instrumentor patches BEFORE FastAPI(...)
 # is constructed. FastAPIInstrumentor patches the FastAPI class — must run
@@ -67,6 +74,12 @@ INTERNAL_SERVER_ERROR_DETAIL = "Internal Server Error"
 
 # Global variables
 agent_config = None  # PTC Agent configuration (loaded from config files)
+# Which bundle owns each shipped MCP server and skill, as of the read that
+# composed `agent_config`. Enforcement reads this rather than re-reading
+# plugins/, so it cannot disagree with the server set actually running; the
+# Plugins page keeps the live read, where showing an edited manifest at once
+# is the point. See services/plugins/bundled.enforcement_owners.
+bundle_owners = None
 session_service = None  # PTC Session service instance
 workspace_manager = None  # Workspace manager instance
 checkpointer = None  # PTC Agent LangGraph checkpointer for state persistence
@@ -87,6 +100,35 @@ _ACCEPTABLE_INIT_COMMS = (
     "dumb-init",
     "podman-init",
 )
+
+
+# Per-worker background singletons sharing one lifecycle shape: importable
+# lazily, ``get_instance()``, sync ``start()``, async ``stop()``. A table
+# rather than a stanza each, so adding one is a row and neither direction can
+# drift out of sync with the other.
+_REDIS_BACKGROUND_SINGLETONS: tuple[tuple[str, str], ...] = (
+    # A run that dies before its terminal never stamps a TTL, so its event
+    # stream would stay resident forever.
+    ("StreamRetentionSweeper", "src.server.services.stream_retention_sweep"),
+    # One PSUBSCRIBE per worker feeds every open /watch, instead of one pinned
+    # Redis connection per viewer.
+    ("ThreadWakeListener", "src.server.services.report_back.flash.wake_listener"),
+    # Tells apart "Redis is slow" from "this worker's loop was blocked", which
+    # read identically at the redis-py boundary.
+    ("EventLoopLagMonitor", "src.observability.loop_lag"),
+    # Refreshes expiring MCP OAuth connections ahead of the hot path; the
+    # per-connection advisory try-lock dedups it across workers.
+    ("McpOAuthRefreshSweeper", "src.server.services.mcp_oauth.sweep"),
+)
+
+
+def _background_singleton(name: str, module: str):
+    """Resolve one singleton, importing its module on first use.
+
+    Imports stay lazy for the same reason the hand-written blocks did it: these
+    modules pull in Redis and service layers that must not load at import time.
+    """
+    return getattr(importlib.import_module(module), name).get_instance()
 
 
 def _log_container_hardening() -> None:
@@ -127,6 +169,7 @@ async def lifespan(app: FastAPI):
     """Initialize resources when server starts, cleanup when stops."""
     global \
         agent_config, \
+        bundle_owners, \
         session_service, \
         workspace_manager, \
         checkpointer, \
@@ -238,12 +281,28 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to start LocalRunExecutor cleanup task: {e}")
 
+    # Warm and validate repository-shipped workflows so bad seeds are logged
+    # during startup rather than on the first request.
+    try:
+        from ptc_agent.agent.middleware.background_subagent.workflow.prebuilt import (
+            get_prebuilt_workflows,
+        )
+
+        prebuilts = get_prebuilt_workflows()
+        logger.info(f"Loaded {len(prebuilts.names())} pre-built workflow(s)")
+    except Exception as e:
+        logger.warning(f"Pre-built workflow warmup failed: {e}")
+
     # Initialize PTC Agent configuration and session service
     try:
         from ptc_agent.config import load_from_files, ConfigContext
 
         logger.info("Loading PTC Agent configuration...")
         agent_config = await load_from_files(context=ConfigContext.SDK)
+
+        from src.server.services.plugins.bundled import component_owners
+
+        bundle_owners = component_owners()
 
         from src.server.services.platform_secret_rollout import (
             reconcile_platform_secrets_at_boot,
@@ -435,13 +494,19 @@ async def lifespan(app: FastAPI):
     # immediately. Executor registration must precede start(): the outbox
     # never imports handlers, and an unregistered type's jobs nack toward
     # dead.
-    try:
-        from src.server.services.report_back import subagent
-        from src.server.services.report_back.flash import core as flash_core
-        from src.server.services.hook_outbox import HookOutboxDrainer
+    # Imports + registration OUTSIDE the guard: a failure there is a code bug
+    # that must crash the worker loudly — swallowed, it leaves the drainer
+    # permanently off behind one WARN line (report-backs undelivered, burst
+    # slots leaking).
+    from src.server.services.report_back import subagent
+    from src.server.services.report_back.flash import core as flash_core
+    from src.server.services import thread_lifecycle_feed
+    from src.server.services.hook_outbox import HookOutboxDrainer
 
-        flash_core.register_outbox_executors()
-        subagent.register_outbox_executors()
+    flash_core.register_outbox_executors()
+    subagent.register_outbox_executors()
+    thread_lifecycle_feed.register_outbox_executors()
+    try:
         HookOutboxDrainer.get_instance().start()
         logger.info("HookOutboxDrainer started")
     except Exception as e:
@@ -472,6 +537,13 @@ async def lifespan(app: FastAPI):
         logger.info("TurnCancelListener started")
     except Exception as e:
         logger.warning(f"Failed to start TurnCancelListener: {e}")
+
+    for name, module in _REDIS_BACKGROUND_SINGLETONS:
+        try:
+            _background_singleton(name, module).start()
+            logger.info(f"{name} started")
+        except Exception as e:
+            logger.warning(f"Failed to start {name}: {e}")
 
     # Start MarketDataFeed (shared upstream WS to ginlix-data)
     try:
@@ -537,6 +609,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to start ProvenanceGCService: {e}")
 
+    # Confirm the runtime credit gate can reach its lease service, and on
+    # terms its refresher can work with. Both failures it catches are silent
+    # at request time.
+    try:
+        from src.server.services.credit_gate_port import verify_credit_gate_wiring
+
+        await verify_credit_gate_wiring()
+    except Exception as e:
+        logger.warning(f"Credit gate wiring check failed: {e}")
+
     yield  # Server is running
 
     # Shutdown
@@ -561,6 +643,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Error stopping PlatformSecretSweeper: {e}")
 
+    try:
+        from src.server.services.egress.relay import close_relay_client
+
+        await close_relay_client()
+    except Exception as e:
+        logger.warning(f"Error closing egress relay client: {e}")
+
     # 0.0b. Stop the turn-cancel nudge listener.
     try:
         from src.server.services.runs.cancel import TurnCancelListener
@@ -568,6 +657,14 @@ async def lifespan(app: FastAPI):
         await TurnCancelListener.get_instance().stop()
     except Exception as e:
         logger.warning(f"Error stopping TurnCancelListener: {e}")
+
+    # 0.0b. Stop the Redis-backed background singletons, in reverse start
+    # order so nothing is still publishing into a listener that has gone.
+    for name, module in reversed(_REDIS_BACKGROUND_SINGLETONS):
+        try:
+            await _background_singleton(name, module).stop()
+        except Exception as e:
+            logger.warning(f"Error stopping {name}: {e}")
 
     # 0.1. Shutdown ProvenanceGCService
     try:
@@ -640,14 +737,6 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Error draining warm tasks: {e}")
         try:
-            from src.server.services.workspace_status_pubsub import (
-                close_status_pubsub_pool,
-            )
-
-            await close_status_pubsub_pool()
-        except Exception as e:
-            logger.warning(f"Error closing status pubsub pool: {e}")
-        try:
             logger.info("Shutting down Workspace Manager...")
             await workspace_manager.shutdown()
             logger.info("Workspace Manager shutdown complete")
@@ -671,17 +760,6 @@ async def lifespan(app: FastAPI):
         clear_global_registry()
     except Exception as e:
         logger.debug(f"Error clearing global MCP registry: {e}")
-
-    # 5. Close PTC Agent checkpointer pool
-    if checkpointer is not None:
-        try:
-            from src.server.utils.checkpointer import close_checkpointer_pool
-
-            logger.info("Closing PTC Agent checkpointer pool...")
-            await close_checkpointer_pool(checkpointer)
-            logger.info("PTC Agent checkpointer pool closed")
-        except Exception as e:
-            logger.warning(f"Error closing PTC Agent checkpointer pool: {e}")
 
     # 6. Gracefully shutdown background workflows
     try:
@@ -710,6 +788,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Error closing writer-guard pool: {e}")
 
+    # 6d. Close the checkpointer pool AFTER BTM shutdown, for the same reason
+    # as 6b/6c: cancelling a live run flushes its checkpoint on the way out.
+    # Closing first left that flush — and the history projection behind it —
+    # retrying against a dead pool and falling back to a slow listing, which
+    # dragged graceful shutdown past the deploy's grace period.
+    if checkpointer is not None:
+        try:
+            from src.server.utils.checkpointer import close_checkpointer_pool
+
+            logger.info("Closing PTC Agent checkpointer pool...")
+            await close_checkpointer_pool(checkpointer)
+            logger.info("PTC Agent checkpointer pool closed")
+        except Exception as e:
+            logger.warning(f"Error closing PTC Agent checkpointer pool: {e}")
+
     # 7. Close database pools
     try:
         from src.server.database.pool import get_or_create_pool
@@ -722,7 +815,25 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Error closing conversation database pool: {e}")
 
-    # 8. Close Redis cache connection
+    # 8. Close the Redis pools. All three, unconditionally — the status pubsub
+    # pool used to be closed only when a workspace manager existed, so some
+    # shutdown paths leaked it.
+    try:
+        from src.server.services.workspace_status_pubsub import (
+            close_status_pubsub_pool,
+        )
+
+        await close_status_pubsub_pool()
+    except Exception as e:
+        logger.warning(f"Error closing status pubsub pool: {e}")
+
+    try:
+        from src.utils.cache.stream_pool import close_stream_reader_pool
+
+        await close_stream_reader_pool()
+    except Exception as e:
+        logger.warning(f"Error closing Redis stream-reader pool: {e}")
+
     try:
         from src.utils.cache.redis_cache import close_cache
 
@@ -903,6 +1014,36 @@ app.add_middleware(
 
 
 # ============================================================================
+# Exception Handlers
+# ============================================================================
+
+
+async def _sandbox_unreachable_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Map an unreachable sandbox to 503 once, for every route.
+
+    The detail wording is a wire contract, not a message: the file panel
+    categorizes the error by matching this string, so it must stay identical
+    across producers rather than being re-spelled per route. It is built by
+    ``sandbox_unreachable_detail`` because the raw exception carries provider
+    URLs and SDK response bodies that must not leave the server.
+    """
+    # The exception is the live carrier: it quotes provider response bodies, so
+    # it can hold a newline and a forged entry. Starlette's path is already
+    # CR/LF-free (urlsplit drops them); it is escaped to keep the rule uniform.
+    logger.warning(
+        f"Sandbox unreachable for {single_line(request.url.path)}: {single_line(str(exc))}"
+    )
+    return JSONResponse(
+        status_code=503,
+        content={"detail": sandbox_unreachable_detail(exc)},
+    )
+
+
+app.add_exception_handler(SandboxGoneError, _sandbox_unreachable_handler)
+app.add_exception_handler(SandboxTransientError, _sandbox_unreachable_handler)
+
+
+# ============================================================================
 # Router Registration
 # ============================================================================
 # Import routers
@@ -918,6 +1059,7 @@ from src.server.app.chart_annotations import router as chart_annotations_router
 from src.server.app.workspace_sandbox import preview_redirect_router
 from src.server.app.market_data import router as market_data_router
 from src.server.app.bars import router as bars_router
+from src.server.app.user_events import router as user_events_router
 from src.server.app.users import router as users_router
 from src.server.app.features import router as features_router
 from src.server.app.watchlist import router as watchlist_router
@@ -931,10 +1073,16 @@ from src.server.app.insights import router as insights_router
 from src.server.app.oauth import router as oauth_router
 from src.server.app.public import router as public_router
 from src.server.app.skills import router as skills_router
+from src.server.app.skills import workspace_router as workspace_skills_router
 from src.server.app.vault import router as vault_router
 from src.server.app.memo import router as memo_router
 from src.server.app.memory import router as memory_router
+from src.server.app.workflows import include_workflow_router
+from src.server.app.egress_relay import router as egress_relay_router
 from src.server.app.mcp_catalog import router as mcp_catalog_router
+from src.server.app.mcp_oauth import router as mcp_oauth_router
+from src.server.app.plugins import router as plugins_router
+from src.server.app.user_vault import router as user_vault_router
 from src.server.app.mcp_servers import router as mcp_servers_router
 
 # Conditionally import ginlix-data WS proxy (only when GINLIX_DATA_WS_URL is set)
@@ -976,6 +1124,9 @@ app.include_router(
     bars_router
 )  # /api/v1/market-data/bars/* - Protocol-native progressive bars
 app.include_router(users_router)  # /api/v1/users/* - User management
+app.include_router(
+    user_events_router
+)  # /api/v1/users/me/thread-events - Thread lifecycle SSE feed
 app.include_router(features_router)  # /api/v1/features/* - Feature flags (per-user resolved)
 app.include_router(
     watchlist_router
@@ -1001,6 +1152,9 @@ app.include_router(
 )  # /api/v1/public/* - Public shared thread access (no auth)
 app.include_router(skills_router)  # /api/v1/skills - Available agent skills
 app.include_router(
+    workspace_skills_router
+)  # /api/v1/workspaces/{id}/skills - Workspace-scoped skills
+app.include_router(
     vault_router
 )  # /api/v1/workspaces/{id}/vault/secrets - Per-workspace secret storage
 app.include_router(
@@ -1009,9 +1163,22 @@ app.include_router(
 app.include_router(
     memo_router
 )  # /api/v1/memo/* - User-managed document memos (upload, read, write, delete, download)
+include_workflow_router(app)  # /api/v1/workflows/* - Reusable JavaScript workflows
 app.include_router(
     mcp_catalog_router
-)  # /api/v1/mcp/servers - User-level MCP server catalog (templates)
+)  # /api/v1/mcp/servers - User-level MCP servers (Plugins backing store)
+app.include_router(
+    mcp_oauth_router
+)  # /api/v1/mcp/servers/{name}/oauth + /api/v1/mcp/oauth/callback - MCP OAuth
+app.include_router(
+    user_vault_router
+)  # /api/v1/mcp/vault/secrets - User-level vault (merged into sandbox pushes)
+app.include_router(
+    plugins_router
+)  # /api/v1/plugins/* - Agent Plugins packages (install/manage/export)
+app.include_router(
+    egress_relay_router
+)  # /v1/egress/{grant_id} - Sandbox egress relay (relay-JWT auth, not user auth)
 app.include_router(
     mcp_servers_router
 )  # /api/v1/workspaces/{id}/mcp/servers - Per-workspace MCP server config

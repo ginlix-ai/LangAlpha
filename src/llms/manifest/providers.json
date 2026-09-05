@@ -1,43 +1,4 @@
 {
-  "embedding_models": {
-    "openai": [
-      {
-        "id": "text-embedding-3-small",
-        "name": "Text Embedding 3 Small",
-        "description": "OpenAI's latest small embedding model with 1536 dimensions",
-        "dimensions": 1536,
-        "max_tokens": 8191,
-        "pricing": {
-          "input": 0.02,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "text-embedding-3-large",
-        "name": "Text Embedding 3 Large",
-        "description": "OpenAI's latest large embedding model with 3072 dimensions for higher accuracy",
-        "dimensions": 3072,
-        "max_tokens": 8191,
-        "pricing": {
-          "input": 0.13,
-          "unit": "per_1m_tokens"
-        }
-      }
-    ],
-    "dashscope": [
-      {
-        "id": "text-embedding-v4",
-        "name": "Text Embedding V4",
-        "description": "Alibaba's latest multilingual embedding model (Qwen3-Embedding) with flexible dimensions",
-        "dimensions": 1536,
-        "max_tokens": 8192,
-        "pricing": {
-          "input": 0.007,
-          "unit": "per_1m_tokens"
-        }
-      }
-    ]
-  },
   "models": {
     "openai": [
       {
@@ -165,6 +126,44 @@
         },
         "context_window": 1050000,
         "max_output": 128000
+      },
+      {
+        "id": "gpt-6-astra",
+        "name": "GPT-6 Astra",
+        "is_reasoning": true,
+        "description": "OpenAI's most capable GPT-6 reasoning model with tiered short/long-context pricing",
+        "pricing": {
+          "input_tiers": [
+            {
+              "max_tokens": 272000,
+              "rate": 10.0,
+              "cached_input": 1.0,
+              "cache_5m": 12.5
+            },
+            {
+              "max_tokens": null,
+              "rate": 20.0,
+              "cached_input": 2.0,
+              "cache_5m": 25.0
+            }
+          ],
+          "cache_5m": 12.5,
+          "output_tiers": [
+            {
+              "max_tokens": 272000,
+              "rate": 50.0
+            },
+            {
+              "max_tokens": null,
+              "rate": 75.0
+            }
+          ],
+          "output_pricing_mode": "input_dependent",
+          "input_pricing_mode": "input_dependent",
+          "unit": "per_1m_tokens"
+        },
+        "context_window": 1050000,
+        "max_output": 128000
       }
     ],
     "anthropic": [
@@ -179,6 +178,34 @@
           "cache_5m": 12.5,
           "cache_1h": 20.0,
           "output": 50.0,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "claude-fable-5-1",
+        "name": "Claude Fable 5.1",
+        "is_reasoning": true,
+        "description": "Claude Fable 5.1 model",
+        "pricing": {
+          "input": 10.0,
+          "cached_input": 0.25,
+          "cache_5m": 12.5,
+          "cache_1h": 20.0,
+          "output": 50.0,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "claude-opus-5",
+        "name": "Claude Opus 5",
+        "is_reasoning": true,
+        "description": "Claude Opus 5 model",
+        "pricing": {
+          "input": 5.0,
+          "cached_input": 0.5,
+          "cache_5m": 6.25,
+          "cache_1h": 10.0,
+          "output": 25.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -282,26 +309,44 @@
         }
       },
       {
-        "id": "gemini-3.1-flash-image-preview",
-        "name": "Gemini 3.1 Flash Image Preview",
-        "description": "Designed for speed and efficiency, effective for quick interactive responses and high throughput image generation",
+        "id": "gemini-3.7-flash",
+        "name": "Gemini 3.7 Flash",
+        "is_reasoning": true,
+        "description": "Google's most capable Flash model for agentic workflows and multimodal reasoning",
         "pricing": {
-          "input": 0.25,
-          "output": 1.5,
-          "output_image": 60.0,
+          "input": 0.75,
+          "cached_input": 0.075,
+          "output": 3.75,
+          "cache_storage": 0.5,
+          "unit": "per_1m_tokens"
+        },
+        "scheduled_pricing": {
+          "effective_from": "2027-01-01",
+          "input": 1.5,
+          "cached_input": 0.15,
+          "output": 7.5,
+          "cache_storage": 1.0,
           "unit": "per_1m_tokens"
         }
       },
       {
-        "id": "gemini-3-flash-preview",
-        "name": "Gemini 3 Flash Preview",
+        "id": "gemini-3.8-flash",
+        "name": "Gemini 3.8 Flash",
         "is_reasoning": true,
-        "description": "Google's fast and cost-efficient model with thinking capabilities",
+        "description": "Google's most intelligent Flash model, for long-horizon software engineering, autonomous agents, and complex enterprise workflows",
         "pricing": {
-          "input": 0.5,
-          "cached_input": 0.05,
-          "output": 3.0,
-          "storage": 1.0,
+          "input": 0.75,
+          "cached_input": 0.075,
+          "output": 3.75,
+          "cache_storage": 0.5,
+          "unit": "per_1m_tokens"
+        },
+        "scheduled_pricing": {
+          "effective_from": "2027-01-01",
+          "input": 1.5,
+          "cached_input": 0.15,
+          "output": 7.5,
+          "cache_storage": 1.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -363,10 +408,33 @@
         "context_window": 1000000,
         "max_output": 384000,
         "pricing": {
-          "input": 0.435,
-          "cached_input": 0.003625,
-          "output": 0.87,
-          "unit": "per_1m_tokens"
+          "input": 1.32,
+          "cached_input": 0.044,
+          "output": 3.96,
+          "unit": "per_1m_tokens",
+          "peak_utc": [
+            [
+              1,
+              4
+            ],
+            [
+              6,
+              10
+            ]
+          ],
+          "peak_days": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "peak_days_utc_offset": 8,
+          "off_peak": {
+            "input": 0.66,
+            "cached_input": 0.022,
+            "output": 1.98
+          }
         }
       },
       {
@@ -377,27 +445,75 @@
         "context_window": 1000000,
         "max_output": 384000,
         "pricing": {
-          "input": 0.14,
-          "cached_input": 0.0028,
-          "output": 0.28,
-          "unit": "per_1m_tokens"
+          "input": 0.44,
+          "cached_input": 0.014,
+          "output": 1.32,
+          "unit": "per_1m_tokens",
+          "peak_utc": [
+            [
+              1,
+              4
+            ],
+            [
+              6,
+              10
+            ]
+          ],
+          "peak_days": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "peak_days_utc_offset": 8,
+          "off_peak": {
+            "input": 0.22,
+            "cached_input": 0.007,
+            "output": 0.66
+          }
+        }
+      },
+      {
+        "id": "deepseek-v4-flash-vision-exp",
+        "name": "DeepSeek V4 Flash Vision (Exp)",
+        "is_reasoning": true,
+        "description": "DeepSeek's V4 Flash with image input, priced identically to the text model; experimental, and the vendor may change or withdraw it",
+        "context_window": 1000000,
+        "max_output": 384000,
+        "pricing": {
+          "input": 0.44,
+          "cached_input": 0.014,
+          "output": 1.32,
+          "unit": "per_1m_tokens",
+          "peak_utc": [
+            [
+              1,
+              4
+            ],
+            [
+              6,
+              10
+            ]
+          ],
+          "peak_days": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "peak_days_utc_offset": 8,
+          "off_peak": {
+            "input": 0.22,
+            "cached_input": 0.007,
+            "output": 0.66
+          }
         }
       }
     ],
     "vllm": [],
     "z-ai": [
-      {
-        "id": "glm-5.1",
-        "name": "GLM-5.1",
-        "is_reasoning": true,
-        "description": "Z.AI's latest GLM-5.1 model with extended thinking capabilities",
-        "pricing": {
-          "input": 1.4,
-          "cached_input": 0.26,
-          "output": 4.4,
-          "unit": "per_1m_tokens"
-        }
-      },
       {
         "id": "glm-5.2",
         "name": "GLM-5.2",
@@ -411,26 +527,26 @@
         }
       },
       {
-        "id": "glm-5v-turbo",
-        "name": "GLM-5V-Turbo",
+        "id": "glm-5.3",
+        "name": "GLM-5.3",
         "is_reasoning": true,
-        "description": "Z.AI's GLM-5V-Turbo multimodal Agent model with vision and tool calling",
+        "description": "Z.AI's flagship GLM-5.3 model with 1M context and always-on thinking",
         "pricing": {
-          "input": 1.2,
-          "cached_input": 0.24,
-          "output": 4.0,
+          "input": 1.4,
+          "cached_input": 0.26,
+          "output": 4.4,
           "unit": "per_1m_tokens"
         }
       },
       {
-        "id": "glm-5-turbo",
-        "name": "GLM-5-Turbo",
+        "id": "glm-5.3-flash",
+        "name": "GLM-5.3-Flash",
         "is_reasoning": true,
-        "description": "Z.AI's GLM-5 Turbo model optimized for agentic tasks and tool calling",
+        "description": "Z.AI's natively multimodal GLM-5.3-Flash with 1M context",
         "pricing": {
-          "input": 1.2,
-          "cached_input": 0.24,
-          "output": 4.0,
+          "input": 0.15,
+          "cached_input": 0.03,
+          "output": 0.5,
           "unit": "per_1m_tokens"
         }
       },
@@ -449,38 +565,6 @@
     ],
     "z-ai-cn": [
       {
-        "id": "glm-5.1",
-        "name": "GLM-5.1",
-        "is_reasoning": true,
-        "description": "Z.AI's latest GLM-5.1 model with input-dependent tiered pricing",
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 32000,
-              "rate": 0.83,
-              "cached_input": 0.18
-            },
-            {
-              "max_tokens": null,
-              "rate": 1.1,
-              "cached_input": 0.28
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 32000,
-              "rate": 3.31
-            },
-            {
-              "max_tokens": null,
-              "rate": 3.87
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
         "id": "glm-5.2",
         "name": "GLM-5.2",
         "is_reasoning": true,
@@ -493,66 +577,26 @@
         }
       },
       {
-        "id": "glm-5v-turbo",
-        "name": "GLM-5V-Turbo",
+        "id": "glm-5.3",
+        "name": "GLM-5.3",
         "is_reasoning": true,
-        "description": "Z.AI's GLM-5V-Turbo multimodal Agent model with vision, tiered pricing",
+        "description": "Z.AI's flagship GLM-5.3 model with 1M context, flat domestic pricing",
         "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 32000,
-              "rate": 0.69,
-              "cached_input": 0.17
-            },
-            {
-              "max_tokens": null,
-              "rate": 0.97,
-              "cached_input": 0.25
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 32000,
-              "rate": 3.04
-            },
-            {
-              "max_tokens": null,
-              "rate": 3.59
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
+          "input": 1.14,
+          "cached_input": 0.29,
+          "output": 4.0,
           "unit": "per_1m_tokens"
         }
       },
       {
-        "id": "glm-5-turbo",
-        "name": "GLM-5-Turbo",
+        "id": "glm-5.3-flash",
+        "name": "GLM-5.3-Flash",
         "is_reasoning": true,
-        "description": "Z.AI's GLM-5 Turbo model optimized for agentic tasks, tiered pricing",
+        "description": "Z.AI's natively multimodal GLM-5.3-Flash with 1M context, flat domestic pricing",
         "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 32000,
-              "rate": 0.69,
-              "cached_input": 0.17
-            },
-            {
-              "max_tokens": null,
-              "rate": 0.97,
-              "cached_input": 0.25
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 32000,
-              "rate": 3.03
-            },
-            {
-              "max_tokens": null,
-              "rate": 3.59
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
+          "input": 0.114,
+          "cached_input": 0.033,
+          "output": 0.4,
           "unit": "per_1m_tokens"
         }
       },
@@ -607,224 +651,36 @@
           "cached_input": 0.12,
           "unit": "per_1m_tokens"
         }
-      },
-      {
-        "id": "minimax-m2.7",
-        "name": "MiniMax-M2.7",
-        "alias": [
-          "MiniMax-M2.7",
-          "minimax-m2.7"
-        ],
-        "is_reasoning": false,
-        "description": "MiniMax's M2.7 model for commercial use",
-        "pricing": {
-          "input": 0.3,
-          "output": 1.2,
-          "cached_input": 0.06,
-          "cache_storage": 0.375,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "minimax-m2.7-highspeed",
-        "name": "MiniMax-M2.7-Highspeed",
-        "alias": [
-          "MiniMax-M2.7-highspeed"
-        ],
-        "is_reasoning": false,
-        "description": "MiniMax's M2.7 Highspeed model with faster inference and higher output pricing",
-        "pricing": {
-          "input": 0.6,
-          "output": 2.4,
-          "cached_input": 0.06,
-          "cache_storage": 0.375,
-          "unit": "per_1m_tokens"
-        }
-      }
-    ],
-    "volcengine": [
-      {
-        "id": "doubao-seed-2.0-pro",
-        "name": "Doubao Seed 2.0 Pro",
-        "is_reasoning": true,
-        "description": "Doubao Seed 2.0 Pro - high-capability model with tiered pricing",
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 32000,
-              "rate": 3.2,
-              "cached_input": 0.64
-            },
-            {
-              "max_tokens": 128000,
-              "rate": 4.8,
-              "cached_input": 0.64
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 9.6,
-              "cached_input": 0.64
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 32000,
-              "rate": 16.0
-            },
-            {
-              "max_tokens": 128000,
-              "rate": 24.0
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 48.0
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "cache_storage": 0.017,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "doubao-seed-2.0-lite",
-        "name": "Doubao Seed 2.0 Lite",
-        "is_reasoning": true,
-        "description": "Doubao Seed 2.0 Lite - balanced performance and cost",
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 32000,
-              "rate": 0.6,
-              "cached_input": 0.12
-            },
-            {
-              "max_tokens": 128000,
-              "rate": 0.9,
-              "cached_input": 0.12
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 1.8,
-              "cached_input": 0.12
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 32000,
-              "rate": 3.6
-            },
-            {
-              "max_tokens": 128000,
-              "rate": 5.4
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 10.8
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "cache_storage": 0.017,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "doubao-seed-2.0-mini",
-        "name": "Doubao Seed 2.0 Mini",
-        "is_reasoning": true,
-        "description": "Doubao Seed 2.0 Mini - lightweight and cost-efficient",
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 32000,
-              "rate": 0.2,
-              "cached_input": 0.04
-            },
-            {
-              "max_tokens": 128000,
-              "rate": 0.4,
-              "cached_input": 0.04
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 0.8,
-              "cached_input": 0.04
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 32000,
-              "rate": 2.0
-            },
-            {
-              "max_tokens": 128000,
-              "rate": 4.0
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 8.0
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "cache_storage": 0.017,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "doubao-seed-2.0-code",
-        "name": "Doubao Seed 2.0 Code",
-        "is_reasoning": true,
-        "description": "Doubao Seed 2.0 Code - optimized for coding tasks",
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 32000,
-              "rate": 3.2,
-              "cached_input": 0.64
-            },
-            {
-              "max_tokens": 128000,
-              "rate": 4.8,
-              "cached_input": 0.64
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 9.6,
-              "cached_input": 0.64
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 32000,
-              "rate": 16.0
-            },
-            {
-              "max_tokens": 128000,
-              "rate": 24.0
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 48.0
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "cache_storage": 0.017,
-          "unit": "per_1m_tokens"
-        }
       }
     ],
     "dashscope": [
       {
-        "id": "qwen3.7-max",
-        "name": "Qwen3.7 Max",
+        "id": "qwen3.8-max",
+        "name": "Qwen3.8 Max",
         "is_reasoning": true,
-        "description": "Alibaba's largest and most capable Qwen3.7 Max — flagship agentic model excelling at coding, office/productivity, and long-horizon autonomous execution",
+        "description": "Alibaba's 2.4T-parameter MoE flagship — native vision across planning, execution and verification, with autonomous long-horizon coding and closed-loop iteration",
         "context_window": 1000000,
         "max_output": 65536,
         "pricing": {
           "input": 1.714,
-          "cached_input": 0.343,
+          "cached_input": 0.214,
           "cache_5m": 2.143,
           "output": 5.143,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "qwen3.8-flash",
+        "name": "Qwen3.8 Flash",
+        "is_reasoning": true,
+        "description": "Alibaba's Qwen3.8 Flash — multimodal with a 1M context window, aimed at coding assistance and agent workflows at a fraction of Max's cost",
+        "context_window": 1000000,
+        "max_output": 131072,
+        "pricing": {
+          "input": 0.114,
+          "cached_input": 0.014,
+          "cache_5m": 0.179,
+          "output": 0.386,
           "unit": "per_1m_tokens"
         }
       },
@@ -861,260 +717,36 @@
           "output_pricing_mode": "input_dependent",
           "unit": "per_1m_tokens"
         }
-      },
-      {
-        "id": "qwen3.6-plus",
-        "name": "Qwen3.6 Plus",
-        "is_reasoning": true,
-        "description": "Alibaba's Qwen3.6 Plus flagship model with Agentic coding, vision, and 1M context",
-        "context_window": 1000000,
-        "max_output": 65536,
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 256000,
-              "rate": 0.287,
-              "cached_input": 0.029
-            },
-            {
-              "max_tokens": 1000000,
-              "rate": 1.147,
-              "cached_input": 0.115
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 256000,
-              "rate": 1.72
-            },
-            {
-              "max_tokens": 1000000,
-              "rate": 6.89
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "qwen3.5-plus",
-        "name": "Qwen3.5 Plus",
-        "is_reasoning": true,
-        "description": "Alibaba's Qwen3.5 Plus model with thinking capabilities and 1M context",
-        "context_window": 1000000,
-        "max_output": 65536,
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 128000,
-              "rate": 0.115,
-              "cached_input": 0.023
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 0.287,
-              "cached_input": 0.057
-            },
-            {
-              "max_tokens": 1000000,
-              "rate": 0.573,
-              "cached_input": 0.115
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 128000,
-              "rate": 0.688
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 1.72
-            },
-            {
-              "max_tokens": 1000000,
-              "rate": 3.44
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "qwen3.6-flash",
-        "name": "Qwen3.6 Flash",
-        "is_reasoning": true,
-        "description": "Alibaba's Qwen3.6 Flash — native vision-language model with agentic coding, math, and spatial reasoning improvements over 3.5-Flash",
-        "context_window": 1000000,
-        "max_output": 65536,
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 256000,
-              "rate": 0.172,
-              "cached_input": 0.017
-            },
-            {
-              "max_tokens": 1000000,
-              "rate": 0.689,
-              "cached_input": 0.069
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 256000,
-              "rate": 1.033
-            },
-            {
-              "max_tokens": 1000000,
-              "rate": 4.132
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "qwen3.5-397b-a17b",
-        "name": "Qwen3.5 397B-A17B",
-        "is_reasoning": true,
-        "description": "Alibaba's largest Qwen3.5 open-weight model (397B total, 17B active MoE)",
-        "context_window": 262144,
-        "max_output": 65536,
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 128000,
-              "rate": 0.172
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 0.43
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 128000,
-              "rate": 1.032
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 2.58
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "qwen3.5-122b-a10b",
-        "name": "Qwen3.5 122B-A10B",
-        "is_reasoning": true,
-        "description": "Alibaba's Qwen3.5 mid-large model (122B total, 10B active MoE)",
-        "context_window": 262144,
-        "max_output": 65536,
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 128000,
-              "rate": 0.115
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 0.287
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 128000,
-              "rate": 0.917
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 2.293
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "qwen3.5-27b",
-        "name": "Qwen3.5 27B",
-        "is_reasoning": true,
-        "description": "Alibaba's Qwen3.5 mid-size dense model (27B parameters)",
-        "context_window": 262144,
-        "max_output": 65536,
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 128000,
-              "rate": 0.086
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 0.258
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 128000,
-              "rate": 0.688
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 2.064
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "qwen3.5-35b-a3b",
-        "name": "Qwen3.5 35B-A3B",
-        "is_reasoning": true,
-        "description": "Alibaba's smallest Qwen3.5 MoE model (35B total, 3B active)",
-        "context_window": 262144,
-        "max_output": 65536,
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 128000,
-              "rate": 0.057
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 0.229
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 128000,
-              "rate": 0.459
-            },
-            {
-              "max_tokens": 256000,
-              "rate": 1.835
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        }
       }
     ],
     "dashscope-intl": [
       {
-        "id": "qwen3.7-max",
-        "name": "Qwen3.7 Max (SG)",
+        "id": "qwen3.8-max",
+        "name": "Qwen3.8 Max (SG)",
         "is_reasoning": true,
-        "description": "Alibaba's Qwen3.7 Max — Singapore international region",
+        "description": "Alibaba's Qwen3.8 Max — Singapore international region",
         "context_window": 1000000,
         "max_output": 65536,
         "pricing": {
-          "input": 2.677,
-          "cached_input": 0.535,
-          "cache_5m": 3.346,
-          "output": 8.03,
+          "input": 2.141,
+          "cached_input": 0.268,
+          "cache_5m": 2.677,
+          "output": 6.424,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "qwen3.8-flash",
+        "name": "Qwen3.8 Flash (SG)",
+        "is_reasoning": true,
+        "description": "Alibaba's Qwen3.8 Flash — Singapore international region",
+        "context_window": 1000000,
+        "max_output": 131072,
+        "pricing": {
+          "input": 0.156,
+          "cached_input": 0.017,
+          "cache_5m": 0.208,
+          "output": 0.49,
           "unit": "per_1m_tokens"
         }
       },
@@ -1146,106 +778,6 @@
             {
               "max_tokens": 1000000,
               "rate": 5.139
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "qwen3.6-plus",
-        "name": "Qwen3.6 Plus (SG)",
-        "is_reasoning": true,
-        "description": "Alibaba's Qwen3.6 Plus flagship model — Singapore international region",
-        "context_window": 1000000,
-        "max_output": 65536,
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 256000,
-              "rate": 0.538,
-              "cached_input": 0.054
-            },
-            {
-              "max_tokens": 1000000,
-              "rate": 2.15,
-              "cached_input": 0.215
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 256000,
-              "rate": 3.227
-            },
-            {
-              "max_tokens": 1000000,
-              "rate": 6.452
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "qwen3.5-plus",
-        "name": "Qwen3.5 Plus (SG)",
-        "is_reasoning": true,
-        "description": "Alibaba's Qwen3.5 Plus model — Singapore international region",
-        "context_window": 1000000,
-        "max_output": 65536,
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 256000,
-              "rate": 0.421
-            },
-            {
-              "max_tokens": 1000000,
-              "rate": 0.526
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 256000,
-              "rate": 2.524
-            },
-            {
-              "max_tokens": 1000000,
-              "rate": 3.156
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "qwen3.6-flash",
-        "name": "Qwen3.6 Flash (SG)",
-        "is_reasoning": true,
-        "description": "Alibaba's Qwen3.6 Flash — Singapore international region",
-        "context_window": 1000000,
-        "max_output": 65536,
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 256000,
-              "rate": 0.269,
-              "cached_input": 0.027
-            },
-            {
-              "max_tokens": 1000000,
-              "rate": 1.075,
-              "cached_input": 0.108
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 256000,
-              "rate": 1.613
-            },
-            {
-              "max_tokens": 1000000,
-              "rate": 6.451
             }
           ],
           "output_pricing_mode": "input_dependent",
@@ -1310,32 +842,6 @@
           "output": 15.0,
           "unit": "per_1m_tokens"
         }
-      },
-      {
-        "id": "kimi-k2.6",
-        "name": "Kimi K2.6",
-        "is_reasoning": true,
-        "description": "Moonshot AI's Kimi K2.6 multi-modal model with extended context",
-        "context_window": 262144,
-        "pricing": {
-          "input": 0.95,
-          "cached_input": 0.16,
-          "output": 4.0,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "kimi-k2.5",
-        "name": "Kimi K2.5",
-        "is_reasoning": true,
-        "description": "Moonshot AI's Kimi K2.5 multi-modal model with extended context",
-        "context_window": 262144,
-        "pricing": {
-          "input": 0.6,
-          "cached_input": 0.1,
-          "output": 3.0,
-          "unit": "per_1m_tokens"
-        }
       }
     ],
     "moonshot-coding": [
@@ -1349,45 +855,6 @@
           "input": 3.0,
           "cached_input": 0.3,
           "output": 15.0,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "kimi-for-coding",
-        "name": "Kimi for Coding",
-        "is_reasoning": true,
-        "description": "Moonshot AI's Kimi model optimized for coding tasks",
-        "context_window": 262144,
-        "pricing": {
-          "input": 0.6,
-          "cached_input": 0.1,
-          "output": 3.0,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "kimi-k2.6",
-        "name": "Kimi K2.6",
-        "is_reasoning": true,
-        "description": "Moonshot AI's Kimi K2.6 multi-modal model with extended context",
-        "context_window": 262144,
-        "pricing": {
-          "input": 0.95,
-          "cached_input": 0.16,
-          "output": 4.0,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "kimi-k2.5",
-        "name": "Kimi K2.5",
-        "is_reasoning": true,
-        "description": "Moonshot AI's Kimi K2.5 multi-modal model with extended context",
-        "context_window": 262144,
-        "pricing": {
-          "input": 0.6,
-          "cached_input": 0.1,
-          "output": 3.0,
           "unit": "per_1m_tokens"
         }
       }
@@ -1446,6 +913,7 @@
       "use_response_api": true,
       "prompt_cache_key": true,
       "display_name": "OpenAI",
+      "reasoning_compat_group": "openai",
       "variants": {
         "codex-oauth": {
           "sdk": "codex",
@@ -1453,7 +921,8 @@
           "env_key": null,
           "access_type": "oauth",
           "use_response_api": true,
-          "display_name": "ChatGPT Codex"
+          "display_name": "ChatGPT Codex",
+          "reasoning_compat_group": "codex-oauth"
         }
       }
     },
@@ -1463,6 +932,7 @@
       "access_type": "api_key",
       "byok_eligible": true,
       "display_name": "Anthropic",
+      "reasoning_compat_group": "anthropic",
       "variants": {
         "claude-oauth": {
           "base_url": "https://api.anthropic.com",
@@ -1491,15 +961,15 @@
       "display_name": "DashScope (Qwen)",
       "variants": {
         "dashscope": {
-          "sdk": "openai",
-          "base_url": "https://dashscope.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1",
+          "sdk": "dashscope",
+          "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
           "use_response_api": true,
           "default_headers": {
             "x-dashscope-session-cache": "enabled"
           }
         },
         "dashscope-intl": {
-          "sdk": "openai",
+          "sdk": "dashscope",
           "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
           "env_key": "DASHSCOPE_API_KEY_INT",
           "use_response_api": true,
@@ -1508,13 +978,6 @@
           },
           "region": "intl",
           "display_name": "DashScope (Intl)"
-        },
-        "dashscope-coding": {
-          "sdk": "anthropic",
-          "base_url": "https://coding.dashscope.aliyuncs.com/apps/anthropic",
-          "env_key": "DASHSCOPE_API_KEY_CODING",
-          "access_type": "coding_plan",
-          "display_name": "DashScope (Coding)"
         }
       }
     },
@@ -1528,10 +991,6 @@
           "sdk": "openai",
           "base_url": "https://ark.cn-beijing.volces.com/api/v3",
           "use_response_api": true
-        },
-        "doubao-anthropic": {
-          "sdk": "anthropic",
-          "base_url": "https://ark.cn-beijing.volces.com/api/compatible"
         },
         "doubao-coding": {
           "sdk": "anthropic",

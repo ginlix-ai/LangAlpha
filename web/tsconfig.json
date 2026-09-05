@@ -12,7 +12,7 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "paths": { "@/*": ["./src/*"] }
+    "paths": { "@/*": ["./src/*"], "@e2e/*": ["./e2e/*"] }
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist", "e2e"]

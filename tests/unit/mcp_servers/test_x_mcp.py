@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from mcp_servers import x_mcp_server as xm
+from plugins.alternative_data import x_mcp_server as xm
 
-_MOD = "mcp_servers.x_mcp_server"
+_MOD = "plugins.alternative_data.x_mcp_server"
 
 
 def _mock_response(

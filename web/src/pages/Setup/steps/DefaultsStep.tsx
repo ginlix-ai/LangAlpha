@@ -1,12 +1,18 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, Info } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { ChevronRight, Info } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { Loader } from '@/components/ui/loader';
 import { ModelTierConfig } from '@/components/model/ModelTierConfig';
+import { ModelSelector } from '@/components/model/ModelSelector';
+import { FallbackModelsPicker } from '@/components/model/FallbackModelsPicker';
 import { useAllModels } from '@/hooks/useAllModels';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
 import { useTranslation } from 'react-i18next';
+import { modelPrefs, splitPreferenceWrite } from '@/lib/modelPreferences';
 
 // ---------------------------------------------------------------------------
 // DefaultsStep — Step 5: Set default primary + flash models
@@ -14,7 +20,7 @@ import { useTranslation } from 'react-i18next';
 
 export default function DefaultsStep() {
   const navigate = useNavigate();
-  const { models, modelAccessMap, systemDefaults, isLoading } = useAllModels();
+  const { models, modelAccessMap, isLoading } = useAllModels();
   const { preferences } = usePreferences();
   const updatePreferences = useUpdatePreferences();
   const { t } = useTranslation();
@@ -23,24 +29,24 @@ export default function DefaultsStep() {
   // Selection state — seed from existing preferences if available
   // ---------------------------------------------------------------------------
 
-  const prefs = preferences as Record<string, unknown> | null;
-  const otherPref = (prefs?.other_preference ?? {}) as Record<string, unknown>;
+  const modelPref = modelPrefs(preferences);
 
   const [primaryModel, setPrimaryModel] = useState<string>(
-    () => (otherPref.preferred_model as string) ?? '',
+    () => modelPref.preferred_model ?? '',
   );
   const [flashModel, setFlashModel] = useState<string>(
-    () => (otherPref.preferred_flash_model as string) ?? '',
+    () => modelPref.preferred_flash_model ?? '',
   );
   const [advancedModels, setAdvancedModels] = useState<{
     compactionModel: string;
     fetchModel: string;
     fallbackModels: string[];
   }>({
-    compactionModel: (otherPref.compaction_model as string) ?? '',
-    fetchModel: (otherPref.fetch_model as string) ?? '',
-    fallbackModels: (otherPref.fallback_models as string[]) ?? [],
+    compactionModel: modelPref.compaction_model ?? '',
+    fetchModel: modelPref.fetch_model ?? '',
+    fallbackModels: modelPref.fallback_models ?? [],
   });
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,15 +78,13 @@ export default function DefaultsStep() {
       const compaction = advancedModels.compactionModel || flashModel;
       const fetchModel = advancedModels.fetchModel || flashModel;
 
-      await updatePreferences.mutateAsync({
-        other_preference: {
-          preferred_model: primaryModel,
-          preferred_flash_model: flashModel,
-          compaction_model: compaction,
-          fetch_model: fetchModel,
-          fallback_models: advancedModels.fallbackModels,
-        },
-      });
+      await updatePreferences.mutateAsync(splitPreferenceWrite({
+        preferred_model: primaryModel,
+        preferred_flash_model: flashModel,
+        compaction_model: compaction,
+        fetch_model: fetchModel,
+        fallback_models: advancedModels.fallbackModels,
+      }));
 
       navigate('/setup/ready');
     } catch (e: unknown) {
@@ -99,7 +103,7 @@ export default function DefaultsStep() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-5 w-5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
+        <Loader size={20} className="text-[color:var(--color-text-tertiary)]" />
       </div>
     );
   }
@@ -154,12 +158,64 @@ export default function DefaultsStep() {
         flashModel={flashModel}
         onFlashModelChange={setFlashModel}
         showExplainer
-        showAdvanced
-        advancedModels={advancedModels}
-        onAdvancedModelsChange={handleAdvancedChange}
-        systemDefaults={systemDefaults ?? undefined}
         modelAccess={modelAccessMap}
       />
+
+      {/* Routing models. Folded away because a first run never needs them, and
+          named with the same keys the Settings tab uses so one control does not
+          read two ways. */}
+      <div>
+        <button
+          type="button"
+          onClick={() => setAdvancedOpen((v) => !v)}
+          className="inline-flex items-center gap-1 text-xs font-medium transition-colors"
+          style={{ color: 'var(--color-text-tertiary)' }}
+          aria-expanded={advancedOpen}
+        >
+          <ChevronRight
+            className={cn('h-3 w-3 transition-transform duration-200', advancedOpen && 'rotate-90')}
+          />
+          {t('settings.modelTuning.advanced')}
+        </button>
+
+        <AnimatePresence initial={false}>
+          {advancedOpen && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2, ease: 'easeInOut' }}
+              className="overflow-hidden"
+            >
+              <div className="flex flex-col pt-4" style={{ gap: '24px' }}>
+                <ModelSelector
+                  label={t('settings.modelTuning.fetchModel')}
+                  description={t('settings.modelTuning.fetchModelDesc')}
+                  value={advancedModels.fetchModel}
+                  onChange={(v) => handleAdvancedChange({ fetchModel: v })}
+                  models={models}
+                  placeholder={t('settings.modelTuning.defaultsToFlash')}
+                  modelAccess={modelAccessMap}
+                />
+                <ModelSelector
+                  label={t('settings.modelTuning.compactionModel')}
+                  description={t('settings.modelTuning.compactionModelDesc')}
+                  value={advancedModels.compactionModel}
+                  onChange={(v) => handleAdvancedChange({ compactionModel: v })}
+                  models={models}
+                  placeholder={t('settings.modelTuning.defaultsToFlash')}
+                  modelAccess={modelAccessMap}
+                />
+                <FallbackModelsPicker
+                  selected={advancedModels.fallbackModels}
+                  onChange={(list) => handleAdvancedChange({ fallbackModels: list })}
+                  models={models}
+                />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
 
       {/* Error */}
       {error && (
@@ -181,7 +237,9 @@ export default function DefaultsStep() {
         >
           {saving ? (
             <>
-              <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+              <span aria-hidden="true" className="mr-1.5 flex-shrink-0">
+                <Loader size={16} className="text-current" />
+              </span>
               {t('setup.saving')}
             </>
           ) : (

@@ -8,15 +8,42 @@ and delegates to the database layer.
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from croniter import croniter
 
 from src.server.database import automation as auto_db
+from src.server.database.workspace import get_workspace
 from src.server.services.automation_scheduler import AutomationScheduler
 from src.server.services.automation_executor import AutomationExecutor
+from src.server.utils.api import require_thread_owner, require_workspace_owner
 
 logger = logging.getLogger(__name__)
+
+
+async def require_target_ownership(
+    user_id: str,
+    workspace_id: UUID | str | None,
+    conversation_thread_id: UUID | str | None,
+) -> None:
+    """Verify caller-supplied automation targets belong to ``user_id``.
+
+    Gated here rather than in the router because the REST endpoints and the
+    agent's automation tool both reach the database through this module. The
+    check mostly holds for the row's life: nothing reassigns
+    ``workspaces.user_id`` and nothing moves a thread between workspaces, so a
+    workspace owned at write time stays owned. A pinned thread is the gap —
+    deleting one hard-deletes the row and frees its id for whoever posts to it
+    next, and the column carries no FK to catch that. Raises 404/403, never
+    ValueError, which these routes map to 409.
+    """
+    if workspace_id:
+        require_workspace_owner(
+            await get_workspace(str(workspace_id)), user_id=user_id
+        )
+    if conversation_thread_id:
+        await require_thread_owner(str(conversation_thread_id), user_id)
 
 
 def validate_cron_expression(expr: str) -> None:
@@ -93,6 +120,14 @@ async def create_automation(
     if agent_mode == "ptc" and not data.get("workspace_id"):
         raise ValueError("workspace_id is required for agent_mode='ptc'")
 
+    # Targets are checked whatever the mode: flash ignores workspace_id at run
+    # time, but a later PATCH to agent_mode='ptc' activates the stored one.
+    await require_target_ownership(
+        user_id,
+        data.get("workspace_id"),
+        data.get("conversation_thread_id"),
+    )
+
     # Create in database
     automation = await auto_db.create_automation(
         user_id=user_id,
@@ -138,12 +173,19 @@ async def update_automation(
         Updated automation dict, or None if not found
 
     Raises:
-        ValueError: On invalid cron/timezone
+        ValueError: On invalid cron/timezone, or a merged state that leaves
+            agent_mode='ptc' without a workspace
     """
     # Get current automation for reference
     current = await auto_db.get_automation(automation_id, user_id)
     if not current:
         return None
+
+    await require_target_ownership(
+        user_id,
+        data.get("workspace_id"),
+        data.get("conversation_thread_id"),
+    )
 
     # Build update kwargs (only non-None values)
     update_kwargs: Dict[str, Any] = {}
@@ -171,6 +213,14 @@ async def update_automation(
     new_cron = update_kwargs.get("cron_expression")
     if new_cron:
         validate_cron_expression(new_cron)
+
+    # create enforces this, but a PATCH can flip agent_mode without naming a
+    # workspace — check the merged state, or 'ptc' activates on a row that has
+    # none and the executor only finds out at run time, burning a failure.
+    merged_mode = update_kwargs.get("agent_mode") or current.get("agent_mode")
+    merged_workspace = update_kwargs.get("workspace_id") or current.get("workspace_id")
+    if merged_mode == "ptc" and not merged_workspace:
+        raise ValueError("workspace_id is required for agent_mode='ptc'")
 
     # Recalculate next_run_at if cron expression or timezone changed
     cron_expr = new_cron or current["cron_expression"]

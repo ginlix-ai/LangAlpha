@@ -12,7 +12,7 @@ const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
       <div className={cn("relative", className)}>
         <select
           ref={ref}
-          className="w-full appearance-none rounded-md py-2 pl-3 pr-9 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-50"
+          className="h-9 w-full appearance-none rounded-md py-0 pl-3 pr-9 text-sm disabled:cursor-not-allowed disabled:opacity-50"
           style={{
             backgroundColor: "var(--color-bg-card)",
             border: "1px solid var(--color-border-muted)",

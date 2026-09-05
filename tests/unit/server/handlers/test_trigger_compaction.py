@@ -22,6 +22,8 @@ from ptc_agent.config.core import (
 
 
 HANDLER = "src.server.handlers.thread_maintenance"
+USER_MODELS = "src.server.services.llm.user_models"
+CLIENTS = "src.server.services.llm.clients"
 LLM_HANDLER = "src.server.services.llm.config"
 
 
@@ -73,13 +75,15 @@ def _stub_resolve_graph_and_state():
     backend = None
     lg_config = {"configurable": {"thread_id": "thread-1"}}
 
-    async def _stub(thread_id, verb, config=None, checkpointer=None):
+    async def _stub(thread_id, verb, config=None, checkpointer=None, user_id=None):
         _stub.captured_config = config
         _stub.captured_checkpointer = checkpointer
+        _stub.captured_user_id = user_id
         return graph, lg_config, state, messages, backend
 
     _stub.captured_config = None
     _stub.captured_checkpointer = None
+    _stub.captured_user_id = None
     return _stub
 
 
@@ -162,12 +166,12 @@ async def test_manual_compact_uses_user_compaction_model(base_config):
             return_value=False,
         ),
         patch(
-            f"{LLM_HANDLER}.get_model_preference",
+            f"{USER_MODELS}.get_model_preference",
             new_callable=AsyncMock,
             return_value={"compaction_model": "user-compaction-model"},
         ),
         patch(
-            f"{LLM_HANDLER}.resolve_oauth_llm_client",
+            f"{CLIENTS}.resolve_oauth_llm_client",
             new_callable=AsyncMock,
             return_value=None,
         ),
@@ -187,6 +191,10 @@ async def test_manual_compact_uses_user_compaction_model(base_config):
     resolved = stub_resolve.captured_config
     assert resolved is not None
     assert resolved.llm.compaction == "user-compaction-model"
+
+    # The session acquire behind it resolves MCP/OAuth per owner, so the caller
+    # identity must not be dropped on the way down.
+    assert stub_resolve.captured_user_id == "user-1"
 
 
 @pytest.mark.asyncio
@@ -632,6 +640,37 @@ class TestMutationFence:
         assert stub_resolve.captured_checkpointer is fence_saver
 
     @pytest.mark.asyncio
+    async def test_offload_threads_the_caller_identity(self, base_config):
+        # Same contract as compaction: the route's x_user_id must reach the
+        # session acquire, whose MCP resolve is owner-scoped.
+        from src.server.handlers.thread_maintenance import trigger_offload
+
+        runner = _fake_runner()
+        stub_resolve = _stub_resolve_graph_and_state()
+        offload_mock = AsyncMock(
+            return_value={
+                "offloaded_args": 0,
+                "offloaded_reads": 0,
+                "messages": [],
+                "original_count": 2,
+            }
+        )
+
+        with (
+            patch("src.server.app.setup.agent_config", base_config),
+            patch(f"{HANDLER}._resolve_graph_and_state", new=stub_resolve),
+            patch(f"{HANDLER}._persist_context_window_event", new=_noop_persist),
+            patch(
+                "ptc_agent.agent.middleware.compaction.offload_tool_args",
+                new=offload_mock,
+            ),
+            patch(RUNNER_GET_INSTANCE, return_value=runner),
+        ):
+            await trigger_offload("thread-1", user_id="user-1")
+
+        assert stub_resolve.captured_user_id == "user-1"
+
+    @pytest.mark.asyncio
     async def test_compact_releases_fence_on_error(self, base_config):
         """A failure inside the critical section still releases the fence, so
         a queued POST is not blocked past the runner's own cleanup."""
@@ -734,3 +773,51 @@ class TestMutationFence:
         assert detail["code"] == "request_cancelled"
         assert detail["verb"] == "offload"
         assert runner.released == [("thread-1", "offload")]
+
+
+# ---------------------------------------------------------------------------
+# Session acquire — the workspace manager resolves MCP/OAuth per owner
+# ---------------------------------------------------------------------------
+
+
+class TestSessionAcquireIdentity:
+    @pytest.mark.asyncio
+    async def test_the_caller_identity_reaches_the_session_acquire(self, base_config):
+        """An acquire with no user_id resolves the owner's server set empty, and
+        a recovery taken from that path would carry the gap into provisioning."""
+        from src.server.handlers.thread_maintenance import _resolve_graph_and_state
+
+        manager = MagicMock()
+        manager.get_session_for_workspace = AsyncMock(
+            return_value=MagicMock(sandbox=None)
+        )
+        graph = MagicMock()
+        graph.aget_state = AsyncMock(
+            return_value=MagicMock(values={"messages": [MagicMock(id="m1")]})
+        )
+
+        with (
+            patch(
+                "src.server.database.conversation.get_thread_with_summary",
+                new_callable=AsyncMock,
+                return_value={"workspace_id": "ws-1"},
+            ),
+            patch(
+                "src.server.services.workspace_manager.WorkspaceManager.get_instance",
+                return_value=manager,
+            ),
+            patch(
+                "ptc_agent.agent.graph.build_ptc_graph_with_session",
+                new_callable=AsyncMock,
+                return_value=graph,
+            ),
+        ):
+            await _resolve_graph_and_state(
+                "thread-1",
+                "compact",
+                config=base_config,
+                checkpointer=MagicMock(),
+                user_id="user-1",
+            )
+
+        assert manager.get_session_for_workspace.await_args.kwargs["user_id"] == "user-1"

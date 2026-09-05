@@ -226,6 +226,8 @@ def serialize_context_metadata(
     query_metadata: dict,
     user_input: str,
     mode: str,
+    extra_commands: dict[str, str] | None = None,
+    allowed_skills: set[str] | None = None,
 ) -> None:
     """Serialize additional_context into lightweight persistence metadata.
 
@@ -250,7 +252,12 @@ def serialize_context_metadata(
 
     # Detect slash commands from message text when additional_context is absent
     if not request.hitl_response and "additional_context" not in query_metadata:
-        _, early_detected = detect_slash_commands(user_input, mode=mode)
+        _, early_detected = detect_slash_commands(
+            user_input,
+            mode=mode,
+            extra_commands=extra_commands,
+            allowed_skills=allowed_skills,
+        )
         if early_detected:
             query_metadata["additional_context"] = [
                 {"type": "skills", "name": s.name} for s in early_detected
@@ -342,7 +349,25 @@ async def ensure_thread(
         ensure_kwargs["platform"] = request.platform
     if request.external_thread_id:
         ensure_kwargs["external_id"] = request.external_thread_id
-    await qr_db.ensure_thread_exists(**ensure_kwargs)
+    if request.origin:
+        ensure_kwargs["metadata"] = {
+            "origin": request.origin.model_dump(exclude_none=True)
+        }
+    created = await qr_db.ensure_thread_exists(**ensure_kwargs)
+
+    # Threads born here (automations, channel gateways, legacy clients) never
+    # pass through POST /threads, so this is their only shot at an LLM title.
+    # Web create-first threads pre-exist → created=False → no double generation.
+    if created and initial_query:
+        from src.server.services.thread_title import schedule_title_generation
+
+        schedule_title_generation(
+            thread_id=thread_id,
+            user_id=user_id,
+            first_query=initial_query,
+            expected_title=initial_query[:255],
+            timezone=request.timezone,
+        )
 
 
 def _slash_text_target(content: Any) -> tuple[str, dict | None]:
@@ -367,10 +392,69 @@ def _slash_text_target(content: Any) -> tuple[str, dict | None]:
     return "", None
 
 
+def user_skill_commands(config) -> dict[str, str] | None:
+    """Command → skill-name map for the turn user's skill customizations.
+
+    Read off the resolved ``AgentConfig`` (populated by ``resolve_llm_config``):
+    uploaded skills under their effective triggers, plus platform-command
+    renames (which ``detect_slash_commands`` treats as replacing the builtin
+    trigger). None when there is nothing to add, so slash detection falls back
+    to the builtin map alone.
+
+    Fold precedence, lowest first: platform renames, user-tier skills,
+    workspace-tier rows — so a workspace row wins a same-trigger collision in
+    its workspace, the invariant the cross-scope alias checks rely on.
+    """
+    if config is None:
+        return None
+    extra: dict[str, str] = {}
+    for name, command in (
+        getattr(config, "skill_command_overrides", None) or {}
+    ).items():
+        extra[command] = name
+    specs = sorted(
+        getattr(config, "user_skills", None) or [],
+        key=lambda s: getattr(s, "workspace_scoped", False),
+    )
+    for s in specs:
+        extra[s.command] = s.name
+    return extra or None
+
+
+def turn_skill_names(config, mode: str) -> set[str] | None:
+    """The skill names this turn's build actually exposes.
+
+    Slash detection otherwise matches against the process-wide registry, which
+    knows nothing about this user's disables, feature opt-outs, or the build's
+    mode. A command matching a skill the build then refuses does not error: the
+    prefix is stripped and nothing loads, so the model silently receives a
+    shortened message. Assembled from the config ``resolve_llm_config`` already
+    populated, by the same call the agent build makes, so the two cannot drift.
+    """
+    if config is None:
+        return None
+    from ptc_agent.agent.middleware.skills.registry import (
+        build_effective_skill_registry,
+    )
+
+    return set(
+        build_effective_skill_registry(
+            mode,  # type: ignore[arg-type]
+            feature_resolver=getattr(config, "feature_enabled", None),
+            disabled_skills=getattr(config, "disabled_skills", None) or (),
+            user_skills=getattr(config, "user_skills", None) or (),
+            user_skill_dir=getattr(config, "user_skill_dir", None),
+            workspace_skill_dir=getattr(config, "workspace_skill_dir", None),
+        )
+    )
+
+
 def prepare_skill_contexts(
     messages: list[dict],
     request: ChatRequest,
     mode: str,
+    extra_commands: dict[str, str] | None = None,
+    allowed_skills: set[str] | None = None,
 ) -> list[dict]:
     """Resolve which skills this turn activates, for the agent to inject.
 
@@ -390,7 +474,12 @@ def prepare_skill_contexts(
         last_msg = messages[-1]
         msg_text, text_block = _slash_text_target(last_msg.get("content"))
         if msg_text:
-            cleaned_text, detected = detect_slash_commands(msg_text, mode=mode)
+            cleaned_text, detected = detect_slash_commands(
+                msg_text,
+                mode=mode,
+                extra_commands=extra_commands,
+                allowed_skills=allowed_skills,
+            )
             if detected:
                 skill_contexts = detected
                 if cleaned_text != msg_text:
@@ -418,7 +507,6 @@ def build_graph_config(
     token_callback,
     request: ChatRequest,
     effective_model: str | None,
-    is_byok: bool,
     recursion_limit: int,
     plan_mode: bool | None = None,
     extra_configurable: dict | None = None,
@@ -451,9 +539,6 @@ def build_graph_config(
         locale=request.locale,
         timezone=timezone_str,
         llm_model=effective_model,
-        reasoning_effort=getattr(request, "reasoning_effort", None),
-        fast_mode=getattr(request, "fast_mode", None),
-        is_byok=is_byok,
         platform=request.platform,
         **({"plan_mode": plan_mode} if plan_mode is not None else {}),
     )

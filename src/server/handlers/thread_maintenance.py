@@ -25,13 +25,15 @@ logger = logging.getLogger(__name__)
 
 
 async def _resolve_graph_and_state(
-    thread_id: str, verb: str, config=None, checkpointer=None
+    thread_id: str, verb: str, config=None, checkpointer=None, user_id=None
 ) -> tuple:
     """Validate thread, build graph, get state, build backend.
 
     ``config`` is the resolved AgentConfig; defaults to ``setup.agent_config``.
     ``checkpointer`` overrides the global pooled saver — a mutation passes its
     fence-bound saver so checkpoint writes die with the lock session (I2).
+    ``user_id`` identifies the caller to the session acquire, whose MCP resolve
+    is owner-scoped.
 
     Returns:
         (graph, lg_config, state, messages, backend)
@@ -55,7 +57,9 @@ async def _resolve_graph_and_state(
     # Session
     workspace_manager = WorkspaceManager.get_instance()
     try:
-        session = await workspace_manager.get_session_for_workspace(workspace_id)
+        session = await workspace_manager.get_session_for_workspace(
+            workspace_id, user_id=user_id
+        )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:
@@ -187,7 +191,7 @@ async def trigger_compaction(
 
             graph, lg_config, state, messages, backend = await _resolve_graph_and_state(
                 thread_id, "compact", config=agent_cfg,
-                checkpointer=mutation.saver,
+                checkpointer=mutation.saver, user_id=user_id,
             )
 
             original_count = len(messages)
@@ -298,12 +302,14 @@ async def trigger_compaction(
 
 
 @cancellation_as_http("offload")
-async def trigger_offload(thread_id: str) -> dict:
+async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict:
     """
     Manually trigger tool-arg offloading for a thread (Tier 1 only).
 
     Truncates large tool arguments in older messages and offloads the
     originals to the sandbox filesystem. No LLM summarization is performed.
+    ``user_id`` identifies the caller to the session acquire, same as
+    :func:`trigger_compaction`.
 
     Args:
         thread_id: The thread/conversation ID to offload
@@ -320,7 +326,7 @@ async def trigger_offload(thread_id: str) -> dict:
         # fail-open/fail-closed tracker asymmetry is gone.
         async with _hold_thread_mutation(thread_id, "offload") as mutation:
             graph, lg_config, state, messages, backend = await _resolve_graph_and_state(
-                thread_id, "offload", checkpointer=mutation.saver
+                thread_id, "offload", checkpointer=mutation.saver, user_id=user_id
             )
 
             # Load already-offloaded IDs from graph state (persisted in checkpoint)

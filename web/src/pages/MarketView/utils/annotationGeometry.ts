@@ -33,7 +33,7 @@ import type {
 
 // Default colors — used only when the agent omits a color. A calm, cohesive
 // accent set (slate blue + muted gold for fibs) that reads cleanly on both the
-// black dark-mode and cream light-mode chart backgrounds.
+// dark (#232426) and light (#FFFFFF) chart backgrounds.
 export const DEFAULT_LINE_COLOR = '#4F8AD6';
 export const DEFAULT_TRENDLINE_COLOR = 'rgba(79,138,214,0.7)';
 export const DEFAULT_MARKER_COLOR = '#4F8AD6';
@@ -41,9 +41,10 @@ export const DEFAULT_RECT_COLOR = '#4F8AD6';
 export const DEFAULT_VLINE_COLOR = '#4F8AD6';
 export const DEFAULT_TEXT_COLOR = '#4F8AD6';
 export const DEFAULT_FIB_COLOR = '#C99A4E';
-// News/event badges read as editorial callouts — a warm amber that stands
-// apart from the slate-blue technical accents on both chart backgrounds.
-export const DEFAULT_EVENT_COLOR = '#D8893B';
+// News/event badges read as editorial callouts — the product's annotation amber
+// (--color-accent-primary), which stands apart from the slate-blue technical
+// accents on both chart backgrounds.
+export const DEFAULT_EVENT_COLOR = '#E9954A';
 
 /** Standard Fibonacci retracement ratios. */
 export const FIB_RATIOS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1] as const;

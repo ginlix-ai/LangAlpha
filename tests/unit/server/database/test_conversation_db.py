@@ -203,33 +203,52 @@ async def test_get_thread_by_id_malformed_id_skips_database(
 
 
 @pytest.mark.asyncio
-async def test_update_thread_title(mock_db_connection, mock_cursor):
-    """update_thread_title updates title and returns updated thread."""
-    from src.server.database.conversation import update_thread_title
+async def test_update_thread_fields_title(mock_db_connection, mock_cursor):
+    """Title update sets title, bumps updated_at, returns the updated row."""
+    from src.server.database.conversation import update_thread_fields
 
     row = _thread_row(title="New Title")
     mock_cursor.fetchone.return_value = row
 
-    result = await update_thread_title("t-1", "New Title")
+    result = await update_thread_fields("t-1", title="New Title")
 
     assert result is not None
     assert result["title"] == "New Title"
     params = mock_cursor.execute.call_args[0][1]
     assert params[0] == "New Title"
     assert params[1] == "t-1"
-    # RETURNING now includes platform so the endpoint response carries it.
     sql = mock_cursor.execute.call_args[0][0]
+    # RETURNING includes platform so the endpoint response carries it.
     assert "platform" in sql
+    assert "updated_at = NOW()" in sql
 
 
 @pytest.mark.asyncio
-async def test_update_thread_title_not_found(mock_db_connection, mock_cursor):
-    """update_thread_title returns None when thread not found."""
-    from src.server.database.conversation import update_thread_title
+async def test_update_thread_fields_pin_skips_updated_at(
+    mock_db_connection, mock_cursor
+):
+    """Pin/archive must not bump updated_at — pinning may not reorder the
+    recency sort (same contract as stamp_thread_seen)."""
+    from src.server.database.conversation import update_thread_fields
+
+    mock_cursor.fetchone.return_value = _thread_row()
+
+    await update_thread_fields("t-1", is_pinned=True, archived=False)
+
+    sql = mock_cursor.execute.call_args[0][0]
+    assert "is_pinned = %s" in sql
+    assert "archived_at = NULL" in sql
+    assert "updated_at = NOW()" not in sql
+
+
+@pytest.mark.asyncio
+async def test_update_thread_fields_not_found(mock_db_connection, mock_cursor):
+    """update_thread_fields returns None when thread not found."""
+    from src.server.database.conversation import update_thread_fields
 
     mock_cursor.fetchone.return_value = None
 
-    result = await update_thread_title("nonexistent", "Title")
+    result = await update_thread_fields("nonexistent", title="Title")
     assert result is None
 
 

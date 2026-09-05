@@ -126,9 +126,10 @@ class TestSafeCrawlerCrawl:
         result = await wrapper.crawl("https://bogus.invalid")
 
         assert result.error_type == "dns_error"
-        # DNS errors trip BOTH per-host AND infra breakers.
+        # Host-scoped only: a name that does not resolve is that host's problem,
+        # and must not fail-fast crawling for every other host.
         assert wrapper._host_breakers["bogus.invalid"].failure_count == 1
-        assert wrapper._infra_breaker.failure_count == 1
+        assert wrapper._infra_breaker.failure_count == 0
 
     @pytest.mark.asyncio
     async def test_browser_closed_classifies_correctly(self):
@@ -145,7 +146,7 @@ class TestSafeCrawlerCrawl:
         assert wrapper._infra_breaker.failure_count == 1
 
     @pytest.mark.asyncio
-    async def test_connection_refused_trips_infra(self):
+    async def test_connection_refused_stays_host_scoped(self):
         wrapper = _make_wrapper()
         mock_crawler = _inject_mock_crawler(wrapper)
         mock_crawler.crawl_with_metadata = AsyncMock(
@@ -155,7 +156,8 @@ class TestSafeCrawlerCrawl:
         result = await wrapper.crawl("https://example.com")
 
         assert result.error_type == "connection_refused"
-        assert wrapper._infra_breaker.failure_count == 1
+        assert wrapper._host_breakers["example.com"].failure_count == 1
+        assert wrapper._infra_breaker.failure_count == 0
 
     @pytest.mark.asyncio
     async def test_generic_crawl_error_host_only(self):
@@ -418,8 +420,9 @@ class TestThreeLayerHealth:
         assert result.success is True
 
     @pytest.mark.asyncio
-    async def test_infra_breaker_only_trips_on_infra_kind(self):
-        """failure_kind='infra_error' trips both per-host and infra breakers."""
+    async def test_unreachable_target_spares_the_global_breaker(self):
+        """'infra_error' is the Tier-1 unreachable short-circuit — it describes
+        the target, so it must not fail-fast crawling for every other host."""
         wrapper = _make_wrapper(circuit_failure_threshold=1)
         mock_crawler = _inject_mock_crawler(wrapper)
         mock_crawler.crawl_with_metadata = AsyncMock(
@@ -429,6 +432,18 @@ class TestThreeLayerHealth:
 
         await wrapper.crawl("https://example.com")
         assert wrapper._host_breakers["example.com"].state == CircuitState.OPEN
+        assert wrapper._infra_breaker.state == CircuitState.CLOSED
+
+    @pytest.mark.asyncio
+    async def test_dead_browser_trips_the_global_breaker(self):
+        """A closed browser is ours, not the target's — every host is affected."""
+        wrapper = _make_wrapper(circuit_failure_threshold=1)
+        mock_crawler = _inject_mock_crawler(wrapper)
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            side_effect=RuntimeError("Target page, context or browser has been closed")
+        )
+
+        await wrapper.crawl("https://example.com")
         assert wrapper._infra_breaker.state == CircuitState.OPEN
 
     @pytest.mark.asyncio
@@ -517,10 +532,9 @@ class TestThreeLayerHealth:
         )
         mock_crawler = _inject_mock_crawler(wrapper)
 
-        # Trip infra breaker via an infra_error failure.
+        # Trip infra breaker via a failure that is genuinely ours.
         mock_crawler.crawl_with_metadata = AsyncMock(
-            return_value=CrawlOutput(title="", html="", markdown="",
-                                     status=None, failure_kind="infra_error")
+            side_effect=RuntimeError("Target page, context or browser has been closed")
         )
         await wrapper.crawl("https://example.com")
         infra = wrapper._infra_breaker

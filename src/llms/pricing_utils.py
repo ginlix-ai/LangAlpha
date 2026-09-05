@@ -2,11 +2,27 @@
 Pricing calculation utilities for LLM token usage with support for both flat and tiered pricing.
 """
 
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List, Tuple
 import logging
 import re
 
 logger = logging.getLogger(__name__)
+
+# Keys describing *when* a card applies rather than what it charges. Stripped
+# from the card handed to the engine so what gets priced, logged and snapshotted
+# is only the rates in force.
+_SCHEDULE_KEYS = (
+    "peak_utc",
+    "off_peak",
+    "schedule_anchor",
+    "peak_days",
+    "peak_days_utc_offset",
+)
+
+# An unstamped record's model name is the vendor's string; bound it before it
+# reaches a log line.
+_LOGGED_NAME_MAX_LEN = 120
 
 
 def extract_base_model(model_name: str) -> str:
@@ -57,21 +73,78 @@ def extract_base_model(model_name: str) -> str:
     return model_name
 
 
+def resolve_pricing_identity(
+    model_name: str, billing_type: str = "platform"
+) -> Tuple[Optional[str], str]:
+    """
+    Resolve a tracked model name to the (provider, pricing id) pair its rates live under.
+
+    A manifest key is tried before any model_id, and that ordering is the whole point:
+    keys are unique by construction, model_ids are not. Several keys share one id while
+    declaring providers whose rates genuinely differ (a region or plan variant against
+    its base), so a single scan matching keys and ids together would resolve a shared id
+    by whichever entry the manifest happens to list first.
+
+    For platform billing the provider is system_provider when present, since that is the
+    route whose rates the call actually costs. BYOK and OAuth resolve to the base provider,
+    which is the one the user pays directly.
+
+    Args:
+        model_name: Manifest key (preferred) or model_id from a usage record
+        billing_type: "platform", "byok", or "oauth"
+
+    Returns:
+        (provider, pricing_id). provider is None when the name is not in the manifest;
+        pricing_id falls back to model_name so the caller can still attempt a lookup.
+    """
+    from .llm import LLM
+
+    try:
+        config_data = LLM.get_model_config().llm_config  # models.json
+    except Exception as e:
+        logger.debug(f"Failed to load models.json for provider detection: {e}")
+        return None, model_name
+
+    if not config_data:
+        return None, model_name
+
+    def _provider_of(config: Dict[str, Any]) -> Optional[str]:
+        if billing_type == "platform":
+            return config.get("system_provider") or config.get("provider")
+        return config.get("provider")
+
+    model_name_lower = model_name.lower()
+
+    for custom_name, config in config_data.items():
+        if custom_name.lower() == model_name_lower:
+            provider = _provider_of(config)
+            pricing_id = config.get("model_id") or model_name
+            logger.debug(
+                f"Manifest key '{model_name}' (billing={billing_type}) "
+                f"-> provider={provider}, pricing id={pricing_id}"
+            )
+            return provider, pricing_id
+
+    for custom_name, config in config_data.items():
+        if config.get("model_id", "").lower() == model_name_lower:
+            provider = _provider_of(config)
+            logger.debug(
+                f"Model id '{model_name}' (billing={billing_type}) -> provider={provider} "
+                f"via key '{custom_name}'"
+            )
+            return provider, model_name
+
+    logger.debug(f"No provider found for model '{model_name}' in models.json")
+    return None, model_name
+
+
 def detect_provider_for_model(model_name: str, billing_type: str = "platform") -> Optional[str]:
     """
     Detect provider by reverse-looking up models.json, with billing-type awareness.
 
-    For platform billing, returns system_provider when available — that's the actual
-    routing provider whose rates determine credit costs. For BYOK/OAuth, returns the
-    base provider since the user pays that provider directly.
-
-    This handles mixed-billing conversations correctly: each per-call record carries
-    its own billing_type, so platform calls resolve to system_provider pricing while
-    BYOK calls in the same conversation resolve to base provider pricing.
-
-    Searches both:
-    - Custom model names (keys in models.json)
-    - model_id values (the actual model identifier sent to APIs)
+    Thin wrapper over resolve_pricing_identity for callers that only need the provider.
+    Prefer the resolver directly when the pricing id is needed too — a manifest key and
+    its model_id differ for most entries.
 
     Args:
         model_name: Model name from token usage (e.g., "MiniMax-M2", "gpt-5-0905")
@@ -88,38 +161,7 @@ def detect_provider_for_model(model_name: str, billing_type: str = "platform") -
         >>> detect_provider_for_model("gpt-5")
         "openai"
     """
-    from .llm import LLM
-
-    try:
-        model_config = LLM.get_model_config()
-        config_data = model_config.llm_config  # Load models.json
-    except Exception as e:
-        logger.debug(f"Failed to load models.json for provider detection: {e}")
-        return None
-
-    if not config_data:
-        return None
-
-    # Normalize for case-insensitive comparison
-    model_name_lower = model_name.lower()
-
-    # Search through all custom model configurations
-    for custom_name, config in config_data.items():
-        # Check 1: Match against custom name (the key in models.json)
-        # Check 2: Match against model_id field (case-insensitive)
-        model_id = config.get("model_id", "")
-        if custom_name.lower() == model_name_lower or model_id.lower() == model_name_lower:
-            if billing_type == "platform":
-                provider = config.get("system_provider") or config.get("provider")
-            else:
-                provider = config.get("provider")
-            if provider:
-                logger.debug(f"Provider detected for '{model_name}' (billing={billing_type}): {provider}")
-                return provider
-
-    # Not found in models.json
-    logger.debug(f"No provider found for model '{model_name}' in models.json")
-    return None
+    return resolve_pricing_identity(model_name, billing_type)[0]
 
 
 def find_model_pricing(model_name: str, provider: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -247,35 +289,40 @@ def find_model_pricing(model_name: str, provider: Optional[str] = None) -> Optio
                         )
                         return model.get('pricing')
 
+    # On an unstamped record this name is the vendor's own string, which can carry
+    # newlines and forge a log record downstream, so every line below quotes and
+    # bounds it rather than interpolating it raw.
+    safe_name = f"{model_name[:_LOGGED_NAME_MAX_LEN]!r}"
+
     # STEP 3: Pattern-based fallback for version snapshots
     base_model = extract_base_model(model_name)
     if base_model != model_name:
         logger.info(
-            f"No exact match for '{model_name}', trying base model '{base_model}' "
+            f"No exact match for {safe_name}, trying base model '{base_model}' "
             f"(extracted via pattern matching)"
         )
         # Recursive lookup with base model (keep same provider context)
         pricing = find_model_pricing(base_model, provider)
         if pricing:
             logger.warning(
-                f"Using pricing for base model '{base_model}' for snapshot version '{model_name}'. "
-                f"This is a fallback strategy. Consider adding '{model_name}' as an alias in "
+                f"Using pricing for base model '{base_model}' for snapshot version {safe_name}. "
+                f"This is a fallback strategy. Consider adding that name as an alias in "
                 f"providers.json if this model is frequently used."
             )
             return pricing
         else:
             logger.debug(f"Base model '{base_model}' also not found in manifest")
 
-    # STEP 4: Not found - log comprehensive error
+    # STEP 4: Not found - log comprehensive error.
     if provider:
         logger.warning(
-            f"No pricing found for model: {model_name} (provider: {provider}). "
+            f"No pricing found for model: {safe_name} (provider: {provider!r}). "
             f"Tried: exact ID match, alias match, base model '{base_model}'. "
             f"Please add this model to providers.json under provider '{provider}'."
         )
     else:
         logger.warning(
-            f"No pricing found for model: {model_name} (searched all providers). "
+            f"No pricing found for model: {safe_name} (searched all providers). "
             f"Tried: exact ID match, alias match, base model '{base_model}'. "
             f"Please add this model to providers.json."
         )
@@ -289,17 +336,26 @@ def find_model_pricing(model_name: str, provider: Optional[str] = None) -> Optio
 PRICE_TIER_BANDS = [(8.0, 5), (4.0, 4), (1.5, 3), (0.5, 2), (0.0, 1)]
 
 
-def _representative_rate(pricing: Dict[str, Any], flat_key: str, tier_key: str) -> Optional[float]:
+def _representative_rate(
+    pricing: Dict[str, Any],
+    flat_key: str,
+    tier_key: str,
+    tier_field: str = 'rate',
+) -> Optional[float]:
     """A single $/1M rate for tiering: the flat rate, else the base (first) tier.
 
     Base tier is deliberate: it's the standard-context rate nearly all requests
     pay; long-context surcharge tiers are excluded from the headline cost dot.
+
+    ``tier_field`` names the rate to read inside a tier, because a tiered card
+    carries its cache rates as siblings of ``rate`` rather than as tiers of
+    their own.
     """
     if pricing.get(flat_key) is not None:
         return pricing[flat_key]
     tiers = pricing.get(tier_key)
     if tiers:
-        return tiers[0].get('rate')
+        return tiers[0].get(tier_field)
     return None
 
 
@@ -322,6 +378,100 @@ def get_price_tier(model_name: str, provider: Optional[str] = None) -> Optional[
         if blended >= lo:
             return tier
     return 1
+
+
+# The token mix a typical platform-billed call bills at, measured over 30 days
+# of production traffic. Two of them, because the split is a property of the
+# provider's cache architecture rather than of the model: an implicit-cache
+# provider is never charged for a cache write, so those tokens are absent from
+# its bill entirely, while explicit breakpoints put roughly a quarter of every
+# prompt on a rate twelve times the read rate. Weights are
+# (fresh input, cache read, cache write, output).
+_MIX_IMPLICIT_CACHE = (0.17, 0.81, 0.00, 0.02)
+_MIX_EXPLICIT_CACHE = (0.00, 0.73, 0.23, 0.04)
+
+# Providers whose caching is keyed at explicit breakpoints, so a cache write is
+# a real line on the bill. Mirrors ``provider_cache.breakpoint_marker``, which
+# keys Anthropic reads that way unconditionally; OpenAI's opt-in models run in
+# implicit mode and are billed no differently from the rest.
+_EXPLICIT_CACHE_PROVIDERS = frozenset({"anthropic", "claude-oauth"})
+
+# What one call bills at, per 1M tokens, on the model carrying most of our
+# traffic. A constant rather than a live lookup on that model: a vendor price
+# cut should carry every chunk down with it, and a ratio taken against a moving
+# baseline would cancel out exactly the change a chunk needs to follow.
+_BASELINE_BLENDED_RATE = 0.34
+
+
+def blended_rate(
+    model_name: str,
+    billing_type: str = "platform",
+    at: Optional[datetime] = None,
+) -> Optional[float]:
+    """What a typical call on this model bills at, in $/1M tokens.
+
+    Weights the card's four rates by the measured production token mix, which
+    answers a different question from the headline input rate: traffic here runs
+    about 80% cache reads at a tenth of the input rate, so input alone overstates
+    a cheap model and understates one whose output rate is 6x its input.
+
+    Resolves a scheduled card (peak/off-peak) against ``at``, defaulting to now,
+    because a model on hourly pricing genuinely costs twice as much some hours.
+    """
+    provider, pricing_id = resolve_pricing_identity(model_name, billing_type)
+    pricing = find_model_pricing(pricing_id, provider)
+    if not pricing:
+        return None
+    if has_schedule(pricing):
+        pricing = resolve_schedule(pricing, at or datetime.now(timezone.utc))[0]
+    r_in = _representative_rate(pricing, 'input', 'input_tiers')
+    r_out = _representative_rate(pricing, 'output', 'output_tiers')
+    if r_in is None or r_out is None:
+        return None
+    # A card publishing no read discount charges reads as input, and one
+    # publishing no write rate bills a write as ordinary input. Both fall back
+    # to the higher figure, which sizes a budget generously rather than short.
+    r_read = _representative_rate(pricing, 'cached_input', 'input_tiers', 'cached_input')
+    r_write = _representative_rate(pricing, 'cache_5m', 'input_tiers', 'cache_5m')
+    if r_write is None:
+        # Falls through on absence, not on zero: a card that publishes a free
+        # cache write means it, and ``or`` would bill it at the input rate.
+        r_write = _representative_rate(pricing, 'cache_1h', 'input_tiers', 'cache_1h')
+    rates = (
+        r_in,
+        r_in if r_read is None else r_read,
+        r_in if r_write is None else r_write,
+        r_out,
+    )
+    mix = (
+        _MIX_EXPLICIT_CACHE
+        if provider in _EXPLICIT_CACHE_PROVIDERS
+        else _MIX_IMPLICIT_CACHE
+    )
+    return sum(rate * weight for rate, weight in zip(rates, mix))
+
+
+def chunk_multiplier(
+    model_name: str,
+    billing_type: str = "platform",
+    at: Optional[datetime] = None,
+) -> Optional[float]:
+    """How much one call on this model costs against the baseline model.
+
+    Sizes the credit lease: a run reserves this many times the baseline chunk
+    before it has to re-check, so a pricier model gets headroom matching what a
+    single model boundary actually spends. Snapped to a coarse ladder so a cent
+    of manifest drift cannot restate every reservation, and to the nearest step
+    rather than up, because the figure doubles as a plain statement of relative
+    cost and only reads honestly as one if it rounds both ways. None when the
+    model has no rates, which leaves the caller on its own default.
+    """
+    rate = blended_rate(model_name, billing_type, at)
+    if rate is None or rate <= 0:
+        return None
+    raw = rate / _BASELINE_BLENDED_RATE
+    return round(raw, 1) if raw < 1 else round(raw * 2) / 2
+
 
 
 def calculate_tiered_cost(tokens: int, tiers: List[Dict[str, Any]]) -> float:
@@ -679,6 +829,189 @@ def get_output_cost(tokens: int, pricing: Dict[str, Any], input_tokens: int = 0)
         return (tokens / 1_000_000) * pricing['output']
 
     return 0.0
+
+
+def has_schedule(pricing: Optional[Dict[str, Any]]) -> bool:
+    """Whether this card's rate depends on when the call ran.
+
+    Either rate-bearing key arms the schedule. Keying on ``peak_utc`` alone would
+    let a card carrying only the ``off_peak`` discount read as unscheduled and
+    bill peak around the clock, silently and with nothing to log — the discount
+    block is the half a maintainer writes first.
+    """
+    return bool(pricing and (pricing.get("peak_utc") or pricing.get("off_peak")))
+
+
+def _usable_windows(pricing: Dict[str, Any]) -> List[Tuple[int, int]]:
+    """The peak windows this card can actually be evaluated against.
+
+    Every rejection is a manifest authoring error, so each one is logged rather
+    than raised: the callers of the pricing path wrap it in a blanket except that
+    turns any raise into a zero-cost turn for every model in it, not just this one.
+    A dropped window costs only its own card.
+    """
+    windows: List[Tuple[int, int]] = []
+    declared = pricing.get("peak_utc")
+    if declared and not isinstance(declared, (list, tuple)):
+        # The container is checked before the windows in it: a scalar would raise on
+        # the for statement itself, ahead of any per-window rule, and that raise
+        # escapes to the caller's blanket except and zeroes the turn. The list of
+        # windows is what this reads, so anything else says nothing about when peak is.
+        logger.warning(f"Ignoring unusable peak_utc container {declared!r}")
+        return windows
+
+    for window in declared or []:
+        if (
+            isinstance(window, (list, tuple))
+            and len(window) == 2
+            # ``type is int`` rather than isinstance: bool subclasses int, so a JSON
+            # ``true`` would pass as hour 1 and ``false`` as hour 0. Both then satisfy
+            # the range test and silently install a window nobody wrote -- and
+            # ``[0, true]`` reads as [0,1), handing out the discount for all 23 hours
+            # outside it, which is the one outcome this validation exists to forbid.
+            and all(type(bound) is int for bound in window)
+            # A window that wraps midnight is inexpressible as one pair: no hour
+            # satisfies ``start <= hour < end`` when start > end, so it would read
+            # as "never peak" and bill the discount 24/7. Split it into two.
+            and 0 <= window[0] < window[1] <= 24
+        ):
+            windows.append((window[0], window[1]))
+        else:
+            logger.warning(f"Ignoring unusable peak_utc window {window!r}")
+    return windows
+
+
+def _usable_days(pricing: Dict[str, Any]) -> List[int]:
+    """The ISO weekdays this card's peak windows apply on, if it names any.
+
+    An empty list means the card places no day restriction, which is also where
+    every malformed value lands. That direction is deliberate and matches
+    ``_usable_windows``: no restriction leaves the hour windows charging peak,
+    and the rule here is to fail toward the higher rate rather than hand out a
+    discount off a card we just found unreadable.
+    """
+    declared = pricing.get("peak_days")
+    if declared is None:
+        return []
+    if not isinstance(declared, (list, tuple)) or not declared:
+        logger.warning(f"Ignoring unusable peak_days container {declared!r}")
+        return []
+    days: List[int] = []
+    for day in declared:
+        # ``type is int`` rather than isinstance, for the same reason as the
+        # window bounds: bool subclasses int, so a JSON ``true`` would install
+        # Monday and ``false`` would install nothing at all.
+        if type(day) is int and 1 <= day <= 7:
+            days.append(day)
+        else:
+            logger.warning(f"Ignoring unusable peak_days entry {day!r}")
+            return []
+    return days
+
+
+def _days_offset(pricing: Dict[str, Any]) -> int:
+    """Hours to shift UTC by before reading the weekday off the clock.
+
+    A vendor writes its schedule in one local calendar and publishes the hours
+    converted to UTC, which loses the day: DeepSeek's peak windows are Monday to
+    Friday *Beijing* time, and Beijing is eight hours ahead, so from 16:00Z
+    Friday it is already Saturday there and from 16:00Z Sunday it is already
+    Monday. Reading the day off UTC gets those sixteen hours a week wrong.
+
+    Zero -- read the day off UTC -- is the default and the landing place for a
+    malformed value, so a card that names days without naming a calendar still
+    restricts them rather than silently dropping the restriction.
+    """
+    declared = pricing.get("peak_days_utc_offset", 0)
+    if type(declared) is not int or not -14 <= declared <= 14:
+        logger.warning(f"Ignoring unusable peak_days_utc_offset {declared!r}")
+        return 0
+    return declared
+
+
+def schedule_anchor(pricing: Optional[Dict[str, Any]]) -> str:
+    """Which end of the call picks the rate window: ``completion`` or ``request``.
+
+    A manifest field rather than a constant because no vendor publishes the rule.
+    DeepSeek documents the hours and says nothing about which end of a streamed
+    call decides, so this stays a one-line edit for when a vendor does.
+    """
+    return (pricing or {}).get("schedule_anchor", "completion")
+
+
+def parse_stamp(value: Optional[str]) -> Optional[datetime]:
+    """Read a per-call time stamp, defaulting a naive one to UTC.
+
+    Not a compatibility path: per-call records never leave the process that
+    wrote them, so a naive stamp cannot arrive here from an older build. The
+    default is kept because every bound it gets compared against is UTC, and
+    reading a naive stamp as local time would shift a call into the wrong rate
+    window on any host that is not.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+
+
+def resolve_schedule(
+    pricing: Dict[str, Any], at: Optional[datetime]
+) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Pick the rate card in force at ``at``, for models on peak hour pricing.
+
+    The top level of the manifest entry holds the peak rates and ``off_peak``
+    carries only what differs. That way every reader predating this — the model
+    picker's price tier, the aggregate display path — keeps working untouched and
+    errs toward the higher rate rather than quietly quoting the cheaper one.
+
+    Returns the card and the window that chose it, or ``(pricing, None)`` for the
+    overwhelming majority of models, which have no schedule.
+    """
+    if not has_schedule(pricing):
+        return pricing, None
+
+    card = {k: v for k, v in pricing.items() if k not in _SCHEDULE_KEYS}
+    if at is None:
+        # No usable stamp: charge peak rather than guess downward.
+        return card, "peak"
+
+    # A shape test guards the committed manifest, but rates are hand-authored
+    # config and a deploy can carry an edit no test ran against, so the windows
+    # are validated where the money is decided rather than trusted.
+    windows = _usable_windows(pricing)
+    if not windows:
+        # Nothing left says when peak is, so nothing can place this call outside
+        # it. Same direction as the missing-stamp case: charge peak, don't guess
+        # downward off a card we just found unreadable.
+        logger.warning("No usable peak_utc window on a scheduled card, charging peak")
+        return card, "peak"
+
+    # The windows are declared in UTC and read in UTC. Only the *day* is read
+    # on the vendor's own clock -- see ``_days_offset`` for why the two differ.
+    at_utc = at.astimezone(timezone.utc)
+    days = _usable_days(pricing)
+    on_a_peak_day = not days or (
+        at_utc.astimezone(timezone(timedelta(hours=_days_offset(pricing)))).isoweekday()
+        in days
+    )
+    if on_a_peak_day and any(start <= at_utc.hour < end for start, end in windows):
+        return card, "peak"
+
+    off_peak = pricing.get("off_peak")
+    if off_peak and not isinstance(off_peak, dict):
+        # Same fail-high rule as an unusable window, and for the same reason: a card
+        # claiming a discount without saying what it is cannot price one, and letting
+        # dict.update raise here would escape into the caller's blanket except and
+        # zero the turn for every model in it. Absent is not malformed, so it keeps
+        # falling through to the peak rates under an off_peak label.
+        logger.warning(f"Ignoring unusable off_peak override {off_peak!r}, charging peak")
+        return card, "peak"
+
+    card.update(off_peak or {})
+    return card, "off_peak"
 
 
 def calculate_total_cost(

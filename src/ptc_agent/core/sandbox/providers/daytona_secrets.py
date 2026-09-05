@@ -17,6 +17,42 @@ from ptc_agent.core.sandbox.platform_secrets import (
 logger = structlog.get_logger(__name__)
 
 
+def daytona_error_status(exc: Exception) -> int | None:
+    """Extract an HTTP status through SDK wrapper exception chains."""
+
+    return _walk_chain_attrs(exc, ("status", "status_code"))
+
+
+def daytona_error_code(exc: Exception) -> str | None:
+    """Extract the SDK's machine-readable ``error_code`` through wrapper chains.
+
+    Structured and stable where the message text is not — it is what separates a
+    per-path ``FILE_NOT_FOUND`` from a sandbox-level ``NOT_FOUND``, both of which
+    arrive as HTTP 404.
+    """
+
+    code = _walk_chain_attrs(exc, ("error_code",))
+    return str(code) if code else None
+
+
+def _walk_chain_attrs(exc: Exception, attrs: tuple[str, ...]) -> Any | None:
+    """First truthy *attrs* value found walking the ``__cause__``/``__context__`` chain."""
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        for attr in attrs:
+            value = getattr(current, attr, None)
+            if attr in ("status", "status_code"):
+                if isinstance(value, int):
+                    return value
+            elif value:
+                return value
+        current = current.__cause__ or current.__context__
+    return None
+
+
 def is_transient_daytona_error(exc: Exception) -> bool:
     """Classify a Daytona SDK error as transient (retryable).
 
@@ -208,13 +244,4 @@ class DaytonaSecretReconciler:
     def _exception_status(exc: Exception) -> int | None:
         """Extract an HTTP status through SDK wrapper exception chains."""
 
-        current: BaseException | None = exc
-        seen: set[int] = set()
-        while current is not None and id(current) not in seen:
-            seen.add(id(current))
-            for attr in ("status", "status_code"):
-                status = getattr(current, attr, None)
-                if isinstance(status, int):
-                    return status
-            current = current.__cause__ or current.__context__
-        return None
+        return daytona_error_status(exc)

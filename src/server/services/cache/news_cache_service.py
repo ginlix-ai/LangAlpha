@@ -63,8 +63,12 @@ class NewsCacheService:
         try:
             cache = get_cache_client()
             keys = await cache.scan_keys("news:*")
-            for key in keys:
-                data = await cache.get(key)
+            if not keys:
+                return None
+            # One MGET instead of a GET per key: the scan is bounded but not
+            # small, and N sequential round trips made a best-effort fast path
+            # the slowest thing on the request.
+            for data in await cache.mget(list(keys)):
                 if data:
                     for article in data.get("results", []):
                         if article.get("id") == article_id:

@@ -13,7 +13,9 @@ export function Toaster() {
 
   return (
     <ToastProvider duration={3000}>
-      {toasts.map(function ({ id, title, description, action, ...props }) {
+      {/* `pinned` is store policy, not a Radix prop — the rest of props is
+          spread onto the DOM node, and React warns on an unknown attribute. */}
+      {toasts.map(function ({ id, title, description, action, pinned: _pinned, ...props }) {
         return (
           <Toast key={id} {...props}>
             <div className="grid gap-1">

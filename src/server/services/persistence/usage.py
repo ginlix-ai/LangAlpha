@@ -83,6 +83,10 @@ class UsagePersistenceService:
         self._infrastructure_credits: Decimal = Decimal("0.0")
         self._token_credits: Decimal = Decimal("0.0")
         self._has_platform_calls: bool = False
+        # Whether _has_platform_calls was actually computed. _token_usage cannot
+        # stand in for this: the no-records exit stores a zeroed payload, which
+        # is truthy, so a turn with no per-call data read as though it had some.
+        self._has_per_call_data: bool = False
 
         logger.debug(
             f"[UsagePersistence] Initialized service for thread_id={thread_id}, "
@@ -115,19 +119,17 @@ class UsagePersistenceService:
                 "per_call_costs": [...]
             }
         """
-        from src.utils.tracking.core import calculate_cost_from_per_call_records
+        from src.utils.tracking.core import (
+            calculate_cost_from_per_call_records,
+            empty_usage_payload,
+        )
 
         if not per_call_records:
             logger.debug("[UsagePersistence] No per-call records to track")
-            self._token_usage = {
-                "by_model": {},
-                "total_cost": 0.0,
-                "cost_breakdown": {
-                    "input_cost": 0.0,
-                    "output_cost": 0.0,
-                    "cached_cost": 0.0
-                }
-            }
+            # Shared with the pricing pass rather than hand-written: a duplicate
+            # literal drifts the moment a key is added, leaving a degraded row
+            # indistinguishable from one an older writer produced.
+            self._token_usage = empty_usage_payload()
             self._token_credits = Decimal("0.0")
             return self._token_usage
 
@@ -144,8 +146,15 @@ class UsagePersistenceService:
             total_cost_usd = token_usage_with_cost.get("total_cost", 0.0)
             self._token_credits = Decimal(str(platform_cost_usd)) * Decimal(str(self.credit_conversion_rate))
 
-            # Determine if any platform calls occurred (for is_byok flag)
-            self._has_platform_calls = platform_cost_usd > 0
+            # Whether the platform's key did the work, not whether that work
+            # priced to something. A call can price to zero and still have run
+            # on the platform's key, so deriving this from cost files the turn
+            # under the user's own key instead. billing_type is set from the
+            # absence of a user key override, which is the fact being asked here.
+            self._has_platform_calls = any(
+                r.get("billing_type", "platform") == "platform" for r in per_call_records
+            )
+            self._has_per_call_data = True
 
             # OTel counters (langalpha.llm.tokens, langalpha.credits) are
             # sourced from conversation_usages via ObservableCounter — see
@@ -165,15 +174,14 @@ class UsagePersistenceService:
                 f"[UsagePersistence] Failed to track LLM usage: {e}",
                 exc_info=True
             )
-            # Leave _token_usage as None so persist_usage falls back to caller's
-            # is_byok hint instead of deriving from _has_platform_calls (which
-            # was never updated).
+            # _has_per_call_data stays False so persist_usage falls back to the
+            # caller's is_byok hint. _token_usage cannot carry that signal: it is
+            # assigned as soon as pricing returns, so a raise anywhere after that
+            # leaves it set while _has_platform_calls is still the default.
             self._token_credits = Decimal("0.0")
-            return {
-                "by_model": {},
-                "total_cost": 0.0,
-                "cost_breakdown": {"input_cost": 0.0, "output_cost": 0.0, "cached_cost": 0.0}
-            }
+            # Same shape as every other exit, built without touching the pricing
+            # pass that just raised.
+            return empty_usage_payload()
 
     # ========== Infrastructure Usage Tracking ==========
 
@@ -242,7 +250,8 @@ class UsagePersistenceService:
         deepthinking: bool = False,
         status: str = "completed",
         conn: Optional[Any] = None,
-        is_byok: bool = False
+        is_byok: bool = False,
+        settle_task_run_id: Optional[str] = None,
     ) -> bool:
         """
         Persist usage data to conversation_usage table.
@@ -266,12 +275,18 @@ class UsagePersistenceService:
             status: Workflow completion status (completed, error, cancelled, interrupted)
             conn: Optional database connection for transaction support
             is_byok: Caller hint for billing type (overridden by per-call data when available)
+            settle_task_run_id: When set, stamp this subagent run billing-settled
+                in the same transaction as the usage insert — the pair commits or
+                rolls back together, so the run can never read settled with its
+                spend missing from billing, nor billed while still counting as
+                in-flight.
 
         Returns:
             True if successful, False otherwise
         """
         from src.server.database import conversation as qr_db
         from src.server.database import pool
+        from src.server.database.runs import credit_ledger
 
         if timestamp is None:
             timestamp = datetime.now(timezone.utc)
@@ -294,7 +309,7 @@ class UsagePersistenceService:
             # If we tracked any LLM calls, use real billing data: BYOK only
             # when no call used the platform key.  Otherwise fall back to the
             # flag from the auth layer.
-            if self._token_usage:
+            if self._has_per_call_data:
                 effective_is_byok = not self._has_platform_calls
             else:
                 effective_is_byok = is_byok
@@ -320,9 +335,19 @@ class UsagePersistenceService:
             # Persist to database (use provided conn for transaction support)
             if conn:
                 await qr_db.create_usage_record(usage_data, conn=conn)
+                if settle_task_run_id:
+                    await credit_ledger.settle_task_run(settle_task_run_id, conn=conn)
             else:
                 async with pool.get_db_connection() as new_conn:
-                    await qr_db.create_usage_record(usage_data, conn=new_conn)
+                    # One transaction either way. The settle stamp has to land
+                    # with the usage row or not at all, and wrapping the lone
+                    # insert when there is no stamp costs nothing.
+                    async with new_conn.transaction():
+                        await qr_db.create_usage_record(usage_data, conn=new_conn)
+                        if settle_task_run_id:
+                            await credit_ledger.settle_task_run(
+                                settle_task_run_id, conn=new_conn
+                            )
 
             logger.info(
                 f"[UsagePersistence] Persisted usage for response_id={response_id}, "
@@ -411,6 +436,7 @@ class UsagePersistenceService:
         self._infrastructure_credits = Decimal("0.0")
         self._token_credits = Decimal("0.0")
         self._has_platform_calls = False
+        self._has_per_call_data = False
 
         logger.debug(f"[UsagePersistence] Reset usage tracking for thread_id={self.thread_id}")
 

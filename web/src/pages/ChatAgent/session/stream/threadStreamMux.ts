@@ -20,6 +20,8 @@
  * being buffered.
  */
 import { openThreadMuxStream } from '../../utils/api';
+import { RECONNECT_BACKLOG_CAP_MS } from './lifecycle';
+import { taskIdFromAgentId } from '../../utils/agentId';
 
 type SSEEventObj = Record<string, unknown>;
 
@@ -48,6 +50,12 @@ interface RunChannel {
   // Server-declared run start (epoch ms, ledger row truth; 0 = undeclared).
   // Outcome voting orders by this — close order never decides.
   startedAt: number;
+  // Between chan_open and chan_caught_up the frames are the backlog that
+  // existed when the channel opened, and carry `_replay` so the sink can
+  // present them as already rendered. The timer bounds a marker that never
+  // comes (a failed head probe) at the main stream's own backlog cap.
+  replaying: boolean;
+  replayCap: ReturnType<typeof setTimeout> | null;
 }
 
 interface ParsedFrame {
@@ -58,6 +66,7 @@ interface ParsedFrame {
 
 const CONTROL_EVENTS = new Set([
   'chan_open',
+  'chan_caught_up',
   'chan_close',
   'resync_required',
   'transport_error',
@@ -80,7 +89,7 @@ function entryAfter(a: string, b: string): boolean {
 }
 
 function taskIdFromLane(lane: string): string | null {
-  return lane.startsWith('task:') ? lane.slice(5) || null : null;
+  return taskIdFromAgentId(lane) || null;
 }
 
 export class ThreadStreamMux {
@@ -228,6 +237,7 @@ export class ThreadStreamMux {
     if (this.disposed) return;
     this.disposed = true;
     this.controller?.abort();
+    for (const chan of this.runs.values()) this.endReplay(chan);
     this.onDispose();
   }
 
@@ -352,6 +362,7 @@ export class ThreadStreamMux {
       ev._drain = true;
       if (chan.startedAt) ev._runStartedMs = chan.startedAt;
     }
+    if (chan.replaying) ev._replay = true;
     try {
       this.sink?.onTaskEvent(ev);
       // Cursor and high-water advance only after successful delivery: the
@@ -381,6 +392,13 @@ export class ThreadStreamMux {
       chan.closed = false;
       chan.drain = data.mode === 'drain';
       if (typeof data.started === 'number') chan.startedAt = data.started;
+      this.beginReplay(chan);
+      return;
+    }
+    if (event === 'chan_caught_up') {
+      const runId = runIdFromChanName(data.chan);
+      const chan = runId ? this.runs.get(runId) : undefined;
+      if (chan) this.endReplay(chan);
       return;
     }
     if (event === 'resync_required' && typeof data.chan !== 'string') {
@@ -409,6 +427,7 @@ export class ThreadStreamMux {
       if (!runId) return;
       const chan = this.runs.get(runId);
       if (!chan || chan.closed) return;
+      this.endReplay(chan);
       if (data.reason === 'resync_required') {
         // Our cursor points below a lost head. Drop the cursor and force one
         // reconnect: the channel re-attaches in replay mode from 0, and the
@@ -467,6 +486,18 @@ export class ThreadStreamMux {
     // here (the report-back watch has its own transport until M8).
   }
 
+  private beginReplay(chan: RunChannel): void {
+    if (chan.replayCap) clearTimeout(chan.replayCap);
+    chan.replaying = true;
+    chan.replayCap = setTimeout(() => this.endReplay(chan), RECONNECT_BACKLOG_CAP_MS);
+  }
+
+  private endReplay(chan: RunChannel): void {
+    if (chan.replayCap) clearTimeout(chan.replayCap);
+    chan.replayCap = null;
+    chan.replaying = false;
+  }
+
   private getOrCreateRun(runId: string, lane: string): RunChannel {
     let chan = this.runs.get(runId);
     if (!chan) {
@@ -479,6 +510,8 @@ export class ThreadStreamMux {
         outcome: null,
         drain: false,
         startedAt: 0,
+        replaying: false,
+        replayCap: null,
       };
       this.runs.set(runId, chan);
     } else if (lane && !chan.lane) {

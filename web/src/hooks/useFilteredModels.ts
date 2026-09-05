@@ -19,6 +19,17 @@ export interface ModelMetadataEntry {
   oauth_plans?: string[];
   /** True for user-added custom models — bypasses all access filters. */
   is_custom_model?: boolean;
+  /** Reasoning levels this model actually honors, weakest first. Absent means
+   * the model has no reasoning control — render no selector rather than
+   * assuming a ladder. */
+  reasoning_efforts?: string[];
+  /** Level used when the user has not picked one. */
+  reasoning_effort_default?: string;
+  /** Guidance level the model declares for itself. Absent = the detailed fail-safe. */
+  prompt_guidance?: string;
+  /** Compaction preset the model resolves to on its own — its declaration, else
+   * the band its context window falls in. Absent = the deployment default. */
+  compaction_profile?: string;
 }
 
 /** Key for the (group, name) pair in customPairs — '::' can't collide with any provider or model name. */
@@ -211,6 +222,37 @@ interface CustomModelEntry {
   name: string;
   model_id: string;
   provider: string;
+  reasoning?: { efforts?: string[]; default?: string };
+  reasoning_efforts?: string[];
+  reasoning_effort_default?: string;
+  prompt_guidance?: string;
+  compaction_profile?: string;
+}
+
+// The ladder an entry declares, from either shape it may be stored in. Mirrors
+// `reasoning_block` on the server, precedence included: a `reasoning` object
+// answers for the whole declaration, so an entry carrying both does not get
+// its flat keys read as a fallback for the block's missing ones. An empty
+// object is not such an answer, and `{}` being truthy here is what would have
+// made this side read one anyway.
+function declaredLadder(cm: CustomModelEntry): {
+  efforts?: string[];
+  effortDefault?: string;
+} {
+  if (
+    cm.reasoning &&
+    typeof cm.reasoning === 'object' &&
+    Object.keys(cm.reasoning).length > 0
+  ) {
+    return {
+      ...('efforts' in cm.reasoning ? { efforts: cm.reasoning.efforts } : {}),
+      ...('default' in cm.reasoning ? { effortDefault: cm.reasoning.default } : {}),
+    };
+  }
+  return {
+    ...('reasoning_efforts' in cm ? { efforts: cm.reasoning_efforts } : {}),
+    ...('reasoning_effort_default' in cm ? { effortDefault: cm.reasoning_effort_default } : {}),
+  };
 }
 
 interface ProviderCatalogEntry {
@@ -281,6 +323,22 @@ export function buildVisibleModels(
         ...(sdk ? { sdk } : {}),
       };
     }
+    // What a model declares about itself is the entry's answer where it gives
+    // one, and the shadowed built-in's where it does not: a shadow reaches the
+    // same model through the user's own key, so the ladder carries over. The
+    // server resolves it identically (`with_inherited_declarations`). Presence,
+    // not truthiness -- an entry declaring an empty ladder is saying the model
+    // honors no levels, which the built-in's must not overwrite.
+    const ladder = declaredLadder(cm);
+    metadata[cm.name] = {
+      ...metadata[cm.name],
+      ...('efforts' in ladder ? { reasoning_efforts: ladder.efforts } : {}),
+      ...('effortDefault' in ladder
+        ? { reasoning_effort_default: ladder.effortDefault }
+        : {}),
+      ...('prompt_guidance' in cm ? { prompt_guidance: cm.prompt_guidance } : {}),
+      ...('compaction_profile' in cm ? { compaction_profile: cm.compaction_profile } : {}),
+    };
   }
 
   // Snapshot before filtering — preserves the FULL pre-filter picture for

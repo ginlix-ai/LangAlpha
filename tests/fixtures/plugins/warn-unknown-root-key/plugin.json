@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "warn-root",
+  "version": "1.0.0",
+  "homepage2": "x"
+}

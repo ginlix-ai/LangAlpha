@@ -25,7 +25,7 @@ Threads are kept for visual inspection (never deleted).
 
 Usage:
   uv run python scripts/e2e/subagent_wire_pass.py --user <user_id> \
-      [--workspace <ws_id>] [--base http://localhost:8020] [--model <model>] \
+      [--workspace <ws_id>] [--base http://localhost:8000] [--model <model>] \
       [--settle-timeout 600] [--turn-timeout 420]
 
 Auth: X-Service-Token from INTERNAL_SERVICE_TOKEN (repo .env or environment),

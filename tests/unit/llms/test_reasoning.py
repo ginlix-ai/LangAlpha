@@ -1,17 +1,10 @@
-"""
-Tests for src.llms.reasoning — apply_reasoning_effort() multi-provider mapper.
+"""Tests for src.llms.reasoning — the declared-surface effort mapper.
 
-Covers all provider detection patterns:
-- OpenAI: parameters.reasoning.effort
-- Anthropic adaptive: output_config.effort (via thinking.type=adaptive or output_config key)
-- Anthropic enabled: thinking.budget_tokens
-- Gemini 3.x: thinking_level
-- Gemini 2.x: thinking_budget (numeric)
-- vLLM/Groq/Cerebras: reasoning_effort
-- Volcengine/Doubao: extra_body.thinking.type
-- Dashscope/Qwen: extra_body.enable_thinking
-- Combined extra_body patterns (always run regardless of parameters branch)
-- Invalid level passthrough
+The mapper no longer guesses a vendor from the keys an entry happens to carry.
+Each entry names its own surface, so what is worth locking here is
+the block's contract: ``write`` takes the level verbatim, ``on`` layers under it,
+``off`` replaces both rather than layering over them, and a path outside the
+allowlists is refused rather than written somewhere the vendor ignores.
 """
 
 import copy
@@ -19,311 +12,414 @@ import copy
 import pytest
 
 from src.llms.reasoning import (
+    OFF_LEVELS,
+    PATCH_PATHS,
     REASONING_LEVELS,
-    _ANTHROPIC_BUDGETS,
-    _GEMINI_BUDGETS,
+    WRITE_PATHS,
+    ReasoningSurfaceError,
     apply_reasoning_effort,
+    infer_surface,
+    validate_surface,
 )
 
 
-# ---------------------------------------------------------------------------
-# Invalid / passthrough
-# ---------------------------------------------------------------------------
-
-
-class TestReasoningInvalidLevel:
-    def test_invalid_level_returns_unchanged(self):
-        params = {"reasoning": {"effort": "medium"}}
-        extra = {}
-        result_params, result_extra = apply_reasoning_effort("invalid", params, extra)
-        assert result_params["reasoning"]["effort"] == "medium"  # Unchanged
-
-    def test_empty_string_returns_unchanged(self):
-        params = {"reasoning": {"effort": "medium"}}
-        extra = {}
-        apply_reasoning_effort("", params, extra)
-        assert params["reasoning"]["effort"] == "medium"
-
-    def test_constants(self):
-        assert REASONING_LEVELS == ("low", "medium", "high", "xhigh")
-        assert "low" in _ANTHROPIC_BUDGETS
-        assert "low" in _GEMINI_BUDGETS
+def run(level, surface, parameters=None, extra_body=None):
+    p, b = copy.deepcopy(parameters or {}), copy.deepcopy(extra_body or {})
+    apply_reasoning_effort(level, p, b, surface)
+    return p, b
 
 
 # ---------------------------------------------------------------------------
-# OpenAI: parameters.reasoning.effort
+# Vocabulary
 # ---------------------------------------------------------------------------
 
 
-class TestOpenAIReasoning:
-    @pytest.mark.parametrize("level", ["low", "medium", "high"])
-    def test_sets_effort(self, level):
-        params = {"reasoning": {"effort": "medium", "summary": "auto"}}
-        extra = {}
-        apply_reasoning_effort(level, params, extra)
-        assert params["reasoning"]["effort"] == level
-        assert params["reasoning"]["summary"] == "auto"  # Other keys preserved
+class TestVocabulary:
+    def test_levels(self):
+        assert REASONING_LEVELS == (
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        )
 
-    def test_non_dict_reasoning_replaced(self):
-        """If reasoning is not a dict, replace with dict containing effort."""
-        params = {"reasoning": True}
-        extra = {}
-        apply_reasoning_effort("high", params, extra)
-        assert params["reasoning"] == {"effort": "high"}
+    def test_levels_are_ordered_weakest_first(self):
+        """The UI renders a model's declared subset in this order, and the clamp
+        walks down it — an unordered tuple would silently pick the wrong rung."""
+        assert REASONING_LEVELS.index("none") < REASONING_LEVELS.index("low")
+        assert REASONING_LEVELS.index("low") < REASONING_LEVELS.index("high")
+        assert REASONING_LEVELS.index("high") < REASONING_LEVELS.index("max")
 
-
-# ---------------------------------------------------------------------------
-# Anthropic adaptive: output_config.effort
-# ---------------------------------------------------------------------------
-
-
-class TestAnthropicAdaptive:
-    def test_output_config_present(self):
-        """When output_config key exists, sets effort on it."""
-        params = {"output_config": {"effort": "medium"}}
-        extra = {}
-        apply_reasoning_effort("high", params, extra)
-        assert params["output_config"]["effort"] == "high"
-
-    def test_thinking_adaptive_type(self):
-        """When thinking.type == 'adaptive', sets output_config.effort."""
-        params = {"thinking": {"type": "adaptive"}}
-        extra = {}
-        apply_reasoning_effort("low", params, extra)
-        assert params["output_config"]["effort"] == "low"
-
-    @pytest.mark.parametrize("level", ["low", "medium", "high", "xhigh"])
-    def test_all_levels(self, level):
-        params = {"thinking": {"type": "adaptive"}, "output_config": {"effort": "medium"}}
-        extra = {}
-        apply_reasoning_effort(level, params, extra)
-        assert params["output_config"]["effort"] == level
-
-    def test_xhigh_passes_through(self):
-        """Anthropic adaptive natively supports xhigh — must pass through, not clamp."""
-        params = {"thinking": {"type": "adaptive"}}
-        extra = {}
-        apply_reasoning_effort("xhigh", params, extra)
-        assert params["output_config"]["effort"] == "xhigh"
+    def test_only_none_means_off(self):
+        """`low` is a real thinking level on every surface that grades. Binary
+        surfaces used to key off it, which is why three of four buttons emitted
+        an identical request."""
+        assert OFF_LEVELS == frozenset({"none"})
 
 
 # ---------------------------------------------------------------------------
-# Anthropic enabled: thinking.budget_tokens
+# write
 # ---------------------------------------------------------------------------
 
 
-class TestAnthropicEnabled:
-    @pytest.mark.parametrize("level", ["low", "medium", "high"])
-    def test_sets_budget_tokens(self, level):
-        params = {"thinking": {"type": "enabled", "budget_tokens": 10000}}
-        extra = {}
-        apply_reasoning_effort(level, params, extra)
-        assert params["thinking"]["budget_tokens"] == _ANTHROPIC_BUDGETS[level]
+class TestWrite:
+    @pytest.mark.parametrize("level", REASONING_LEVELS)
+    def test_level_goes_out_verbatim(self, level):
+        p, _ = run(level, {"write": "parameters.reasoning.effort"})
+        assert p == {"reasoning": {"effort": level}}
 
-    def test_non_dict_thinking_replaced(self):
-        params = {"thinking": True}
-        extra = {}
-        apply_reasoning_effort("medium", params, extra)
-        assert params["thinking"]["type"] == "enabled"
-        assert params["thinking"]["budget_tokens"] == _ANTHROPIC_BUDGETS["medium"]
+    @pytest.mark.parametrize("path", WRITE_PATHS)
+    def test_every_allowed_path_is_reachable(self, path):
+        """A path in the allowlist no branch can reach would be a dead
+        declaration that reports a level and sends nothing."""
+        p, b = run("high", {"write": path})
+        lanes = {"parameters": p, "extra_body": b}
+        node = lanes[path.split(".")[0]]
+        for segment in path.split(".")[1:]:
+            node = node[segment]
+        assert node == "high"
 
+    def test_nested_containers_are_created(self):
+        p, _ = run("low", {"write": "parameters.reasoning.effort"})
+        assert p["reasoning"] == {"effort": "low"}
 
-# ---------------------------------------------------------------------------
-# Gemini 3.x: thinking_level
-# ---------------------------------------------------------------------------
+    def test_sibling_keys_survive(self):
+        """`reasoning.summary` and friends are transport config that happens to
+        share a container with the dial; the write must not flatten them."""
+        p, _ = run(
+            "max",
+            {"write": "parameters.reasoning.effort"},
+            parameters={"reasoning": {"summary": "auto"}, "max_tokens": 8},
+        )
+        assert p == {"reasoning": {"summary": "auto", "effort": "max"}, "max_tokens": 8}
 
-
-class TestGemini3xThinkingLevel:
-    @pytest.mark.parametrize("level", ["low", "medium", "high"])
-    def test_sets_level(self, level):
-        params = {"thinking_level": "medium"}
-        extra = {}
-        apply_reasoning_effort(level, params, extra)
-        assert params["thinking_level"] == level
-
-
-# ---------------------------------------------------------------------------
-# Gemini 2.x: thinking_budget (numeric)
-# ---------------------------------------------------------------------------
-
-
-class TestGemini2xThinkingBudget:
-    @pytest.mark.parametrize("level", ["low", "medium", "high"])
-    def test_sets_numeric_budget(self, level):
-        params = {"thinking_budget": 4096}
-        extra = {}
-        apply_reasoning_effort(level, params, extra)
-        assert params["thinking_budget"] == _GEMINI_BUDGETS[level]
+    def test_non_dict_container_is_replaced(self):
+        p, _ = run(
+            "low", {"write": "parameters.reasoning.effort"}, parameters={"reasoning": 3}
+        )
+        assert p == {"reasoning": {"effort": "low"}}
 
 
 # ---------------------------------------------------------------------------
-# vLLM / Groq / Cerebras: reasoning_effort
+# on / off
 # ---------------------------------------------------------------------------
 
 
-class TestVLLMReasoningEffort:
-    @pytest.mark.parametrize("level", ["low", "medium", "high"])
-    def test_sets_effort(self, level):
-        params = {"reasoning_effort": "medium"}
-        extra = {}
-        apply_reasoning_effort(level, params, extra)
-        assert params["reasoning_effort"] == level
+class TestOnAndOff:
+    SURFACE = {
+        "write": "parameters.output_config.effort",
+        "on": {"parameters.thinking.type": "enabled"},
+        "off": {"parameters.thinking.type": "disabled"},
+    }
 
+    @pytest.mark.parametrize("level", ["low", "high", "max"])
+    def test_on_layers_under_the_write(self, level):
+        p, _ = run(level, self.SURFACE)
+        assert p == {"thinking": {"type": "enabled"}, "output_config": {"effort": level}}
 
-# ---------------------------------------------------------------------------
-# Volcengine / Doubao: extra_body.thinking.type
-# ---------------------------------------------------------------------------
+    def test_off_replaces_the_write_rather_than_layering_over_it(self):
+        """On a surface carrying both a switch and a dial, only the switch
+        reliably means off; emitting both puts a live effort next to the
+        instruction not to think.
 
+        Verified live on 2026-09-02, one turn per rung. deepseek-v4-flash at
+        `none` takes `thinking.type: disabled` with no `output_config` at all
+        and returns no thinking block; at `high` it takes both and does. GLM
+        5.2 at `none` takes `thinking.type: disabled` with no `reasoning_effort`
+        and returns no reasoning; at `high` it takes the pair plus
+        `clear_thinking: false` and reads 234 characters of reasoning back, so
+        the gate still works carried per request rather than seeded.
+        """
+        p, _ = run("none", self.SURFACE)
+        assert p == {"thinking": {"type": "disabled"}}
 
-class TestVolcengineThinking:
-    def test_low_disables(self):
-        params = {}
-        extra = {"thinking": {"type": "enabled"}}
-        apply_reasoning_effort("low", params, extra)
-        assert extra["thinking"]["type"] == "disabled"
+    def test_off_clears_a_level_the_caller_supplied_at_the_write_path(self):
+        """The manifest no longer seeds one, but a caller override lands in the
+        same place and is merged in before the mapper runs. Left alone it is
+        the payload this branch exists to prevent, arriving by the one route
+        the seed's removal did not close."""
+        p, _ = run("none", self.SURFACE, parameters={"output_config": {"effort": "high"}})
+        assert p["thinking"] == {"type": "disabled"}
+        assert "effort" not in p["output_config"]
 
-    @pytest.mark.parametrize("level", ["medium", "high"])
-    def test_medium_high_enables(self, level):
-        params = {}
-        extra = {"thinking": {"type": "disabled"}}
-        apply_reasoning_effort(level, params, extra)
-        assert extra["thinking"]["type"] == "enabled"
+    def test_off_leaves_the_containers_own_siblings_alone(self):
+        """Only the graded key is the contradiction. The rest of that container
+        is the entry's transport config, which the switch says nothing about."""
+        p, _ = run(
+            "none",
+            self.SURFACE,
+            parameters={"output_config": {"effort": "high", "verbosity": "low"}},
+        )
+        assert p["output_config"] == {"verbosity": "low"}
 
-    def test_non_dict_thinking(self):
-        params = {}
-        extra = {"thinking": True}
-        apply_reasoning_effort("low", params, extra)
-        assert extra["thinking"]["type"] == "disabled"
+    def test_off_without_an_off_patch_is_just_the_level(self):
+        """A surface whose vendor accepts `none` as an effort needs no patch."""
+        p, _ = run("none", {"write": "parameters.reasoning.effort"})
+        assert p == {"reasoning": {"effort": "none"}}
 
-
-# ---------------------------------------------------------------------------
-# Dashscope / Qwen: extra_body.enable_thinking
-# ---------------------------------------------------------------------------
-
-
-class TestDashscopeEnableThinking:
-    def test_low_disables(self):
-        params = {}
-        extra = {"enable_thinking": True}
-        apply_reasoning_effort("low", params, extra)
-        assert extra["enable_thinking"] is False
-
-    @pytest.mark.parametrize("level", ["medium", "high"])
-    def test_medium_high_enables(self, level):
-        params = {}
-        extra = {"enable_thinking": False}
-        apply_reasoning_effort(level, params, extra)
-        assert extra["enable_thinking"] is True
-
-
-# ---------------------------------------------------------------------------
-# GLM 5.2+: extra_body.reasoning_effort
-# ---------------------------------------------------------------------------
-
-
-class TestGLMReasoningEffort:
-    @pytest.mark.parametrize(
-        ("level", "expected"),
-        [("low", "none"), ("medium", "medium"), ("high", "high"), ("xhigh", "max")],
-    )
-    def test_maps_native_levels(self, level, expected):
-        params = {}
-        extra = {"reasoning_effort": "max"}
-        apply_reasoning_effort(level, params, extra)
-        assert extra["reasoning_effort"] == expected
-
-    def test_glm_52_shape_low_disables_thinking_and_effort(self):
-        """The real glm-5.2 extra_body carries both keys; low turns both off."""
-        params = {"max_tokens": 128000}
-        extra = {
-            "thinking": {"type": "enabled", "clear_thinking": False},
-            "reasoning_effort": "max",
+    def test_surface_with_no_write_is_a_bare_switch(self):
+        surface = {
+            "on": {"parameters.thinking.type": "adaptive"},
+            "off": {"parameters.thinking.type": "disabled"},
         }
-        apply_reasoning_effort("low", params, extra)
-        assert extra["thinking"]["type"] == "disabled"
-        assert extra["reasoning_effort"] == "none"
+        assert run("high", surface)[0] == {"thinking": {"type": "adaptive"}}
+        assert run("none", surface)[0] == {"thinking": {"type": "disabled"}}
 
-    def test_glm_52_shape_xhigh_maps_to_max(self):
-        """xhigh keeps thinking enabled and requests GLM's native max effort."""
-        params = {"max_tokens": 128000}
-        extra = {
-            "thinking": {"type": "enabled", "clear_thinking": False},
-            "reasoning_effort": "high",
+    def test_off_spans_both_lanes(self):
+        p, b = run(
+            "none",
+            {
+                "write": "extra_body.reasoning_effort",
+                "off": {
+                    "extra_body.thinking.type": "disabled",
+                    "parameters.thinking.type": "disabled",
+                },
+            },
+        )
+        assert p == {"thinking": {"type": "disabled"}}
+        assert b == {"thinking": {"type": "disabled"}}
+
+
+# ---------------------------------------------------------------------------
+# Merging with what the caller already supplied
+# ---------------------------------------------------------------------------
+
+
+class TestMergesWithSuppliedParams:
+    """A model's `parameters`/`extra_body` carry transport config, and a caller
+    may add more through override params. The level is written into that, not
+    over it."""
+
+    SWITCHED = {
+        "write": "parameters.output_config.effort",
+        "on": {"parameters.thinking.type": "enabled"},
+        "off": {"parameters.thinking.type": "disabled"},
+    }
+
+    def test_write_merges_into_a_supplied_container(self):
+        p, _ = run(
+            "high",
+            {"write": "parameters.reasoning.effort"},
+            parameters={"reasoning": {"summary": "auto"}, "max_tokens": 8},
+        )
+        assert p == {"reasoning": {"summary": "auto", "effort": "high"}, "max_tokens": 8}
+
+    def test_on_merges_and_leaves_unrelated_keys(self):
+        p, _ = run(
+            "high",
+            self.SWITCHED,
+            parameters={"output_config": {"verbosity": "low"}, "max_tokens": 8},
+        )
+        assert p == {
+            "output_config": {"verbosity": "low", "effort": "high"},
+            "thinking": {"type": "enabled"},
+            "max_tokens": 8,
         }
-        apply_reasoning_effort("xhigh", params, extra)
-        assert extra["thinking"]["type"] == "enabled"
-        assert extra["thinking"]["clear_thinking"] is False
-        assert extra["reasoning_effort"] == "max"
+
+    def test_off_replaces_its_container_rather_than_merging(self):
+        """`thinking` is a discriminated union: the disabled variant rejects the
+        `budget_tokens` the enabled one requires, so a supplied sibling must not
+        survive the switch being turned off."""
+        p, _ = run(
+            "none",
+            self.SWITCHED,
+            parameters={"thinking": {"type": "enabled", "budget_tokens": 5000}, "max_tokens": 8},
+        )
+        assert p == {"thinking": {"type": "disabled"}, "max_tokens": 8}
+
+    def test_off_leaves_keys_it_does_not_name(self):
+        p, _ = run("none", self.SWITCHED, parameters={"max_tokens": 8})
+        assert p == {"thinking": {"type": "disabled"}, "max_tokens": 8}
+
+    def test_two_off_paths_sharing_a_container_both_land(self):
+        """The container is cleared once, before either write, or the second
+        path would wipe the first."""
+        _, b = run(
+            "none",
+            {
+                "write": "extra_body.reasoning_effort",
+                "off": {
+                    "extra_body.thinking.type": "disabled",
+                    "extra_body.thinking.clear_thinking": False,
+                },
+            },
+            extra_body={"thinking": {"type": "enabled", "stale": 1}},
+        )
+        assert b == {"thinking": {"type": "disabled", "clear_thinking": False}}
 
 
 # ---------------------------------------------------------------------------
-# Combined: extra_body patterns run INDEPENDENTLY of parameters branch
+# Passthrough
 # ---------------------------------------------------------------------------
 
 
-class TestCombinedPatterns:
-    def test_openai_plus_volcengine(self):
-        """OpenAI reasoning AND volcengine extra_body should both be set."""
-        params = {"reasoning": {"effort": "medium"}}
-        extra = {"thinking": {"type": "enabled"}}
-        apply_reasoning_effort("low", params, extra)
-        assert params["reasoning"]["effort"] == "low"
-        assert extra["thinking"]["type"] == "disabled"
+class TestPassthrough:
+    def test_no_surface_writes_nothing(self):
+        """A model with no effort control must not acquire one."""
+        assert run("high", None, parameters={"max_tokens": 8}) == ({"max_tokens": 8}, {})
 
-    def test_anthropic_plus_dashscope(self):
-        """Anthropic thinking AND dashscope extra_body should both be set."""
-        params = {"thinking": {"type": "enabled", "budget_tokens": 10000}}
-        extra = {"enable_thinking": True}
-        apply_reasoning_effort("low", params, extra)
-        assert params["thinking"]["budget_tokens"] == _ANTHROPIC_BUDGETS["low"]
-        assert extra["enable_thinking"] is False
+    def test_level_outside_the_vocabulary_writes_nothing(self):
+        assert run("invalid", {"write": "parameters.reasoning.effort"}) == ({}, {})
+
+    def test_empty_level_writes_nothing(self):
+        assert run("", {"write": "parameters.reasoning.effort"}) == ({}, {})
 
     def test_mutates_in_place(self):
-        """apply_reasoning_effort should mutate and return the same objects."""
-        params = {"reasoning": {"effort": "low"}}
-        extra = {}
-        result_params, result_extra = apply_reasoning_effort("high", params, extra)
-        assert result_params is params
-        assert result_extra is extra
-
-    def test_no_matching_pattern_no_change(self):
-        """If no pattern matches, parameters and extra_body stay unchanged."""
-        params = {"temperature": 0.7, "max_tokens": 1000}
-        extra = {"custom_field": True}
-        original_params = copy.deepcopy(params)
-        original_extra = copy.deepcopy(extra)
-        apply_reasoning_effort("high", params, extra)
-        assert params == original_params
-        assert extra == original_extra
+        params, extra = {}, {}
+        out_p, out_b = apply_reasoning_effort(
+            "high", params, extra, {"write": "parameters.reasoning.effort"}
+        )
+        assert out_p is params and out_b is extra
 
 
 # ---------------------------------------------------------------------------
-# xhigh clamping: non-Anthropic-adaptive providers must clamp xhigh → high
+# infer_surface
 # ---------------------------------------------------------------------------
 
 
-class TestXhighClamping:
-    def test_openai_clamps_to_high(self):
-        params = {"reasoning": {"effort": "medium"}}
-        apply_reasoning_effort("xhigh", params, {})
-        assert params["reasoning"]["effort"] == "high"
+class TestInferSurface:
+    """Entries stored before the block existed name no surface, so the seed
+    they carry is the only evidence of where their level goes."""
 
-    def test_anthropic_enabled_clamps_to_high_budget(self):
-        params = {"thinking": {"type": "enabled", "budget_tokens": 10000}}
-        apply_reasoning_effort("xhigh", params, {})
-        assert params["thinking"]["budget_tokens"] == _ANTHROPIC_BUDGETS["high"]
+    @pytest.mark.parametrize("path", WRITE_PATHS)
+    def test_every_dial_is_recognized_from_its_seed(self, path):
+        lane, *rest = path.split(".")
+        seed = "medium"
+        for segment in reversed(rest):
+            seed = {segment: seed}
+        lanes = {"parameters": {}, "extra_body": {}}
+        lanes[lane] = seed
+        assert infer_surface(lanes["parameters"], lanes["extra_body"]) == {"write": path}
 
-    def test_gemini_thinking_level_clamps_to_high(self):
-        params = {"thinking_level": "medium"}
-        apply_reasoning_effort("xhigh", params, {})
-        assert params["thinking_level"] == "high"
+    def test_two_seeded_dials_resolve_to_the_typed_lane(self):
+        """WRITE_PATHS is ordered for exactly this: `parameters` holds typed SDK
+        fields, so an entry seeded in both lanes writes there rather than
+        wherever the paths happen to sort."""
+        surface = infer_surface({"reasoning_effort": "low"}, {"reasoning_effort": "low"})
+        assert surface == {"write": "parameters.reasoning_effort"}
 
-    def test_gemini_thinking_budget_clamps_to_high(self):
-        params = {"thinking_budget": 4096}
-        apply_reasoning_effort("xhigh", params, {})
-        assert params["thinking_budget"] == _GEMINI_BUDGETS["high"]
+    def test_a_seed_the_allowlist_does_not_name_infers_nothing(self):
+        """A mode switch and a token budget are not dials, so no seed value of
+        theirs distinguishes one from a dial's starting point."""
+        assert infer_surface({"thinking": {"type": "enabled"}}, {}) == {}
+        assert infer_surface({"max_tokens": 8}, {}) == {}
 
-    def test_vllm_reasoning_effort_clamps_to_high(self):
-        params = {"reasoning_effort": "medium"}
-        apply_reasoning_effort("xhigh", params, {})
-        assert params["reasoning_effort"] == "high"
+
+# ---------------------------------------------------------------------------
+# validate_surface
+# ---------------------------------------------------------------------------
+
+
+class TestValidateSurface:
+    def test_known_paths_pass(self):
+        validate_surface("m", {"write": "parameters.reasoning.effort"})
+        validate_surface("m", {"off": {"parameters.thinking.type": "disabled"}})
+
+    def test_typo_in_a_write_is_refused(self):
+        """The whole point of the allowlist: a misspelled path is structurally
+        valid JSON that lands somewhere the vendor answers 200 for and ignores."""
+        with pytest.raises(ReasoningSurfaceError, match="not a known write path"):
+            validate_surface("m", {"write": "parmeters.reasoning.effort"})
+
+    def test_typo_in_a_patch_is_refused(self):
+        with pytest.raises(ReasoningSurfaceError, match="not a known patch path"):
+            validate_surface("m", {"off": {"parameters.thinking.mode": "off"}})
+
+    def test_a_mode_switch_is_not_a_write_target(self):
+        """`thinking.type` takes a vendor literal, never a level name."""
+        assert "parameters.thinking.type" in PATCH_PATHS
+        assert "parameters.thinking.type" not in WRITE_PATHS
+        with pytest.raises(ReasoningSurfaceError):
+            validate_surface("m", {"write": "parameters.thinking.type"})
+
+    def test_a_ladder_with_nowhere_to_write_is_refused(self):
+        """The failure the block exists to make loud: levels the UI renders as
+        buttons, and no path for the chosen one to be written to."""
+        with pytest.raises(ReasoningSurfaceError, match="nowhere to write"):
+            validate_surface("m", {"efforts": ["low", "high"], "default": "high"})
+
+    def test_a_dial_is_not_a_patch_target(self):
+        """The two allowlists are disjoint: an `off` free to name the entry's
+        own graded write is how a switch and a dial end up contradicting each
+        other in one payload."""
+        assert not set(WRITE_PATHS) & PATCH_PATHS
+        with pytest.raises(ReasoningSurfaceError, match="not a known patch path"):
+            validate_surface("m", {"off": {"parameters.output_config.effort": "high"}})
+
+    def test_an_on_without_an_off_is_refused(self):
+        """Verified against the mapper before it was refused: at `none` this
+        emits `thinking.type: enabled` beside `effort: none`, which is the
+        surface enabling thinking on the rung that asks for none."""
+        with pytest.raises(ReasoningSurfaceError, match="declares no `off`"):
+            validate_surface(
+                "m",
+                {
+                    "efforts": ["none", "high"],
+                    "write": "parameters.output_config.effort",
+                    "on": {"parameters.thinking.type": "enabled"},
+                },
+            )
+
+    def test_an_unreachable_off_is_refused(self):
+        """The clamp never hands the mapper a level outside the ladder, so an
+        `off` with no off rung above it is a branch no request can enter."""
+        with pytest.raises(ReasoningSurfaceError, match="never be applied"):
+            validate_surface(
+                "m",
+                {
+                    "efforts": ["low", "high"],
+                    "write": "parameters.output_config.effort",
+                    "off": {"parameters.thinking.type": "disabled"},
+                },
+            )
+
+    @pytest.mark.parametrize(
+        "block, wrong",
+        [
+            ({"efforts": 1, "write": "parameters.reasoning.effort"}, "efforts"),
+            ({"write": ["parameters.reasoning.effort"]}, "write"),
+            ({"on": ["parameters.thinking.type"]}, "on"),
+            ({"off": "parameters.thinking.type"}, "off"),
+        ],
+    )
+    def test_a_wrongly_typed_key_is_refused(self, block, wrong):
+        """The block is user input on the preferences path, and every one of
+        these otherwise reaches the mapper as an exception raised per turn --
+        a 500 on data the save accepted."""
+        with pytest.raises(ReasoningSurfaceError, match=f"reasoning.{wrong} must be"):
+            validate_surface("m", block)
+
+    def test_an_unhashable_effort_is_refused_before_the_set_math(self):
+        """The ladder arrives from a stored preferences bag, so an element can
+        be any JSON value. One unhashable one raised out of the ``OFF_LEVELS``
+        intersection: a 500 from the function whose job is the 400."""
+        with pytest.raises(ReasoningSurfaceError, match="reasoning.efforts must be drawn"):
+            validate_surface("m", {"efforts": [{}], "write": "parameters.reasoning.effort"})
+
+    def test_a_bare_switch_may_not_wear_more_than_two_rungs(self):
+        """A patch is one payload, so every non-off rung on a surface with no
+        graded write emits the same request. Three buttons, two outcomes, and
+        nothing downstream can tell -- the shape the block exists to refuse."""
+        with pytest.raises(ReasoningSurfaceError, match="all apply the same `on` patch"):
+            validate_surface("m", {
+                "efforts": ["none", "high", "max"],
+                "on": {"parameters.thinking.type": "adaptive"},
+                "off": {"parameters.thinking.type": "disabled"},
+            })
+
+    def test_a_two_rung_switch_is_still_fine(self):
+        """The shape `minimax-m3` actually ships: off, and on."""
+        validate_surface("m", {
+            "efforts": ["none", "high"],
+            "on": {"parameters.thinking.type": "adaptive"},
+            "off": {"parameters.thinking.type": "disabled"},
+        })
+
+    def test_a_surface_with_no_ladder_skips_the_rung_checks(self):
+        """An inferred surface carries no efforts, so there is no rung for the
+        cross-field checks to be about."""
+        validate_surface("m", {"off": {"parameters.thinking.type": "disabled"}})
+        validate_surface("m", {"on": {"parameters.thinking.type": "enabled"}})

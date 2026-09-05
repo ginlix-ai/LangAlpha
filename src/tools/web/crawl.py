@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 from langchain_core.tools import tool
 
 from src.config.tool_settings import get_crawl_provider
+from src.observability import stamp_run
 from src.tools.decorators import create_logged_tool, get_tool_tracker
 from src.tools.web.manifest import (
     CAPABILITY_CRAWL,
@@ -151,13 +152,11 @@ def create_crawl_tools(filesystem_backend: Any) -> List[Any]:
     ) -> Tuple[str, Dict[str, Any]]:
         """Crawl a website and dump each page as markdown into the workspace.
 
-        Starts an asynchronous crawl at ``url``, follows internal links up to
-        ``limit`` pages, and writes one .md file per page plus an index.jsonl
-        manifest. Read the dumped files with glob/read_file afterwards — page
-        content is never returned inline. Scope a site with WebMap first, and
-        prefer WebFetch when you already know the handful of URLs you need.
-        Crawling bills per delivered page, so keep ``limit`` tight and focus
-        the crawl with include_paths/exclude_paths.
+        Starts an asynchronous crawl at ``url`` and follows internal links up
+        to ``limit`` pages. Scope a site with WebMap first, and prefer WebFetch
+        when you already know the handful of URLs you need. Crawling bills per
+        delivered page, so keep ``limit`` tight and focus the crawl with
+        include_paths/exclude_paths.
 
         Args:
             url: Starting URL; the crawl stays within its site.
@@ -169,7 +168,15 @@ def create_crawl_tools(filesystem_backend: Any) -> List[Any]:
             output_dir: Workspace directory to dump into; pages land in
                 <output_dir>/<host>/. Defaults to work/crawl. Pass your task's
                 work dir (e.g. work/<task>/crawl) when running a task workflow.
+
+        Returns:
+            A page count and the paths it wrote, never page content: one .md
+            file per page plus an index.jsonl manifest.
+
+        Glob the directory and Read the pages you need. Never re-crawl what
+        you already dumped.
         """
+        stamp_run(crawl_provider=provider)
         limit_ = max(1, min(int(limit), _MAX_CRAWL_PAGES))
         base_dir = (output_dir or _DEFAULT_OUTPUT_DIR).rstrip("/")
         dest_dir = f"{base_dir}/{_host_dirname(url)}"
@@ -266,7 +273,7 @@ def create_crawl_tools(filesystem_backend: Any) -> List[Any]:
             lines.append(f"{failures} page(s) failed — see {index_path}.")
         if ok_pages:
             lines.append(
-                f"Manifest: {index_path}. Use glob('{dest_dir}/*.md') and read_file to work "
+                f"Manifest: {index_path}. Use Glob('{dest_dir}/*.md') and Read to work "
                 f"through the pages."
             )
         artifact = {
@@ -285,14 +292,17 @@ def create_crawl_tools(filesystem_backend: Any) -> List[Any]:
     async def web_map(url: str, query: Optional[str] = None, limit: int = 100) -> Tuple[str, Dict[str, Any]]:
         """Discover the URLs of a website without crawling it.
 
-        Maps ``url`` and lists its discovered links, ranked by relevance to
-        ``query`` when given. Fast and cheap — use it to scope a site before
-        deciding which pages to WebFetch or whether a WebCrawl is worth it.
+        Fast and cheap — use it to scope a site before deciding which pages to
+        WebFetch or whether a WebCrawl is worth it.
 
         Args:
             url: Site to map.
-            query: Optional relevance filter/ranking for the returned links.
+            query: Optional relevance filter for the returned links.
             limit: Max links to return (default 100, max 300).
+
+        Returns:
+            URLs with page titles where the site supplies them, ranked by
+            ``query`` when given. No page content is fetched.
         """
         limit_ = max(1, min(int(limit), _MAX_MAP_LINKS))
         try:
@@ -318,7 +328,14 @@ def create_crawl_tools(filesystem_backend: Any) -> List[Any]:
     tools: List[Any] = [web_crawl]
     if map_cap is not None:
         map_key = map_cap.tracking_key(map_cap.default_level_spec)
-        tools.append(create_logged_tool(web_map, name="WebMap", tracking_name=map_key))
+        tools.append(
+            create_logged_tool(
+                web_map,
+                name="WebMap",
+                tracking_name=map_key,
+                run_metadata={"map_provider": provider},
+            )
+        )
     else:
         # Capability-driven: a provider without a manifest map capability
         # simply doesn't offer WebMap (never ship an unmetered tool).

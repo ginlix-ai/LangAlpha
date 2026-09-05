@@ -338,16 +338,31 @@ class BackgroundSubagentOrchestrator:
         # Build notification message
         if len(sorted_tasks) == 1:
             task = sorted_tasks[0]
+            if task.terminal_status == "cancelled":
+                # Announcing a stop as finished work invites the agent to go
+                # fetch a result that does not exist, and to offer to redo work
+                # the user just stopped.
+                return (
+                    f"Your background subagent task was stopped before it "
+                    f"finished: **{task.display_id}**. No result was produced, "
+                    f"and the stop was deliberate — report it and await "
+                    f"instruction rather than re-dispatching."
+                )
             return (
-                f"Your background subagent task has completed: **{task.display_id}**.\n\n"
+                f"Your background subagent task has finished: **{task.display_id}**.\n\n"
                 f"Call `TaskOutput(task_id=\"{task.task_id}\")` to see the result."
             )
 
-        task_list = ", ".join(f"**{t.display_id}**" for t in sorted_tasks)
+        task_list = ", ".join(
+            f"**{t.display_id}**"
+            + (" (stopped)" if t.terminal_status == "cancelled" else "")
+            for t in sorted_tasks
+        )
         return (
-            f"Your background subagent tasks have completed: {task_list}.\n\n"
+            f"Your background subagent tasks have finished: {task_list}.\n\n"
             f"Call `TaskOutput()` to see all results, or "
-            f"`TaskOutput(task_id=\"...\")` for a specific task."
+            f"`TaskOutput(task_id=\"...\")` for a specific task. A task marked "
+            f"stopped produced no result; do not re-dispatch it unless asked."
         )
 
     def get_pending_tasks_status(self) -> dict[str, Any]:
@@ -358,12 +373,12 @@ class BackgroundSubagentOrchestrator:
         """
         tasks = list(self.middleware.registry._tasks.values())
         pending = [t for t in tasks if not t.completed]
-        completed = [t for t in tasks if t.completed]
+        settled = [t for t in tasks if t.completed]
 
         return {
             "total": len(tasks),
             "pending": len(pending),
-            "completed": len(completed),
+            "completed": len(settled),
             "pending_tasks": [
                 {
                     "id": t.display_id,
@@ -373,7 +388,12 @@ class BackgroundSubagentOrchestrator:
                 for t in pending
             ],
             "completed_tasks": [
-                {"id": t.display_id, "type": t.subagent_type} for t in completed
+                {
+                    "id": t.display_id,
+                    "type": t.subagent_type,
+                    "status": t.terminal_status,
+                }
+                for t in settled
             ],
         }
 
@@ -425,10 +445,12 @@ class BackgroundSubagentOrchestrator:
         return True
 
     async def check_and_get_notification(self) -> str | None:
-        """Check for newly completed tasks and return notification if any.
+        """Announce settled LEDGER-LESS tasks the agent hasn't seen.
 
-        This is called by CLI before processing a new query to inject
-        notifications about completed background tasks.
+        Runs after every agent invoke/stream (server and library alike), but
+        announces only tasks with no ledger identity — ledgered runs belong
+        to the durable outbox notifier, whose claim-time arbitration this
+        memory-gated check cannot participate in.
 
         Returns:
             Notification string if tasks completed, None otherwise
@@ -444,18 +466,25 @@ class BackgroundSubagentOrchestrator:
         # Sync completion status first
         for task in self.middleware.registry._tasks.values():
             if not task.completed and task.asyncio_task and task.asyncio_task.done():
-                task.completed = True
-                try:
-                    task.result = task.asyncio_task.result()
-                except Exception as e:
-                    task.error = str(e)
-                    task.result = {"success": False, "error": str(e)}
+                task.adopt_writer_outcome(task.asyncio_task)
 
-        # Completed tasks whose results the agent hasn't seen. Server-side
-        # report-back is outbox-owned and never reaches this CLI-only path.
+        # Completed tasks whose results the agent hasn't seen. Ledgered runs
+        # (task_run_id set at admission) are excluded: the durable outbox
+        # notifier owns them, arbitrating at claim time against
+        # result_delivered_at — a second, memory-gated announcer here can only
+        # duplicate it. The local sweep announces exactly the ledger-less
+        # tasks (direct library embedding, or a failed admission), where this
+        # process is the only notifier there is. Workflow-owned children are
+        # excluded too: their results flow to the driver, not the main agent —
+        # only the run task itself notifies.
         all_tasks = list(self.middleware.registry._tasks.values())
         unseen_tasks = [
-            t for t in all_tasks if t.completed and not t.result_seen
+            t
+            for t in all_tasks
+            if t.completed
+            and not t.result_seen
+            and t.is_turn_visible
+            and not t.task_run_id
         ]
 
         logger.debug(

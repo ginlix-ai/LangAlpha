@@ -36,6 +36,23 @@ vi.mock('../../utils/api', async () => (await import('./chatHookHarness')).apiMo
 
 import { getWorkflowStatus, reconnectToWorkflowStream } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';
+import {
+  RECONNECT_BACKLOG_QUIET_MS, RECONNECT_BACKLOG_CAP_MS,
+} from '../../session/stream/lifecycle';
+import type { AssistantMessage } from '@/types/chat';
+
+/** Text rendered across the assistant bubbles, in segment order. */
+function assistantText(messages: { role: string }[]): string {
+  return (messages.filter((m) => m.role === 'assistant') as AssistantMessage[])
+    .flatMap((m) => m.contentSegments ?? [])
+    .map((seg) => (seg as { content?: string }).content ?? '')
+    .join('');
+}
+
+/** One assistant text chunk on the main stream. */
+const textChunk = (content: string) => ({
+  event: 'message_chunk', role: 'assistant', agent: 'main', content_type: 'text', content,
+});
 
 const mockStatus = getWorkflowStatus as Mock;
 const mockReconnect = reconnectToWorkflowStream as Mock;
@@ -183,6 +200,9 @@ describe('useChatMessages — cross-thread navigation reconnect', () => {
       // Live tokens arrive, then the reader hangs — the turn is still in progress.
       onEvent({ event: 'metadata', thread_id: 'th-live', run_id: 'run-live' });
       onEvent({ event: 'message_chunk', role: 'assistant', agent: 'main', content_type: 'text', content: 'streaming…' });
+      // The server marks where its replayed backlog ends; the client holds
+      // events until then and applies them in one pass.
+      onEvent({ event: 'caught_up' });
       return new Promise<{ disconnected: boolean; aborted: boolean }>((res) => {
         resolveStream = () => res({ disconnected: false, aborted: false });
       });
@@ -201,5 +221,92 @@ describe('useChatMessages — cross-thread navigation reconnect', () => {
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     expect(result.current.isReconnecting).toBe(false);
     await waitFor(() => expect(result.current.isLoading).toBe(false));
+  });
+
+  it('holds the replayed backlog until caught_up, then paints it before the live tail', async () => {
+    mockStatus.mockResolvedValue({ can_reconnect: true, status: 'running', run_id: 'run-live', active_tasks: [] });
+
+    let emit: ((e: Record<string, unknown>) => void) | undefined;
+    mockReconnect.mockImplementation((...args: unknown[]) => {
+      emit = args[3] as (e: Record<string, unknown>) => void;
+      emit({ event: 'metadata', thread_id: 'th-live', run_id: 'run-live' });
+      emit(textChunk('already '));
+      emit(textChunk('written'));
+      return new Promise<{ disconnected: boolean; aborted: boolean }>(() => {});
+    });
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws', 'th-live'));
+    await waitFor(() => expect(mockReconnect).toHaveBeenCalledTimes(1));
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+
+    // Backlog in flight: nothing rendered yet, spinner still on.
+    expect(assistantText(result.current.messages)).toBe('');
+    expect(result.current.isReconnecting).toBe(true);
+
+    await act(async () => { emit?.({ event: 'caught_up' }); });
+    expect(assistantText(result.current.messages)).toBe('already written');
+    expect(result.current.isReconnecting).toBe(false);
+
+    // The live tail streams through as it arrives.
+    await act(async () => { emit?.(textChunk(' and live')); });
+    expect(assistantText(result.current.messages)).toBe('already written and live');
+  });
+
+  it('a held event restarts the quiet window; the backlog paints once it goes quiet', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockStatus.mockResolvedValue({ can_reconnect: true, status: 'running', run_id: 'run-live', active_tasks: [] });
+      let emit: ((e: Record<string, unknown>) => void) | undefined;
+      mockReconnect.mockImplementation((...args: unknown[]) => {
+        emit = args[3] as (e: Record<string, unknown>) => void;
+        emit({ event: 'metadata', thread_id: 'th-live', run_id: 'run-live' });
+        emit(textChunk('older '));
+        return new Promise<{ disconnected: boolean; aborted: boolean }>(() => {});
+      });
+
+      const { result } = renderHookWithProviders(() => useChatMessages('ws', 'th-live'));
+      await waitFor(() => expect(mockReconnect).toHaveBeenCalledTimes(1));
+
+      // A second held event lands just before the first one's window closes:
+      // the window restarts, so a slow replay is never cut in half.
+      await act(async () => { vi.advanceTimersByTime(RECONNECT_BACKLOG_QUIET_MS - 200); });
+      await act(async () => { emit?.(textChunk('server')); });
+      await act(async () => { vi.advanceTimersByTime(RECONNECT_BACKLOG_QUIET_MS - 200); });
+      expect(assistantText(result.current.messages)).toBe('');
+
+      await act(async () => { vi.advanceTimersByTime(300); });
+      expect(assistantText(result.current.messages)).toBe('older server');
+      expect(result.current.isReconnecting).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('paints at the cap when held events keep the quiet window alive', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockStatus.mockResolvedValue({ can_reconnect: true, status: 'running', run_id: 'run-live', active_tasks: [] });
+      let emit: ((e: Record<string, unknown>) => void) | undefined;
+      mockReconnect.mockImplementation((...args: unknown[]) => {
+        emit = args[3] as (e: Record<string, unknown>) => void;
+        emit({ event: 'metadata', thread_id: 'th-live', run_id: 'run-live' });
+        emit(textChunk('x'));
+        return new Promise<{ disconnected: boolean; aborted: boolean }>(() => {});
+      });
+
+      const { result } = renderHookWithProviders(() => useChatMessages('ws', 'th-live'));
+      await waitFor(() => expect(mockReconnect).toHaveBeenCalledTimes(1));
+
+      // A marker-less stream that keeps trickling would restart the window
+      // forever; the cap ends the hold.
+      for (let elapsed = 0; elapsed < RECONNECT_BACKLOG_CAP_MS; elapsed += 1000) {
+        await act(async () => { vi.advanceTimersByTime(1000); });
+        await act(async () => { emit?.(textChunk('x')); });
+      }
+      expect(assistantText(result.current.messages)).not.toBe('');
+      expect(result.current.isReconnecting).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -28,6 +28,16 @@ def _make_server(name: str = "test", env: dict | None = None, enabled: bool = Tr
     )
 
 
+def _make_http_server(name: str = "remote", headers: dict | None = None) -> MCPServerConfig:
+    return MCPServerConfig(
+        name=name,
+        transport="http",
+        url="https://mcp.example.test/mcp",
+        headers=headers or {},
+        enabled=True,
+    )
+
+
 def _make_tool_message(content: str, tool_call_id: str = "call_1") -> ToolMessage:
     return ToolMessage(content=content, tool_call_id=tool_call_id)
 
@@ -106,6 +116,56 @@ class TestSecretDiscovery:
         ):
             mw = LeakDetectionMiddleware(mcp_servers=[s1, s2])
         assert len(mw._secrets) == 2
+
+    def test_credential_headers_are_tracked(self):
+        """An inline header credential redacts from tool output the same way an
+        env literal does — a vendor echoing the request back must not hand the
+        model the bearer."""
+        server = _make_http_server(headers={
+            "Authorization": "Bearer inline_bearer_123",
+            "X-Api-Key": "inline_apikey_456",
+        })
+        with patch(_GNC, side_effect=_disable_github):
+            mw = LeakDetectionMiddleware(mcp_servers=[server])
+        assert sorted(v for _, v in mw._secrets) == [
+            "Bearer inline_bearer_123", "inline_apikey_456",
+        ]
+
+    def test_protocol_headers_are_not_secrets(self):
+        """Tool output quotes "application/json" constantly; masking it would
+        punch holes in every result the model reads."""
+        server = _make_http_server(headers={
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+        })
+        with patch(_GNC, side_effect=_disable_github):
+            mw = LeakDetectionMiddleware(mcp_servers=[server])
+        assert mw._secrets == []
+
+    def test_header_vault_refs_are_skipped(self):
+        """${vault:NAME} resolves in-sandbox; the vault lane covers its value."""
+        server = _make_http_server(headers={"Authorization": "${vault:RH_TOKEN}"})
+        with patch(_GNC, side_effect=_disable_github):
+            mw = LeakDetectionMiddleware(mcp_servers=[server])
+        assert mw._secrets == []
+
+    def test_arg_credentials_are_tracked_but_paths_are_not(self):
+        """A credential passed as a CLI flag redacts like an env literal; the
+        path and URL arguments beside it must stay quotable in tool output."""
+        server = MCPServerConfig(
+            name="stdio",
+            command="npx",
+            args=[
+                "--token=inline_argtok_123",
+                "--out",
+                "/workspace/data/long_output_file.csv",
+            ],
+            env={},
+            enabled=True,
+        )
+        with patch(_GNC, side_effect=_disable_github):
+            mw = LeakDetectionMiddleware(mcp_servers=[server])
+        assert mw._secrets == [("stdio:token", "inline_argtok_123")]
 
     def test_github_token_from_config(self):
         """GitHub token is discovered via get_nested_config."""

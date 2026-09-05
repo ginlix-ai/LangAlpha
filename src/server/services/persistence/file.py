@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ptc_agent.core.paths import BACKUP_EXCLUDE_AGENT_SUBDIRS, BACKUP_EXCLUDE_DIRS, ALWAYS_HIDDEN_DIR_NAMES, HIDDEN_DIR_NAMES
+from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 from src.server.database.workspace_file import (
     bulk_update_file_mtimes,
     bulk_upsert_files,
@@ -574,12 +575,22 @@ class FilePersistenceService:
         if not sandbox or not dirs:
             return
 
-        ok = await sandbox.acreate_directories(dirs)
-        if ok:
-            return
+        try:
+            if await sandbox.acreate_directories(dirs):
+                return
+            reason = "bulk mkdir reported failure"
+        except SandboxGoneError:
+            # Nothing to fall back to: per-dir creates would fail identically.
+            raise
+        except Exception as exc:
+            # The bulk call is an optimization, and its documented failure mode
+            # — one mkdir line too long for the shell — now normalizes to a
+            # typed transient instead of a False return. Falling back is still
+            # the right answer for it; only a gone sandbox is unrecoverable.
+            reason = str(exc)
 
         logger.debug(
-            f"Bulk mkdir unavailable or failed for {len(dirs)} dirs; "
+            f"Bulk mkdir unavailable or failed for {len(dirs)} dirs ({reason}); "
             "falling back to parallel per-dir creates."
         )
         sem = asyncio.Semaphore(16)
@@ -624,6 +635,13 @@ class FilePersistenceService:
             )
             await cls.restore_to_sandbox(workspace_id, sandbox)
 
+        except (SandboxGoneError, SandboxTransientError):
+            # Let a sandbox condition reach the caller as itself. The marker
+            # probe answering with a failure means we never learned whether the
+            # files are there, and flattening that into a generic warning here
+            # reads downstream as "checked, nothing to do" — which is how a
+            # recreated sandbox stays empty with no attributable reason.
+            raise
         except Exception as e:
             logger.warning(f"Error in maybe_restore for workspace {workspace_id}: {e}")
 

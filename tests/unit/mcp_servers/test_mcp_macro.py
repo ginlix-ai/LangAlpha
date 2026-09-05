@@ -8,7 +8,7 @@ import pytest
 
 from .conftest import assert_error, assert_ok_envelope
 
-_MOD = "mcp_servers.macro_mcp_server"
+_MOD = "plugins.langalpha_market_data.macro_mcp_server"
 
 
 def _make_fmp_client() -> AsyncMock:
@@ -41,7 +41,7 @@ def _make_fmp_client() -> AsyncMock:
 class TestGetEconomicIndicator:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.macro_mcp_server import get_economic_indicator
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -57,7 +57,7 @@ class TestGetEconomicIndicator:
 
     @pytest.mark.asyncio
     async def test_custom_limit(self):
-        from mcp_servers.macro_mcp_server import get_economic_indicator
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -67,7 +67,7 @@ class TestGetEconomicIndicator:
 
     @pytest.mark.asyncio
     async def test_fmp_init_error(self):
-        from mcp_servers.macro_mcp_server import get_economic_indicator
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
 
         with patch(f"{_MOD}.get_fmp_client", side_effect=RuntimeError("no key")):
             result = await get_economic_indicator("GDP")
@@ -77,7 +77,7 @@ class TestGetEconomicIndicator:
 
     @pytest.mark.asyncio
     async def test_api_error(self):
-        from mcp_servers.macro_mcp_server import get_economic_indicator
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
 
         client = _make_fmp_client()
         client.get_economic_indicators = AsyncMock(side_effect=Exception("timeout at ?apikey=SECRET"))
@@ -95,7 +95,7 @@ class TestGetEconomicIndicator:
 class TestGetEconomicCalendar:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.macro_mcp_server import get_economic_calendar
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_calendar
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -110,7 +110,7 @@ class TestGetEconomicCalendar:
 
     @pytest.mark.asyncio
     async def test_default_dates(self):
-        from mcp_servers.macro_mcp_server import get_economic_calendar
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_calendar
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -127,7 +127,7 @@ class TestGetEconomicCalendar:
 class TestGetTreasuryRates:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.macro_mcp_server import get_treasury_rates
+        from plugins.langalpha_market_data.macro_mcp_server import get_treasury_rates
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -139,7 +139,7 @@ class TestGetTreasuryRates:
 
     @pytest.mark.asyncio
     async def test_with_date_range(self):
-        from mcp_servers.macro_mcp_server import get_treasury_rates
+        from plugins.langalpha_market_data.macro_mcp_server import get_treasury_rates
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -158,7 +158,7 @@ class TestGetTreasuryRates:
 class TestGetMarketRiskPremium:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.macro_mcp_server import get_market_risk_premium
+        from plugins.langalpha_market_data.macro_mcp_server import get_market_risk_premium
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -170,7 +170,7 @@ class TestGetMarketRiskPremium:
 
     @pytest.mark.asyncio
     async def test_api_error(self):
-        from mcp_servers.macro_mcp_server import get_market_risk_premium
+        from plugins.langalpha_market_data.macro_mcp_server import get_market_risk_premium
 
         client = _make_fmp_client()
         client.get_market_risk_premium = AsyncMock(side_effect=Exception("fail"))
@@ -187,7 +187,7 @@ class TestGetMarketRiskPremium:
 class TestGetEarningsCalendar:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.macro_mcp_server import get_earnings_calendar
+        from plugins.langalpha_market_data.macro_mcp_server import get_earnings_calendar
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -203,7 +203,7 @@ class TestGetEarningsCalendar:
 
     @pytest.mark.asyncio
     async def test_fmp_init_error(self):
-        from mcp_servers.macro_mcp_server import get_earnings_calendar
+        from plugins.langalpha_market_data.macro_mcp_server import get_earnings_calendar
 
         with patch(f"{_MOD}.get_fmp_client", side_effect=RuntimeError("no key")):
             result = await get_earnings_calendar(from_date="2025-01-01", to_date="2025-01-31")

@@ -45,6 +45,10 @@ cd web && pnpm test                   # Vitest;  pnpm test:e2e = Playwright;  pn
 
 React 19 + Vite + TypeScript + Tailwind + shadcn/ui; state via React Query. Path alias `@` → `web/src/`. Non-obvious landmines — dual-mode auth (`VITE_HOST_MODE`), SSE via raw `fetch` (not axios), Zod at the prefs boundary — are documented in **`web/AGENTS.md`**.
 
+### Desktop shell (`desktop/`)
+
+Electron wrapper around the hosted web app. It carries **no web bundle**, only an entry URL, so a web deploy never needs a desktop release. Two editions from one source, selected by a gitignored `config/build.json` written at package time (`scripts/write-build-config.mjs`): `oss` points at the user's own stack and asks for it on first run, `saas` opens on hosted onboarding and then the app. Details, including the OAuth interception invariant, in **`desktop/AGENTS.md`**.
+
 ### Agent internals
 
 Built with `create_agent()` from **`langchain.agents`** (not a hand-written `StateGraph`), wrapped in a custom middleware stack (some middleware from `deepagents`). `PTCAgent.create_agent()` in `src/ptc_agent/agent/agent.py` assembles the tools (`execute_code`, `bash`, filesystem ops, `show_widget`, web search/fetch, SEC/market), the middleware, and a `BackgroundSubagentOrchestrator` for parallel background tasks.
@@ -54,7 +58,7 @@ Built with `create_agent()` from **`langchain.agents`** (not a hand-written `Sta
 
 ### PTC pattern
 
-The core differentiator: the LLM does **not** call MCP tools directly. It writes Python via `execute_code` that imports generated wrapper modules and calls MCP-backed functions in the sandbox — enabling data manipulation, charting, and multi-step analysis in one execution. Financial-data MCP servers live in `mcp_servers/` (stdio subprocesses configured in `agent_config.yaml`); `ToolFunctionGenerator` builds the wrapper code uploaded to sandboxes.
+The core differentiator: the LLM does **not** call MCP tools directly. It writes Python via `execute_code` that imports generated wrapper modules and calls MCP-backed functions in the sandbox — enabling data manipulation, charting, and multi-step analysis in one execution. Financial-data MCP servers run as stdio subprocesses, each living in the `plugins/` bundle that declares it (see below); `ToolFunctionGenerator` builds the wrapper code uploaded to sandboxes.
 
 ### Data, streaming & database
 
@@ -70,12 +74,15 @@ The core differentiator: the LLM does **not** call MCP tools directly. It writes
 
 ## Conventions
 
-- **Python 3.12+, async-first.** Ruff for linting (only `E741` ignored globally).
+- **Python 3.13+, async-first.** Ruff for linting (only `E741` ignored globally).
 - **Config split**: `.env` for credentials/URLs, YAML (`agent_config.yaml`, `config.yaml`) for behavioral settings.
+- **`plugins/` holds the built-in MCP servers and skills** — one Agent Plugins 1.0.0 package per group, the same format a user uploads on the Plugins page, read at config load by `src/ptc_agent/config/plugins.py`. A bundle carries its own files: the server entry points `mcp.json` names, and its skills as directories under `plugins/<bundle>/skills/`. `mcp_servers/` keeps only the runtime they share (`_bootstrap`, the envelope, the output schemas). `mcp.json` is closed (`additionalProperties: false` at every level), so a server's `description`, `instruction`, `tool_exposure_mode` and `vault_blueprints` live in `plugin.json` under `extensions["ai.langalpha"]`, the format's one extension point — the same block an uploaded plugin may use. `agent_config.yaml`'s `mcp.servers` is now the operator's own list; a name declared in both wins there. See `plugins/README.md`.
 - **Server-side LLM calls** go through `LLMService.complete`, never `create_llm()` directly (skips BYOK/OAuth/per-user prefs) — contract in `src/server/AGENTS.md`.
 - **Package managers**: `uv` (Python), `pnpm` (frontend).
 - **Deployment**: `docker-compose.yml` / `docker-compose.prod.yml`; Dockerfiles in `deploy/` + root `Dockerfile.sandbox`; `make deploy` / `make prod-up`.
-- **⚠️ Pinned agent-facing docstrings**: the market-data MCP server tools (`mcp_servers/*_mcp_server.py`) and direct market tools (`src/tools/market_data/tool.py`) ship into agent prompts and are snapshot-locked (`tests/unit/mcp_servers/agent_docstring_lock.json`). Any edit fails the default unit suite — don't reword them as a side effect. Editing an MCP tool's signature/docstring also requires bumping `MCP_CLIENT_CODEGEN_VERSION` (`src/ptc_agent/core/tool_generator.py`) — warm sandboxes cache the generated wrappers by that version and won't otherwise pick up the change. See `mcp_servers/AGENT_CONTRACT.md`.
+- **⚠️ Pinned agent-facing docstrings**: the market-data MCP server tools (`plugins/*/*_mcp_server.py`) and direct market tools (`src/tools/market_data/tool.py`) ship into agent prompts and are snapshot-locked (`tests/unit/mcp_servers/agent_docstring_lock.json`). Any edit fails the default unit suite — don't reword them as a side effect. Warm sandboxes cache the generated wrappers by `MCP_CLIENT_CODEGEN_VERSION` (`src/ptc_agent/core/tool_generator.py`), but there is no manual knob to turn: the version is derived from the sandbox runtime source plus a hash of a deterministic emission probe, so a codegen or runtime change invalidates it on its own, and server-file edits resync by content hash. Only a deliberate architecture shift moves its hand-set major. Return annotations are lock-exempt — they publish output schemas via `mcp_servers/_schemas.py`. See `mcp_servers/AGENT_CONTRACT.md`.
+- **Tool docstrings are prompt surface**: every agent-facing tool docstring, direct or MCP, follows `src/tools/AGENTS.md` — the model reads it at call time, so each sentence has to change a decision (call this tool or another, what to pass, what to do with the result). The two surfaces split on `Returns:`: one line for a direct tool (a selection signal), the full machine shape for an MCP tool (agent code indexes it).
+- **⚠️ Third-party MCP servers launch isolated**: any stdio MCP server whose code we don't own runs via `uvx`/`npx` with pinned versions, never from the shared app venv or sandbox system Python — a shared-env server is coupled to the environment's `mcp` pin and dies on the next SDK major (the `scrapling mcp` failure class). Builtins are exempt: they import through `_bootstrap` and are era-proof by construction. The add/update API warns on shared-env commands (`isolation_warnings`, `src/server/models/mcp_server.py`); a server that still dies pre-handshake gets a classified diagnosis in the logs and discovery status (`classify_startup_failure`, `src/ptc_agent/core/mcp_registry.py`).
 - **⚠️ Multi-worker server**: the backend runs `--workers N` — a request, its SSE consumer, the outbox drainer, and the recovery scanner may each land on **different processes**. Truth lives in Postgres (run ledger + advisory locks); Redis is coordination/transport; process memory is execution context only — never introduce module-level state that a request path consults, and never treat local registries as liveness/status truth. Before touching turn lifecycle, streaming, or subagent ownership, read `src/server/AGENTS.md` § Multi-worker (review checklist); verify with `scripts/multiworker_gate/`.
 
 ## Working principles

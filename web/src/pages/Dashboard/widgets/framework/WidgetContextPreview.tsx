@@ -103,7 +103,7 @@ function renderStructuredValue(v: unknown, depth: number, maxDepth = 4): React.R
         {entries.map(([k, val]) => (
           <div key={k} className="grid grid-cols-[110px_1fr] gap-3">
             <dt
-              className="text-[10px] font-semibold uppercase tracking-[0.12em] pt-0.5"
+              className="text-[0.625rem] font-semibold uppercase tracking-[0.12em] pt-0.5"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               {humanizeKey(k)}

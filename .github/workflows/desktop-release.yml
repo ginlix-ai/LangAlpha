@@ -1,0 +1,267 @@
+name: Desktop Release
+
+# Builds the OSS edition of the desktop shell and attaches it to a GitHub
+# release. That release is how a self-hoster gets a build.
+#
+# It ships the committed localhost defaults and takes no configuration, because
+# an OSS build points at the stack the person running it already has. The first
+# launch asks for that address.
+#
+# Deliberately not here: the hosted build. It needs Apple and Windows signing
+# certificates and a key that can replace the binaries every installed app
+# downloads and runs, and this repository is public. Those live with the
+# infrastructure that owns them, and the pipeline lives there too — a secret is
+# not made safer by being read from somewhere else.
+#
+# Artifacts are UNSIGNED until certificates exist: a Developer ID for macOS and
+# an EV certificate for Windows. The signing steps below activate on their own if
+# the secrets are ever set, which is what makes this useful to a fork that has
+# its own.
+#
+# These builds do not update themselves. There is no feed to point them at, so
+# the updater reports as much and people collect new versions from the releases
+# page. Giving a fork its own feed means setting DESKTOP_UPDATE_FEED in the build
+# step; scripts/build.mjs does the rest, including emitting the manifests.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp (e.g. 0.1.0). Empty keeps package.json's."
+        required: false
+        default: ""
+      publish:
+        description: "Attach the artifacts to a GitHub release"
+        type: boolean
+        default: false
+
+# Read at the top so the three build runners — which install dependencies and
+# run electron-builder, i.e. the third-party code in this workflow — cannot
+# reach the repository or its releases with the checkout's own token. Only the
+# job that publishes gets write, and it checks nothing out.
+permissions:
+  contents: read
+
+jobs:
+  # Ahead of the matrix, so a bad combination costs one runner-second rather than
+  # three builds that only fail at the upload.
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: A publish needs an explicit version
+        if: inputs.publish
+        # Trimmed rather than tested as `!= ''`: a dispatch field holding a
+        # single space passes the expression form, and the whole point of this
+        # job is spending one runner-second instead of three builds.
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ -z "$(printf '%s' "$VERSION" | tr -d '[:space:]')" ]; then
+            echo "::error::publish needs a version. The tag is desktop-v<version>, so an empty one creates the tag 'desktop-v'."
+            exit 1
+          fi
+
+  build:
+    needs: guard
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    # Declared once for the whole job. It selects what gets built and, through
+    # electron-builder.yml's per-edition `directories.output`, where the
+    # artifacts land, so the steps below read it rather than spelling the edition
+    # again beside a path that has to agree with it.
+    env:
+      DESKTOP_EDITION: oss
+    defaults:
+      run:
+        shell: bash
+        working-directory: desktop
+
+    steps:
+      # `contents: read` bounds what the token can do; this stops it being
+      # written into .git/config at all, where anything this job installs and
+      # runs could read it. Nothing here pushes.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Stamp version
+        if: inputs.version != ''
+        # Through `env`, never interpolated into the script body: an expression
+        # is substituted into the text before bash parses it, so a dispatch
+        # input would be read as shell in a step that carries signing secrets.
+        env:
+          VERSION: ${{ inputs.version }}
+        run: pnpm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Build
+        env:
+          # electron-builder picks these up automatically. Absent, it produces an
+          # unsigned build and says so, which is the current state.
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm run dist
+
+      # The point of building an unsigned artifact is knowing it is unsigned.
+      # Without this the log looks identical either way.
+      - name: Report signing status
+        if: matrix.os == 'macos-14'
+        continue-on-error: true
+        run: |
+          app=$(find "dist/$DESKTOP_EDITION" -maxdepth 2 -name "*.app" -print -quit)
+          if [ -n "$app" ]; then codesign -dv "$app" 2>&1 | head -5 || echo "UNSIGNED"; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: langalpha-desktop-${{ env.DESKTOP_EDITION }}-${{ matrix.os }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            desktop/dist/${{ env.DESKTOP_EDITION }}/*.dmg
+            desktop/dist/${{ env.DESKTOP_EDITION }}/*.zip
+            desktop/dist/${{ env.DESKTOP_EDITION }}/*.exe
+            desktop/dist/${{ env.DESKTOP_EDITION }}/*.AppImage
+            desktop/dist/${{ env.DESKTOP_EDITION }}/*.deb
+
+  release:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # Composed from what this run actually had, not hardcoded: fixed text
+      # promising unsigned builds would keep saying so on the first signed one.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIGNED_MAC: ${{ secrets.MAC_CSC_LINK != '' }}
+          SIGNED_WIN: ${{ secrets.WIN_CSC_LINK != '' }}
+          # Data, not script text. This step holds a contents:write token.
+          VERSION: ${{ inputs.version }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Named for the edition it builds. `desktop-v` belongs to the hosted
+          # release, which is cut from the pipeline that holds the signing
+          # certificates, and a tag is claimed by whichever job gets there first.
+          # A fork has neither release to collide with and can use either.
+          tag="desktop-oss-v${VERSION}"
+          notes="Self-hosted build. On first launch it asks for the address of your stack."$'\n\n'
+          if [ "$SIGNED_MAC" != "true" ]; then
+            notes="${notes}macOS builds are unsigned. Open the app once, then go to System Settings > Privacy & Security and click Open Anyway. (Control-click > Open no longer works: Apple removed that bypass in macOS 15.)"$'\n\n'
+          fi
+          if [ "$SIGNED_WIN" != "true" ]; then
+            notes="${notes}Windows builds are unsigned, so SmartScreen warns on first run."$'\n\n'
+          fi
+          notes="${notes}These builds do not update themselves. Watch this page for new versions."
+          # Re-runnable: a publish that failed partway through is retried by
+          # running it again, so neither step may error on work already done.
+          # `gh release create` refuses an existing tag and `gh release upload`
+          # refuses a duplicate asset name, and both would strand a release that
+          # had uploaded some of its artifacts.
+          # --target pins the tag to the commit these artifacts were built from.
+          # Without it a missing tag is created from the default branch's head,
+          # so a release cut from an older ref ships binaries that no longer
+          # match the source the tag points at.
+          # A tag that already exists must still point at the commit these
+          # artifacts were built from. `gh release view` succeeding skips the
+          # only --target, so a rerun from a different ref would clobber the
+          # binaries and leave the tag where it was: source from one tree,
+          # executables from another, under one version.
+          if gh release view "$tag" --repo "$REPO" >/dev/null 2>&1; then
+            ref=$(gh api "repos/$REPO/git/ref/tags/$tag" \
+              --jq '.object.type + " " + .object.sha' 2>/dev/null || echo '')
+            at=${ref#* }
+            # An annotated tag resolves to a tag object, and its SHA is not the
+            # commit's. Every signed tag is annotated, so a maintainer who cuts
+            # the tag by hand rather than letting the release create it lands
+            # here, and an unpeeled comparison rejects a tag sitting exactly
+            # where it belongs.
+            if [ "${ref%% *}" = tag ]; then
+              at=$(gh api "repos/$REPO/git/tags/$at" --jq '.object.sha' 2>/dev/null || echo '')
+            fi
+            # A draft release has no tag ref: GitHub creates it on publish. That
+            # is exactly the state a run that failed after `create` leaves
+            # behind, and reruns of it are what --clobber below is for, so an
+            # empty lookup cannot abort. The draft still records the commit it
+            # was cut from, which answers the same question.
+            if [ -z "$at" ]; then
+              at=$(gh release view "$tag" --repo "$REPO" --json targetCommitish --jq '.targetCommitish' 2>/dev/null || echo '')
+            fi
+            # Neither source answered: the release exists and nothing here can
+            # say what it is pinned to. Publishing over it is the mismatch this
+            # check exists to prevent, so refuse rather than assume.
+            if [ -z "$at" ]; then
+              echo "::error::$tag exists but neither its tag ref nor its target commit could be read; refusing to clobber it."
+              exit 1
+            fi
+            if [ "$at" != "$SHA" ]; then
+              echo "::error::$tag is on $at, not $SHA. Move the tag deliberately or pick a new version."
+              exit 1
+            fi
+          else
+            gh release create "$tag" --repo "$REPO" \
+              --target "$SHA" \
+              --title "Desktop $tag" \
+              --notes "$notes" \
+              --draft
+          fi
+          # The note under the upload loop only holds while the release is a
+          # draft. On a rerun over one that is already published it is not, and
+          # `--clobber` deletes each asset before uploading its replacement, so a
+          # failure midway leaves the public download page serving a mix of old,
+          # new and missing platform binaries. Put it back to draft first; the
+          # tag it created on its first publish stays where it is.
+          if [ "$(gh release view "$tag" --repo "$REPO" --json isDraft --jq '.isDraft')" = false ]; then
+            echo "re-drafting the published $tag before replacing its assets"
+            gh release edit "$tag" --repo "$REPO" --draft=true
+          fi
+          find artifacts -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \
+            -o -name '*.AppImage' -o -name '*.deb' \) > assets.txt
+          # An explicit loop, because `find -exec` reports only find's own
+          # errors: an upload that failed left this step green and the release
+          # below publishable, which is the one thing the draft was protecting
+          # against. An empty match is the same failure arriving earlier.
+          if [ ! -s assets.txt ]; then
+            echo "::error::no artifacts matched; refusing to publish an empty release"
+            exit 1
+          fi
+          while IFS= read -r asset; do
+            echo "uploading $(basename "$asset")"
+            gh release upload "$tag" "$asset" --clobber --repo "$REPO"
+          done < assets.txt
+          # Draft until the assets are attached, published once they are: a
+          # draft is invisible to everyone but the repo's own maintainers, so
+          # stopping here would mean a green run that shipped nothing anyone
+          # could download. Last, so a failed upload leaves the release hidden
+          # rather than public and half-empty.
+          # `--notes` and not only `--draft=false`: on a rerun the create above is
+          # skipped, and `notes` is recomputed from the signing state of *this*
+          # run. Without it a release rebuilt after signing credentials were
+          # added keeps the old unsigned warning, or drops one the replacement
+          # binaries still need.
+          gh release edit "$tag" --repo "$REPO" --notes "$notes" --draft=false

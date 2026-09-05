@@ -931,8 +931,8 @@ async def test_workspace_events_emits_initial_status_then_pubsub_transition(clie
             nonlocal sent
             if not sent:
                 sent = True
-                return {"workspace_id": workspace_id, "status": "running"}
-            return None
+                return ("message", {"workspace_id": workspace_id, "status": "running"})
+            return ("timeout", None)
 
         yield wait
 
@@ -990,7 +990,8 @@ async def test_workspace_events_forwards_archived_sandbox_state(client):
         )
 
         async def wait(timeout):
-            return next(msgs, None)
+            payload = next(msgs, None)
+            return ("message", payload) if payload else ("timeout", None)
 
         yield wait
 
@@ -1030,7 +1031,7 @@ async def test_workspace_events_terminates_on_initial_running(client):
     @asynccontextmanager
     async def fake_subscribe(workspace_id):
         async def wait(timeout):
-            return None
+            return ("timeout", None)
 
         yield wait
 

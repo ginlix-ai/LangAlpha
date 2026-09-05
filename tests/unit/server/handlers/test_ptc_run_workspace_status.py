@@ -92,7 +92,7 @@ def _make_workspace_manager(
     wm.has_ready_session = MagicMock(return_value=has_ready)
 
     async def _session_with_callback(
-        workspace_id, *, user_id=None, on_state_observed=None
+        workspace_id, *, user_id=None, on_state_observed=None, skills_signature=None
     ):
         # Fire the callback asynchronously, as the real reconnect does.
         if observed_state is not None and on_state_observed is not None:

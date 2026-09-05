@@ -13,6 +13,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { slugifyModelName } from '../slugifyModelName';
+import { modelPrefs } from '@/lib/modelPreferences';
 
 interface CustomModelEntry {
   name?: string;
@@ -26,9 +27,7 @@ function existingCustomModelsFor(
   brandKey: string,
 ): string[] {
   if (!preferences) return [];
-  const prefs = preferences as Record<string, unknown>;
-  const otherPref = (prefs.other_preference ?? {}) as Record<string, unknown>;
-  const customModels = (otherPref.custom_models ?? []) as CustomModelEntry[];
+  const customModels = (modelPrefs(preferences).custom_models ?? []) as CustomModelEntry[];
   return customModels
     .filter((cm) => cm.provider === provider || cm.provider === brandKey)
     .map((cm) => cm.name ?? cm.model_id);
@@ -37,7 +36,7 @@ function existingCustomModelsFor(
 describe('ModelPickStep.existingCustomModels', () => {
   it('returns name when name and model_id differ (new form)', () => {
     const prefs = {
-      other_preference: {
+      model_preference: {
         custom_models: [
           { name: 'glm-6-preview', model_id: 'glm-6', provider: 'z-ai' },
         ],
@@ -48,7 +47,7 @@ describe('ModelPickStep.existingCustomModels', () => {
 
   it('falls back to model_id for legacy entries without name', () => {
     const prefs = {
-      other_preference: {
+      model_preference: {
         custom_models: [
           { model_id: 'legacy-model', provider: 'z-ai' } as CustomModelEntry,
         ],
@@ -59,7 +58,7 @@ describe('ModelPickStep.existingCustomModels', () => {
 
   it('filters by provider or brandKey', () => {
     const prefs = {
-      other_preference: {
+      model_preference: {
         custom_models: [
           { name: 'a', model_id: 'a', provider: 'z-ai-coding' },
           { name: 'b', model_id: 'b', provider: 'z-ai' },
@@ -68,6 +67,17 @@ describe('ModelPickStep.existingCustomModels', () => {
       },
     };
     expect(existingCustomModelsFor(prefs, 'z-ai-coding', 'z-ai').sort()).toEqual(['a', 'b']);
+  });
+
+  it('still reads a row the migration has not moved yet', () => {
+    const prefs = {
+      other_preference: {
+        custom_models: [
+          { name: 'glm-6-preview', model_id: 'glm-6', provider: 'z-ai' },
+        ],
+      },
+    };
+    expect(existingCustomModelsFor(prefs, 'z-ai', 'z-ai')).toEqual(['glm-6-preview']);
   });
 
   it('returns empty when preferences is null', () => {

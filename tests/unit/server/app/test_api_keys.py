@@ -382,3 +382,45 @@ async def test_list_visible_models_platform_only_rejected(client):
         resp = await client.get("/api/v1/providers/platform-proxy/visible-models")
 
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# _get_custom_providers — which column it reads
+# ---------------------------------------------------------------------------
+
+# Every test above patches _get_custom_providers wholesale, so nothing exercised
+# the read itself. It spent a release pointed at the legacy column, which
+# emptied the custom-provider list for every migrated user.
+
+
+@pytest.mark.asyncio
+async def test_custom_providers_read_from_model_preference():
+    from src.server.app.api_keys import _get_custom_providers
+
+    stored = [{"name": "mylab", "parent_provider": "openai"}]
+    with patch(
+        "src.server.database.user.get_user_preferences",
+        AsyncMock(return_value={"other_preference": {}, "model_preference": {"custom_providers": stored}}),
+    ):
+        assert await _get_custom_providers("u1") == stored
+
+
+@pytest.mark.asyncio
+async def test_custom_providers_falls_back_to_legacy_column():
+    """A row the 026 migration has not reached still resolves."""
+    from src.server.app.api_keys import _get_custom_providers
+
+    stored = [{"name": "mylab", "parent_provider": "openai"}]
+    with patch(
+        "src.server.database.user.get_user_preferences",
+        AsyncMock(return_value={"other_preference": {"custom_providers": stored}, "model_preference": {}}),
+    ):
+        assert await _get_custom_providers("u1") == stored
+
+
+@pytest.mark.asyncio
+async def test_custom_providers_absent_is_empty():
+    from src.server.app.api_keys import _get_custom_providers
+
+    with patch("src.server.database.user.get_user_preferences", AsyncMock(return_value=None)):
+        assert await _get_custom_providers("u1") == []

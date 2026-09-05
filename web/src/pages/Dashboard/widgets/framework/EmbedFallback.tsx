@@ -11,18 +11,18 @@ export function EmbedFallback({ onRetry }: { onRetry: () => void }) {
         color: 'var(--color-text-secondary)',
       }}
     >
-      <AlertTriangle size={20} style={{ color: 'var(--color-icon-warning, var(--color-text-tertiary))' }} />
+      <AlertTriangle size={20} style={{ color: 'var(--color-warning)' }} />
       <div className="text-xs font-medium" style={{ color: 'var(--color-text-primary)' }}>
         {t('dashboard.widgets.embedFallback.title')}
       </div>
-      <div className="text-[11px] max-w-[28ch]" style={{ color: 'var(--color-text-tertiary)' }}>
+      <div className="text-[0.6875rem] max-w-[28ch]" style={{ color: 'var(--color-text-tertiary)' }}>
         {t('dashboard.widgets.embedFallback.body')}
       </div>
       <div className="flex items-center gap-2 mt-1">
         <button
           type="button"
           onClick={onRetry}
-          className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-[11px] border widget-drag-cancel"
+          className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-[0.6875rem] border widget-drag-cancel"
           style={{
             borderColor: 'var(--color-border-default)',
             backgroundColor: 'var(--color-bg-elevated)',
@@ -35,7 +35,7 @@ export function EmbedFallback({ onRetry }: { onRetry: () => void }) {
           href="https://status.tradingview.com/"
           target="_blank"
           rel="noopener noreferrer"
-          className="tv-attribution inline-flex items-center gap-1 px-2.5 py-1 rounded text-[11px] widget-drag-cancel"
+          className="tv-attribution inline-flex items-center gap-1 px-2.5 py-1 rounded text-[0.6875rem] widget-drag-cancel"
           style={{ color: 'var(--color-text-tertiary)', padding: '4px 10px' }}
         >
           {t('dashboard.widgets.embedFallback.status')} <ExternalLink size={10} />

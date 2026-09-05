@@ -272,22 +272,28 @@ class PlatformSecretSweeper:
         return True
 
     async def _drop_local_session(self, workspace_id: str) -> None:
-        """Best-effort eviction of this worker's cached session after a scrub.
+        """Best-effort retirement of this worker's cached session after a scrub.
 
-        The restart killed the session's exec processes; evicting makes the
-        next acquisition re-init instead of tripping a transient. Other
+        The restart killed the session's exec processes; retiring makes the
+        next acquisition re-attach instead of tripping a transient. Other
         workers' caches recover through the existing sandbox-transient paths,
         the same as any out-of-band sandbox restart.
+
+        Retirement, not destruction: the sandbox was just scrubbed and remains
+        the workspace's durable identity, so destroying it here would leave
+        Postgres pointing at a sandbox that no longer exists.
         """
         try:
             from src.server.services.workspace_manager import WorkspaceManager
 
             manager = WorkspaceManager._instance
             if manager is not None:
-                await manager.evict_session_if_present(workspace_id)
+                await manager.retire_session_if_present(
+                    workspace_id, reason="platform-secret scrub restart"
+                )
         except Exception:
             logger.warning(
-                "[PlatformSecretSweeper] local session eviction failed for "
+                "[PlatformSecretSweeper] local session retirement failed for "
                 f"workspace {workspace_id}",
                 exc_info=True,
             )

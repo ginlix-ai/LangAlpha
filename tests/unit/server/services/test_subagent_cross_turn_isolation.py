@@ -59,7 +59,7 @@ def _make_subagent_task(
         spawned_run_id=spawned_run_id,
     )
     # Make it claimable: completed with captured events, no asyncio_task pending.
-    t.completed = True
+    t.terminal_status = "completed"
     t.captured_event_count = 1
     return t
 
@@ -309,7 +309,7 @@ class TestRegistryEvictionAfterDrain:
         task.sse_drain_complete.set()
         # The steal: resume reset cleared the round-1 claim and respawned.
         task.collector_response_id = None
-        task.completed = False
+        task.terminal_status = None
         new_writer = asyncio.create_task(asyncio.sleep(30))
         task.asyncio_task = new_writer
         task.per_call_records = [{"model": "m"}]

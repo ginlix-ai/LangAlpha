@@ -81,6 +81,14 @@ function abbreviateSector(name: string): string {
   return ABBREVIATIONS[name] || name;
 }
 
+/** Recharts makes its chart surface a tab stop -- `tabindex="0"`,
+ *  `role="application"` -- so arrow keys can walk a tooltip's active index.
+ *  Neither card below renders a <Tooltip>, so the stop navigates nothing: a
+ *  Tab press spent on a picture, announced to assistive tech as an
+ *  application. (The stray focus ring these charts used to draw came from
+ *  elsewhere and is fixed in styles/tokens.css, not by this flag.) */
+const NO_KEYBOARD_LAYER = false;
+
 /** Measures container width via ResizeObserver and passes it to children as a render prop.
  *  Replaces ResponsiveContainer to avoid the Recharts width(-1) warning on first render. */
 function MeasuredContainer({ height, children }: { height: number; children: (width: number) => React.ReactNode }): React.ReactElement {
@@ -148,12 +156,12 @@ export function InlineStockPriceCard({ artifact, onClick }: InlineCardProps): Re
     >
       {/* Header row: symbol + price + change */}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: sz.gap, marginBottom: 2 }}>
-        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: isMobile ? 13 : 15 }}>{symbol}</span>
+        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: isMobile ? '0.8125rem' : '0.9375rem' }}>{symbol}</span>
         {lastClose != null && (
-          <span style={{ color: 'var(--color-text-primary)', fontSize: isMobile ? 13 : 15, fontWeight: 600 }}>${lastClose.toFixed(2)}</span>
+          <span style={{ color: 'var(--color-text-primary)', fontSize: isMobile ? '0.8125rem' : '0.9375rem', fontWeight: 600 }}>${lastClose.toFixed(2)}</span>
         )}
         {changePct != null && (
-          <span style={{ color, fontSize: isMobile ? 11 : 13, fontWeight: 600 }}>
+          <span style={{ color, fontSize: isMobile ? '0.6875rem' : '0.8125rem', fontWeight: 600 }}>
             {formatPct(changePct)}
           </span>
         )}
@@ -165,7 +173,13 @@ export function InlineStockPriceCard({ artifact, onClick }: InlineCardProps): Re
       {/* Sparkline */}
       <MeasuredContainer height={isMobile ? 48 : 64}>
         {(w) => (
-          <AreaChart width={w} height={isMobile ? 48 : 64} data={sparkData} margin={{ top: 4, right: 2, bottom: 2, left: 2 }}>
+          <AreaChart
+            width={w}
+            height={isMobile ? 48 : 64}
+            data={sparkData}
+            margin={{ top: 4, right: 2, bottom: 2, left: 2 }}
+            accessibilityLayer={NO_KEYBOARD_LAYER}
+          >
             <defs>
               <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor={color} stopOpacity={0.3} />
@@ -257,11 +271,11 @@ export function InlineCompanyOverviewCard({ artifact, onClick }: InlineCardProps
     >
       {/* Company name + symbol + market status */}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: sz.gap, marginBottom: sz.sectionMb, flexWrap: 'wrap' }}>
-        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: isMobile ? 14 : 16, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: isMobile ? '0.875rem' : '1rem', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {name || symbol}
         </span>
         {name && (
-          <span style={{ fontSize: isMobile ? 11 : 13, color: TEXT_COLOR, flexShrink: 0 }}>{symbol}</span>
+          <span style={{ fontSize: isMobile ? '0.6875rem' : '0.8125rem', color: TEXT_COLOR, flexShrink: 0 }}>{symbol}</span>
         )}
         {marketStatus && (
           <span style={{
@@ -278,12 +292,12 @@ export function InlineCompanyOverviewCard({ artifact, onClick }: InlineCardProps
       {/* Regular close price + change */}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: isMobile ? 8 : 10, marginBottom: hasExtPrice ? 2 : sz.filingMb }}>
         {displayPrice != null && (
-          <span style={{ fontSize: isMobile ? 18 : 22, fontWeight: 700, color: 'var(--color-text-primary)' }}>
+          <span style={{ fontSize: isMobile ? '1.125rem' : '1.375rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
             ${displayPrice.toFixed(2)}
           </span>
         )}
         {displayChange != null && (
-          <span style={{ fontSize: isMobile ? 12 : 14, color: changeColor, fontWeight: 500 }}>
+          <span style={{ fontSize: isMobile ? '0.75rem' : '0.875rem', color: changeColor, fontWeight: 500 }}>
             {displayChange >= 0 ? '+' : ''}{displayChange.toFixed(2)} ({displayChangePct?.toFixed(2)}%)
           </span>
         )}
@@ -291,7 +305,7 @@ export function InlineCompanyOverviewCard({ artifact, onClick }: InlineCardProps
 
       {/* Extended-hours price */}
       {hasExtPrice && (
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: sz.gap, marginBottom: sz.filingMb, fontSize: isMobile ? 11 : 13 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: sz.gap, marginBottom: sz.filingMb, fontSize: isMobile ? '0.6875rem' : '0.8125rem' }}>
           <span style={{ color: TEXT_COLOR }}>
             {extendedHoursLabel(t, marketStatus, 'long')}
           </span>
@@ -450,13 +464,14 @@ export function InlineSectorPerformanceCard({ artifact, onClick }: InlineCardPro
             data={chartData}
             layout="vertical"
             margin={{ left: 0, right: isMobile ? 40 : 50, top: 0, bottom: 0 }}
+            accessibilityLayer={NO_KEYBOARD_LAYER}
           >
             <XAxis type="number" hide />
             <YAxis
               type="category"
               dataKey="name"
               width={isMobile ? 80 : 100}
-              tick={{ fill: TEXT_COLOR, fontSize: sz.badgeFs }}
+              tick={{ fill: TEXT_COLOR, fontSize: sz.chartFs }}
               axisLine={false}
               tickLine={false}
             />
@@ -467,7 +482,7 @@ export function InlineSectorPerformanceCard({ artifact, onClick }: InlineCardPro
               <LabelList
                 dataKey="label"
                 position="right"
-                style={{ fill: TEXT_COLOR, fontSize: sz.badgeFs }}
+                style={{ fill: TEXT_COLOR, fontSize: sz.chartFs }}
               />
             </Bar>
           </BarChart>
@@ -631,7 +646,7 @@ export function InlineStockScreenerCard({ artifact, onClick }: InlineCardProps):
                 {(stock.price as number | undefined) != null ? `$${(stock.price as number).toFixed(2)}` : 'N/A'}
               </span>
               {!isMobile && (
-                <span style={{ color: TEXT_COLOR, fontSize: 11, flexShrink: 0, textAlign: 'right' }}>
+                <span style={{ color: TEXT_COLOR, fontSize: '0.6875rem', flexShrink: 0, textAlign: 'right' }}>
                   {(stock.marketCap as number | undefined) != null ? formatCompactNumber(stock.marketCap as number) : ''}
                 </span>
               )}
@@ -710,7 +725,7 @@ function InlineAnnualQuarterlyCard({ artifact, onClick }: InlineFilingCardProps)
         >
           {symbol}
         </span>
-        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: isMobile ? 12 : 14 }}>
+        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: isMobile ? '0.75rem' : '0.875rem' }}>
           {t('toolArtifact.filing', { type: filing_type })}
         </span>
       </div>
@@ -784,7 +799,7 @@ function Inline8KCard({ artifact, onClick }: InlineFilingCardProps): React.React
         >
           {symbol}
         </span>
-        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: isMobile ? 12 : 14 }}>{t('toolArtifact.8kFilings')}</span>
+        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: isMobile ? '0.75rem' : '0.875rem' }}>{t('toolArtifact.8kFilings')}</span>
         <span
           style={{
             fontSize: sz.labelFs,

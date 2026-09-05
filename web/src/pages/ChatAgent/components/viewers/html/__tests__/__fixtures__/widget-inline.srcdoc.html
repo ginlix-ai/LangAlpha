@@ -12,8 +12,13 @@ body > :first-child {
   border: none !important;
   border-radius: 0 !important;
   box-shadow: none !important;
-  margin: 0 !important;
+  margin: 0 auto !important;
 }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border-elevated); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-text-tertiary); }
 </style>
 <script>
 (function(){
@@ -53,6 +58,17 @@ body > :first-child {
   }
   window.onerror=function(_,__,___,____,e){showError(e&&e.message||String(_));};
   window.addEventListener('unhandledrejection',function(e){showError(e.reason&&e.reason.message||String(e.reason));});
+  document.addEventListener('click',function(e){
+    if(e.defaultPrevented)return;
+    var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;
+    if(!a)return;
+    var href=a.getAttribute('href')||'';
+    if(href.charAt(0)==='#')return;
+    if(!/^https?:/i.test(a.href)){e.preventDefault();return;}
+    if(a.host===location.host)return;
+    e.preventDefault();
+    window.open(a.href,'_blank','noopener,noreferrer');
+  });
 })();
 </script>
 <script>window.__WIDGET_DATA__ = {"a.json":"{\"x\":1}"};</script>
@@ -81,10 +97,16 @@ window.sendPrompt = function(text) {
   document.addEventListener('DOMContentLoaded', function() {
     var mo = new MutationObserver(debouncedReport);
     mo.observe(document.body, { childList: true, subtree: true });
+    if (typeof ResizeObserver === 'function') {
+      new ResizeObserver(debouncedReport).observe(document.body);
+    }
     reportHeight();
   });
   var checks = [100, 300, 800, 2000, 5000];
   checks.forEach(function(ms) { setTimeout(reportHeight, ms); });
+  // A container width change is a pure reflow — no DOM mutation — so the
+  // observers above never see it; track the viewport and body box directly.
+  window.addEventListener('resize', debouncedReport);
   window.addEventListener('message', function(e) {
     if (e.data && e.data.type === 'widget:themeUpdate' && e.data.css) {
       var style = document.querySelector('style');

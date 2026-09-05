@@ -98,7 +98,7 @@ export function PageIntroModal({ intro, onClose }: { intro: PageIntroDef; onClos
                     {t(step.titleKey)}
                   </DialogTitle>
                   <DialogDescription
-                    className="text-sm leading-relaxed sm:text-[15px]"
+                    className="text-sm leading-relaxed sm:text-[0.9375rem]"
                     style={{ color: 'var(--color-text-secondary)' }}
                   >
                     {t(step.bodyKey)}
@@ -117,7 +117,7 @@ export function PageIntroModal({ intro, onClose }: { intro: PageIntroDef; onClos
                     aria-current={i === stepIdx ? 'step' : undefined}
                     onClick={() => goTo(i)}
                     className={cn(
-                      'h-1.5 rounded-full transition-all duration-300 hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] focus-visible:ring-offset-2',
+                      'h-1.5 rounded-full transition-all duration-300 hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
                       i === stepIdx ? 'w-6' : 'w-1.5'
                     )}
                     style={{
@@ -141,7 +141,7 @@ export function PageIntroModal({ intro, onClose }: { intro: PageIntroDef; onClos
                   <button
                     type="button"
                     onClick={() => goTo(stepIdx - 1)}
-                    className="rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors hover:bg-[var(--color-bg-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                    className="rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors hover:bg-[var(--color-bg-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     style={{
                       borderColor: 'var(--color-border-default)',
                       color: 'var(--color-text-secondary)',
@@ -153,7 +153,7 @@ export function PageIntroModal({ intro, onClose }: { intro: PageIntroDef; onClos
                 <button
                   type="button"
                   onClick={() => (isLast ? onClose() : goTo(stepIdx + 1))}
-                  className="flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] focus-visible:ring-offset-2"
+                  className="flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   style={{
                     background: 'var(--color-accent-primary)',
                     color: 'var(--color-text-on-accent)',

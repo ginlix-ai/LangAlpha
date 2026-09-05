@@ -12,7 +12,8 @@ import { Button } from '@/components/ui/button';
 import type { Workspace } from '@/types/api';
 
 interface DuplicateWorkspaceDialogProps {
-  target: Workspace | null;
+  /** Only the name is read — narrowed so nav-tree rows open this without a cast. */
+  target: Partial<Pick<Workspace, 'name'>> | null;
   onClose: () => void;
   onConfirm: () => void;
   busy: boolean;

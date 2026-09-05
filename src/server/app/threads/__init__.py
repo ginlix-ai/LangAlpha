@@ -8,6 +8,7 @@ from ._deps import router
 
 # Leaf imports register routes on the shared router; order preserves the
 # pre-split registration order.
+from . import create  # noqa: E402,F401
 from . import crud  # noqa: E402,F401
 from . import messaging  # noqa: E402,F401
 from . import tasks  # noqa: E402,F401

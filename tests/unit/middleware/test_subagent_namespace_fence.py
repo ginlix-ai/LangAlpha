@@ -39,9 +39,16 @@ class FakeOwner:
         self.released.append(task_id)
 
 
+class _Request(SimpleNamespace):
+    # The resume path rewrites the tool_call before respawning; the pending
+    # arms refuse before reaching it, so only the admitted ones need this.
+    def override(self, **changes) -> "_Request":
+        return _Request(**{**vars(self), **changes})
+
+
 def _request(
     args: dict, tool_call_id: str = "tc-1", config: dict | None = None
-) -> SimpleNamespace:
+) -> _Request:
     # Production shape: LangChain strips the top-level run_id from child
     # configs by the tool-call layer — only metadata carries it. Tests that
     # exercise the top-level fallback pass their own config.
@@ -50,7 +57,7 @@ def _request(
             "configurable": {"thread_id": "thread-x"},
             "metadata": {"run_id": "run-1"},
         }
-    return SimpleNamespace(
+    return _Request(
         tool_call={"name": "Task", "id": tool_call_id, "args": args},
         runtime=SimpleNamespace(config=config),
     )
@@ -84,7 +91,7 @@ async def test_init_refused_namespace_spawns_nothing():
     assert "could not start" in result.content
     task = mw.registry._tasks["tc-1"]
     assert task.asyncio_task is None  # no writer spawned
-    assert task.completed and task.cancelled  # inert: no collector claims it
+    assert task.terminal_status == "never_started"  # inert: no collector claims it
 
 
 @pytest.mark.asyncio
@@ -122,15 +129,17 @@ async def test_init_without_owner_keeps_legacy_shape():
 # ---------------------------------------------------------------------------
 
 
-def _seed_task(mw, *, completed: bool, asyncio_task=None) -> BackgroundTask:
+def _seed_task(
+    mw, *, completed: bool, asyncio_task=None, subagent_type="general-purpose"
+) -> BackgroundTask:
     task = BackgroundTask(
         tool_call_id="tc-orig",
         task_id="abc123",
         description="d",
         prompt="p",
-        subagent_type="general-purpose",
+        subagent_type=subagent_type,
         agent_id="general-purpose:x",
-        completed=completed,
+        terminal_status="completed" if completed else None,
         asyncio_task=asyncio_task,
     )
     mw.registry._tasks["tc-orig"] = task
@@ -556,8 +565,21 @@ async def test_resume_steals_claim_before_redis_deletes():
     evictions: list[bool] = []
     locked_during_delete: list[bool] = []
 
+    class _FakeClient:
+        """The stream delete goes through the raw client, not ``cache.delete``."""
+
+        def __init__(self, record):
+            self._record = record
+
+        async def delete(self, key: str) -> int:
+            await self._record(key)
+            return 1
+
     class FakeCache:
         enabled = True
+
+        def __init__(self):
+            self.client = _FakeClient(self.delete)
 
         async def delete(self, key: str) -> None:
             locked_during_delete.append(task.redis_spill_lock.locked())
@@ -942,3 +964,44 @@ async def test_sweep_skips_entirely_when_the_circuit_is_already_open():
     client.lrange.assert_not_awaited()
     client.delete.assert_not_awaited()
     registry.append_event_for_task.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resume_refuses_a_workflow_run_before_admission():
+    """A workflow run's task is a driver entry, not a subagent. `workflow` is
+    not in ``subagent_graphs``, and the spawn path answers an unknown type
+    with prose *as a successful result* — so a resume would settle a fresh
+    completed run that shadows the workflow's archived one for TaskOutput.
+
+    Refused before the fence, because the damage is the new row.
+    """
+    owner = FakeOwner(grant=True)
+    mw = _middleware(owner)
+    _seed_task(mw, completed=True, subagent_type="workflow")
+
+    result = await mw.awrap_tool_call(
+        _request({"action": "resume", "task_id": "abc123", "description": "d", "prompt": "p"}),
+        _ok_handler,
+    )
+
+    assert "cannot be resumed" in result.content
+    assert "TaskOutput" in result.content
+    assert owner.acquired == []
+
+
+@pytest.mark.asyncio
+async def test_resume_still_admits_an_ordinary_completed_subagent():
+    """The gate keys on the type, not on being completed."""
+    owner = FakeOwner(grant=True)
+    mw = _middleware(owner)
+    mw.registry.write_task_meta = AsyncMock()
+    task = _seed_task(mw, completed=True)
+
+    result = await mw.awrap_tool_call(
+        _request({"action": "resume", "task_id": "abc123", "description": "d", "prompt": "p"}),
+        _ok_handler,
+    )
+
+    assert "Resumed" in result.content
+    assert owner.acquired == ["abc123"]
+    await task.asyncio_task

@@ -12,8 +12,10 @@ Wire shape:
 - Cursors: ``?cursors=run:<run_id>#<entry_id>,…`` — resume is exclusive.
 - Frames: ``id: run:<run_id>#<entry_id>`` + the contract envelope
   ``{run_id, seq, lane, type, payload}`` as data. Control frames
-  (``chan_open``, ``chan_close``, ``resync_required``, ``transport_error``,
-  ``timeout``) carry no cursor.
+  (``chan_open``, ``chan_caught_up``, ``chan_close``, ``resync_required``,
+  ``transport_error``, ``timeout``) carry no cursor. ``chan_caught_up``
+  marks where a channel's backlog ends: everything before it existed when
+  the channel opened, everything after arrived live.
 - Close: the ``run_end`` frame, or — for a worker that died between the
   terminal CAS and the append — a rate-limited ledger-row probe emitting
   ``chan_close{reason: terminal}`` from row truth. 'unknown' never closes.
@@ -32,20 +34,28 @@ from typing import AsyncGenerator, Optional
 from fastapi import HTTPException
 
 from src.server.services.thread_control_stream import control_stream_key
-from src.utils.cache.redis_cache import get_cache_client
+from src.utils.cache.redis_cache import get_cache_client, is_pool_exhaustion
+from src.utils.cache import stream_pool
 
 from src.server.services.report_back.flash.core import watch_wakes
-from .run_stream_reader import _xread_block_ms
+from .xread_tuning import (
+    XREAD_ERROR_BACKOFF_S,
+    XREAD_EXHAUSTION_BACKOFF_S,
+    xread_block_ms,
+    xread_wait_timeout_s,
+)
 
 # Same hard-coded logger name request_prep uses — existing log routing keys off it.
 logger = logging.getLogger("src.server.handlers.chat_handler")
 
 _MAX_CHANNELS = 32
 _MAX_CURSORS_LEN = 4096
-# Per-channel entries per XREAD round. XREAD's COUNT applies per stream, so
-# this IS the fairness bound: a flooding task hands the loop at most this
-# many frames before other channels get their turn.
+# Per-channel entries per XREAD round — deliberately not the shared
+# ``xread_tuning.XREAD_COUNT``. XREAD's COUNT applies per stream, so here it IS
+# the fairness bound: a flooding task hands the loop at most this many frames
+# before other channels get their turn.
 _XREAD_COUNT = 32
+_XREAD_MAX_CONSECUTIVE_FAILURES = 5
 # Empty XREAD rounds on a channel before its (rate-limited) settled probe may
 # fire — a throttle on the crash-window backstop, not a completion handshake.
 _QUIESCE_EMPTY_ROUNDS = 2
@@ -93,8 +103,13 @@ def _pending_key(thread_id: str) -> str:
 async def _store_pending(cache, thread_id: str, run_id: str, lane: str) -> None:
     try:
         key = _pending_key(thread_id)
-        await cache.client.hset(key, run_id, lane)
-        await cache.client.expire(key, _PENDING_TTL_S)
+        # One connection, one round trip — and the TTL can no longer be
+        # skipped by a failure between two separate awaits, which is a real
+        # leak here: TTL is the ONLY eraser for this hash.
+        async with cache.client.pipeline(transaction=False) as pipe:
+            pipe.hset(key, run_id, lane)
+            pipe.expire(key, _PENDING_TTL_S)
+            await pipe.execute()
     except Exception:
         logger.warning(
             "[mux2] pending store failed for %s/%s", thread_id, run_id,
@@ -165,6 +180,13 @@ class _RunChan:
     # Ledger started_at (epoch ms), declared on chan_open: the client
     # orders per-task outcome votes by run start, never by close order.
     started_ms: Optional[float] = None
+    # Stream head when the channel opened, probed once by the pump. The
+    # entries up to it are backlog the client presents as already rendered;
+    # ``chan_caught_up`` is emitted once the cursor reaches it, or on the
+    # first read that returns nothing for the channel. A failed probe sends
+    # no marker and leaves the client to its bounded fallback.
+    head_at_open: Optional[bytes] = None
+    caught_up: bool = False
 
     @property
     def name(self) -> str:
@@ -213,6 +235,47 @@ def _parse_task_entry(fields: dict) -> Optional[tuple[str, str]]:
     if not ftype:
         return None
     return ftype, payload or ""
+
+
+async def _probe_backlog_head(cache, chan: _RunChan) -> Optional[str]:
+    """Record the channel's backlog head; the marker frame when there is none."""
+    try:
+        tail = await cache.client.xrevrange(chan.stream_key, count=1)
+    except Exception:
+        chan.caught_up = True  # no marker: the client's fallback bounds the wait
+        logger.warning(
+            "[mux2] backlog head probe failed for %s, no boundary marker",
+            chan.name,
+            exc_info=True,
+        )
+        return None
+    if not tail:
+        chan.caught_up = True
+        return _control("chan_caught_up", {"chan": chan.name})
+    chan.head_at_open = tail[0][0]
+    return None
+
+
+def _marker_before(chan: _RunChan, entry_id: bytes) -> Optional[str]:
+    """The marker ahead of the first entry past the recorded head, so a batch
+    that straddles the boundary never sends live entries as backlog."""
+    if chan.caught_up or chan.closed or chan.head_at_open is None:
+        return None
+    if not _entry_after(entry_id, chan.head_at_open.decode()):
+        return None
+    chan.caught_up = True
+    return _control("chan_caught_up", {"chan": chan.name})
+
+
+def _caught_up_frame(chan: _RunChan, got_entries: bool) -> Optional[str]:
+    """The marker once the cursor reaches the recorded head, or a read came
+    back empty for the channel (its backlog was shorter than the head said)."""
+    if chan.caught_up or chan.closed or chan.head_at_open is None:
+        return None
+    if got_entries and _entry_after(chan.head_at_open, chan.cursor.decode()):
+        return None
+    chan.caught_up = True
+    return _control("chan_caught_up", {"chan": chan.name})
 
 
 async def _run_row(run_id: str, lane: str) -> Optional[dict]:
@@ -363,6 +426,13 @@ async def stream_thread_mux_v2(
     history load still gets positive closure."""
     cache = get_cache_client()
     if not cache.enabled or not cache.client:
+        yield _control("transport_error", {"retryable": True})
+        return
+
+    # The mux's XREAD holds a connection for the socket's whole life, so it
+    # reads from the dedicated reader pool — never the cache pool.
+    reader = await stream_pool.get_stream_reader_client(cache)
+    if reader is None:
         yield _control("transport_error", {"retryable": True})
         return
 
@@ -554,7 +624,7 @@ async def stream_thread_mux_v2(
         yield frame
 
     # ---- pumps -----------------------------------------------------------
-    block_ms = _xread_block_ms()
+    block_ms = xread_block_ms()
 
     # A deferred admission must outlive every bounded recovery window AND
     # this socket: its announce is already behind control_cursor, a run that
@@ -645,28 +715,74 @@ async def stream_thread_mux_v2(
     async def _read_pump() -> None:
         nonlocal control_cursor, pending_synced
         last_scan = time.monotonic()
+        xread_failures = 0
         while True:
             open_chans = [c for c in channels.values() if not c.closed]
+            unprobed = [
+                c for c in open_chans if not c.caught_up and c.head_at_open is None
+            ]
+            if unprobed:
+                # One bound for the whole pass: probed together, so a slow
+                # pool costs one timeout, not one per channel, and the read
+                # loop keeps its keepalive cadence.
+                try:
+                    markers = await asyncio.wait_for(
+                        asyncio.gather(*(_probe_backlog_head(cache, c) for c in unprobed)),
+                        timeout=xread_wait_timeout_s(),
+                    )
+                except asyncio.TimeoutError:
+                    markers = []
+                    for c in unprobed:
+                        if c.head_at_open is None:
+                            c.caught_up = True
+                    logger.warning(
+                        "[mux2] backlog head probes timed out for %d channels, no boundary marker",
+                        len(unprobed),
+                    )
+                for marker in markers:
+                    if marker is not None:
+                        await out_q.put(("frame", marker))
             streams: dict[bytes, bytes] = {control_key: control_cursor}
             for c in open_chans:
                 streams[c.stream_key] = c.cursor
             try:
                 result = await asyncio.wait_for(
-                    cache.client.xread(
+                    reader.xread(
                         streams, block=block_ms, count=_XREAD_COUNT
                     ),
-                    timeout=(block_ms / 1000.0) + 2.0,
+                    timeout=xread_wait_timeout_s(),
                 )
             except asyncio.TimeoutError:
                 result = None
+                xread_failures = 0
             except (asyncio.CancelledError, GeneratorExit):
                 raise
-            except Exception:
+            except Exception as exc:
+                # A read that lost the race for a reader slot is not a dead
+                # socket. Tearing the SSE down here sends the viewer straight
+                # back through reconnect and into the same short pool — the
+                # herd that makes exhaustion self-sustaining. The two
+                # single-run readers already back off; this is the live v2
+                # chat path and needs the same treatment. A genuinely stuck
+                # reader still surfaces, just after it has proven persistent.
+                xread_failures += 1
                 logger.warning(
-                    "[mux2] XREAD failed for %s", thread_id, exc_info=True
+                    "[mux2] XREAD failed for %s (%d consecutive)",
+                    thread_id,
+                    xread_failures,
+                    exc_info=True,
                 )
-                await out_q.put(("transport", None))
-                return
+                if xread_failures >= _XREAD_MAX_CONSECUTIVE_FAILURES:
+                    await out_q.put(("transport", None))
+                    return
+                await asyncio.sleep(
+                    XREAD_EXHAUSTION_BACKOFF_S
+                    if is_pool_exhaustion(exc)
+                    else XREAD_ERROR_BACKOFF_S
+                )
+                continue
+            else:
+                xread_failures = 0
 
             got: set[str] = set()
             for stream_name, entries in result or ():
@@ -697,6 +813,9 @@ async def stream_thread_mux_v2(
                 got.add(chan.run_id)
                 chan.empty_rounds = 0
                 for entry_id, fields in entries:
+                    marker = _marker_before(chan, entry_id)
+                    if marker is not None:
+                        await out_q.put(("frame", marker))
                     chan.cursor = entry_id
                     parsed = (
                         _parse_main_entry(fields)
@@ -717,6 +836,9 @@ async def stream_thread_mux_v2(
                     if ftype == "run_end":
                         await _close(chan, "terminal")
                         break
+                marker = _caught_up_frame(chan, got_entries=True)
+                if marker is not None:
+                    await out_q.put(("frame", marker))
 
             # Crash-window backstop: a terminal ledger row whose stream
             # never got its run_end closes the channel from row truth.
@@ -724,6 +846,9 @@ async def stream_thread_mux_v2(
             for chan in open_chans:
                 if chan.run_id in got or chan.closed:
                     continue
+                marker = _caught_up_frame(chan, got_entries=False)
+                if marker is not None:
+                    await out_q.put(("frame", marker))
                 chan.empty_rounds += 1
                 if chan.empty_rounds < _QUIESCE_EMPTY_ROUNDS:
                     continue

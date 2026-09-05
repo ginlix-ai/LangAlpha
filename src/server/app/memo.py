@@ -65,6 +65,7 @@ from src.config.settings import (
 )
 from src.server.app import setup
 from src.server.utils.http_headers import content_disposition
+from src.server.utils.uploads import read_capped
 from src.server.app._store_helpers import (
     MAX_LIST_LIMIT,
     adelete,
@@ -181,34 +182,6 @@ def _namespace(user_id: str) -> tuple[str, ...]:
 # Cap the sandbox-source path field before it lands in a memo row so a
 # malicious 1 MB form value can't bloat every list/read response.
 _SOURCE_PATH_MAX_CHARS: int = 1024
-_UPLOAD_READ_CHUNK: int = 64 * 1024
-
-
-async def _read_capped(file: UploadFile, max_bytes: int) -> bytes:
-    """Read an uploaded file in chunks, raising 413 once the cap is exceeded.
-
-    ``await file.read()`` would buffer the entire body to a SpooledTemporaryFile
-    (1 MB threshold then disk) before any size check fires, turning a 100 MB
-    adversarial upload into a disk-full DoS amplifier. Reading in chunks lets
-    us reject early.
-    """
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = await file.read(_UPLOAD_READ_CHUNK)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > max_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail=(
-                    f"File too large (>{max_bytes} bytes). Aborting before "
-                    f"the full body is buffered."
-                ),
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
 
 
 def _reject_reserved_key(key: str) -> None:
@@ -547,9 +520,9 @@ async def upload_user_memo(
         workspace = await db_get_workspace(source_workspace_id)
         require_workspace_owner(workspace, user_id=user_id)
 
-    # Reject oversized uploads as soon as we cross the limit so a 100MB
-    # adversarial body never gets fully buffered to disk.
-    raw = await _read_capped(file, MEMO_MAX_UPLOAD_BYTES)
+    # Stop reading once we cross the limit so a 100MB adversarial body never
+    # lands in memory (the form parser has already spooled it by now).
+    raw = await read_capped(file, MEMO_MAX_UPLOAD_BYTES)
 
     # Text extraction -----------------------------------------------------
     if is_pdf(mime_type):

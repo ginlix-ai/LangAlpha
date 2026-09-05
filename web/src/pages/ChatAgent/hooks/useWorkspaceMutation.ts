@@ -1,46 +1,10 @@
 import { useCallback, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { QueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/use-toast';
 import { queryKeys } from '@/lib/queryKeys';
 import { formatApiErrorDetail } from '../utils/api';
-
-// Shape of a cached workspace-list query entry (queryKeys.workspaces.lists()).
-interface CachedWorkspaceList {
-  workspaces: Array<Record<string, unknown> & { workspace_id: string }>;
-  [key: string]: unknown;
-}
-
-type QueriesSnapshot = ReturnType<QueryClient['getQueriesData']>;
-
-/**
- * Optimistically patch one workspace across every cached list. Returns the
- * snapshot so the caller can roll back on error.
- */
-export function patchCachedWorkspace(
-  queryClient: QueryClient,
-  wsId: string,
-  patch: Record<string, unknown>,
-): QueriesSnapshot {
-  const previous = queryClient.getQueriesData({ queryKey: queryKeys.workspaces.lists() });
-  previous.forEach(([key, data]) => {
-    const d = data as CachedWorkspaceList | undefined;
-    if (!d?.workspaces) return;
-    queryClient.setQueryData(key as readonly unknown[], {
-      ...d,
-      workspaces: d.workspaces.map((ws) =>
-        ws.workspace_id === wsId ? { ...ws, ...patch } : ws,
-      ),
-    });
-  });
-  return previous;
-}
-
-/** Restore a snapshot captured by patchCachedWorkspace. */
-export function rollbackCachedWorkspaces(queryClient: QueryClient, previous: QueriesSnapshot): void {
-  previous.forEach(([key, data]) => queryClient.setQueryData(key as readonly unknown[], data));
-}
+import { patchCachedWorkspace, rollbackCachedWorkspaces } from './workspaceRowActions';
 
 export interface UseWorkspaceMutationOptions<A> {
   /** Runs the network request for one workspace. */

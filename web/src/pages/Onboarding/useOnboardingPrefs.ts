@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import { usePreferences } from '@/hooks/usePreferences';
 import { migrateOnboardingPrefs, emptyOnboardingPrefs } from './onboardingPrefsSchema';
 import { useOnboardingPrefsWriter } from './onboardingPrefsWriter';
@@ -16,7 +16,7 @@ function readOnboarding(preferences: unknown): unknown {
  */
 export function useOnboardingPrefs() {
   const { preferences, isLoading } = usePreferences();
-  const { writeOnboardingPrefs } = useOnboardingPrefsWriter();
+  const { writeOnboardingPrefs, remoteUpdateGen } = useOnboardingPrefsWriter();
 
   const prefs = useMemo<OnboardingPrefs>(
     () => migrateOnboardingPrefs(readOnboarding(preferences)),
@@ -50,19 +50,37 @@ export function useOnboardingPrefs() {
     [writeOnboardingPrefs, fallbackOther, isLoading]
   );
 
+  // One write attempt per task per session. A refused PUT moves the prefs
+  // entry twice (optimistic rollback, then the settle refetch), and callers
+  // that stamp from an effect keyed on those prefs would re-send the same
+  // write for as long as the server kept refusing it. Only an accepted write
+  // counts: a cold-cache refusal (the writer returns false) leaves the task
+  // for the next visit once the cache fills. The attempts also restart when
+  // another tab's write lands (it may have been a reset that un-stamped a
+  // task this tab already tried); this tab's own failed PUTs never move that
+  // count, so the loop the guard exists for stays closed.
+  const taskAttemptsRef = useRef({ gen: remoteUpdateGen.current, ids: new Set<string>() });
+
   /** Stamp a getting-started task complete. */
   const markTaskDone = useCallback(
     (id: string) => {
       if (isLoading) return;
-      writeOnboardingPrefs(
+      const attempts = taskAttemptsRef.current;
+      if (attempts.gen !== remoteUpdateGen.current) {
+        attempts.gen = remoteUpdateGen.current;
+        attempts.ids.clear();
+      }
+      if (attempts.ids.has(id)) return;
+      const accepted = writeOnboardingPrefs(
         (cur) =>
           cur.gettingStartedDoneAt[id] != null
             ? null
             : { ...cur, gettingStartedDoneAt: { ...cur.gettingStartedDoneAt, [id]: Date.now() } },
         { fallbackOther }
       );
+      if (accepted) attempts.ids.add(id);
     },
-    [writeOnboardingPrefs, fallbackOther, isLoading]
+    [writeOnboardingPrefs, remoteUpdateGen, fallbackOther, isLoading]
   );
 
   /** Hide the getting-started card permanently. */
@@ -127,6 +145,8 @@ export function useOnboardingPrefs() {
    * write was refused (cold cache), so the caller can skip an empty toast. */
   const resetAll = useCallback((): boolean => {
     if (isLoading) return false;
+    // A reset un-stamps every task, so the session's attempts start over too.
+    taskAttemptsRef.current.ids.clear();
     return writeOnboardingPrefs(emptyOnboardingPrefs(), { fallbackOther, clearMirror: true });
   }, [writeOnboardingPrefs, fallbackOther, isLoading]);
 

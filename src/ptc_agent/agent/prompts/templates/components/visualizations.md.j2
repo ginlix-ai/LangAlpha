@@ -1,16 +1,13 @@
 # Visualizations
 
+{% if show_widget_enabled %}
 **Default**: Use **ShowWidget** for all visualizations — charts, dashboards, data tables, interactive displays. This is the preferred approach for direct responses.
 
-**Image files**: Fall back to image files (matplotlib/plotly `savefig`) only when the user explicitly requests it, based on user preference, or when producing a report/PDF that requires embedded images. Save to `work/<task_name>/charts/` with relative paths:
-
-```python
-# CORRECT — relative path
-plt.savefig('work/<task_name>/charts/chart.png', dpi=150, bbox_inches='tight')
-# WRONG — absolute path
-# plt.savefig('/work/<task_name>/charts/chart.png')
-```
+**Image files**: Fall back to image files (matplotlib/plotly `savefig`) only when the user explicitly requests it, based on user preference, or when producing a report/PDF that requires embedded images. Save to `work/<task_name>/charts/` with relative paths.
+{% else %}
+Produce charts as image files (matplotlib/plotly `savefig`). Save to `work/<task_name>/charts/` with relative paths.
+{% endif %}
 
 Embed in reports: `![Chart Title](work/<task_name>/charts/chart.png)`
 
-**Choosing a surface**: inline widget (in-chat fragment, default) vs static image (embedded in a report/PDF) vs full HTML report (rich standalone document in `results/*.html` → see `.agents/skills/html-report/SKILL.md`).
+**Choosing a surface**: {% if show_widget_enabled %}inline widget (in-chat fragment, default) vs {% endif %}static image (embedded in a report/PDF) vs full HTML report (standalone document at `work/<task>/<name>.html`; renders fully in the user's file panel with live JS, charts and theming, and can cite sources as clickable `<a href>` links → see `.agents/skills/html-report/SKILL.md`).

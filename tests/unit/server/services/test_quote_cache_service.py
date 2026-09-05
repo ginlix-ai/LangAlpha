@@ -20,6 +20,7 @@ class _StubCache:
     def __init__(self) -> None:
         self.store: dict[str, dict] = {}
         self.set_ttls: dict[str, int] = {}
+        self.set_many_calls = 0
 
     async def get(self, key):
         return self.store.get(key)
@@ -30,6 +31,13 @@ class _StubCache:
     async def set(self, key, value, ttl=None):
         self.store[key] = value
         self.set_ttls[key] = ttl
+
+    async def set_many(self, items):
+        self.set_many_calls += 1
+        for key, value, ttl in items:
+            self.store[key] = value
+            self.set_ttls[key] = ttl
+        return True
 
 
 class _StubProvider:
@@ -87,6 +95,9 @@ async def test_misses_fill_via_one_batched_call(service):
     out = await svc.get_quotes(["AAPL", "MSFT"])
     assert [r["symbol"] for r in out] == ["AAPL", "MSFT"]
     assert provider.calls == [["AAPL", "MSFT"]]
+    # ONE pipelined write-through, not a connection per symbol: the batch cap
+    # is 250, which alone exceeded the 150-slot pool.
+    assert cache.set_many_calls == 1
 
     # Second request: pure cache hits, no upstream call.
     out = await svc.get_quotes(["AAPL", "MSFT"])

@@ -624,15 +624,18 @@ class LocalRunExecutor:
         #
         #   except asyncio.CancelledError (consume_workflow):
         #     1. _flush_checkpoint(thread_id)        # if explicit_cancel
-        #     2. drain killed-subagent events        # bounded (~stop_drain_timeout)
-        #     3. cancel orphan collector tasks       # no post-stop mutation
-        #     4. cancel_and_clear(force=True)        # kill subagents, wipe registry
+        #     2. cancel this run's orphan collectors # no post-stop mutation
+        #     3. cancel_run_tasks(force=True)        # kill this run's subagents
+        #     4. drain killed-subagent events        # bounded (~stop_drain_timeout)
         #     5. _finalize_run(kind="cancelled")     # persist merged sse_events + run_end frame
         #     6. raise
         #
-        # Drain MUST run before cancel_and_clear wipes the registry, and
-        # cancel_and_clear must run before _finalize_run so the merged
-        # subagent events are in place before persistence reads them.
+        # Steps 2-4 are teardown_subagents_on_stop's own order, and the kill
+        # MUST precede the drain: the drain reads its high-water at drain
+        # start, so a pre-kill snapshot misses the frames a task emits between
+        # snapshot and kill. The drain must in turn complete before
+        # _finalize_run, so the merged subagent events are in place before
+        # persistence reads them.
         # =====================================================================
         except asyncio.CancelledError:
             async with self.task_lock:
@@ -652,12 +655,15 @@ class LocalRunExecutor:
                 if explicit:
                     # 1. Flush the LangGraph checkpoint so the next message
                     #    resumes from the last committed boundary. Gated on
-                    #    explicit_cancel (set by the user stop, graceful
-                    #    shutdown, and stale-sandbox recovery — all of which
-                    #    cancel the INNER task, leaving this handler live to
-                    #    flush). Abandoned-task cleanup cancels the OUTER task
-                    #    with the flag unset and skips this. Best-effort: a
-                    #    flush failure must not block persistence (step 5).
+                    #    explicit_cancel, set by every deliberate cancel:
+                    #    user stop, graceful shutdown, and stale-sandbox
+                    #    recovery cancel the INNER task (this handler stays
+                    #    live to flush); abandoned-task cleanup sets it too
+                    #    but also cancels the OUTER task, so this path can
+                    #    run already-re-cancelled — the shields below, per
+                    #    the NB above, are what carry these awaits through.
+                    #    Best-effort: a flush failure must not block
+                    #    persistence (step 5).
                     with suppress(Exception):
                         await asyncio.shield(self._flush_checkpoint(thread_id, run_id))
 
@@ -1065,14 +1071,9 @@ class LocalRunExecutor:
             )
             if not bg_registry:
                 return
-            writers: list[asyncio.Task] = []
-            async with bg_registry._lock:
-                for t in bg_registry._tasks.values():
-                    if not guard.owns_task_ns(t.task_id):
-                        continue
-                    for writer in (t.asyncio_task, getattr(t, "handler_task", None)):
-                        if writer is not None and not writer.done():
-                            writers.append(writer)
+            writers = await bg_registry.live_writers_where(
+                lambda t: guard.owns_task_ns(t.task_id)
+            )
             if not writers:
                 return
             remaining = deadline - loop.time()

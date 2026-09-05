@@ -52,7 +52,7 @@ describe('ErrorBanner', () => {
   it('renders an internal link that navigates via react-router', () => {
     const err: StructuredError = {
       message: 'You hit the credit limit.',
-      link: { url: '/settings/billing', label: 'View Usage' },
+      links: [{ url: '/settings/billing', label: 'View Usage' }],
     };
     let currentPath = '';
     renderInRouter(<ErrorBanner error={err} />, (p) => { currentPath = p; });
@@ -64,10 +64,46 @@ describe('ErrorBanner', () => {
     expect(currentPath).toBe('/settings/billing');
   });
 
+  it('leaves a same-origin external link to the browser, in a new tab', () => {
+    // /account/plans is served by the account portal, a different app on the
+    // same origin. Routing to it would land on our catch-all and load nothing,
+    // and navigating in place would discard the banner and the rejected
+    // message, which only ever existed in client state.
+    const err: StructuredError = {
+      message: 'Monthly credit limit reached.',
+      links: [{ url: '/account/plans', label: 'Upgrade plan', external: true }],
+    };
+    let currentPath = '';
+    renderInRouter(<ErrorBanner error={err} />, (p) => { currentPath = p; });
+    const link = screen.getByText('Upgrade plan');
+    expect(link).toHaveAttribute('href', '/account/plans');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    fireEvent.click(link);
+    expect(currentPath).toBe('/start');
+  });
+
+  it('renders every link in order, separated', () => {
+    const err: StructuredError = {
+      message: 'Monthly credit limit reached.',
+      links: [
+        { url: '/account/plans', label: 'Upgrade plan', external: true },
+        { url: '/account/usage', label: 'View usage', external: true },
+      ],
+    };
+    renderInRouter(<ErrorBanner error={err} />);
+    const links = screen.getAllByRole('link');
+    expect(links.map((l) => l.textContent)).toEqual(['Upgrade plan', 'View usage']);
+    expect(links[1]).toHaveAttribute('href', '/account/usage');
+    expect(links[1]).toHaveAttribute('target', '_blank');
+    // The separator is decoration, so it must not reach the accessible name.
+    expect(screen.getByText('·')).toHaveAttribute('aria-hidden', 'true');
+  });
+
   it('renders an external link with target=_blank', () => {
     const err: StructuredError = {
       message: 'Upstream provider failed.',
-      link: { url: 'https://status.anthropic.com', label: 'Status' },
+      links: [{ url: 'https://status.anthropic.com', label: 'Status' }],
     };
     renderInRouter(<ErrorBanner error={err} />);
     const link = screen.getByText('Status');

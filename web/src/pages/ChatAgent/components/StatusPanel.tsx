@@ -29,7 +29,7 @@ function StatusSection({
           {title}
         </span>
         {caption && (
-          <span className="ml-auto text-[11px]" style={TERTIARY}>
+          <span className="ml-auto text-[0.6875rem]" style={TERTIARY}>
             {caption}
           </span>
         )}
@@ -48,7 +48,7 @@ function QuoteBlock({ content }: { content: string }): ReactElement {
   const rows = newlineIdx === -1 ? '' : content.slice(newlineIdx + 1);
   return (
     <div className="mt-3">
-      <div className="text-[11px]" style={TERTIARY}>
+      <div className="text-[0.6875rem]" style={TERTIARY}>
         {header}
       </div>
       {rows && (

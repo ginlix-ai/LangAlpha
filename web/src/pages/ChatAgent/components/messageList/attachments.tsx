@@ -118,7 +118,7 @@ export function InlineSelectionCards({ selections }: { selections: SelectionPrev
             <div className="min-w-0 flex flex-col">
               <div
                 className="truncate"
-                style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}
+                style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--color-text-primary)' }}
               >
                 {title}
                 <span style={{ fontWeight: 400, color: 'var(--color-text-tertiary)' }}>
@@ -127,7 +127,7 @@ export function InlineSelectionCards({ selections }: { selections: SelectionPrev
               </div>
               <div
                 className="truncate"
-                style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}
+                style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}
               >
                 {snippet}
               </div>
@@ -166,7 +166,7 @@ export function AttachmentCard({ attachment }: AttachmentCardProps): React.React
       <div className="relative flex-shrink-0 w-24 h-24 rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-border-muted)', background: 'var(--color-bg-input)' }}>
         <div className="w-full h-full p-3 flex flex-col items-center justify-center gap-2">
           <ImageIcon className="w-6 h-6" style={{ color: 'var(--color-icon-muted)' }} />
-          <p className="text-[10px] truncate w-full text-center" style={{ color: 'var(--color-text-tertiary)' }}>{att.name}</p>
+          <p className="text-[0.625rem] truncate w-full text-center" style={{ color: 'var(--color-text-tertiary)' }}>{att.name}</p>
         </div>
       </div>
     );
@@ -180,14 +180,14 @@ export function AttachmentCard({ attachment }: AttachmentCardProps): React.React
           <div className="p-1.5 rounded" style={{ background: 'var(--color-border-muted)' }}>
             <FileText className="w-4 h-4" style={{ color: 'var(--color-text-tertiary)' }} />
           </div>
-          <span className="text-[10px] font-medium uppercase tracking-wider truncate" style={{ color: 'var(--color-text-tertiary)' }}>
+          <span className="text-[0.625rem] font-medium uppercase tracking-wider truncate" style={{ color: 'var(--color-text-tertiary)' }}>
             {ext}
           </span>
         </div>
         <div className="space-y-0.5">
           <p className="text-xs font-medium truncate" style={{ color: 'var(--color-text-muted)' }} title={att.name}>{att.name}</p>
           {(att.size ?? 0) > 0 && (
-            <p className="text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>{formatFileSize(att.size)}</p>
+            <p className="text-[0.625rem]" style={{ color: 'var(--color-text-tertiary)' }}>{formatFileSize(att.size)}</p>
           )}
         </div>
       </div>

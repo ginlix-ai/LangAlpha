@@ -164,7 +164,7 @@ async def test_register_refuses_to_displace_starting_entry():
     assert exc_info.value.task is task_a
 
     # A settled entry (completed) is a dead writer — retry re-registers.
-    task_a.completed = True
+    task_a.terminal_status = "completed"
     replacement = await registry.register(
         tool_call_id="tc-1",
         description="retry",
@@ -224,8 +224,7 @@ def _pipeline_harness(order: list[str]):
         subagent_type="general-purpose",
         agent_id="general-purpose:x",
     )
-    task.cancelled = True
-    task.completed = True
+    task.terminal_status = "cancelled"
     task.task_run_id = "tr-1"
     return middleware, ledger, task
 

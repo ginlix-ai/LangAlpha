@@ -11,6 +11,7 @@ The full surface stays no-op when ``OTEL_EXPORTER_OTLP_ENDPOINT`` is unset — i
 call sites are always safe to leave in place.
 """
 
+from .langsmith_run import stamp_run
 from .otel import init_otel, init_otel_runtime, shutdown_otel_runtime
 from .tracing import (
     attached,
@@ -66,6 +67,7 @@ __all__ = [
     "init_otel",
     "init_otel_runtime",
     "shutdown_otel_runtime",
+    "stamp_run",
     "tracer",
     "meter",
     "hash_id",

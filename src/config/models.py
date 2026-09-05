@@ -6,7 +6,7 @@ These models define the schema for config.yaml (infrastructure settings).
 
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class BackgroundExecutionConfig(BaseModel):
@@ -176,6 +176,27 @@ class RedisConfig(BaseModel):
 
     cache_enabled: bool = Field(default=True, description="Enable/disable caching globally")
     max_connections: int = Field(default=10, description="Connection pool size")
+    # Pools are split by connection LIFETIME, not by feature: short cache ops
+    # must never queue behind a stream reader parked in XREAD BLOCK, and a
+    # subscriber holding a connection for 30 minutes must not sit in either.
+    stream_max_connections: int = Field(
+        default=100,
+        ge=1,
+        le=10000,
+        description="Pool size for blocking stream readers (XREAD)",
+    )
+    pubsub_max_connections: int = Field(
+        default=150,
+        ge=1,
+        le=10000,
+        description="Pool size for long-lived pub/sub subscriptions",
+    )
+    pool_timeout: float = Field(
+        default=2.0,
+        gt=0,
+        le=60,
+        description="Seconds a caller queues for a free cache connection before failing",
+    )
     socket_timeout: int = Field(
         default=5, description="Redis socket read/write timeout in seconds"
     )
@@ -276,16 +297,145 @@ class MarketWatchConfig(BaseModel):
     )
 
 
+class WorkflowOrchestrationConfig(BaseModel):
+    """Caps and timeouts for RunWorkflow programmatic subagent runs."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Expose the RunWorkflow tool to the PTC main agent",
+    )
+    memory_limit_mb: int = Field(
+        default=128,
+        ge=16,
+        le=1024,
+        description="QuickJS heap limit per workflow run (MB)",
+    )
+    cpu_budget_s: float = Field(
+        default=30.0,
+        gt=0,
+        le=600,
+        description="Continuous-JS interrupt budget in seconds (host awaits excluded)",
+    )
+    schema_max_bytes: int = Field(
+        default=4096,
+        ge=256,
+        le=65536,
+        description="Max serialized size of a dispatch schema",
+    )
+    schema_max_depth: int = Field(
+        default=5,
+        ge=1,
+        le=16,
+        description="Max nesting depth of a dispatch schema",
+    )
+    schema_max_properties: int = Field(
+        default=32,
+        ge=1,
+        le=256,
+        description="Max keys at any schema object level",
+    )
+    max_dispatches_per_run: int = Field(
+        default=64, ge=1, le=256, description="Max subagent dispatches per run"
+    )
+    max_concurrent_children: int = Field(
+        default=8, ge=1, le=32, description="Max concurrently running children"
+    )
+    child_timeout: int = Field(
+        default=1800, ge=1, le=7200, description="Per-child subagent timeout in seconds"
+    )
+    run_timeout: int = Field(
+        default=16200,
+        ge=1,
+        le=86400,
+        description=(
+            "Whole-run wall-clock timeout in seconds; must exceed "
+            "child_timeout or the run dies before any child of it can. The "
+            "default clears several sequential waves of children"
+        ),
+    )
+    max_runs_per_thread: int = Field(
+        default=2, ge=1, le=8, description="Max concurrently active runs per thread"
+    )
+    max_result_bytes: int = Field(
+        default=1024 * 1024,
+        ge=1024,
+        le=16 * 1024 * 1024,
+        description=(
+            "Per-child result dump cap; bounds what the script manipulates in "
+            "JS, not what any reader is handed"
+        ),
+    )
+    max_summary_bytes: int = Field(
+        default=96 * 1024,
+        ge=1024,
+        le=1024 * 1024,
+        description=(
+            "Cap on the run summary — the text handed to the model and "
+            "archived for TaskOutput; the full value stays in result.json"
+        ),
+    )
+    max_prompt_chars: int = Field(
+        default=400_000,
+        ge=1,
+        le=1_000_000,
+        description="Per-dispatch prompt length cap",
+    )
+    max_script_bytes: int = Field(
+        default=200 * 1024,
+        ge=1024,
+        le=4 * 1024 * 1024,
+        description="Workflow script size cap in bytes",
+    )
+
+    @model_validator(mode="after")
+    def _run_timeout_outlasts_one_child(self) -> "WorkflowOrchestrationConfig":
+        """Reject a run timeout no child can time out inside.
+
+        At or below one ``child_timeout`` the run-level kill always beats the
+        per-child one, so every timeout is reported as the blunt whole-run
+        failure and no child is ever named. The bound stops at one child on
+        purpose: covering a worst-case wave would assume every child burns its
+        full timeout with none overlapping, which is a property of the script
+        rather than of the configuration — and asserting it here left in-range
+        settings (``max_concurrent_children: 1``) unsatisfiable at every
+        ``run_timeout``. The shipped default still carries several waves of
+        margin, as a recommendation rather than a rule.
+        """
+        if self.run_timeout <= self.child_timeout:
+            raise ValueError(
+                f"workflow.run_timeout={self.run_timeout} must exceed "
+                f"child_timeout={self.child_timeout}, or the run dies before "
+                "any child of it can"
+            )
+        return self
+
+
+class PromptConfig(BaseModel):
+    """Deployment-wide prompt settings."""
+
+    guidance: Literal["auto", "lean", "detailed"] = Field(
+        default="auto",
+        description=(
+            "Prompt scaffolding level for this deployment. 'auto' defers to the "
+            "model's prompt_guidance in models.json; 'lean'/'detailed' pin it. A "
+            "per-user model_preference.prompt_guidance still wins over this — a "
+            "profile for the running model first, then the account-wide value."
+        ),
+    )
+
+
 class InfrastructureConfig(BaseModel):
     """Root model for infrastructure configuration (config.yaml)."""
 
     model_config = ConfigDict(extra="allow")
 
+    prompt: PromptConfig = Field(default_factory=PromptConfig)
+
     # Application Settings
     debug: bool = Field(default=False, description="Debug mode flag")
     ptc_recursion_limit: int = Field(default=2000, ge=1, le=10000, description="PTC agent recursion limit")
     flash_recursion_limit: int = Field(default=500, ge=1, le=10000, description="Flash agent recursion limit")
-    workflow_timeout: int = Field(default=3200, description="Workflow timeout in seconds")
+    workflow_timeout: int = Field(default=21600, description="Workflow timeout in seconds")
     sse_keepalive_interval: float = Field(
         default=15.0, description="SSE keepalive interval in seconds"
     )
@@ -336,3 +486,8 @@ class InfrastructureConfig(BaseModel):
     market_data: MarketDataConfig = Field(default_factory=MarketDataConfig)
     news_data: NewsDataConfig = Field(default_factory=NewsDataConfig)
     news_poll: NewsPollConfig = Field(default_factory=NewsPollConfig)
+
+    # RunWorkflow orchestration caps
+    workflow: WorkflowOrchestrationConfig = Field(
+        default_factory=WorkflowOrchestrationConfig
+    )

@@ -409,6 +409,29 @@ describe('buildVisibleModels', () => {
     expect(result.rawModels.anthropic?.models).toEqual(['claude-sonnet']);
   });
 
+  it('an empty reasoning block does not strand the entry\'s flat ladder', () => {
+    // `{}` is truthy, so this side read the block as the whole declaration and
+    // showed no effort selector for a model whose flat keys declare one. The
+    // server reads the same entry through `reasoning_block`; the two have to
+    // agree on what an empty block means or the UI offers a different ladder
+    // than the turn runs.
+    const customModels = [
+      {
+        name: 'my-gpt',
+        model_id: 'gpt-4o',
+        provider: 'openai',
+        reasoning: {},
+        reasoning_efforts: ['low', 'high'],
+        reasoning_effort_default: 'high',
+      },
+    ];
+
+    const result = buildVisibleModels({}, {}, customModels, {}, null, []);
+
+    expect(result.metadata['my-gpt']?.reasoning_efforts).toEqual(['low', 'high']);
+    expect(result.metadata['my-gpt']?.reasoning_effort_default).toBe('high');
+  });
+
   it('variant bypass: parent-catalog model starred under variant shows under variant group', () => {
     // User has ``z-ai-coding`` configured (access_type=coding_plan). They
     // starred ``glm-5.1`` (a parent-catalog model, provider=z-ai) under the

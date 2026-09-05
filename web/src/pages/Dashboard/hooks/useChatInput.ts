@@ -6,7 +6,6 @@ import { attachmentsToContexts, widgetSnapshotsToContexts } from '../../ChatAgen
 import { useWorkspaces } from '../../../hooks/useWorkspaces';
 import { ContextBus } from '@/lib/contextBus';
 import type { WidgetContextSnapshot } from '../widgets/framework/contextSnapshot';
-import type { Workspace } from '@/types/api';
 
 type ChatMode = 'fast' | 'ptc';
 
@@ -50,7 +49,7 @@ export function useChatInput() {
   // dashboard widgets (RecentThreads, ConversationWidget, WorkspacePicker) so all
   // four share a single React Query cache entry instead of four separate ones.
   const { data: wsData } = useWorkspaces({ limit: 100, offset: 0 });
-  const workspaces = ((wsData as { workspaces?: Workspace[] })?.workspaces || []).filter((ws: Workspace) => ws.status !== 'flash');
+  const workspaces = (wsData?.workspaces || []).filter((ws) => ws.status !== 'flash');
 
   // Auto-select first workspace when data arrives
   useEffect(() => {

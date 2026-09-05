@@ -48,7 +48,7 @@ function ConfirmDialog({ open, title, message, confirmLabel, onConfirm, onOpenCh
             type="button"
             onClick={handleConfirm}
             className="px-4 py-1.5 rounded text-sm font-medium hover:opacity-90"
-            style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
+            style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
           >
             {confirmLabel || t('common.delete')}
           </button>

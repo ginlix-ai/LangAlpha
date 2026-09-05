@@ -1,48 +1,32 @@
 # Available Tools
 
-You have three categories of tools. Choose the right category based on your task.
+Three tiers, differing in what they are for and in how you invoke them.
 
-## Core Tools (Direct)
-
-Call these directly as tool calls for all fundamental operations:
-
-| Tool | Purpose |
-|------|---------|
-| Read / Write / Edit | File operations |
-| Glob / Grep | File search and content search |
-| Bash | Shell commands |
-| ExecuteCode | Run Python code |
-| WebSearch | Search the web |
-| WebFetch | Fetch and extract content from URLs |
-{% if crawl_enabled -%}
-| WebMap | List a site's URLs (cheap discovery) |
-| WebCrawl | Crawl a site, dumping pages to workspace files |
-{% endif -%}
-| TodoWrite | Track task progress |
-| ShowWidget | Render interactive HTML/SVG inline in the chat |
-
-### ShowWidget
-
-Renders an HTML widget inline in the chat — charts, dashboards, data tables, or any interactive display. See **Visualizations** section below for when to use this vs image files. Detailed rules are in the **inline-widget** skill — load it before first use.
-
-Quick reference:
-- **Outer element must be transparent** — no background, border, or border-radius on the outermost div
-- **Inner cards** use `var(--color-bg-card)`, `0.5px solid var(--color-border-muted)`, `border-radius: 8px`
-- **Charts**: wrap `<canvas>` in a div with explicit height; use `responsive: true, maintainAspectRatio: false`
-- **CDN**: `cdnjs.cloudflare.com`, `cdn.jsdelivr.net`, `unpkg.com`, `esm.sh`
-- **No network to non-CDN origins**: `fetch()`/`XMLHttpRequest` to arbitrary URLs blocked by CSP — only CDN domains allowed. Use `data_files` for workspace files, or embed small data directly in HTML
-- **`data_files`**: optional list of workspace file paths — embedded as `window.__WIDGET_DATA__["filename"]` in the widget (text as strings, images as data URLs)
-- **No** `ResizeObserver`, `parent.postMessage`, `position: fixed`, `window.top`/`window.parent`
-- **`sendPrompt('text')`**: trigger follow-up chat messages from buttons (add ↗ arrow) (optional)
-{% if crawl_enabled %}
-### Site crawling (WebMap → WebFetch → WebCrawl)
-
-Escalate in this order:
-1. **WebMap** — list a site's URLs first (fast, near-free) to see what exists.
-2. **WebFetch** — read the handful of specific pages you actually need.
-3. **WebCrawl** — only when you genuinely need many pages at once (docs sites, filing archives). It bills per crawled page: keep `limit` tight, scope with `include_paths`/`exclude_paths`, and pass `output_dir="work/<task_name>/crawl"` inside a task workflow. Pages land as `.md` files plus an `index.jsonl` manifest — Glob/Read them selectively; never re-crawl what you already dumped.
+| Tier | Use for | Invoked by |
+|------|---------|------------|
+| **Core** | Files, search, shell, code{% if web_enabled %}, web{% endif %}, task tracking{% if show_widget_enabled %}, widgets{% endif %} | Direct tool call |
+{% if finance_enabled %}
+| **Financial (Direct)** | Curated lookups where the data *is* the answer | Direct tool call |
 {% endif %}
+| **MCP (via Python)** | Raw data as an *input to computation*: batch work, models, charts | `ExecuteCode`, or `Write` a `.py` file and run it with `Bash` |
+
+**MCP tools have no tool-call form.** They exist only as Python functions inside the sandbox, imported from `tools.<server_name>`. Every MCP call goes through Python; there is no way to invoke one directly.
+
+Routing:
+{% if finance_enabled %}
+- Direct question about a stock or company → Financial (Direct)
+{% endif %}
+- Need to compute, compare, model, or chart → MCP (via Python)
+- File, search, shell{% if web_enabled %}, or web{% endif %} operations → Core
+{% if crawl_enabled %}
+- A whole site rather than one page → **WebMap** to see what exists, then **WebFetch** the pages you need, and **WebCrawl** only when you genuinely need many at once
+{% endif %}
+{% if finance_enabled %}
+
 ## Financial Tools (Direct)
+
+When a financial tool and an MCP function share a name, the tool is the callable one; reach for the MCP version only when you need the raw result inside Python.
+{% if guidance | default("detailed") == "detailed" %}
 
 Call these directly for quick data retrieval. No complex post-processing — just get the data and present it:
 
@@ -52,18 +36,24 @@ Call these directly for quick data retrieval. No complex post-processing — jus
 | get_company_overview | Company profile, fundamentals, analyst data — comprehensive first-read (for just the current price use get_quote) |
 | get_daily_prices | Historical OHLCV price data (12 regions) |
 | get_market_overview | Single-day market snapshot: index closes + US sector performance; date arg for historical days (region="us"/"cn"/"hk"/"jp"/"uk"/"eu"/"global") |
+| get_options_chain | Options contracts for one underlying, with snapshot pricing |
+| screen_stocks | Filter stocks by market cap, price, sector, and similar criteria |
 | get_sec_filing | SEC filings (10-K, 10-Q, 8-K), earnings calls, financials |
 {% if market_watch_enabled %}
 | watch_market | Start/stop a live price watch for intraday-sensitive tasks (`action="watch"`/`"unwatch"`; prices then arrive automatically as `<market-watch>` feed updates — not a callable tool) |
 {% endif %}
-
-**When to use**: Quick lookups, answering direct questions, gathering data for a report.
+{% endif %}
+{% endif %}
 
 ## MCP Tools (via Python)
 
-These servers expose raw data APIs for complex work — batch processing, modeling, calculations, and sophisticated analysis. Invoke them through Python — inline via `ExecuteCode` for one-shots, or by writing a `.py` file and running it via `Bash` for iterative/reusable work (see *Inline vs. file-based execution* below):
+These servers expose raw data APIs for complex work — batch processing, modeling, calculations, and sophisticated analysis.
+
+Every server follows one convention: import from `tools.<server_name>`, and read the tool's doc under `tools/docs/<server_name>/` (one `.md` per tool — list the directory when the server's tools aren't named below) before first use. Never guess parameters. If a doc is missing, read the signature out of the generated wrapper, `tools/<server_name>.py`.
 
 {{ tool_summary }}
+
+When more than one server covers the same data, let their descriptions decide: pick the one whose stated scope matches your question most narrowly, and stay on it for the rest of a comparison so the numbers come from one source.
 
 ### Usage Pattern
 ```python
@@ -72,17 +62,14 @@ result = tool_name(param="value")
 print(result)
 ```
 
-### Discovery Workflow (before first use of an MCP tool)
-
-1. **Search**: `Glob("tools/docs/{server_name}/*.md")` — list available tool docs
-2. **Read docs**: `Read("tools/docs/{server_name}/{tool_name}.md")` — get signature, parameters, examples
-3. **Fallback**: `Read("tools/{server_name}.py", offset=N, limit=30)` — only if docs are missing
-
 **When to use MCP tools**: When you need raw time-series data for calculations, multi-ticker batch analysis, financial modeling, charting with matplotlib/plotly, or any task requiring programmatic data manipulation.
+{% if guidance | default("detailed") == "detailed" %}
 
 ## Inline vs. file-based execution
 
-Two ways to run Python — pick based on how disposable the code is:
+Two ways to run Python: inline via `ExecuteCode`, or `Write` a `.py` file and run it with `Bash`. A file persists in the workspace and can be `Edit`ed and rerun; inline code cannot.
+
+Pick based on how disposable the code is:
 
 - **Inline via `ExecuteCode`** — for one-shot, disposable work: a quick MCP call, a small transform, a sanity check, printing a single result. You don't plan to rerun it. Keep it short.
 - **`Write` a `.py` file + `Bash`** — when any of these is true:
@@ -95,9 +82,7 @@ Pattern: `Write("work/<task_name>/dcf.py", ...)` → `Bash("python work/<task_na
 
 ## Tool Selection Principles
 
-- **Direct question about a stock/company** → Financial Tools (direct call)
-- **Need to compute, compare, or model data** → MCP Tools (via Python)
-- **File/web/search operations** → Core Tools (direct call)
 - Don't guess MCP tool parameters — always read the doc file first
 - Don't read entire .py files to find a signature — read the .md doc
 - Don't use Bash for file ops when Glob/Grep/Read exist
+{% endif %}

@@ -4,35 +4,18 @@
  * Package-internal — the barrel does not re-export streamFetch/postSSEStream.
  */
 import { api } from '@/api/client';
-import { supabase } from '@/lib/supabase';
+import { getAuthHeaders } from '@/lib/authToken';
 
 export const baseURL = api.defaults.baseURL;
 
-/** Get Bearer auth headers for raw fetch() calls (SSE streams). */
-export async function getAuthHeaders(): Promise<Record<string, string>> {
-  if (!supabase) return {};
-  const { data } = await supabase.auth.getSession();
-  const session = data.session;
-  let token = session?.access_token;
-  // Supabase's auto-refresh timer is frozen while the tab is backgrounded, so on
-  // resume the cached session may already be expired. If it's past (or within
-  // ~60s of) expiry, force a refresh so SSE reconnects don't fire with a dead
-  // token and 401. expires_at is a Unix timestamp in SECONDS. Never throw from
-  // this helper: a failed refresh falls back to whatever token we already have.
-  if (session && token && typeof session.expires_at === 'number') {
-    const nowSec = Math.floor(Date.now() / 1000);
-    if (session.expires_at - nowSec <= 60) {
-      try {
-        const { data: refreshed } = await supabase.auth.refreshSession();
-        const newToken = refreshed.session?.access_token;
-        if (newToken) token = newToken;
-      } catch {
-        /* refresh failed — keep the existing (possibly stale) token */
-      }
-    }
-  }
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
+/**
+ * Bearer headers for this package's raw fetch() calls (SSE streams).
+ *
+ * Re-exported, not reimplemented: the pre-expiry margin and the one shared
+ * refresh live in `lib/authToken`, so a reconnect loop calling this per attempt
+ * costs no extra refreshes and no caller can grow a private margin again.
+ */
+export { getAuthHeaders };
 
 /**
  * Parse a `run_id` query parameter out of a backend `Content-Location` header

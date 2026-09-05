@@ -1,78 +1,8 @@
 import { useCallback, useState, memo } from "react"
 import { Check } from "lucide-react"
+import { BrandMark } from "@/pages/ChatAgent/components/mcp/BrandMark"
+import { llmProviderArt } from "@/lib/brandArt"
 import { cn } from "@/lib/utils"
-
-// Provider icons — maps brand key to imported asset
-import iconOpenai from "@/assets/providers/openai.png"
-import iconAnthropic from "@/assets/providers/anthropic.png"
-import iconGemini from "@/assets/providers/gemini.png"
-import iconOpenrouter from "@/assets/providers/openrouter.png"
-import iconZai from "@/assets/providers/z-ai.png"
-import iconMinimax from "@/assets/providers/minimax.png"
-import iconDashscope from "@/assets/providers/dashscope.png"
-import iconVolcengine from "@/assets/providers/volcengine.png"
-import iconMoonshot from "@/assets/providers/moonshot.png"
-import iconDeepseek from "@/assets/providers/deepseek.png"
-import iconGroq from "@/assets/providers/groq.png"
-import iconCerebras from "@/assets/providers/cerebras.png"
-import iconOllama from "@/assets/providers/ollama.png"
-import iconLmStudio from "@/assets/providers/lmstudio.png"
-import iconVllm from "@/assets/providers/vllm.png"
-
-const PROVIDER_ICONS: Record<string, string> = {
-  openai: iconOpenai,
-  "codex-oauth": iconOpenai,
-  anthropic: iconAnthropic,
-  "claude-oauth": iconAnthropic,
-  gemini: iconGemini,
-  openrouter: iconOpenrouter,
-  "z-ai": iconZai,
-  "z-ai-coding": iconZai,
-  "z-ai-cn": iconZai,
-  "z-ai-cn-coding": iconZai,
-  minimax: iconMinimax,
-  "minimax-coding": iconMinimax,
-  dashscope: iconDashscope,
-  "dashscope-coding": iconDashscope,
-  volcengine: iconVolcengine,
-  "doubao-coding": iconVolcengine,
-  moonshot: iconMoonshot,
-  "moonshot-coding": iconMoonshot,
-  deepseek: iconDeepseek,
-  groq: iconGroq,
-  cerebras: iconCerebras,
-  ollama: iconOllama,
-  "lm-studio": iconLmStudio,
-  vllm: iconVllm,
-}
-
-/** Providers whose logos have transparent backgrounds — show a white circle behind them */
-const NEEDS_LIGHT_BG = new Set(["ollama", "lm-studio", "vllm"])
-
-const PROVIDER_COLORS: Record<string, string> = {
-  openai: "#10A37F",
-  "codex-oauth": "#10A37F",
-  anthropic: "#D4A574",
-  "claude-oauth": "#D4A574",
-  gemini: "#4285F4",
-  openrouter: "#6366F1",
-  "z-ai": "#3B82F6",
-  "z-ai-coding": "#3B82F6",
-  "z-ai-cn": "#3B82F6",
-  "z-ai-cn-coding": "#3B82F6",
-  minimax: "#F59E0B",
-  "minimax-coding": "#F59E0B",
-  dashscope: "#FF6A00",
-  "dashscope-coding": "#FF6A00",
-  volcengine: "#1E88E5",
-  "doubao-coding": "#1E88E5",
-  moonshot: "#8B5CF6",
-  "moonshot-coding": "#8B5CF6",
-  deepseek: "#0EA5E9",
-  "lm-studio": "#6B7280",
-  vllm: "#6B7280",
-  ollama: "#1A1A1A",
-}
 
 export interface ProviderCardProps {
   provider: string
@@ -89,11 +19,7 @@ export const ProviderCard = memo(function ProviderCard({
   configured = false,
   onSelect,
 }: ProviderCardProps) {
-  const icon = PROVIDER_ICONS[provider]
-  const color = PROVIDER_COLORS[provider] ?? "var(--color-accent-primary)"
-  const initial = displayName.charAt(0).toUpperCase()
   const [hovered, setHovered] = useState(false)
-  const [imgError, setImgError] = useState(false)
 
   const handleClick = useCallback(() => {
     onSelect(provider)
@@ -147,25 +73,13 @@ export const ProviderCard = memo(function ProviderCard({
         </span>
       )}
 
-      {/* Provider icon or fallback initial */}
-      {icon && !imgError ? (
-        <img
-          src={icon}
-          alt=""
-          aria-hidden="true"
-          className="w-10 h-10 rounded-full object-contain shrink-0"
-          style={NEEDS_LIGHT_BG.has(provider) ? { background: "#fff", padding: 2 } : undefined}
-          onError={() => setImgError(true)}
-        />
-      ) : (
-        <div
-          className="flex items-center justify-center w-10 h-10 rounded-full text-sm font-semibold shrink-0"
-          style={{ background: color, color: "#fff" }}
-          aria-hidden="true"
-        >
-          {initial}
-        </div>
-      )}
+      {/* Provider mark, or this provider's monogram when we ship no art */}
+      <BrandMark
+        name={displayName}
+        art={llmProviderArt(provider)}
+        size="lg"
+        className="rounded-full"
+      />
 
       {/* Provider name */}
       <span

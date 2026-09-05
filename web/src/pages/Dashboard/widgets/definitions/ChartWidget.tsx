@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ExternalLink, Loader2, Maximize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
+import { ExternalLink, Maximize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { Loader } from '@/components/ui/loader';
 import {
   createChart,
   ColorType,
@@ -44,6 +45,7 @@ import {
   useLiveBars,
 } from '@/lib/bars';
 import { chartSecToDateStr, dateStrInTz } from '@/lib/utils';
+import { createValueStore, type ValueStore } from '@/lib/valueStore';
 import { useMarketDataWSContext } from '@/pages/MarketView/contexts/MarketDataWSContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { createFormatter, createDateFormatter } from '@/lib/format';
@@ -125,6 +127,56 @@ function formatHoverVolume(v: number): string {
   if (v < 1e3) return fmtVolumeRound(v);
   return fmtVolumeCompact(v);
 }
+
+type HoverBar =
+  | { time: number; open?: number; high?: number; low?: number; close: number; volume?: number }
+  | null;
+
+// Subscribes to the hover store so per-mousemove crosshair updates re-render
+// only this strip, never the widget that owns the chart. useTranslation is
+// required — the fmt*/fmtHover* formatters are locale-bound.
+const HoverReadout = memo(function HoverReadout({
+  store,
+  daily,
+}: {
+  store: ValueStore<HoverBar>;
+  daily: boolean;
+}) {
+  useTranslation();
+  const hover = useSyncExternalStore(store.subscribe, store.get);
+  if (!hover) return null;
+  return (
+    <div
+      className="absolute top-1 left-1 pointer-events-none text-[0.625rem] tabular-nums flex flex-wrap items-center gap-x-2 gap-y-0.5"
+      style={{ color: 'var(--color-text-tertiary)' }}
+    >
+      <span style={{ color: 'var(--color-text-secondary)' }}>
+        {formatHoverTime(hover.time, daily)}
+      </span>
+      {hover.open != null && hover.high != null && hover.low != null && (
+        <>
+          <span>
+            O <span style={{ color: 'var(--color-text-primary)' }}>{fmt2(hover.open)}</span>
+          </span>
+          <span>
+            H <span style={{ color: 'var(--color-text-primary)' }}>{fmt2(hover.high)}</span>
+          </span>
+          <span>
+            L <span style={{ color: 'var(--color-text-primary)' }}>{fmt2(hover.low)}</span>
+          </span>
+        </>
+      )}
+      <span>
+        C <span style={{ color: 'var(--color-text-primary)' }}>{fmt2(hover.close)}</span>
+      </span>
+      {hover.volume != null && hover.volume > 0 && (
+        <span>
+          V <span style={{ color: 'var(--color-text-primary)' }}>{formatHoverVolume(hover.volume)}</span>
+        </span>
+      )}
+    </div>
+  );
+});
 
 // Return the ET calendar date (YYYY-MM-DD) of a bar. Bar timestamps are stored
 // as ET-wall-clock-as-UTC (the 'Z' trick used across the chart), so UTC getters
@@ -262,11 +314,14 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
   // --- Summary state (header) ---
   const [summary, setSummary] = useState<{ first: number; last: number } | null>(null);
   // --- Hover state: populated from crosshair move, shown as a small overlay
-  // in the top-left corner of the chart body (TradingView-style).
-  const [hover, setHover] = useState<
-    | { time: number; open?: number; high?: number; low?: number; close: number; volume?: number }
-    | null
-  >(null);
+  // in the top-left corner of the chart body (TradingView-style). External
+  // store, not useState — the crosshair fires per raw mousemove, and a
+  // setState here re-renders the whole widget (which also re-registers the
+  // context exporter, notifying every WidgetFrame). Only HoverReadout
+  // subscribes.
+  const hoverStoreRef = useRef<ValueStore<HoverBar> | null>(null);
+  hoverStoreRef.current ??= createValueStore<HoverBar>(null);
+  const hoverStore = hoverStoreRef.current;
   // Live last overrides the bar-based summary.last whenever a fresher tick is
   // available — lets the header update between bar closes.
   const headerLast = liveLast ?? summary?.last ?? 0;
@@ -541,14 +596,14 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
     const crosshairHandler = (param: MouseEventParams) => {
       const series = seriesRef.current;
       if (!series || param.time == null || !param.point) {
-        setHover((prev) => (prev ? null : prev));
+        if (hoverStore.get()) hoverStore.set(null);
         return;
       }
       const bar = param.seriesData.get(series) as
         | { open?: number; high?: number; low?: number; close?: number; value?: number }
         | undefined;
       if (!bar) {
-        setHover((prev) => (prev ? null : prev));
+        if (hoverStore.get()) hoverStore.set(null);
         return;
       }
       const volBar = volumeRef.current
@@ -556,7 +611,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
         : undefined;
       const time = param.time as unknown as number;
       if (bar.close != null && bar.open != null) {
-        setHover({
+        hoverStore.set({
           time,
           open: bar.open,
           high: bar.high,
@@ -565,9 +620,9 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
           volume: volBar?.value,
         });
       } else if (bar.value != null) {
-        setHover({ time, close: bar.value, volume: volBar?.value });
+        hoverStore.set({ time, close: bar.value, volume: volBar?.value });
       } else {
-        setHover((prev) => (prev ? null : prev));
+        if (hoverStore.get()) hoverStore.set(null);
       }
     };
     chart.subscribeCrosshairMove(crosshairHandler);
@@ -1141,7 +1196,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
                   setSearchHits([]);
                 }
               }}
-              className="text-sm font-semibold tabular-nums bg-transparent outline-none border-b px-0 py-0 w-24"
+              className="text-sm font-semibold tabular-nums bg-transparent border-b px-0 py-0 w-24"
               style={{
                 color: 'var(--color-text-primary)',
                 borderColor: 'var(--color-accent-primary)',
@@ -1172,7 +1227,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
               )}
             </div>
           )}
-          <div className="text-[11px] tabular-nums" style={{ color: changeColor }}>
+          <div className="text-[0.6875rem] tabular-nums" style={{ color: changeColor }}>
             {positive ? '+' : ''}{fmt2(change)} ({positive ? '+' : ''}{fmt2(pct)}%)
           </div>
           {editingSymbol && symbolDraft.trim() && (
@@ -1185,14 +1240,14 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
             >
               {searchLoading ? (
                 <div
-                  className="px-2.5 py-1.5 text-[11px]"
+                  className="px-2.5 py-1.5 text-[0.6875rem]"
                   style={{ color: 'var(--color-text-tertiary)' }}
                 >
                   {t('dashboard.widgets.chart.searching')}
                 </div>
               ) : searchHits.length === 0 ? (
                 <div
-                  className="px-2.5 py-1.5 text-[11px]"
+                  className="px-2.5 py-1.5 text-[0.6875rem]"
                   style={{ color: 'var(--color-text-tertiary)' }}
                 >
                   {t('dashboard.widgets.chart.noMatchesEnter', { symbol: symbolDraft.trim().toUpperCase() })}
@@ -1220,7 +1275,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
                     <span className="text-xs font-semibold tabular-nums">{hit.symbol}</span>
                     {hit.name && (
                       <span
-                        className="text-[11px] truncate"
+                        className="text-[0.6875rem] truncate"
                         style={{ color: 'var(--color-text-tertiary)' }}
                       >
                         {hit.name}
@@ -1239,7 +1294,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
                 key={key}
                 type="button"
                 onClick={() => updateConfig({ interval: key })}
-                className="px-1.5 py-0.5 text-[10px] rounded transition-colors"
+                className="px-1.5 py-0.5 text-[0.625rem] rounded transition-colors"
                 style={{
                   backgroundColor: config.interval === key ? 'var(--color-bg-elevated)' : 'transparent',
                   color: config.interval === key ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
@@ -1277,44 +1332,14 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
       </div>
       <div className="flex-1 min-h-0 relative overflow-hidden">
         <div ref={containerRef} className="absolute inset-0 overflow-hidden" />
-        {hover && (
-          <div
-            className="absolute top-1 left-1 pointer-events-none text-[10px] tabular-nums flex flex-wrap items-center gap-x-2 gap-y-0.5"
-            style={{ color: 'var(--color-text-tertiary)' }}
-          >
-            <span style={{ color: 'var(--color-text-secondary)' }}>
-              {formatHoverTime(hover.time, config.interval === '1day')}
-            </span>
-            {hover.open != null && hover.high != null && hover.low != null && (
-              <>
-                <span>
-                  O <span style={{ color: 'var(--color-text-primary)' }}>{fmt2(hover.open)}</span>
-                </span>
-                <span>
-                  H <span style={{ color: 'var(--color-text-primary)' }}>{fmt2(hover.high)}</span>
-                </span>
-                <span>
-                  L <span style={{ color: 'var(--color-text-primary)' }}>{fmt2(hover.low)}</span>
-                </span>
-              </>
-            )}
-            <span>
-              C <span style={{ color: 'var(--color-text-primary)' }}>{fmt2(hover.close)}</span>
-            </span>
-            {hover.volume != null && hover.volume > 0 && (
-              <span>
-                V <span style={{ color: 'var(--color-text-primary)' }}>{formatHoverVolume(hover.volume)}</span>
-              </span>
-            )}
-          </div>
-        )}
+        <HoverReadout store={hoverStore} daily={config.interval === '1day'} />
         {loading && !hasData && (
           // Initial load — full-body shimmer so empty axes don't flash.
           <div
             className="absolute inset-0 rounded animate-pulse flex items-center justify-center"
             style={{ backgroundColor: 'var(--color-bg-subtle)' }}
           >
-            <Loader2 size={18} className="animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
+            <Loader size={18} className="text-[color:var(--color-text-tertiary)]" />
           </div>
         )}
         {loading && hasData && (
@@ -1322,7 +1347,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
           // chart body is already cleared at fetch-start so there's no stale
           // data to hide behind an overlay.
           <div className="absolute top-2 right-2 pointer-events-none">
-            <Loader2 size={14} className="animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
+            <Loader size={14} className="text-[color:var(--color-text-tertiary)]" />
           </div>
         )}
       </div>
@@ -1408,8 +1433,8 @@ export function ChartSettings({ config, onChange, onClose }: WidgetSettingsProps
               onClick={() => setDraft((p) => ({ ...p, chartType: t.key }))}
               className="flex-1 px-2 py-1 text-xs rounded border transition-colors"
               style={{
-                backgroundColor: draft.chartType === t.key ? 'var(--color-accent-primary)' : 'transparent',
-                color: draft.chartType === t.key ? 'var(--color-text-on-accent)' : 'var(--color-text-secondary)',
+                backgroundColor: draft.chartType === t.key ? 'var(--color-btn-primary-bg)' : 'transparent',
+                color: draft.chartType === t.key ? 'var(--color-btn-primary-text)' : 'var(--color-text-secondary)',
                 borderColor: 'var(--color-border-default)',
               }}
             >
@@ -1431,7 +1456,7 @@ export function ChartSettings({ config, onChange, onClose }: WidgetSettingsProps
           type="button"
           onClick={save}
           className="px-3 py-1 text-xs rounded font-medium"
-          style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
+          style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
         >
           {t('dashboard.widgets.common.save')}
         </button>

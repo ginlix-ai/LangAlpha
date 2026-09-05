@@ -211,7 +211,7 @@ async def test_injected_body_survives_patch_tool_calls_rewrite():
     # Exercise the real append path. The fake body carries the real mid-bound marker
     # for whatever message_id Skills threads through (the last human's id), so this also
     # proves _inject_requested_skills binds the marker to h1 — not a hardcoded constant.
-    def _fake_build(skills, *, skill_dirs, mode, already_loaded, message_id):
+    def _fake_build(skills, *, skill_dirs, mode, already_loaded, message_id, registry=None):
         block = f"{loaded_skill_marker('chart-annotation', message_id)}\nBODY\n</loaded-skill>"
         return SkillPrefixResult(
             content=f"{block}\n\n[Instruction: AAPL:1d]",
@@ -303,3 +303,41 @@ def test_runnable_callable_injects_config_into_abefore_agent():
     mw = SkillsMiddleware(mode="flash")
     rc = RunnableCallable(None, mw.abefore_agent)
     assert "config" in rc.func_accepts
+
+
+def test_an_empty_registry_is_not_a_missing_one():
+    """A build whose gates and user disables removed every skill passes ``{}``.
+    Truthiness would read that as "nothing supplied" and hand back the global
+    registry, re-exposing exactly what the build just subtracted.
+    """
+    assert SkillsMiddleware(mode="flash", skill_registry={}).skill_registry == {}
+    assert SkillsMiddleware(mode="flash").skill_registry != {}
+
+
+@pytest.mark.asyncio
+async def test_discovery_does_not_readvertise_a_disabled_skill():
+    """A disabled user-tier skill is in neither the effective registry nor the
+    platform catalog, so only the ctor's ``disabled_skills`` set stops its
+    still-on-disk directory from returning as a user-installed skill.
+    """
+    mw = SkillsMiddleware(
+        mode="ptc",
+        skill_registry={},
+        backend=MagicMock(),
+        sources=["/workspace/.agents/skills"],
+        disabled_skills=frozenset({"my-disabled-skill"}),
+    )
+    on_disk = [
+        {"name": "my-disabled-skill", "description": "stale on disk"},
+        {"name": "genuinely-user-installed", "description": "keep"},
+    ]
+
+    async def _fake_discover(backend, source, known):
+        return on_disk
+
+    state = {"messages": [HumanMessage(content="hi", id="u1")], "loaded_skills": []}
+    with patch(f"{MW}.adiscover_skills", _fake_discover):
+        out = await mw.abefore_agent(state, MagicMock(), config=_config())
+
+    names = {s["name"] for s in out["discovered_skills"]}
+    assert names == {"genuinely-user-installed"}

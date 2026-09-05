@@ -5,7 +5,7 @@
   <br>
   LangAlpha 帮你解读金融市场，辅助投资决策。
   <br><br>
-  <img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+" />
+  <img src="https://img.shields.io/badge/python-3.13+-blue.svg" alt="Python 3.13+" />
   <a href="https://github.com/langchain-ai/langchain"><img src="https://img.shields.io/badge/LangChain-1c3c3c?logo=langchain&logoColor=white" alt="LangChain" /></a>
   <img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License" />
 </p>

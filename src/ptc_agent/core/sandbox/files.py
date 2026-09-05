@@ -22,6 +22,9 @@ from src.observability import (
 from ptc_agent.core.paths import ALWAYS_HIDDEN_DIR_NAMES
 from ptc_agent.core.sandbox.retry import RetryPolicy
 from ptc_agent.core.sandbox.runtime import (
+    RuntimeState,
+    SandboxFailureKind,
+    SandboxGoneError,
     SandboxTransientError,
 )
 
@@ -35,6 +38,97 @@ if TYPE_CHECKING:
     from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
 logger = structlog.get_logger(__name__)
+
+# States a sandbox can still come back from. ``reconnect`` knows how to start a
+# stopped or archived sandbox, so reporting those as Gone would answer a merely
+# idle sandbox by deleting it and rebuilding from the last backup — losing
+# everything written since. Only an unrecoverable state counts as absence.
+#
+# ERROR belongs here for that same reason: ``reconnect`` answers an error-state
+# sandbox with a recovery ``start`` rather than giving up on it, so calling it
+# absence here would destroy a sandbox that path would have revived.
+_RECOVERABLE_STATES = frozenset(
+    {
+        RuntimeState.RUNNING,
+        RuntimeState.STARTING,
+        RuntimeState.STOPPED,
+        RuntimeState.STOPPING,
+        RuntimeState.ARCHIVED,
+        RuntimeState.ERROR,
+    }
+)
+
+
+async def _raise_normalized(
+    sandbox: "PTCSandbox", exc: Exception, *, op: str, path: str
+) -> None:
+    """Re-raise *exc* as a ``Sandbox*`` error, or return if it is confirmed absence.
+
+    The single place this module decides what a failure means. Returning is the
+    caller's licence to emit its "not there" sentinel; every other outcome
+    raises, because a sentinel that also means "I couldn't reach the sandbox" is
+    what turned a replaced sandbox into "File not found — the file has been
+    deleted" for files that existed.
+
+    ``SandboxGoneError``/``SandboxTransientError`` are ``RuntimeError`` subclasses,
+    so HTTP call sites keep mapping them to 503; raw SDK errors are not, and
+    would surface as a 500.
+    """
+    if isinstance(exc, (SandboxTransientError, SandboxGoneError)):
+        raise exc
+
+    kind = sandbox.provider.classify_error(exc)
+
+    if kind is SandboxFailureKind.PATH_ABSENT:
+        logger.debug(
+            "Sandbox path not found", op=op, filepath=path, error=str(exc)
+        )
+        return
+
+    if kind is SandboxFailureKind.SANDBOX_GONE:
+        raise SandboxGoneError(str(sandbox.sandbox_id or "unknown"), str(exc)) from exc
+
+    if kind is SandboxFailureKind.TRANSIENT:
+        raise SandboxTransientError(f"{op} failed on {path}: {exc}") from exc
+
+    # UNKNOWN — undecidable from the exception alone (a deleted sandbox answers a
+    # bulk download with a status-less 404). Ask the control plane which it was
+    # instead of guessing; this costs a round trip but only on failures we
+    # genuinely cannot classify.
+    raise await _classify_by_liveness(sandbox, exc, op=op, path=path) from exc
+
+
+async def _classify_by_liveness(
+    sandbox: "PTCSandbox", exc: Exception, *, op: str, path: str
+) -> Exception:
+    """Decide gone-vs-transient for an unclassifiable failure by probing the runtime.
+
+    Uses ``refresh_state`` deliberately: ``get_state`` reads the SDK's cached
+    ``.state`` and would confirm a sandbox that has been deleted for an hour.
+    """
+    runtime = sandbox.runtime
+    sandbox_id = str(sandbox.sandbox_id or "unknown")
+    if runtime is None:
+        return SandboxTransientError(f"{op} failed on {path} with no runtime: {exc}")
+
+    try:
+        state = await runtime.refresh_state()
+    except Exception as probe_exc:
+        if sandbox.provider.classify_error(probe_exc) is SandboxFailureKind.SANDBOX_GONE:
+            return SandboxGoneError(sandbox_id, str(exc))
+        logger.warning(
+            "Could not confirm sandbox liveness after an unclassifiable failure",
+            op=op,
+            filepath=path,
+            sandbox_id=sandbox_id,
+            error=str(exc),
+            probe_error=str(probe_exc),
+        )
+        return SandboxTransientError(f"{op} failed on {path}: {exc}")
+
+    if state not in _RECOVERABLE_STATES:
+        return SandboxGoneError(sandbox_id, f"state={state.value}: {exc}")
+    return SandboxTransientError(f"{op} failed on {path}: {exc}")
 
 
 def _normalize_search_path(sandbox: "PTCSandbox", path: str) -> str:
@@ -62,9 +156,10 @@ async def adownload_file_bytes(sandbox: "PTCSandbox", filepath: str) -> bytes | 
         semaphore to limit event-loop pressure from concurrent downloads.
 
         Returns:
-            Bytes if downloaded, or None if missing.
+            Bytes if downloaded, or None if the file genuinely does not exist.
 
         Raises:
+            SandboxGoneError: If the sandbox itself is no longer there.
             SandboxTransientError: If a transient sandbox transport error persists.
         """
     await sandbox._wait_ready()
@@ -79,19 +174,17 @@ async def adownload_file_bytes(sandbox: "PTCSandbox", filepath: str) -> bytes | 
         if result:
             safe_record(workspace_fs_bytes, len(result), {"op": "read"})
         return result
-    except SandboxTransientError:
-        raise
     except Exception as e:
-        logger.debug(
-            "Failed to download file bytes", filepath=filepath, error=str(e)
-        )
+        await _raise_normalized(sandbox, e, op="download_file", path=filepath)
         return None
 
 
 async def aread_file_text(sandbox: "PTCSandbox", filepath: str) -> str | None:
     """Read a UTF-8 text file from the sandbox.
 
-        This path is safe to retry automatically.
+        This path is safe to retry automatically. ``None`` means absent (or not
+        decodable as UTF-8); sandbox failures propagate from
+        ``adownload_file_bytes``.
         """
     content_bytes = await sandbox.adownload_file_bytes(filepath)
     if not content_bytes:
@@ -109,8 +202,12 @@ async def aupload_file_bytes(sandbox: "PTCSandbox", filepath: str, content: byte
     """Upload raw bytes to the sandbox.
 
         This path is safe to retry automatically because uploads overwrite the target.
+        ``False`` means the path was rejected by validation — a sandbox failure
+        raises, since silently reporting "write failed" for an unreachable sandbox
+        makes a recoverable outage look like a permission problem.
 
         Raises:
+            SandboxGoneError: If the sandbox itself is no longer there.
             SandboxTransientError: If a transient sandbox transport error persists.
         """
     await sandbox._wait_ready()
@@ -135,10 +232,11 @@ async def aupload_file_bytes(sandbox: "PTCSandbox", filepath: str, content: byte
         )
         safe_record(workspace_fs_bytes, len(content), {"op": "write"})
         return True
-    except SandboxTransientError:
-        raise
     except Exception as e:
-        logger.debug(
+        # A write has no "absent" outcome, so a returned PATH_ABSENT (e.g. a
+        # missing parent directory) is still a failure for this caller.
+        await _raise_normalized(sandbox, e, op="upload_file", path=normalized_path)
+        logger.warning(
             "Failed to upload file bytes",
             filepath=filepath,
             normalized_path=normalized_path,
@@ -191,10 +289,13 @@ async def aread_file_range(
         if result.exit_code != 0:
             return await sandbox._aread_file_range_fallback(file_path, offset, limit)
         return result.stdout or ""
-    except SandboxTransientError:
-        raise
     except Exception as e:
-        logger.debug("Failed to read file range", filepath=file_path, error=str(e))
+        # The fallback re-reads through ``aread_file_text``, which now raises on
+        # sandbox failures — so falling back is only meaningful when the sandbox
+        # is actually reachable. Normalize first so an unreachable sandbox
+        # surfaces instead of burning a second doomed round trip.
+        await _raise_normalized(sandbox, e, op="read_file_range", path=normalized)
+        logger.warning("Failed to read file range", filepath=file_path, error=str(e))
         return await sandbox._aread_file_range_fallback(file_path, offset, limit)
 
 
@@ -216,7 +317,7 @@ def normalize_path(sandbox: "PTCSandbox", path: str) -> str:
 
         Converts agent's virtual paths to real sandbox paths:
             "/" or "." or "" -> {working_directory}
-            "/results/file.txt" -> {working_directory}/results/file.txt
+            "/work/task/file.txt" -> {working_directory}/work/task/file.txt
             "data/file.txt" -> {working_directory}/data/file.txt
             "{working_directory}/file.txt" -> unchanged
             "/tmp/file.txt" -> unchanged
@@ -252,7 +353,7 @@ def virtualize_path(sandbox: "PTCSandbox", path: str) -> str:
     """Convert real sandbox path to virtual path (output normalization).
 
         Strips working_directory prefix from paths returned to agent:
-            {working_directory}/results/file.txt -> /results/file.txt
+            {working_directory}/work/task/file.txt -> /work/task/file.txt
             {working_directory}/tools/docs/foo.md -> /tools/docs/foo.md
             /tmp/file.txt -> /tmp/file.txt (unchanged)
 
@@ -285,7 +386,7 @@ def validate_path(sandbox: "PTCSandbox", filepath: str) -> bool:
     if not sandbox.config.filesystem.enable_path_validation:
         return True
 
-    # Normalize the path first (handles virtual paths like /results/...)
+    # Normalize the path first (handles virtual paths like /work/task/...)
     normalized_path = sandbox.normalize_path(filepath)
 
     # Denylist takes priority over allowlist
@@ -334,51 +435,56 @@ def validate_and_normalize_path(sandbox: "PTCSandbox", path: str) -> tuple[str, 
 async def als_directory(sandbox: "PTCSandbox", directory: str = ".") -> list[dict[str, Any]]:
     """List contents of a directory.
 
-        Returns entries as dicts with at least: name, path, is_dir.
+        Returns entries as dicts with at least: name, path, is_dir. An empty list
+        means the directory is empty or absent — a sandbox failure raises, because
+        "200 with no files" for a broken sandbox reads as a deliberately emptied
+        workspace.
         """
     await sandbox._wait_ready()
 
-    try:
-        if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(
-            directory
-        ):
-            logger.error(
-                f"Access denied: {directory} is not in allowed directories"
-            )
-            return []
+    if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(
+        directory
+    ):
+        logger.error(f"Access denied: {directory} is not in allowed directories")
+        return []
 
+    try:
         assert sandbox.runtime is not None
         file_infos = await sandbox._runtime_call(
             sandbox.runtime.list_files,
             directory,
             retry_policy=RetryPolicy.SAFE,
         )
-        if not file_infos:
-            return []
-
-        results: list[dict[str, Any]] = []
-        for entry in file_infos:
-            name = _entry_name(entry)
-            is_dir = _entry_is_dir(entry)
-            entry_path = f"{directory}/{name}" if directory != "." else name
-            results.append({"name": name, "path": entry_path, "is_dir": is_dir})
-        return results
     except Exception as e:
-        logger.debug("Error listing directory", directory=directory, error=str(e))
+        await _raise_normalized(sandbox, e, op="list_files", path=directory)
         return []
+
+    if not file_infos:
+        return []
+
+    results: list[dict[str, Any]] = []
+    for entry in file_infos:
+        name = _entry_name(entry)
+        is_dir = _entry_is_dir(entry)
+        entry_path = f"{directory}/{name}" if directory != "." else name
+        results.append({"name": name, "path": entry_path, "is_dir": is_dir})
+    return results
 
 
 async def acreate_directory(sandbox: "PTCSandbox", dirpath: str) -> bool:
-    """Create a directory in the sandbox."""
+    """Create a directory in the sandbox.
+
+        ``False`` means path validation rejected it; sandbox failures raise.
+        """
     await sandbox._wait_ready()
 
-    try:
-        if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(
-            dirpath
-        ):
-            logger.error(f"Access denied: {dirpath} is not in allowed directories")
-            return False
+    if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(
+        dirpath
+    ):
+        logger.error(f"Access denied: {dirpath} is not in allowed directories")
+        return False
 
+    try:
         assert sandbox.runtime is not None
         await sandbox._runtime_call(
             sandbox.runtime.exec,
@@ -387,7 +493,8 @@ async def acreate_directory(sandbox: "PTCSandbox", dirpath: str) -> bool:
         )
         return True
     except Exception as e:
-        logger.debug("Failed to create directory", dirpath=dirpath, error=str(e))
+        await _raise_normalized(sandbox, e, op="mkdir", path=dirpath)
+        logger.warning("Failed to create directory", dirpath=dirpath, error=str(e))
         return False
 
 
@@ -421,7 +528,8 @@ async def acreate_directories(sandbox: "PTCSandbox", dirpaths: Iterable[str]) ->
         )
         return True
     except Exception as e:
-        logger.debug(
+        await _raise_normalized(sandbox, e, op="mkdir_bulk", path=paths[0])
+        logger.warning(
             "Failed to bulk-create directories",
             count=len(paths),
             error=str(e),
@@ -440,18 +548,20 @@ async def aedit_file_text(
     """Async edit for tools; safe to retry underlying I/O.
 
         This does not retry the logical edit itself; it only makes file I/O resilient.
+        Sandbox failures propagate rather than becoming ``{"success": False}`` — the
+        agent must not read "the sandbox is unreachable" as "your edit was wrong".
         """
     await sandbox._wait_ready()
 
-    try:
-        if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(
-            filepath
-        ):
-            return {
-                "success": False,
-                "error": f"Access denied: {filepath} is not in allowed directories",
-            }
+    if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(
+        filepath
+    ):
+        return {
+            "success": False,
+            "error": f"Access denied: {filepath} is not in allowed directories",
+        }
 
+    try:
         content = await sandbox.aread_file_text(filepath)
         if content is None:
             return {"success": False, "error": "File not found"}
@@ -494,8 +604,10 @@ async def aedit_file_text(
             "message": "File edited successfully",
         }
 
+    except (SandboxGoneError, SandboxTransientError):
+        raise
     except Exception as e:
-        logger.debug("Async edit_file failed", filepath=filepath, error=str(e))
+        logger.warning("Async edit_file failed", filepath=filepath, error=str(e))
         return {"success": False, "error": f"Edit operation failed: {e!s}"}
 
 
@@ -518,20 +630,25 @@ def _validate_path_allow_denied(sandbox: "PTCSandbox", path: str) -> bool:
 async def aglob_files(
     sandbox: "PTCSandbox", pattern: str, path: str = ".", *, allow_denied: bool = False
 ) -> list[str]:
-    """Async glob; safe to retry automatically."""
+    """Async glob; safe to retry automatically.
+
+        An empty list means no matches. A broken sandbox raises — returning ``[]``
+        made "the sandbox is unreachable" indistinguishable from "this workspace
+        has no files", which call sites then reported as success.
+        """
     await sandbox._wait_ready()
 
-    try:
-        if sandbox.config.filesystem.enable_path_validation:
-            is_allowed = (
-                sandbox._validate_path_allow_denied(path)
-                if allow_denied
-                else sandbox.validate_path(path)
-            )
-            if not is_allowed:
-                logger.error(f"Access denied: {path} is not in allowed directories")
-                return []
+    if sandbox.config.filesystem.enable_path_validation:
+        is_allowed = (
+            sandbox._validate_path_allow_denied(path)
+            if allow_denied
+            else sandbox.validate_path(path)
+        )
+        if not is_allowed:
+            logger.error(f"Access denied: {path} is not in allowed directories")
+            return []
 
+    try:
         search_path = sandbox._normalize_search_path(path)
 
         if "**" not in pattern and "/" not in pattern:
@@ -612,6 +729,7 @@ async def aglob_files(
         return output.split("\n")
 
     except Exception as e:
+        await _raise_normalized(sandbox, e, op="glob", path=path)
         logger.warning(
             "Async glob failed", pattern=pattern, path=path, error=str(e)
         )
@@ -635,16 +753,19 @@ async def agrep_content(
     head_limit: int | None = None,
     offset: int = 0,
 ) -> Any:
-    """Async ripgrep; safe to retry automatically."""
+    """Async ripgrep; safe to retry automatically.
+
+        An empty result means no matches; a broken sandbox raises.
+        """
     await sandbox._wait_ready()
 
-    try:
-        if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(
-            path
-        ):
-            logger.error(f"Access denied: {path} is not in allowed directories")
-            return []
+    if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(
+        path
+    ):
+        logger.error(f"Access denied: {path} is not in allowed directories")
+        return []
 
+    try:
         cmd = ["rg"]
         if output_mode == "files_with_matches":
             cmd.append("-l")
@@ -716,5 +837,6 @@ async def agrep_content(
         return results_strs
 
     except Exception as e:
-        logger.debug("Async grep failed", pattern=pattern, path=path, error=str(e))
+        await _raise_normalized(sandbox, e, op="grep", path=path)
+        logger.warning("Async grep failed", pattern=pattern, path=path, error=str(e))
         return []

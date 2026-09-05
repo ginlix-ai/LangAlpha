@@ -5,6 +5,8 @@
  * useChatMessages (carve B); consumes the HistoryRuntime lane port.
  */
 
+import i18n from '@/i18n';
+import { isOnline } from '@/lib/network';
 import type { AssistantMessage } from '@/types/chat';
 import { replayThreadHistory } from '../../utils/api';
 import { setStoredThreadId } from '../../hooks/utils/threadStorage';
@@ -31,7 +33,8 @@ import {
 import type {
   TokenUsage, SSEEvent, HistoryInterruptInfo, SubagentHistoryData, PairState,
 } from '../types';
-import { PROPOSAL_INTERRUPT_TYPES, PROPOSAL_DATA_KEY_MAP } from '../interrupts/buckets';
+import { PROPOSAL_INTERRUPT_TYPES, PROPOSAL_DATA_KEY_MAP, resolvePendingHistoryInterrupt, setCardStatus } from '../interrupts/buckets';
+import { recordInterruptClaims, type HistoryInterruptClaim } from '../interrupts/claims';
 import { projectHistoryInterrupt } from '../interrupts/fromHistoryEvent';
 import type { HistoryRuntime } from '../runtime';
 
@@ -111,6 +114,13 @@ export async function loadConversationHistory(
 
     // Track pending HITL interrupts from history to resolve status on next user_message
     const pendingHistoryInterrupts: HistoryInterruptInfo[] = [];
+    // What each still-running resume turn answered, kept for the whole replay
+    // because the claim can arrive BEFORE the interrupt it answers: the tip
+    // interrupt is appended once at the end of a checkpoint replay carrying no
+    // turn_index, so a reload taken before the resume commits its boundary
+    // replays it last — after the stamp that already answered it. See
+    // interrupts/claims.ts for why only a live resume records one.
+    const claimedInterrupts = new Map<string, HistoryInterruptClaim>();
 
     // Track subagent events by task ID for this history load
     // Map<taskId, { messages: Array, events: Array, description?: string, type?: string }>
@@ -308,34 +318,23 @@ export async function loadConversationHistory(
           // History replays chronologically, so the last write wins = most recent query's model.
           rt.setLastThreadModel(llmModel);
         }
+        // The resolvers below settle the cards already on screen; this keeps
+        // the same evidence for the interrupts still ahead of us.
+        recordInterruptClaims(claimedInterrupts, event);
+
         // Resolve pending plan_approval interrupt from content (empty = approved, non-empty = rejected).
-        {
-          const idx = pendingHistoryInterrupts.findIndex((p) => p.type === 'plan_approval');
-          if (idx !== -1) {
-            const matched = pendingHistoryInterrupts[idx];
-            const hasContent = typeof event.content === 'string' && event.content.trim();
-            const resolvedStatus = hasContent ? 'rejected' : 'approved';
-            rt.setMessages((prev) =>
-              updateMessage(prev,matched.assistantMessageId, (msg) => {
-                if (msg.role !== 'assistant') return msg;
-                const aMsg = msg as AssistantMessage;
-                const approvals = aMsg.planApprovals || {};
-                const key = matched.planApprovalId!;
-                return {
-                  ...aMsg,
-                  planApprovals: {
-                    ...approvals,
-                    [key]: {
-                      ...(approvals[key] || {}),
-                      status: resolvedStatus,
-                    },
-                  },
-                };
-              })
-            );
-            pendingHistoryInterrupts.splice(idx, 1);
-          }
-        }
+        resolvePendingHistoryInterrupt(
+          pendingHistoryInterrupts,
+          (p) => p.type === 'plan_approval',
+          (m) => ({
+            bucket: 'planApprovals',
+            key: m.planApprovalId!,
+            fields: {
+              status: typeof event.content === 'string' && event.content.trim() ? 'rejected' : 'approved',
+            },
+          }),
+          rt.setMessages,
+        );
 
         // Resolve ask_user_question interrupts from resume query metadata (hitl_answers).
         // Persisted immediately by persist_query_start(), keyed by interrupt_id.
@@ -343,33 +342,46 @@ export async function loadConversationHistory(
           const hitlAnswers = event.metadata?.hitl_answers as Record<string, unknown> | undefined;
           if (hitlAnswers && pendingHistoryInterrupts.length > 0) {
             for (const [interruptId, answerValue] of Object.entries(hitlAnswers)) {
-              const idx = pendingHistoryInterrupts.findIndex(
-                (p) => p.type === 'ask_user_question' && p.interruptId === interruptId
+              resolvePendingHistoryInterrupt(
+                pendingHistoryInterrupts,
+                (p) => p.type === 'ask_user_question' && p.interruptId === interruptId,
+                (m) => ({
+                  bucket: 'userQuestions',
+                  key: m.questionId!,
+                  fields: {
+                    status: answerValue !== null ? 'answered' : 'skipped',
+                    answer: answerValue as string | null,
+                  },
+                }),
+                rt.setMessages,
               );
-              if (idx !== -1) {
-                const matched = pendingHistoryInterrupts[idx];
-                const resolvedStatus = answerValue !== null ? 'answered' : 'skipped';
-                const qKey = matched.questionId!;
-                rt.setMessages((prev) =>
-                  updateMessage(prev,matched.assistantMessageId, (msg) => {
-                    if (msg.role !== 'assistant') return msg;
-                    const aMsg = msg as AssistantMessage;
-                    const questions = aMsg.userQuestions || {};
-                    return {
-                      ...aMsg,
-                      userQuestions: {
-                        ...questions,
-                        [qKey]: {
-                          ...(questions[qKey] || {}),
-                          status: resolvedStatus,
-                          answer: answerValue as string | null,
-                        },
-                      },
-                    };
-                  })
-                );
-                pendingHistoryInterrupts.splice(idx, 1);
-              }
+            }
+          }
+        }
+
+        // Resolve credit_pause interrupts from the resume query's metadata.
+        // A credit resume carries no answer (approve with no message), so it
+        // never lands in `hitl_answers` the way a question does — but every
+        // HITL resume stamps `hitl_interrupt_ids` with the ids it answered,
+        // and that is the signal here. Without it the card replays pending
+        // forever and re-arms a live Resume button on a turn that already
+        // resumed and completed.
+        {
+          const resumedIds = event.metadata?.hitl_interrupt_ids as string[] | undefined;
+          if (Array.isArray(resumedIds) && pendingHistoryInterrupts.length > 0) {
+            for (const interruptId of resumedIds) {
+              const idx = pendingHistoryInterrupts.findIndex(
+                (p) => p.type === 'credit_pause' && p.interruptId === interruptId,
+              );
+              if (idx === -1) continue;
+              pendingHistoryInterrupts.splice(idx, 1);
+              // By card id, not by bubble: a pause re-raised on a refused
+              // resume is re-queued against that resume's bubble, so a later
+              // attempt resolving through updateMessage would flip an invisible
+              // copy and leave the visible card pending — a Resume button on a
+              // finished thread, and the pending set is gone, so it would not
+              // even answer. The live path settles by id for the same reason.
+              rt.setMessages((prev) => setCardStatus(prev, 'creditPauses', interruptId, 'resumed'));
             }
           }
         }
@@ -598,8 +610,11 @@ export async function loadConversationHistory(
           // (payload.status). The top-level `status` is a hardcoded "completed"
           // and MUST be ignored.
           const stampedStatus = payload.status as string | undefined;
-          // Ledger failure reason, stamped only on an errored task artifact.
+          // Ledger failure reason, stamped on any task that settled with one.
           const stampedError = payload.error as string | undefined;
+          // Its machine spelling, which is what tells a stop the user can act
+          // on (a credit stop) from one that is only worth reporting.
+          const stampedErrorType = payload.error_type as string | undefined;
           const stampedRunStartedMs =
             typeof payload.projected_run_started_ms === 'number'
               ? payload.projected_run_started_ms
@@ -616,6 +631,7 @@ export async function loadConversationHistory(
                 type: type || 'general-purpose',
                 status: stampedStatus,
                 error: stampedError,
+                errorType: stampedErrorType,
                 projectedRunStartedMs: stampedRunStartedMs,
               });
             } else {
@@ -623,8 +639,18 @@ export async function loadConversationHistory(
               if (description && !existing.description) existing.description = description;
               if (prompt && !existing.prompt) existing.prompt = prompt || description || '';
               if (type && !existing.type) existing.type = type;
-              if (stampedStatus) existing.status = stampedStatus;
-              if (stampedError) existing.error = stampedError;
+              // The failure travels with the status it arrived with, and is
+              // replaced by it rather than merged under it. Every replayed
+              // task artifact carries a status; a resumed task's carries no
+              // failure at all, so preserving the previous run's reason is
+              // exactly how a retracted credit stop comes back on the next
+              // reload — the live session clears both writers when the task
+              // resumes, and replay would put one of them straight back.
+              if (stampedStatus) {
+                existing.status = stampedStatus;
+                existing.error = stampedError;
+                existing.errorType = stampedErrorType;
+              }
               // Monotonic max: artifacts stamp claims-through-their-turn, and
               // page/artifact processing order must not regress the watermark.
               if (stampedRunStartedMs != null) {
@@ -754,84 +780,56 @@ export async function loadConversationHistory(
 
         // Resolve pending ask_user_question interrupt from tool_call_result
         // (fallback for conversations where hitl_answers wasn't persisted)
-        {
-          const idx = pendingHistoryInterrupts.findIndex((p) => p.type === 'ask_user_question');
-          if (idx !== -1 && typeof event.content === 'string' &&
-              (event.content.startsWith('User answered:') || event.content.startsWith('User skipped'))) {
-            const matched = pendingHistoryInterrupts[idx];
-            const content = event.content;
-            const isAnswered = content.startsWith('User answered:');
-            const answerText = isAnswered ? content.replace('User answered: ', '') : null;
-            const qKey = matched.questionId!;
-            rt.setMessages((prev) =>
-              updateMessage(prev, matched.assistantMessageId, (msg) => {
-                if (msg.role !== 'assistant') return msg;
-                const aMsg = msg as AssistantMessage;
-                const questions = aMsg.userQuestions || {};
-                return {
-                  ...aMsg,
-                  userQuestions: {
-                    ...questions,
-                    [qKey]: {
-                      ...(questions[qKey] || {}),
-                      status: isAnswered ? 'answered' : 'skipped',
-                      answer: answerText,
-                    },
-                  },
-                };
-              })
-            );
-            pendingHistoryInterrupts.splice(idx, 1);
-          }
+        if (typeof event.content === 'string' &&
+            (event.content.startsWith('User answered:') || event.content.startsWith('User skipped'))) {
+          const isAnswered = event.content.startsWith('User answered:');
+          const answerText = isAnswered ? event.content.replace('User answered: ', '') : null;
+          resolvePendingHistoryInterrupt(
+            pendingHistoryInterrupts,
+            (p) => p.type === 'ask_user_question',
+            (m) => ({
+              bucket: 'userQuestions',
+              key: m.questionId!,
+              fields: { status: isAnswered ? 'answered' : 'skipped', answer: answerText },
+            }),
+            rt.setMessages,
+          );
         }
 
         // Resolve pending create_workspace, start_question, ptc_agent, or secretary action interrupt from tool_call_result
-        {
-          const idx = pendingHistoryInterrupts.findIndex((p) => PROPOSAL_INTERRUPT_TYPES.has(p.type));
-          if (idx !== -1 && typeof event.content === 'string') {
-            const matched = pendingHistoryInterrupts[idx];
-            const content = event.content;
-            const dataKey = PROPOSAL_DATA_KEY_MAP[matched.type] || 'questionProposals';
-
-            let resolvedStatus = 'approved';
-            let resultPayload: Record<string, unknown> | null = null;
-            if (content.startsWith('User declined')) {
-              resolvedStatus = 'rejected';
-            } else {
-              try {
-                const parsed = JSON.parse(content);
-                if (parsed?.success === false) resolvedStatus = 'rejected';
-                resultPayload = parsed;
-              } catch { /* non-JSON → treat as approved */ }
-            }
-
-            const pKey = matched.proposalId!;
-            // Extract thread_id/workspace_id from ptc_agent result for navigation
-            const extraFields: Record<string, unknown> = {};
-            if (matched.type === 'ptc_agent' && resultPayload) {
-              if (resultPayload.thread_id) extraFields.thread_id = resultPayload.thread_id;
-              if (resultPayload.workspace_id) extraFields.workspace_id = resultPayload.workspace_id;
-            }
-            rt.setMessages((prev) =>
-              updateMessage(prev,matched.assistantMessageId, (msg) => {
-                if (msg.role !== 'assistant') return msg;
-                const aMsg = msg as AssistantMessage;
-                const existing = ((aMsg as unknown as Record<string, unknown>)[dataKey] || {}) as Record<string, Record<string, unknown>>;
-                return {
-                  ...aMsg,
-                  [dataKey]: {
-                    ...existing,
-                    [pKey]: {
-                      ...(existing[pKey] || {}),
-                      status: resolvedStatus,
-                      ...extraFields,
-                    },
-                  },
-                };
-              })
-            );
-            pendingHistoryInterrupts.splice(idx, 1);
-          }
+        if (typeof event.content === 'string') {
+          const content = event.content;
+          // Parsed inside the patch builder so replay only pays for it on the
+          // tool result that actually settles a pending proposal.
+          resolvePendingHistoryInterrupt(
+            pendingHistoryInterrupts,
+            (p) => PROPOSAL_INTERRUPT_TYPES.has(p.type),
+            (m) => {
+              let resolvedStatus = 'approved';
+              let resultPayload: Record<string, unknown> | null = null;
+              if (content.startsWith('User declined')) {
+                resolvedStatus = 'rejected';
+              } else {
+                try {
+                  const parsed = JSON.parse(content);
+                  if (parsed?.success === false) resolvedStatus = 'rejected';
+                  resultPayload = parsed;
+                } catch { /* non-JSON → treat as approved */ }
+              }
+              // Extract thread_id/workspace_id from ptc_agent result for navigation
+              const extraFields: Record<string, unknown> = {};
+              if (m.type === 'ptc_agent' && resultPayload) {
+                if (resultPayload.thread_id) extraFields.thread_id = resultPayload.thread_id;
+                if (resultPayload.workspace_id) extraFields.workspace_id = resultPayload.workspace_id;
+              }
+              return {
+                bucket: PROPOSAL_DATA_KEY_MAP[m.type] || 'questionProposals',
+                key: m.proposalId!,
+                fields: { status: resolvedStatus, ...extraFields },
+              };
+            },
+            rt.setMessages,
+          );
         }
 
         return;
@@ -840,7 +838,7 @@ export async function loadConversationHistory(
       // Handle interrupt events during history replay
       if (eventType === 'interrupt') {
         projectHistoryInterrupt(rt, event, {
-          currentActivePairIndex, assistantMessagesByPair, pairStateByPair, pendingHistoryInterrupts,
+          currentActivePairIndex, assistantMessagesByPair, pairStateByPair, pendingHistoryInterrupts, claimedInterrupts,
         });
         return;
       }
@@ -926,7 +924,14 @@ export async function loadConversationHistory(
     const errMsg = (error as Error).message || '';
     const isNotFound = errMsg.includes('404');
     if (errMsg && !isNotFound) {
-      rt.setMessageError(errMsg || 'Failed to load conversation history');
+      // A dropped link surfaces here as the browser's own string — "Failed to
+      // fetch", "Load failed" — which we then render in red as if the request
+      // were rejected. It was not: the turn is usually still running and the
+      // reconnect resumes it from the cursor once the link returns. Say what
+      // actually happened instead of quoting the transport at the user.
+      rt.setMessageError(
+        isOnline() ? errMsg : i18n.t('chat.offlineHistoryLoad'),
+      );
     }
     rt.setIsLoadingHistory(false);
     rt.historyLoadingRef.current = false;

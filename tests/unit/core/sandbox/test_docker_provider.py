@@ -215,6 +215,38 @@ class TestDockerRuntimeProperties:
         assert "state" in meta
         assert meta["state"] in {s.value for s in RuntimeState}
 
+    @pytest.mark.asyncio
+    async def test_get_metadata_reports_container_limits(self, container, runtime):
+        """Daytona reports cpu/memory/created_at, so without these the settings
+        panel shows "---" on every resource card for a local sandbox."""
+        container.show.return_value = {
+            **container.show.return_value,
+            "Created": "2026-01-02T03:04:05Z",
+            "HostConfig": {"NanoCpus": 2_000_000_000, "Memory": 4 * 1024**3},
+        }
+
+        meta = await runtime.get_metadata()
+
+        assert meta["cpu"] == 2.0
+        assert meta["memory"] == 4.0
+        assert meta["created_at"] == "2026-01-02T03:04:05Z"
+        # No size quota is set, so there is no sandbox-scoped disk figure to report.
+        assert "disk" not in meta
+
+    @pytest.mark.asyncio
+    async def test_get_metadata_omits_unset_limits(self, container, runtime):
+        """A container created outside this provider's config reads back 0, which
+        means "unlimited" — reporting it as a 0-core, 0-GiB sandbox would be wrong."""
+        container.show.return_value = {
+            **container.show.return_value,
+            "HostConfig": {"NanoCpus": 0, "Memory": 0},
+        }
+
+        meta = await runtime.get_metadata()
+
+        assert "cpu" not in meta
+        assert "memory" not in meta
+
 
 class TestDockerRuntimeLifecycle:
     @pytest.fixture

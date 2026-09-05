@@ -122,6 +122,89 @@ async def list_user_features(user_id: str) -> list[FeatureState]:
     return features
 
 
+async def _get_skills_prefs(user_id: str) -> dict[str, Any]:
+    """The ``other_preference.skills`` sub-dict — the same server-managed
+    JSONB bag as ``feature_overrides``, so it rides the cached preferences
+    fetch and the agent can never edit it."""
+    prefs = await get_user_preferences(user_id)
+    other = (prefs or {}).get("other_preference") or {}
+    skills = other.get("skills")
+    return dict(skills) if isinstance(skills, dict) else {}
+
+
+async def _write_skills_prefs(user_id: str, skills: dict[str, Any]) -> None:
+    """Rewrite the whole ``skills`` sub-dict (the JSONB merge in
+    ``upsert_user_preferences`` is one-level shallow, so a partial write would
+    drop sibling keys); an emptied dict deletes the key outright. Same
+    last-writer-wins posture as ``set_feature_override``."""
+    await upsert_user_preferences(
+        user_id, other_preference={"skills": skills or None}
+    )
+    await invalidate_user_prefs_cache(user_id)
+
+
+def _parse_disabled(skills: dict[str, Any]) -> set[str]:
+    raw = skills.get("disabled_builtins")
+    if not isinstance(raw, list):
+        return set()
+    return {str(name) for name in raw}
+
+
+async def get_disabled_builtin_skills(user_id: str) -> frozenset[str]:
+    """Builtin skills this user has switched off."""
+    return frozenset(_parse_disabled(await _get_skills_prefs(user_id)))
+
+
+async def set_builtin_skill_disabled(
+    user_id: str, name: str, disabled: bool
+) -> frozenset[str]:
+    """Set or clear one builtin skill's per-user disable; return the new set."""
+    skills = await _get_skills_prefs(user_id)
+    current = _parse_disabled(skills)
+    if disabled:
+        current.add(name)
+    else:
+        current.discard(name)
+    if current:
+        skills["disabled_builtins"] = sorted(current)
+    else:
+        skills.pop("disabled_builtins", None)
+    await _write_skills_prefs(user_id, skills)
+    return frozenset(current)
+
+
+async def get_skill_command_overrides(user_id: str) -> dict[str, str]:
+    """Per-user platform-skill command renames: skill name → alias.
+
+    An alias REPLACES the registry command as the trigger; user/workspace
+    skill aliases live on their rows instead.
+    """
+    overrides = (await _get_skills_prefs(user_id)).get("command_overrides")
+    if not isinstance(overrides, dict):
+        return {}
+    return {str(k): str(v) for k, v in overrides.items() if v}
+
+
+async def set_skill_command_override(
+    user_id: str, name: str, command: str | None
+) -> dict[str, str]:
+    """Set (or clear, with None) one platform skill's command alias; return
+    the new override map. Collision/charset checks are the caller's job."""
+    skills = await _get_skills_prefs(user_id)
+    overrides = skills.get("command_overrides")
+    overrides = dict(overrides) if isinstance(overrides, dict) else {}
+    if command is None:
+        overrides.pop(name, None)
+    else:
+        overrides[name] = command
+    if overrides:
+        skills["command_overrides"] = overrides
+    else:
+        skills.pop("command_overrides", None)
+    await _write_skills_prefs(user_id, skills)
+    return {str(k): str(v) for k, v in overrides.items()}
+
+
 async def set_feature_override(
     user_id: str, key: str, enabled: bool | None
 ) -> list[FeatureState]:

@@ -17,6 +17,16 @@
   background-color: hsl(var(--bg-main));
   overflow: auto;
   box-sizing: border-box;
+  transition: padding-left 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Fixed overlays positioned off --sidebar-width. They are viewport-anchored, so
+   nothing carries them along when the sidebar animates — without this they snap
+   to the new column while .app-main is still easing into it. */
+.sidebar-tracking {
+  transition:
+    left 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .main {
@@ -25,6 +35,30 @@
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
+}
+
+/* A route with no top bar of its own to mark `data-chrome="drag"` drops in a
+   `.chrome-drag-strip` (chrome.css) so the top of the content column can still
+   move the window. Two shapes, and which one a route needs is decided by
+   whether it scrolls:
+
+   A route that scrolls puts the strip ABOVE its scroll port (Plugins, Settings)
+   -- a strip inside one rides the content out of view, and a titlebar that
+   works only at scroll-top is the bug reported again. That shape needs nothing
+   from here: the strip is the first child of an unpadded column, so it already
+   starts at the window's top edge and runs the column's full width.
+
+   A route that does not scroll can keep its padding on the page root and drop
+   the strip straight in (Automations). There the padding is between the strip
+   and the two edges a drag aims for -- the window's top, and on the left the
+   band between this strip and the sidebar's own. Such a page publishes its
+   padding as `--page-inset`: the strip pulls back out of it and hands it back
+   below itself, so the strip is the titlebar and the padding still spaces the
+   content underneath. Unset, every margin here resolves to zero. */
+html.desktop-mac .chrome-drag-strip {
+  margin-top: calc(-1 * var(--page-inset, 0px));
+  margin-bottom: var(--page-inset, 0px);
+  margin-inline: calc(-1 * var(--page-inset, 0px));
 }
 
 @media (max-width: 767px) {
@@ -38,5 +72,25 @@
   }
   .app-main--no-tab {
     padding-bottom: 0;
+  }
+
+  /* Below this width the sidebar is gone, and the sidebar is the only thing
+     reserving the strip the macOS window buttons float over, so every route's
+     own top bar lays out underneath them. Reserved here rather than per route
+     because there is no shape the routes share: some own a header, some carry
+     the padding on the page root, some start straight into content.
+
+     Height only, and the column is `box-sizing: border-box`, so this shrinks
+     the content box instead of adding to it: the child at `height: 100%` still
+     fits and nothing leaves the scroll port. Gated on `desktop-mac`, which only
+     the shell's preload can produce, so mobile web is untouched. */
+  html.desktop-mac .app-main {
+    padding-top: 38px;
+  }
+
+  /* ...so a route's own strip stands down here. The rule above already reserved
+     the row for every one of them, and two reservations are 76px of nothing. */
+  html.desktop-mac .app-main .chrome-drag-strip {
+    display: none;
   }
 }

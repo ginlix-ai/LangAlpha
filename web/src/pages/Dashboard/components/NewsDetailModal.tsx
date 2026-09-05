@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { getNewsArticle } from '../utils/api';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { MobileBottomSheet } from '@/components/ui/mobile-bottom-sheet';
+import { Loader } from '@/components/ui/loader';
 import { useToast } from '@/components/ui/use-toast';
 import { ContextBus } from '@/lib/contextBus';
 import { buildNewsWidgetSnapshot, normalizeArticle } from '../utils/newsArticleFetch';
@@ -179,10 +180,7 @@ function NewsBody({
   if (loading && !article) {
     return (
       <div className="flex items-center justify-center py-24">
-        <div
-          className="h-8 w-8 border-2 rounded-full animate-spin"
-          style={{ borderColor: 'var(--color-border-default)', borderTopColor: 'var(--color-accent-primary)' }}
-        />
+        <Loader size={32} className="text-[color:var(--color-accent-primary)]" />
       </div>
     );
   }
@@ -200,8 +198,8 @@ function NewsBody({
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
             style={{
-              backgroundColor: 'var(--color-accent-primary)',
-              color: '#fff',
+              backgroundColor: 'var(--color-btn-primary-bg)',
+              color: 'var(--color-btn-primary-text)',
             }}
           >
             Open article
@@ -233,7 +231,7 @@ function NewsBody({
           <div className={`absolute bottom-0 left-0 right-0 ${isMobile ? 'p-4' : 'p-6 md:p-8'}`}>
             {article.source?.name && (
               <span
-                className="inline-flex items-center gap-1.5 text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider mb-2 sm:mb-3"
+                className="inline-flex items-center gap-1.5 text-[0.625rem] font-bold px-2 py-0.5 rounded uppercase tracking-wider mb-2 sm:mb-3"
                 style={{
                   backgroundColor: 'var(--color-accent-primary)',
                   color: '#fff',
@@ -269,7 +267,7 @@ function NewsBody({
           <div className="mb-5 sm:mb-6">
             {article.source?.name && (
               <span
-                className="inline-flex items-center gap-1.5 text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider mb-2 sm:mb-3"
+                className="inline-flex items-center gap-1.5 text-[0.625rem] font-bold px-2 py-0.5 rounded uppercase tracking-wider mb-2 sm:mb-3"
                 style={{
                   backgroundColor: 'var(--color-accent-soft)',
                   color: 'var(--color-accent-primary)',
@@ -318,19 +316,17 @@ function NewsBody({
               <button
                 type="button"
                 onClick={onAttach}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] sm:text-xs font-medium transition-colors"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[0.6875rem] sm:text-xs font-medium transition-colors"
                 style={{
                   backgroundColor: 'var(--color-accent-soft)',
                   borderColor: 'var(--color-accent-overlay)',
                   color: 'var(--color-accent-primary)',
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = 'var(--color-accent-primary)';
-                  e.currentTarget.style.color = '#fff';
+                  e.currentTarget.style.opacity = '0.9';
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = 'var(--color-accent-soft)';
-                  e.currentTarget.style.color = 'var(--color-accent-primary)';
+                  e.currentTarget.style.opacity = '1';
                 }}
                 title={trans('dashboard.widgets.frame.addToContext', { defaultValue: 'Attach to chat' })}
               >
@@ -367,7 +363,7 @@ function NewsBody({
                 {article.keywords!.map((kw, i) => (
                   <span
                     key={i}
-                    className="px-2 py-0.5 sm:px-3 sm:py-1 rounded-full border text-[11px] sm:text-xs"
+                    className="px-2 py-0.5 sm:px-3 sm:py-1 rounded-full border text-[0.6875rem] sm:text-xs"
                     style={{
                       backgroundColor: 'var(--color-bg-hover)',
                       borderColor: 'var(--color-border-muted)',
@@ -392,7 +388,7 @@ function NewsBody({
                 Executive Summary
               </h3>
               <p
-                className="text-[13px] sm:text-sm leading-relaxed"
+                className="text-[0.8125rem] sm:text-sm leading-relaxed"
                 style={{ color: 'var(--color-text-secondary)' }}
               >
                 {article.description}
@@ -431,7 +427,7 @@ function NewsBody({
                             {insight.ticker}
                           </span>
                           <div
-                            className="flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded uppercase border"
+                            className="flex items-center gap-1 text-[0.625rem] font-bold px-1.5 py-0.5 rounded uppercase border"
                             style={sentimentStyle(insight.sentiment)}
                           >
                             {sentimentIcon(insight.sentiment)} {insight.sentiment || 'neutral'}
@@ -439,7 +435,7 @@ function NewsBody({
                         </div>
                         {insight.reasoning && (
                           <p
-                            className="text-[11px] sm:text-xs leading-relaxed line-clamp-2"
+                            className="text-[0.6875rem] sm:text-xs leading-relaxed line-clamp-2"
                             style={{ color: 'var(--color-text-secondary)' }}
                           >
                             {insight.reasoning}

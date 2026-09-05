@@ -1,8 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, FolderOpen, Loader2 } from 'lucide-react';
+import { ArrowLeft, FolderOpen } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Loader } from '@/components/ui/loader';
 import MessageList from '../ChatAgent/components/MessageList';
+import {
+  MessageActionsProvider,
+  READ_ONLY_MESSAGE_ACTIONS,
+  type MessageActions,
+} from '../ChatAgent/components/messageList/MessageActionsContext';
 import FilePanel from '../ChatAgent/components/FilePanel';
 import { WorkspaceProvider } from '../ChatAgent/contexts/WorkspaceContext';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -18,6 +24,7 @@ import {
   handleHistoryTodoUpdate,
   handleHistoryTaskArtifactStatus,
 } from '../ChatAgent/hooks/utils/historyEventHandlers';
+import type { PairState } from '../ChatAgent/hooks/utils/historyEventHandlers';
 import {
   getSharedThread,
   replaySharedThread,
@@ -29,6 +36,7 @@ import {
 } from './api';
 import type { SharedThreadMetadata, SSEEvent } from './api';
 import { buildSharedServeUrl } from '../ChatAgent/components/viewers/html/wsfilesUrl';
+import { isTaskAgentId } from '../ChatAgent/utils/agentId';
 
 // Message record type compatible with historyEventHandlers
 type MessageRecord = Record<string, unknown>;
@@ -36,12 +44,6 @@ type MessageRecord = Record<string, unknown>;
 /** SetMessages type matching historyEventHandlers' signature */
 type SetMessages = (updater: (prev: MessageRecord[]) => MessageRecord[]) => void;
 
-/** PairState type matching historyEventHandlers' PairState */
-interface PairState {
-  contentOrderCounter: number;
-  reasoningId: string | null;
-  toolCallId: string | null;
-}
 
 function updateMessage(messages: MessageRecord[], messageId: string, updater: (m: MessageRecord) => MessageRecord): MessageRecord[] {
   return messages.map((m) => (m.id === messageId ? updater(m) : m));
@@ -69,6 +71,10 @@ export default function SharedChatView() {
   const [filePanelTargetFile, setFilePanelTargetFile] = useState<string | null>(null);
   const [rightPanelWidth, setRightPanelWidth] = useState(750);
   const isDraggingRef = useRef(false);
+  // Armed for the duration of a divider drag; unmount mid-drag would otherwise
+  // strand document listeners and app-wide col-resize/no-select body styles.
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => dragCleanupRef.current?.(), []);
 
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
@@ -126,7 +132,7 @@ export default function SharedChatView() {
           }
 
           // Skip subagent events in shared view
-          if (event.agent && typeof event.agent === 'string' && event.agent.startsWith('task:')) {
+          if (isTaskAgentId(event.agent)) {
             return;
           }
 
@@ -393,6 +399,15 @@ export default function SharedChatView() {
     }
   }, [canBrowseFiles, files.length, shareToken]);
 
+  // Read-only adapter for the transcript's action surface. The shared view has
+  // no turn to edit/regenerate/rate and no interrupt to approve. Subagent-task
+  // opening isn't declared here — MessageContentSegments strips it on readOnly
+  // surfaces, so a value would be dead weight pretending to be the gate.
+  const readOnlyActions = useMemo<MessageActions>(() => ({
+    ...READ_ONLY_MESSAGE_ACTIONS,
+    onOpenFile: handleOpenFile,
+  }), [handleOpenFile]);
+
   // Deep link: `?file=<path>` opens that report directly once metadata + file
   // permission are known. One-shot — the share-link target from §1.3b.
   const fileDeepLinkConsumedRef = useRef(false);
@@ -418,7 +433,10 @@ export default function SharedChatView() {
       setRightPanelWidth(newWidth);
     };
 
-    const onMouseUp = () => {
+    const onMouseUp = () => teardown();
+    // Doubles as the unmount cleanup — unhooks listeners and restores body styles.
+    const teardown = () => {
+      dragCleanupRef.current = null;
       isDraggingRef.current = false;
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
@@ -430,6 +448,7 @@ export default function SharedChatView() {
     document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
+    dragCleanupRef.current = teardown;
   }, [rightPanelWidth]);
 
   // Error state
@@ -451,7 +470,7 @@ export default function SharedChatView() {
   if (!metadata) {
     return (
       <div className="flex items-center justify-center min-h-screen" style={{ backgroundColor: 'var(--color-bg-page)' }}>
-        <Loader2 className="h-6 w-6 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
+        <Loader size={24} className="text-[color:var(--color-text-tertiary)]" />
       </div>
     );
   }
@@ -516,18 +535,20 @@ export default function SharedChatView() {
                   <div className="w-full max-w-3xl">
                     {loading && messages.length === 0 ? (
                       <div className="flex items-center justify-center py-20">
-                        <Loader2 className="h-5 w-5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
+                        <span aria-hidden="true" className="flex-shrink-0">
+                          <Loader size={20} className="text-[color:var(--color-text-tertiary)]" />
+                        </span>
                         <span className="ml-2 text-sm" style={{ color: 'var(--color-text-tertiary)' }}>Loading conversation...</span>
                       </div>
                     ) : (
                       <WorkspaceProvider workspaceId={null} downloadFile={imageDownloader}>
-                      <MessageList
-                        messages={messages}
-                        readOnly={true}
-                        allowFiles={canBrowseFiles}
-                        onOpenSubagentTask={() => {}}
-                        onOpenFile={handleOpenFile}
-                      />
+                      <MessageActionsProvider actions={readOnlyActions}>
+                        <MessageList
+                          messages={messages}
+                          readOnly={true}
+                          allowFiles={canBrowseFiles}
+                        />
+                      </MessageActionsProvider>
                       </WorkspaceProvider>
                     )}
                   </div>

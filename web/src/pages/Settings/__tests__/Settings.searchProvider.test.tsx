@@ -42,6 +42,7 @@ const h = vi.hoisted(() => {
     platformMode: false,
     accessTier: 1 as number,
     otherPreference: {} as Record<string, unknown>,
+    mutate: vi.fn((_payload: unknown) => undefined),
     mutateAsync: vi.fn(async (_payload: unknown) => ({})),
     // Stable references rebuilt only between tests (in beforeEach). Settings has
     // effects keyed on the user / preferences / validModelNames identities; if a
@@ -50,6 +51,12 @@ const h = vi.hoisted(() => {
     user: null as Record<string, unknown> | null,
     preferences: null as Record<string, unknown> | null,
     validModelNames: new Set<string>(),
+    // The untouched GET /api/v1/models payload. Distinct from validModelNames,
+    // which has the user's custom models folded in.
+    rawApiResponse: null as Record<string, unknown> | null,
+    // Pre-filter catalog + custom models — what exists, as opposed to what the
+    // user can currently reach.
+    rawModels: {} as Record<string, { models?: string[] }>,
     searchProviderCatalog: searchProviderCatalog as typeof searchProviderCatalog | null,
     fullCatalog: searchProviderCatalog,
   };
@@ -83,10 +90,13 @@ vi.mock('@/hooks/usePreferences', () => ({
   usePreferences: () => ({ preferences: h.preferences, isLoading: false }),
 }));
 
-// Update mutation — assert the saved payload here. Stable object so the
-// saveModelPrefs useCallback identity stays put across renders.
-const mutationStub = { mutateAsync: h.mutateAsync };
+// Update mutation. Assert the saved payload here: every control on the tab
+// writes a patch of the keys it owns through this one hook, so the payload is
+// the whole assertion surface. Stable object so the write callback's identity
+// stays put across renders.
+const mutationStub = { mutate: h.mutate, mutateAsync: h.mutateAsync };
 vi.mock('@/hooks/useUpdatePreferences', () => ({
+  PREFERENCE_MUTATION_KEY: ['user-preferences'],
   useUpdatePreferences: () => mutationStub,
 }));
 
@@ -99,10 +109,15 @@ vi.mock('@/contexts/ThemeContext', () => ({
 vi.mock('@/hooks/useAllModels', () => ({
   useAllModels: () => ({
     models: {},
+    // Per-model tuning metadata — the Advanced section reads it for the
+    // reasoning-effort ladder. Always an object from the real hook.
+    metadata: {},
     modelAccessMap: {},
     systemDefaults: { fallback_models: [] },
     // Stable Set ref — the stale-model cleanup effect keys on its identity.
     validModelNames: h.validModelNames,
+    rawModels: h.rawModels,
+    rawApiResponse: h.rawApiResponse,
     compactionProfiles: null,
     searchProviders: h.searchProviderCatalog,
     isLoading: false,
@@ -114,11 +129,9 @@ vi.mock('@/components/ui/use-toast', () => ({
   useToast: () => ({ toast: vi.fn() }),
 }));
 
-// Debounced save — collapse the 500ms debounce to a 0ms macrotask instead of
-// firing synchronously. The component updates modelStateRef.current during its
-// render commit; saveModelPrefs reads that ref, so the save must run AFTER the
-// setState's commit (a macrotask), not inside the same event handler tick — or
-// it would read the pre-change value. Mirrors the real debounce ordering.
+// Debounced save. The model tab has no text input and writes on the change
+// event, but UserInfoTab (mounted by the same Settings shell) still debounces
+// its text fields.
 vi.mock('@/hooks/useDebouncedSave', () => ({
   useDebouncedSave: (saveFn: () => Promise<void>) => ({
     trigger: () => { setTimeout(() => { void saveFn(); }, 0); },
@@ -131,10 +144,23 @@ vi.mock('@/hooks/useDebouncedSave', () => ({
 // select lives outside this component, so a stub is safe. The button exposes
 // onPrimaryModelChange so tests can fire an unrelated model-pref save.
 vi.mock('@/components/model/ModelTierConfig', () => ({
-  ModelTierConfig: (props: { onPrimaryModelChange?: (v: string) => void }) => (
+  ModelTierConfig: (props: {
+    onPrimaryModelChange?: (v: string) => void;
+  }) => (
     <div data-testid="model-tier-config-stub">
       <button onClick={() => props.onPrimaryModelChange?.('')}>stub-change-primary</button>
     </div>
+  ),
+}));
+
+// The fallback list moved out of ModelTierConfig into the Advanced section's
+// own picker. It still maps `selected` with no catalog filter, so what renders
+// is exactly the panel's state — which is what the cleanup effect must prune.
+vi.mock('@/components/model/FallbackModelsPicker', () => ({
+  FallbackModelsPicker: (props: { selected?: string[] }) => (
+    <ul data-testid="fallback-chips">
+      {(props.selected ?? []).map((m) => <li key={m}>{m}</li>)}
+    </ul>
   ),
 }));
 
@@ -194,7 +220,12 @@ beforeEach(() => {
   h.accessTier = 1;
   h.otherPreference = {};
   h.validModelNames = new Set<string>();
+  h.rawModels = {};
+  h.rawApiResponse = null;
   h.searchProviderCatalog = h.fullCatalog;
+  // The Simple/Advanced choice is persisted, so it would leak between tests.
+  localStorage.removeItem('settings:modelMode');
+  h.mutate.mockClear();
   h.mutateAsync.mockClear();
   h.mutateAsync.mockResolvedValue({});
 });
@@ -327,41 +358,41 @@ describe('Settings — Web Search Provider', () => {
     setupAndRenderModelTab();
 
     const select = await screen.findByRole('combobox', { name: 'Web Search Provider' });
-    // Wait for the async model-tab load to settle (it sets state from prefs).
     await waitFor(() => expect(select).toHaveValue(''));
 
     fireEvent.change(select, { target: { value: 'serper' } });
 
     await waitFor(() => {
-      expect(h.mutateAsync).toHaveBeenCalled();
+      expect(h.mutate).toHaveBeenCalled();
     });
-    const payload = h.mutateAsync.mock.calls.at(-1)![0] as {
+    const payload = h.mutate.mock.calls.at(-1)![0] as {
       other_preference: Record<string, unknown>;
     };
-    expect(payload.other_preference).toMatchObject({ search_provider: 'serper' });
+    expect(payload.other_preference).toEqual({ search_provider: 'serper' });
   });
 
-  it('platform mode below tier: unrelated saves omit search_provider entirely', async () => {
+  it('a save carries only the keys the control it came from owns', async () => {
+    // The whole bag used to be rewritten on every save, which is why a gated
+    // key had to be omitted by hand and why an unloaded model catalog could
+    // null six model references at once. A patch write cannot reach a sibling
+    // key at all, so there is nothing left to omit.
     h.platformMode = true;
     h.accessTier = 0;
-    h.otherPreference = { search_provider: 'serper' };
+    h.otherPreference = { search_provider: 'serper', preferred_model: 'some-model' };
 
     setupAndRenderModelTab();
 
     const select = await screen.findByRole('combobox', { name: 'Web Search Provider' });
     expect(select).toBeDisabled();
 
-    // Fire a save through an unrelated control; the gated key must be omitted
-    // (not nulled) so the stored pref is neither re-persisted nor deleted.
     fireEvent.click(screen.getByText('stub-change-primary'));
 
     await waitFor(() => {
-      expect(h.mutateAsync).toHaveBeenCalled();
+      expect(h.mutate).toHaveBeenCalled();
     });
-    const payload = h.mutateAsync.mock.calls.at(-1)![0] as {
-      other_preference: Record<string, unknown>;
-    };
-    expect('search_provider' in payload.other_preference).toBe(false);
+    expect(h.mutate.mock.calls.at(-1)![0]).toEqual({
+      model_preference: { preferred_model: null },
+    });
   });
 });
 
@@ -443,18 +474,14 @@ describe('Settings — Search Depth', () => {
     fireEvent.change(select, { target: { value: 'deep' } });
 
     await waitFor(() => {
-      expect(h.mutateAsync).toHaveBeenCalled();
+      expect(h.mutate).toHaveBeenCalled();
     });
-    const payload = h.mutateAsync.mock.calls.at(-1)![0] as {
-      other_preference: Record<string, unknown>;
-    };
-    expect(payload.other_preference).toMatchObject({
-      search_provider: 'tavily',
-      search_depth: 'deep',
+    expect(h.mutate.mock.calls.at(-1)![0]).toEqual({
+      other_preference: { search_depth: 'deep' },
     });
   });
 
-  it('switching provider resets the depth selection and drops it from the payload', async () => {
+  it('switching to a single-depth provider leaves the stored depth alone', async () => {
     h.otherPreference = { search_provider: 'tavily', search_depth: 'deep' };
 
     setupAndRenderModelTab();
@@ -464,19 +491,14 @@ describe('Settings — Search Depth', () => {
 
     fireEvent.change(getSearchProviderSelect(), { target: { value: 'serper' } });
 
-    // Depth select disappears (serper is single-depth)…
+    // Serper has no depth control, so deleting the stored level would cost the
+    // user a value a switch back to tavily wants. (That the control itself goes
+    // away is pinned above, off the stored provider.)
     await waitFor(() => {
-      expect(screen.queryByRole('combobox', { name: 'Search Depth' })).not.toBeInTheDocument();
+      expect(h.mutate).toHaveBeenCalled();
     });
-    // …and the save omits search_depth (single-depth provider → gated off),
-    // leaving the stored key untouched for a later switch back.
-    await waitFor(() => {
-      expect(h.mutateAsync).toHaveBeenCalled();
+    expect(h.mutate.mock.calls.at(-1)![0]).toEqual({
+      other_preference: { search_provider: 'serper' },
     });
-    const payload = h.mutateAsync.mock.calls.at(-1)![0] as {
-      other_preference: Record<string, unknown>;
-    };
-    expect(payload.other_preference).toMatchObject({ search_provider: 'serper' });
-    expect('search_depth' in payload.other_preference).toBe(false);
   });
 });

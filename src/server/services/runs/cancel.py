@@ -23,19 +23,27 @@ _POLL_TIMEOUT_S = 5.0
 _RETRY_BACKOFF_S = 2.0
 
 
-async def publish_cancel_nudge(thread_id: str, run_id: Optional[str]) -> None:
-    """Best-effort: never raises — the durable intent row is the truth."""
+async def publish_cancel_nudge(
+    thread_id: str, run_id: Optional[str], task_id: Optional[str] = None
+) -> None:
+    """Best-effort: never raises — the durable intent row is the truth.
+
+    With ``task_id``, targets one background task instead of the run: the
+    owning worker cancels just that task via its local registry.
+    """
     from src.utils.cache.redis_cache import get_cache_client
 
     cache = get_cache_client()
     if not cache.enabled or not cache.client:
         return
+    payload: dict = {"thread_id": thread_id, "run_id": run_id}
+    if task_id is not None:
+        payload["task_id"] = task_id
     try:
-        await cache.client.publish(
-            CANCEL_CHANNEL, json.dumps({"thread_id": thread_id, "run_id": run_id})
-        )
+        await cache.client.publish(CANCEL_CHANNEL, json.dumps(payload))
         logger.info(
-            f"[cancel-nudge] published for thread={thread_id} run={run_id}"
+            f"[cancel-nudge] published for thread={thread_id} run={run_id} "
+            f"task={task_id}"
         )
     except Exception as exc:
         logger.warning(f"[cancel-nudge] publish failed for {thread_id}: {exc}")
@@ -126,12 +134,18 @@ class TurnCancelListener:
             payload = json.loads(data)
             thread_id = payload.get("thread_id")
             run_id = payload.get("run_id")
-            # run_id is required: an untargeted local cancel could hit a
-            # NEWER run than the one the intent was stamped on.
-            if not thread_id or not run_id:
-                return
+            task_id = payload.get("task_id")
         except Exception:
             logger.warning("[cancel-nudge] undecodable payload dropped")
+            return
+        # Task-targeted nudge: cancel that one background task if this
+        # worker owns its live writer (idempotent — non-owners no-op).
+        if thread_id and task_id:
+            await self._handle_task(thread_id, task_id)
+            return
+        # run_id is required: an untargeted local cancel could hit a
+        # NEWER run than the one the intent was stamped on.
+        if not thread_id or not run_id:
             return
         try:
             from src.server.services.runs.executor import (
@@ -150,5 +164,26 @@ class TurnCancelListener:
             logger.error(
                 f"[cancel-nudge] local cancel dispatch failed for "
                 f"thread={thread_id}",
+                exc_info=True,
+            )
+
+    async def _handle_task(self, thread_id: str, task_id: str) -> None:
+        try:
+            from src.server.services.background_registry_store import (
+                BackgroundRegistryStore,
+            )
+
+            handled = await BackgroundRegistryStore.get_instance().cancel_task(
+                thread_id, task_id
+            )
+            if handled:
+                logger.info(
+                    f"[cancel-nudge] local task cancelled for "
+                    f"thread={thread_id} task={task_id}"
+                )
+        except Exception:
+            logger.error(
+                f"[cancel-nudge] local task cancel failed for "
+                f"thread={thread_id} task={task_id}",
                 exc_info=True,
             )

@@ -77,7 +77,7 @@ class TestValidateCustomModels:
         """Custom model name may collide with a built-in — the resolver
         checks custom first, so the user's entry shadows the built-in. This
         is the normal path for routing built-in model names (e.g.
-        ``glm-5.1``) through a user's variant-specific key."""
+        ``glm-5.2``) through a user's variant-specific key."""
         mc = _mock_model_config(system_models={"gpt-4o": {"model_id": "gpt-4o"}})
         # Should not raise.
         self._validate(
@@ -150,6 +150,47 @@ class TestValidateCustomModels:
         self._validate([
             {"name": "my-gpt", "model_id": "gpt-4o", "provider": "openai"},
         ])
+
+    def test_a_block_carrying_only_a_surface_is_still_checked(self):
+        """The save-time check used to run only when the block declared levels,
+        so a block that named nothing but a path was stored unread. Nothing
+        writes it today, which is exactly why a typo in it would sit there."""
+        with pytest.raises(HTTPException):
+            self._validate([{
+                "name": "my-gpt", "model_id": "gpt-4o", "provider": "openai",
+                "reasoning": {"write": "parmeters.reasoning.effort"},
+            }])
+
+    def test_a_wrongly_typed_block_is_a_400_not_a_500(self):
+        """`on` as a list survives the path check -- iterating it yields the
+        same strings a dict would -- then raises AttributeError in the mapper,
+        once per turn, for every turn."""
+        with pytest.raises(HTTPException):
+            self._validate([{
+                "name": "my-gpt", "model_id": "gpt-4o", "provider": "openai",
+                "reasoning": {
+                    "efforts": ["none", "high"],
+                    "write": "parameters.output_config.effort",
+                    "on": ["parameters.thinking.type"],
+                    "off": {"parameters.thinking.type": "disabled"},
+                },
+            }])
+
+    def test_an_empty_block_does_not_strand_the_flat_ladder(self):
+        """Accepted as declaring a ladder, then read as declaring none: the
+        level the user had already picked was cleared on the next save."""
+        from src.server.app.users import _clear_unhonored_efforts
+
+        entry = {
+            "name": "my-gpt", "model_id": "gpt-4o", "provider": "openai",
+            "reasoning": {}, "reasoning_efforts": ["low", "high"],
+        }
+        self._validate([dict(entry)])
+        written = {}
+        _clear_unhonored_efforts(
+            written, {"custom_models": [entry]}, {"my-gpt": {"reasoning_effort": "high"}}
+        )
+        assert written == {}
 
     def test_text_auto_prepended(self):
         """If input_modalities is provided without 'text', it should be auto-added."""

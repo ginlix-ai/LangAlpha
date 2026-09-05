@@ -1,12 +1,13 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../lib/supabase';
-import { setTokenGetter, setTokenRefresher } from '../api/client';
+import { publishSession, sessionAdopter, clearAuthToken } from '../lib/authToken';
 import { queryKeys } from '../lib/queryKeys';
 import { AUTH_BROADCAST_CHANNEL, OAUTH_POPUP_WINDOW_NAME, OAUTH_POPUP_FEATURES } from '../lib/oauthPopup';
 import { clearFlashWorkspaceCache } from '@/pages/MarketView/utils/flashWorkspace';
 import { resetNavPanelExpansion } from '@/pages/ChatAgent/components/navExpansionStore';
-import { resetStableNavOrder, resetSharedWorkspaceThreads } from '@/pages/ChatAgent/hooks/useNavigationData';
+import { resetStableNavOrder } from '@/pages/ChatAgent/hooks/useNavigationData';
+import { resetSharedWorkspaceThreads } from '@/lib/navThreadsStore';
 import { runAuthResets } from '../lib/authResets';
 
 import type {
@@ -43,6 +44,7 @@ export interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 import { isPlatformMode } from '@/config/hostMode';
+import { withShellReturn } from '../lib/desktopAuthHandoff';
 
 const _LOCAL_DEV_USER_ID = (import.meta.env.VITE_AUTH_USER_ID as string) || 'local-dev-user';
 
@@ -72,12 +74,28 @@ const _localDevValue: AuthContextValue = {
 // the PKCE `?code=` a default email template produces is auto-exchanged and
 // stripped from the URL before any component can read it, so the landing
 // path is the only reliable carrier of the "reset password" intent.
-const emailConfirmUrl = () => window.location.origin + '/auth/confirm';
-const passwordResetUrl = () => window.location.origin + '/reset-password';
+// `withShellReturn` marks these when this window is the desktop app, so the
+// browser that opens the mail passes the link back instead of redeeming it and
+// stranding the app on "check your inbox".
+const emailConfirmUrl = () => withShellReturn(window.location.origin + '/auth/confirm');
+const passwordResetUrl = () => withShellReturn(window.location.origin + '/reset-password');
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  // Skip all Supabase logic in OSS mode.
-  if (!isPlatformMode) {
+  // Skip all Supabase logic in OSS mode. `supabase` is checked separately
+  // because it keys on the two Supabase env vars, not on the host mode: a
+  // platform build with those unset still has no client to talk to.
+  if (!isPlatformMode || !supabase) {
+    // Say so loudly in that second case. The fallback renders a signed-in
+    // local-dev UI, which for a platform build is a misconfiguration wearing a
+    // working app's face: requests go out unauthenticated and the backend
+    // rejects them, with nothing on screen to explain why.
+    if (isPlatformMode) {
+      console.error(
+        '[auth] VITE_HOST_MODE=platform but VITE_SUPABASE_URL/_KEY are unset, '
+        + 'so there is no auth client. Falling back to the local-dev context; '
+        + 'every authenticated request will be rejected.',
+      );
+    }
     return <AuthContext.Provider value={_localDevValue}>{children}</AuthContext.Provider>;
   }
 
@@ -89,8 +107,8 @@ let _syncPromise: Promise<void> | null = null;
 
 /** Inner provider that uses hooks — only rendered when Supabase auth is enabled. */
 function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
-  // supabase is guaranteed non-null here because SupabaseAuthProvider is only
-  // rendered when isPlatformMode is true.
+  // supabase is guaranteed non-null here: AuthProvider checks it before
+  // rendering this component.
   const sb = supabase!;
   const [session, setSession] = useState<Session | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
@@ -98,16 +116,6 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
   // an email link for account B opened while A is logged in) can be detected.
   const lastUserIdRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
-
-  /** Wire up the axios token getter immediately when we have a session. */
-  const wireTokenGetter = useCallback(() => {
-    setTokenGetter(() =>
-      sb.auth.getSession().then((r) => r.data.session?.access_token ?? null)
-    );
-    setTokenRefresher(() =>
-      sb.auth.refreshSession().then((r) => r.data.session?.access_token ?? null)
-    );
-  }, [sb]);
 
   /** Sync user on actual sign-in: create/migrate + backfill fields. Seed React Query cache. */
   const syncUser = useCallback(async (sess: Session) => {
@@ -155,10 +163,13 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
 
   // Bootstrap: read existing session and listen for auth changes.
   useEffect(() => {
+    // Fenced, because this read is async: a cross-tab sign-out landing between
+    // the request and this handler must not put the departed user's token back.
+    const adopt = sessionAdopter();
     sb.auth.getSession().then(({ data: { session: sess } }) => {
+      adopt(sess);
       setSession(sess);
       if (sess) {
-        wireTokenGetter();
         // Trigger background refetch of user data via React Query
         queryClient.invalidateQueries({ queryKey: queryKeys.user.all });
       }
@@ -173,6 +184,11 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
     const {
       data: { subscription },
     } = sb.auth.onAuthStateChange((event, sess) => {
+      // First, and synchronously: every event that carries a session is the
+      // freshest token we will be told about, including TOKEN_REFRESHED from
+      // auth-js's own background timer. This callback must stay non-async: it
+      // runs under an exclusive lock and an async one can deadlock across tabs.
+      publishSession(sess);
       // Switching accounts without a sign-out in between must not render the
       // new user against the old user's cached data.
       if (sess?.user && lastUserIdRef.current && sess.user.id !== lastUserIdRef.current) {
@@ -186,7 +202,6 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
       lastUserIdRef.current = sess?.user?.id ?? null;
       setSession(sess);
       if (sess) {
-        wireTokenGetter();
         if (event === 'SIGNED_IN') {
           syncUser(sess);  // Full sync only on actual login
         } else if (event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') {
@@ -206,13 +221,12 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
         resetStableNavOrder();
         resetSharedWorkspaceThreads();
         runAuthResets();
-        setTokenGetter(() => Promise.resolve(null));
-        setTokenRefresher(() => Promise.resolve(null));
+        clearAuthToken();
       }
     });
 
     return () => subscription.unsubscribe();
-  }, [sb, wireTokenGetter, syncUser, queryClient]);
+  }, [sb, syncUser, queryClient]);
 
   const loginWithEmail = useCallback(
     (email: string, password: string) => sb.auth.signInWithPassword({ email, password }),
@@ -299,7 +313,13 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
     const channel = new BroadcastChannel(AUTH_BROADCAST_CHANNEL);
     const onMessage = (event: MessageEvent) => {
       if (event.data?.type === 'oauth-complete') {
-        sb.auth.getSession();
+        // Adopt the token here too: this is the one sign-in path that reaches
+        // us without an auth event, so the cache would otherwise stay empty.
+        const adopt = sessionAdopter();
+        // A rejection here is survivable and must stay unhandled-free: the
+        // popup has already written the cookie, so the next read picks the
+        // session up even if this one could not.
+        sb.auth.getSession().then(({ data }) => adopt(data.session)).catch(() => {});
       }
     };
     channel.addEventListener('message', onMessage);

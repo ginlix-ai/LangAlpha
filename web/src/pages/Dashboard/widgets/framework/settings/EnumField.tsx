@@ -27,7 +27,7 @@ export function EnumField({ label, value, onChange, options, helper }: Props) {
         ))}
       </Select>
       {helper && (
-        <span className="text-[11px] mt-1 block" style={{ color: 'var(--color-text-tertiary)' }}>
+        <span className="text-[0.6875rem] mt-1 block" style={{ color: 'var(--color-text-tertiary)' }}>
           {helper}
         </span>
       )}

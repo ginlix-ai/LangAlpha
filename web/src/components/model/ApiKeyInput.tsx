@@ -1,8 +1,8 @@
 import { useState, useCallback, useRef, useId, useEffect } from "react"
-import { Eye, EyeOff, Check, Loader2, X } from "lucide-react"
+import { Eye, EyeOff, Check, X } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
-import { cn } from "@/lib/utils"
+import { Loader } from "@/components/ui/loader"
 
 export interface TestResult {
   success: boolean
@@ -103,7 +103,7 @@ export function ApiKeyInput({
             onChange={(e) => onChange(e.target.value)}
             onBlur={handleBlur}
             placeholder={maskedKey || "Paste your API key here"}
-            className={cn("pr-12 focus-visible:ring-offset-0", hasError && "focus-visible:ring-0")}
+            className="pr-12"
             style={
               hasError
                 ? { borderColor: "var(--color-loss)" }
@@ -146,7 +146,9 @@ export function ApiKeyInput({
           >
             {testState === "loading" && (
               <>
-                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                <span aria-hidden="true" className="mr-1.5 flex-shrink-0">
+                  <Loader size={14} className="text-current" />
+                </span>
                 Testing...
               </>
             )}

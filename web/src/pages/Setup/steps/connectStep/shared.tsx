@@ -47,6 +47,7 @@ export function getApiFormatKey(sdk?: string | null, useResponseApi?: boolean): 
     case 'gemini':
       return 'setup.apiFormatGemini';
     case 'openai':
+    case 'dashscope':
       return useResponseApi ? 'setup.apiFormatOpenaiResponses' : 'setup.apiFormatOpenaiCompletions';
     case 'codex':
       return 'setup.apiFormatCodex';
@@ -103,7 +104,7 @@ export function DisclaimerBox({ provider }: { provider: string }) {
     <div
       className="rounded-lg p-3"
       style={{
-        backgroundColor: 'var(--color-bg-sunken, var(--color-bg-card))',
+        backgroundColor: 'var(--color-bg-subtle)',
         border: '1px solid var(--color-border-muted)',
       }}
     >
@@ -113,10 +114,10 @@ export function DisclaimerBox({ provider }: { provider: string }) {
           <p className="text-xs font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
             {t('setup.securityPrivacy')}
           </p>
-          <p className="text-[11px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
+          <p className="text-[0.6875rem] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
             {t('setup.tokensEncrypted')}
           </p>
-          <p className="text-[11px] leading-relaxed mt-1.5" style={{ color: 'var(--color-text-tertiary)' }}>
+          <p className="text-[0.6875rem] leading-relaxed mt-1.5" style={{ color: 'var(--color-text-tertiary)' }}>
             {isClaude
               ? t('setup.usageCountsClaude')
               : t('setup.usageCountsOpenai')}

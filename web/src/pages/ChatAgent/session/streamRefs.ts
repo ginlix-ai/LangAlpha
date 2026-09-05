@@ -15,6 +15,8 @@ interface TaskRefs {
   currentToolCallIdRef: { current: string | null };
   messages: MessageRecord[];
   runIndex: number;
+  /** Live accumulator for a workflow run task's workflow_lifecycle reducer. */
+  workflowRun?: import('./subagents/workflowRunState').WorkflowRunState;
 }
 
 /** Shape of refs passed to main-agent streaming handlers. */
@@ -23,8 +25,7 @@ interface StreamRefs {
   currentReasoningIdRef: { current: string | null };
   currentToolCallIdRef: { current: string | null };
   subagentStateRefs?: Record<string, TaskRefs>;
-  isReconnect?: boolean | number;
-  _toolCreatedAt?: Record<string, number>;
+  isReconnect?: boolean;
   updateTodoListCard?: (data: Record<string, unknown>, isNew: boolean) => void;
   isNewConversation?: boolean;
   [key: string]: unknown;
@@ -36,6 +37,16 @@ interface ToolCallChunkRecord {
   name?: string;
   args?: string;
   [key: string]: unknown;
+}
+
+/**
+ * Next value of a message's monotonic arrival counter. Every landed reply
+ * text, reasoning text or tool-argument chunk bumps it, so a bubble can tell
+ * "text is still flowing" from "the turn has gone quiet" without re-measuring
+ * everything it holds.
+ */
+export function nextArrivalSeq(msg: { arrivalSeq?: unknown }): number {
+  return ((msg.arrivalSeq as number) ?? 0) + 1;
 }
 
 /**

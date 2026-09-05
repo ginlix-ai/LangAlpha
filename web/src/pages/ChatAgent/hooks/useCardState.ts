@@ -28,6 +28,7 @@ interface SubagentMessage {
 
 interface SubagentData {
   agentId?: string;
+  displayId?: string;
   taskId?: string;
   description?: string;
   prompt?: string;
@@ -42,6 +43,11 @@ interface SubagentData {
   isHistory?: boolean;
   isReconnect?: boolean;
   title?: string;
+  /** Reduced workflow-run progress (workflow run tasks only). */
+  workflowRun?: import('../session/subagents/workflowRunState').WorkflowRunState;
+  /** Owning workflow run's agent id (workflow children only) — such cards
+   *  are hidden from the sidebar and reached via the run's detail view. */
+  ownerTaskId?: string;
   [key: string]: unknown;
 }
 
@@ -120,9 +126,13 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
         // for the subagent's last LLM call are emitted on the MAIN stream which
         // typically finishes draining slightly after the per-task stream marks the
         // card inactive — dropping them here would zero out the displayed total.
+        // A workflow run's progress is content in the same sense: its card holds
+        // no messages at all, and a replayed run is never isActive, so without
+        // this every live progress frame would be dropped.
         const hasContentUpdate =
           subagentDataUpdate.messages !== undefined ||
-          subagentDataUpdate.tokenUsage !== undefined;
+          subagentDataUpdate.tokenUsage !== undefined ||
+          subagentDataUpdate.workflowRun !== undefined;
         if (isCurrentlyInactive && !isBeingReactivated && !hasContentUpdate && !isTerminalWrite) {
           // Card is inactive and not being reactivated — drop the pure status update.
           // A terminal write is exempt: a closure correcting a stale non-terminal

@@ -1,5 +1,17 @@
 {
   "common": {
+    "staleBuild": {
+      "title": "This tab is out of date with the server",
+      "description": "The server is serving a different build than this tab loaded. Reload to switch to it.",
+      "blockedTitle": "This page could not load",
+      "blockedDescription": "The app changed while this tab was open. Reload to continue.",
+      "reload": "Reload"
+    },
+    "networkBanner": {
+      "offlineMessage": "You are offline. Data may be out of date until your connection returns."
+    },
+    "copy": "Copy",
+    "submit": "Submit",
     "save": "Save",
     "saving": "Saving...",
     "cancel": "Cancel",
@@ -66,6 +78,9 @@
     "confirming": "Confirming your email…",
     "confirmedSigningIn": "Email confirmed — signing you in…",
     "confirmError": "This link is invalid or has expired.",
+    "shellHandoffTitle": "Opening LangAlpha…",
+    "shellHandoffBody": "We handed this link to the LangAlpha app so you finish signing in there.",
+    "shellHandoffFallback": "Continue in this browser",
     "requestNewLink": "Request a new link",
     "confirmPassword": "Confirm password",
     "strengthTooShort": "Too short",
@@ -101,7 +116,14 @@
     "marketView": "Market View",
     "automations": "Automations",
     "settings": "Settings",
-    "account": "Usage & Plan"
+    "account": "Usage & Plan",
+    "newChat": "New chat",
+    "workspaces": "Workspaces",
+    "workspaceGallery": "Workspace gallery",
+    "collapse": "Collapse sidebar",
+    "expand": "Expand sidebar",
+    "resize": "Resize sidebar",
+    "plugins": "Plugins"
   },
   "account": {
     "menuLabel": "Account menu"
@@ -117,10 +139,27 @@
     "threadsPerWorkspace": "Threads per workspace",
     "all": "All",
     "showMore": "Show more",
-    "loadAll": "Load all"
+    "loadAll": "Load all",
+    "pinThread": "Pin",
+    "unpinThread": "Unpin",
+    "archiveThread": "Archive",
+    "threadUpdated": "Updated",
+    "threadCreated": "Created",
+    "threadTurns": "Turns",
+    "threadNeedsInput": "Waiting for your input",
+    "threadUnseen": "Finished, not yet viewed",
+    "untitledThread": "Untitled",
+    "noConversations": "No conversations yet",
+    "workspaceFallback": "Workspace",
+    "collapseAgents": "Collapse agents",
+    "expandAgents": "Expand agents",
+    "removeAgent": "Remove agent"
   },
   "settings": {
     "title": "User Settings",
+    "connected": "Connected",
+    "manageProviders": "Manage providers",
+    "fontSize": "Font size",
     "userInfo": "User Info",
     "preferences": "Preferences",
     "model": "Model",
@@ -255,6 +294,10 @@
     "claudeOpenAgain": "Open authorize page again",
     "starredModels": "Quick-access models",
     "starredModelsDesc": "Starred models appear in the chat input for quick switching",
+    "fallbackModels": "Fallback models",
+    "fallbackModelsDesc": "Tried in order when your primary or flash model is unavailable. Only add models you have access to. With none selected, no fallback is used.",
+    "fallbackModelsEmpty": "No models found",
+    "removeModel": "Remove {{model}}",
     "addModels": "Add",
     "searchProvider": "Web Search Provider",
     "searchProviderDesc": "Search engine the agent uses for web searches.",
@@ -271,7 +314,7 @@
       "deep": "Deep"
     },
     "compactionProfile": "Compaction Profile",
-    "compactionProfileDesc": "Bundled preset for compaction trigger and retention. Leave on system default unless you have a reason to tune it.",
+    "compactionProfileDesc": "Bundled preset for compaction trigger and retention. Leave on system default and each model gets the preset that fits its context window.",
     "compactionProfileUseDefault": "Use system default",
     "compactionProfilePreset": "{{tokens}}k tokens · keep {{keep}} · trim@{{trim}}",
     "compactionProfiles": {
@@ -291,6 +334,40 @@
         "label": "Relaxed",
         "description": "Maximum context. Best for 1M-context models."
       }
+    },
+    "modelTuning": {
+      "sectionModels": "Models",
+      "sectionDefaults": "Account defaults",
+      "sectionRouting": "Routing",
+      "sectionSearch": "Web search",
+      "sectionProviders": "Providers & accounts",
+      "detailLevel": "Detail level",
+      "simple": "Simple",
+      "advanced": "Advanced",
+      "perModel": "Per-model settings",
+      "perModelDesc": "Settings that apply only to one model. Anything left on Default follows the account defaults above.",
+      "colModel": "Model",
+      "colEffort": "Effort",
+      "colContext": "Context",
+      "colGuidance": "Guidance",
+      "colSpeed": "Speed",
+      "default": "Default",
+      "defaultNamed": "Default ({{value}})",
+      "modelDefault": "Model default",
+      "useModelDefault": "Use the model default",
+      "notSupported": "Not available",
+      "modelUnavailable": "Not reachable right now",
+      "addModel": "Add a model",
+      "resetModel": "Remove overrides",
+      "effortDesc": "How hard a model thinks before answering, where the model offers a choice.",
+      "guidanceDesc": "How much instruction the agent carries into a turn. Concise trims the coaching and leaves the facts.",
+      "guidanceLean": "Concise",
+      "guidanceDetailed": "Thorough",
+      "fetchModel": "Web fetch model",
+      "fetchModelDesc": "Used for web page extraction.",
+      "compactionModel": "Compaction model",
+      "compactionModelDesc": "Used for compacting long conversation context.",
+      "defaultsToFlash": "Defaults to flash model"
     }
   },
   "dashboard": {
@@ -1047,9 +1124,6 @@
       "placeholderMobile": "Ask AI about market trends...",
       "placeholderDesktop": "Ask AI about market trends, specific stocks, or portfolio analysis..."
     },
-    "networkBanner": {
-      "offlineMessage": "Network offline — dashboard data may be stale until you reconnect."
-    },
     "newsFeedCard": {
       "tabMarket": "Market Pulse",
       "tabPortfolio": "Your Portfolio",
@@ -1182,7 +1256,12 @@
     "failedDeleteThread": "Failed to delete thread. Please try again.",
     "failedRenameThread": "Failed to rename thread. Please try again.",
     "viewAll": "View all",
-    "shared": "Shared"
+    "shared": "Shared",
+    "archive": "Archive",
+    "unarchive": "Unarchive",
+    "archived": "Archived",
+    "archivedTasks": "Archived tasks",
+    "noArchivedThreads": "No archived threads"
   },
   "share": {
     "shareConversation": "Share conversation",
@@ -1194,12 +1273,25 @@
     "anyoneWithLink": "Anyone with this link can view the conversation."
   },
   "chat": {
+    "backToWorkflow": "Back to workflow",
+    "backToMain": "Back to main",
+    "backToFlash": "Back to Flash",
+    "reconnecting": "Reconnecting…",
+    "offlineHistoryLoad": "You are offline, so this conversation could not be refreshed. It will catch up when your connection returns.",
+    "jumpToLatest": {
+      "aria": "Scroll to latest message"
+    },
+    "minimap": {
+      "untitledTurn": "Message without text",
+      "replyPending": "Working"
+    },
     "pills": {
       "plan": "Plan",
       "planTitle": "Plan mode — agent creates a plan for approval before executing",
       "watch": "Watch",
       "watchTitle": "Market watch — live prices for tickers the agent tracks"
     },
+    "moreTools": "More tools",
     "widgetContext": {
       "inContext_one": "{{count}} in context",
       "inContext_other": "{{count}} in context",
@@ -1228,6 +1320,8 @@
     "errorHintModelAccess": "Confirm your plan or subscription allows access to this model.",
     "errorHintProviderStatus": "Check the provider's status page for ongoing incidents.",
     "errorHintTryAnotherModel": "Try switching to a different model in the model picker.",
+    "errorLinkManagePlan": "Manage plan",
+    "errorLinkViewUsage": "View usage",
     "errorUpstreamHeadlineModel": "{{model}} returned an error",
     "errorUpstreamHeadlineModelStatus": "{{model}} returned an error ({{status}})",
     "errorAttemptedModels": "Also tried:",
@@ -1238,6 +1332,23 @@
     "modelFallbackAttempts_other": "{{count}} attempts",
     "viewErrorDetail": "View error",
     "hideErrorDetail": "Hide error",
+    "showRawJson": "Show raw JSON",
+    "hideRawJson": "Hide raw JSON",
+    "resultTruncated": "Partial result — the rest was clipped from the preview",
+    "expandResult": "Show all",
+    "collapseResult": "Show less",
+    "resultMoreItems": "+{{n}} more",
+    "actions": {
+      "copyMessage": "Copy message",
+      "copied": "Copied!",
+      "editMessage": "Edit message",
+      "goodResponse": "Good response",
+      "removeRating": "Remove rating",
+      "reportIssue": "Report issue",
+      "feedbackSubmitted": "Feedback submitted",
+      "regenerate": "Regenerate response",
+      "retry": "Retry"
+    },
     "modelTroubleSuggestion": "{{from}} is having trouble — this answer came from {{to}}",
     "switchToModel": "Switch to {{model}}",
     "modelSwitched": "Default model set to {{model}}",
@@ -1245,6 +1356,77 @@
     "backgroundTasksRunning": "Background tasks are still running",
     "reportBackPending": "Waiting for PTC Agent to report back",
     "taskReportBackPending": "Waiting for subagent results to report back",
+    "taskCard": {
+      "statusRunning": "Running",
+      "statusPausing": "Finishing current step",
+      "statusCompleted": "Completed",
+      "statusStopped": "Stopped",
+      "statusFailed": "Failed",
+      "statusUpdated": "Updated",
+      "statusResumed": "Resumed"
+    },
+    "creditPause": {
+      "title": "Run paused",
+      "resume": "Resume",
+      "resuming": "Resuming…",
+      "resumedLabel": "Resumed"
+    },
+    "creditStop": {
+      "title": "Out of credits"
+    },
+    "subagentCard": {
+      "titleFallback": "Subagent Task",
+      "viewDetails": "View task details",
+      "openUpdated": "Click to view updated subagent",
+      "openResumed": "Click to view resumed subagent",
+      "openRunning": "Click to view running subagent",
+      "openDetails": "Click to view subagent details",
+      "toolUnit_one": "tool",
+      "toolUnit_other": "tools",
+      "tokenUnit": "tokens"
+    },
+    "subagentBar": {
+      "completedWithTools_one": "Completed ({{count}} tool call)",
+      "completedWithTools_other": "Completed ({{count}} tool calls)",
+      "runningWithTool": "Running: {{tool}}",
+      "initializing": "Initializing",
+      "instruct": "Instruct",
+      "errorHeading": "This agent stopped with an error",
+      "stoppedHeading": "This agent stopped",
+      "inputPlaceholder": "Add instruction for this agent...",
+      "avatarAlt": "Agent"
+    },
+    "workflowRun": {
+      "titleFallback": "Workflow run",
+      "openRunning": "Click to view running workflow",
+      "openDetails": "Click to view workflow details",
+      "sharedUnavailable": "Run details aren't available in shared view",
+      "agents_one": "{{count}} agent",
+      "agents_other": "{{count}} agents",
+      "done": "{{count}} done",
+      "tokens": "{{value}} tokens",
+      "earlier": "+{{count}} earlier",
+      "childFallbackLabel": "agent {{n}}",
+      "childRunning": "Running",
+      "childDone": "Done",
+      "childFailed": "Failed",
+      "childTimedOut": "Timed out",
+      "childInvalid": "Invalid result",
+      "childStopped": "Stopped",
+      "stop": "Stop",
+      "stopping": "Stopping…",
+      "statAgents": "Agents",
+      "statPhases": "Phases",
+      "statDuration": "Duration",
+      "statTokens": "Tokens",
+      "toolCalls_one": "{{count}} tool",
+      "toolCalls_other": "{{count}} tools",
+      "tokensShort": "{{value}} tok",
+      "sectionResult": "Result",
+      "sectionLog": "Log",
+      "starting": "Workflow starting…",
+      "noProgress": "No recorded progress for this run."
+    },
     "ptcCard": {
       "awaitingApproval": "Awaiting approval",
       "researchDeclined": "Research declined",
@@ -1258,7 +1440,7 @@
       "statusFailed": "Failed",
       "statusStopped": "Stopped",
       "hintProvisioning": "Provisioning sandbox…",
-      "hintWorking": "Working through the analysis…",
+      "hintWorking": "Running in the background",
       "hintFailed": "Run stopped before finishing",
       "hintStopped": "Run was stopped",
       "ctaOpenThread": "Open thread",
@@ -1296,6 +1478,11 @@
     "workspaceStateArchivedTitle": "Restoring from cold storage",
     "workspaceStateArchivedBody": "Sandboxes that sit idle for 7 days are archived to free compute. Bringing one back involves downloading the snapshot and rebooting the container, which usually takes 60 to 90 seconds.",
     "workspaceStateArchivedFootnote": "Your files, tools, and conversation state are intact — you'll be able to chat as soon as the sandbox is ready.",
+    "archiveConfirm": {
+      "title": "Archive a running thread?",
+      "body": "This thread has a run in progress. Archiving hides it from your lists while the run keeps going — you'll find it under Archived, with its results waiting.",
+      "confirm": "Archive"
+    },
     "compacting": "Compacting conversation...",
     "offloading": "Offloading context...",
     "compactionStopped": "Compaction stopped",
@@ -1334,6 +1521,7 @@
     },
     "compactedNotification": "Context compacted · {{from}} messages → summary",
     "taskErrorNotification": "Subagent run failed",
+    "taskStoppedNotification": "Subagent run stopped",
     "taskSteeringReturnedNotification": "Steering message returned — the run ended before it was delivered",
     "viewSummary": "View summary",
     "hideSummary": "Hide summary",
@@ -1347,16 +1535,20 @@
       "manageModels": "Manage models",
       "moreModels": "More models",
       "configureModels": "Configure models →",
-      "reasoningEffort": "Reasoning",
+      "reasoningEffort": "Effort",
+      "effortNone": "Off",
+      "effortMinimal": "Minimal",
       "effortLow": "Low",
       "effortMedium": "Medium",
       "effortHigh": "High",
-      "effortXhigh": "X-High",
-      "incompatibleSdk": "Cannot switch to this model in the current session (different provider)",
-      "fastMode": "Fast",
-      "fastModeDesc": "Priority routing for faster responses",
-      "fastModeHelpLine1": "Equivalent to /fast in Codex",
-      "fastModeHelpLine2": "2× credit usage, priority service tier"
+      "effortXhigh": "Extra High",
+      "effortMax": "Max",
+      "effortHint": "Higher effort is more thorough but slower.",
+      "defaultBadge": "Default",
+      "speed": "Speed",
+      "speedStandard": "Standard",
+      "speedFast": "Fast",
+      "speedFastHint": "2× credit usage, priority service tier"
     },
     "voice": {
       "start": "Start voice input",
@@ -1448,6 +1640,9 @@
     "addNLinesToContext": "Add {{count}} lines to context",
     "openFile": "Open file",
     "fromAgentResponse": "From agent response",
+    "pastedText": "Pasted text",
+    "pastedLines_one": "Pasted text · {{count}} line",
+    "pastedLines_other": "Pasted text · {{count}} lines",
     "addToMemo": "Add to memo",
     "syncWithMemo": "Sync with memo",
     "memoAdding": "Adding \"{{name}}\" to memo",
@@ -1501,6 +1696,7 @@
     "htmlSource": "Source",
     "pdfPrintHint": "Press Cmd/Ctrl-P to save the page as a PDF.",
     "pdfGenerating": "Generating PDF…",
+    "pdfFailed": "Could not save the PDF. Please try again.",
     "copyShareLink": "Copy link",
     "shareLinkCopied": "Shareable link copied to clipboard",
     "shareLinkFailed": "Couldn't copy the link",
@@ -1766,6 +1962,7 @@
   },
   "toolArtifact": {
     "open": "Open",
+    "floatPct": "Float %",
     "prevClose": "Prev Close",
     "dayRange": "Day Range",
     "52wRange": "52W Range",
@@ -1778,8 +1975,14 @@
     "vol": "Vol",
     "liveQuotes": "Live Quotes",
     "extendedHours": {
-      "preMarket": { "long": "Pre-Mkt", "short": "Pre" },
-      "afterHours": { "long": "After-Hrs", "short": "AH" }
+      "preMarket": {
+        "long": "Pre-Mkt",
+        "short": "Pre"
+      },
+      "afterHours": {
+        "long": "After-Hrs",
+        "short": "AH"
+      }
     },
     "marketStatus": {
       "early_trading": "Pre-Market",
@@ -1896,9 +2099,6 @@
     "noPlanDescription": "No plan description.",
     "subagentTask": "Subagent Task",
     "instructions": "Instructions",
-    "result": "Result",
-    "subagentStillRunning": "Subagent is still running...",
-    "noResultAvailable": "No result available",
     "goToSubagentTab": "Go to subagent tab",
     "noResultContent": "No result content",
     "input": "Input",
@@ -2092,6 +2292,14 @@
     }
   },
   "setup": {
+    "capabilities": "Capabilities",
+    "importParentModels": "Also add these models",
+    "importParentModelsDesc": "Models from the parent catalog, routed through your endpoint and key. Uncheck any you don't need.",
+    "selectNone": "None",
+    "fetchingModels": "Fetching models...",
+    "selectModelsDesc": "Select models available on your server.",
+    "availableModels": "Available models",
+    "noModelsFound": "No models found. Make sure your server is running and has models loaded.",
     "brandedHeader": "Configure your LLM providers",
     "securityNote": "Your API keys are encrypted and never shared",
     "methodTitle": "How would you like to connect?",
@@ -2258,7 +2466,7 @@
     "addModel": "Add model",
     "modelIdInputPlaceholder": "Enter model ID (e.g. GPT-5.4)",
     "customModelNameLabel": "Display name",
-    "customModelNamePlaceholder": "How this model appears in menus (e.g. glm-5.1)",
+    "customModelNamePlaceholder": "How this model appears in menus (e.g. glm-5.3)",
     "customModelNameSlugPreview": "Saved as: {{slug}}",
     "customModelNameSlugEmpty": "Add letters or numbers — spaces and symbols will be stripped.",
     "customModelIdLabel": "Upstream model ID",
@@ -2469,6 +2677,489 @@
       "replayDone": "Page tips and the getting-started guide will show again.",
       "reset": "Reset onboarding",
       "resetDone": "Onboarding reset — tips and the guide start fresh."
+    }
+  },
+  "mcp": {
+    "list": {
+      "title": "Connectors",
+      "addServer": "Add server",
+      "importJson": "Import JSON",
+      "importHint": "Paste a standard mcpServers JSON config",
+      "atCap": "At {{max}}/{{max}} — remove one first",
+      "loadFailed": "Failed to load MCP servers",
+      "empty": "No MCP servers. Add one or copy a template."
+    },
+    "tab": {
+      "plugins": "Plugins",
+      "pluginsHint": "User-level servers, skills, OAuth connections and shared secrets",
+      "startingWorkspace": "Starting workspace — your servers are checked automatically as soon as it's up.",
+      "workspaceStopped": "Workspace is stopped — saving a server starts it back up and checks the server automatically.",
+      "promoteExistsBefore": "Server ",
+      "promoteExistsAfter": " already exists. Overwrite it with this server's current config?",
+      "overwrite": "Overwrite",
+      "savedWithWarnings": "Server saved with warnings",
+      "promotedTitle": "Saved to your servers",
+      "promoteUpdatedTitle": "Server updated",
+      "promotedDesc": "\"{{name}}\" is now one of your servers. Manage it on the Plugins page and use it in any workspace.",
+      "promoteFailed": "Could not save the server"
+    },
+    "row": {
+      "builtin": "built-in",
+      "inherited": "inherited",
+      "workspace": "workspace",
+      "inheritedHint": "Inherited from your servers, applies to all your workspaces",
+      "overridesInherited": "overrides inherited",
+      "overridesInheritedHint": "A workspace copy overrides your same-named user-level server here",
+      "userDisabled": "Disabled in Plugins",
+      "toolCount_one": "{{count}} tool",
+      "toolCount_other": "{{count}} tools",
+      "setupSecret": "Set up {{name}}",
+      "manageInPlugins": "Manage in Plugins",
+      "reconnectInPlugins": "Reconnect in Plugins",
+      "edit": "Edit",
+      "testConnection": "Test connection",
+      "promoteToUser": "Save to your servers",
+      "delete": "Delete",
+      "enableAria": "Enable {{name}}",
+      "disableAria": "Disable {{name}}",
+      "actionsAria": "Actions for {{name}}"
+    },
+    "status": {
+      "connected": "Connected",
+      "error": "Error",
+      "needsSecret": "Needs secret",
+      "pending": "Pending",
+      "disabled": "Disabled",
+      "unknown": "Unknown",
+      "pendingHint": "Waiting for discovery. Start the workspace, or test the connection."
+    },
+    "lifecycle": {
+      "verifying": "Verifying…",
+      "starting": "Starting workspace…",
+      "waiting": "Waiting for workspace to start",
+      "applying": "Applying to agent…",
+      "appliesOnStart": "Applies when workspace starts",
+      "ready": "Ready"
+    },
+    "discover": {
+      "failed": "Discovery failed",
+      "noTools": "Connected, no tools reported",
+      "toolCount_one": "Connected, {{count}} tool",
+      "toolCount_other": "Connected, {{count}} tools"
+    }
+  },
+  "vault": {
+    "addSecret": "Add Secret",
+    "valuePlaceholder": "Secret value",
+    "editValuePlaceholder": "New value (leave empty to keep current)",
+    "descriptionPlaceholder": "Description (optional)",
+    "update": "Update",
+    "edit": "Edit",
+    "delete": "Delete",
+    "deleteConfirmYes": "Confirm",
+    "deleting": "Deleting…",
+    "hideValue": "Hide value",
+    "revealValue": "Reveal value",
+    "loadFailed": "Failed to load secrets",
+    "nameInvalid": "Name must use letters, digits, underscores; start with letter or underscore",
+    "recommended": "Recommended credentials",
+    "setUp": "Set up",
+    "settingUp": "Setting up",
+    "docs": "Docs",
+    "tokenFallback": "token",
+    "atCapHint": "Vault at {{max}}/{{max}} — remove a secret first",
+    "valueHintInvalid": "This doesn't look like a valid {{label}}",
+    "valueHintDocs": " — check the docs link above.",
+    "valueHintStillSave": "You can still save.",
+    "workspace": {
+      "title": "Vault",
+      "empty": "No secrets stored. Add API keys or credentials for agent code to use.",
+      "usageTitle": "Usage",
+      "usageAccess": "Access in code:",
+      "securityTitle": "Security",
+      "security1": "Secrets are encrypted at rest with AES (pgcrypto) and never stored in plaintext on our servers.",
+      "security2a": "The AI agent cannot read secret values directly — it can only call",
+      "security2b": "inside sandboxed code.",
+      "security3": "All agent output is scanned by leak detection. Any secret value found in tool results is automatically redacted before reaching the model.",
+      "security4a": "Direct file access to the internal secret store is blocked by code validation — only the",
+      "security4b": "API is allowed."
+    }
+  },
+  "plugins": {
+    "title": "Plugins",
+    "description": "MCP servers, skills, and credentials available to your agent in every workspace.",
+    "tabs": {
+      "mcp": "Connectors",
+      "skills": "Skills",
+      "secrets": "Secrets",
+      "plugins": "Plugins",
+      "brokerages": "Brokerages"
+    },
+    "servers": {
+      "inheritHint": "A server switched on here is available in every one of your workspaces; switch it off in a single workspace from that workspace's MCP tab. Switched-off servers are inert templates.",
+      "enabledState": "On in all workspaces",
+      "disabledState": "Off, not inherited",
+      "empty": "No servers yet. Add a server or import a JSON config.",
+      "emptyPluginOnly": "Every server you have came from a plugin. Add one of your own here.",
+      "toggleFailed": "Could not change server state",
+      "enabledWithWarnings": "Server enabled with warnings",
+      "deleteFailed": "Could not delete server",
+      "deleteConfirm": "Delete \"{{server}}\" from your servers? Workspaces stop inheriting it immediately.",
+      "deleteConfirmYes": "Delete",
+      "deleteConfirmNo": "Cancel",
+      "warningTitle": "Server saved with warnings"
+    },
+    "brokerages": {
+      "capabilities": {
+        "market_data": {
+          "label": "Market data and research",
+          "desc": "Quotes, charts, fundamentals, filings and screeners. Nothing about your account."
+        },
+        "watchlists": {
+          "label": "Watchlists",
+          "desc": "Read your watchlists, add or remove symbols, and create or delete whole lists."
+        },
+        "scanners": {
+          "label": "Saved scanners",
+          "desc": "Read the screeners you have saved, and create, run or change them."
+        },
+        "alerts": {
+          "label": "Price alerts",
+          "desc": "Read your price alerts, and create or delete them."
+        },
+        "account": {
+          "label": "Account and positions",
+          "desc": "Balances, holdings and order history. Reading only."
+        },
+        "paper_trading": {
+          "label": "Paper trading",
+          "desc": "Trade in the broker's simulated account. It has its own cash and positions, and no real money."
+        },
+        "order_preview": {
+          "label": "Order preview",
+          "desc": "Work an order out against your real account and see its cost and warnings. Nothing is submitted, and nothing is saved."
+        },
+        "staged_orders": {
+          "label": "Staged orders",
+          "desc": "Save a draft order into your real account. It is not live, but you can submit it at the broker in one click."
+        },
+        "trading": {
+          "label": "Live orders",
+          "desc": "Buy, sell, replace and cancel with real money in your account, without asking you first."
+        }
+      },
+      "consent": {
+        "title": "Connect “{{server}}”",
+        "subtitle": "Choose what this connection lets the agent do at this broker.",
+        "footnote": "A group left off is refused when the agent asks for it, not merely hidden. To change this later, reconnect."
+      },
+      "detail": {
+        "broker": "Broker",
+        "capabilities": "What this can do",
+        "capabilitiesNote": "A declined group is refused when the agent asks for it, not merely hidden. Reconnect to change this.",
+        "declined": "Declined",
+        "endpoint": "Endpoint",
+        "granted": "Granted",
+        "grantedNone": "This connection was granted no group, so every tool under one is refused. Reconnect to choose again.",
+        "notConnectedNote": "Nothing is granted until you connect, and you choose what to grant then.",
+        "offered": "Offered",
+        "website": "Website",
+        "unclassified": "Not in a group",
+        "unclassifiedNote": "No group covers these, so declining a group does not refuse them. The agent can still call them.",
+        "unclassifiedNoteUnconnected": "No group covers these, so declining a group does not refuse them. Nothing is connected here, so nothing can call them yet.",
+        "neverAvailable": "Never available",
+        "neverAvailableNote": "Held back deliberately. Refused whatever you grant."
+      },
+      "exclusiveNote": "Replaces this account's other AI connection",
+      "exclusiveWarning": "This account allows one connected AI platform, so connecting here replaces whichever one is connected now.",
+      "grantedNone": "Granted nothing",
+      "intro": "Brokerage accounts the agent can read and trade in. Connect one to link your account; nothing reaches a broker until you do.",
+      "none": "This build ships no brokerage connectors.",
+      "notAdded": "Not added",
+      "openInMcp": "Open in Connectors",
+      "redirectedNote": "Points at a custom address",
+      "removeConfirm": "Remove \"{{server}}\"? This disconnects your account and removes it from every workspace.",
+      "toggleFailed": "Could not change this connector"
+    },
+    "oauth": {
+      "abandonedDesc": "\"{{server}}\" never came back from the provider's sign-in page.",
+      "abandonedDescNeedsDesktop": "\"{{server}}\" never came back from the provider's sign-in page. Some providers only accept desktop apps. Open the LangAlpha desktop app to connect this one.",
+      "abandonedTitle": "Connection did not finish",
+      "callbackError": {
+        "blocked_endpoint": "The provider asked for a token from an address this app will not call.",
+        "denied": "You declined the request at the provider.",
+        "internal": "Something went wrong on our side. Try again.",
+        "invalid_state": "This connection attempt is no longer valid. Start it again.",
+        "issuer_mismatch": "The provider's identity did not match its own configuration, so the connection was stopped.",
+        "missing_code": "The provider sent no authorization back. Start the connection again.",
+        "missing_state": "The link back from the provider was incomplete. Start the connection again.",
+        "provider_error": "The provider refused the connection.",
+        "server_changed": "This connector's address changed while the connection was in progress. Check it and try again.",
+        "state_mismatch": "This could not be matched to the connection you started. Start it again in the window you began in.",
+        "token_exchange_failed": "The provider would not exchange the authorization for a token. Start the connection again.",
+        "unknown": "The connection did not complete. Try again."
+      },
+      "callbackErrorTitle": "Connection failed",
+      "connect": "Connect",
+      "connectFailed": "Could not start the connection",
+      "connected": "Connected",
+      "connectedDesc": "\"{{server}}\" is connected. Enable it to use it in your workspaces.",
+      "connectedDescAnon": "The connection completed.",
+      "connectedTitle": "Connected",
+      "disconnect": "Disconnect",
+      "disconnectFailed": "Could not disconnect",
+      "disconnectedDesc": "\"{{server}}\" is disconnected. Reconnect anytime; agent calls fail until then.",
+      "disconnectedTitle": "Disconnected",
+      "loopback": {
+        "no-listener": "LangAlpha could not open a local port to receive this broker's reply. Quit any other copy of the desktop app and try again.",
+        "not-minted": "This server has not been set up to send the reply back to the desktop app. Try again in a few minutes.",
+        "not-bound": "Another connection was started before this one finished. Try connecting again.",
+        "shell-outdated": "This version of the desktop app cannot receive the provider's reply. Update the desktop app, then try again."
+      },
+      "nativeHint": "Some providers only accept desktop apps and cannot be connected from a browser.",
+      "nativeOnlyNote": "Needs the desktop app",
+      "registryUnavailableNote": "Broker requirements could not be checked, so connecting is on hold.",
+      "needsReauth": "Reconnect needed",
+      "reconnect": "Reconnect",
+      "refreshAmbiguous": "Check connection",
+      "refreshFailed": "Could not refresh tools",
+      "refreshFailedStaleDesc": "The refresh of \"{{server}}\" did not complete. Its {{count}} previously discovered tools are still available.",
+      "refreshFailedStaleTitle": "Tools not refreshed",
+      "refreshSchemas": "Refresh tools",
+      "refreshedDesc": "\"{{server}}\" now exposes {{count}} tools.",
+      "refreshedTitle": "Tools refreshed",
+      "revoked": "Disconnected",
+      "serverMoved": "This server's address changed since this page was loaded. Reload the page, then connect again.",
+      "shellOutdatedHint": "This version of the desktop app cannot complete a connection. Update it, or connect from your browser.",
+      "shellOutdatedNote": "Desktop app needs updating"
+    },
+    "import": {
+      "disabledNudgeTitle": "Imported switched off",
+      "disabledNudgeDesc": "Imported servers start off. Switch each one on to make it available in your workspaces."
+    },
+    "secrets": {
+      "title": "Vault",
+      "scopeHint": "Secrets here back your MCP servers and are available in every workspace. A workspace secret with the same name overrides the value in that workspace.",
+      "empty": "No secrets stored. Add API keys or credentials for your servers."
+    },
+    "mcp": {
+      "platform": "Platform servers",
+      "platformBadge": "Platform",
+      "yours": "Your servers",
+      "builtinLoadFailed": "Couldn't load the servers that ship with the app."
+    },
+    "skills": {
+      "platform": "Platform skills",
+      "yours": "Your skills",
+      "platformBadge": "Platform",
+      "upload": "Upload skill",
+      "inheritHint": "A skill uploaded here is available in every one of your workspaces. Switched-off skills stay listed here but leave the agent's menu.",
+      "empty": "No skills yet. Upload a zip with a SKILL.md to teach your agent a new workflow.",
+      "toggleFailed": "Could not change skill state",
+      "deleteFailed": "Could not delete skill",
+      "commandFailed": "Could not change the command",
+      "editCommandHint": "Click to edit the slash command. Enter saves, Esc cancels, empty resets to the skill name.",
+      "commandInputAria": "Slash command",
+      "deleteConfirm": "Delete \"{{skill}}\"? Workspaces stop receiving it immediately.",
+      "deleteConfirmYes": "Delete",
+      "deleteConfirmNo": "Cancel",
+      "uploadTitle": "Upload a skill",
+      "uploadHint": "A zip with SKILL.md at its root (or inside one top-level folder), up to 2 MB.",
+      "uploadDropzone": "Drop a .zip here or click to choose",
+      "uploadNotZip": "That file is not a .zip archive.",
+      "uploadTooLarge": "The zip is larger than 2 MB.",
+      "uploading": "Uploading {{percent}}%",
+      "uploadConfirm": "Upload",
+      "workspaceSection": "This workspace",
+      "workspaceHint": "A skill uploaded here runs only in this workspace and overrides a same-named skill from your Plugins.",
+      "workspaceEmpty": "No workspace skills yet. Upload a zip with a SKILL.md to add one.",
+      "inheritedSection": "Inherited",
+      "inheritedHint": "Platform skills and your Plugins skills, as this workspace sees them. Switching one off here hides it in this workspace only.",
+      "shadowsBadge": "Overrides user skill",
+      "userDisabledBadge": "Disabled in Plugins"
+    },
+    "scope": {
+      "allWorkspaces": "All workspaces",
+      "allExcept": "All workspaces except {{count}}",
+      "activeIn": "Active in",
+      "futureHint": "New workspaces start enabled",
+      "moveToWorkspace": "Move to workspace",
+      "moveToAll": "Move to all workspaces",
+      "moveToAnother": "Move to another workspace",
+      "moveOauthBlocked": "Disconnect OAuth first to move this server into a workspace",
+      "moveShadowBlocked": "This name already exists at the account tier. Delete or rename one of the two first",
+      "moveFailed": "Move failed",
+      "inWorkspace": "Workspace: {{name}}",
+      "unknownWorkspace": "Unknown workspace",
+      "triggerAria": "Scope: {{scope}}",
+      "movePluginBlocked": "Owned by {{plugin}}; its components stay at the account level"
+    },
+    "list": {
+      "title": "Installed plugins",
+      "install": "Install plugin",
+      "hint": "A plugin bundles MCP servers and skills. Its components appear in the MCP and Skills tabs with the plugin's name; the toggle here switches all of them at once.",
+      "empty": "No plugins installed. Install one from a zip file or a public git URL.",
+      "atCap": "Plugin limit reached ({{max}})"
+    },
+    "card": {
+      "serverCount_one": "{{count}} server",
+      "serverCount_other": "{{count}} servers",
+      "skillCount_one": "{{count}} skill",
+      "skillCount_other": "{{count}} skills",
+      "componentCount": "{{servers}}, {{skills}}",
+      "sourceZip": "zip",
+      "sourceRemote": "remote",
+      "disabledState": "Off, components suppressed in every workspace",
+      "update": "Update",
+      "export": "Export",
+      "uninstall": "Uninstall",
+      "toggleFailed": "Could not update the plugin",
+      "updatedTitle": "{{plugin}} updated",
+      "updateFailed": "Update failed",
+      "exportFailed": "Export failed",
+      "uninstalledTitle": "{{plugin}} uninstalled",
+      "uninstalledDesc": "Removed {{servers}} and {{skills}}. Customized components were kept.",
+      "uninstallFailed": "Uninstall failed",
+      "uninstallConfirm": "Uninstall {{plugin}}? Its servers and skills will be removed from every workspace. Customized components are kept.",
+      "uninstallConfirmYes": "Uninstall",
+      "uninstallConfirmNo": "Keep",
+      "sourceBundled": "Ships with LangAlpha"
+    },
+    "component": {
+      "fromPlugin": "Provided by {{plugin}}",
+      "customize": "Customize",
+      "customizeHint": "Detaches this from {{plugin}} so you can edit it. Plugin updates will skip it from then on.",
+      "suppressed": "Suppressed: {{plugin}} is off",
+      "suppressedBadge": "plugin off"
+    },
+    "install": {
+      "title": "Install plugin",
+      "stepSource": "Choose a source",
+      "stepChoose": "Choose a plugin",
+      "stepInstalling": "Installing",
+      "stepReport": "Install report",
+      "stepBindings": "Credentials",
+      "sourceZip": "Upload a zip file",
+      "sourceGit": "Install from a public git URL",
+      "or": "or",
+      "installConfirm": "Install",
+      "notZip": "Choose a .zip file",
+      "chooseHint_one": "This source contains {{count}} plugin. Pick it to install.",
+      "chooseHint_other": "This source contains {{count}} plugins. Pick the one to install.",
+      "tooLarge": "The zip exceeds the 64 MB limit",
+      "urlRequired": "Enter a git URL or choose a zip file",
+      "notHttps": "The git URL must start with https://",
+      "hasPlaceholder": "The git URL must not contain a placeholder or a secret",
+      "hasUserinfo": "Remove the username and password from the git URL",
+      "badHost": "That host cannot be reached. Use a public git host such as github.com",
+      "badUrl": "That git URL is not valid",
+      "fetching": "Fetching plugin",
+      "uploading": "Uploading {{percent}}%",
+      "reportInstalled": "Installed",
+      "reportSkipped": "Skipped",
+      "reportUpgradable": "Needs consent",
+      "reportErrors": "Errors",
+      "reportWarnings": "Warnings",
+      "specRef": "Spec",
+      "reportNoChanges": "Nothing changed. This plugin is already up to date.",
+      "sseUpgradeHint": "These servers declare the legacy SSE transport. They responded to a streamable HTTP probe, so you can install them with the modern transport.",
+      "sseUpgradeConfirm": "Install as streamable HTTP",
+      "sseUpgradeFailed": "Upgrade failed",
+      "droppedFiles": "Not imported: {{files}}",
+      "continueToBindings": "Continue",
+      "bindingsHint": "This plugin declares credentials it needs. Values are stored in your vault and never shown to the agent in plain text. You can skip and set them later in the Secrets tab.",
+      "bindingsSkip": "Skip for now",
+      "bindingsSave": "Save {{count}}",
+      "bindingPlaceholder": "Paste the value",
+      "bindingDocs": "Where to get this",
+      "boundTitle": "Credentials saved",
+      "boundDesc": "{{count}} saved to your vault"
+    },
+    "groups": {
+      "tally": "{{enabled}} on · {{disabled}} off",
+      "expandAria": "Expand {{title}}",
+      "collapseAria": "Collapse {{title}}",
+      "selectAllAria": "Select all in {{title}}",
+      "uploaded": "Uploaded",
+      "openPlugin": "View plugin",
+      "bundled": "Built in"
+    },
+    "bulk": {
+      "select": "Select",
+      "selected": "{{count}} selected",
+      "enable": "Enable {{count}}",
+      "disable": "Disable {{count}}",
+      "delete": "Delete {{count}}",
+      "uninstall": "Uninstall {{count}}",
+      "confirmDelete_one": "Delete {{count}} item? This cannot be undone.",
+      "confirmDelete_other": "Delete {{count}} items? This cannot be undone.",
+      "confirmUninstall_one": "Uninstall {{count}} plugin? Its servers and skills are removed.",
+      "confirmUninstall_other": "Uninstall {{count}} plugins? Their servers and skills are removed.",
+      "progress": "Working on {{done}} of {{total}}",
+      "resultTitle": "Bulk action finished",
+      "okPart": "{{count}} succeeded",
+      "failPart": "{{count}} failed",
+      "scope": "Scope",
+      "scopeAria": "Set scope for selected items",
+      "scopeEverywhere": "All workspaces ({{count}})",
+      "scopeOnlyIn": "Only in workspaces ({{count}})",
+      "scopeMoveTo": "Move into workspace ({{count}})",
+      "scopeApply": "Apply to {{count}}",
+      "noChanges": "Nothing to change for this selection"
+    },
+    "filter": {
+      "placeholder": "Filter",
+      "clear": "Clear filter",
+      "noMatches": "No matches"
+    },
+    "addMenu": {
+      "add": "Add",
+      "installPlugin": "Install plugin",
+      "addServer": "Add MCP server",
+      "importServers": "Import servers",
+      "uploadSkill": "Upload skill"
+    },
+    "stateFilter": {
+      "all": "All",
+      "on": "On",
+      "off": "Off",
+      "attention": "Needs attention"
+    },
+    "detail": {
+      "kindServer": "MCP server",
+      "kindBrokerage": "Brokerage",
+      "kindSkill": "Skill",
+      "kindPlugin": "Plugin",
+      "tools": "Tools",
+      "toolsEmpty": "No tools discovered yet. They appear after the server first connects.",
+      "discovered": "Discovered {{date}}",
+      "config": "Configuration",
+      "transport": "Transport",
+      "url": "URL",
+      "command": "Command",
+      "envVars": "Env vars",
+      "headers": "Headers",
+      "info": "Details",
+      "origin": "Origin",
+      "originPlatform": "Platform",
+      "originUser": "Yours",
+      "originWorkspace": "Workspace",
+      "size": "Size",
+      "updated": "Updated",
+      "created": "Added",
+      "skillSource": "SKILL.md",
+      "sourceLoadFailed": "Could not load the skill's source.",
+      "components": "Components",
+      "version": "Version",
+      "author": "Author",
+      "homepage": "Homepage",
+      "sourceLabel": "Source",
+      "installed": "Installed",
+      "openComponentAria": "Open {{name}}",
+      "toolsFailed": "Could not load tools. The request failed, try again.",
+      "toolsUnavailable": "Not available from this server process. A restart usually restores it.",
+      "repository": "Repository",
+      "license": "License"
     }
   }
 }

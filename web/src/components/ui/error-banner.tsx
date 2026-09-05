@@ -2,7 +2,7 @@ import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle } from 'lucide-react';
-import { UPSTREAM_HINT_I18N_KEY, type StructuredError } from '@/utils/rateLimitError';
+import { UPSTREAM_HINT_I18N_KEY, type ErrorLinkSpec, type StructuredError } from '@/utils/rateLimitError';
 import { parseErrorMessage } from '@/pages/ChatAgent/utils/parseErrorMessage';
 
 interface ErrorBannerProps {
@@ -11,35 +11,38 @@ interface ErrorBannerProps {
   style?: React.CSSProperties;
 }
 
-function ErrorLink({ url, label }: { url: string; label: string }) {
+export function ErrorLink({ url, label, labelKey, external }: ErrorLinkSpec): React.ReactElement {
   const navigate = useNavigate();
-  const isRelative = url.startsWith('/') && !url.startsWith('//');
-  // Same-origin absolute URLs (e.g. the platform portal on ginlix.ai) navigate
-  // in the current tab; only cross-origin URLs open in a new tab.
-  const isCrossOrigin = !isRelative && (() => {
+  const { t } = useTranslation();
+  // A leading slash is not enough to claim a URL as ours: with a path-shaped
+  // VITE_PLATFORM_URL the account portal answers on /account/*, same origin but
+  // a different app, and routing to it lands on our catch-all with no network
+  // request at all. So the call site declares `external` and we believe it.
+  const isRouterPath = !external && url.startsWith('/') && !url.startsWith('//');
+  // Cross-origin URLs (an upstream provider's status page) open in a new tab so
+  // the chat survives the detour; `external` asks for the same treatment on our
+  // own origin, for banners whose state would not survive a navigation.
+  const opensNewTab = external || (!isRouterPath && (() => {
     try {
       return new URL(url, window.location.href).origin !== window.location.origin;
     } catch {
       return false;
     }
-  })();
+  })());
   return (
-    <>
-      {' '}
       <a
         href={url}
-        {...(isCrossOrigin && { target: '_blank', rel: 'noopener noreferrer' })}
+        {...(opensNewTab && { target: '_blank', rel: 'noopener noreferrer' })}
         onClick={(e) => {
-          if (isRelative) {
+          if (isRouterPath) {
             e.preventDefault();
             navigate(url);
           }
         }}
         style={{ textDecoration: 'underline', fontWeight: 500 }}
       >
-        {label}
+        {labelKey ? t(labelKey) : label}
       </a>
-    </>
   );
 }
 
@@ -73,7 +76,12 @@ export function ErrorBanner({ error, className, style }: ErrorBannerProps): Reac
           {headline && <span className="font-medium">{headline}</span>}
           <span className="break-words">
             {err.message}
-            {err.link && <ErrorLink url={err.link.url} label={err.link.label} />}
+            {err.links?.map((l, i) => (
+              <React.Fragment key={`${l.url}|${l.label}`}>
+                {i === 0 ? ' ' : <span aria-hidden="true"> · </span>}
+                <ErrorLink {...l} />
+              </React.Fragment>
+            ))}
           </span>
           {hasHints && (
             <ul className="mt-1 list-disc pl-4 flex flex-col gap-0.5 text-xs opacity-90">

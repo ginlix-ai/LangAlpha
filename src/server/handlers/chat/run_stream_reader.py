@@ -17,10 +17,24 @@ import asyncio
 import json
 from typing import AsyncGenerator, Awaitable, Callable, Optional
 
-from src.config.settings import get_redis_socket_timeout
+from src.server.handlers.chat.xread_tuning import (
+    XREAD_COUNT,
+    XREAD_ERROR_BACKOFF_S,
+    XREAD_EXHAUSTION_BACKOFF_S,
+    xread_block_ms,
+    xread_wait_timeout_s,
+)
 from src.server.services.runs.executor import LocalRunExecutor
 from src.server.services.runs.stream_writer import RUN_END_EVENT_TYPE
-from src.utils.cache.redis_cache import get_cache_client
+
+from src.utils.cache.redis_cache import get_cache_client, is_pool_exhaustion
+from src.utils.cache import stream_pool
+
+# Emitted once by the main-workflow consumer where the replayed backlog ends
+# and the live tail begins. The client batches everything before it. The
+# ``_EVENT_TYPE`` suffix is what the event-ledger scan keys on, so the type
+# stays visible even though the frame around it is built from the parameter.
+CAUGHT_UP_EVENT_TYPE = "caught_up"
 
 # Same hard-coded logger name request_prep uses — existing log routing keys off it.
 logger = logging.getLogger("src.server.handlers.chat_handler")
@@ -33,41 +47,6 @@ logger = logging.getLogger("src.server.handlers.chat_handler")
 WORKFLOW_STREAM_END_EVENT = "workflow_stream_end"
 
 
-_XREAD_BLOCK_MARGIN_MS = 1_000
-_XREAD_BLOCK_FLOOR_MS = 500
-
-
-def _xread_block_ms() -> int:
-    """Compute XREAD's BLOCK arg given the pool's socket_timeout.
-
-    redis-py applies the connection's ``socket_timeout`` to every command,
-    blocking ones included. If BLOCK >= socket_timeout the socket read
-    raises ``Timeout reading from redis`` before XREAD ever returns. We
-    keep BLOCK strictly below socket_timeout by ``_XREAD_BLOCK_MARGIN_MS``
-    (1 s by default — the cost is one extra XREAD round-trip per
-    ``socket_timeout - 1`` s on idle streams, negligible vs LLM latency).
-
-    When ``socket_timeout`` is configured very low (1-2 s) the natural
-    ``timeout - margin`` would go to zero or negative; we floor at
-    ``_XREAD_BLOCK_FLOOR_MS`` (500 ms) so the consumer still polls at a
-    sane cadence. The accepted trade-off is that with ``socket_timeout=1
-    s`` the safety margin shrinks from 1 s to 500 ms — still positive, but
-    redis-py is more likely to win the race and surface a Timeout. Bump
-    ``redis.socket_timeout`` (config.yaml) above 2 s in production.
-    """
-    socket_seconds = get_redis_socket_timeout() or 5
-    socket_ms = max(1, socket_seconds) * 1_000
-    return max(_XREAD_BLOCK_FLOOR_MS, socket_ms - _XREAD_BLOCK_MARGIN_MS)
-
-
-# Cap entries per XREAD round. Keeps us responsive to terminal-check
-# polling under sustained traffic without per-event round-trips.
-_XREAD_COUNT = 100
-
-# Startup window for subagent: how long to wait for the registry/task
-# to come into existence before giving up. The registry is created when
-# the subagent middleware first runs; for short-lived turns it can take
-# a few seconds.
 def _is_stream_end_sentinel(raw: str, sentinel_event: str) -> bool:
     """True when ``raw`` is a terminal sentinel record ``{"event": <sentinel>}``.
 
@@ -86,6 +65,21 @@ def _is_stream_end_sentinel(raw: str, sentinel_event: str) -> bool:
         and record.get("event") == sentinel_event
         and "seq" not in record
     )
+
+
+def _entry_id_key(entry_id: bytes | str) -> tuple[int, int]:
+    """Order key for a Redis stream ID (``ms-seq``).
+
+    Explicit ``seq-0`` ids and auto ids (epoch ms) share one stream, and the
+    tuple order is the order Redis itself uses, so a cursor compares against
+    the head without caring which kind either one is.
+    """
+    text = entry_id.decode("utf-8") if isinstance(entry_id, bytes) else entry_id
+    ms, _, seq = text.partition("-")
+    try:
+        return (int(ms), int(seq or 0))
+    except ValueError:
+        return (0, 0)
 
 
 def _first_available_seq(entries: list) -> Optional[int]:
@@ -120,6 +114,7 @@ async def _stream_from_redis_log(
     on_detach: Optional[Callable[[], Awaitable[None]]] = None,
     sentinel_event: Optional[str] = None,
     close_event: Optional[str] = None,
+    caught_up_event: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """Generic XREAD BLOCK loop yielding SSE strings stored in a Redis Stream.
 
@@ -153,11 +148,31 @@ async def _stream_from_redis_log(
     starting ``event: <name>\\n``) that is YIELDED to the client and then
     ends the stream — the visible ``run_end`` frame, vs the swallowed
     legacy sentinel above.
+
+    ``caught_up_event`` (optional) names a marker frame yielded exactly once,
+    where the cursor first reaches the stream head sampled at attach: what
+    precedes it is backlog the client may apply in one pass, what follows is
+    live. An empty stream marks the boundary at once (nothing to batch); an
+    unreadable head sends no marker at all, and the client's quiet-window and
+    cap timers close the backlog instead. An early marker would have the
+    client present the whole retained backlog live, which is the retype the
+    marker exists to prevent.
     """
     cache = get_cache_client()
     if not cache.enabled or not cache.client:
         logger.warning(
             "[stream_from_log] Redis disabled — no events to stream for %s",
+            stream_key,
+        )
+        return
+
+    # The blocking read lives on its own pool: this loop holds a connection for
+    # the life of the stream, and parking that in the cache pool is what
+    # starved every short op in the process.
+    reader = await stream_pool.get_stream_reader_client(cache)
+    if reader is None:
+        logger.warning(
+            "[stream_from_log] no stream-reader pool — cannot stream %s",
             stream_key,
         )
         return
@@ -170,7 +185,7 @@ async def _stream_from_redis_log(
         cursor = f"{last_event_id}-0".encode("utf-8")
 
     stream_key_bytes = stream_key.encode("utf-8")
-    block_ms = _xread_block_ms()
+    block_ms = xread_block_ms()
 
     if last_event_id is not None and last_event_id > 0:
         # Trimmed-head detection (1.5c): if the oldest surviving entry's seq
@@ -194,6 +209,29 @@ async def _stream_from_redis_log(
                 "[stream_from_log] gap probe failed on %s: %s", stream_key, exc
             )
 
+    # Backlog/live boundary: the head at attach time. Read once, up front, so
+    # a producer that keeps writing during the replay cannot push the marker
+    # out indefinitely. An empty stream leaves the zero key, which the first
+    # boundary check below clears; a failed probe drops the marker instead.
+    caught_up_pending = caught_up_event is not None
+    head_key: tuple[int, int] = (0, 0)
+    if caught_up_event is not None:
+        try:
+            tail = await asyncio.wait_for(
+                cache.client.xrevrange(stream_key_bytes, count=1),
+                timeout=xread_wait_timeout_s(),
+            )
+            if tail:
+                head_key = _entry_id_key(tail[0][0])
+        except Exception as exc:
+            caught_up_pending = False
+            logger.warning(
+                "[stream_from_log] head probe failed on %s, no boundary marker: %s",
+                stream_key,
+                exc,
+            )
+    caught_up_frame = f"event: {caught_up_event}\ndata: {{}}\n\n"
+
     attached = False
     try:
         if on_attach is not None:
@@ -201,26 +239,26 @@ async def _stream_from_redis_log(
             attached = True
         terminal_seen = False
         while True:
+            # The boundary, checked once per round before the read: covers
+            # the fresh attach and a batch that ends exactly on the head. A
+            # batch that runs past it emits the marker mid-batch below.
+            if caught_up_pending and _entry_id_key(cursor) >= head_key:
+                caught_up_pending = False
+                yield caught_up_frame
             try:
                 # asyncio.wait_for guards against the underlying redis-py
                 # XREAD hanging past BLOCK if the connection is poisoned.
-                #
-                # Sized so the outer wait_for fires AFTER redis-py's own
-                # socket_timeout. Recall ``block_ms = socket_timeout -
-                # _XREAD_BLOCK_MARGIN_MS`` (i.e. socket_timeout - 1 s) from
-                # ``_xread_block_ms``. Adding 2.0 s here gives an outer
-                # timeout of ``socket_timeout + 1 s`` — redis-py gets a full
-                # second past socket_timeout to surface its own
-                # ``Timeout reading from redis`` before wait_for races it.
-                # Using ``+ 1.0`` would equal socket_timeout and produce a
-                # racy double-fire.
+                # It must stay a backstop: it has to fire after redis-py's
+                # own socket_timeout AND after a cold connect's full budget,
+                # or it cancels mid-handshake and redials. Both terms are
+                # derived in ``xread_tuning.xread_wait_timeout_s``.
                 result = await asyncio.wait_for(
-                    cache.client.xread(
+                    reader.xread(
                         {stream_key_bytes: cursor},
                         block=block_ms,
-                        count=_XREAD_COUNT,
+                        count=XREAD_COUNT,
                     ),
-                    timeout=(block_ms / 1000.0) + 2.0,
+                    timeout=xread_wait_timeout_s(),
                 )
             except asyncio.TimeoutError:
                 # XREAD wedged — yield keepalive, recheck terminal, retry.
@@ -248,10 +286,20 @@ async def _stream_from_redis_log(
                 if await terminal_check():
                     return
                 # Brief backoff to avoid tight error loops, then retry.
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(
+                    XREAD_EXHAUSTION_BACKOFF_S
+                    if is_pool_exhaustion(exc)
+                    else XREAD_ERROR_BACKOFF_S
+                )
                 continue
 
             if not result:
+                # Fallback for a head that raced ahead of what is readable:
+                # settle the boundary rather than hold the client's backlog
+                # open until the producer catches up to its own head.
+                if caught_up_pending:
+                    caught_up_pending = False
+                    yield caught_up_frame
                 # BLOCK timed out — emit keepalive comment so proxies and
                 # the browser see liveness, then re-check terminal.
                 yield ":keepalive\n\n"
@@ -264,6 +312,12 @@ async def _stream_from_redis_log(
             # result format: [(stream_key, [(entry_id, {field: value}), ...])]
             for _stream_name, entries in result:
                 for entry_id, fields in entries:
+                    # The boundary inside a batch: the first entry past the
+                    # recorded head is live, so the marker goes ahead of it
+                    # rather than after the whole batch.
+                    if caught_up_pending and _entry_id_key(entry_id) > head_key:
+                        caught_up_pending = False
+                        yield caught_up_frame
                     # Advance the cursor unconditionally before any skip path.
                     # If the *last* entry in a batch hits a continue (missing
                     # ``event`` field, non-UTF8 payload), leaving the cursor
@@ -385,5 +439,6 @@ async def stream_from_log(
         on_detach=on_detach,
         sentinel_event=WORKFLOW_STREAM_END_EVENT,
         close_event=RUN_END_EVENT_TYPE,
+        caught_up_event=CAUGHT_UP_EVENT_TYPE,
     ):
         yield event

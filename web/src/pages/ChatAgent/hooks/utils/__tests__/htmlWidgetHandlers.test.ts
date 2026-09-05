@@ -62,6 +62,7 @@ function makePairState(counterStart = 0) {
     contentOrderCounter: counterStart,
     reasoningId: null,
     toolCallId: null,
+    steeringBatches: 0,
   };
 }
 

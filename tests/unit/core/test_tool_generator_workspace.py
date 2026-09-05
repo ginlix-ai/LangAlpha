@@ -32,10 +32,16 @@ def _write_vault(tmp_path, secrets: dict) -> str:
     return str(tmp_path)
 
 
-class TestBuiltinByteStability:
-    """Builtin-only codegen must not gain vault machinery."""
+class TestBuiltinConfigMinimal:
+    """Builtin config entries carry env key NAMES only — never values.
 
-    def test_no_vault_refs_in_builtin_client(self):
+    The client runtime is a static module (vault machinery always present but
+    inert without untrusted entries); the security contract lives in the
+    generated CONFIG: builtin entries must never embed env values, headers, or
+    untrusted-only flags.
+    """
+
+    def test_builtin_entries_embed_no_env_values(self):
         gen = ToolFunctionGenerator()
         servers = [
             MCPServerConfig(
@@ -43,21 +49,26 @@ class TestBuiltinByteStability:
                 transport="stdio",
                 command="node",
                 args=["srv.js"],
-                env={"PLACEHOLDER_KEY": "x"},
+                env={"PLACEHOLDER_KEY": "secret-value"},
             ),
             MCPServerConfig(
                 name="remote_srv", transport="sse", url="https://example.test/mcp"
             ),
         ]
-        code = gen.generate_mcp_client_code(servers)
-        # No vault resolution helpers leak into builtin-only output.
-        assert "_load_vault" not in code
-        assert "_VAULT_SECRETS_FILE" not in code
-        assert "_build_proc_env" not in code
-        assert "_resolve_cmd_args" not in code
-        assert "def discover(" not in code
-        # The stdio cmd stays the byte-identical raw-args form.
-        assert 'cmd = [config["command"]] + config["args"]' in code
+        config = gen.generate_client_config(servers)
+        stdio_entry = config["servers"]["data_srv"]
+        assert stdio_entry["env_keys"] == ["PLACEHOLDER_KEY"]
+        assert "env" not in stdio_entry
+        assert "source" not in stdio_entry
+        assert stdio_entry["untrusted"] is False
+        sse_entry = config["servers"]["remote_srv"]
+        assert sse_entry == {
+            "transport": "sse",
+            "untrusted": False,
+            "url": "https://example.test/mcp",
+        }
+        # And the composed module never embeds the value anywhere.
+        assert "secret-value" not in gen.generate_mcp_client_code(servers)
 
     def test_builtin_stdio_uses_os_environ(self):
         gen = ToolFunctionGenerator()
@@ -69,7 +80,38 @@ class TestBuiltinByteStability:
         code = gen.generate_mcp_client_code(servers)
         # Builtin env resolution still reads os.environ.
         assert "os.environ.copy()" in code
-        assert 'for key in config.get("env_keys", []):' in code
+        assert "for key in cfg.env_keys:" in code
+
+
+class TestTrustFailsClosed:
+    """Trust is the host's ``untrusted`` bool; the runtime never re-derives it.
+
+    A config entry that arrives without the flag (version skew, a hand-edited
+    client) must get the UNTRUSTED treatment — the opposite default is how a
+    user-configured server would inherit the sandbox's whole environment.
+    """
+
+    def test_entry_without_the_flag_gets_the_untrusted_treatment(self, tmp_path):
+        gen = ToolFunctionGenerator()
+        ns = _exec_client(gen.generate_mcp_client_code([], working_dir=str(tmp_path)))
+        ns["_apply_config_dict"](
+            {
+                "working_dir": str(tmp_path),
+                "servers": {
+                    "drifted": {
+                        "transport": "stdio",
+                        "command": "npx",
+                        "env": {"TOKEN": "${vault:MISSING}"},
+                    }
+                },
+            }
+        )
+        cfg = ns["_SERVER_CONFIGS"]["drifted"]
+        assert cfg.untrusted is True
+        # And that is what it is actually treated as: vault-only resolution,
+        # which raises on the unresolvable ref instead of reaching os.environ.
+        with pytest.raises(RuntimeError, match="MISSING"):
+            ns["_build_proc_env"](cfg)
 
 
 class TestVaultOnlyResolution:
@@ -96,7 +138,7 @@ class TestVaultOnlyResolution:
 
         os.environ["PLATFORM_TOKEN"] = "must-not-leak"
         try:
-            env = ns["_build_proc_env"](ns["_SERVER_CONFIGS"]["user_srv"], "user_srv")
+            env = ns["_build_proc_env"](ns["_SERVER_CONFIGS"]["user_srv"])
         finally:
             del os.environ["PLATFORM_TOKEN"]
 
@@ -119,7 +161,7 @@ class TestVaultOnlyResolution:
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         with pytest.raises(RuntimeError) as exc:
-            ns["_build_proc_env"](ns["_SERVER_CONFIGS"]["user_srv"], "user_srv")
+            ns["_build_proc_env"](ns["_SERVER_CONFIGS"]["user_srv"])
         assert "NEEDED_NAME" in str(exc.value)
 
     def test_args_vault_ref_resolved_at_spawn(self, tmp_path):
@@ -135,7 +177,7 @@ class TestVaultOnlyResolution:
             source="workspace",
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
-        resolved = ns["_resolve_cmd_args"](ns["_SERVER_CONFIGS"]["user_srv"], "user_srv")
+        resolved = ns["_resolve_cmd_args"](ns["_SERVER_CONFIGS"]["user_srv"])
         assert resolved == ["-y", "@scope/pkg", "--api-key=resolved-secret"]
 
     def test_args_missing_secret_raises_naming_secret_not_value(self, tmp_path):
@@ -150,7 +192,7 @@ class TestVaultOnlyResolution:
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         with pytest.raises(RuntimeError) as exc:
-            ns["_resolve_cmd_args"](ns["_SERVER_CONFIGS"]["user_srv"], "user_srv")
+            ns["_resolve_cmd_args"](ns["_SERVER_CONFIGS"]["user_srv"])
         assert "NEEDED_ARG_SECRET" in str(exc.value)
 
     def test_args_discovery_secretless_does_not_raise(self, tmp_path):
@@ -167,7 +209,7 @@ class TestVaultOnlyResolution:
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         out = ns["_resolve_cmd_args"](
-            ns["_SERVER_CONFIGS"]["user_srv"], "user_srv", discovery=True
+            ns["_SERVER_CONFIGS"]["user_srv"], discovery=True
         )
         assert isinstance(out, list) and len(out) == 1
 
@@ -190,7 +232,7 @@ class TestPerServerScoping:
 
         os.environ["SOME_UNRELATED_HOST_VAR"] = "secret-host-value"
         try:
-            env = ns["_build_proc_env"](ns["_SERVER_CONFIGS"]["user_srv"], "user_srv")
+            env = ns["_build_proc_env"](ns["_SERVER_CONFIGS"]["user_srv"])
         finally:
             del os.environ["SOME_UNRELATED_HOST_VAR"]
 
@@ -219,9 +261,7 @@ class TestHeaderInjection:
             source="workspace",
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
-        url, headers = ns["_resolve_sse"](
-            ns["_SERVER_CONFIGS"]["user_http"], "user_http"
-        )
+        url, headers = ns["_resolve_http"](ns["_SERVER_CONFIGS"]["user_http"])
         assert url == "https://example.test/abc123"
         assert headers["Authorization"] == "Bearer abc123"
 
@@ -244,7 +284,7 @@ class TestNoVaultDiscovery:
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         env = ns["_build_proc_env"](
-            ns["_SERVER_CONFIGS"]["user_srv"], "user_srv", discovery=True
+            ns["_SERVER_CONFIGS"]["user_srv"], discovery=True
         )
         # Discovery substitutes inert empty string, never raises.
         assert env["TOKEN"] == ""
@@ -261,8 +301,8 @@ class TestNoVaultDiscovery:
             source="workspace",
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
-        _url, headers = ns["_resolve_sse"](
-            ns["_SERVER_CONFIGS"]["user_http"], "user_http", discovery=True
+        _url, headers = ns["_resolve_http"](
+            ns["_SERVER_CONFIGS"]["user_http"], discovery=True
         )
         assert headers["Authorization"] == "Bearer "
 
@@ -286,15 +326,13 @@ class TestDiscoveryUsesSecrets:
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         env = ns["_build_proc_env"](
-            ns["_SERVER_CONFIGS"]["user_srv"], "user_srv", discovery=True
+            ns["_SERVER_CONFIGS"]["user_srv"], discovery=True
         )
         # Secret-less posture: the present secret is NOT resolved during discovery.
         assert env["TOKEN"] == ""
         assert "real-secret" not in json.dumps(env)
         # Normal (non-discovery) calls still resolve the real secret.
-        env_call = ns["_build_proc_env"](
-            ns["_SERVER_CONFIGS"]["user_srv"], "user_srv"
-        )
+        env_call = ns["_build_proc_env"](ns["_SERVER_CONFIGS"]["user_srv"])
         assert env_call["TOKEN"] == "real-secret"
 
     def test_opt_in_discovery_resolves_present_stdio_secret(self, tmp_path):
@@ -311,7 +349,7 @@ class TestDiscoveryUsesSecrets:
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         env = ns["_build_proc_env"](
-            ns["_SERVER_CONFIGS"]["user_srv"], "user_srv", discovery=True
+            ns["_SERVER_CONFIGS"]["user_srv"], discovery=True
         )
         # Explicit opt-in: discovery resolves the real secret (today's behavior).
         assert env["TOKEN"] == "real-secret"
@@ -330,14 +368,12 @@ class TestDiscoveryUsesSecrets:
             source="workspace",
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
-        _url, headers = ns["_resolve_sse"](
-            ns["_SERVER_CONFIGS"]["user_http"], "user_http", discovery=True
+        _url, headers = ns["_resolve_http"](
+            ns["_SERVER_CONFIGS"]["user_http"], discovery=True
         )
         assert headers["Authorization"] == "Bearer real-secret"
         # Normal call also resolves the real secret.
-        _u2, headers2 = ns["_resolve_sse"](
-            ns["_SERVER_CONFIGS"]["user_http"], "user_http"
-        )
+        _u2, headers2 = ns["_resolve_http"](ns["_SERVER_CONFIGS"]["user_http"])
         assert headers2["Authorization"] == "Bearer real-secret"
 
     def test_opt_in_discovery_resolves_present_http_secret(self, tmp_path):
@@ -352,8 +388,8 @@ class TestDiscoveryUsesSecrets:
             discovery_uses_secrets=True,
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
-        _url, headers = ns["_resolve_sse"](
-            ns["_SERVER_CONFIGS"]["user_http"], "user_http", discovery=True
+        _url, headers = ns["_resolve_http"](
+            ns["_SERVER_CONFIGS"]["user_http"], discovery=True
         )
         assert headers["Authorization"] == "Bearer real-secret"
 
@@ -369,7 +405,7 @@ class TestDiscoveryUsesSecrets:
             discovery_uses_secrets=True,
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
-        assert ns["_SERVER_CONFIGS"]["user_srv"]["discovery_uses_secrets"] is True
+        assert ns["_SERVER_CONFIGS"]["user_srv"].discovery_uses_secrets is True
 
     def test_remote_vault_header_auto_enables_discovery_secrets(self, tmp_path):
         """A workspace remote server whose header references a vault secret is
@@ -386,15 +422,15 @@ class TestDiscoveryUsesSecrets:
             # NOT set — defaults to False; the vault-ref header forces it on.
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
-        assert ns["_SERVER_CONFIGS"]["user_http"]["discovery_uses_secrets"] is True
-        _url, headers = ns["_resolve_sse"](
-            ns["_SERVER_CONFIGS"]["user_http"], "user_http", discovery=True
+        assert ns["_SERVER_CONFIGS"]["user_http"].discovery_uses_secrets is True
+        _url, headers = ns["_resolve_http"](
+            ns["_SERVER_CONFIGS"]["user_http"], discovery=True
         )
         assert headers["Authorization"] == "Bearer real-secret"
 
-    def test_builtin_only_client_omits_flag_byte_stable(self):
-        """The new key only appears for workspace servers; a builtin-only config
-        must not gain it (or any vault machinery)."""
+    def test_builtin_entries_omit_flag(self):
+        """The flag only appears on untrusted entries; builtin config entries
+        never carry it."""
         gen = ToolFunctionGenerator()
         servers = [
             MCPServerConfig(
@@ -408,8 +444,9 @@ class TestDiscoveryUsesSecrets:
                 name="remote_srv", transport="sse", url="https://example.test/mcp"
             ),
         ]
-        code = gen.generate_mcp_client_code(servers)
-        assert "discovery_uses_secrets" not in code
+        config = gen.generate_client_config(servers)
+        for entry in config["servers"].values():
+            assert "discovery_uses_secrets" not in entry
 
 
 class TestDiscoverEntrypoint:
@@ -470,7 +507,7 @@ class TestWorkspaceToolTextSanitized:
             server_name="user_srv",
         )
         gen = ToolFunctionGenerator()
-        module = gen.generate_tool_module("user_srv", [tool], source="workspace")
+        module = gen.generate_tool_module("user_srv", [tool], untrusted=True)
         # The generated module must compile — the breakout is inert.
         ast.parse(module)
 
@@ -508,7 +545,7 @@ class TestToolNameInjection:
             server_name="user_srv",
         )
         gen = ToolFunctionGenerator()
-        module = gen.generate_tool_module("user_srv", [tool], source="workspace")
+        module = gen.generate_tool_module("user_srv", [tool], untrusted=True)
         tree = ast.parse(module)  # must parse — the breakout is inert
 
         # The hostile name survives ONLY as inert data inside a string literal
@@ -568,7 +605,7 @@ class TestParamNameInjection:
             server_name="user_srv",
         )
         gen = ToolFunctionGenerator()
-        module = gen.generate_tool_module("user_srv", [tool], source="workspace")
+        module = gen.generate_tool_module("user_srv", [tool], untrusted=True)
         tree = ast.parse(module)  # must parse cleanly
         # The hostile key was sanitized to an identifier — no os.system Call and
         # no `import os` statement was injected. (The module legitimately
@@ -601,10 +638,57 @@ class TestParamNameInjection:
             server_name="user_srv",
         )
         gen = ToolFunctionGenerator()
-        module = gen.generate_tool_module("user_srv", [tool], source="workspace")
+        module = gen.generate_tool_module("user_srv", [tool], untrusted=True)
         ast.parse(module)
         # Key emitted via repr (single-quoted), value references the identifier.
         assert "'sym': sym," in module
+
+
+class TestEnumValueInjection:
+    """Hostile enum values embed as inert literals in Literal[...] and docs."""
+
+    def _tool(self, values):
+        from ptc_agent.core.mcp_registry import MCPToolInfo
+
+        return MCPToolInfo(
+            name="probe",
+            description="probe",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string", "enum": values},
+                },
+                "required": ["mode"],
+            },
+            server_name="user_srv",
+        )
+
+    def test_hostile_enum_value_is_inert(self):
+        hostile = "'], __import__(\"os\").system(\"x\") #"
+        gen = ToolFunctionGenerator()
+        module = gen.generate_tool_module(
+            "user_srv", [self._tool([hostile, "ok"])], untrusted=True
+        )
+        tree = ast.parse(module)  # repr() keeps it a plain string literal
+        assert not any(
+            isinstance(n, ast.Name) and n.id == "__import__"
+            for n in ast.walk(tree)
+        )
+
+    def test_triple_quote_enum_value_cannot_break_docstring(self):
+        gen = ToolFunctionGenerator()
+        module = gen.generate_tool_module(
+            "user_srv", [self._tool(['"""x"""', "ok"])], untrusted=True
+        )
+        tree = ast.parse(module)
+        assert not any(
+            isinstance(n, ast.Name) and n.id == "__import__"
+            for n in ast.walk(tree)
+        )
+        doc = gen.generate_tool_documentation(
+            self._tool(['"""x"""', "ok"]), untrusted=True
+        )
+        assert '"""' not in doc
 
 
 class TestParamTypeInjection:
@@ -630,7 +714,7 @@ class TestParamTypeInjection:
         hostile = '"""x", __import__("os").system("touch /tmp/pwned") #'
         gen = ToolFunctionGenerator()
         module = gen.generate_tool_module(
-            "user_srv", [self._tool(hostile)], source="workspace"
+            "user_srv", [self._tool(hostile)], untrusted=True
         )
         tree = ast.parse(module)  # must parse — the breakout is inert
         assert not any(
@@ -642,7 +726,7 @@ class TestParamTypeInjection:
         # An unhashable `type` must neither crash codegen nor inject quotes.
         gen = ToolFunctionGenerator()
         module = gen.generate_tool_module(
-            "user_srv", [self._tool({"evil": '"""'})], source="workspace"
+            "user_srv", [self._tool({"evil": '"""'})], untrusted=True
         )
         ast.parse(module)
         # The closed type_map falls back to Any in the signature.
@@ -651,7 +735,7 @@ class TestParamTypeInjection:
     def test_hostile_param_type_sanitized_in_docs(self):
         hostile = '"""x"""'
         gen = ToolFunctionGenerator()
-        doc = gen.generate_tool_documentation(self._tool(hostile), source="workspace")
+        doc = gen.generate_tool_documentation(self._tool(hostile), untrusted=True)
         assert '"""' not in doc
 
     def test_builtin_param_type_byte_stable(self):

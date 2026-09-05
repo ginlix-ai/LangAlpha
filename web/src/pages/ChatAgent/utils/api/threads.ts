@@ -3,6 +3,46 @@
  */
 import { api } from '@/api/client';
 
+export interface ThreadCreatedInfo {
+  thread_id: string;
+  workspace_id: string;
+  thread_index: number;
+  title: string;
+  msg_type: string;
+}
+
+/**
+ * Pre-create a thread via POST /api/v1/threads — one round-trip, plain 201.
+ *
+ * Resolves with the created row so the caller can navigate and paint the
+ * sidebar row immediately. The generated title is NOT awaited here: it lands
+ * on the lifecycle feed's `thread_title` event (and on the next list refetch),
+ * which is the single delivery path for it. Rejects on HTTP failure or
+ * timeout — callers fall back to the legacy `__default__` send path.
+ */
+export async function createThreadWithTitle(opts: {
+  workspaceId?: string | null;
+  firstQuery: string;
+  agentMode?: 'flash' | 'ptc';
+  platform?: string | null;
+  timeoutMs?: number;
+}): Promise<ThreadCreatedInfo> {
+  const { workspaceId, firstQuery, agentMode = 'ptc', platform, timeoutMs = 8000 } = opts;
+
+  const body: Record<string, unknown> = { first_query: firstQuery, agent_mode: agentMode };
+  if (workspaceId) body.workspace_id = workspaceId;
+  if (platform) body.platform = platform;
+  // Lets title generation resolve relative dates ("today") on the user's wall clock.
+  try {
+    body.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    /* omit — server falls back to UTC */
+  }
+
+  const { data } = await api.post<ThreadCreatedInfo>('/api/v1/threads', body, { timeout: timeoutMs });
+  return data;
+}
+
 /**
  * Get a single thread by ID (used to resolve workspace_id on direct URL access)
  * @param {string} threadId - The thread ID
@@ -42,10 +82,13 @@ export async function getWorkspaceThreads(
   limit: number = 20,
   offset: number = 0,
   platformPrefix: string | null = null,
+  archived: boolean = false,
 ) {
   if (!workspaceId) throw new Error('Workspace ID is required');
-  const params: Record<string, string | number> = { workspace_id: workspaceId, limit, offset };
+  const params: Record<string, string | number | boolean> = { workspace_id: workspaceId, limit, offset };
   if (platformPrefix) params.platform_prefix = platformPrefix;
+  // Only sent when true — the hot path never carries archived rows.
+  if (archived) params.archived = true;
   const { data } = await api.get('/api/v1/threads', { params });
   return data;
 }
@@ -73,6 +116,22 @@ export async function deleteThread(threadId: string) {
   return data;
 }
 
+export interface ThreadUpdates {
+  title?: string | null;
+  is_pinned?: boolean;
+  archived?: boolean;
+}
+
+/**
+ * Update user-editable thread fields (title, pin, archive) via PATCH.
+ * Only the keys present in `updates` are applied server-side.
+ */
+export async function updateThread(threadId: string, updates: ThreadUpdates) {
+  if (!threadId) throw new Error('Thread ID is required');
+  const { data } = await api.patch(`/api/v1/threads/${threadId}`, updates);
+  return data;
+}
+
 /**
  * Update a thread's title
  * @param {string} threadId - The thread ID to update
@@ -80,9 +139,7 @@ export async function deleteThread(threadId: string) {
  * @returns {Promise<Object>} Updated thread object
  */
 export async function updateThreadTitle(threadId: string, title: string | null) {
-  if (!threadId) throw new Error('Thread ID is required');
-  const { data } = await api.patch(`/api/v1/threads/${threadId}`, { title });
-  return data;
+  return updateThread(threadId, { title });
 }
 
 // --- Streaming (fetch + ReadableStream; axios not used) ---

@@ -65,8 +65,6 @@ class CheckpointReplayUnavailable(Exception):
 
 IMAGE_CAPTURE_UI_NAME = "image_capture"
 
-# Mirrors the streaming handler's model_fallback field whitelist.
-
 
 async def build_checkpoint_replay_items(
     thread_id: str,
@@ -112,6 +110,10 @@ async def build_checkpoint_replay_items(
         if isinstance(q, dict):
             queries_by_turn.setdefault(q.get("turn_index"), []).append(q)
 
+    # Both paths key the projection cache on these rows, so index once.
+    usage_by_response = items._usage_rows_by_response(usages)
+    provenance_by_response = items._rows_by_response(provenance, many=True)
+
     out: list[dict[str, Any]] | None = None
     if projection_cache.cache_active():
         out = await _assemble_from_cache(
@@ -122,6 +124,8 @@ async def build_checkpoint_replay_items(
             turn_indexes,
             branch_tip_checkpoint_id,
             last_n_turns,
+            usage_by_response,
+            provenance_by_response,
         )
     if out is None:
         out = await _build_and_backfill(
@@ -132,11 +136,38 @@ async def build_checkpoint_replay_items(
             turn_indexes,
             branch_tip_checkpoint_id,
             last_n_turns,
-            usages,
-            provenance,
+            usage_by_response,
+            provenance_by_response,
         )
     await widgets._resolve_widget_data_refs(out)
     return out
+
+
+def _turn_fingerprint(
+    response: dict[str, Any] | None,
+    usage_by_response: dict[str, Any],
+    provenance_by_response: dict[str, Any],
+) -> str:
+    """Cache-key fingerprint for one turn's table-sourced replay inputs.
+
+    Degrades to a constant on failure rather than propagating: the cache is
+    an optimization, so an unhashable row must cost a rebuild, never the
+    replay itself. Reads and writes agree on the fallback, and tails are
+    unique per turn, so it cannot collide across turns.
+    """
+    response_id = str(response.get("conversation_response_id")) if response else None
+    try:
+        return projection_cache.turn_fingerprint(
+            response,
+            provenance_by_response.get(response_id) or [],
+            usage_by_response.get(response_id),
+        )
+    except Exception:
+        logger.warning(
+            f"[REPLAY] turn fingerprint failed for response={response_id}",
+            exc_info=True,
+        )
+        return "unfingerprinted"
 
 
 async def _assemble_from_cache(
@@ -147,6 +178,8 @@ async def _assemble_from_cache(
     turn_indexes: list[Any],
     branch_tip_checkpoint_id: str | None,
     last_n_turns: int | None,
+    usage_by_response: dict[str, Any],
+    provenance_by_response: dict[str, Any],
 ) -> list[dict[str, Any]] | None:
     """Concatenate cached per-turn entries — a light boundary walk plus one
     raw tip read, no state materialization. Returns None on any miss (the
@@ -170,7 +203,18 @@ async def _assemble_from_cache(
     )
     cached = await projection_cache.get_cached_turns(
         thread_id,
-        [a.tail_checkpoint_id for _, a in pairs if a is not None],
+        [
+            (
+                a.tail_checkpoint_id,
+                _turn_fingerprint(
+                    responses_by_turn.get(ti),
+                    usage_by_response,
+                    provenance_by_response,
+                ),
+            )
+            for ti, a in pairs
+            if a is not None
+        ],
     )
     if any(v is None for v in cached.values()):
         return None
@@ -198,8 +242,8 @@ async def _build_and_backfill(
     turn_indexes: list[Any],
     branch_tip_checkpoint_id: str | None,
     last_n_turns: int | None,
-    usages: list[dict[str, Any]] | None,
-    provenance: list[dict[str, Any]] | None,
+    usage_by_response: dict[str, Any],
+    provenance_by_response: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Materialize checkpoint state and project every requested turn, storing
     each settled turn's finished segment in the projection cache."""
@@ -224,16 +268,13 @@ async def _build_and_backfill(
         windowed=last_n_turns is not None,
     )
 
-    usage_by_response = items._usage_rows_by_response(usages)
-    provenance_by_response = items._rows_by_response(provenance, many=True)
-
     out: list[dict[str, Any]] = []
     lane = task_lane.TaskLaneProjector(thread_id, windowed=last_n_turns is not None)
     await lane.prepare(reader, pairs)
 
     # Stores are deferred past trailing_items(): only then is it known which
     # turns carry trailing salvage and must stay out of the cache.
-    cacheable: list[tuple[Any, str | None, list[dict[str, Any]]]] = []
+    cacheable: list[tuple[Any, str | None, str, list[dict[str, Any]]]] = []
     for turn_index, turn in pairs:
         if turn is None:
             out.extend(
@@ -348,10 +389,27 @@ async def _build_and_backfill(
                 for e in stored_events or []
                 if stored_merge._valid_stored(e) and e["event"] in stored_merge._ARCHIVE_EVIDENCE_EVENTS
             }
-        if not awaiting_archive and not await projection_cache.task_streams_live(
-            thread_id, turn_task_ids
+        # Gate on the PRE-read probe (lane.prepare), not a probe here: a
+        # stream sealing between the namespace read and a post-projection
+        # probe would let this build cache pre-terminal state it read
+        # moments earlier — frozen for the cache TTL, since task-ns writes
+        # never move this turn's tail. A lane the projection could not
+        # reconcile vetoes outright: no stored evidence retires that debt.
+        if (
+            not awaiting_archive
+            and not lane.turn_uncacheable_lanes
+            and not (turn_task_ids & lane.live_streams_at_read)
         ):
-            cacheable.append((turn_index, turn.tail_checkpoint_id, segment))
+            cacheable.append(
+                (
+                    turn_index,
+                    turn.tail_checkpoint_id,
+                    _turn_fingerprint(
+                        response, usage_by_response, provenance_by_response
+                    ),
+                    segment,
+                )
+            )
 
     out.extend(await lane.trailing_items())
     # Trailing salvage rides items but belongs to no turn's checkpoint range,
@@ -360,16 +418,33 @@ async def _build_and_backfill(
     # store and evict any entry from before the orphan appeared — so every
     # read misses there and rebuilds until the salvage resolves.
     salvaged = lane.salvaged_turn_indexes
-    for turn_index, tail_checkpoint_id, segment in cacheable:
+    fingerprints: dict[Any, str] = {}
+    for turn_index, tail_checkpoint_id, fingerprint, segment in cacheable:
+        fingerprints[turn_index] = fingerprint
         if turn_index not in salvaged:
             await projection_cache.store_turn(
-                thread_id, tail_checkpoint_id, segment
+                thread_id, tail_checkpoint_id, fingerprint, segment
             )
     if salvaged:
         tails_by_turn = {ti: t.tail_checkpoint_id for ti, t in pairs if t is not None}
+        # A salvaged turn is usually uncacheable for other reasons too, so it
+        # may never have reached `cacheable` — derive its fingerprint directly
+        # rather than assuming an entry was recorded there.
         await projection_cache.delete_turns(
             thread_id,
-            [tails_by_turn[ti] for ti in salvaged if tails_by_turn.get(ti)],
+            [
+                (
+                    tails_by_turn[ti],
+                    fingerprints.get(ti)
+                    or _turn_fingerprint(
+                        responses_by_turn.get(ti),
+                        usage_by_response,
+                        provenance_by_response,
+                    ),
+                )
+                for ti in salvaged
+                if tails_by_turn.get(ti)
+            ],
         )
 
     for interrupt in history.interrupts:

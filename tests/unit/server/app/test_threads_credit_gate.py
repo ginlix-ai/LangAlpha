@@ -1,9 +1,12 @@
 """Tests for the credit-gate ``is_byok`` logic in ``_handle_send_message``.
 
 The gate reads ``config.credential_source`` (set by ``resolve_llm_config``) to
-decide which enforcement path to take:
-  - OAUTH or BYOK  → ``enforce_credit_limit(byok=True)``  (negative-balance only)
-  - PLATFORM or NONE → ``enforce_credit_limit(byok=False)`` (daily quota check)
+decide what to report to the quota service:
+  - OAUTH or BYOK  → ``enforce_credit_limit(byok=True)``
+  - PLATFORM or NONE → ``enforce_credit_limit(byok=False)``
+
+The flag is reported, not acted on: which pools apply to a user-owned key is
+the quota service's rule, and this service only relays its verdict.
 
 The regression guard: even when ``config.llm_client`` is set (non-None), a
 PLATFORM credential_source must still produce ``byok=False``.  The old check

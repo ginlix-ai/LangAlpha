@@ -52,9 +52,32 @@ def ptc_rb_resolved_key(ptc_thread_id: str) -> str:
     return f"ptc_rb_resolved:{ptc_thread_id}"
 
 
+THREAD_WAKE_PREFIX = "thread:wake:"
+
+
 def thread_wake_key(flash_thread_id: str) -> str:
     """Pub/sub channel an in-session client subscribes to for report-back wake nudges."""
-    return f"thread:wake:{flash_thread_id}"
+    return f"{THREAD_WAKE_PREFIX}{flash_thread_id}"
+
+
+def thread_wake_pattern() -> str:
+    """Glob for the one per-worker PSUBSCRIBE that feeds every open watch."""
+    return f"{THREAD_WAKE_PREFIX}*"
+
+
+def parse_thread_wake_key(channel: str) -> str | None:
+    """Thread id a wake channel addresses, or None when it is not one.
+
+    Pattern-subscribing puts routing in this function's hands: under
+    per-channel SUBSCRIBE, delivering one thread's wake to another viewer was
+    structurally impossible, and now it is one parser bug away. So the match
+    is exact and the remainder is returned verbatim — callers route by string
+    equality against the id the subscriber attached with, which is byte-for-byte
+    what the publisher built the channel from.
+    """
+    if not channel.startswith(THREAD_WAKE_PREFIX):
+        return None
+    return channel[len(THREAD_WAKE_PREFIX) :] or None
 
 
 # TTL for report-back Redis state (run pointers, watch SET, queue); 24h.

@@ -15,9 +15,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from src.server.utils.error_sanitization import sanitize_error_text
+
 logger = logging.getLogger(__name__)
 
-_TERMINAL_STATUSES = ("completed", "cancelled", "error")
+# Client vocabulary (see _LEDGER_TO_CLIENT), not the ledger's — everything
+# ``resolve_task_details`` can report except "running".
+TERMINAL_TASK_STATUSES = ("completed", "cancelled", "error")
 
 # Ledger run status -> client vocabulary — a deliberate SECOND lane beside
 # contracts.status (whose public mapping keeps 'interrupted' for
@@ -54,11 +58,14 @@ def collect_task_ids(items: list[dict]) -> list[str]:
 async def resolve_task_details(
     thread_id: str, task_ids: list[str]
 ) -> dict[str, dict[str, Any]]:
-    """Map each task id to ``{"status", "error"}``.
+    """Map each task id to ``{"status", "error", "error_type"}``.
 
     ``status`` is ``running`` / ``completed`` / ``cancelled`` / ``error``;
-    ``error`` is the ledger failure message, present only when the client
-    status is ``error`` (None otherwise). The run ledger is the authority
+    ``error`` is the ledger failure message, present for any terminal that
+    settled with a failure payload (``error`` and ``cancelled``), None
+    otherwise, and ``error_type`` is its machine spelling — the client reads
+    it to tell a stop it can offer a remedy for from one it can only report.
+    The run ledger is the authority
     (M4): the latest run row's status maps straight to the client vocabulary —
     a dead worker's in_progress row reads "running" only until the recovery
     scanner finalizes it. Tasks without a ledgered run (pre-ledger launches,
@@ -87,16 +94,29 @@ async def resolve_task_details(
             legacy_ids.append(task_id)
         else:
             client_status = _LEDGER_TO_CLIENT.get(row.get("status"), "error")
+            # A run that ended on a failure payload carries its reason
+            # whatever terminal it settled on. Restricting this to "error"
+            # silently blanked the one case that needs it most: a credit stop
+            # settles "cancelled" by design, and its denial copy is the whole
+            # explanation the user gets.
+            carries_reason = client_status in ("error", "cancelled")
+            # Scrubbed on the way out, the way the neighbouring lane already
+            # reads this column: a setup failure quotes whatever DSN it choked
+            # on, and widening the predicate above to "cancelled" put a second
+            # terminal on this path.
+            ledger_error = row.get("error") if carries_reason else None
             details[task_id] = {
                 "status": client_status,
-                # Only an errored task carries a reason to the client.
-                "error": row.get("error") if client_status == "error" else None,
+                "error": sanitize_error_text(ledger_error) if ledger_error else None,
+                # Not sanitized: unlike the message beside it, this is a closed
+                # vocabulary this codebase writes, never quoted upstream text.
+                "error_type": row.get("error_type") if carries_reason else None,
             }
     if legacy_ids:
         for task_id, status in (
             await _resolve_legacy_statuses(thread_id, legacy_ids)
         ).items():
-            details[task_id] = {"status": status, "error": None}
+            details[task_id] = {"status": status, "error": None, "error_type": None}
     return details
 
 
@@ -125,7 +145,7 @@ async def _resolve_legacy_statuses(
         )
         if live is None and meta_status == "running":
             statuses[task_id] = "running"
-        elif meta_status in _TERMINAL_STATUSES:
+        elif meta_status in TERMINAL_TASK_STATUSES:
             statuses[task_id] = meta_status
         else:
             statuses[task_id] = "completed"
@@ -135,10 +155,11 @@ async def _resolve_legacy_statuses(
 def stamp_task_artifact_data(
     data: Any, details: dict[str, dict[str, Any]], *, status_only: bool = False
 ) -> Any:
-    """Return ``data`` with ``payload.status`` (and ``payload.error`` when the
-    task errored) stamped — copies, never mutates: stored/cached event dicts
-    are shared objects. ``status_only`` restricts the stamp to the whitelisted
-    status value — public replay must never ship failure text unauthenticated."""
+    """Return ``data`` with ``payload.status`` (and the failure reason when the
+    task settled with one) stamped — copies, never mutates: stored/cached event
+    dicts are shared objects. ``status_only`` restricts the stamp to the
+    whitelisted status value — public replay must never ship failure text
+    unauthenticated, and the type travels with the message it classifies."""
     task_id = _artifact_task_id(data)
     if not task_id or task_id not in details:
         return data
@@ -146,6 +167,8 @@ def stamp_task_artifact_data(
     payload = {**(data.get("payload") or {}), "status": detail["status"]}
     if not status_only and detail.get("error"):
         payload["error"] = detail["error"]
+        if detail.get("error_type"):
+            payload["error_type"] = detail["error_type"]
     return {**data, "payload": payload}
 
 

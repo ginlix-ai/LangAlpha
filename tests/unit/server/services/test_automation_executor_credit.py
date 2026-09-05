@@ -259,6 +259,46 @@ class TestCredentialGate:
         # so a persistently zero-credit automation eventually auto-disables.
         mock_adb.increment_failure_count.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_our_own_outage_does_not_burn_a_strike(self):
+        """The credit gate fails closed on 503, and that must not auto-disable.
+
+        The quota service restarts on every deploy. If a restart landing on a
+        schedule window counted as this automation's failure, a few unlucky
+        coincidences would quietly switch off something the user built, for a
+        reason that was never theirs.
+        """
+        exc = HTTPException(
+            status_code=503,
+            detail={"message": "Service temporarily unavailable.", "type": "service_unavailable"},
+        )
+        patches = _patch_all(is_byok=False, has_oauth=False, credit_raises=exc)
+
+        with (
+            patches["is_byok_active"],
+            patches["has_any_oauth"],
+            patches["enforce_credit"],
+            patches["auto_db"] as mock_adb,
+            patches["flash_ws"],
+            patches["fire_webhook"],
+            patches["btm"] as mock_btm_cls,
+            patch(
+                "src.server.handlers.chat.astream_flash_workflow",
+                side_effect=_empty_async_gen,
+            ) as mock_astream,
+        ):
+            _setup_auto_db(mock_adb)
+            _setup_btm(mock_btm_cls)
+
+            executor = AutomationExecutor()
+            await executor.execute(_make_automation(agent_mode="flash"), _EXEC_ID)
+
+        mock_astream.assert_not_called()
+        # The run still didn't happen, so the execution row is honest about it.
+        _assert_execution_marked_failed(mock_adb)
+        # But the automation itself is not held responsible.
+        mock_adb.increment_failure_count.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Assertion helpers

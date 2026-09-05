@@ -1,0 +1,321 @@
+"""
+Auto-generated tool functions for MCP server: probe
+
+This module provides Python functions that call tools on the probe MCP server.
+Functions are automatically generated from the MCP tool schemas.
+"""
+
+from typing import Any, Literal  # noqa: F401 - Literal used only by enum params
+import json
+
+# Import MCP client
+try:
+    from .mcp_client import _call_mcp_tool
+except ImportError:
+    # Fallback for when mcp_client is not available
+    def _call_mcp_tool(server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
+        raise NotImplementedError(
+            "MCP client not initialized. "
+            "This module must be used within a PTC sandbox with mcp_client.py installed."
+        )
+
+
+def probe_tool(type_: Literal['market', 'limit'], class_: str, tags: list[str] | None = None, note: str | None = 'hi') -> dict:
+    """Emission probe.
+
+Returns:
+    dict: probe result
+    
+    Args:
+        type_ (string) (required):  [allowed: 'market', 'limit']
+        class_ (string) (required): 
+        tags (array): 
+        note (string):  [default: 'hi']
+    
+    Returns:
+        dict: dict: probe result
+    
+    Example:
+        result = probe_tool(type_='market', class_="example")"""
+    arguments = {
+        "type": type_,
+        "class": class_,
+    }
+
+    # Optional params: None means "not provided" — drop the key.
+    # (Required params above are always sent; their None is a JSON null.)
+    optional = {
+        "tags": tags,
+        "note": note,
+    }
+    arguments.update({k: v for k, v in optional.items() if v is not None})
+
+    return _call_mcp_tool("probe", "probe_tool", arguments)
+
+def probe_tool_2(count: int, ratio: float, payload: dict, flag: bool = False, mode: str | None = None) -> list[dict]:
+    """Second probe with a breakout attempt: \"\"\" and a backslash \\.
+
+Returns:
+    list[dict]: first line of a multiline return
+    second line with \\ and \"\"\" and ''' inside
+    
+    Args:
+        count (integer) (required): Count. Ends with \\ and ''' fence
+        ratio (number) (required): 
+        flag (boolean):  [default: False]
+        payload (object) (required): 
+        mode (string):  [allowed: 'm0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10', 'm11', ...]
+    
+    Returns:
+        list[dict]: list[dict]: first line of a multiline return
+        second line with \\ and \"\"\" and ''' inside
+    
+    Example:
+        result = probe_tool_2(count=42, ratio=42.0)"""
+    arguments = {
+        "count": count,
+        "ratio": ratio,
+        "payload": payload,
+    }
+
+    # Optional params: None means "not provided" — drop the key.
+    # (Required params above are always sent; their None is a JSON null.)
+    optional = {
+        "flag": flag,
+        "mode": mode,
+    }
+    arguments.update({k: v for k, v in optional.items() if v is not None})
+
+    return _call_mcp_tool("probe", "probe_tool_2", arguments)
+
+"""
+Auto-generated tool functions for MCP server: probe
+
+This module provides Python functions that call tools on the probe MCP server.
+Functions are automatically generated from the MCP tool schemas.
+"""
+
+from typing import Any, Literal  # noqa: F401 - Literal used only by enum params
+import json
+
+# Import MCP client
+try:
+    from .mcp_client import _call_mcp_tool
+except ImportError:
+    # Fallback for when mcp_client is not available
+    def _call_mcp_tool(server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
+        raise NotImplementedError(
+            "MCP client not initialized. "
+            "This module must be used within a PTC sandbox with mcp_client.py installed."
+        )
+
+
+def probe_tool(type_: Literal['market', 'limit'], class_: str, tags: list[str] | None = None, note: str | None = 'hi') -> dict:
+    """Emission probe.
+
+Returns:
+    dict: probe result
+    
+    Args:
+        type_ (string) (required):  [allowed: 'market', 'limit']
+        class_ (string) (required): 
+        tags (array): 
+        note (string):  [default: 'hi']
+    
+    Returns:
+        dict: dict: probe result
+    
+    Example:
+        result = probe_tool(type_='market', class_="example")"""
+    arguments = {
+        'type': type_,
+        'class': class_,
+    }
+
+    # Optional params: None means "not provided" — drop the key.
+    # (Required params above are always sent; their None is a JSON null.)
+    optional = {
+        'tags': tags,
+        'note': note,
+    }
+    arguments.update({k: v for k, v in optional.items() if v is not None})
+
+    return _call_mcp_tool('probe', 'probe_tool', arguments)
+
+def probe_tool_2(count: int, ratio: float, payload: dict, flag: bool = False, mode: str | None = None) -> list[dict]:
+    """Second probe with a breakout attempt: \"\"\" and a backslash \\.
+
+Returns:
+    list[dict]: first line of a multiline return
+    second line with \\ and \"\"\" and \'\'\' inside
+    
+    Args:
+        count (integer) (required): Count. Ends with \\ and \'\'\' fence
+        ratio (number) (required): 
+        flag (boolean):  [default: False]
+        payload (object) (required): 
+        mode (string):  [allowed: 'm0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10', 'm11', ...]
+    
+    Returns:
+        list[dict]: list[dict]: first line of a multiline return
+        second line with \\ and \"\"\" and \'\'\' inside
+    
+    Example:
+        result = probe_tool_2(count=42, ratio=42.0)"""
+    arguments = {
+        'count': count,
+        'ratio': ratio,
+        'payload': payload,
+    }
+
+    # Optional params: None means "not provided" — drop the key.
+    # (Required params above are always sent; their None is a JSON null.)
+    optional = {
+        'flag': flag,
+        'mode': mode,
+    }
+    arguments.update({k: v for k, v in optional.items() if v is not None})
+
+    return _call_mcp_tool('probe', 'probe_tool_2', arguments)
+
+# probe_tool(type_: Literal['market', 'limit'], class_: str, tags: list[str] | None = None, note: str | None = 'hi')
+
+Emission probe.
+
+Returns:
+    dict: probe result
+
+## Parameters
+
+- `type_` (string) - **Required** [allowed: 'market', 'limit']
+
+- `class_` (string) - **Required**
+
+- `tags` (array) - Optional
+
+- `note` (string) - Optional [default: 'hi']
+
+## Returns
+
+**Type:** `dict`
+
+dict: probe result
+
+## Example
+
+```python
+from tools.probe import probe_tool
+
+result = probe_tool(type_='market', class_="example")
+print(result)  # noqa: T201
+```
+# probe_tool(type_: Literal['market', 'limit'], class_: str, tags: list[str] | None = None, note: str | None = 'hi')
+
+Emission probe.
+
+Returns:
+    dict: probe result
+
+## Parameters
+
+- `type_` (string) - **Required** [allowed: 'market', 'limit']
+
+- `class_` (string) - **Required**
+
+- `tags` (array) - Optional
+
+- `note` (string) - Optional [default: 'hi']
+
+## Returns
+
+**Type:** `dict`
+
+dict: probe result
+
+## Example
+
+```python
+from tools.probe import probe_tool
+
+result = probe_tool(type_='market', class_="example")
+print(result)  # noqa: T201
+```
+# probe_tool_2(count: int, ratio: float, payload: dict, flag: bool = False, mode: str | None = None)
+
+Second probe with a breakout attempt: """ and a backslash \.
+
+Returns:
+    list[dict]: first line of a multiline return
+    second line with \ and """ and ''' inside
+
+## Parameters
+
+- `count` (integer) - **Required**
+  Count. Ends with \ and ''' fence
+
+- `ratio` (number) - **Required**
+
+- `flag` (boolean) - Optional [default: False]
+
+- `payload` (object) - **Required**
+
+- `mode` (string) - Optional [allowed: 'm0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10', 'm11', ...]
+
+## Returns
+
+**Type:** `list[dict]`
+
+list[dict]: first line of a multiline return
+    second line with \ and """ and ''' inside
+
+## Example
+
+```python
+from tools.probe import probe_tool_2
+
+result = probe_tool_2(count=42, ratio=42.0, payload={})
+print(result)  # noqa: T201
+```
+# probe_tool_2(count: int, ratio: float, payload: dict, flag: bool = False, mode: str | None = None)
+
+Second probe with a breakout attempt: \"\"\" and a backslash \\.
+
+Returns:
+    list[dict]: first line of a multiline return
+    second line with \\ and \"\"\" and \'\'\' inside
+
+## Parameters
+
+- `count` (integer) - **Required**
+  Count. Ends with \\ and \'\'\' fence
+
+- `ratio` (number) - **Required**
+
+- `flag` (boolean) - Optional [default: False]
+
+- `payload` (object) - **Required**
+
+- `mode` (string) - Optional [allowed: 'm0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10', 'm11', ...]
+
+## Returns
+
+**Type:** `list[dict]`
+
+list[dict]: first line of a multiline return
+    second line with \\ and \"\"\" and \'\'\' inside
+
+## Example
+
+```python
+from tools.probe import probe_tool_2
+
+result = probe_tool_2(count=42, ratio=42.0, payload={})
+print(result)  # noqa: T201
+```
+
+
+# --- Per-workspace configuration (generated epilogue). ---
+_apply_config_dict(json.loads("{\"result_body_max_bytes\": 65536, \"result_body_trace_budget_bytes\": 4194304, \"servers\": {\"probe_builtin\": {\"args\": [\"run\", \"python\", \"/probe/mcp_servers/probe_server.py\"], \"command\": \"uv\", \"env_keys\": [\"PROBE_API_KEY\"], \"transport\": \"stdio\", \"untrusted\": false}, \"probe_oauth\": {\"relay_bound\": true, \"transport\": \"http\", \"untrusted\": true}, \"probe_workspace\": {\"discovery_uses_secrets\": true, \"headers\": {\"Authorization\": \"${vault:PROBE_TOKEN}\"}, \"transport\": \"http\", \"untrusted\": true, \"url\": \"https://probe.example/mcp\"}}, \"working_dir\": \"/probe\"}"))
+
+if __name__ == "__main__":
+    _cli_main()

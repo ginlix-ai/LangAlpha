@@ -4,6 +4,8 @@
  */
 import { api } from '@/api/client';
 import type { WorkflowRunStatus } from '@/types/api';
+import type { CancelOutcome } from '../cancelOutcome';
+import { bearerTokenOf, refreshAccessToken } from '@/lib/authToken';
 import { baseURL, getAuthHeaders, streamFetch, postSSEStream } from './transport';
 
 export async function replayThreadHistory(threadId: string, onEvent: (event: Record<string, unknown>) => void = () => {}) {
@@ -57,7 +59,7 @@ export async function sendChatMessageStream(
   }
   if (llmModel) body.llm_model = llmModel;
   if (reasoningEffort) body.reasoning_effort = reasoningEffort;
-  if (fastMode) body.fast_mode = true;
+  if (fastMode != null) body.fast_mode = fastMode;
   if (platform) body.platform = platform;
   // Use /threads/{id}/messages for existing thread, /threads/messages for new
   const isNewThread = !threadId || threadId === '__default__';
@@ -88,10 +90,13 @@ export async function sendRetryStream(
   const body: Record<string, unknown> = { workspace_id: workspaceId };
   if (llmModel) body.llm_model = llmModel;
   if (reasoningEffort) body.reasoning_effort = reasoningEffort;
-  if (fastMode) body.fast_mode = true;
+  if (fastMode != null) body.fast_mode = fastMode;
   if (requestKey) body.request_key = requestKey;
   return await postSSEStream(`/api/v1/threads/${threadId}/retry`, body, { onEvent, onRunIdResolved, signal });
 }
+
+export { isNoOpCancellation } from '../cancelOutcome';
+export type { CancelNoOpState, CancelOutcome } from '../cancelOutcome';
 
 /**
  * Hard-cancel the workflow for a thread (stops the main agent AND kills all
@@ -103,11 +108,16 @@ export async function sendRetryStream(
  * turn already tore down and the user started a new one, would hard-cancel that
  * *new* turn. The stop flow captures the run id at stop entry to avoid this.
  *
+ * Resolving is not proof of a stop — read {@link CancelOutcome.state} before
+ * treating the turn as cancelled.
+ *
  * @param {string} threadId - The thread ID to cancel
  * @param {string|null} runId - The specific run to cancel; null = latest active
- * @returns {Promise<Object>} Response data
  */
-export async function cancelWorkflow(threadId: string, runId: string | null = null) {
+export async function cancelWorkflow(
+  threadId: string,
+  runId: string | null = null,
+): Promise<CancelOutcome> {
   if (!threadId) throw new Error('Thread ID is required');
   // Bound the request: the shared axios instance sets no global timeout, so a
   // network-level hang (not a 4xx) would block each stopWorkflow retry until the
@@ -258,10 +268,20 @@ export function watchThread(
 ): { abort: AbortController } {
   const abort = new AbortController();
   const MAX_RETRIES = 2;
+  // One rotation per subscription, so a token the server keeps refusing cannot
+  // turn the retry budget into a burst of them.
+  let authRetried = false;
 
   (async () => {
     try {
-      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      // The auth rotation below rides this loop but must not be paid for out of
+      // it: spending an iteration on it would leave a genuinely flaky network
+      // one retry instead of `MAX_RETRIES`. `authRetried` caps the extension at
+      // one, so the loop still terminates. Counted as an extra turn rather than
+      // by winding `attempt` back, because `attempt` is also what tells a
+      // re-subscribe from the first one for `onResubscribed`.
+      const lastAttempt = () => MAX_RETRIES + (authRetried ? 1 : 0);
+      for (let attempt = 0; attempt <= lastAttempt(); attempt++) {
         if (abort.signal.aborted) return;
         try {
           const authHeaders = await getAuthHeaders();
@@ -270,6 +290,18 @@ export function watchThread(
             headers: { ...authHeaders },
             signal: abort.signal,
           });
+
+          // `fetch` does not throw on an HTTP status, so an auth failure never
+          // reaches the catch below and never spends a retry -- the loop's
+          // budget is only ever available to network errors. Rotate the token
+          // this request actually carried and re-subscribe with whatever comes
+          // back. When nothing better is available the fall-through below ends
+          // the subscription, and the caller's own paced re-subscribe takes it
+          // from there rather than this loop spinning on a refused token.
+          if (res.status === 401 && !authRetried) {
+            authRetried = true;
+            if (await refreshAccessToken(bearerTokenOf(authHeaders.Authorization))) continue;
+          }
 
           if (!res.ok || !res.body) return;
 
@@ -344,7 +376,7 @@ export function watchThread(
           return; // Backend closed the stream (30-min cap / disconnect).
         } catch (err: unknown) {
           if ((err as Error).name === 'AbortError') return;
-          if (attempt < MAX_RETRIES) {
+          if (attempt < lastAttempt()) {
             await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
           }
         }
@@ -490,6 +522,35 @@ export async function getSubagentTaskStatus(
 }
 
 /**
+ * On-demand checkpoint transcript for one subagent task. Serves drill-in
+ * views for tasks replay never projects as lanes (workflow children).
+ * Items are the same SSE-shaped events replay emits.
+ */
+export async function getSubagentTaskHistory(
+  threadId: string,
+  taskId: string,
+): Promise<{
+  task_id: string;
+  items: Array<{ event: string; data: Record<string, unknown> }>;
+}> {
+  const { data } = await api.get(
+    `/api/v1/threads/${threadId}/tasks/${taskId}/history`,
+  );
+  return data;
+}
+
+/** Stop one background task (e.g. a workflow run) without cancelling the turn. */
+export async function cancelSubagentTask(
+  threadId: string,
+  taskId: string,
+): Promise<CancelOutcome> {
+  const { data } = await api.post(
+    `/api/v1/threads/${threadId}/tasks/${taskId}/cancel`,
+  );
+  return data;
+}
+
+/**
  * List files in a workspace sandbox
  * @param {string} workspaceId
  * @param {string} dirPath - e.g. "results"
@@ -536,7 +597,7 @@ export async function sendHitlResponse(
   };
   if (modelOptions?.model) body.llm_model = modelOptions.model;
   if (modelOptions?.reasoningEffort) body.reasoning_effort = modelOptions.reasoningEffort;
-  if (modelOptions?.fastMode) body.fast_mode = true;
+  if (modelOptions?.fastMode != null) body.fast_mode = modelOptions.fastMode;
   if (requestKey) body.request_key = requestKey;
   return await postSSEStream(`/api/v1/threads/${threadId}/messages`, body, { onEvent, onRunIdResolved, signal });
 }

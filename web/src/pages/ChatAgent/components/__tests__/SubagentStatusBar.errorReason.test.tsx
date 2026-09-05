@@ -3,6 +3,11 @@
  * "Failed" with no cause. These lock that an errored agent renders the reason
  * banner (with the ledger message when present), and that a non-errored agent
  * never does.
+ *
+ * A credit stop is the one terminal that is neither: it settles ``cancelled``
+ * because nothing malfunctioned, but it still carries a reason, so it keeps
+ * the banner in neutral dress rather than losing the explanation along with
+ * the danger styling. A plain cancel has no reason and grows no banner.
  */
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
@@ -42,6 +47,26 @@ describe('SubagentStatusBar — failure reason banner', () => {
     expect(screen.getByText('This agent stopped with an error')).toBeInTheDocument();
   });
 
+  it('shows a stopped task its reason, without calling it an error', () => {
+    const denial = 'Not enough credits to continue.';
+    render(
+      <SubagentStatusBar
+        agent={{ ...baseAgent, status: 'cancelled', error: denial }}
+        threadId="t-1"
+      />,
+    );
+    expect(screen.getByText('This agent stopped')).toBeInTheDocument();
+    expect(screen.getByText(denial)).toBeInTheDocument();
+    expect(screen.queryByText('This agent stopped with an error')).toBeNull();
+    expect(screen.queryByText('Failed')).toBeNull();
+  });
+
+  it('renders no banner for a plain cancel, which carries no reason', () => {
+    render(<SubagentStatusBar agent={{ ...baseAgent, status: 'cancelled' }} threadId="t-1" />);
+    expect(screen.queryByText('This agent stopped')).toBeNull();
+    expect(screen.queryByText('This agent stopped with an error')).toBeNull();
+  });
+
   it('renders no error banner for a completed task', () => {
     render(<SubagentStatusBar agent={{ ...baseAgent, status: 'completed' }} threadId="t-1" />);
     expect(screen.queryByText('This agent stopped with an error')).toBeNull();
@@ -59,7 +84,10 @@ describe('SubagentStatusBar — failure reason banner', () => {
     );
     expect(screen.getByText('Failed')).toBeInTheDocument();
     expect(screen.queryByText('Running: WebFetch')).toBeNull();
+    // Neither spinner form may appear: the legacy animate-spin arc nor the
+    // shared ascii Loader (role="status") that Running renders now.
     expect(container.querySelector('.animate-spin')).toBeNull();
+    expect(container.querySelector('[role="status"]')).toBeNull();
     expect(screen.getByText('This agent stopped with an error')).toBeInTheDocument();
   });
 });

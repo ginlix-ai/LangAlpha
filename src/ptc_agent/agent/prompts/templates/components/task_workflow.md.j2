@@ -4,12 +4,8 @@ Your working directory is `work/`. **Create a subdirectory for every task** — 
 
 1. **Create task directory**: `mkdir -p work/<name>/` (e.g., `work/sector_analysis/`, `work/earnings_q3_review/`)
 2. **Plan**: Use `TodoWrite` to break down the task.
-   - Each call **fully replaces** the prior list — pass the entire collection every time.
-   - **Exactly one** task should have status `in_progress` at any moment.
-   - Mark tasks `completed` **immediately** after finishing; don't batch.
-   - Add tasks discovered mid-execution; remove tasks that become irrelevant.
 3. **Execute**: All intermediate files go in your task directory. Delegate to sub-agents with the directory path.
-4. **Deliver**: Match output to the task — answer in chat for simple queries, create a report in `results/` for complex analysis. When unsure, ask the user.
-5. **Update agent.md**: Key findings, file index, reusable artifacts
+4. **Deliver**: Match output to the task — answer in chat for simple queries, write a report into the task directory for complex analysis. When unsure, ask the user.
+5. **Update agent.md**: Key findings, what each task produced and where, reusable artifacts
 
 `ls work/` to see previous tasks and relevant prior work.

@@ -58,10 +58,17 @@ _REAPER_INTERVAL_SECONDS = 300.0   # opportunistic reap cadence
 _BLOCK_CACHE_THRESHOLD = 2
 _BLOCK_ATTEMPTS_LRU_CAP = 256      # bound block-attempt counter under churn
 
-# Exception substrings that classify as cross-cutting infra failures (trip the
-# global infra breaker in addition to the per-host breaker). Other exceptions
-# stay host-scoped.
-_INFRA_ERROR_TYPES = ("browser_closed", "dns_error", "connection_refused")
+# Failures that are OURS, not the target's — these alone may trip the global
+# breaker that fails-fast every crawl.
+#
+# DNS and connection-refused deliberately are not here. A broken resolver and a
+# domain that no longer exists are indistinguishable at this layer (both arrive
+# as one unreachable host), and the two mistakes are not equally cheap: five
+# dead links in a research burst would starve all crawling for 60s, ratcheting
+# to 900s, whereas a genuinely broken resolver fails every crawl anyway — the
+# breaker would only save the latency of trying. An unreachable host still
+# opens its own per-host breaker.
+_INFRA_ERROR_TYPES = ("browser_closed",)
 
 
 @dataclass
@@ -108,11 +115,12 @@ class SafeCrawlerWrapper:
         self._circuit_failure_threshold = circuit_failure_threshold
         self._circuit_recovery_timeout = circuit_recovery_timeout
         self._circuit_success_threshold = circuit_success_threshold
-        # Global infra breaker. Trips only on cross-cutting failures
-        # (browser_closed, dns_error, connection_refused). When open, all
-        # crawls fail-fast until recovery — DNS being broken is genuinely a
-        # cross-host problem.
+        # Global infra breaker. When open, every crawl fails fast, so only our
+        # own failures (_INFRA_ERROR_TYPES) may trip it — never a property of
+        # one target. Its on_open remedy is a browser reset, which is coherent
+        # precisely because that is the one thing it now trips on.
         self._infra_breaker = CircuitBreaker(
+            name="crawler:infra",
             failure_threshold=circuit_failure_threshold,
             recovery_timeout=circuit_recovery_timeout,
             success_threshold=circuit_success_threshold,
@@ -197,6 +205,7 @@ class SafeCrawlerWrapper:
         breaker = self._host_breakers.get(netloc)
         if breaker is None:
             breaker = CircuitBreaker(
+                name=f"crawler:host:{netloc}",
                 failure_threshold=self._circuit_failure_threshold,
                 recovery_timeout=self._circuit_recovery_timeout,
                 success_threshold=self._circuit_success_threshold,
@@ -421,13 +430,14 @@ class SafeCrawlerWrapper:
             )
 
         if kind == "infra_error":
-            # Cross-cutting failure → both breakers.
+            # Host-scoped despite the name: the only producer is the Tier-1
+            # unreachable short-circuit ("could not resolve", "connection
+            # refused"), which describes the target, not our infrastructure.
             if host_breaker is not None:
                 await host_breaker.record_failure(self._trigger_browser_reset)
-            await self._infra_breaker.record_failure(self._trigger_browser_reset)
             return CrawlResult(
                 success=False,
-                error="Crawler infrastructure error",
+                error="Target unreachable (host did not resolve or refused the connection)",
                 error_type="infra_error",
             )
 

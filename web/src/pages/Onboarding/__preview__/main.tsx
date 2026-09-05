@@ -44,7 +44,7 @@ function Btn({
       onClick={onClick}
       style={{
         font: 'inherit',
-        fontSize: 12,
+        fontSize: '0.75rem',
         cursor: 'pointer',
         padding: '5px 12px',
         borderRadius: 999,
@@ -95,7 +95,7 @@ function Preview() {
           background: 'var(--color-bg-card)',
           boxShadow: '0 4px 24px rgba(0,0,0,.25)',
           fontFamily: 'system-ui, sans-serif',
-          fontSize: 12,
+          fontSize: '0.75rem',
           color: 'var(--color-text-tertiary)',
         }}
       >

@@ -9,6 +9,7 @@ unexpected exception) degrades to leaving the sandbox path in place.
 from __future__ import annotations
 
 import hashlib
+from pathlib import PurePosixPath
 
 import pytest
 from langchain.agents.middleware.types import ModelResponse
@@ -26,14 +27,31 @@ PNG_SHA16 = hashlib.sha256(PNG).hexdigest()[:16]
 
 
 class _FakeSandbox:
+    """Stands in for the sandbox, mirroring ``core.sandbox.files.normalize_path``.
+
+    The allowed-roots passthrough is the part that matters: an absolute path
+    under an allowed root is a real location, not a virtual one, so it must not
+    be re-rooted under the work dir. A fake that always prepends the work dir
+    silently agrees with a caller that folds the path first.
+    """
+
     working_dir = "/home/workspace"
+    allowed_directories = ("/home/workspace", "/tmp")
 
     def __init__(self, files: dict[str, bytes] | None = None):
         self.files = files if files is not None else {}
         self.downloads: list[str] = []
 
     def normalize_path(self, path: str) -> str:
-        return f"{self.working_dir}/{path}"
+        if path in ("", ".", "/"):
+            return self.working_dir
+        path = path.strip()
+        for allowed in self.allowed_directories:
+            if path.startswith(allowed):
+                return str(PurePosixPath(path))
+        if path.startswith("/"):
+            return str(PurePosixPath(f"{self.working_dir}{path}"))
+        return str(PurePosixPath(f"{self.working_dir}/{path}"))
 
     async def adownload_file_bytes(self, filepath: str) -> bytes | None:
         self.downloads.append(filepath)
@@ -221,6 +239,39 @@ def test_is_sandbox_image_path():
     assert not is_sandbox_image_path("https://example.com/a.png")
     assert not is_sandbox_image_path("data:image/png;base64,xxx")
     assert not is_sandbox_image_path("work/notes.txt")
+
+
+@pytest.mark.asyncio
+async def test_an_image_under_an_allowed_root_outside_the_work_dir_is_captured(storage):
+    # /tmp is an allowed_directories default and matplotlib's savefig target, so
+    # this is the ordinary case, not an exotic one. Folding the path to a
+    # work-dir-relative form before normalize_path re-rooted it under the work
+    # dir: the download missed, and the markdown silently kept a sandbox path
+    # the browser cannot load.
+    sandbox = _FakeSandbox({"/tmp/chart.png": PNG})
+    msg = AIMessage(content="![chart](/tmp/chart.png)")
+
+    out = await _run(_mw(sandbox), _response(msg))
+
+    assert sandbox.downloads == ["/tmp/chart.png"]
+    assert (
+        f"https://cdn.test/response-images/{PNG_SHA16}/chart.png"
+        in out.result[0].content
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_path_that_repeats_the_work_dir_keeps_its_segments(storage):
+    # A directory that mirrors the work dir must not have its name spliced out
+    # of the middle: ".../mirror/home/workspace/c.png" once collapsed to
+    # "mirrorc.png" under a str.replace that stripped every occurrence.
+    path = "/home/workspace/mirror/home/workspace/c.png"
+    sandbox = _FakeSandbox({path: PNG})
+
+    out = await _run(_mw(sandbox), _response(AIMessage(content=f"![c]({path})")))
+
+    assert sandbox.downloads == [path]
+    assert f"https://cdn.test/response-images/{PNG_SHA16}/c.png" in out.result[0].content
 
 
 def test_image_storage_key_thread_scoping():
