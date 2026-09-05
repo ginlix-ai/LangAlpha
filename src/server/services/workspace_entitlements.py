@@ -564,7 +564,11 @@ class WorkspaceEntitlementsMixin:
                 #    copy should reflect the source's content).
                 async def _post_init(session: Session) -> None:
                     if session.sandbox:
-                        await self._restore_files(new_id, session.sandbox)
+                        # A fresh row: the bind expects no previous sandbox,
+                        # and so does the restore's flag.
+                        await self._restore_files(
+                            new_id, session.sandbox, expected_sandbox_id=None
+                        )
 
                 _session, new_workspace = await self._provision_sandbox_session(
                     new_id,

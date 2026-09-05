@@ -37,6 +37,11 @@ _MCP_SHARED_RUNTIME_FILES: tuple[str, ...] = (
 # (e.g. ``market_protocol/instruments.yaml``) can never silently drop.
 _SANDBOX_INTERNAL_PACKAGES: tuple[str, ...] = ("data_client", "market_protocol")
 
+#: Backend-owned script that walks, hashes and moves workspace files inside the
+#: sandbox. Lives beside this module on the host; ships to ``_internal/src/``.
+TRANSFER_RUNTIME_SANDBOX_NAME = "wsfiles_transfer.py"
+_TRANSFER_RUNTIME_SOURCE = Path(__file__).with_name("wsfiles_transfer_runtime.py")
+
 
 @dataclass
 class ChartData:
@@ -92,6 +97,10 @@ def _internal_package_files(src_dir: Path) -> list[tuple[Path, Path]]:
     if not src_init.exists():
         return []
     files: list[tuple[Path, Path]] = [(src_init, Path("__init__.py"))]
+    # The file-transfer runtime rides the same all-or-nothing module so it is
+    # hashed into the manifest and re-shipped whenever it changes; the vault
+    # helper's unhashed upload is the precedent this deliberately avoids.
+    files.append((_TRANSFER_RUNTIME_SOURCE, Path(TRANSFER_RUNTIME_SANDBOX_NAME)))
     for pkg in _SANDBOX_INTERNAL_PACKAGES:
         pkg_dir = (src_dir / pkg).resolve()
         if not pkg_dir.exists():

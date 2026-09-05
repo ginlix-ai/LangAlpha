@@ -17,6 +17,7 @@ from fastapi.responses import Response
 from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.services.workspace_manager import WorkspaceManager
 from src.server.services.persistence.file import FilePersistenceService
+from src.server.services.persistence.resolve import resolve_file_bytes_or_none
 from src.server.utils.secret_redactor import get_redactor, get_vault_secrets_for_redaction
 from src.utils.mime import resolve_content_type
 
@@ -161,7 +162,7 @@ def _has_traversal(path: str) -> bool:
 
 
 async def _db_fallback_bytes(
-    workspace_id: str, normalized_path: str, extension_mime: str
+    workspace: dict[str, Any], workspace_id: str, normalized_path: str, extension_mime: str
 ) -> tuple[bytes, str] | None:
     """Read a file's bytes from the persisted DB record (no sandbox I/O)."""
     file_record = await FilePersistenceService.get_file_content(
@@ -169,13 +170,12 @@ async def _db_fallback_bytes(
     )
     if not file_record:
         return None
-    if file_record.get("is_binary") and file_record.get("content_binary") is not None:
-        content = file_record["content_binary"]
-        if isinstance(content, memoryview):
-            content = bytes(content)
-    elif file_record.get("content_text") is not None:
-        content = file_record["content_text"].encode("utf-8")
-    else:
+    content = await resolve_file_bytes_or_none(
+        file_record,
+        user_id=workspace["user_id"],
+        context=f"serving {normalized_path} for workspace {workspace_id}",
+    )
+    if content is None:
         return None
     # Extension is the authority for known web types; fall back to the
     # DB-stored mime only when the extension is unrecognized.
@@ -215,7 +215,9 @@ async def _resolve_serve_bytes(
     )
     sandbox = getattr(session, "sandbox", None) if session else None
     if sandbox is None:
-        return await _db_fallback_bytes(workspace_id, normalized_path, extension_mime)
+        return await _db_fallback_bytes(
+            workspace, workspace_id, normalized_path, extension_mime
+        )
     candidate, error = sandbox.validate_and_normalize_path(normalized_path)
     if error:
         return None
@@ -232,7 +234,9 @@ async def _resolve_serve_bytes(
             f"Sandbox read failed for workspace {workspace_id}; "
             f"serving the persisted copy instead: {single_line(str(e))}"
         )
-        return await _db_fallback_bytes(workspace_id, normalized_path, extension_mime)
+        return await _db_fallback_bytes(
+            workspace, workspace_id, normalized_path, extension_mime
+        )
     if content is None:
         return None
     client_path = _to_client_path(sandbox, candidate)

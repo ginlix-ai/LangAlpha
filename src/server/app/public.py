@@ -461,6 +461,7 @@ async def read_shared_file(
 
     from src.server.database.workspace import get_workspace as db_get_workspace
     from src.server.services.persistence.file import FilePersistenceService
+    from src.server.services.persistence.resolve import resolve_file_text_or_none
     from src.server.services.workspace_manager import WorkspaceManager
 
     workspace = await db_get_workspace(workspace_id)
@@ -483,21 +484,31 @@ async def read_shared_file(
         if file_record.get("is_binary"):
             raise HTTPException(status_code=415, detail="Cannot read binary file as text.")
 
-        text_content = file_record.get("content_text", "")
-        text_content = get_redactor().redact(text_content, vault_secrets=vault_secrets)
-        lines = text_content.splitlines()
-        content = "\n".join(lines[offset:offset + limit])
-        mime = file_record.get("mime_type") or "text/plain"
+        # `.get("content_text", "")` would hand redact() a None on a blob-backed
+        # row, since the key exists with a NULL value.
+        text_content = await resolve_file_text_or_none(
+            file_record,
+            user_id=workspace["user_id"],
+            context=f"reading shared file in workspace {workspace_id}",
+        )
+        # None is the resolver's uniform "absent" for a storage failure as
+        # much as for a missing row; a warm sandbox below may still hold
+        # the file, and the 404 at the end covers both when it does not.
+        if text_content is not None:
+            text_content = get_redactor().redact(text_content, vault_secrets=vault_secrets)
+            lines = text_content.splitlines()
+            content = "\n".join(lines[offset:offset + limit])
+            mime = file_record.get("mime_type") or "text/plain"
 
-        return {
-            "path": normalized_path,
-            "offset": offset,
-            "limit": limit,
-            "content": content,
-            "mime": mime,
-            "truncated": len(lines) > offset + limit,
-            "source": "database",
-        }
+            return {
+                "path": normalized_path,
+                "offset": offset,
+                "limit": limit,
+                "content": content,
+                "mime": mime,
+                "truncated": len(lines) > offset + limit,
+                "source": "database",
+            }
 
     # Try live sandbox only when it's ALREADY warm in this worker — see
     # list_shared_files: gate on the in-memory has_ready_session() and read the
@@ -573,6 +584,7 @@ async def download_shared_file(
 
     from src.server.database.workspace import get_workspace as db_get_workspace
     from src.server.services.persistence.file import FilePersistenceService
+    from src.server.services.persistence.resolve import resolve_file_bytes_or_none
     from src.server.services.workspace_manager import WorkspaceManager
 
     workspace = await db_get_workspace(workspace_id)
@@ -592,26 +604,28 @@ async def download_shared_file(
         FilePersistenceService.get_file_content(workspace_id, normalized_path),
     )
     if file_record:
-        if file_record.get("is_binary") and file_record.get("content_binary"):
-            content = file_record["content_binary"]
-            if isinstance(content, memoryview):
-                content = bytes(content)
-        elif file_record.get("content_text") is not None:
-            content = file_record["content_text"].encode("utf-8")
-        else:
-            raise HTTPException(status_code=404, detail="File content not available")
-
-        filename = file_record.get("file_name", "download")
-        mime = file_record.get("mime_type") or "application/octet-stream"
-
-        if _is_text_content_type(mime) or _is_utf8(content):
-            content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
-
-        return StreamingResponse(
-            iter([content]),
-            media_type=mime,
-            headers={"Content-Disposition": content_disposition(filename)},
+        content = await resolve_file_bytes_or_none(
+            file_record,
+            user_id=workspace["user_id"],
+            context=f"downloading shared file in workspace {workspace_id}",
         )
+        # None is the resolver's uniform "absent" for a storage failure as
+        # much as for a missing row; a warm sandbox below may still hold the
+        # file. When it does not, the 404 at the end has the same status and
+        # body as an absent path: the caller holds only a share token, so
+        # "content not available" would confirm the workspace and path exist.
+        if content is not None:
+            filename = file_record.get("file_name", "download")
+            mime = file_record.get("mime_type") or "application/octet-stream"
+
+            if _is_text_content_type(mime) or _is_utf8(content):
+                content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
+
+            return StreamingResponse(
+                iter([content]),
+                media_type=mime,
+                headers={"Content-Disposition": content_disposition(filename)},
+            )
 
     # Try live sandbox only when it's ALREADY warm in this worker — see
     # list_shared_files: gate on the in-memory has_ready_session() and read the

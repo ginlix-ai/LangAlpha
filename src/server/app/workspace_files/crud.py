@@ -48,6 +48,8 @@ from ._shared import (
     _requested_system_ok,
     _serialize_user_profile_file,
     _to_client_path,
+    http_file_bytes,
+    http_file_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -255,7 +257,10 @@ async def read_workspace_file(
                 detail="Cannot read binary file as text. Use GET /files/download instead.",
             )
 
-        text_content = file_record.get("content_text", "")
+        # Never `.get("content_text", "")` — the key exists with a NULL value on
+        # a blob-backed row, so the default never fires and redact() would be
+        # handed None.
+        text_content = await http_file_text(file_record, user_id=workspace["user_id"])
         text_content = get_redactor().redact(text_content, vault_secrets=vault_secrets)
         if unlimited:
             content = text_content
@@ -473,14 +478,7 @@ async def download_workspace_file(
         if not file_record:
             raise HTTPException(status_code=404, detail="File not found")
 
-        if file_record.get("is_binary") and file_record.get("content_binary"):
-            content = file_record["content_binary"]
-            if isinstance(content, memoryview):
-                content = bytes(content)
-        elif file_record.get("content_text") is not None:
-            content = file_record["content_text"].encode("utf-8")
-        else:
-            raise HTTPException(status_code=404, detail="File content not available")
+        content = await http_file_bytes(file_record, user_id=workspace["user_id"])
 
         filename = file_record.get("file_name", "download")
         mime = file_record.get("mime_type") or "application/octet-stream"
@@ -617,6 +615,7 @@ async def backup_workspace_files(
         "skipped": result["skipped"],
         "deleted": result["deleted"],
         "errors": result["errors"],
+        "oversized": result.get("oversized", 0),
         "total_size": result["total_size"],
     }
 
@@ -648,7 +647,13 @@ async def get_backup_status(
         get_workspace_total_size,
     )
 
-    db_meta = await get_file_metadata_for_sync(workspace_id)
+    # The sync metadata carries directory and symlink rows too; this status
+    # is about files, and the running branch below only ever sees files.
+    db_meta = {
+        path: meta
+        for path, meta in (await get_file_metadata_for_sync(workspace_id)).items()
+        if meta.get("kind", "file") == "file"
+    }
 
     # If sandbox is stopped, everything in DB is "backed_up", nothing else
     if workspace.get("status") in ("stopped", "stopping", "starting"):
@@ -675,9 +680,11 @@ async def get_backup_status(
             "total_backed_up_size": total_size,
         }
 
-    # Run find to get current sandbox file metadata
+    # The sandbox lists itself; known rows let it skip re-hashing.
     try:
-        sandbox_meta = await FilePersistenceService.list_sandbox_files(sandbox)
+        sandbox_meta = await FilePersistenceService.list_sandbox_files(
+            sandbox, prior=FilePersistenceService.prior_from_meta(db_meta)
+        )
     except Exception:
         total_size = await get_workspace_total_size(workspace_id)
         return {
