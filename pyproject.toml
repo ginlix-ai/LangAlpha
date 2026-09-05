@@ -90,7 +90,7 @@ dependencies = [
     # __all__, so a 0.x minor is free to delete them without notice — 0.7.0
     # dropped WriteResult.files_update exactly that way. Bump deliberately.
     "deepagents>=0.6.11,<0.8",
-    "daytona>=0.200.1",
+    "daytona>=0.210.0",
     "boto3>=1.42.28",
     "tavily-python>=0.7.18",
     "PyJWT[crypto]>=2.8",

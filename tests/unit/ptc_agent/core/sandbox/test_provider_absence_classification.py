@@ -16,6 +16,8 @@ that ordering, so the base tests say nothing about it and it is pinned
 separately at the bottom of this module.
 """
 
+from urllib.error import HTTPError
+
 from daytona.common.errors import DaytonaNotFoundError
 
 from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
@@ -81,14 +83,15 @@ def _daytona() -> DaytonaProvider:
 def _miss(path: str) -> DaytonaNotFoundError:
     """A per-path miss shaped exactly as the live API returns it.
 
-    Message and metadata transcribed from a probe against SDK 0.200.1: the
+    Message and metadata transcribed from a probe against SDK 0.200.1 (the
+    field was renamed ``error_code`` -> ``code`` in 0.201): the
     server echoes the requested path into the message, which is precisely what
     makes the message scan dangerous here.
     """
     return DaytonaNotFoundError(
         f"Failed to download file: file not found: {path}",
         status_code=404,
-        error_code="FILE_NOT_FOUND",
+        code="FILE_NOT_FOUND",
     )
 
 
@@ -130,8 +133,26 @@ def test_daytona_a_missing_sandbox_is_still_gone() -> None:
     assert (
         _daytona().classify_error(
             DaytonaNotFoundError(
-                "Sandbox not found", status_code=404, error_code="NOT_FOUND"
+                "Sandbox not found", status_code=404, code="NOT_FOUND"
             )
         )
         is SandboxFailureKind.SANDBOX_GONE
     )
+
+
+def test_daytona_an_int_code_on_a_wrapper_does_not_hide_the_sdk_string() -> None:
+    """``code`` is a common attribute name, and the outermost one is not the SDK's.
+
+    A transport error raised over the SDK's carries its own ``code``, an
+    integer: ``HTTPError`` is 404 the number. Stopping the chain walk at the
+    first exception that merely has the attribute loses ``FILE_NOT_FOUND``,
+    and the 404 left behind routes to ``SANDBOX_GONE``, so a missing file
+    authorizes destroying and replacing the sandbox it lives in.
+    """
+    from ptc_agent.core.sandbox.providers.daytona_secrets import daytona_error_code
+
+    wrapped = HTTPError("http://daytona/files", 404, "Not Found", None, None)
+    wrapped.__cause__ = _miss("/home/workspace/report.csv")
+
+    assert daytona_error_code(wrapped) == "FILE_NOT_FOUND"
+    assert _daytona().classify_error(wrapped) is SandboxFailureKind.PATH_ABSENT

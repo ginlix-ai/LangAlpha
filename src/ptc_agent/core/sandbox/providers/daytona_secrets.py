@@ -24,15 +24,15 @@ def daytona_error_status(exc: Exception) -> int | None:
 
 
 def daytona_error_code(exc: Exception) -> str | None:
-    """Extract the SDK's machine-readable ``error_code`` through wrapper chains.
+    """Extract the SDK's machine-readable ``code`` through wrapper chains.
 
     Structured and stable where the message text is not — it is what separates a
     per-path ``FILE_NOT_FOUND`` from a sandbox-level ``NOT_FOUND``, both of which
-    arrive as HTTP 404.
+    arrive as HTTP 404. Only a string counts: ``code`` is a common attribute
+    name, and an integer on some wrapped exception is not an SDK envelope.
     """
 
-    code = _walk_chain_attrs(exc, ("error_code",))
-    return str(code) if code else None
+    return _walk_chain_attrs(exc, ("code",))
 
 
 def _walk_chain_attrs(exc: Exception, attrs: tuple[str, ...]) -> Any | None:
@@ -46,6 +46,11 @@ def _walk_chain_attrs(exc: Exception, attrs: tuple[str, ...]) -> Any | None:
             value = getattr(current, attr, None)
             if attr in ("status", "status_code"):
                 if isinstance(value, int):
+                    return value
+            elif attr == "code":
+                # ``code`` is a common name; an integer on an outer wrapper
+                # (HTTPError, SystemExit) must not hide the SDK's string.
+                if isinstance(value, str) and value:
                     return value
             elif value:
                 return value
