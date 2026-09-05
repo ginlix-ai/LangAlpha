@@ -113,3 +113,26 @@ async def test_files_during_concurrent_failing_lazy_init(
     assert isinstance(b_outcome, dict), f"B should not raise 503 / error: {b_outcome!r}"
     assert b_outcome["source"] == "database"
     assert b_outcome["files"] == ["results/x.txt"]
+
+
+@pytest.mark.asyncio
+@patch("src.server.database.workspace_file.get_workspace_total_size", new_callable=AsyncMock, return_value=7)
+@patch("src.server.database.workspace_file.get_file_metadata_for_sync", new_callable=AsyncMock)
+@patch("src.server.app.workspace_files.crud.db_get_workspace")
+async def test_backup_status_of_a_stopped_workspace_lists_files_only(mock_get_ws, mock_meta, _size):
+    """The sync metadata carries directory and symlink rows; the status is
+    about files, and the running branch only ever sees files."""
+    from src.server.app.workspace_files.crud import get_backup_status
+
+    mock_get_ws.return_value = _workspace("ws-stopped", "user-1", status="stopped")
+    mock_meta.return_value = {
+        "data": {"kind": "directory", "file_size": 0},
+        "link": {"kind": "symlink", "file_size": 0},
+        "data/a.csv": {"kind": "file", "file_size": 7},
+        "legacy.txt": {"file_size": 3},
+    }
+
+    result = await get_backup_status(workspace_id="ws-stopped", x_user_id="user-1")
+
+    assert set(result["backed_up"]) == {"data/a.csv", "legacy.txt"}
+    assert result["total_backed_up_size"] == 7

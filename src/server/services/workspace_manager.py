@@ -55,7 +55,11 @@ from src.server.database.workspace import (
     update_workspace_activity,
     update_workspace_status,
 )
-from src.server.services.persistence.file import FilePersistenceService
+from src.server.services.persistence.file import (
+    FilePersistenceService,
+    RestoreGuardUnavailable,
+    RestoreIdentityLost,
+)
 from src.server.services.user_skills import sandbox_skill_sync_params
 from src.server.services.user_skills.reconcile import reconcile_workspace_skills
 from src.server.services.workspace_entitlements import WorkspaceEntitlementsMixin
@@ -1123,6 +1127,13 @@ class WorkspaceManager(WorkspaceEntitlementsMixin):
             # can no longer be read as stale by a concurrent acquisition.
             self._sessions[workspace_id] = session
 
+            # post_init restored into a sandbox the row did not yet name, so
+            # its clear of the completeness flag could not land. Now that the
+            # row names this sandbox: a marker means the restore came back
+            # clean and the flag can go; no marker means it did not, and the
+            # restore runs again here, on the sandbox that actually won.
+            await self._maybe_restore_files(workspace_id, session.sandbox)
+
             if kick_discovery and resolved_mcp is not None:
                 self._kick_mcp_discovery(
                     workspace_id,
@@ -1175,9 +1186,15 @@ class WorkspaceManager(WorkspaceEntitlementsMixin):
         always_on = await self._entitled_always_on(workspace or {}, user_id)
         auto_stop_minutes = 0 if always_on else None
 
+        previous_sandbox_id = (workspace or {}).get("sandbox_id")
+
         async def _post_init(session: Session) -> None:
             if session.sandbox:
-                await self._restore_files(workspace_id, session.sandbox)
+                await self._restore_files(
+                    workspace_id,
+                    session.sandbox,
+                    expected_sandbox_id=previous_sandbox_id,
+                )
 
         # ws_version=None forces a resolve (the session is brand new); discovery
         # is kicked in the background so recovered user servers re-hydrate.
@@ -1190,7 +1207,7 @@ class WorkspaceManager(WorkspaceEntitlementsMixin):
             kick_discovery=True,
             post_init=_post_init,
             core_config=core_config,
-            expected_previous_sandbox_id=(workspace or {}).get("sandbox_id"),
+            expected_previous_sandbox_id=previous_sandbox_id,
         )
         await update_workspace_activity(workspace_id)
         return session
@@ -1351,11 +1368,17 @@ class WorkspaceManager(WorkspaceEntitlementsMixin):
                 extra={"workspace_id": workspace_id, "sandbox_id": sandbox_id},
             )
 
-    async def _restore_files(self, workspace_id: str, sandbox: Any) -> None:
-        """Restore backed-up files from DB to sandbox. Non-blocking on failure."""
+    async def _restore_files(
+        self, workspace_id: str, sandbox: Any, *, expected_sandbox_id: Any
+    ) -> None:
+        """Restore backed-up files from DB to sandbox. Non-blocking on failure.
+
+        ``expected_sandbox_id`` is the sandbox the workspace row names while
+        the restore runs, the same value the identity CAS that follows expects
+        to replace; the restore's flag lands only while that still holds."""
         try:
             result = await FilePersistenceService.restore_to_sandbox(
-                workspace_id, sandbox
+                workspace_id, sandbox, expected_sandbox_id=expected_sandbox_id
             )
             errors = result.get("errors", 0) if isinstance(result, dict) else 0
             if errors:
@@ -1372,13 +1395,31 @@ class WorkspaceManager(WorkspaceEntitlementsMixin):
                 logger.info(
                     f"Restored {result['restored']} files to sandbox for {workspace_id}"
                 )
+        except RestoreIdentityLost:
+            # Another provisioner already bound this workspace; the identity
+            # CAS below would lose too. Unwinding here discards our sandbox
+            # before it is filled.
+            logger.info(
+                f"Skipping restore for {workspace_id}: another sandbox was "
+                f"bound while this one was being provisioned"
+            )
+            raise
+        except RestoreGuardUnavailable:
+            # Nothing was restored and nothing records that. Binding this
+            # sandbox would hand the next backup an empty mirror of a full
+            # manifest with pruning enabled; the provisioning unwind destroys
+            # it instead and the next start tries again.
+            raise
         except Exception as e:
             logger.warning(f"File restore failed for {workspace_id}: {e}")
 
     async def _maybe_restore_files(self, workspace_id: str, sandbox: Any) -> None:
-        """Restore files if sync marker is missing. Non-blocking on failure."""
+        """Restore files if sync marker is missing. Non-blocking on failure,
+        except when the completeness guard itself could not be raised."""
         try:
             await FilePersistenceService.maybe_restore(workspace_id, sandbox)
+        except RestoreGuardUnavailable:
+            raise
         except Exception as e:
             logger.warning(f"File restore check failed for {workspace_id}: {e}")
 

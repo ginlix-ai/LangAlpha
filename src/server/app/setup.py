@@ -609,6 +609,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to start ProvenanceGCService: {e}")
 
+    # Start WorkspaceFileGCService (condemn-then-reap of unreferenced file blobs)
+    try:
+        from src.server.services.workspace_file_gc import WorkspaceFileGCService
+
+        await WorkspaceFileGCService.get_instance().start()
+    except Exception as e:
+        logger.warning(f"Failed to start WorkspaceFileGCService: {e}")
+
     # Confirm the runtime credit gate can reach its lease service, and on
     # terms its refresher can work with. Both failures it catches are silent
     # at request time.
@@ -673,6 +681,13 @@ async def lifespan(app: FastAPI):
         await ProvenanceGCService.get_instance().stop()
     except Exception as e:
         logger.warning(f"Error shutting down ProvenanceGCService: {e}")
+
+    try:
+        from src.server.services.workspace_file_gc import WorkspaceFileGCService
+
+        await WorkspaceFileGCService.get_instance().stop()
+    except Exception as e:
+        logger.warning(f"Error shutting down WorkspaceFileGCService: {e}")
 
     # 0.2. Shutdown NewsRefreshService
     try:

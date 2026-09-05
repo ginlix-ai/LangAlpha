@@ -801,3 +801,89 @@ class TestReplayStripsWorkspaceId:
             assert "sandbox_state" not in d
         # The stored event object must be untouched (no in-place mutation).
         assert stored == original
+
+
+# ---------------------------------------------------------------------------
+# TestPublicWarmSandboxFallback — a storage failure is not the end of the read
+# ---------------------------------------------------------------------------
+
+_RESOLVE_TEXT = "src.server.services.persistence.resolve.resolve_file_text_or_none"
+_RESOLVE_BYTES = "src.server.services.persistence.resolve.resolve_file_bytes_or_none"
+
+
+def _warm_manager(content: bytes):
+    """A WorkspaceManager holding a ready session whose sandbox serves ``content``."""
+    from unittest.mock import MagicMock
+
+    sandbox = MagicMock()
+    sandbox.working_dir = "/home/workspace"
+    sandbox.validate_and_normalize_path.return_value = ("/home/workspace/data/x.txt", None)
+    sandbox.virtualize_path.return_value = "data/x.txt"
+    sandbox.adownload_file_bytes = AsyncMock(return_value=content)
+    session = MagicMock()
+    session.sandbox = sandbox
+    mgr = MagicMock()
+    mgr.get_session_if_ready.return_value = session
+    holder = MagicMock()
+    holder.get_instance.return_value = mgr
+    return holder
+
+
+class TestPublicWarmSandboxFallback:
+    """The resolver answers None for a storage failure as it does for an absent
+    row. With a warm sandbox in this worker the live copy is served; the
+    uniform 404 is kept for when there is none."""
+
+    async def test_read_falls_through_to_the_warm_sandbox(self, public_client):
+        with (
+            patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
+            patch(_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="running"))),
+            patch(_WORK_DIR, return_value="/home/workspace"),
+            patch(_NORM_PATH, return_value="data/x.txt"),
+            patch(_FILE_SVC, AsyncMock(return_value=_make_file_record(None))),
+            patch(_RESOLVE_TEXT, AsyncMock(return_value=None)),
+            patch(_WSMGR, _warm_manager(b"live copy")),
+        ):
+            resp = await public_client.get(
+                f"/api/v1/public/shared/{_SHARE_TOKEN}/files/read",
+                params={"path": "data/x.txt"},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["content"] == "live copy"
+        assert resp.json()["source"] == "sandbox"
+
+    async def test_download_falls_through_to_the_warm_sandbox(self, public_client):
+        with (
+            patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
+            patch(_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="running"))),
+            patch(_WORK_DIR, return_value="/home/workspace"),
+            patch(_NORM_PATH, return_value="data/x.txt"),
+            patch(_FILE_SVC, AsyncMock(return_value=_make_file_record(None))),
+            patch(_RESOLVE_BYTES, AsyncMock(return_value=None)),
+            patch(_WSMGR, _warm_manager(b"live copy")),
+        ):
+            resp = await public_client.get(
+                f"/api/v1/public/shared/{_SHARE_TOKEN}/files/download",
+                params={"path": "data/x.txt"},
+            )
+        assert resp.status_code == 200
+        assert resp.content == b"live copy"
+
+    async def test_read_stays_a_uniform_404_without_a_warm_sandbox(self, public_client):
+        holder, mgr = _no_warm_manager()
+        with (
+            patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
+            patch(_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="running"))),
+            patch(_WORK_DIR, return_value="/home/workspace"),
+            patch(_NORM_PATH, return_value="data/x.txt"),
+            patch(_FILE_SVC, AsyncMock(return_value=_make_file_record(None))),
+            patch(_RESOLVE_TEXT, AsyncMock(return_value=None)),
+            patch(_WSMGR, holder),
+        ):
+            resp = await public_client.get(
+                f"/api/v1/public/shared/{_SHARE_TOKEN}/files/read",
+                params={"path": "data/x.txt"},
+            )
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "File not found"
+        mgr.get_session_for_workspace.assert_not_awaited()

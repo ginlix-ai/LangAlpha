@@ -23,6 +23,10 @@ from ptc_agent.core.paths import (
     USER_PROFILE_WATCHLIST_FILE,
 )
 from src.server.services.workspace_manager import WorkspaceManager
+from src.server.services.persistence.resolve import (
+    FileBytesUnavailable,
+    resolve_file_bytes,
+)
 from src.server.services import user_data_io
 from src.server.utils.error_sanitization import (
     sandbox_unreachable_detail,
@@ -31,6 +35,43 @@ from src.server.utils.error_sanitization import (
 from src.observability import safe_record, workspace_fs_bytes
 
 logger = logging.getLogger(__name__)
+
+
+async def http_file_bytes(file_record: dict[str, Any], *, user_id: str) -> bytes:
+    """Resolve a persisted file's bytes for a route that authenticated its caller.
+
+    ``user_id`` is the workspace owner's (the storage namespace), which the
+    caller already holds from the ownership check.
+
+    503 when the bytes exist but object storage can't serve them right now, 404
+    when the row carries no content at all. The caller is already authorized for
+    this workspace, so the distinction leaks nothing to them — and a storage
+    outage must not be reported as "your file is gone". Routes whose only
+    credential is the URL take the opposite policy: see
+    ``resolve_file_bytes_or_none``.
+
+    The underlying error is logged rather than returned; its message names the
+    object key, which the client has no business seeing.
+    """
+    try:
+        content = await resolve_file_bytes(file_record, user_id=user_id)
+    except FileBytesUnavailable as e:
+        logger.warning(f"Blob unavailable for {file_record.get('file_path')!r}: {e}")
+        raise HTTPException(
+            status_code=503, detail="File content temporarily unavailable"
+        ) from None
+    if content is None:
+        raise HTTPException(status_code=404, detail="File content not available")
+    return content
+
+
+async def http_file_text(file_record: dict[str, Any], *, user_id: str) -> str:
+    """:func:`http_file_bytes`, decoded. Caller must 415 binary rows first.
+
+    ``replace`` is a guard, not a decoding strategy; see ``resolve_file_text``.
+    """
+    data = await http_file_bytes(file_record, user_id=user_id)
+    return data.decode("utf-8", errors="replace")
 
 
 def _record_fs_bytes(op: str, size: int | None) -> None:
