@@ -121,6 +121,7 @@ class DockerRuntime(SandboxRuntime):
         self._host_port_map: dict[int, int] = host_port_map or {}
         self._port_map: dict[int, int] = {}  # agent port → container proxy port
         self._forwarder_pids: dict[int, str] = {}  # container proxy port → socat PID
+        self._owner_id_cache: tuple[int, int] | None = None  # uid/gid inside the container
 
     # -- Properties --
 
@@ -298,12 +299,14 @@ class DockerRuntime(SandboxRuntime):
 
         # Build one tar archive with full absolute paths.
         buf = io.BytesIO()
+        uid, gid = await self._owner_ids()
         with tarfile.open(fileobj=buf, mode="w") as tar:
             for data, dest_path in prepared:
                 tar_name = dest_path.lstrip("/")
                 info = tarfile.TarInfo(name=tar_name)
                 info.size = len(data)
                 info.mode = 0o644
+                info.uid, info.gid = uid, gid
                 tar.addfile(info, io.BytesIO(data))
         buf.seek(0)
 
@@ -598,6 +601,27 @@ class DockerRuntime(SandboxRuntime):
 
     # -- Internal: tar-based file I/O --
 
+    async def _owner_ids(self) -> tuple[int, int]:
+        """The uid/gid the container runs as, cached for the runtime's life.
+
+        ``put_archive`` extracts with each tar entry's ownership, and an entry
+        built here defaults to root. A file the container's own user does not
+        own can be read but never chmod'd or utime'd, which is exactly what
+        placing a restored workspace file has to do.
+        """
+        if self._owner_id_cache is None:
+            res = await self.exec("id -u; id -g", timeout=10)
+            try:
+                uid, gid = (int(x) for x in res.stdout.split()[:2])
+            except ValueError:
+                logger.warning(
+                    "Could not read the container's uid/gid; uploading as root",
+                    runtime_id=self._id,
+                )
+                uid, gid = 0, 0
+            self._owner_id_cache = (uid, gid)
+        return self._owner_id_cache
+
     async def _tar_upload(self, dest_path: str, content: bytes) -> None:
         """Upload a single file into the container via a tar archive.
 
@@ -608,12 +632,14 @@ class DockerRuntime(SandboxRuntime):
         if parent:
             await self.exec(f"mkdir -p {shlex.quote(parent)}", timeout=10)
 
+        uid, gid = await self._owner_ids()
         buf = io.BytesIO()
         tar_name = dest_path.lstrip("/")
         with tarfile.open(fileobj=buf, mode="w") as tar:
             info = tarfile.TarInfo(name=tar_name)
             info.size = len(content)
             info.mode = 0o644
+            info.uid, info.gid = uid, gid
             tar.addfile(info, io.BytesIO(content))
         buf.seek(0)
 

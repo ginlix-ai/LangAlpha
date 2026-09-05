@@ -428,6 +428,33 @@ class TestDockerRuntimeTarUpload:
         # The exec call is for mkdir
         container.exec.assert_called()
 
+    @pytest.mark.asyncio
+    async def test_uploads_are_owned_by_the_container_user(self, runtime, container):
+        """A tar entry defaults to root, and put_archive extracts what it says.
+
+        The container runs as its own non-root user, and a file that user does
+        not own can be read but never chmod'd or utime'd — which is what
+        placing a restored workspace file has to do."""
+        container.exec = AsyncMock(side_effect=lambda **kw: _make_exec_mock("1001\n1001\n"))
+        await runtime.upload_file(b"x", "/home/workspace/a.txt")
+        await runtime.upload_files([(b"y", "/home/workspace/b.txt")])
+        for call in container.put_archive.call_args_list:
+            with tarfile.open(fileobj=io.BytesIO(call[0][1]), mode="r") as tar:
+                for m in tar.getmembers():
+                    assert (m.uid, m.gid) == (1001, 1001)
+        # One lookup for the runtime's whole life, not one per upload.
+        cmds = [" ".join(c.kwargs["cmd"]) for c in container.exec.call_args_list]
+        assert sum("id -u" in c for c in cmds) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_uid_falls_back_to_root(self, runtime, container):
+        """Losing the lookup must not lose the upload; root is what it was before."""
+        container.exec = AsyncMock(side_effect=lambda **kw: _make_exec_mock(""))
+        await runtime.upload_file(b"x", "/home/workspace/a.txt")
+        tar_data = container.put_archive.call_args[0][1]
+        with tarfile.open(fileobj=io.BytesIO(tar_data), mode="r") as tar:
+            assert tar.getmembers()[0].uid == 0
+
 
 # ---------------------------------------------------------------------------
 # DockerRuntime — tar download
