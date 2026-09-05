@@ -115,12 +115,12 @@ class TestDashScopeFailureStatus:
 
     @staticmethod
     def _error(code, message):
-        from src.llms.extension.dashscope import ResponsesStreamFailedError, _status_for
+        from src.llms.extension.dashscope import ResponsesStreamFailedError, _status_for_failure_code
 
         return ResponsesStreamFailedError(
             f"Responses stream failed ({code}): {message}",
             code=code,
-            status_code=_status_for(code, message),
+            status_code=_status_for_failure_code(code, message),
         )
 
     @pytest.mark.parametrize("code,message", LIVE_TERMINAL)
