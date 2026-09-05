@@ -186,13 +186,20 @@ def upload_base64(key: str, image_data: str, content_type: str | None = None) ->
         return False
 
 
-def upload_bytes(key: str, data: bytes, content_type: str | None = None) -> bool:
+def upload_bytes(
+    key: str,
+    data: bytes,
+    content_type: str | None = None,
+    max_size: int | None = None,
+) -> bool:
     """Upload raw bytes to OSS.
 
     Args:
         key: The object key (path) in OSS bucket
         data: Raw bytes to upload
         content_type: Optional MIME type. If not provided, auto-detected from key extension.
+        max_size: Per-call override of OSS_MAX_UPLOAD_SIZE, for callers whose
+            own domain cap is larger than the shared default.
 
     Returns:
         bool: True if upload successful, False otherwise
@@ -202,10 +209,9 @@ def upload_bytes(key: str, data: bytes, content_type: str | None = None) -> bool
         >>> upload_bytes("text/hello.txt", data)
         True
     """
-    if len(data) > OSSConfig.MAX_UPLOAD_SIZE:
-        logger.error(
-            f"Data too large: {len(data)} bytes > {OSSConfig.MAX_UPLOAD_SIZE} bytes limit"
-        )
+    cap = OSSConfig.MAX_UPLOAD_SIZE if max_size is None else max_size
+    if len(data) > cap:
+        logger.error(f"Data too large: {len(data)} bytes > {cap} bytes limit")
         return False
 
     # Auto-detect content type from key extension if not provided
@@ -231,6 +237,34 @@ def upload_bytes(key: str, data: bytes, content_type: str | None = None) -> bool
     except Exception:
         logger.exception(f"Unexpected error uploading {key}")
         return False
+
+
+def get_bytes_range(key: str, start: int, length: int) -> bytes | None:
+    """Download ``length`` bytes of an object from offset ``start``.
+
+    Same contract as the S3 ``get_bytes_range``: ``None`` on a missing object
+    or any failure, ``b""`` for a zero length without a request.
+    """
+    if length <= 0:
+        return b""
+    try:
+        client = get_oss_client()
+        result = client.get_object(oss.GetObjectRequest(
+            bucket=OSSConfig.BUCKET_NAME,
+            key=key,
+            range_header=f"bytes={start}-{start + length - 1}",
+        ))
+        body = getattr(result, "body", None)
+        if body is None:
+            return None
+        data = body.read()
+        return data if isinstance(data, bytes) else bytes(data)
+    except Exception as e:
+        if "NoSuchKey" in str(e):
+            logger.debug(f"Object not found: {key}")
+            return None
+        logger.exception(f"Ranged download failed for {key}: {e}")
+        return None
 
 
 def get_bytes(key: str) -> bytes | None:
@@ -349,6 +383,23 @@ def get_public_url(key: str) -> str:
         'https://${OSS_BUCKET_NAME}.${OSS_ENDPOINT}/images/photo.png'
     """
     return f"{OSSConfig.get_public_url_base()}/{key}"
+
+
+def get_signed_upload_url(
+    key: str,
+    *,
+    sha256_hex: str,
+    content_length: int,
+    content_type: str,
+    expires_in: int = 900,
+) -> tuple[str, dict[str, str]] | None:
+    """Unavailable on OSS: its presigner can bind Content-MD5 but not SHA-256.
+
+    An MD5 condition does not tie the key to the bytes under a content-
+    addressed key, so a direct upload here could not be trusted. Callers fall
+    back to uploading through the server.
+    """
+    return None
 
 
 def get_signed_url(key: str, expires_in: int = 3600) -> str | None:
