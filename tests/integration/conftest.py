@@ -65,6 +65,7 @@ _ALL_TABLES = [
     "user_skills",
     "user_plugins",
     "workspace_files",
+    "workspace_file_blobs",
     "watchlist_items",
     "watchlists",
     "user_portfolios",
