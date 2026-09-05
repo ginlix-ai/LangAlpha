@@ -97,14 +97,14 @@ async def test_openai_parent_does_not_rewrite_or_force_response_api():
 
 
 @pytest.mark.asyncio
-async def test_dashscope_parent_does_not_rewrite_or_force_response_api():
-    """A DashScope parent is OpenAI-shaped, so it gets the gateway treatment too.
+async def test_dashscope_parent_is_matched_in_full():
+    """A parent with its own SDK is a dialect, so naming it inherits all of it.
 
-    DashScope's manifest entry declares ``sdk: "dashscope"`` to route built-in
-    Qwen models at their own client, but a custom provider under that parent is
-    still someone's own endpoint. Rewriting it would inherit the manifest's
-    ``use_response_api`` and session-cache header, putting a gateway that only
-    speaks ``/chat/completions`` onto ``/responses`` with no way to opt out.
+    DashScope declares ``sdk: "dashscope"`` because it has a client of its own,
+    which is also what rescues its raw reasoning. A gateway that names it as a
+    parent is saying it is that thing, so it gets the client, the headers and
+    the manifest's ``use_response_api`` without opting in separately. Contrast
+    the ``openai`` parent above, which is a wire shape rather than a vendor.
     """
     provider_def = {"name": "my-qwen-gw", "parent_provider": "vendor-parent"}
     custom_model = {"name": "eval-model", "model_id": "some-model", "provider": "my-qwen-gw"}
@@ -114,8 +114,7 @@ async def test_dashscope_parent_does_not_rewrite_or_force_response_api():
     with p1, p2, p3:
         byok, base_url, out = await _resolve_custom_model_byok("u", "eval-model", dict(custom_model), mc)
 
-    assert out["provider"] == "my-qwen-gw"
-    assert "_use_response_api" not in out
+    assert out["provider"] == "vendor-parent"
 
 
 @pytest.mark.asyncio
@@ -133,3 +132,35 @@ async def test_custom_provider_explicit_use_response_api_opt_in_preserved():
         byok, base_url, out = await _resolve_custom_model_byok("u", "eval-model", dict(custom_model), mc)
 
     assert out.get("_use_response_api") is True
+
+
+def test_an_inherited_dashscope_provider_actually_builds_the_bridged_client():
+    """The rewrite above is only worth anything if it changes the client class.
+
+    Asserting on the config alone would keep passing if the factory stopped
+    honouring ``provider``, which is the failure the rewrite exists to prevent.
+    """
+    from langchain_openai import ChatOpenAI
+
+    from src.llms.extension import ChatDashScope
+    from src.llms.llm import LLM
+
+    # No ``_use_response_api``: the inherited parent is what supplies it, which
+    # is the half of "matched in full" a config assertion cannot see.
+    def build(provider):
+        return LLM.from_custom_config(
+            {"name": "eval-model", "model_id": "qwen3.8-max", "provider": provider},
+            api_key="sk-test",
+            base_url_override="https://gw.example.com/v1",
+        )
+
+    not_inherited = build("my-qwen-gw")
+    assert isinstance(not_inherited, ChatOpenAI)
+    assert not isinstance(not_inherited, ChatDashScope)
+
+    inherited = build("dashscope")
+    assert isinstance(inherited, ChatDashScope)
+    # The Responses opt-in rides as ``output_version``; see llm.py:698.
+    assert inherited.output_version == "responses/v1"
+    # The gateway's own endpoint outranks the manifest's, both ways.
+    assert inherited.openai_api_base == "https://gw.example.com/v1"

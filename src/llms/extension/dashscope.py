@@ -6,8 +6,19 @@ converter has no branch for, so both fall through its final ``else`` and vanish:
 ``response.failed`` carries the reason a stream died. The bridge below rescues
 both, which is the difference between a Qwen turn that shows its reasoning and
 names its own failures, and one that silently returns nothing.
+
+The two halves reach different distances, because the evidence for them does.
+``response.failed`` is rescued for every Responses backend: the event type is
+self-describing, no provider means anything else by it, and letting it through
+returns a half-finished stream as a success. The raw-reasoning rewrite is scoped
+to this client, because it guesses how one provider numbers its thought sections
+and a backend emitting both reasoning families would collide on
+``summary_index``. Scope is carried by a ContextVar the streaming overrides set
+while upstream's body runs; widening it to another provider later is one more
+read in ``_patched``.
 """
 
+import contextvars
 import logging
 
 from langchain_openai import ChatOpenAI
@@ -18,6 +29,12 @@ logger = logging.getLogger(__name__)
 # a user can see, so a newline in it would forge a second log entry.
 _MAX_PROVIDER_TEXT = 500
 
+# True only while this client's own Responses stream is being advanced, which is
+# exactly the window in which upstream calls the converter the bridge replaces.
+_in_dashscope_stream: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "in_dashscope_stream", default=False
+)
+
 
 def _one_line(value) -> str | None:
     if value is None:
@@ -26,16 +43,66 @@ def _one_line(value) -> str | None:
 
 
 class ChatDashScope(ChatOpenAI):
-    """ChatOpenAI under a DashScope name, carrying no request-side behavior.
+    """ChatOpenAI under a DashScope name, marking its own stream while it runs.
 
-    DashScope accepts the standard Responses payload, and replaying a prior
-    turn's reasoning item back to it round-trips, so there is nothing to
-    override yet. The subclass earns its place by giving the route a name: the
-    manifest's ``sdk`` says DashScope, the factory hands back a class that says
-    DashScope, and anything provider-specific that shows up later has a home
-    that is not an ``if`` in the shared OpenAI path. It does not scope the
-    bridge below, which is process-wide.
+    DashScope accepts the standard Responses payload and replaying a prior
+    turn's reasoning item back to it round-trips, so nothing about the request
+    is overridden. The two overrides exist only to raise a flag while upstream's
+    body runs: the converter the bridge replaces is a module global taking no
+    provider argument, so this is the only handle it has for telling a Qwen
+    stream apart from any other Responses stream in the process.
+
+    They hook ``_stream``/``_astream`` and not the ``*_responses`` pair those
+    dispatch to, which would read as the tighter choice and is in fact dead
+    code: ``ChatOpenAI._stream`` reaches the Responses body through ``super()``,
+    so an override of it on a subclass is never consulted. Nothing reports that,
+    the flag simply never rises, which is why a test drives a real stream and
+    asserts the converter sees the flag rather than calling the overrides here.
     """
+
+    def _stream(self, *args, **kwargs):
+        stream = iter(super()._stream(*args, **kwargs))
+        try:
+            while True:
+                # Set around the resume and never held across the ``yield``: a
+                # generator body runs in its caller's context, so a flag still
+                # set at the yield would stay set for the caller, and the next
+                # plain OpenAI stream opened in that same context would be read
+                # as a Qwen one.
+                token = _in_dashscope_stream.set(True)
+                try:
+                    chunk = next(stream)
+                except StopIteration:
+                    return
+                finally:
+                    _in_dashscope_stream.reset(token)
+                yield chunk
+        finally:
+            # Reached on an abandoned stream too, where it is what propagates
+            # the close into upstream's ``with`` and releases the response. Looked
+            # up rather than called, because upstream returns this as an
+            # ``Iterator``, and only the generator it happens to be has a close.
+            close = getattr(stream, "close", None)
+            if close is not None:
+                close()
+
+    async def _astream(self, *args, **kwargs):
+        stream = super()._astream(*args, **kwargs).__aiter__()
+        try:
+            while True:
+                # Same window as the sync twin above, and for the same reason.
+                token = _in_dashscope_stream.set(True)
+                try:
+                    chunk = await stream.__anext__()
+                except StopAsyncIteration:
+                    return
+                finally:
+                    _in_dashscope_stream.reset(token)
+                yield chunk
+        finally:
+            aclose = getattr(stream, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
 
 class ResponsesStreamFailedError(RuntimeError):
@@ -72,13 +139,18 @@ class ResponsesStreamFailedError(RuntimeError):
 _TERMINAL_SERVER_ERROR_TOKENS = ("DataInspectionFailed",)
 
 
-def _status_for(code: str | None, message: str) -> int | None:
-    """What a DashScope failure code means, as an HTTP status, or None if unknown.
+def _status_for_failure_code(code: str | None, message: str) -> int | None:
+    """What a failed stream's error code means as an HTTP status, or None if unknown.
 
-    Neither field decides this alone: the code says ``server_error`` for a
-    permanent content block, and the message carries no status at all for an
-    unsupported model. Returning None leaves the older message-regex guess in
-    place, so an unrecognised code behaves exactly as it did before.
+    The codes are the ones observed from DashScope, but this decides for every
+    Responses backend, because the failure it feeds is not scoped to one. That
+    holds up rather than merely not having broken yet: ``InvalidParameter`` is
+    DashScope's own spelling and is not in the OpenAI SDK's error vocabulary at
+    all, ``server_error`` turns permanent only on prose no other provider
+    writes, and ``rate_limit_exceeded`` means 429 wherever it appears.
+
+    Anything unrecognised returns None, which leaves the older message-regex
+    guess in ``src.llms.error_classification`` exactly as it was.
     """
     if code == "InvalidParameter":
         return 400
@@ -96,12 +168,11 @@ def _status_for(code: str | None, message: str) -> int | None:
 def _install_responses_stream_bridge() -> None:
     """Rescue the two event families langchain-openai's Responses converter drops.
 
-    The hook is a module global, so this is process-wide and keyed on event
-    type rather than on provider: any Responses backend that emits these two
-    frames gets the same treatment, which is what makes it a fix to the
-    converter's blind spot rather than a DashScope special case. One installer
-    wrapping it once, not two, since a second would stack in import order and
-    collide on the idempotence flag.
+    The hook is a module global taking no provider argument, so the wrapper is
+    process-wide and each half picks its own reach inside it: ``response.failed``
+    for every backend, the raw-reasoning rewrite only for a stream
+    ``ChatDashScope`` has marked. One installer wrapping it once, not two, since
+    a second would stack in import order and collide on the idempotence flag.
     """
     try:
         import langchain_openai.chat_models.base as base
@@ -114,7 +185,8 @@ def _install_responses_stream_bridge() -> None:
         logger.warning(
             "Responses stream bridge not installed: "
             "langchain_openai._convert_responses_chunk_to_generation_chunk is gone; "
-            "Qwen turns will stream without reasoning and fail without a reason"
+            "Qwen turns will stream without reasoning, and every Responses stream "
+            "will report a killed stream as a truncated success"
         )
         return
 
@@ -122,6 +194,7 @@ def _install_responses_stream_bridge() -> None:
         return
 
     _warned_unbridgeable = False
+    _warned_off_scope = False
 
     def _as_summary_delta(chunk):
         """Rewrite a raw-reasoning delta as the summary event upstream understands.
@@ -130,8 +203,10 @@ def _install_responses_stream_bridge() -> None:
         rotting: block shape, index bookkeeping and the v0 downgrade all stay
         upstream's. ``content_index`` becomes ``summary_index`` because both
         number the thought section, which the SSE layer reads to space sections
-        apart. The ``done`` event is deliberately still dropped, since the
-        deltas already aggregate to the same text.
+        apart. Reusing that number is also why the caller scopes this to one
+        provider: a backend emitting both reasoning families would have the two
+        share a section. The ``done`` event is deliberately still dropped, since
+        the deltas already aggregate to the same text.
         """
         try:
             return ResponseReasoningSummaryTextDeltaEvent(
@@ -171,13 +246,34 @@ def _install_responses_stream_bridge() -> None:
         raise ResponsesStreamFailedError(
             f"Responses stream failed ({code}): {message}",
             code=code,
-            status_code=_status_for(code, message),
+            status_code=_status_for_failure_code(code, message),
+        )
+
+    def _note_off_scope_reasoning() -> None:
+        """Say once that a backend outside the scope emits raw reasoning we drop.
+
+        The scope above is a claim about which providers emit this family, and
+        upstream drops what it does not recognise in silence, so the day the
+        claim is wrong the only symptom is a model that stopped showing its
+        thinking. One line per process, since this fires per reasoning token.
+        """
+        nonlocal _warned_off_scope
+        if _warned_off_scope:
+            return
+        _warned_off_scope = True
+        logger.info(
+            "Dropping raw reasoning from a Responses backend outside the bridge's "
+            "scope. If this model should show its thinking, its client has to mark "
+            "its own stream the way ChatDashScope does."
         )
 
     def _patched(chunk, *args, **kwargs):
         chunk_type = getattr(chunk, "type", None)
         if chunk_type == "response.reasoning_text.delta":
-            chunk = _as_summary_delta(chunk)
+            if _in_dashscope_stream.get():
+                chunk = _as_summary_delta(chunk)
+            else:
+                _note_off_scope_reasoning()
         elif chunk_type == "response.failed":
             _raise_if_failed(chunk)
 

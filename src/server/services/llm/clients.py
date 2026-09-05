@@ -143,11 +143,13 @@ async def _walk_byok_candidates(
     return None, None
 
 
-# SDKs that speak the OpenAI wire shape, so the ``"openai"`` a custom provider
-# derives by default already reaches them. A parent on this list is skipped by
-# ``_inherit_custom_provider_sdk`` below; anything added here must be routable
-# by a plain ``ChatOpenAI`` against a third-party gateway.
-_OPENAI_SHAPED_SDKS = (None, "openai", "dashscope")
+# Parents with no dialect of their own. ``openai`` is the base shape a great
+# many services implement rather than a vendor whose behaviour you would want
+# copied, and a provider declaring ``sdk: "openai"`` is saying exactly that
+# about itself. A parent on this list is skipped by
+# ``_inherit_custom_provider_sdk`` below, so its OpenAI-specific request
+# shaping (``use_response_api``, ``prompt_cache_key``) stays opt-in.
+_OPENAI_SHAPED_SDKS = (None, "openai")
 
 
 def _inherit_custom_provider_sdk(custom_config, parent_provider, provider_def, mc):
@@ -159,11 +161,22 @@ def _inherit_custom_provider_sdk(custom_config, parent_provider, provider_def, m
     (``/chat/completions`` vs ``/v1/messages``). Rewriting ``provider`` to the
     manifest parent fixes the SDK and ``default_headers``.
 
-    Skip the rewrite for OpenAI-shaped parents: the default already reaches
-    them, and inheriting the manifest entry would force ``use_response_api`` /
-    ``prompt_cache_key`` onto OpenAI-compatible gateways (vLLM/LiteLLM/
-    OpenRouter) that only speak ``/chat/completions``. The custom provider's own
-    ``use_response_api`` opt-in is honoured either way.
+    Naming a parent is how a custom provider says what it is, so it gets that
+    parent's dialect: SDK, ``default_headers``, and the request shaping the
+    manifest entry declares. ``openai`` is the exception, because it is the base
+    shape a great many unrelated services implement rather than a vendor whose
+    behaviour a gateway means to copy. Declaring it says "my API is OpenAI
+    shaped", not "treat me as OpenAI", so its ``use_response_api`` and
+    ``prompt_cache_key`` stay opt-in and a gateway that only speaks
+    ``/chat/completions`` is left alone. Providers that declare ``sdk:
+    "openai"`` themselves (vLLM, Groq, DeepInfra, LM Studio) are saying the same
+    thing about themselves and are covered by the same entry.
+
+    A parent with its own SDK is a real dialect, so declaring it matches
+    everything. DashScope is the case that makes this concrete: it has its own
+    client because its raw reasoning is rescued by a bridge scoped to
+    ``ChatDashScope``, and a gateway left on a plain ``ChatOpenAI`` would stream
+    every Qwen turn with the thinking silently dropped.
     """
     updates: dict = {}
     if mc.get_provider_info(parent_provider).get("sdk") not in _OPENAI_SHAPED_SDKS:
