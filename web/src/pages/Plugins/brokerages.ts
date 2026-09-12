@@ -112,6 +112,63 @@ export function defaultGrant(vendor: Brokerage | null | undefined): string[] {
     .map((group) => group.key);
 }
 
+function requiresOf(vendor: Brokerage | null | undefined, key: string): string[] {
+  return vendor?.capabilities?.find((group) => group.key === key)?.requires ?? [];
+}
+
+/**
+ * A selection with one group switched, carrying what the switch depends on.
+ *
+ * Turning a group on turns on what it requires, and turning a group off turns
+ * off whatever requires it, so the dialog cannot confirm a selection the server
+ * refuses. Read off each group's `requires` rather than a rule held here: which
+ * group needs which is the backend's fact.
+ */
+export function toggleGrant(
+  vendor: Brokerage | null | undefined,
+  granted: readonly string[],
+  key: string,
+): string[] {
+  const next = new Set(granted);
+  const on = !next.has(key);
+  const pending = [key];
+  while (pending.length > 0) {
+    const current = pending.pop() as string;
+    if (on) {
+      if (next.has(current)) continue;
+      next.add(current);
+      pending.push(...requiresOf(vendor, current));
+    } else if (next.delete(current)) {
+      for (const group of vendor?.capabilities ?? []) {
+        if (group.requires?.includes(current)) pending.push(group.key);
+      }
+    }
+  }
+  return [...next];
+}
+
+/**
+ * The part of a selection that can be in force: each group whose requirements
+ * are all selected as well.
+ *
+ * The backend reads a stored grant the same way, so a choice remembered from
+ * before the groups were linked opens on what the connection can actually do.
+ * It narrows and never widens: a group the user declined is not ticked for them.
+ */
+export function grantInForce(
+  vendor: Brokerage | null | undefined,
+  granted: readonly string[],
+): string[] {
+  const selected = new Set(granted);
+  const inForce = (key: string, seen: ReadonlySet<string>): boolean =>
+    selected.has(key) &&
+    !seen.has(key) &&
+    requiresOf(vendor, key).every((required) =>
+      inForce(required, new Set([...seen, key])),
+    );
+  return granted.filter((key) => inForce(key, new Set()));
+}
+
 /**
  * Whether connecting this vendor has to ask something first.
  *
