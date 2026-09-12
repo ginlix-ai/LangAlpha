@@ -10,8 +10,8 @@ When populating a model template with public company data, extract financials di
 
 ### Step 1: Locate the Filing
 
-1. Use SEC EDGAR: `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=[TICKER]&type=10-K`
-2. For quarterly data, use `type=10-Q`
+1. Call `get_sec_filing` for the company's 10-K or 10-Q.
+2. Record the filing as the tier-1 source per `.agents/skills/research-conventions/references/evidence.md`.
 
 ### Step 2: Identify Filing Currency
 
@@ -46,46 +46,7 @@ Within the 10-K or 10-Q, locate:
 
 ### Step 4: Data Extraction Mapping
 
-**Income Statement (from Consolidated Statements of Operations)**
-
-| Filing Line Item | Model Line Item |
-|------------------|-----------------|
-| Net revenues / Net sales | Revenue |
-| Cost of goods sold | COGS |
-| Selling, general and administrative | SG&A |
-| Depreciation and amortization | D&A |
-| Interest expense, net | Interest Expense |
-| Income tax expense | Taxes |
-| Net income | Net Income |
-
-**Balance Sheet (from Consolidated Balance Sheets)**
-
-| Filing Line Item | Model Line Item |
-|------------------|-----------------|
-| Cash and cash equivalents | Cash |
-| Accounts receivable, net | AR |
-| Inventories | Inventory |
-| Property, plant and equipment, net | PP&E (Net) |
-| Total assets | Total Assets |
-| Accounts payable | AP |
-| Short-term debt / Current portion of LT debt | Current Debt |
-| Long-term debt | LT Debt |
-| Retained earnings | Retained Earnings |
-| Total stockholders' equity | Total Equity |
-
-**Cash Flow Statement (from Consolidated Statements of Cash Flows)**
-
-| Filing Line Item | Model Line Item |
-|------------------|-----------------|
-| Net income | Net Income |
-| Depreciation and amortization | D&A |
-| Changes in accounts receivable | ΔAR |
-| Changes in inventories | ΔInventory |
-| Changes in accounts payable | ΔAP |
-| Capital expenditures | CapEx |
-| Proceeds from issuance of common stock | Equity Issuance |
-| Proceeds from / Repayments of debt | Debt activity |
-| Dividends paid | Dividends |
+Map every caption to its canonical row per `line-items.md` in this directory.
 
 ### Step 5: Extract Supporting Detail from Notes
 

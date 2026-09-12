@@ -5,7 +5,7 @@
 | Hard-coded inputs | Blue font |
 | Formulas | Black font |
 | Links to other sheets | Green font |
-| Check cells | Red if error, green if balanced |
+| Check cells | Per the Checks contract in `.agents/skills/xlsx/SKILL.md`: a live verdict formula in column C reading OK, FAIL or WARN |
 | Negative values | Parentheses, not minus signs |
 | Currency | No decimals for large figures, 2 decimals for per-share |
 | Percentages | 1 decimal place |
@@ -61,14 +61,7 @@ All total and subtotal rows must use **bold font formatting** for their numerica
 
 ## Balance Sheet Check Row Formatting
 
-The Balance Sheet check row (below Total Liabilities and Equity) uses conditional number formatting that displays non-zero values in red. When the balance sheet balances correctly (check = 0), the values display in black or standard formatting.
-
-| Check Value | Font Color |
-|-------------|------------|
-| = 0 (balanced) | Black (standard) |
-| ≠ 0 (error) | Red |
-
-**Implementation:** Apply custom number format `[Red][<>0]0.00;[Red][<>0](0.00);0.00` or use Excel conditional formatting with the rule "Cell Value ≠ 0" → Red font.
+Follow the Checks contract in `.agents/skills/xlsx/SKILL.md`; the balance sheet check uses a live verdict formula in column C reading OK or FAIL.
 
 ## Margin Row Formatting
 
@@ -102,11 +95,7 @@ The Balance Sheet check row (below Total Liabilities and Equity) uses conditiona
 
 ## Conditional Formatting for Checks Tab
 
-- Cell contains pass indicator → Green fill
-- Cell contains fail indicator → Red fill
-- Cell contains warning → Yellow fill
-- Difference cells = 0 → Light green fill
-- Difference cells ≠ 0 → Light red fill
+None beyond the Checks contract in `.agents/skills/xlsx/SKILL.md`; the verdict is the text in column C, which the audit script reads.
 
 ## Margin Reasonability Flags
 

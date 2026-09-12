@@ -1,6 +1,6 @@
 # Formula Reference
 
-**IMPORTANT:** Use the formulas outlined in this reference document unless otherwise specified by the user.
+**IMPORTANT:** Use the formulas outlined in this reference document unless the user specifies otherwise. Where this file and `.agents/skills/3-statements/SKILL.md` differ, SKILL.md governs.
 
 ---
 
@@ -128,7 +128,6 @@ Interest Expense = Avg Debt Balance × Interest Rate
 ```
 Beginning Retained Earnings
 + Net Income (from IS)
-+ Stock-Based Compensation (SBC) (from IS)
 - Dividends
 = Ending Retained Earnings
 ```
@@ -140,7 +139,7 @@ NOL CARRYFORWARD SCHEDULE
 
 Beginning NOL Balance (Year 1 / Formation = 0)
 + NOL Generated (if EBT < 0, then ABS(EBT), else 0)
-- NOL Utilized (limited by taxable income and utilization cap)
+- NOL Utilized (limited to available NOL and 80 percent of pre-tax income before the NOL deduction)
 = Ending NOL Balance
 
 STARTING BALANCE RULE
@@ -152,10 +151,10 @@ For a new business or first modeled period:
 
 NOL UTILIZATION CALCULATION
 
-Pre-Tax Income (EBT)
+Pre-Tax Income (EBT, before the NOL deduction)
   If EBT > 0:
     NOL Available = Beginning NOL Balance
-    Utilization Limit = EBT × 80%  (post-2017 federal limit)
+    Utilization Limit = 80 percent of pre-tax income before the NOL deduction (post-2017 federal limit)
     NOL Utilized = MIN(NOL Available, Utilization Limit)
     Taxable Income = EBT - NOL Utilized
   If EBT ≤ 0:
@@ -280,12 +279,12 @@ Net Income
 ```
 BS Balance Check:       = Assets - Liabilities - Equity  (must = 0)
 Cash Tie-Out:           = BS Cash - CF Ending Cash       (must = 0)
-RE Roll-Forward:        = Prior RE + NI + SBC - Div - BS RE  (must = 0)
+RE Roll-Forward:        = Prior RE + NI - Div - BS RE    (must = 0)
 DTA Tie-Out:            = NOL Schedule DTA - BS DTA      (must = 0)
 Equity Raise Tie-Out:   = ΔCommon Stock/APIC (BS) - Equity Issuance (CFF)  (must = 0)
 Year 0 Equity Tie-Out:  = Equity Raised (Year 0) - Beginning Equity (Year 1)  (must = 0)
 Cash Monthly vs Annual: = Closing Cash (Monthly) - Closing Cash (Annual)  (must = 0)
-NOL Utilization Cap:    = NOL Utilized ≤ EBT × 80%       (must be TRUE for post-2017)
+NOL Utilization Cap:    = NOL Utilized ≤ 80 percent of pre-tax income before the NOL deduction (must be TRUE for post-2017)
 NOL Non-Negative:       = Ending NOL Balance ≥ 0         (must be TRUE)
 NOL Starting Balance:   = Beginning NOL (Year 1) = 0     (must be TRUE for new business)
 NOL Accumulation:       = NOL increases only when EBT < 0 (losses generate NOL)
