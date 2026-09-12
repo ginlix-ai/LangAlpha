@@ -1376,6 +1376,24 @@ class TestCapabilitiesInForceAndCapabilitiesRemembered:
         assert response.granted_capabilities is None
         assert response.remembered_capabilities is None
 
+    def test_a_group_whose_requirement_was_declined_is_not_drawn_granted(self):
+        """The badges read the grant, so it has to be the one the relay enforces:
+        live orders stored without account access are refused, and drawn off."""
+        from src.server.app.mcp_catalog import _decorated
+        from src.server.services.brokerages import brokerage_by_name
+
+        response = _decorated(
+            _row(),
+            {
+                "status": "connected",
+                "server_url": brokerage_by_name("moomoo").url,
+                "granted_capabilities": ["market_data", "trading"],
+            },
+        )
+
+        assert response.granted_capabilities == ["market_data"]
+        assert response.remembered_capabilities == ["market_data", "trading"]
+
 
 
 # ---------------------------------------------------------------------------
@@ -1520,12 +1538,12 @@ async def test_binding_an_edit_keeps_another_tool_a_concurrent_write_added(clien
     async with _binding_patches(row=row) as update:
         resp = await client.patch(
             "/api/v1/mcp/servers/moomoo/binding",
-            json={"tool_binding_set": {"quote_kline": "both"}},
+            json={"tool_binding_set": {"quote_cur_kline": "both"}},
         )
     assert resp.status_code == 200, resp.json()
     assert _written(update)["tool_binding"] == {
         "quote_stock_quote": "direct",
-        "quote_kline": "both",
+        "quote_cur_kline": "both",
     }
 
 
@@ -1533,10 +1551,12 @@ async def test_binding_an_edit_keeps_another_tool_a_concurrent_write_added(clien
 async def test_binding_refuses_a_request_naming_more_tools_than_a_server_has(client):
     from src.server.services.mcp_discovery import MAX_TOOLS_PER_SERVER
 
-    row = _row("moomoo", url=MOOMOO_URL)
+    # Not a brokerage row: at a curated vendor a name no group carries is
+    # refused for that reason instead, and the cap would go untested.
+    row = _row("remote_server")
     async with _binding_patches(row=row):
         resp = await client.patch(
-            "/api/v1/mcp/servers/moomoo/binding",
+            "/api/v1/mcp/servers/remote_server/binding",
             json={
                 "tool_binding_set": {
                     f"quote_t{i}": "ptc" for i in range(MAX_TOOLS_PER_SERVER + 1)
@@ -1553,10 +1573,10 @@ async def test_binding_refuses_a_delta_that_grows_the_row_past_the_cap(client):
     from src.server.services.mcp_discovery import MAX_TOOLS_PER_SERVER
 
     stored = {f"quote_s{i}": "ptc" for i in range(MAX_TOOLS_PER_SERVER)}
-    row = _row("moomoo", url=MOOMOO_URL, tool_binding=stored)
+    row = _row("remote_server", tool_binding=stored)
     async with _binding_patches(row=row):
         resp = await client.patch(
-            "/api/v1/mcp/servers/moomoo/binding",
+            "/api/v1/mcp/servers/remote_server/binding",
             json={"tool_binding_set": {"quote_one_more": "ptc"}},
         )
     assert resp.status_code == 422, resp.json()
@@ -1569,14 +1589,16 @@ async def test_binding_still_lets_an_oversized_row_be_edited_down(client):
     from src.server.services.mcp_discovery import MAX_TOOLS_PER_SERVER
 
     stored = {f"quote_s{i}": "ptc" for i in range(MAX_TOOLS_PER_SERVER + 5)}
-    row = _row("moomoo", url=MOOMOO_URL, tool_binding=stored)
+    row = _row("remote_server", tool_binding=stored)
     async with _binding_patches(row=row) as update:
         resp = await client.patch(
-            "/api/v1/mcp/servers/moomoo/binding",
+            "/api/v1/mcp/servers/remote_server/binding",
             json={"tool_binding_unset": ["quote_s0"]},
         )
     assert resp.status_code == 200, resp.json()
-    assert "quote_s0" not in _written(update)["tool_binding"]
+    written = _written(update)["tool_binding"]
+    assert "quote_s0" not in written
+    assert len(written) == MAX_TOOLS_PER_SERVER + 4
 
 
 @pytest.mark.asyncio
@@ -1584,7 +1606,7 @@ async def test_binding_unset_clears_one_tool_and_leaves_the_rest(client):
     row = _row(
         "moomoo",
         url=MOOMOO_URL,
-        tool_binding={"quote_stock_quote": "direct", "quote_kline": "both"},
+        tool_binding={"quote_stock_quote": "direct", "quote_cur_kline": "both"},
     )
     async with _binding_patches(row=row) as update:
         resp = await client.patch(
@@ -1592,7 +1614,7 @@ async def test_binding_unset_clears_one_tool_and_leaves_the_rest(client):
             json={"tool_binding_unset": ["quote_stock_quote"]},
         )
     assert resp.status_code == 200, resp.json()
-    assert _written(update)["tool_binding"] == {"quote_kline": "both"}
+    assert _written(update)["tool_binding"] == {"quote_cur_kline": "both"}
 
 
 @pytest.mark.asyncio
@@ -1628,7 +1650,7 @@ async def test_binding_heals_from_the_row_read_under_the_lock(client):
     B stores an override and commits; A resumes. The map A heals from has to
     be the one B left, or A's write puts the row back to what it saw."""
     before = {"trading_order_place": "ptc"}
-    after = {"sim_trade_input_order": "ptc"}
+    after = {"quote_stock_quote": "ptc"}
     calls: list[str] = []
 
     async def read(user_id, name, *, conn=None, **_):
@@ -1710,18 +1732,103 @@ async def test_binding_a_live_connection_outranks_the_row_url(client):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("value", [True, False])
-async def test_binding_refuses_a_new_order_approval_write(client, value):
-    """Nothing reads the setting yet, so a write that was stored and echoed
-    back would present as in force. The column and its echo stay untouched."""
+async def test_binding_writes_the_order_approval_switch(client, value):
+    """The resolver reads the column now, so the write is stored rather than
+    refused: it is the one setting that decides whether an order stops."""
+    row = _row(
+        "moomoo",
+        url=MOOMOO_URL,
+        tool_binding={},
+        order_approval={"live": not value},
+    )
+    async with _binding_patches(row=row) as update:
+        resp = await client.patch(
+            "/api/v1/mcp/servers/moomoo/binding",
+            json={"order_approval": {"live": value}, "binding_preset": "ptc_only"},
+        )
+    assert resp.status_code == 200
+    assert update.await_args.kwargs["updates"]["order_approval"] == {"live": value}
+
+
+@pytest.mark.asyncio
+async def test_binding_stores_only_the_modes_someone_set(client):
+    """A default nobody chose is not written down, so a later change to it
+    reaches this row."""
+    row = _row("moomoo", url=MOOMOO_URL, tool_binding={}, order_approval={})
+    async with _binding_patches(row=row) as update:
+        resp = await client.patch(
+            "/api/v1/mcp/servers/moomoo/binding",
+            json={"order_approval": {"paper": True}},
+        )
+    assert resp.status_code == 200, resp.json()
+    assert update.await_args.kwargs["updates"]["order_approval"] == {"paper": True}
+
+
+@pytest.mark.asyncio
+async def test_binding_merges_one_mode_into_the_stored_map(client):
+    """The body is a delta over the modes, so a page flipping paper cannot put
+    a live answer another tab stored back to what this worker last read. The
+    merge is under the same lock as the tool map, and for the same reason."""
+    row = _row(
+        "moomoo",
+        url=MOOMOO_URL,
+        tool_binding={},
+        order_approval={"live": False, "paper": False, "staged": True},
+    )
+    async with _binding_patches(row=row) as update:
+        resp = await client.patch(
+            "/api/v1/mcp/servers/moomoo/binding",
+            json={"order_approval": {"paper": True}},
+        )
+    assert resp.status_code == 200, resp.json()
+    assert update.await_args.kwargs["updates"]["order_approval"] == {
+        "live": False, "paper": True, "staged": True
+    }
+
+
+@pytest.mark.asyncio
+async def test_binding_folds_the_boolean_the_column_used_to_hold(client):
+    """A row untouched since the column was one switch names no modes at all.
+    The old value is carried as the live answer, and nothing is written for
+    the modes it never named."""
     row = _row("moomoo", url=MOOMOO_URL, tool_binding={}, order_approval=False)
     async with _binding_patches(row=row) as update:
         resp = await client.patch(
             "/api/v1/mcp/servers/moomoo/binding",
-            json={"order_approval": value, "binding_preset": "ptc_only"},
+            json={"order_approval": {"paper": True}},
         )
-    assert resp.status_code == 422
-    assert "order_approval" in resp.json()["detail"]
+    assert resp.status_code == 200, resp.json()
+    assert update.await_args.kwargs["updates"]["order_approval"] == {
+        "live": False, "paper": True
+    }
+
+
+@pytest.mark.asyncio
+async def test_binding_refuses_a_mode_nothing_declares(client):
+    row = _row("moomoo", url=MOOMOO_URL, tool_binding={})
+    async with _binding_patches(row=row) as update:
+        resp = await client.patch(
+            "/api/v1/mcp/servers/moomoo/binding",
+            json={"order_approval": {"futures": True}},
+        )
+    assert resp.status_code == 422, resp.json()
     update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_binding_write_that_says_nothing_about_approval_leaves_it_alone(client):
+    """Absent is not False. The body omitting the switches must not rewrite the
+    column, or every unrelated binding edit would silently re-arm the gate."""
+    row = _row(
+        "moomoo", url=MOOMOO_URL, tool_binding={}, order_approval={"live": False}
+    )
+    async with _binding_patches(row=row) as update:
+        resp = await client.patch(
+            "/api/v1/mcp/servers/moomoo/binding",
+            json={"binding_preset": "ptc_only"},
+        )
+    assert resp.status_code == 200
+    assert "order_approval" not in update.await_args.kwargs["updates"]
 
 
 # ---------------------------------------------------------------------------
@@ -1759,13 +1866,28 @@ async def test_tools_carry_the_paths_each_may_take(client):
     ):
         resp = await client.get("/api/v1/mcp/servers/moomoo/tools")
     assert resp.status_code == 200, resp.json()
-    by_name = {t["name"]: t for t in resp.json()["tools"]}
+    body = resp.json()
+    assert body["order_modes"] == ["live", "paper"]
+    by_name = {t["name"]: t for t in body["tools"]}
     live = by_name["trading_order_place"]
     assert live["capability"] == "trading"
     assert (live["binding"], live["binding_source"]) == ("direct", "policy")
     assert live["allowed"] == ["direct"]
-    for name in ("sim_trade_input_order", "quote_stock_quote", "new_vendor_tool"):
-        assert by_name[name]["allowed"] == ["both", "direct", "ptc"], name
+    assert live["approval"] is True
+    assert live["order"] == {"action": "place", "mode": "live"}
+
+    # Same pin, different mode, and the mode is what decides the gate.
+    paper = by_name["sim_trade_input_order"]
+    assert (paper["binding"], paper["binding_source"]) == ("direct", "policy")
+    assert paper["allowed"] == ["direct"]
+    assert paper["approval"] is False
+    assert paper["order"] == {"action": "place", "mode": "paper"}
+
+    # A curated read keeps every path; one no group names keeps the sandbox.
+    assert by_name["quote_stock_quote"]["allowed"] == ["both", "direct", "ptc"]
+    assert by_name["new_vendor_tool"]["allowed"] == ["ptc"]
+    for name in ("quote_stock_quote", "new_vendor_tool"):
+        assert by_name[name]["order"] is None, name
         assert (by_name[name]["binding"], by_name[name]["binding_source"]) == (
             "ptc",
             "preset",

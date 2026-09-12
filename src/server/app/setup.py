@@ -599,6 +599,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to start NewsRefreshService: {e}")
 
+    # Start OrderReconciler (asks each brokerage what became of an open order)
+    try:
+        from src.server.services.orders import OrderReconciler
+
+        OrderReconciler.get_instance().start()
+    except Exception as e:
+        logger.warning(f"Failed to start OrderReconciler: {e}")
+
     # Start ProvenanceGCService (daily mark-sweep of orphaned result bodies)
     try:
         from src.server.services.provenance_gc import ProvenanceGCService
@@ -696,6 +704,14 @@ async def lifespan(app: FastAPI):
         await NewsRefreshService.get_instance().stop()
     except Exception as e:
         logger.warning(f"Error shutting down NewsRefreshService: {e}")
+
+    # 0.2b. Shutdown OrderReconciler
+    try:
+        from src.server.services.orders import OrderReconciler
+
+        await OrderReconciler.get_instance().stop()
+    except Exception as e:
+        logger.warning(f"Error shutting down OrderReconciler: {e}")
 
     # 0.3. Shutdown MarketInsightService
     try:
@@ -1086,6 +1102,7 @@ from src.server.app.api_keys import router as api_keys_router
 from src.server.app.automations import router as automations_router
 from src.server.app.insights import router as insights_router
 from src.server.app.oauth import router as oauth_router
+from src.server.app.orders import router as orders_router
 from src.server.app.public import router as public_router
 from src.server.app.skills import router as skills_router
 from src.server.app.skills import workspace_router as workspace_skills_router
@@ -1162,6 +1179,9 @@ app.include_router(
 )  # /api/v1/automations/* - Scheduled automation triggers
 app.include_router(insights_router)  # /api/v1/insights/* - AI market insights
 app.include_router(oauth_router)  # /api/v1/oauth/* - OAuth provider connections (Codex)
+app.include_router(
+    orders_router
+)  # /api/v1/orders/* - Order attempt ledger (read-only, user-scoped)
 app.include_router(
     public_router
 )  # /api/v1/public/* - Public shared thread access (no auth)

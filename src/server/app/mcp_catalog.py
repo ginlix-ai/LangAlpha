@@ -122,6 +122,7 @@ async def _oauth_for_server(user_id: str, name: str) -> dict | None:
         return None
     return {
         "status": conn.status,
+        "server_url": conn.server_url,
         "granted_capabilities": conn.granted_capabilities,
     }
 
@@ -160,14 +161,24 @@ def _decorated(row: dict, conn: dict | None, **extra) -> CatalogServer:
     """
     if conn is None:
         return catalog_row_to_response(row, **extra)
+    from src.server.services.brokerage_capabilities import (
+        effective_capabilities,
+        vendor_for_url,
+    )
+
     status = ConnectionStatus(conn["status"])
+    stored = conn["granted_capabilities"]
     return catalog_row_to_response(
         row,
         oauth_status=status,
+        # In force rather than as stored, since every badge reads this: a group
+        # whose requirement was not granted is refused, so it is not drawn.
         granted_capabilities=(
-            conn["granted_capabilities"] if status in SERVABLE else None
+            list(effective_capabilities(vendor_for_url(conn.get("server_url")), stored))
+            if status in SERVABLE and stored is not None
+            else None
         ),
-        remembered_capabilities=conn["granted_capabilities"],
+        remembered_capabilities=stored,
         **extra,
     )
 
@@ -388,6 +399,7 @@ async def get_server_tools(name: str, user_id: CurrentUserId) -> dict:
     from src.server.services.brokerage_capabilities import (
         group_of_tool,
         is_always_denied,
+        order_modes,
         vendor_for_url,
     )
     from src.server.services.mcp_config import user_row_to_server_config
@@ -415,6 +427,9 @@ async def get_server_tools(name: str, user_id: CurrentUserId) -> dict:
     _vendor = vendor_for_url(row.get("url"))
     return {
         "server_name": name,
+        # Which order modes this brokerage has at all, so the page can offer
+        # one approval switch per mode without keeping its own vendor table.
+        "order_modes": [m.value for m in order_modes(_vendor)],
         "tools": [
             {
                 "name": t.get("name", ""),
@@ -596,16 +611,19 @@ async def _apply_catalog_enabled(
 
 
 def _binding_fields(vendor: str | None, tool: str, inputs) -> dict:
-    """The effective path, which layer chose it, and which paths the row may
-    pick from, so the page offers exactly the options the write path accepts
-    rather than keeping its own copy of the group policy."""
-    from src.server.services.tool_binding import allowed_bindings, resolve_tool
+    """The effective path, which layer chose it, which paths the row may pick
+    from, and what the call does to an order, so the page offers exactly the
+    options the write path accepts rather than keeping its own copy of the
+    policy."""
+    from src.server.services.tool_binding import order_payload, resolve_tool
 
     resolved = resolve_tool(vendor, tool, inputs)
     return {
         "binding": resolved.binding,
         "binding_source": resolved.source,
-        "allowed": sorted(allowed_bindings(vendor, tool, relayable=inputs.relayable)),
+        "allowed": sorted(resolved.allowed),
+        "approval": resolved.approval,
+        "order": order_payload(resolved.order),
     }
 
 
@@ -634,23 +652,16 @@ async def set_binding(
     from src.server.services.mcp_discovery import MAX_TOOLS_PER_SERVER
     from src.server.services.tool_binding import (
         merge_overrides,
+        order_approval_overrides,
         strip_disallowed_overrides,
         validate_overrides,
     )
 
-    if body.order_approval is not None:
-        # Refused rather than dropped: a write that is accepted and then echoed
-        # back from the column reads as a setting in force, and nothing reads
-        # this one yet.
-        raise HTTPException(
-            status_code=422,
-            detail="order_approval is not a setting that can be changed yet",
-        )
     updates: dict = {}
     delta = body.tool_binding_set is not None or body.tool_binding_unset is not None
     if "binding_preset" in body.model_fields_set:
         updates["binding_preset"] = body.binding_preset
-    if not delta and not updates:
+    if not delta and not updates and body.order_approval is None:
         raise HTTPException(status_code=422, detail="nothing to change")
 
     # Only a servable connection's address says which vendor's rules apply: a
@@ -669,6 +680,15 @@ async def set_binding(
         if not row:
             raise HTTPException(status_code=404, detail="MCP server not found")
         stored = row.get("tool_binding") or {}
+        # Merged under the same lock as the map, and for the same reason: the
+        # body names the modes it changes, so a page flipping live cannot put
+        # another tab's paper answer back to what this worker last read. Only
+        # the modes someone set are stored, so the rest follow their defaults.
+        if body.order_approval is not None:
+            updates["order_approval"] = {
+                **order_approval_overrides(row.get("order_approval")),
+                **{k: bool(v) for k, v in body.order_approval.items()},
+            }
         # A stdio row has no address for the relay, so no tool on it can take
         # the direct path however the request or its group is worded.
         relayable = row.get("transport") != "stdio"
