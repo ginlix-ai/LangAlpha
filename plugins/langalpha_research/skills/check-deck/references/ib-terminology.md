@@ -9,9 +9,9 @@
 | "they bought the company" | "the company was acquired" |
 | "big deal" | "transformative transaction" |
 | "cheap valuation" | "attractive valuation" or "valuation discount" |
-| "expensive" | "premium valuation" |
+| "expensive" | "trades at [N]x NTM earnings against a peer median of [M]x" |
 | "make more money" | "enhance profitability" or "drive margin expansion" |
-| "getting bigger" | "pursuing growth" or "expanding operations" |
+| "getting bigger" | "revenue grew [N]% year over year to $[M]m" |
 | "cut costs" | "implement cost optimization" or "drive operational efficiencies" |
 | "good fit" | "strategic fit" or "compelling strategic rationale" |
 | "help with" | "support" or "facilitate" |
@@ -19,7 +19,7 @@
 | "kind of" / "sort of" | [remove or be specific] |
 | "really" / "very" | [remove or quantify] |
 | "tons of" | "substantial" or quantify |
-| "huge" | "significant" or quantify |
+| "huge" | "represents $[N]m, or [M]% of annual revenue" |
 | "pretty much" | [remove or be precise] |
 | "basically" | [remove or clarify] |
 
@@ -27,7 +27,7 @@
 
 - **Contractions**: Don't → Do not, won't → will not
 - **Exclamation points**: Generally inappropriate for IB materials
-- **First-person**: "We think..." → "Management believes..." or passive voice
+- **First-person**: attribute the view to its holder. Our own judgement stays ours, written per the evidence-to-language table in `.agents/skills/research-conventions/references/evidence.md`; restating it as a management statement fabricates one.
 - **Superlatives without evidence**: "best-in-class" requires supporting data
 - **Vague quantifiers**: "some", "many", "several" → specific numbers
 
