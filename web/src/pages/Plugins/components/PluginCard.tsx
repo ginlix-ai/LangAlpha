@@ -7,7 +7,7 @@ import {
   MetaText,
   ServerNameLine,
   ServerRowShell,
-} from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+} from '@/components/mcp/McpPrimitives';
 import { useTogglePlugin } from '@/hooks/usePlugins';
 import { formatApiErrorDetail, type PluginInfo } from '@/pages/ChatAgent/utils/api';
 

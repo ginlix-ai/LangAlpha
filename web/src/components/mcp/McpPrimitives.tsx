@@ -5,16 +5,16 @@ import { Check, Download, MoreVertical, Plus } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
 
 /**
- * Shared building blocks for the two MCP server surfaces — the global
- * Plugins page (user level) and the workspace settings MCP tab. Both lists
- * must read as one system: same row anatomy (name line → status line →
- * detail), same toggle, same chrome. Anything visual that exists on both
- * sides lives here; the surfaces keep only their own semantics.
+ * Shared building blocks for the list surfaces: the Plugins page, the
+ * workspace settings MCP tab, and the Orders page. They must read as one
+ * system: same row anatomy (name line, status line, detail), same toggle,
+ * same chrome. Anything visual that exists on more than one of them lives
+ * here; the surfaces keep only their own semantics.
  */
 
 // Matches the spring used across the chat UI (ActivityBlock) so motion feels
 // consistent. The toggle knob's travel IS the state change, so it springs.
-export const SPRING_SNAPPY = { type: 'spring' as const, stiffness: 200, damping: 22 };
+const SPRING_SNAPPY = { type: 'spring' as const, stiffness: 200, damping: 22 };
 
 // House entrance curve (DESIGN.md § Motion): ease-out, no overshoot.
 const EASE_OUT = [0.16, 1, 0.3, 1] as const;
@@ -259,12 +259,14 @@ export function StatusPill({
 }) {
   return (
     <span
-      className="inline-flex items-center gap-1 text-[0.6875rem] px-1.5 py-0.5 rounded font-medium"
+      // The glyph sits on the first line of the label rather than at the
+      // middle of the pill, so a label that wraps keeps it beside its words.
+      className="inline-flex items-start gap-1 text-[0.6875rem] leading-4 px-1.5 py-0.5 rounded font-medium"
       style={{ color, backgroundColor: bg }}
       title={title}
       data-testid={testid}
     >
-      <Icon className="h-3 w-3" />
+      <Icon className="h-3 w-3 mt-0.5 flex-shrink-0" />
       {label}
     </span>
   );

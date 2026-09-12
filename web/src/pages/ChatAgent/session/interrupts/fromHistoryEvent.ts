@@ -14,15 +14,13 @@ import {
   historyCardKey,
   CARD_BUCKET_FOR_TYPE,
 } from './buckets';
-import { claimedCardFields, type HistoryInterruptClaim } from './claims';
+import { claimedCardFields, evidenceLookup, type ApprovalEvidence } from './claims';
 import { buildCreditPauseState } from './creditPauseCard';
 import {
   batchToolApprovalFields,
-  isToolApprovalRequest,
+  isToolApprovalInterrupt,
+  resolveApprovalDecision,
   toolApprovalCards,
-  toolApprovalActionIndex,
-  toolApprovalDecisionFields,
-  type HitlDecision,
 } from './toolApprovalCard';
 import type { SSEEvent, PairState, HistoryInterruptInfo } from '../types';
 import type { HistoryRuntime } from '../runtime';
@@ -32,13 +30,10 @@ export interface HistoryInterruptContext {
   assistantMessagesByPair: Map<number, string>;
   pairStateByPair: Map<number, PairState>;
   pendingHistoryInterrupts: HistoryInterruptInfo[];
-  /** What each resume turn recorded about the interrupts it answered, keyed by
-   *  interrupt id — including claims that replayed BEFORE the interrupt. */
-  claimedInterrupts: Map<string, HistoryInterruptClaim>;
-  /** The decision list each of those resumes recorded per interrupt, which is
-   *  what settles a batch's cards one by one instead of on the claim's single
-   *  answer. Empty for a thread persisted before the server recorded it. */
-  claimedToolDecisions: Map<string, HitlDecision[]>;
+  /** What the still-running resumes in this replay recorded about the
+   *  interrupts they answered, including the ones that replayed BEFORE the
+   *  interrupt they settle. */
+  evidence: ApprovalEvidence;
 }
 
 export function projectHistoryInterrupt(
@@ -82,7 +77,7 @@ export function projectHistoryInterrupt(
     if (
       event.interrupt_id
       && event.turn_index == null
-      && ctx.claimedInterrupts.has(event.interrupt_id)
+      && ctx.evidence.claims.has(event.interrupt_id)
     ) {
       return;
     }
@@ -97,7 +92,7 @@ export function projectHistoryInterrupt(
           interruptId: proposalId,
         });
       }
-    } else if (isToolApprovalRequest(actionRequests[0]) && interruptAssistantId) {
+    } else if (isToolApprovalInterrupt(event.kind, actionRequests[0]) && interruptAssistantId) {
       // Tool approvals settle from the same stamp and are re-raised for the
       // same reason, so they get the same treatment: one interrupt to N cards.
       // A resume that answered every call still records the ids it answered
@@ -119,6 +114,7 @@ export function projectHistoryInterrupt(
             assistantMessageId: interruptAssistantId,
             proposalId: card.proposalId,
             interruptId: event.interrupt_id,
+            target: card.target,
           });
         }
       }
@@ -322,7 +318,7 @@ export function projectHistoryInterrupt(
         proposalId,
         interruptId: event.interrupt_id,
       });
-    } else if (isToolApprovalRequest(actionRequests[0])) {
+    } else if (isToolApprovalInterrupt(event.kind, actionRequests[0])) {
       // --- Direct MCP tool approval interrupt (history) ---
       const cards = toolApprovalCards(
         actionRequests,
@@ -359,6 +355,7 @@ export function projectHistoryInterrupt(
           assistantMessageId: interruptAssistantId,
           proposalId: card.proposalId,
           interruptId: event.interrupt_id,
+          target: card.target,
         });
       }
     } else {
@@ -409,7 +406,7 @@ export function projectHistoryInterrupt(
     // terminal turn — a genuine re-raise, or one a failed resume never took —
     // finds none here and keeps its controls.
     const cardId = event.interrupt_id;
-    const claim = cardId ? ctx.claimedInterrupts.get(cardId) : undefined;
+    const claim = cardId ? ctx.evidence.claims.get(cardId) : undefined;
     if (claim && cardId) {
       // The branch above queued these entries against the same bubble it
       // rendered their cards on, so the ordinary resolver settles them: patch
@@ -430,7 +427,7 @@ export function projectHistoryInterrupt(
           (p) => p.type === 'tool_approval' && p.interruptId === cardId,
         ).length,
       );
-      const decisions = ctx.claimedToolDecisions.get(cardId);
+      const lookup = evidenceLookup(ctx.evidence, cardId);
       let settled = false;
       while (
         resolvePendingHistoryInterrupt(
@@ -440,13 +437,7 @@ export function projectHistoryInterrupt(
             const bucket = CARD_BUCKET_FOR_TYPE[m.type];
             const key = historyCardKey(m);
             const claimed = claimedCardFields(m.type, claim);
-            const decided =
-              m.type === 'tool_approval' && m.proposalId
-                ? toolApprovalDecisionFields(
-                    decisions,
-                    toolApprovalActionIndex(m.proposalId, cardId),
-                  )
-                : null;
+            const decided = m.target ? resolveApprovalDecision(m.target, lookup) : null;
             const fields =
               decided ??
               (m.type === 'tool_approval' && claimed && batchFields ? batchFields : claimed);

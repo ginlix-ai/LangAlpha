@@ -5,6 +5,7 @@
  */
 
 import { isToolResultFailure, toolNameOf } from '../subagents/subagentStatus';
+import { ownerOfToolCall } from '../toolCallOwner';
 import { deriveTaskSegment, applyTaskSegment, applyLaunchReply } from '../subagents/taskSegmentBuilder';
 import type { MessageRecord, SetMessages, ToolCallRecord, ToolCallResultRecord, TodoPayload, HtmlWidgetData } from '../../hooks/utils/types';
 import type { ProvenanceEvent } from '@/types/sse';
@@ -354,9 +355,12 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
     return false;
   }
 
-  setMessages((prev: MessageRecord[]) =>
-    prev.map((msg: MessageRecord) => {
-      if (msg.id !== assistantMessageId) return msg;
+  setMessages((prev: MessageRecord[]) => {
+    // The message that made the call, which is an earlier one whenever a gate
+    // stopped it: the resume answers it in the next turn, under a new message.
+    const targetId = ownerOfToolCall(prev, toolCallId) ?? assistantMessageId;
+    return prev.map((msg: MessageRecord) => {
+      if (msg.id !== targetId) return msg;
 
       const toolCallProcesses = { ...((msg.toolCallProcesses as Record<string, Record<string, unknown>>) || {}) };
 
@@ -389,8 +393,8 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
       }
 
       return { ...msg, toolCallProcesses, subagentTasks };
-    })
-  );
+    });
+  });
 
   // Reset current tool call ID after result is received
   if (currentToolCallIdRef.current === toolCallId) {

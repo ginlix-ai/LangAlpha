@@ -15,7 +15,7 @@ import {
   ListEmpty,
   ListError,
   ListSkeleton,
-} from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+} from '@/components/mcp/McpPrimitives';
 import { needsOauthConnect } from '@/pages/ChatAgent/components/mcp/mcpState';
 import { formatApiErrorDetail, type CatalogServer } from '@/pages/ChatAgent/utils/api';
 import {

@@ -3,7 +3,7 @@ Tests for src/server/handlers/chat/request_prep.py — chat request preparation.
 
 Covers:
 - classify_error: recoverable vs non-recoverable error classification
-- process_hitl_response: 5-tuple return, various HITL scenarios
+- process_hitl_response: the PreparedHitl record, various HITL scenarios
 - normalize_request_messages: dict conversion, multimodal, empty
 - init_tracking: returns (TokenTrackingManager, ToolUsageTracker)
 - apply_fetch_override: sets context vars
@@ -202,143 +202,123 @@ class TestClassifyNonRecoverableErrorType:
 
 
 class TestProcessHitlResponse:
+    """Every scenario runs through the wire type, because the handler now
+    normalizes to it once and reads plain attributes below that."""
+
     def _make_request(self, hitl_response):
         req = MagicMock()
         req.hitl_response = hitl_response
         return req
 
-    def test_approve_with_message(self):
+    def _prepared(self, hitl_response, **summary):
         from src.server.handlers.chat.request_prep import process_hitl_response
 
-        response = MagicMock()
-        response.decisions = [MagicMock(type="approve", message="yes please")]
-        req = self._make_request({"int-1": response})
+        with patch(f"{PREP}.summarize_hitl_response_map", return_value=summary):
+            return process_hitl_response(self._make_request(hitl_response))
 
-        with patch(
-            f"{PREP}.summarize_hitl_response_map",
-            return_value={
-                "feedback_action": "QUESTION_ANSWERED",
-                "content": "approved: yes please",
-                "interrupt_ids": ["int-1"],
-            },
-        ):
-            action, content, answers, ids, decisions = process_hitl_response(req)
-
-        assert action == "QUESTION_ANSWERED"
-        assert ids == ["int-1"]
-        assert answers["int-1"] == "yes please"
+    def test_approve_with_message(self):
+        prepared = self._prepared(
+            {"int-1": {"decisions": [{"type": "approve", "message": "yes please"}]}},
+            feedback_action="QUESTION_ANSWERED",
+            content="approved: yes please",
+            interrupt_ids=["int-1"],
+        )
+        assert prepared.feedback_action == "QUESTION_ANSWERED"
+        assert prepared.query_content == "approved: yes please"
+        assert prepared.metadata["hitl_interrupt_ids"] == ["int-1"]
+        assert prepared.metadata["hitl_answers"]["int-1"] == "yes please"
 
     def test_reject_without_message(self):
-        from src.server.handlers.chat.request_prep import process_hitl_response
+        prepared = self._prepared(
+            {"int-1": {"decisions": [{"type": "reject", "message": ""}]}},
+            feedback_action="QUESTION_SKIPPED",
+            content="rejected",
+            interrupt_ids=["int-1"],
+        )
+        assert prepared.feedback_action == "QUESTION_SKIPPED"
+        assert prepared.metadata["hitl_answers"]["int-1"] is None
 
-        response = MagicMock()
-        response.decisions = [MagicMock(type="reject", message="")]
-        req = self._make_request({"int-1": response})
+    def test_a_validated_model_and_the_raw_dict_agree(self):
+        """The wire type is ``Dict[str, HITLResponse]``, but a caller that built
+        the request itself hands over what the client sent."""
+        from src.server.models.chat import HITLResponse
 
-        with patch(
-            f"{PREP}.summarize_hitl_response_map",
-            return_value={
-                "feedback_action": "QUESTION_SKIPPED",
-                "content": "rejected",
-                "interrupt_ids": ["int-1"],
-            },
-        ):
-            action, content, answers, ids, decisions = process_hitl_response(req)
-
-        assert action == "QUESTION_SKIPPED"
-        assert answers["int-1"] is None
-
-    def test_dict_style_response(self):
-        """HITL response as plain dict (not Pydantic model)."""
-        from src.server.handlers.chat.request_prep import process_hitl_response
-
-        response = {"decisions": [{"type": "approve", "message": "ok"}]}
-        req = self._make_request({"int-1": response})
-
-        with patch(
-            f"{PREP}.summarize_hitl_response_map",
-            return_value={
-                "feedback_action": "QUESTION_ANSWERED",
-                "content": "ok",
-                "interrupt_ids": ["int-1"],
-            },
-        ):
-            action, content, answers, ids, decisions = process_hitl_response(req)
-
-        assert answers["int-1"] == "ok"
+        raw = {"decisions": [{"type": "approve", "message": "ok"}]}
+        summary = dict(
+            feedback_action="QUESTION_ANSWERED", content="ok", interrupt_ids=["int-1"]
+        )
+        assert self._prepared({"int-1": raw}, **summary) == self._prepared(
+            {"int-1": HITLResponse.model_validate(raw)}, **summary
+        )
 
     def test_multiple_interrupts(self):
-        from src.server.handlers.chat.request_prep import process_hitl_response
-
-        r1 = MagicMock()
-        r1.decisions = [MagicMock(type="approve", message="answer 1")]
-        r2 = MagicMock()
-        r2.decisions = [MagicMock(type="reject", message="")]
-        req = self._make_request({"int-1": r1, "int-2": r2})
-
-        with patch(
-            f"{PREP}.summarize_hitl_response_map",
-            return_value={
-                "feedback_action": "QUESTION_ANSWERED",
-                "content": "mixed",
-                "interrupt_ids": ["int-1", "int-2"],
+        prepared = self._prepared(
+            {
+                "int-1": {"decisions": [{"type": "approve", "message": "answer 1"}]},
+                "int-2": {"decisions": [{"type": "reject", "message": ""}]},
             },
-        ):
-            action, content, answers, ids, decisions = process_hitl_response(req)
-
-        assert action == "QUESTION_ANSWERED"
-        assert answers["int-1"] == "answer 1"
-        assert answers["int-2"] is None
+            feedback_action="QUESTION_ANSWERED",
+            content="mixed",
+            interrupt_ids=["int-1", "int-2"],
+        )
+        assert prepared.feedback_action == "QUESTION_ANSWERED"
+        assert prepared.metadata["hitl_answers"] == {
+            "int-1": "answer 1",
+            "int-2": None,
+        }
 
     def test_empty_decisions(self):
-        from src.server.handlers.chat.request_prep import process_hitl_response
-
-        response = MagicMock()
-        response.decisions = []
-        req = self._make_request({"int-1": response})
-
-        with patch(
-            f"{PREP}.summarize_hitl_response_map",
-            return_value={
-                "feedback_action": "QUESTION_SKIPPED",
-                "content": "",
-                "interrupt_ids": ["int-1"],
-            },
-        ):
-            action, content, answers, ids, decisions = process_hitl_response(req)
-
-        assert answers == {}
-        assert decisions == {}
-        assert action == "QUESTION_SKIPPED"
+        prepared = self._prepared(
+            {"int-1": {"decisions": []}},
+            feedback_action="QUESTION_SKIPPED",
+            content="",
+            interrupt_ids=["int-1"],
+        )
+        assert prepared.feedback_action == "QUESTION_SKIPPED"
+        # Nothing to file beyond the ids, so nothing is filed.
+        assert prepared.metadata == {"hitl_interrupt_ids": ["int-1"]}
 
     def test_batch_records_a_decision_per_action_request(self):
         """A mixed batch keeps every verdict, which hitl_answers cannot."""
-        from src.server.handlers.chat.request_prep import process_hitl_response
-
-        response = {
-            "decisions": [
-                {"type": "approve", "message": None},
-                {"type": "reject", "message": "not this one"},
-            ]
-        }
-        req = self._make_request({"int-1": response})
-
-        with patch(
-            f"{PREP}.summarize_hitl_response_map",
-            return_value={
-                "feedback_action": "QUESTION_SKIPPED",
-                "content": "not this one",
-                "interrupt_ids": ["int-1"],
+        prepared = self._prepared(
+            {
+                "int-1": {
+                    "decisions": [
+                        {"type": "approve", "message": None},
+                        {"type": "reject", "message": "not this one"},
+                    ]
+                }
             },
-        ):
-            _action, _content, answers, _ids, decisions = process_hitl_response(req)
-
-        assert decisions["int-1"] == [
+            feedback_action="QUESTION_SKIPPED",
+            content="not this one",
+            interrupt_ids=["int-1"],
+        )
+        assert prepared.metadata["hitl_decisions"]["int-1"] == [
             {"type": "approve", "message": None},
             {"type": "reject", "message": "not this one"},
         ]
         # The collapsed record cannot tell this from rejecting both.
-        assert answers == {}
+        assert "hitl_answers" not in prepared.metadata
+
+    def test_an_order_verdict_is_filed_under_its_attempt(self):
+        """An order authorizes one execution of one call, so its answer is
+        keyed by attempt id and never by a position in a list."""
+        prepared = self._prepared(
+            {
+                "int-1": {
+                    "decisions": [],
+                    "order_decisions": {
+                        "att-1": {"type": "reject", "message": "too big"}
+                    },
+                }
+            },
+            feedback_action="DECLINED",
+            content="too big",
+            interrupt_ids=["int-1"],
+        )
+        assert prepared.metadata["order_decisions"] == {
+            "att-1": {"type": "reject", "message": "too big"}
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -64,10 +64,11 @@ from ptc_agent.agent.middleware import (
     ReasoningCompatibilityMiddleware,
 )
 from ptc_agent.agent.middleware.direct_mcp import (
-    DirectMcpPolicyMiddleware,
     DirectToolSet,
+    direct_tool_middleware,
     direct_tool_summary,
 )
+from ptc_agent.agent.middleware.order_governance import OrderLedger
 from ptc_agent.core.paths import (
     MEMO_INDEX_FILENAME,
     MEMO_USER_DIR,
@@ -451,6 +452,7 @@ class PTCAgent:
         tool_summary: str | None = None,
         disable_subagents: bool = False,
         direct_mcp: DirectToolSet | None = None,
+        order_ledger: OrderLedger | None = None,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
 
@@ -669,11 +671,11 @@ class PTCAgent:
         # Must be first: steering context must be visible before any other middleware.
         main_only_middleware.append(SteeringMiddleware())
 
-        # Consent is re-read per call here, so a tool the connection no longer
-        # covers is refused rather than reaching the vendor.
+        # Ahead of the plan interrupt: consent is re-read per call and an order
+        # is put to the user against a durable attempt, which is what execution
+        # then reads.
         direct_tools = list(direct_mcp.tools) if direct_mcp is not None else []
-        if direct_tools:
-            main_only_middleware.append(DirectMcpPolicyMiddleware(direct_mcp))
+        main_only_middleware.extend(direct_tool_middleware(direct_mcp, order_ledger))
 
         _bg_registry = background_registry or BackgroundTaskRegistry()
         event_capture_middleware = SubagentEventCaptureMiddleware(registry=_bg_registry)
@@ -690,8 +692,9 @@ class PTCAgent:
             tools.extend(background_middleware.tools)
 
         if HumanInTheLoopMiddleware is not None:
-            interrupt_config: Any = create_plan_mode_interrupt_config()
-            hitl_middleware = HumanInTheLoopMiddleware(interrupt_on=interrupt_config)
+            hitl_middleware = HumanInTheLoopMiddleware(
+                interrupt_on=create_plan_mode_interrupt_config()
+            )
             main_only_middleware.append(hitl_middleware)
 
             # Only add submit_plan tool when plan_mode is enabled

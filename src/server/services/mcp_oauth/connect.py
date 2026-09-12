@@ -55,9 +55,14 @@ from src.server.database.mcp_servers import (
     get_catalog_server,
     list_catalog_servers,
 )
+from src.server.database.order_attempts import refuse_attempts_on_connection_change
 from src.server.database.pool import get_db_connection
 from src.server.database.workspace import get_running_workspace_ids_for_user
-from src.server.services.brokerage_capabilities import group_keys_for, vendor_for_url
+from src.server.services.brokerage_capabilities import (
+    group_keys_for,
+    required_groups,
+    vendor_for_url,
+)
 from src.server.services.brokerages import Brokerage, brokerage_for_url
 from src.server.services.mcp_config import same_consented_url
 from src.server.services.mcp_oauth.http import (
@@ -767,7 +772,8 @@ def _consented_capabilities(
     it stopped beats one that silently connects to a broker that then does
     nothing.
     """
-    available = group_keys_for(vendor_for_url(server_url))
+    vendor = vendor_for_url(server_url)
+    available = group_keys_for(vendor)
     if not available:
         return None
     if requested is None:
@@ -776,7 +782,28 @@ def _consented_capabilities(
             "connected; reload the page (or update the app) and try again"
         )
     wanted = set(requested)
-    return [key for key in available if key in wanted]
+    chosen = [key for key in available if key in wanted]
+    # Refused rather than repaired: adding the missing group would grant what
+    # the user switched off, and dropping the dependent one would store less
+    # than they asked for without telling them.
+    for key in chosen:
+        missing = [req for req in required_groups(vendor, key) if req not in wanted]
+        if missing:
+            needed = " and ".join(_group_words(req) for req in missing)
+            raise McpOAuthError(
+                f"{_group_words(key).capitalize()} can't be granted without "
+                f"{needed}. Turn on {needed}, or turn off {_group_words(key)}."
+            )
+    return chosen
+
+
+# What a refusal calls a group. The page shows the message as sent and the
+# labels are the client's, so these are plain words rather than the keys.
+_GROUP_WORDS = {"account": "account and positions", "trading": "live orders"}
+
+
+def _group_words(key: str) -> str:
+    return _GROUP_WORDS.get(key, key.replace("_", " "))
 
 
 async def start_connect(
@@ -1217,6 +1244,10 @@ async def complete_callback(
                     conn=db,
                 )
                 await apply_consent_to_active_grants(connection_id, conn=db)
+                # The exchange may have signed in another brokerage login.
+                await refuse_attempts_on_connection_change(
+                    record.user_id, server_name, conn=db
+                )
         except Exception:
             logger.exception(
                 "[mcp_oauth] could not settle consent for user=%s server=%s; "

@@ -134,6 +134,30 @@ class TestSummarizeHitlResponseMap:
         with pytest.raises(TypeError, match="Unsupported HITL decision type"):
             summarize_hitl_response_map({"i1": raw})
 
+    def test_an_order_reject_carries_its_reason_once(self):
+        # The client sends an order verdict in its positional slot and again
+        # under order_decisions; the reason must reach the stored message once.
+        raw = {
+            "decisions": [{"type": "reject", "message": "too rich"}],
+            "order_decisions": {
+                "11111111-2222-4333-8444-555555555555": {
+                    "type": "reject", "message": "too rich",
+                },
+            },
+        }
+        summary = summarize_hitl_response_map({"i1": raw})
+        assert summary["feedback_action"] == "DECLINED"
+        assert summary["content"] == "too rich"
+
+    def test_an_order_reject_alone_declines_the_turn(self):
+        raw = {
+            "decisions": [{"type": "approve"}],
+            "order_decisions": {
+                "11111111-2222-4333-8444-555555555555": {"type": "reject"},
+            },
+        }
+        assert summarize_hitl_response_map({"i1": raw})["feedback_action"] == "DECLINED"
+
 
 # ---------------------------------------------------------------------------
 # Content / Message models

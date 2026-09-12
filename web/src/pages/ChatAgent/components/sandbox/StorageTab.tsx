@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { ListEmpty } from '../mcp/McpPrimitives';
+import { ListEmpty } from '@/components/mcp/McpPrimitives';
 import type { SandboxStats } from './sandboxTypes';
 
 interface StorageTabProps {

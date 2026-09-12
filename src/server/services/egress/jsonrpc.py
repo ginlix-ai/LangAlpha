@@ -27,6 +27,10 @@ class CanonicalRequest:
     method: str
     tool_name: str | None  # params.name when method == "tools/call"
     is_notification: bool
+    # params.arguments when method == "tools/call". Kept because the order
+    # gate hashes them: the frame the relay forwards has to be the frame the
+    # approval was signed for, and only the parsed body can say that.
+    arguments: dict | None = None
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -69,6 +73,7 @@ def canonicalize_request(
         raise JsonRpcRejected("JSON-RPC body must carry a string method")
 
     tool_name: str | None = None
+    arguments: dict | None = None
     if method == "tools/call":
         params = parsed.get("params")
         if not isinstance(params, dict):
@@ -77,6 +82,8 @@ def canonicalize_request(
         if not isinstance(name, str) or not name:
             raise JsonRpcRejected("tools/call requires a string params.name")
         tool_name = name
+        raw_arguments = params.get("arguments")
+        arguments = raw_arguments if isinstance(raw_arguments, dict) else None
 
     body = json.dumps(parsed, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return CanonicalRequest(
@@ -84,4 +91,5 @@ def canonicalize_request(
         method=method,
         tool_name=tool_name,
         is_notification="id" not in parsed,
+        arguments=arguments,
     )

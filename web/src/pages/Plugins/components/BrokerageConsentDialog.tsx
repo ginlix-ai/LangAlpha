@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle } from 'lucide-react';
-import { EnabledToggle } from '@/pages/ChatAgent/components/mcp/McpPrimitives';
-import { defaultGrant, type Brokerage } from '../brokerages';
+import { EnabledToggle } from '@/components/mcp/McpPrimitives';
+import { defaultGrant, grantInForce, toggleGrant, type Brokerage } from '../brokerages';
 import { PluginDialog } from './PluginDialog';
 import { RowNote } from './RowNote';
 
@@ -45,20 +45,20 @@ export function BrokerageConsentDialog({
   // that has never been asked. This dialog is also the way an existing grant is
   // narrowed, and opening it on the default re-ticked every group the user had
   // declined -- offering to widen consent while looking like it was showing it.
+  // Narrowed to what can be in force, so a choice remembered from before the
+  // groups were linked does not open on a pair the server would refuse.
   //
   // Seeded once. Re-deriving per render would undo the user's own ticks, and
   // the dialog is mounted for exactly one question, so there is nothing for it
   // to go stale against: the call sites key it by row, so a different row
   // opens a different dialog.
-  const [granted, setGranted] = useState<string[]>(
-    () => current ?? defaultGrant(vendor),
+  const [granted, setGranted] = useState<string[]>(() =>
+    grantInForce(vendor, current ?? defaultGrant(vendor)),
   );
   const label = vendor?.label ?? name;
 
   function toggle(key: string) {
-    setGranted((current) =>
-      current.includes(key) ? current.filter((k) => k !== key) : [...current, key],
-    );
+    setGranted((selected) => toggleGrant(vendor, selected, key));
   }
 
   return (
@@ -101,6 +101,16 @@ export function BrokerageConsentDialog({
                     >
                       {t(`plugins.brokerages.capabilities.${group.key}.desc`)}
                     </p>
+                    {/* Why this switch moves another: ticking it ticks what it
+                        needs, and unticking that unticks this. */}
+                    {(group.requires?.length ?? 0) > 0 && (
+                      <p
+                        className="text-[0.6875rem] mt-0.5"
+                        style={{ color: 'var(--color-text-tertiary)' }}
+                      >
+                        {t(`plugins.brokerages.capabilities.${group.key}.needs`)}
+                      </p>
+                    )}
                   </div>
                   <div className="flex-shrink-0 pt-0.5">
                     <EnabledToggle

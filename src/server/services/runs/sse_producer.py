@@ -1151,11 +1151,13 @@ class RunSSEProducer:
             # Value is a string description (plan description)
             action_requests = [{"description": interrupt_value}]
 
+        kind = interrupt_value.get("kind") if isinstance(interrupt_value, dict) else None
         return self._format_sse_event(
             "interrupt",
             {
                 "thread_id": self.thread_id,
                 "interrupt_id": interrupt_obj.id,
+                **({"kind": kind} if isinstance(kind, str) else {}),
                 "action_requests": action_requests,
                 "role": "assistant",
                 "finish_reason": "interrupt",

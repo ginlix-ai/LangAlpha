@@ -3,11 +3,11 @@
  *
  * Live rows: `active` gets the left-rule class hook + shimmer label,
  * `completing` is a neutral dimmed row (no badge), `failed` gets the gray ✕
- * badge with the toolCallFailed a11y label — all in the live zone, no
+ * badge with the toolCallFailed a11y label, all in the live zone, no
  * accordion interaction required.
  *
  * Replay parity: with `isStreaming={false}` (history / reconnect replay),
- * completed rows must render WITHOUT the motion.li entrance wrapper —
+ * completed rows must render WITHOUT the motion.li entrance wrapper , 
  * `newlyCompletedIds` is gated on isStreaming, so replayed timelines are
  * animation-free. The motion.li wrapper carries `overflow: hidden` inline
  * style while the plain <li> does not; we assert on that distinction.
@@ -23,7 +23,7 @@ import '@testing-library/jest-dom';
 import ActivityBlock from '../ActivityBlock';
 
 // ---------------------------------------------------------------------------
-// Mocks — keep the component mountable in jsdom and surface i18n keys.
+// Mocks, keep the component mountable in jsdom and surface i18n keys.
 // ---------------------------------------------------------------------------
 
 vi.mock('react-i18next', () => ({
@@ -49,6 +49,7 @@ vi.mock('../Markdown', () => ({
 
 vi.mock('../charts/InlineArtifactCards', () => ({
   INLINE_ARTIFACT_TOOLS: new Set<string>(),
+  isInlineArtifactReady: () => false,
   InlineStockPriceCard: () => null,
   InlineCompanyOverviewCard: () => null,
   InlineMarketIndicesCard: () => null,
@@ -90,7 +91,7 @@ const SUMMARY_BUTTON_RE = /toolArtifact/i;
 // Live-row lifecycle states
 // ---------------------------------------------------------------------------
 
-describe('ActivityBlock — live-row lifecycle states', () => {
+describe('ActivityBlock, live-row lifecycle states', () => {
   it('renders an active tool row with the state-active left-rule hook and no badge', () => {
     const items = [toolItem('active', { isComplete: false })];
     const { container } = render(<ActivityBlock items={items} isStreaming={true} isFirst={false} />);
@@ -98,7 +99,7 @@ describe('ActivityBlock — live-row lifecycle states', () => {
     const row = container.querySelector('.nrow.state-active');
     expect(row).not.toBeNull();
     expect(container.querySelector('.nrow-badge')).toBeNull();
-    // Active rows live in the live zone — no accordion summary yet.
+    // Active rows live in the live zone, no accordion summary yet.
     expect(screen.queryByRole('button', { name: SUMMARY_BUTTON_RE })).toBeNull();
   });
 
@@ -119,16 +120,16 @@ describe('ActivityBlock — live-row lifecycle states', () => {
     const badge = container.querySelector('.nrow .nrow-badge');
     expect(badge).not.toBeNull();
     expect(badge!.getAttribute('aria-label')).toBe('toolArtifact.a11y.toolCallFailed');
-    // Failed rows stay neutral — no active rule.
+    // Failed rows stay neutral, no active rule.
     expect(container.querySelector('.nrow.state-active')).toBeNull();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Replay parity — no entrance animation on history / reconnect replay
+// Replay parity, no entrance animation on history / reconnect replay
 // ---------------------------------------------------------------------------
 
-describe('ActivityBlock — replay parity', () => {
+describe('ActivityBlock, replay parity', () => {
   it('renders completed rows without the motion.li entrance wrapper when not streaming', () => {
     const items = [
       toolItem('completed', { id: 'tc-1', isComplete: true }),

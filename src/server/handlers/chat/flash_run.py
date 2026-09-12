@@ -297,18 +297,10 @@ async def astream_flash_workflow(
         query_content = user_input
 
         if request.hitl_response:
-            (
-                feedback_action,
-                query_content,
-                hitl_answers,
-                interrupt_ids,
-                hitl_decisions,
-            ) = process_hitl_response(request)
-            query_metadata["hitl_interrupt_ids"] = interrupt_ids
-            if hitl_answers:
-                query_metadata["hitl_answers"] = hitl_answers
-            if hitl_decisions:
-                query_metadata["hitl_decisions"] = hitl_decisions
+            prepared = process_hitl_response(request)
+            feedback_action = prepared.feedback_action
+            query_content = prepared.query_content
+            query_metadata.update(prepared.metadata)
 
         # =================================================================
         # START txn (v4): query row + in_progress run row + thread
@@ -382,21 +374,20 @@ async def astream_flash_workflow(
         if user_id:
             flash_user_profile = await get_user_profile_for_prompt(user_id)
 
-        # The one MCP surface Flash has: tools bound directly through the
-        # relay. A failure here costs the turn those tools, not the turn.
-        from src.server.services.egress.direct_tools import DirectMCPBinding
+        # The one MCP surface Flash has: tools bound directly through the relay.
+        from src.server.services.egress.direct_tools import direct_tools_for_turn
         from src.server.services.egress.flash_binding import bind_flash_direct_tools
 
-        try:
-            direct_mcp = await bind_flash_direct_tools(
+        direct_mcp, order_ledger = await direct_tools_for_turn(
+            bind_flash_direct_tools(
                 config, user_id=user_id, workspace_id=workspace_id
-            )
-        except Exception:
-            logger.warning(
-                "[FLASH_CHAT] direct MCP binding failed; running without",
-                exc_info=True,
-            )
-            direct_mcp = DirectMCPBinding(user_id=user_id)
+            ),
+            user_id=user_id,
+            workspace_id=workspace_id,
+            thread_id=thread_id,
+            run_id=run_id,
+            turn_index=run_handle.turn_index,
+        )
 
         # Build flash graph (no sandbox, no session)
         flash_graph = build_flash_graph(
@@ -407,6 +398,7 @@ async def astream_flash_workflow(
             user_profile=flash_user_profile,
             store=setup.store,
             direct_mcp=direct_mcp,
+            order_ledger=order_ledger,
         )
 
         messages = normalize_request_messages(request)

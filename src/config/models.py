@@ -259,6 +259,28 @@ class NewsPollConfig(BaseModel):
     feeds: List[NewsPollFeedConfig] = Field(default_factory=list)
 
 
+class OrderReconcileConfig(BaseModel):
+    """Order reconciliation sweep -- asks each brokerage what became of an order.
+
+    The two grace windows are the values with teeth. ``submitting_grace_seconds``
+    decides when a call that left the relay and never came back is old enough
+    to be settled on the vendor's word rather than waited on, so it must
+    comfortably exceed the slowest order call a brokerage answers; its floor
+    sits above the relay's 55 s wall clock, so no setting can judge a call the
+    relay is still carrying. ``approved_grace_seconds`` decides when an approval
+    no call spent is refused, so it must exceed the gap between an answer and
+    its tool call. A proposal whose run ended without asking waits the same.
+    """
+
+    enabled: bool = Field(default=True)
+    interval_seconds: int = Field(default=60, ge=5)
+    submitting_grace_seconds: int = Field(default=120, ge=90)
+    approved_grace_seconds: int = Field(default=600, ge=60)
+    open_after_seconds: int = Field(default=60, ge=5)
+    batch_limit: int = Field(default=50, ge=1, le=500)
+    match_window_seconds: int = Field(default=900, ge=60)
+
+
 class FeatureFlagOverride(BaseModel):
     """Deployment override for a code-declared feature (src/config/features.py).
 
@@ -490,4 +512,9 @@ class InfrastructureConfig(BaseModel):
     # RunWorkflow orchestration caps
     workflow: WorkflowOrchestrationConfig = Field(
         default_factory=WorkflowOrchestrationConfig
+    )
+
+    # Order reconciliation sweep
+    order_reconcile: OrderReconcileConfig = Field(
+        default_factory=OrderReconcileConfig
     )

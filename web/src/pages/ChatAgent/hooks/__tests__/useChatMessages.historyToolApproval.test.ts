@@ -1,12 +1,16 @@
 /**
- * A stored, unanswered tool approval must not arm the composer's pending slot.
+ * A stored, unanswered order approval arms the composer's pending slot, so the
+ * card a reload replays is one the user can still answer. An approval naming no
+ * attempt is left inert instead: order governance reads its decisions by
+ * attempt id, so nothing on the server would read that card's verdict.
  *
- * Nothing raises a tool approval any more and nothing answers one, so a thread
- * that stopped on one before that replays a card with no controls. Arming it as
- * `pendingInterrupt` disables both composers against that card, and a reload
- * repeats it: the thread is stranded. The card still renders as a record. A
- * credit pause on the same branch keeps re-arming, because Resume still answers
- * it.
+ * The slot is what routes the approve/reject click back to the interrupt it
+ * belongs to, so leaving it null on the paused branch is what stranded a thread
+ * that stopped on an order: the card rendered with controls that answered
+ * nothing. Both entries into the slot are pinned here, because they are
+ * different code paths -- the paused branch reads stored history, and an active
+ * run strips the replayed card and re-arms from the reconnect stream instead. A
+ * credit pause on the same branch must keep arming either way.
  *
  * Drives the REAL hook (api module mocked), the way the dedup suite does.
  */
@@ -38,8 +42,13 @@ const mockStatus = getWorkflowStatus as Mock;
 const mockReplay = replayThreadHistory as Mock;
 const mockReconnect = reconnectToWorkflowStream as Mock;
 
-/** The stop as a live-order approval persisted it: one direct MCP call. */
-const ORDER_REQUEST = [{ name: 'mcp__moomoo__place_order', args: { symbol: 'AAPL', qty: 1 } }];
+/** The stop as a live-order approval persisted it: one direct MCP call, named
+ *  by the ledger row whose verdict answers it. */
+const ORDER_REQUEST = [{
+  name: 'mcp__moomoo__place_order', args: { symbol: 'AAPL', qty: 1 }, attempt_id: 'attempt-1',
+}];
+/** The same stop with no ledger id, which no middleware here can answer. */
+const STAMPLESS_REQUEST = [{ name: 'mcp__moomoo__place_order', args: { symbol: 'AAPL', qty: 1 } }];
 const PAUSE_REQUEST = [{ type: 'credit_pause', message: 'Out of credits.' }];
 
 function replayStoppedOn(actionRequests: unknown[]) {
@@ -67,7 +76,7 @@ describe('useChatMessages: unanswered interrupts from history on a paused thread
     mockReconnect.mockResolvedValue({ disconnected: false, aborted: false });
   });
 
-  it('renders a stored tool approval as a record and leaves the composer open', async () => {
+  it('renders a stored tool approval and arms it for an answer', async () => {
     mockReplay.mockImplementation(replayStoppedOn(ORDER_REQUEST));
 
     const { result } = renderHookWithProviders(() => useChatMessages('ws-x', 'th-x'));
@@ -75,13 +84,28 @@ describe('useChatMessages: unanswered interrupts from history on a paused thread
     await settleMountEffect();
 
     await waitFor(() => expect(segmentsOf(result.current.messages, 'tool_approval')).toHaveLength(1));
-    // Not armed: `pendingInterrupt` is what disables both composers.
-    expect(result.current.pendingInterrupt).toBeNull();
+    // Armed: `pendingInterrupt` is what a click on the card resumes against.
+    await waitFor(() => expect(result.current.pendingInterrupt?.type).toBe('tool_approval'));
+    expect(result.current.pendingInterrupt?.interruptId).toBe('int-1');
+  });
+
+  // Arming this one would be worse than leaving it alone: the click resumes the
+  // graph, no middleware reads a verdict it cannot key, and the call runs with
+  // the rejection dropped. The card still replays as the record of the stop.
+  it('leaves an approval naming no attempt inert', async () => {
+    mockReplay.mockImplementation(replayStoppedOn(STAMPLESS_REQUEST));
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-x', 'th-x'));
+    await waitFor(() => expect(mockReplay).toHaveBeenCalled());
+    await settleMountEffect();
+
+    await waitFor(() => expect(segmentsOf(result.current.messages, 'tool_approval')).toHaveLength(1));
+    expect(result.current.pendingInterrupt?.type).not.toBe('tool_approval');
   });
 
   // The active-run branch strips the replayed card and lets the reconnect
-  // stream redeliver the interrupt through the LIVE projection, so a filter on
-  // the paused branch alone still arms it here.
+  // stream redeliver the interrupt through the LIVE projection, so this arms
+  // from `projectLiveInterrupt` rather than from the stored history entry.
   describe('when the run is still active and the reconnect stream redelivers the stop', () => {
     function redeliver(actionRequests: unknown[]) {
       mockStatus.mockResolvedValue({
@@ -95,7 +119,7 @@ describe('useChatMessages: unanswered interrupts from history on a paused thread
       });
     }
 
-    it('renders the redelivered tool approval as a record and leaves the composer open', async () => {
+    it('arms the redelivered tool approval for an answer', async () => {
       redeliver(ORDER_REQUEST);
 
       const { result } = renderHookWithProviders(() => useChatMessages('ws-x', 'th-x'));
@@ -103,7 +127,8 @@ describe('useChatMessages: unanswered interrupts from history on a paused thread
       await settleMountEffect();
 
       await waitFor(() => expect(segmentsOf(result.current.messages, 'tool_approval')).toHaveLength(1));
-      expect(result.current.pendingInterrupt).toBeNull();
+      await waitFor(() => expect(result.current.pendingInterrupt?.type).toBe('tool_approval'));
+      expect(result.current.pendingInterrupt?.interruptId).toBe('int-1');
     });
 
     it('still arms a redelivered credit pause', async () => {

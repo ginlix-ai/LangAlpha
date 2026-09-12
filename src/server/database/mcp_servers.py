@@ -47,12 +47,13 @@ MAX_CATALOG_SERVERS_PER_USER = 100
 
 # Mutable catalog columns, split by how a value binds. Anything outside the
 # union is rejected by ``update_catalog_server`` rather than silently dropped.
-_CATALOG_JSONB_COLUMNS = frozenset({"args", "env", "headers", "tool_binding"})
+_CATALOG_JSONB_COLUMNS = frozenset({
+    "args", "env", "headers", "tool_binding", "order_approval",
+})
 _CATALOG_SCALAR_COLUMNS = frozenset({
     "transport", "command", "url", "description", "instruction",
     "tool_exposure_mode", "discovery_uses_secrets",
 })
-CATALOG_COLUMNS = (_CATALOG_JSONB_COLUMNS - {"tool_binding"}) | _CATALOG_SCALAR_COLUMNS
 
 # How the row's tools reach the model. Writable through the binding endpoint
 # only and kept OUT of ``CATALOG_COLUMNS``: a PUT replaces the connection
@@ -60,6 +61,10 @@ CATALOG_COLUMNS = (_CATALOG_JSONB_COLUMNS - {"tool_binding"}) | _CATALOG_SCALAR_
 _CATALOG_BINDING_COLUMNS = frozenset({
     "tool_binding", "binding_preset", "order_approval",
 })
+
+CATALOG_COLUMNS = (
+    _CATALOG_JSONB_COLUMNS - _CATALOG_BINDING_COLUMNS
+) | _CATALOG_SCALAR_COLUMNS
 
 # Plugin provenance is writable too, but stays OUT of ``CATALOG_COLUMNS``:
 # that set is what a request body binds against, so ownership can never be
@@ -769,7 +774,10 @@ def _catalog_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
         # binding columns; an absent value is the untouched-row default.
         "tool_binding": dict(row.get("tool_binding") or {}),
         "binding_preset": row.get("binding_preset"),
-        "order_approval": bool(row.get("order_approval", True)),
+        # Left as stored rather than filled out here: a row stores only the
+        # modes a user set, and the defaults for the rest belong to the one
+        # reader that knows them.
+        "order_approval": row.get("order_approval"),
         "created_at": row["created_at"].isoformat(),
         "updated_at": row["updated_at"].isoformat(),
     }

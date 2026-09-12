@@ -16,7 +16,7 @@ import {
   MetaText,
   ServerNameLine,
   ServerRowShell,
-} from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+} from '@/components/mcp/McpPrimitives';
 import type { CatalogServer } from '@/pages/ChatAgent/utils/api';
 import { settledGrant, type Brokerage } from '../brokerages';
 import { useFlashWorkspace } from '../hooks/useFlashWorkspace';

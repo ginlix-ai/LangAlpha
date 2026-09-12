@@ -414,6 +414,9 @@ async def disconnect_server(user_id: str, server_name: str) -> bool:
     from src.server.database.mcp_tool_schemas import (
         delete_user_and_workspace_tool_schemas_and_bump,
     )
+    from src.server.database.order_attempts import (
+        refuse_attempts_on_connection_change,
+    )
     from src.server.database.pool import get_db_connection
 
     row = await get_connection(user_id, server_name)
@@ -429,6 +432,10 @@ async def disconnect_server(user_id: str, server_name: str) -> bool:
                 row.connection_id, ConnectionStatus.REVOKED, conn=conn
             )
             await revoke_grants_for_connection(row.connection_id, conn=conn)
+            # The next connect on this row may be another brokerage login.
+            await refuse_attempts_on_connection_change(
+                user_id, server_name, conn=conn
+            )
             # Both snapshot tiers, plus the fan-out bump. The per-workspace
             # snapshot's fingerprint is OAuth-blind, so a surviving workspace
             # row keeps publishing the connected tool set while the resolved

@@ -5,7 +5,7 @@ import {
   MetaText,
   ServerNameLine,
   ServerRowShell,
-} from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+} from '@/components/mcp/McpPrimitives';
 import type { BuiltinMcpServer } from '@/pages/ChatAgent/utils/api';
 import { ScopeControl, scopeLocked, type ScopeWorkspace } from './ScopeControl';
 import { rowSelection, type BulkSelection } from './useBulkSelection';

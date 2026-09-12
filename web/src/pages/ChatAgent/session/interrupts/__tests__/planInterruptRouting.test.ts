@@ -9,6 +9,7 @@ import type { AssistantMessage } from '@/types/chat';
 
 import { projectLiveInterrupt } from '../fromLiveEvent';
 import { projectHistoryInterrupt, type HistoryInterruptContext } from '../fromHistoryEvent';
+import { createApprovalEvidence } from '../claims';
 import type { StreamRuntime, HistoryRuntime } from '../../runtime';
 import type { MessageRecord, SSEEvent, StreamProcessorRefs, PairState } from '../../types';
 
@@ -62,8 +63,7 @@ describe('plan interrupt routing', () => {
       assistantMessagesByPair: new Map([[0, 'a-1']]),
       pairStateByPair: new Map([[0, pairState]]),
       pendingHistoryInterrupts: [],
-      claimedInterrupts: new Map(),
-      claimedToolDecisions: new Map(),
+      evidence: createApprovalEvidence(),
     };
 
     projectHistoryInterrupt(rt, planEvent(), ctx);

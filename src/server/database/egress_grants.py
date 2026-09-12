@@ -82,7 +82,7 @@ async def _tool_policies(
     await cur.execute(
         """
         SELECT c.connection_id, c.server_url, c.granted_capabilities,
-               s.tool_binding, s.binding_preset
+               s.tool_binding, s.binding_preset, s.order_approval
         FROM user_mcp_oauth_connections c
         LEFT JOIN user_mcp_servers s
                ON s.user_id = c.user_id AND s.name = c.server_name
@@ -385,7 +385,7 @@ async def apply_consent_to_active_grants(connection_id: str, *, conn=None) -> in
             await cur.execute(
                 """
                 SELECT c.server_url, c.granted_capabilities,
-                       s.tool_binding, s.binding_preset
+                       s.tool_binding, s.binding_preset, s.order_approval
                 FROM user_mcp_oauth_connections c
                 LEFT JOIN user_mcp_servers s
                        ON s.user_id = c.user_id AND s.name = c.server_name

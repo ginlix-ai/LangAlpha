@@ -312,6 +312,7 @@ def phase2(monkeypatch) -> SimpleNamespace:
         discoveries=[],
         applies=[],
         consented=[],
+        refusals=[],
         # The connection each write was handed, and how the block wrapping them
         # ended -- together these are what "one transaction" means here.
         write_conns=[],
@@ -392,6 +393,15 @@ def phase2(monkeypatch) -> SimpleNamespace:
     # and raised -- which the callback used to swallow, so the whole file went
     # on passing while never once exercising the write it was swallowing.
     monkeypatch.setattr(connect, "apply_consent_to_active_grants", _apply_consent)
+
+    async def _refuse_open_orders(user_id, server_name, *, conn=None):
+        env.refusals.append((user_id, server_name))
+        env.write_conns.append(conn)
+        return []
+
+    monkeypatch.setattr(
+        connect, "refuse_attempts_on_connection_change", _refuse_open_orders
+    )
     monkeypatch.setattr(
         "src.server.services.mcp_oauth.discovery.refresh_user_tool_schemas",
         _refresh_user_tool_schemas,
@@ -2532,6 +2542,34 @@ class TestConsentIsSettledFirst:
         assert touched == ["discover", "register"]
         assert redis.only_record()["granted_capabilities"] == ["market_data"]
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("vendor", ["moomoo", "robinhood"])
+    async def test_live_orders_without_account_access_are_refused_not_repaired(
+        self, vendor, redis, phase1, monkeypatch
+    ):
+        """Adding account would grant a read the user switched off, and dropping
+        trading would store less than they asked for, so neither happens: the
+        connect stops before the vendor and says which switch to change."""
+        from src.server.services.brokerages import brokerage_by_name
+
+        touched = self._brokerage(phase1, monkeypatch)
+        url = brokerage_by_name(vendor).url
+        phase1.catalog_row = {"name": vendor, "url": url, "transport": "http"}
+
+        with pytest.raises(
+            McpOAuthError, match="Live orders can't be granted without account and positions"
+        ):
+            await start_connect(
+                USER_ID, vendor, granted_capabilities=["market_data", "trading"]
+            )
+
+        assert touched == []
+        assert not redis.store
+        assert connect._consented_capabilities(url, ["trading", "account"]) == [
+            "account",
+            "trading",
+        ]
+
 
 class TestOlderShapedStateAtABrokerage:
     """A state record parked before the consent field existed cannot settle.
@@ -2611,19 +2649,22 @@ class TestConsentReachesTheLiveGrants:
         assert phase2.bumps == [USER_ID]
 
     @pytest.mark.asyncio
-    async def test_both_writes_ride_the_same_connection(
+    async def test_every_write_rides_the_same_connection(
         self, redis, phase1, phase2
     ):
         """Atomicity is the point, so assert the mechanism and not just that
-        both calls happened: two handles would be two transactions."""
+        the calls happened: two handles would be two transactions."""
         started = await start_connect(USER_ID, SERVER_NAME)
 
         await _callback(started, code="auth-code-1")
 
+        # The row, its grants' consent, and the refusal of the orders proposed
+        # against whatever login the row held before this exchange.
         handles = phase2.write_conns
-        assert len(handles) == 2
+        assert len(handles) == 3
         assert handles[0] is not None
-        assert handles[0] is handles[1]
+        assert all(handle is handles[0] for handle in handles)
+        assert phase2.refusals == [(USER_ID, SERVER_NAME)]
 
     @pytest.mark.asyncio
     async def test_a_failed_narrowing_takes_the_connection_row_with_it(

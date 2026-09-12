@@ -11,6 +11,7 @@ classification and the terminal error funnel live in ``error_handling``.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
 
@@ -181,52 +182,70 @@ async def _is_plan_interrupt_pending(thread_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def process_hitl_response(
-    request: ChatRequest,
-) -> tuple[str, str, dict, list, dict]:
+@dataclass(frozen=True)
+class PreparedHitl:
+    """A HITL resume turn's stored answer: how it is filed, and what it says.
+
+    ``metadata`` is ready to merge into the turn's query metadata, so the two
+    run handlers file an answer the same way rather than each re-packing the
+    same keys.
+    """
+
+    feedback_action: str
+    query_content: str
+    metadata: dict[str, Any]
+
+
+def process_hitl_response(request: ChatRequest) -> PreparedHitl:
     """Extract HITL answer metadata for persistence.
 
-    Returns (feedback_action, query_content, hitl_answers, interrupt_ids,
-    hitl_decisions).
-    ``feedback_action`` is "QUESTION_ANSWERED" or "QUESTION_SKIPPED".
-    ``query_content`` is the summarized content string.
-    ``hitl_answers`` maps interrupt_id -> answer string | None.
-    ``interrupt_ids`` is the list of interrupt IDs from the response map.
-    ``hitl_decisions`` maps interrupt_id -> the interrupt's decisions in the
-    order its action requests were raised, each a ``HITLDecision`` payload.
+    ``metadata`` carries ``hitl_interrupt_ids`` always, plus ``hitl_answers``,
+    ``hitl_decisions`` and ``order_decisions`` when there are any.
 
     One interrupt can stop several calls and be answered with a different
     verdict for each, which ``hitl_answers`` collapses into a single key.
     ``hitl_decisions`` keeps every decision under its own slot so slot i is the
     answer to action request i, and it carries the user's own reject message
-    rather than the wording the agent is handed on resume.
+    rather than the wording the agent is handed on resume. ``order_decisions``
+    is the same record for an order interrupt, keyed by attempt id instead of
+    by slot, so a stored verdict names the order it answered rather than a
+    position in a list that can change.
     """
-    summary = summarize_hitl_response_map(request.hitl_response)
+    from src.server.models.chat import HITLResponse
+
+    # The wire type is ``Dict[str, HITLResponse]``, but a caller that built the
+    # request itself can hand over the plain dicts the client sent. Normalized
+    # once here, so everything below reads one shape.
+    responses = {
+        interrupt_id: (
+            response
+            if isinstance(response, HITLResponse)
+            else HITLResponse.model_validate(response)
+        )
+        for interrupt_id, response in request.hitl_response.items()
+    }
+    summary = summarize_hitl_response_map(responses)
     feedback_action = summary["feedback_action"]
-    query_content = summary["content"]
-    interrupt_ids = summary["interrupt_ids"]
 
     hitl_answers: dict = {}
     hitl_decisions: dict = {}
-    for interrupt_id, response in request.hitl_response.items():
-        decisions = (
-            response.decisions
-            if hasattr(response, "decisions")
-            else response.get("decisions", [])
-        )
+    order_decisions: dict = {}
+    for interrupt_id, response in responses.items():
         recorded: list[dict] = []
-        for d in decisions:
-            d_type = d.type if hasattr(d, "type") else d.get("type")
-            d_msg = (
-                d.message if hasattr(d, "message") else d.get("message")
-            ) or ""
-            recorded.append({"type": d_type, "message": d_msg or None})
-            if d_type == "approve" and d_msg:
-                hitl_answers[interrupt_id] = d_msg
-            elif d_type == "reject" and not d_msg:
+        for d in response.decisions:
+            recorded.append({"type": d.type, "message": d.message or None})
+            if d.type == "approve" and d.message:
+                hitl_answers[interrupt_id] = d.message
+            elif d.type == "reject" and not d.message:
                 hitl_answers[interrupt_id] = None
         if recorded:
             hitl_decisions[interrupt_id] = recorded
+
+        for attempt_id, verdict in (response.order_decisions or {}).items():
+            order_decisions[str(attempt_id)] = {
+                "type": verdict.type,
+                "message": verdict.message or None,
+            }
 
     if hitl_answers:
         has_answers = any(v is not None for v in hitl_answers.values())
@@ -234,13 +253,15 @@ def process_hitl_response(
             "QUESTION_ANSWERED" if has_answers else "QUESTION_SKIPPED"
         )
 
-    return (
-        feedback_action,
-        query_content,
-        hitl_answers,
-        interrupt_ids,
-        hitl_decisions,
-    )
+    metadata: dict[str, Any] = {"hitl_interrupt_ids": summary["interrupt_ids"]}
+    for key, value in (
+        ("hitl_answers", hitl_answers),
+        ("hitl_decisions", hitl_decisions),
+        ("order_decisions", order_decisions),
+    ):
+        if value:
+            metadata[key] = value
+    return PreparedHitl(feedback_action, summary["content"], metadata)
 
 
 def serialize_context_metadata(

@@ -31,7 +31,7 @@ import {
   ListError,
   ListSkeleton,
   ListToolbar,
-} from './McpPrimitives';
+} from '@/components/mcp/McpPrimitives';
 import { needsDiscoveryProbe } from './mcpState';
 import { useMcpServerList } from './useMcpServerList';
 

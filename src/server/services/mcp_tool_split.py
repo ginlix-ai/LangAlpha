@@ -16,22 +16,48 @@ from typing import Any
 
 from src.server.services.brokerage_capabilities import vendor_for_url
 from src.server.services.brokerage_tool_overlays import overlay_tool_schemas
-from src.server.services.egress import folded_contains
-from src.server.services.tool_binding import BindingPlan
+from src.server.services.egress import fold_tool_name, folded_contains
+from src.server.services.tool_binding import BindingPlan, Resolved
+
+
+@dataclass(frozen=True)
+class DirectTool:
+    """One directly bound tool: the vendor's schema, and how the row resolved it.
+
+    The resolution travels with the schema so the turn budget, the prompt hint
+    and the tool stamp all read one answer instead of each re-deriving it from
+    a name.
+    """
+
+    schema: dict
+    resolved: Resolved
+
+    @property
+    def name(self) -> str:
+        return str(self.schema.get("name") or "")
+
+    @property
+    def sandboxed(self) -> bool:
+        """Whether this tool also keeps its sandbox wrapper (bound ``both``).
+
+        The prompt has to say so: the blanket rule is that a direct tool is
+        called and not imported, and a ``both`` tool that reads as direct-only
+        loses the Python path it was bound ``both`` to keep.
+        """
+        return self.resolved.binding == "both"
 
 
 @dataclass(frozen=True)
 class DirectServerTools:
-    """One server's directly bound tools, as the vendor publishes their schemas.
+    """One server's directly bound tools.
 
-    ``sandbox_excluded`` is carried alongside because ``both`` and ``direct``
-    are indistinguishable in ``schemas`` alone, and the prompt has to tell the
-    model which of these it may still import: a ``both`` tool that reads as
-    direct-only loses the Python path it was bound ``both`` to keep.
+    ``vendor`` rides along because the binder has the server name and nothing
+    else, and the brokerage whose rules a call is judged by is a question only
+    the address can answer.
     """
 
-    schemas: tuple[dict, ...]
-    sandbox_excluded: frozenset[str] = frozenset()
+    tools: tuple[DirectTool, ...]
+    vendor: str | None = None
 
 
 def split_server_tools(
@@ -39,6 +65,7 @@ def split_server_tools(
     *,
     denied: frozenset[str] | None,
     plan: BindingPlan | None,
+    vendor: str | None = None,
 ) -> tuple[list[dict], DirectServerTools | None]:
     """``(sandbox_tools, direct)``.
 
@@ -49,16 +76,18 @@ def split_server_tools(
         tools = [t for t in tools if not folded_contains(denied, t.get("name"))]
     if plan is None or not plan.direct:
         return tools, None
-    direct_schemas = tuple(
-        t for t in tools if folded_contains(plan.direct, t.get("name"))
+    # Folded, because the plan is keyed by the curated or stored spelling while
+    # a schema carries whatever the vendor publishes. Read off ``by_tool``
+    # rather than off ``direct``, so which tools are bound and how they
+    # resolved are one answer and not two sets that can disagree.
+    by_name = {fold_tool_name(k): r for k, r in sorted(plan.by_tool.items())}
+    bound = tuple(
+        DirectTool(t, resolved)
+        for t in tools
+        if (resolved := by_name.get(fold_tool_name(t.get("name")))) is not None
+        and resolved.binding in ("direct", "both")
     )
-    direct = (
-        DirectServerTools(
-            schemas=direct_schemas, sandbox_excluded=plan.sandbox_excluded
-        )
-        if direct_schemas
-        else None
-    )
+    direct = DirectServerTools(tools=bound, vendor=vendor) if bound else None
     sandbox_tools = [
         t for t in tools if not folded_contains(plan.sandbox_excluded, t.get("name"))
     ]
@@ -83,11 +112,13 @@ def build_direct_entries(
         snapshot = snapshots.ok(server)
         if snapshot is None:
             continue
-        tools = overlay_tool_schemas(
-            vendor_for_url(server.url), snapshot.get("tools") or []
-        )
+        vendor = vendor_for_url(server.url)
+        tools = overlay_tool_schemas(vendor, snapshot.get("tools") or [])
         sandbox_tools, direct = split_server_tools(
-            tools, denied=denied.get(server.name), plan=plans.get(server.name)
+            tools,
+            denied=denied.get(server.name),
+            plan=plans.get(server.name),
+            vendor=vendor,
         )
         sandbox_by_server[server.name] = sandbox_tools
         if direct is not None:

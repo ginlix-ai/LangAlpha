@@ -142,9 +142,9 @@ class ResolvedServer:
     # shipped brokerage. Empty is a real answer and distinct from None: it
     # means the user granted no group, so the server runs and offers nothing.
     denied_tools: frozenset[str] | None = None
-    # How each granted tool reaches the model (sandbox wrapper, JSON tool, or
-    # both), with the set the sandbox must not wrap. None for a server nothing
-    # binds directly.
+    # How each granted tool reaches the model (sandbox wrapper, JSON tool,
+    # or both), with the set the sandbox must not wrap and the set whose calls
+    # stop for the user. None for a server nothing binds directly.
     binding_plan: BindingPlan | None = None
 
     @property

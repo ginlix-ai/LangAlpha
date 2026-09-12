@@ -1,7 +1,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertCircle, CheckCircle2, Clock, KeyRound, MinusCircle, HelpCircle } from 'lucide-react';
-import { StatusPill } from './McpPrimitives';
+import { StatusPill } from '@/components/mcp/McpPrimitives';
 import type { McpOauthStatus, McpStatus } from '../../utils/api';
 
 /**

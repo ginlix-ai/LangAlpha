@@ -18,7 +18,7 @@ import {
   ListError,
   ListSkeleton,
   SectionHeader,
-} from './mcp/McpPrimitives';
+} from '@/components/mcp/McpPrimitives';
 import { formatApiErrorDetail } from '../utils/api';
 import type { SkillInfo } from '../utils/api';
 

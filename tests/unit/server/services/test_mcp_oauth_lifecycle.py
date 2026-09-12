@@ -15,7 +15,7 @@ carry that, and each gets its own coverage here:
   ``refresh_ambiguous`` and rides the old access token to expiry.
 
 ``disconnect_server`` is the module's other write path, and it gets the same
-treatment at the end of the file: its three revocation writes commit as one.
+treatment at the end of the file: its revocation writes commit as one.
 
 Redis, Postgres and the network are all faked at the module's seams: the
 advisory-lock cursor, the connection-row store, and the token endpoint.
@@ -606,6 +606,27 @@ class TestWinner:
         assert abs((commit["expires_at"] - expected).total_seconds()) < 30
         # The stored bundle advanced exactly one generation.
         assert store.row.token_generation == 4
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_refuses_no_open_orders(
+        self, store, db, token_endpoint, monkeypatch
+    ):
+        """A refresh is the same login's next bearer, so an open order stands."""
+        refused: list[tuple] = []
+
+        async def _refuse(*args, **kwargs):
+            refused.append(args)
+
+        monkeypatch.setattr(
+            "src.server.database.order_attempts.refuse_attempts_on_connection_change",
+            _refuse,
+        )
+        store.row = _row(expires_in=120, generation=3)
+
+        await ensure_fresh_access_token(CONNECTION_ID)
+
+        assert len(store.commits) == 1
+        assert refused == []
 
     @pytest.mark.asyncio
     async def test_the_under_lock_re_read_is_the_one_that_takes_the_full_bundle(
@@ -2216,6 +2237,10 @@ def disconnect_db(monkeypatch) -> FakeDisconnectDb:
         lifecycle, "revoke_grants_for_connection", fake.write("revoke_grants")
     )
     monkeypatch.setattr(
+        "src.server.database.order_attempts.refuse_attempts_on_connection_change",
+        fake.write("refuse_open_orders"),
+    )
+    monkeypatch.setattr(
         "src.server.database.mcp_tool_schemas."
         "delete_user_and_workspace_tool_schemas_and_bump",
         fake.write("purge_both_tiers"),
@@ -2244,9 +2269,9 @@ def _connected(row=None):
 class TestDisconnectAtomicity:
     """A half-applied disconnect disagrees with itself — grants revoked while
     the row still reads connected leaves the sweeper renewing a credential the
-    user gave up. All three writes therefore share one transaction."""
+    user gave up. Every write therefore shares one transaction."""
 
-    async def test_the_three_revocation_writes_share_one_transaction(
+    async def test_the_revocation_writes_share_one_transaction(
         self, disconnect_db, monkeypatch
     ):
         monkeypatch.setattr(
@@ -2261,8 +2286,11 @@ class TestDisconnectAtomicity:
         assert disconnect_db.trace == [
             ("mark_status", True, 1),
             ("revoke_grants", True, 1),
+            ("refuse_open_orders", True, 1),
             ("purge_both_tiers", True, 1),
         ]
+        # An order shown for this login must not leave under the next one.
+        assert disconnect_db.args["refuse_open_orders"] == (USER_ID, SERVER_NAME)
 
     async def test_the_purge_spans_both_snapshot_tiers(
         self, disconnect_db, monkeypatch

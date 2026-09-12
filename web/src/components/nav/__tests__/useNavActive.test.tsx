@@ -4,6 +4,10 @@
  *  - 'exact-or-sub' items are active at sub-paths (key + '/...') only
  *  - the 'prefix' item (/chat) is active at any deeper path
  *  - sibling items never light up for each other's routes
+ *
+ * Matching, not visibility: NAV_ITEMS is every route the nav knows, and which
+ * of them a given user is shown is `useNavItems`' answer (its own suite). A
+ * hidden item is still the active one when the user is standing on its route.
  */
 import React from 'react';
 import { describe, it, expect } from 'vitest';

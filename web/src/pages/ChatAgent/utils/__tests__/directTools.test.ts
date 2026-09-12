@@ -11,6 +11,7 @@ import {
   directToolDisplayName,
   isAccountIdKey,
   maskAccountId,
+  maskedAccountValue,
   summarizeDirectToolArgs,
   parseDirectToolResult,
   directToolRejectionReason,
@@ -65,30 +66,58 @@ describe('account id masking', () => {
     expect(isAccountIdKey('account_type')).toBe(false);
   });
 
+  // Robinhood says account_number and rhs_account_number, IBKR says acctId,
+  // and a broker that only ever sends one says account. One key set covers
+  // them, because every surface that masks the field reads it from here.
+  it('matches the number spellings and the bare account', () => {
+    expect(isAccountIdKey('account_number')).toBe(true);
+    expect(isAccountIdKey('rhs_account_number')).toBe(true);
+    expect(isAccountIdKey('accountNumber')).toBe(true);
+    expect(isAccountIdKey('acc_no')).toBe(true);
+    expect(isAccountIdKey('account')).toBe(true);
+    expect(isAccountIdKey('acctId')).toBe(true);
+  });
+
+  it('leaves a key that only starts the same way alone', () => {
+    expect(isAccountIdKey('access_id')).toBe(false);
+    expect(isAccountIdKey('accounting')).toBe(false);
+    expect(isAccountIdKey('account_status')).toBe(false);
+  });
+
+  // `account` is one of the spellings, and a key by that name can hold the
+  // whole record. Four dots and the tail of "[object Object]" would lose it.
+  it('masks only the scalar an id can be', () => {
+    expect(maskedAccountValue('account_number', '123456789')).toBe('••••6789');
+    expect(maskedAccountValue('acc_id', 12345678)).toBe('••••5678');
+    expect(maskedAccountValue('symbol', '123456789')).toBeNull();
+    expect(maskedAccountValue('account', { id: '1234567', name: 'Margin' })).toBeNull();
+    expect(maskedAccountValue('account_id', null)).toBeNull();
+  });
+
   it('shows only the last four characters', () => {
-    expect(maskAccountId('2835410')).toBe('••••5410');
+    expect(maskAccountId('1234567')).toBe('••••4567');
     expect(maskAccountId(12345678)).toBe('••••5678');
     expect(maskAccountId('123')).toBe('••••');
   });
 
   it('masks in the collapsed summary only', () => {
-    const args = { acc_id: '2835410', code: 'US.AAPL', qty: '1' };
-    expect(summarizeDirectToolArgs(args)).toBe('acc_id ••••5410 · code US.AAPL · qty 1');
+    const args = { acc_id: '1234567', code: 'US.AAPL', qty: '1' };
+    expect(summarizeDirectToolArgs(args)).toBe('acc_id ••••4567 · code US.AAPL · qty 1');
     expect(getCompletedSummary('mcp__moomoo__trading_order_place', { args })).toBe(
-      'acc_id ••••5410 · code US.AAPL · qty 1',
+      'acc_id ••••4567 · code US.AAPL · qty 1',
     );
   });
 
   it('masks a camelCase account id', () => {
-    expect(summarizeDirectToolArgs({ accountId: '2835410' })).toBe('accountId ••••5410');
+    expect(summarizeDirectToolArgs({ accountId: '1234567' })).toBe('accountId ••••4567');
   });
 
   it('masks an account id nested inside an object or array', () => {
-    expect(summarizeDirectToolArgs({ order: { account_id: '2835410', qty: 1 } })).toBe(
-      'order {"account_id":"••••5410","qty":1}',
+    expect(summarizeDirectToolArgs({ order: { account_id: '1234567', qty: 1 } })).toBe(
+      'order {"account_id":"••••4567","qty":1}',
     );
-    expect(summarizeDirectToolArgs({ legs: [{ acctId: '2835410' }] })).toBe(
-      'legs [{"acctId":"••••5410"}]',
+    expect(summarizeDirectToolArgs({ legs: [{ acctId: '1234567' }] })).toBe(
+      'legs [{"acctId":"••••4567"}]',
     );
   });
 
@@ -100,7 +129,7 @@ describe('account id masking', () => {
 });
 
 describe('parseDirectToolResult', () => {
-  const inner = { ret_code: 0, ret_msg: 'success', data: { acc_list: [{ acc_id: 2835410 }] } };
+  const inner = { ret_code: 0, ret_msg: 'success', data: { acc_list: [{ acc_id: 1234567 }] } };
   const envelope = JSON.stringify([{ type: 'text', text: JSON.stringify(inner), id: 'lc_1' }]);
 
   it('unwraps content blocks and parses their JSON text', () => {

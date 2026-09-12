@@ -32,6 +32,7 @@ from ptc_agent.core.mcp_sanitize import VAULT_REF_RE
 from src.server.database.mcp_oauth import ConnectionStatus
 from src.server.services.brokerages import Brokerage
 from src.server.services.mcp_config import Origin
+from src.server.services.tool_binding import order_approval_map
 
 
 def _format_validation_error(exc: ValidationError) -> str:
@@ -340,12 +341,13 @@ class BindingInput(BaseModel):
     # from "not sent" is ``model_fields_set``, which the handler reads rather
     # than a sentinel.
     binding_preset: Optional[Literal["ptc_only"]] = None
-    # Echoed back from the column, but nothing reads it to decide a binding:
-    # live orders reach the model as tool calls, but the per-call stop this
-    # would arm is not built yet. The handler refuses a value here with a 422
-    # until governed order execution gives it something to mean; the field
-    # stays so the shape of the body does not change when that lands.
-    order_approval: Optional[bool] = None
+    # Whether this row's order tools put every call to the user first, one
+    # answer per mode. A delta like the map above: a mode the body omits keeps
+    # whatever the row already says, so the page can flip live without
+    # re-sending paper. The resolver reads it, so turning a mode off empties
+    # the plan's approval set for that mode rather than leaving an interrupt
+    # nothing arms.
+    order_approval: Optional[dict[Literal["live", "paper", "staged"], bool]] = None
 
     model_config = {"extra": "forbid"}
 
@@ -646,13 +648,14 @@ class CatalogServer(BaseModel):
     transport: str
     enabled: bool = False
     oauth_status: Optional[ConnectionStatus] = None
-    # The capability groups this connection was actually granted, in the order
-    # they were stored. None means no connection, or one for a server we curate
+    # The capability groups in force on this connection, in the order they were
+    # stored: a group whose requirement was not granted is left out, since its
+    # tools are refused. None means no connection, or one for a server we curate
     # no groups for -- distinct from ``[]``, which is a brokerage the user
     # granted nothing. The consent is enforced per call at the relay, so a
     # surface that cannot read it back can only guess what a connection does.
     granted_capabilities: Optional[list[str]] = None
-    # The same keys, but answering "what did the user last choose" rather than
+    # The keys as stored, answering "what did the user last choose" rather than
     # "what is in force". They part company the moment a connection stops being
     # servable: the grant is gone, so the badges must not draw one, while the
     # choice behind it is still the user's and is what a reconnect has to open
@@ -695,10 +698,12 @@ class CatalogServer(BaseModel):
     # tool off the paths its group allows; a live-order tool is a tool call
     # and nothing else. The effective binding per tool, and the paths it may
     # take, are on the tools endpoint, which sees the vendor's list.
-    # ``order_approval`` is stored only; see ``BindingInput``.
+    # ``order_approval`` is stored only; see ``BindingInput``. Echoed whole
+    # rather than as stored, so a mode the row never set still tells the page
+    # what it does.
     tool_binding: dict[str, str] = Field(default_factory=dict)
     binding_preset: Optional[str] = None
-    order_approval: bool = True
+    order_approval: dict[str, bool] = Field(default_factory=dict)
     # Non-blocking policy nudges (isolation etc.) — populated on create/update
     # responses only, never stored.
     warnings: Optional[list[str]] = None
@@ -780,6 +785,9 @@ class CapabilityGroupOption(BaseModel):
     # One of the steps between reading and placing an order, which is the thing
     # a row is asked first. False for the reading groups.
     rung: bool = False
+    # The other groups this one needs granted to be in force. The dialog links
+    # its switches by it, so no vendor's rule is restated in the client.
+    requires: list[str] = []
 
 
 class BrokerageOption(BaseModel):
@@ -825,13 +833,18 @@ def brokerage_to_response(brokerage: Brokerage) -> BrokerageOption:
     curation map is the source for which groups a vendor has, and copying them
     onto the registry entry would be a second place for that to be wrong.
     """
-    from src.server.services.brokerage_capabilities import groups_for
+    from src.server.services.brokerage_capabilities import groups_for, required_groups
 
     return BrokerageOption.model_validate(
         asdict(brokerage)
         | {
             "capabilities": [
-                {"key": g.key, "tone": g.tone, "rung": g.rung}
+                {
+                    "key": g.key,
+                    "tone": g.tone,
+                    "rung": g.rung,
+                    "requires": list(required_groups(brokerage.name, g.key)),
+                }
                 for g in groups_for(brokerage.name)
             ]
         }
@@ -891,7 +904,7 @@ def catalog_row_to_response(
         discovery_uses_secrets=bool(row.get("discovery_uses_secrets", False)),
         tool_binding=dict(row.get("tool_binding") or {}),
         binding_preset=row.get("binding_preset"),
-        order_approval=bool(row.get("order_approval", True)),
+        order_approval=order_approval_map(row.get("order_approval")),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
         # Indexed, not .get(): the plugin LEFT JOIN is part of every catalog

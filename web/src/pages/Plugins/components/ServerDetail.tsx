@@ -1,10 +1,12 @@
 import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router-dom';
+import { Receipt } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
 import {
   EnabledToggle,
   TagBadge,
-} from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+} from '@/components/mcp/McpPrimitives';
 import { oauthLabelKey } from '@/pages/ChatAgent/components/mcp/McpStatusPill';
 import {
   useBrokerages,
@@ -29,15 +31,12 @@ import {
   DetailOverlay,
   DetailSection,
 } from './DetailOverlay';
-import {
-  BrokerFacts,
-  CapabilityList,
-  GroupedToolList,
-} from './BrokerageDetailParts';
+import { BrokerFacts, CapabilityList } from './BrokerageDetailParts';
 import { ConnectButton } from './OauthRowParts';
 import { OrderCapabilityBadges } from './OrderCapabilityBadges';
 import { PluginOriginBadge, PluginSuppressedBadge } from './PluginBadges';
 import { ToolAccessSwitches, ToolBindingControl } from './ToolAccess';
+import { ToolList } from './ToolList';
 
 /**
  * An MCP server's detail overlay, for every origin the Plugins page lists. The
@@ -61,6 +60,23 @@ export type ServerDetailData =
   | { origin: 'brokerage'; brokerage: Brokerage; server: CatalogServer | null };
 
 const formatDate = createDateFormatter({ dateStyle: 'medium' });
+
+/**
+ * Which control asked for a binding write. A change to many tools at once is
+ * its own scope rather than a row write with a longer list: it cannot be
+ * pinned to the tool it was about, and its refusal belongs in the bar that
+ * asked rather than under the row-wide switches.
+ */
+type WriteScope =
+  | { kind: 'tool'; name: string }
+  | { kind: 'server' }
+  | { kind: 'bulk' };
+
+const SERVER: WriteScope = { kind: 'server' };
+const BULK: WriteScope = { kind: 'bulk' };
+
+const scopeKey = (scope: WriteScope) =>
+  scope.kind === 'tool' ? `tool:${scope.name}` : scope.kind;
 
 export function ServerDetail({
   data,
@@ -115,49 +131,51 @@ export function ServerDetail({
   const granted = settledGrant(catalog?.granted_capabilities, catalog?.oauth_status);
   const groups = vendor?.capabilities ?? [];
 
-  // One refusal at a time, pinned to the tool it was about: the server answers
-  // 422 with the reason in words, and the words belong next to the select that
-  // asked. A row-wide change carries no tool and lands under the switches.
+  // Every binding change is one write on one mutation, told apart by the
+  // control that asked for it. The server answers 422 with the reason in
+  // words, and the words belong next to the control that asked, so the scope
+  // is what pins a refusal and what keeps two tools saving at once from
+  // freezing each other -- a shared `isPending` would hold down every select
+  // on an eighty-eight-tool server while one of them saved.
   const setBinding = useSetMcpServerBinding();
-  const [bindingError, setBindingError] = useState<{
-    tool: string | null;
-    message: string;
-  } | null>(null);
-  // Pinned the same way the refusal is, and for the same reason: the mutation
-  // is shared but a request is about one tool, so a shared `isPending` would
-  // freeze every other select on the server while one of them saves. A
-  // row-wide change is the exception, since it rewrites all of them at once,
-  // and rides here as `null`. A set rather than one slot because two tools can
-  // be in flight at once: a single slot is cleared by whichever request lands
-  // first, and the select it was still holding down comes back live mid-save.
-  const [pending, setPending] = useState<ReadonlySet<string | null>>(new Set());
-  const patchBinding = async (body: McpServerBindingPatch, tool: string | null = null) => {
+  const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
+  const [failure, setFailure] = useState<{ scope: string; message: string } | null>(null);
+  const write = async (scope: WriteScope, body: McpServerBindingPatch) => {
     if (!catalog) return;
-    setBindingError(null);
-    setPending((prev) => new Set(prev).add(tool));
+    const key = scopeKey(scope);
+    setFailure(null);
+    setPending((prev) => new Set(prev).add(key));
     try {
       await setBinding.mutateAsync({ name: catalog.name, body });
     } catch (err) {
-      setBindingError({ tool, message: formatApiErrorDetail(err) });
+      setFailure({ scope: key, message: formatApiErrorDetail(err) });
     } finally {
       setPending((prev) => {
         const next = new Set(prev);
-        next.delete(tool);
+        next.delete(key);
         return next;
       });
     }
   };
+  const busy = (scope: WriteScope) => pending.has(scopeKey(scope));
+  const refusalOn = (scope: WriteScope) =>
+    failure?.scope === scopeKey(scope) ? failure.message : null;
   const bindingControl = catalog
-    ? (tool: McpToolSummary) => (
-        <ToolBindingControl
-          tool={tool}
-          catalog={catalog}
-          busy={pending.has(null) || pending.has(tool.name)}
-          error={bindingError?.tool === tool.name ? bindingError.message : null}
-          onPatch={(body) => patchBinding(body, tool.name)}
-        />
-      )
+    ? (tool: McpToolSummary) => {
+        const scope: WriteScope = { kind: 'tool', name: tool.name };
+        return (
+          <ToolBindingControl
+            tool={tool}
+            // A row-wide or bulk write is rewriting the value this control is
+            // drawing, so it goes inert for those too.
+            busy={busy(BULK) || busy(SERVER) || busy(scope)}
+            error={refusalOn(scope)}
+            onPatch={(body) => write(scope, body)}
+          />
+        );
+      }
     : null;
+  const serverRefusal = refusalOn(SERVER);
 
   // A brokerage wears the vendor's label until its row is pointed elsewhere,
   // exactly as its row does; every other origin is its own name and always was.
@@ -184,26 +202,47 @@ export function ServerDetail({
       ? (data.server?.enabled ?? false)
       : (data.server.enabled ?? false);
 
+  // A server that places orders has a ledger, and this is the way into it. Off
+  // the curation rather than the snapshot, so a broker whose tools have never
+  // been discovered still offers the link to the orders it already placed.
+  const ordersVendor = vendor?.name ?? catalog?.name ?? null;
+  const hasOrders =
+    !!ordersVendor && (catalogTools.data?.order_modes?.length ?? 0) > 0;
+  const canConnect = origin === 'brokerage' && !!onConnect;
+
   return (
     <DetailOverlay
       labelId={labelId}
       onClose={onClose}
       footer={
-        origin === 'brokerage' &&
-        onConnect && (
-          <div className="flex items-center justify-end">
+        (hasOrders || canConnect) && (
+          <div className="flex items-center justify-between gap-2">
+            {hasOrders ? (
+              <Link
+                to={`/orders?vendor=${encodeURIComponent(ordersVendor)}`}
+                className="inline-flex items-center gap-1.5 text-xs hover:underline"
+                style={{ color: 'var(--color-accent-primary)' }}
+              >
+                <Receipt className="h-3 w-3" />
+                {t('plugins.detail.viewOrders')}
+              </Link>
+            ) : (
+              <span />
+            )}
             {/* Offered on a live connection too, and not only a broken one:
                 reconnecting is the only way to change what was granted, so the
                 control that changes it is the one that made it. The sentence
                 saying so sits with the list it would change, not here. */}
-            <ConnectButton
-              status={catalog?.oauth_status ?? null}
-              connecting={connecting}
-              vendor={vendor}
-              rowKey={`brokerage-detail-${name}`}
-              emphasis={catalog?.oauth_status ? 'quiet' : 'loud'}
-              onClick={onConnect}
-            />
+            {canConnect && (
+              <ConnectButton
+                status={catalog?.oauth_status ?? null}
+                connecting={connecting}
+                vendor={vendor}
+                rowKey={`brokerage-detail-${name}`}
+                emphasis={catalog?.oauth_status ? 'quiet' : 'loud'}
+                onClick={onConnect}
+              />
+            )}
           </div>
         )
       }
@@ -276,20 +315,23 @@ export function ServerDetail({
       )}
 
       {/* The row-wide switches are a broker's alone: only its tools belong to
-          capability groups, and the two switches speak about one of them. An
-          ordinary server has per-tool controls in the list below and nothing
-          row-wide to say here. */}
+          capability groups, and only a broker has orders to gate. An ordinary
+          server has per-tool controls in the list below and nothing row-wide
+          to say here. */}
       {origin === 'brokerage' && catalog && (
         <DetailSection title={t('plugins.detail.toolAccess')}>
           <div className="flex flex-col gap-3">
             <ToolAccessSwitches
               catalog={catalog}
+              orderModes={catalogTools.data?.order_modes}
+              // What every per-tool control falls back to, so the switches
+              // stay inert while any binding write is still in flight.
               busy={pending.size > 0}
-              onPatch={(body) => patchBinding(body)}
+              onPatch={(body) => write(SERVER, body)}
             />
-            {bindingError && bindingError.tool === null && (
+            {serverRefusal && (
               <p role="alert" className="text-[0.6875rem]" style={{ color: 'var(--color-loss)' }}>
-                {bindingError.message}
+                {serverRefusal}
               </p>
             )}
             <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-quaternary)' }}>
@@ -331,44 +373,20 @@ export function ServerDetail({
               {t('plugins.detail.toolsEmpty')}
             </p>
           ) : (
-            <div className="flex flex-col gap-2">
-              {/* A brokerage publishes one flat list of up to 88 tools, and
-                  reading it top to bottom answers nothing. Under the consent
-                  group that reaches each one, the same list says which of them
-                  the agent can actually call. */}
-              {origin === 'brokerage' && groups.length > 0 ? (
-                <GroupedToolList
-                  groups={groups}
-                  granted={granted}
-                  tools={toolsQuery.data.tools}
-                  renderControl={bindingControl ?? undefined}
-                />
-              ) : (
-                toolsQuery.data.tools.map((tool) => (
-                  <div key={tool.name} className="flex items-start justify-between gap-2">
-                    <div className="flex flex-col gap-0.5 min-w-0">
-                      <span
-                        className="text-[0.6875rem] font-medium break-all"
-                        style={{
-                          color: 'var(--color-text-secondary)',
-                          fontFamily: "'JetBrains Mono', 'Menlo', monospace",
-                        }}
-                      >
-                        {tool.name}
-                      </span>
-                      {tool.description && (
-                        <span
-                          className="text-[0.6875rem] line-clamp-2"
-                          style={{ color: 'var(--color-text-tertiary)' }}
-                        >
-                          {tool.description}
-                        </span>
-                      )}
-                    </div>
-                    {bindingControl?.(tool)}
-                  </div>
-                ))
-              )}
+            /* A brokerage publishes one flat list of up to 88 tools, and
+               reading it top to bottom answers nothing. Under the consent
+               group that reaches each one, the same list says which of them
+               the agent can actually call -- and a filter and a selection turn
+               a group of sixty-four into one change instead of sixty-four. */
+            <ToolList
+              tools={toolsQuery.data.tools}
+              groups={origin === 'brokerage' ? groups : []}
+              granted={granted}
+              renderControl={bindingControl ?? undefined}
+              onBulkPatch={catalog ? (body) => write(BULK, body) : undefined}
+              bulkBusy={busy(BULK)}
+              bulkError={refusalOn(BULK)}
+            >
               {toolsQuery.data.discovered_at && (
                 <span
                   className="text-[0.6875rem]"
@@ -379,7 +397,7 @@ export function ServerDetail({
                   })}
                 </span>
               )}
-            </div>
+            </ToolList>
           )}
         </DetailSection>
       )}

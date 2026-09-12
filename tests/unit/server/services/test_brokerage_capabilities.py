@@ -7,6 +7,7 @@ declared, or a write filed where a reader belongs.
 """
 
 from dataclasses import replace
+from itertools import combinations
 
 import pytest
 
@@ -18,13 +19,20 @@ from src.server.services.brokerage_capabilities import (
     UNCURATED,
     _BY_KEY,
     _CURATION,
+    _ORDER_TOOLS,
+    OrderMode,
+    OrderTool,
     denied_tools,
+    effective_capabilities,
     group_keys_for,
     group_of_tool,
     groups_for,
     is_always_denied,
+    order_tool,
+    required_groups,
     tools_for,
 )
+from src.server.services.brokerage_orders import ibkr, moomoo, robinhood
 from src.server.services.brokerages import brokerage_names
 
 VENDORS = sorted(_CURATION)
@@ -127,14 +135,14 @@ def test_a_shipped_brokerage_we_have_not_curated_yet_is_a_policy_with_no_rules(
     assert denied_tools(shipped.name, []) == frozenset()
 
 
-@pytest.mark.parametrize("vendor", VENDORS)
+@pytest.mark.parametrize("vendor", sorted(UNCURATED))
 def test_uncurated_tools_are_in_no_group(vendor: str) -> None:
     every = tools_for(vendor, group_keys_for(vendor))
-    for tool in UNCURATED.get(vendor, ()):
+    for tool in UNCURATED[vendor]:
         assert tool not in every
 
 
-@pytest.mark.parametrize("vendor", VENDORS)
+@pytest.mark.parametrize("vendor", sorted(UNCURATED))
 def test_uncurated_tools_are_refused_however_much_is_granted(vendor: str) -> None:
     """Being in no group stopped meaning "unreachable" when the gate inverted.
 
@@ -145,7 +153,7 @@ def test_uncurated_tools_are_refused_however_much_is_granted(vendor: str) -> Non
     that lets it through.
     """
     everything = denied_tools(vendor, group_keys_for(vendor))
-    for tool in UNCURATED.get(vendor, ()):
+    for tool in UNCURATED[vendor]:
         assert tool in everything
 
 
@@ -169,7 +177,7 @@ def test_placing_an_order_takes_the_trading_group() -> None:
     ):
         without = [k for k in group_keys_for(vendor) if k != "trading"]
         assert tool not in tools_for(vendor, without)
-        assert tool in tools_for(vendor, ["trading"])
+        assert tool in tools_for(vendor, ["account", "trading"])
 
 
 @pytest.mark.parametrize("vendor", ["ibkr", "webull"])
@@ -244,6 +252,32 @@ def test_declining_trading_still_refuses_the_tools_that_place_orders() -> None:
         assert tool not in denied_tools(vendor, group_keys_for(vendor))
 
 
+@pytest.mark.parametrize("vendor", ["moomoo", "robinhood"])
+def test_live_orders_stored_without_account_access_are_not_in_force(
+    vendor: str,
+) -> None:
+    """A grant stored before the two were linked narrows, it never widens: the
+    order tools are refused, and account access stays declined."""
+    stored = ["market_data", "trading"]
+
+    assert effective_capabilities(vendor, stored) == ("market_data",)
+    denied = denied_tools(vendor, stored)
+    assert set(_CURATION[vendor]["trading"]) <= denied
+    assert set(_CURATION[vendor]["account"]) <= denied
+    assert effective_capabilities(vendor, ["trading", "account"]) == (
+        "trading",
+        "account",
+    )
+
+
+def test_a_requirement_names_another_declared_group() -> None:
+    for group in GROUPS:
+        for key in group.requires:
+            assert key in _BY_KEY and key != group.key, group.key
+    assert required_groups("moomoo", "trading") == ("account",)
+    assert required_groups(None, "trading") == ()
+
+
 def test_the_catalog_annotation_reads_a_name_the_way_the_relay_does() -> None:
     """The display and the enforcement have to name the same tool.
 
@@ -282,3 +316,59 @@ def test_only_live_orders_are_held_to_one_path() -> None:
         for g in GROUPS
         if g.key not in ("trading", "paper_trading")
     )
+
+
+@pytest.mark.parametrize("vendor", sorted(_ORDER_TOOLS))
+def test_every_order_tool_is_curated_under_a_rung(vendor: str) -> None:
+    """The two maps have to describe the same tool.
+
+    A name in the order map that no group carries is a tool consent cannot
+    reach and the relay refuses, so the pin would be enforcing a path to
+    nowhere. A name filed under a group that is not a rung is worse: the badge
+    on the row and the switch in the consent dialog would read as an ordinary
+    read while the tool moves money.
+    """
+    curated = _CURATION[vendor]
+    for tool in _ORDER_TOOLS[vendor]:
+        key = group_of_tool(vendor, tool)
+        assert key is not None, f"{vendor}.{tool} is in no capability group"
+        assert tool in curated[key]
+        assert _BY_KEY[key].rung, f"{vendor}.{tool} is filed under {key!r}"
+
+
+@pytest.mark.parametrize("vendor", VENDORS)
+def test_the_order_map_is_read_folded_like_every_other_gate(vendor: str) -> None:
+    for tool in _ORDER_TOOLS.get(vendor, ()):
+        assert order_tool(vendor, f" {tool.upper()} ") is not None
+    assert order_tool(vendor, "no_such_tool") is None
+    assert order_tool(None, "trading_order_place") is None
+
+
+def _status_read(vendor: str, entry: OrderTool) -> str:
+    """The read a vendor's adapter settles an order of this kind with."""
+    if vendor == "moomoo":
+        return {OrderMode.LIVE: moomoo.LIVE_HISTORY, OrderMode.PAPER: moomoo.PAPER_HISTORY}[
+            entry.mode
+        ]
+    if vendor == "robinhood":
+        return robinhood._STATUS_TOOLS[entry.asset_class][0]
+    if vendor == "ibkr":
+        return ibkr.LIST_INSTRUCTIONS
+    raise AssertionError(f"name the read {vendor}'s adapter settles an order with")
+
+
+@pytest.mark.parametrize("vendor", sorted(_ORDER_TOOLS))
+def test_no_grant_passes_an_order_it_cannot_settle(vendor: str) -> None:
+    """Reconciliation reads an order's status through the relay under the same
+    grant, so a grant that passes an order tool must pass the read that settles
+    it, or the attempt stays unsettled for good. Every subset is checked, not
+    only those the consent write accepts, because older stored grants remain."""
+    keys = group_keys_for(vendor)
+    for size in range(len(keys) + 1):
+        for granted in combinations(keys, size):
+            denied = denied_tools(vendor, granted)
+            for tool, entry in _ORDER_TOOLS[vendor].items():
+                read = _status_read(vendor, entry)
+                assert tool in denied or read not in denied, (
+                    f"{vendor} granting {granted} passes {tool} but refuses {read}"
+                )

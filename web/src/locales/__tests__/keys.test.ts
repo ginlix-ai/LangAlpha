@@ -34,7 +34,7 @@ const KEY_PROP = /\b(?:titleKey|descriptionKey|nameKey|tagKey|bestForKey|labelKe
 // would otherwise qualify. The cost of being in this list is that a namespace
 // here may not also be used for storage keys or other dotted identifiers --
 // see `plugins:deckExpanded`, which uses a colon for exactly that reason.
-const KEY_VALUE = /['"]((?:dashboard|plugins)\.[a-zA-Z0-9_.]+)['"]/g;
+const KEY_VALUE = /['"]((?:dashboard|plugins|orders)\.[a-zA-Z0-9_.]+)['"]/g;
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {

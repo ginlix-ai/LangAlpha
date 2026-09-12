@@ -9,7 +9,7 @@ import type { AssistantMessage } from '@/types/chat';
 import { updateMessage } from '../../hooks/utils/messageHelpers';
 import { setCardStatus } from './buckets';
 import { buildCreditPauseState } from './creditPauseCard';
-import { isToolApprovalRequest, toolApprovalCards } from './toolApprovalCard';
+import { isToolApprovalInterrupt, toolApprovalCards } from './toolApprovalCard';
 import type { SSEEvent, StreamProcessorRefs } from '../types';
 import type { StreamRuntime } from '../runtime';
 
@@ -229,7 +229,7 @@ export function projectLiveInterrupt(
       assistantMessageId,
       proposalId,
     });
-  } else if (isToolApprovalRequest(actionRequests[0])) {
+  } else if (isToolApprovalInterrupt(event.kind, actionRequests[0])) {
     // --- Direct MCP tool approval interrupt ---
     const cards = toolApprovalCards(
       actionRequests,
@@ -242,7 +242,8 @@ export function projectLiveInterrupt(
     // the resume looked like from the client, and the click already settled
     // the cards to approved/rejected. Put them back rather than writing fresh
     // entries onto this bubble, which the suppression above leaves with no
-    // segment to render them: the status is what history replays.
+    // segment to render them: the calls would otherwise sit unanswerable, and
+    // the status is what history replays.
     rt.setMessages((prev) =>
       interruptAlreadyRendered
         ? cards.reduce((msgs, card) => setCardStatus(msgs, 'toolApprovals', card.proposalId, 'pending'), prev)
@@ -261,11 +262,13 @@ export function projectLiveInterrupt(
           }; })
     );
 
-    // The card is a record, never a slot to fill: nothing raises a tool
-    // approval any more and the approve/reject handlers are gone, so an old
-    // one a stream still carries (a redelivery on reconnect, say) must not
-    // arm the composer against controls that do not exist. History has the
-    // same rule where the paused branch picks what to make interactive.
+    rt.pendingInterruptIdsRef.current.add(event.interrupt_id!);
+    rt.setPendingInterrupt({
+      type: 'tool_approval',
+      interruptId: event.interrupt_id,
+      assistantMessageId,
+      proposalId: cards[0].proposalId,
+    });
   } else {
     // --- Plan approval interrupt (existing) ---
     const planApprovalId = event.interrupt_id || `plan-${Date.now()}`;

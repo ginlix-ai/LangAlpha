@@ -8,7 +8,7 @@ import {
   ConfirmStrip,
   EnabledToggle,
   HeaderButton,
-} from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+} from '@/components/mcp/McpPrimitives';
 import {
   useDeletePlugin,
   useTogglePlugin,

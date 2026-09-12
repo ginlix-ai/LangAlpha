@@ -41,6 +41,21 @@ costs rather than what it trades, and ``trading`` has always carried equities,
 options and option exercise together. Granting crypto separately would need a
 second axis that neither the ladder nor the badges have.
 
+A second map, ``_ORDER_TOOLS``, names the tools that create, change, cancel,
+confirm, stage, unstage or exercise an order. It is per tool rather than per
+group because ``paper_trading`` mixes three mutating tools with five reads, so
+a group-level pin would drag a position list onto the direct path for nothing.
+Every one of these binds ``direct`` and nothing on the row can move it: a JSON
+tool call is one interceptable event per order, which is what a per-call stop
+and an order surface need, while a sandbox wrapper can place any number inside
+a single execution.
+
+That map is also the single declaration of what each order tool *is*. The
+vendor adapters read the same entries to dispatch a call, so what a tool does,
+whose money it does it with and what it trades are stated once here rather than
+restated per adapter, where a table that drifted would gate one tool and parse
+another.
+
 Keys are facts and the words for them belong to the client, the same contract
 ``brokerages.py`` keeps.
 """
@@ -49,10 +64,17 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal, get_args
+from enum import StrEnum
+from typing import TYPE_CHECKING, Literal, get_args
 
 from src.server.services.brokerages import brokerage_by_name, brokerage_for_url
 from src.server.services.egress import fold_tool_name
+
+if TYPE_CHECKING:
+    # Annotation only, and it has to stay that way: the adapters read the
+    # declarations below, so a runtime import of their package here would close
+    # the loop.
+    from src.server.services.brokerage_orders.models import AssetClass
 
 # The paths a tool can take to the model: a sandbox wrapper (``ptc``), a JSON
 # tool call (``direct``), or one of each. Declared here rather than beside the
@@ -109,6 +131,10 @@ class CapabilityGroup:
     # free to restyle, and deriving enforcement from something chosen for how
     # it looks is the mistake ``vendor_for_url`` records.
     allowed_bindings: frozenset[Binding] = ALL_BINDINGS
+    # Other groups that must be granted for this one to be in force, read
+    # through ``required_groups``. A group whose requirement was declined is
+    # not in force, so its tools are refused like any other declined group's.
+    requires: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         # The clamp falls back to the default, so a default outside the
@@ -135,6 +161,10 @@ GROUPS: tuple[CapabilityGroup, ...] = (
     # interceptable event per order, which is what a per-call stop and a UI
     # that shows the order need; a sandbox wrapper can place any number inside
     # a single execution and shows the model's code, not the order.
+    #
+    # They need account access beside them. A placed order is settled by the
+    # vendor's order reads, which sit in ``account``, so a connection that could
+    # place orders but not read them back would leave every attempt unsettled.
     CapabilityGroup(
         key="trading",
         order=90,
@@ -142,6 +172,7 @@ GROUPS: tuple[CapabilityGroup, ...] = (
         rung=True,
         default_binding="direct",
         allowed_bindings=frozenset({"direct"}),
+        requires=("account",),
     ),
 )
 
@@ -475,6 +506,115 @@ UNCURATED: dict[str, tuple[str, ...]] = {
 }
 
 
+class OrderAction(StrEnum):
+    """What a tool does to an order, in the vocabulary the ledger and the UI read."""
+
+    PLACE = "place"
+    REPLACE = "replace"
+    CANCEL = "cancel"
+    CONFIRM = "confirm"
+    STAGE = "stage"
+    UNSTAGE = "unstage"
+    EXERCISE = "exercise"
+    CANCEL_EXERCISE = "cancel_exercise"
+
+
+class OrderMode(StrEnum):
+    """Whose money is at stake: real, simulated, or written into the real
+    account but not yet an order.
+
+    Declared here rather than beside the order shapes because this module is
+    the one the adapters may import: they read the declarations below, so the
+    dependency runs one way only.
+    """
+
+    LIVE = "live"
+    PAPER = "paper"
+    STAGED = "staged"
+
+
+#: What each mode asks for when a row says nothing. Live money and a write into
+#: the real account stop for the user; a simulated account does not.
+ORDER_APPROVAL_DEFAULTS: dict[str, bool] = {
+    mode.value: mode is not OrderMode.PAPER for mode in OrderMode
+}
+
+
+@dataclass(frozen=True)
+class OrderTool:
+    """One order-mutating tool, as the gate and the vendor adapter both read it.
+
+    ``asset_class`` is what the tool's own name says it trades, for a vendor
+    that splits its order tools by class and states it nowhere else in the
+    call. It is ``other`` wherever the arguments are what say.
+    """
+
+    action: OrderAction
+    mode: OrderMode
+    asset_class: AssetClass = "other"
+
+    @property
+    def approval(self) -> bool:
+        """The default for the mode rather than the setting in force.
+
+        A connection carries its own per-mode map, and this is what an absent
+        key there resolves to.
+        """
+        return ORDER_APPROVAL_DEFAULTS[self.mode.value]
+
+# Vendor names verbatim, the spelling the relay compares against. Every name
+# here is also in ``_CURATION`` under a rung group, which is what keeps consent
+# and the order pin talking about the same tool.
+_ORDER_TOOLS: dict[str, dict[str, OrderTool]] = {
+    "moomoo": {
+        "trading_order_place": OrderTool(OrderAction.PLACE, OrderMode.LIVE),
+        "trading_order_replace": OrderTool(OrderAction.REPLACE, OrderMode.LIVE),
+        "trading_order_cancel": OrderTool(OrderAction.CANCEL, OrderMode.LIVE),
+        # Not a second confirmation of ours: moomoo can answer a place with
+        # ``need_order_confirm``, and the order is not live until this runs.
+        "trading_order_confirm": OrderTool(OrderAction.CONFIRM, OrderMode.LIVE),
+        "sim_trade_input_order": OrderTool(OrderAction.PLACE, OrderMode.PAPER),
+        "sim_trade_modify_order": OrderTool(OrderAction.REPLACE, OrderMode.PAPER),
+        "sim_trade_cancel_order": OrderTool(OrderAction.CANCEL, OrderMode.PAPER),
+    },
+    "robinhood": {
+        "place_equity_order": OrderTool(
+            OrderAction.PLACE, OrderMode.LIVE, "equity"
+        ),
+        "place_option_order": OrderTool(
+            OrderAction.PLACE, OrderMode.LIVE, "option"
+        ),
+        "place_crypto_order": OrderTool(
+            OrderAction.PLACE, OrderMode.LIVE, "crypto"
+        ),
+        "cancel_equity_order": OrderTool(
+            OrderAction.CANCEL, OrderMode.LIVE, "equity"
+        ),
+        "cancel_option_order": OrderTool(
+            OrderAction.CANCEL, OrderMode.LIVE, "option"
+        ),
+        "cancel_crypto_order": OrderTool(
+            OrderAction.CANCEL, OrderMode.LIVE, "crypto"
+        ),
+        # Its own action rather than an order: no side, no price, no TIF.
+        "exercise_option": OrderTool(
+            OrderAction.EXERCISE, OrderMode.LIVE, "option"
+        ),
+        "cancel_option_exercise": OrderTool(
+            OrderAction.CANCEL_EXERCISE, OrderMode.LIVE, "option"
+        ),
+    },
+    "ibkr": {
+        # IBKR calls an instruction "not a live order", and it is not: it is an
+        # object written into the real account, one human click from being one.
+        # One ``contract_id_ex`` addresses every class it stages, so the class
+        # is not something either tool's name says.
+        "create_order_instruction": OrderTool(OrderAction.STAGE, OrderMode.STAGED),
+        "delete_order_instruction": OrderTool(OrderAction.UNSTAGE, OrderMode.STAGED),
+    },
+}
+
+
 def groups_for(brokerage: str | None) -> tuple[CapabilityGroup, ...]:
     """The consent toggles to offer for a brokerage, in display order.
 
@@ -490,6 +630,41 @@ def groups_for(brokerage: str | None) -> tuple[CapabilityGroup, ...]:
 def group_keys_for(brokerage: str | None) -> tuple[str, ...]:
     """Every group key a brokerage offers, in display order."""
     return tuple(g.key for g in groups_for(brokerage))
+
+
+def required_groups(brokerage: str | None, key: str) -> tuple[str, ...]:
+    """The groups this brokerage must also grant for ``key`` to be in force.
+
+    Only the ones it offers, so a requirement on a group a vendor does not have
+    can never leave a group it does have ungrantable.
+    """
+    group = _BY_KEY.get(key)
+    offered = _CURATION.get(brokerage) if brokerage else None
+    if group is None or not offered:
+        return ()
+    return tuple(req for req in group.requires if req in offered)
+
+
+def effective_capabilities(
+    brokerage: str | None, granted: Iterable[str]
+) -> tuple[str, ...]:
+    """The granted groups in force: each one whose requirements are granted too.
+
+    It narrows and never widens. A stored grant of live orders without account
+    access, written before the two were linked, reads as no live orders rather
+    than as account access nobody chose; the user reconnects to change it.
+    """
+    kept = tuple(granted)
+    while True:
+        held = set(kept)
+        narrowed = tuple(
+            key
+            for key in kept
+            if all(req in held for req in required_groups(brokerage, key))
+        )
+        if narrowed == kept:
+            return narrowed
+        kept = narrowed
 
 
 def tools_for(brokerage: str | None, granted: Iterable[str]) -> frozenset[str] | None:
@@ -512,7 +687,7 @@ def tools_for(brokerage: str | None, granted: Iterable[str]) -> frozenset[str] |
     curated = _CURATION.get(brokerage)
     if curated is None:
         return frozenset() if brokerage_by_name(brokerage) else None
-    wanted = set(granted)
+    wanted = set(effective_capabilities(brokerage, granted))
     return frozenset(
         tool for key, tools in curated.items() if key in wanted for tool in tools
     )
@@ -552,7 +727,9 @@ def denied_tools(brokerage: str | None, granted: Iterable[str]) -> frozenset[str
     curated = _CURATION.get(brokerage)
     if curated is None:
         return frozenset() if brokerage_by_name(brokerage) else None
-    wanted = set(granted)
+    # In force, not as stored: a group whose requirement was not granted is
+    # refused like one that was declined.
+    wanted = set(effective_capabilities(brokerage, granted))
     return frozenset(
         tool for key, tools in curated.items() if key not in wanted for tool in tools
     ) | frozenset(UNCURATED.get(brokerage, ()))
@@ -587,6 +764,38 @@ def group_for_tool(brokerage: str | None, tool: str) -> CapabilityGroup | None:
     return _BY_KEY.get(key) if key is not None else None
 
 
+def order_tool(brokerage: str | None, tool: str) -> OrderTool | None:
+    """The order this tool mutates, or None if it mutates none.
+
+    The predicate the binder, the gate and the stamp all read, so "is this an
+    order" is answered once. Folded for the reason :func:`group_of_tool` gives.
+    """
+    return _BY_ORDER_TOOL.get(brokerage or "", {}).get(fold_tool_name(tool))
+
+
+def order_modes(brokerage: str | None) -> tuple[OrderMode, ...]:
+    """The order modes this brokerage actually has, in declaration order.
+
+    What the connection's approval switches are offered for: moomoo has live
+    and paper, robinhood live, IBKR staged, and Webull none at all.
+    """
+    tools = _ORDER_TOOLS.get(brokerage or "")
+    if not tools:
+        return ()
+    modes = {t.mode for t in tools.values()}
+    return tuple(m for m in OrderMode if m in modes)
+
+
+def curates(brokerage: str | None) -> bool:
+    """Whether we hold a capability map for this brokerage at all.
+
+    The difference between a tool nobody classified at a vendor we curate,
+    which stays in the sandbox, and one on a server we have no map for, which
+    the row is free to bind however it likes.
+    """
+    return brokerage is not None and brokerage in _CURATION
+
+
 def is_always_denied(brokerage: str | None, tool: str) -> bool:
     """Whether a tool is refused whatever the user granted.
 
@@ -613,4 +822,9 @@ _BY_TOOL: dict[str, dict[str, str]] = {
 _UNCURATED_FOLDED: dict[str, frozenset[str]] = {
     brokerage: frozenset(fold_tool_name(t) for t in tools)
     for brokerage, tools in UNCURATED.items()
+}
+
+_BY_ORDER_TOOL: dict[str, dict[str, OrderTool]] = {
+    brokerage: {fold_tool_name(tool): entry for tool, entry in tools.items()}
+    for brokerage, tools in _ORDER_TOOLS.items()
 }

@@ -6,7 +6,7 @@ import {
   ServerNameLine,
   ServerRowShell,
   TagBadge,
-} from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+} from '@/components/mcp/McpPrimitives';
 import type { WorkspaceScopedMcpServer } from '@/pages/ChatAgent/utils/api';
 import { ScopeControl, type ScopeWorkspace } from './ScopeControl';
 import { rowSelection, type BulkSelection } from './useBulkSelection';

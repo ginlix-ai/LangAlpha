@@ -30,9 +30,11 @@ _STRING_VALUED_ARGS: dict[str, frozenset[str]] = {
 def parse_tool_args(args, tool_name: str | None = None):
     """Coerce a tool-call args dict to match the tool's Pydantic schema.
 
-    Canonical for both the live middleware and checkpoint replay: string-valued
-    JSON args (Write/Edit payloads) are JSON-encoded, and JSON-looking strings on
-    other args are decoded. Non-dict input passes through unchanged.
+    Canonical for the live middleware, checkpoint replay, and the order ledger,
+    which has to hash the same form the relay will see: string-valued JSON args
+    (Write/Edit payloads) are JSON-encoded, and JSON-looking strings on other
+    args are decoded. Non-dict input passes through unchanged. Idempotent, so a
+    caller that parses early does not stop the middleware parsing again.
     """
     if not isinstance(args, dict):
         return args

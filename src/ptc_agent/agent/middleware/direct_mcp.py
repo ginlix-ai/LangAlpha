@@ -1,9 +1,10 @@
 """Gate for MCP tools bound directly to the model.
 
 A directly bound tool is one JSON tool call, which is the shape a policy can
-see. That buys the thing the sandbox path cannot offer: the consent the
+see. Two things run here that the sandbox path cannot offer: the consent the
 connection carries is re-read on every call rather than trusted from the set
-bound at turn start.
+bound at turn start, and an order tool is stopped against a durable attempt
+before the vendor sees it. ``direct_tool_middleware`` assembles both.
 
 The policy itself is a port. This module ships in the agent library and knows
 nothing about connection rows; the server hands it an object that does, the
@@ -14,7 +15,7 @@ alone.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
 from langchain.agents.middleware import AgentMiddleware
@@ -35,8 +36,13 @@ class DirectToolSet(Protocol):
 
     tools: list[BaseTool]
 
-    async def check(self, server: str, tool: str) -> str | None:
-        """None to allow the call, or the reason it is refused."""
+    async def check(self, server: str, tool: str, approval: bool = False) -> str | None:
+        """None to allow the call, or the reason it is refused.
+
+        ``approval`` is what the binder stamped on this tool at turn start, so
+        the policy can tell a call that was gated from one that was not and
+        refuse the latter if the setting has since changed under it.
+        """
         ...
 
 
@@ -61,6 +67,8 @@ def direct_tool_summary(tools: list[BaseTool]) -> str:
             summary = summary[:157].rstrip() + "..."
         stamp = direct_tool_meta(tool) or {}
         line = f"- `{tool.name}`: {summary}"
+        if stamp.get("approval"):
+            line += " Asks the user to confirm before it runs."
         if stamp.get("sandboxed"):
             # The wrapper is generated under the sanitized name, so the raw
             # vendor name would send the model at a symbol its module does not
@@ -92,11 +100,39 @@ def _stamped(result: ToolMessage | Command, stamp: dict[str, Any]) -> ToolMessag
     return result
 
 
+def refused_message(
+    tool_call: Mapping[str, Any],
+    reason: str,
+    stamp: Mapping[str, Any],
+    *,
+    receipt: Mapping[str, Any] | None = None,
+) -> ToolMessage:
+    """A call the vendor never saw, shaped like the result it stands in for.
+
+    ``reason`` is the whole text. A refusal is the one result whose identity
+    cannot be recovered from the alias the model called, so it carries the
+    stamp like any other; ``receipt`` is the ledger's own fragment, merged
+    beside it and opaque here.
+    """
+    message = ToolMessage(
+        content=reason,
+        tool_call_id=tool_call["id"],
+        name=tool_call.get("name"),
+        status="error",
+    )
+    _stamped(message, dict(stamp))
+    if receipt:
+        artifact = message.artifact if isinstance(message.artifact, dict) else {}
+        message.artifact = {**artifact, **receipt}
+    return message
+
+
 class DirectMcpPolicyMiddleware(AgentMiddleware):
     """Refuse a direct tool call the connection's current consent does not cover.
 
-    Main-agent only. Any tool without the binder's stamp passes through
-    untouched.
+    Main-agent only, and placed before the approval interrupt so a refused
+    call never asks the user to approve it. Any tool without the binder's
+    stamp passes through untouched.
     """
 
     def __init__(self, toolset: DirectToolSet) -> None:
@@ -110,19 +146,7 @@ class DirectMcpPolicyMiddleware(AgentMiddleware):
     def _refused(
         self, request: ToolCallRequest, reason: str, stamp: dict[str, Any]
     ) -> ToolMessage:
-        # Stamped like a result, because the refusal is one: the surface reads
-        # the identity off the message, and a refused call the model made under
-        # a digested name would otherwise be the one call rendered without the
-        # vendor's own names.
-        return _stamped(  # type: ignore[return-value]
-            ToolMessage(
-                content=f"Refused: {reason}",
-                tool_call_id=request.tool_call["id"],
-                name=request.tool_call.get("name"),
-                status="error",
-            ),
-            stamp,
-        )
+        return refused_message(request.tool_call, f"Refused: {reason}", stamp)
 
     def wrap_tool_call(
         self,
@@ -149,7 +173,9 @@ class DirectMcpPolicyMiddleware(AgentMiddleware):
         try:
             # The policy check reads the connection row, so it fails the same
             # transient ways the call does and belongs under the same guard.
-            reason = await self._toolset.check(stamp["server"], stamp["tool"])
+            reason = await self._toolset.check(
+                stamp["server"], stamp["tool"], bool(stamp.get("approval"))
+            )
             if reason:
                 return self._refused(request, reason, stamp)
             result = await handler(request)
@@ -173,3 +199,28 @@ class DirectMcpPolicyMiddleware(AgentMiddleware):
                 stamp,
             )
         return _stamped(result, stamp)
+
+
+def direct_tool_middleware(
+    toolset: DirectToolSet | None, ledger: Any | None
+) -> list[AgentMiddleware]:
+    """The middleware a turn's directly bound tools need, outermost first.
+
+    The order gate wraps the consent gate, so a consent refusal is an answer
+    the gate records: the attempt it consumed settles as refused with a
+    receipt, instead of staying ``approved`` with a call nothing ran. Consent
+    still decides before any vendor is reached, because the inner wrapper runs
+    before the tool does. Without a ledger no order runs at all, since the
+    binder pins every order tool to this path.
+    """
+    # Local: ``order_governance`` imports this module for the result stamp.
+    from ptc_agent.agent.middleware.order_governance import OrderGovernanceMiddleware
+
+    tools = list(toolset.tools) if toolset is not None else []
+    if not tools:
+        return []
+    stack: list[AgentMiddleware] = []
+    if ledger is not None:
+        stack.append(OrderGovernanceMiddleware(ledger, tools))
+    stack.append(DirectMcpPolicyMiddleware(toolset))
+    return stack

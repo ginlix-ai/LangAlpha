@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Check, ChevronRight, X } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Check, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Loader } from '@/components/ui/loader';
 import type { ToolApprovalState } from '@/types/chat';
 import { ArgsTable } from './mcp/ArgsTable';
 import { DirectToolTileMark } from './mcp/DirectToolMark';
+import { OrderApprovalCard } from './mcp/OrderApprovalCard';
+import { SettledToolStep } from './mcp/SettledToolStep';
 import { useDirectToolVendorLabel } from './mcp/useDirectToolVendor';
 import { humanizeKey } from '../utils/structuredResult';
 
@@ -13,30 +15,53 @@ interface ToolApprovalCardProps {
   data: ToolApprovalState | null;
   onApprove?: () => void;
   onReject?: (message?: string) => void;
+  /** The approved call has not answered yet. Only meaningful for an order,
+   *  whose card waits for its receipt rather than settling on the click. */
+  resultPending?: boolean;
+  /** The approved call produced no result and no longer can, so no receipt
+   *  will ever state the outcome. Only meaningful for an order, whose end
+   *  state the ledger still holds. */
+  resultLost?: boolean;
 }
 
 /**
- * Inline card for a direct MCP tool call that stopped for approval (a live
- * order, say). Pending shows the vendor, the tool and every argument exactly
- * as it will be sent, with Approve and Reject plus an optional reason; a
- * settled card collapses to a status row that still opens to the arguments.
- * With no handlers the pending card is a record of a stop nobody can answer
- * now, so it names that rather than asking, and shows no spinner.
+ * Inline card for a direct MCP tool call that stopped for approval. Pending
+ * shows the vendor, the tool and every argument exactly as it will be sent,
+ * with Approve and Reject plus an optional reason; a settled card collapses to
+ * a status row that still opens to the arguments. Read-only replay passes no
+ * handlers, and a pending card there is a record of a stop nobody can answer
+ * now, so it names that rather than asking.
+ *
+ * A call that places an order is a different question and gets its own card:
+ * the person is deciding on a trade, not on whether a JSON frame is right, and
+ * that card is drawn in the shape of the receipt the order becomes.
  */
-function ToolApprovalCard({ data, onApprove, onReject }: ToolApprovalCardProps): React.ReactElement | null {
+function ToolApprovalCard({ data, onApprove, onReject, resultPending, resultLost }: ToolApprovalCardProps): React.ReactElement | null {
   const { t } = useTranslation();
-  const [collapsed, setCollapsed] = useState(true);
   const [reason, setReason] = useState('');
   const vendorLabel = useDirectToolVendorLabel(data?.server || '');
 
   if (!data) return null;
+
+  if (data.order) {
+    return (
+      <OrderApprovalCard
+        data={data}
+        order={data.order}
+        onApprove={onApprove}
+        onReject={onReject}
+        resultPending={resultPending}
+        resultLost={resultLost}
+      />
+    );
+  }
 
   const { status, server, tool, args } = data;
   const toolLabel = humanizeKey(tool);
   const isApproved = status === 'approved';
   const isRejected = status === 'rejected';
 
-  const argsBlock = (
+  const detailBlock = (
     <div className="rounded-lg px-4 py-3" style={{ border: '1px solid var(--color-border-muted)' }}>
       <ArgsTable args={args || {}} emptyLabel={t('toolArtifact.directTool.noArguments')} />
     </div>
@@ -44,50 +69,17 @@ function ToolApprovalCard({ data, onApprove, onReject }: ToolApprovalCardProps):
 
   if (isApproved || isRejected) {
     return (
-      <div>
-        <button
-          type="button"
-          onClick={() => setCollapsed((v) => !v)}
-          className="flex items-center gap-2 py-1 cursor-pointer w-full text-left"
-        >
-          <motion.div animate={{ rotate: collapsed ? 0 : 90 }} transition={{ duration: 0.2 }}>
-            <ChevronRight className="h-3.5 w-3.5 flex-shrink-0" style={{ color: 'var(--color-icon-muted)' }} />
-          </motion.div>
-          {isApproved ? (
-            <Check className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-light)' }} />
-          ) : (
-            <X className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-          )}
-          <span
-            className="text-sm truncate"
-            style={{ color: isApproved ? 'var(--color-text-tertiary)' : 'var(--color-text-quaternary)' }}
-          >
-            {isApproved
-              ? t('toolArtifact.directTool.approvedAction', { vendor: vendorLabel, tool: toolLabel })
-              : t('toolArtifact.directTool.rejectedAction', { vendor: vendorLabel, tool: toolLabel })}
-          </span>
-          {isRejected && data.reason && (
-            <span className="text-xs truncate" style={{ color: 'var(--color-icon-muted)' }}>
-              {data.reason}
-            </span>
-          )}
-        </button>
-        <AnimatePresence initial={false}>
-          {!collapsed && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-              className="overflow-hidden"
-            >
-              <div className="pt-2 pb-1 pl-6" style={{ opacity: isRejected ? 0.6 : 0.8 }}>
-                {argsBlock}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
+      <SettledToolStep
+        approved={isApproved}
+        reason={isRejected ? data.reason : null}
+        label={
+          isApproved
+            ? t('toolArtifact.directTool.approvedAction', { vendor: vendorLabel, tool: toolLabel })
+            : t('toolArtifact.directTool.rejectedAction', { vendor: vendorLabel, tool: toolLabel })
+        }
+      >
+        {detailBlock}
+      </SettledToolStep>
     );
   }
 
@@ -117,7 +109,7 @@ function ToolApprovalCard({ data, onApprove, onReject }: ToolApprovalCardProps):
         )}
       </div>
 
-      {argsBlock}
+      {detailBlock}
 
       {canAct && (
         <div className="pt-3 flex flex-wrap items-center gap-2">

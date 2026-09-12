@@ -117,11 +117,21 @@ async def bind_flash_direct_tools(
         # tools rather than on a set it cannot vouch for.
         logger.info("[DIRECT_MCP] flash resolve superseded; no direct tools this turn")
         return empty
-    grants = {
-        s.name: synced.grants[s.oauth_connection_id]
-        for s in servers
-        if s.oauth_connection_id in synced.grants
-    }
+    grants: dict[str, str] = {}
+    for server in servers:
+        grant_id = synced.grants.get(server.oauth_connection_id)
+        if grant_id is None:
+            # The connection vanished between resolve and here (disconnect
+            # race). Fail closed and say so: this server's tools are simply
+            # absent from the turn, and the PTC path warns about the same
+            # miss, so a silent one here is the only place it does not show.
+            logger.warning(
+                "[DIRECT_MCP] flash: connection %s gone for server %s, left unbound",
+                server.oauth_connection_id,
+                server.name,
+            )
+            continue
+        grants[server.name] = grant_id
 
     index = ToolSnapshotIndex(user_rows=await get_user_tool_schemas(user_id))
     # Flash has no sandbox, so the sandbox half of the split is dropped here.

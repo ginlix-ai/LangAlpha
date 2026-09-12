@@ -19,6 +19,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from src.server.database import conversation as qr_db
+from src.server.database import order_attempts as oa_db
 from src.server.database import pool
 from src.server.database.runs import subagent_runs as sr_db
 from src.server.database.runs.outbox import (
@@ -201,6 +202,14 @@ async def start_run(
                         raise sr_db.TaskRunSlotBusyError(
                             thread_id, str(live_task["task_id"]), live_task
                         )
+                    # An order still waiting for a verdict or a call hangs off
+                    # a response row about to be deleted, and nothing settles
+                    # it once the row is gone. After the guards, so a refused
+                    # fork refuses no order; before the truncation, whose rows
+                    # it selects; in this transaction, so a rollback undoes it.
+                    await oa_db.refuse_attempts_on_fork(
+                        thread_id, fork.from_turn, conn=conn
+                    )
                     deleted = await qr_db.truncate_thread_from_turn(
                         thread_id,
                         fork.from_turn,

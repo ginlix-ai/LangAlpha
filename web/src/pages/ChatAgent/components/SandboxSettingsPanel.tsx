@@ -4,7 +4,7 @@ import { api } from '@/api/client';
 import {
   formatApiErrorDetail, getSandboxStats, refreshWorkspace,
 } from '../utils/api';
-import { ListEmpty, ListSkeleton } from './mcp/McpPrimitives';
+import { ListEmpty, ListSkeleton } from '@/components/mcp/McpPrimitives';
 import { McpTab } from './mcp/McpTab';
 import { SkillsTab } from './SkillsTab';
 import { OverviewTab } from './sandbox/OverviewTab';

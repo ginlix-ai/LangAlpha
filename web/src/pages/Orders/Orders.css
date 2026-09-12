@@ -1,0 +1,109 @@
+/* Same frame as the Plugins page: the scroll port is a child of the root so
+   the desktop shell's drag strip can sit above it and stay put. */
+.orders-page {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-bg-canvas);
+}
+
+.orders-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: clamp(16px, 3vw, 32px) clamp(16px, 3vw, 32px) 48px;
+}
+
+.orders-container {
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+/* The table scrolls sideways inside its own port; the page never does. */
+.orders-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 8px;
+  background-color: var(--color-bg-card);
+}
+
+/* Fixed layout, so the column plan in OrdersTable.tsx is the whole story: no
+   cell's content can widen its column at the expense of the ones after it. The
+   floor is what the nine columns need before their own words start wrapping
+   badly, and it is below the container width at the narrowest desktop, so the
+   port's overflow-x is a phone-and-below fallback rather than the normal case. */
+.orders-table {
+  width: 100%;
+  min-width: 860px;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+.orders-head {
+  text-align: left;
+  font-size: 0.625rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--color-text-tertiary);
+  padding: 10px 10px;
+  border-bottom: 1px solid var(--color-border-muted);
+  vertical-align: bottom;
+}
+
+.orders-row {
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.orders-row:hover {
+  background-color: var(--color-bg-hover);
+}
+
+.orders-cell {
+  font-size: 0.8125rem;
+  color: var(--color-text-primary);
+  padding: 10px 10px;
+  border-top: 1px solid var(--color-border-muted);
+  vertical-align: middle;
+  overflow-wrap: break-word;
+}
+
+.orders-cell-time,
+.orders-num,
+.orders-mono {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+.orders-mono {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+
+.orders-num {
+  text-align: right;
+}
+
+.orders-cell-instrument {
+  font-weight: 500;
+}
+
+/* The badge is one short word and reads as a different one broken in half
+   ("STAGE" over "D"), so its column is the one that never wraps. */
+.orders-cell-mode {
+  white-space: nowrap;
+}
+
+/* The row wears the one-word verdict and the full sentence sits in its
+   tooltip, so the pill never wraps and the glyph stays on the text's line. */
+.orders-cell-status {
+  white-space: nowrap;
+}
+
+@media (max-width: 767px) {
+  .orders-scroll {
+    padding: 16px 16px 48px;
+  }
+}

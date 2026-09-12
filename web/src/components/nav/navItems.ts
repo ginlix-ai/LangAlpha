@@ -1,4 +1,4 @@
-import { Blocks, ChartCandlestick, LayoutDashboard, MessagesSquare, Settings, Timer } from 'lucide-react';
+import { Blocks, ChartCandlestick, LayoutDashboard, MessagesSquare, Receipt, Settings, Timer } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 export interface NavItem {
@@ -9,6 +9,14 @@ export interface NavItem {
   labelKey: string;
   /** Active-state strategy: 'prefix' = pathname.startsWith(key); 'exact-or-sub' = exact match or key + '/' sub-path. */
   match: 'prefix' | 'exact-or-sub';
+  /**
+   * What has to be true before the item is drawn at all; absent = always.
+   * Declared here rather than in a nav surface because three of them draw this
+   * list, and a gate that lives in one is a gate the other two do not have.
+   * Never a route guard: the route stays reachable by URL, and the page it
+   * leads to is the one that explains an empty answer.
+   */
+  requires?: 'orders';
 }
 
 // Single source of truth for primary navigation (rail + mobile tab bar).
@@ -17,6 +25,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: '/chat', icon: MessagesSquare, labelKey: 'sidebar.chatAgent', match: 'prefix' },
   { key: '/market', icon: ChartCandlestick, labelKey: 'sidebar.marketView', match: 'exact-or-sub' },
   { key: '/automations', icon: Timer, labelKey: 'sidebar.automations', match: 'exact-or-sub' },
+  { key: '/orders', icon: Receipt, labelKey: 'sidebar.orders', match: 'exact-or-sub', requires: 'orders' },
   { key: '/plugins', icon: Blocks, labelKey: 'sidebar.plugins', match: 'exact-or-sub' },
 ];
 

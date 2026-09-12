@@ -15,7 +15,7 @@ import {
   MetaText,
   ServerNameLine,
   ServerRowShell,
-} from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+} from '@/components/mcp/McpPrimitives';
 import type { CatalogServer } from '@/pages/ChatAgent/utils/api';
 import { brokerageArt, mcpServerArt } from '@/lib/brandArt';
 import { type Brokerage } from '../brokerages';

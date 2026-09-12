@@ -8,6 +8,7 @@ import type React from 'react';
 import type { ChatMessage } from '@/types/chat';
 import type { ActionRequest, ToolCallData } from '@/types/sse';
 import type { SubagentTokenUsage } from '../utils/tokenUsage';
+import type { DecisionTarget } from './interrupts/toolApprovalCard';
 import type { StreamRefs } from './streamRefs';
 
 // --- Internal types for useChatMessages ---
@@ -86,6 +87,8 @@ interface SSEEvent {
   original_message_count?: number;
   offloaded_args?: number;
   offloaded_reads?: number;
+  /** Discriminator carried by several event families; `order_approval` on an
+   *  interrupt the order gate raised. */
   kind?: string;
   position?: number;
   active_tasks?: string[];
@@ -203,6 +206,10 @@ interface HistoryInterruptInfo {
   questionId?: string;
   proposalId?: string;
   interruptId?: string;
+  /** Where a stopped call's verdict is looked up, decided when the interrupt
+   *  was read so no settler has to rebuild it from the card id. Present only on
+   *  a `tool_approval` entry. */
+  target?: DecisionTarget;
   answer?: string | null;
 }
 

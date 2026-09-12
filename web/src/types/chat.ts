@@ -5,6 +5,7 @@ import type {
   ToolCallData,
   ToolCallResultData,
   TodoItem,
+  OrderProposal,
   ProvenanceSourceType,
 } from './sse';
 import type { ErrorLinkSpec } from '@/utils/rateLimitError';
@@ -324,6 +325,19 @@ export interface ToolApprovalState {
    */
   actionIndex: number;
   actionCount: number;
+  /** The tool call this card answers, when the interrupt named one. It is what
+   *  joins the card to the result the call later produces. */
+  toolCallId?: string;
+  /**
+   * The order attempt this card answers. Its presence is what makes the card
+   * keyed: the resume names this id instead of trusting the slot, and a reload
+   * settles the card from the id rather than from its position, so a batch
+   * cannot hand one order the verdict the user gave another.
+   */
+  attemptId?: string;
+  /** The order this call would place, for the summary the card draws above the
+   *  raw arguments. Null, or absent, for a call that places none. */
+  order?: OrderProposal | null;
   /** The reason typed on Reject, if any. */
   reason?: string | null;
 }

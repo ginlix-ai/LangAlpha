@@ -322,18 +322,10 @@ async def astream_ptc_workflow(
             )
 
         if request.hitl_response:
-            (
-                feedback_action,
-                query_content,
-                hitl_answers,
-                interrupt_ids,
-                hitl_decisions,
-            ) = process_hitl_response(request)
-            query_metadata["hitl_interrupt_ids"] = interrupt_ids
-            if hitl_answers:
-                query_metadata["hitl_answers"] = hitl_answers
-            if hitl_decisions:
-                query_metadata["hitl_decisions"] = hitl_decisions
+            prepared = process_hitl_response(request)
+            feedback_action = prepared.feedback_action
+            query_content = prepared.query_content
+            query_metadata.update(prepared.metadata)
 
         # =====================================================================
         # START txn (v4): query row + in_progress run row + thread projection
@@ -521,22 +513,19 @@ async def astream_ptc_workflow(
         # on every model call, ensuring it's always the latest content.
         from src.server.app.workspace_sandbox import _set_cached_signed_url
         from src.server.services.egress.direct_tools import (
-            DirectMCPBinding,
             bind_direct_mcp_tools,
+            direct_tools_for_turn,
         )
 
         # One relay session per directly bound server, held for the run.
-        # A failure here costs the turn those tools, not the turn: the same
-        # bargain the Flash path makes, and the only one that makes sense when
-        # the rest of the toolset is still reachable through the sandbox.
-        try:
-            direct_mcp = await bind_direct_mcp_tools(session, user_id=user_id)
-        except Exception:
-            logger.warning(
-                "[PTC_CHAT] direct MCP binding failed; running without",
-                exc_info=True,
-            )
-            direct_mcp = DirectMCPBinding(user_id=user_id)
+        direct_mcp, order_ledger = await direct_tools_for_turn(
+            bind_direct_mcp_tools(session, user_id=user_id),
+            user_id=user_id,
+            workspace_id=workspace_id,
+            thread_id=thread_id,
+            run_id=run_id,
+            turn_index=run_handle.turn_index,
+        )
 
         ptc_graph = await build_ptc_graph_with_session(
             session=session,
@@ -562,6 +551,7 @@ async def astream_ptc_workflow(
             store=setup.store,
             on_signed_url=_set_cached_signed_url,
             direct_mcp=direct_mcp,
+            order_ledger=order_ledger,
         )
 
         _mark_phase("graph_build")

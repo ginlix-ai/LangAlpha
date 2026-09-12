@@ -1,5 +1,5 @@
 import { chartInstanceKey, planChartAnnotationCards } from '../chartAnnotationGrouping';
-import { INLINE_ARTIFACT_TOOLS } from '../charts/InlineArtifactCards';
+import { INLINE_ARTIFACT_TOOLS, isInlineArtifactReady } from '../charts/InlineArtifactCards';
 import { normalizeSubagentText } from './normalizeSubagentText';
 import { MIN_LIVE_EXPOSURE_MS } from './liveZoneTiming';
 import type { ContentSegmentRecord, ToolCallProcessRecord } from './types';
@@ -255,7 +255,7 @@ export function buildRenderBlocks(
           const age = createdAt ? now - createdAt : Infinity;
 
           const artifactResult = (proc.toolCallResult as Record<string, unknown> | undefined)?.artifact as Record<string, unknown> | undefined;
-          const isArtifactReady = INLINE_ARTIFACT_TOOLS.has(proc.toolName as string) && artifactResult;
+          const isArtifactReady = isInlineArtifactReady(proc.toolName as string, artifactResult);
 
           const isAlwaysLive = ALWAYS_LIVE_TOOLS.has(proc.toolName as string);
 
