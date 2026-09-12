@@ -32,7 +32,7 @@ This document provides step-by-step instructions for executing Task 1 (Company R
   - Company website and blog
   - Press releases and media coverage
   - LinkedIn for management bios
-  - Crunchbase or PitchBook for funding history
+  - Funding databases and press releases for funding history
 
 ### Secondary Sources (Industry/Competitive)
 - Competitor websites and SEC filings

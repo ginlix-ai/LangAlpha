@@ -1,317 +1,193 @@
 ---
 name: dcf-model
-description: "DCF valuation: free cash flow projections, WACC, terminal value, sensitivity analysis"
-license: "Derived from anthropics/financial-services-plugins (Apache-2.0). Modified for langalpha."
+description: "Build a DCF valuation in Excel: FCF projections, WACC, terminal value, scenarios, sensitivity grids, reverse DCF. Triggers on build a DCF, what is it worth, intrinsic value, fair value, price target from cash flows."
 ---
 
 # DCF Model Builder
 
-## Overview
+Builds an institutional-quality DCF as a live Excel workbook: four sheets, three scenarios, three sensitivity grids, and a valuation a portfolio manager can argue with. A model that computes correctly and says nothing about the stock is half the job, so the construction rules and the judgement rules below are one document.
 
-This skill creates institutional-quality DCF models for equity valuation following investment banking standards. Each analysis produces a detailed Excel model (with sensitivity analysis included at the bottom of the DCF sheet).
+Evidence labels, source tiers, staleness, the readiness posture and the intake limits: `.agents/skills/research-conventions/SKILL.md`, read before the first figure enters the workbook.
+
+- `recalc.py` reports errors, the case selector does not move the model, or the valuation looks wrong: read `.agents/skills/dcf-model/TROUBLESHOOTING.md`.
+- The revenue build needs the drivers of a particular sector, or the company is a bank, an insurer, a miner or a REIT: read `.agents/skills/dcf-model/references/sector-drivers.md`.
 
 ## Tools
 
 - **fundamentals MCP**: `get_financial_statements`, `get_financial_ratios`, `get_growth_metrics`, `get_historical_valuation`
 - **macro MCP**: `get_treasury_rates`, `get_market_risk_premium`
-- **`get_company_overview` tool**: analyst consensus, growth estimates, company profile
-- User-provided data and web search/fetch as supplements
+- **`get_company_overview`**: share price, beta, diluted shares, analyst consensus, growth estimates
+- Web search and fetch, and user-provided data, as supplements
 
-## Critical Constraints - Read These First
+## Step 0: Before you build
 
-These constraints apply throughout all DCF model building. Review before starting:
+The question budget, the shape of each question and what to do when no answer comes back are in `.agents/skills/research-conventions/references/intake.md`.
 
-**Sensitivity Tables:**
-- Populate ALL 75 cells (3 tables × 25 cells) with full DCF recalculation formulas
-- Use openpyxl loops to write formulas programmatically
-- NO placeholder text, NO linear approximations, NO manual steps required
-- Each cell must recalculate full DCF for that assumption combination
+The forks that usually matter here: whether the user has an existing model to extend rather than a new build, the horizon, and whether the base case should follow guidance, consensus, or your own view.
 
-**Cell Comments:**
-- Add cell comments AS each hardcoded value is created
-- Format: "Source: [System/Document], [Date], [Reference], [URL if applicable]"
-- Every blue input must have a comment before moving to next section
-- Do not defer to end or write "TODO: add source"
+**Three anchors are required, not optional.** A DCF without them produces a number nobody can act on:
 
-**Model Layout Planning:**
-- Define ALL section row positions BEFORE writing any formulas
-- Write ALL headers and labels first
-- Write ALL section dividers and blank rows second
-- THEN write formulas using the locked row positions
-- Test formulas immediately after creation
+| Anchor | Why the model cannot proceed without it |
+|---|---|
+| Current share price, with its as-of | The output is a fair value; without spot there is no implied return and no stance |
+| Diluted share count | Equity value divided by the wrong share count is wrong by exactly the dilution |
+| Net debt, with the balance-sheet date | It is the whole bridge from enterprise value to equity value |
 
-**Formula Recalculation:**
-- Run `python .agents/skills/xlsx/scripts/recalc.py model.xlsx 30` before delivery
-- Fix ALL errors until status is "success"
-- Zero formula errors required (#REF!, #DIV/0!, #VALUE!, etc.)
+A required input that cannot be sourced is written into the cell as required-and-absent with a comment saying what was searched, never silently defaulted, and the readiness posture is re-read from the table in `.agents/skills/research-conventions/SKILL.md` against that input state. Say it in the delivery message too, not only in the workbook.
 
-**Scenario Blocks:**
-- Create separate blocks for Bear/Base/Bull cases
-- Show assumptions horizontally across projection years within each block
-- Use IF formulas: `=IF($B$6=1,[Bear cell],IF($B$6=2,[Base cell],[Bull cell]))`
-- Verify formulas reference correct scenario block cells
+**Done when** the three anchors are in hand with as-of dates, or the missing one is labelled and the posture is set, and any question asked has either an answer or a disclosed default.
 
-## DCF Process Workflow
+## Build Workflow
 
-**Execution pattern**: build the DCF as a saved Python script (e.g., `work/<task_name>/build_dcf.py`) rather than inline `ExecuteCode`. Model building is iterative — you will debug formulas, tweak assumptions, and rerun. Writing to a file + running via `Bash` lets you `Edit` specific sections and rerun cheaply; resubmitting the whole openpyxl block inline on every iteration is wasteful.
+**Execution pattern**: build the DCF as a saved Python script (for example `work/<task_name>/build_dcf.py`) rather than inline `ExecuteCode`. Model building is iterative: you will debug formulas, tweak assumptions and rerun, and a saved script lets you `Edit` one section and rerun cheaply. Read `references/workbook-patterns.md` before writing the build script; it carries the row layouts and formula patterns. For all formatting, number formats and colour standards, follow `.agents/skills/xlsx/SKILL.md`.
+
+**Formulas, not hardcoded values.** Every projection, margin, discount factor, present value and sensitivity cell is a live Excel formula. A number computed in Python and written into the cell is a defect even when the value is right today. With openpyxl, `ws["D20"] = "=D19*(1+$E$10)"` is correct and `ws["D20"] = 12500.0` is not. The only typed numbers a DCF should hold are historical actuals, the assumption drivers in the scenario blocks, current market data (share price, diluted shares, debt, cash), and a solved value under the one exception `.agents/skills/xlsx/SKILL.md` allows (the reverse DCF driver, Step 10). If you catch yourself computing a value in Python and writing the result, stop and write the formula instead. The model has to move when the user changes an assumption, and a hardcode breaks every downstream tie-out silently, because the check still evaluates and still reads OK.
+
+**Comment as you build.** Every blue input carries its provenance comment as the value is created, with the real source in it, before you move to the next section. The format and the examples are in `references/workbook-patterns.md`.
+
+**Present each stage as you finish it.**
+
+A PTC turn is not chat-interactive at every step, so this is not a blocking question: present the block, say what you are about to build next, and carry on unless the user objects. The point is that a wrong margin assumption surfaces while it is cheap to fix, not after 75 sensitivity formulas have been wired to it.
+
+1. **Inputs** - revenue, margins, diluted shares, net debt, beta, risk-free rate, each with its source
+2. **Projections** - the projected top line and margin build, with the implied growth rates
+3. **FCF schedule** - NOPAT through unlevered free cash flow for every projection year
+4. **WACC** - the CAPM inputs, the capital structure weights, and the resulting rate
+5. **Equity bridge** - enterprise value, net debt, equity value, implied price, implied return against spot
+6. **Sensitivities** - the three grids
+
+Do not build the model end to end and present it complete.
 
 ### Step 1: Data Retrieval and Validation
 
-Fetch data from MCP servers, user provided data, and the web.
+- **Financial statements**: fundamentals MCP `get_financial_statements(symbol, 'all', 'annual', 5)`
+- **Ratios and metrics**: `get_financial_ratios(symbol)`; **growth rates**: `get_growth_metrics(symbol)`
+- **Historical valuation**: `get_historical_valuation(symbol)`, which is also where the exit-multiple back-check gets its comparison
+- **Risk-free rate**: macro MCP `get_treasury_rates()`, the 10Y
+- **Equity risk premium**: macro MCP `get_market_risk_premium()`
+- **Consensus, price, beta, shares**: `get_company_overview`
+- **Web search and fetch**: current price, beta, debt and cash when a tool does not carry them
 
-**Data Sources:**
-- **Financial statements** (income/balance/cash flow): Use fundamentals MCP: `get_financial_statements(symbol, 'all', 'annual', 5)`
-- **Ratios and metrics**: Use fundamentals MCP: `get_financial_ratios(symbol)`
-- **Growth rates**: Use fundamentals MCP: `get_growth_metrics(symbol)`
-- **Risk-free rate / treasury yields**: Use macro MCP: `get_treasury_rates()` -- use the 10Y rate
-- **Market risk premium**: Use macro MCP: `get_market_risk_premium()`
-- **Analyst growth estimates / consensus**: Use `get_company_overview` tool -- includes analyst consensus and growth estimates
-- **Historical valuation data**: Use fundamentals MCP: `get_historical_valuation(symbol)`
-- **User-provided data**: Historical financials from their research
-- **Web search/fetch**: Current prices, beta, debt and cash when needed
+Validate before building: net debt against net cash, diluted shares against recent buybacks or issuance, historical margins against the business model, growth against sector norms, tax rate in a defensible range.
 
-**Validation Checklist:**
-- Verify net debt vs net cash (critical for valuation)
-- Confirm diluted shares outstanding (check for recent buybacks/issuances)
-- Validate historical margins are consistent with business model
-- Cross-check revenue growth rates with industry benchmarks
-- Verify tax rate is reasonable (typically 21-28%)
+**Done when** every input the model needs exists with a source and an as-of, and the validation list above has been walked.
 
 ### Step 2: Historical Analysis (3-5 years)
 
-Analyze and document:
-- **Revenue growth trends**: Calculate CAGR, identify drivers
-- **Margin progression**: Track gross margin, EBIT margin, FCF margin
-- **Capital intensity**: D&A and CapEx as % of revenue
-- **Working capital efficiency**: NWC changes as % of revenue growth
-- **Return metrics**: ROIC, ROE trends
+Document revenue growth and its CAGR, margin progression (gross, EBIT, FCF), capital intensity (D&A and capex as a percent of revenue), working-capital efficiency (NWC change against revenue growth), and return metrics (ROIC, ROE).
 
-Create summary tables showing:
 ```
 Historical Metrics (LTM):
-Revenue: $X million
-Revenue growth: X% CAGR
-Gross margin: X%
-EBIT margin: X%
-D&A % of revenue: X%
-CapEx % of revenue: X%
-FCF margin: X%
+Revenue: $X million | Revenue growth: X% CAGR | Gross margin: X%
+EBIT margin: X% | D&A % of revenue: X% | CapEx % of revenue: X% | FCF margin: X%
 ```
+
+**Done when** each forecast driver you are about to set has a historical range beside it.
 
 ### Step 3: Build Revenue Projections
 
-**Methodology:**
-1. Start with latest actual revenue (LTM or most recent fiscal year)
-2. Apply growth rates for each projection year
-3. Show both dollar amounts AND calculated growth %
+Start from the latest actual, apply a growth rate per year, and show both the dollar amount and the calculated growth percent. `Revenue(N) = Revenue(N-1) * (1 + growth)`, `Growth(N) = Revenue(N)/Revenue(N-1) - 1`.
 
-**Growth Rate Framework:**
-- Year 1-2: Higher growth reflecting near-term visibility
-- Year 3-4: Gradual moderation toward industry average
-- Year 5+: Approaching terminal growth rate
+Shape the path rather than typing a flat number: near-term growth reflects visibility, the middle years moderate toward the industry rate, and the final year approaches terminal growth. Where the sector has real drivers, build revenue over them instead of over a percentage: `.agents/skills/dcf-model/references/sector-drivers.md`.
 
-**Formula structure:**
-- Revenue(Year N) = Revenue(Year N-1) × (1 + Growth Rate)
-- Growth %(Year N) = Revenue(Year N) / Revenue(Year N-1) - 1
+Three scenarios, each a described world rather than three numbers:
 
-**Three-scenario approach:**
 ```
-Bear Case: Conservative growth (e.g., 8-12%)
-Base Case: Most likely scenario (e.g., 12-16%)
-Bull Case: Optimistic growth (e.g., 16-20%)
+Bear: conservative growth, margin compression or none, higher WACC, lower terminal growth, higher capex
+Base: guidance or consensus growth, moderate operating leverage, market-implied WACC, GDP-aligned terminal growth
+Bull: high-end growth, meaningful margin expansion, lower WACC, higher terminal growth, lighter capex
 ```
+
+**Done when** every projection cell is a formula over the consolidation column, and the implied growth row prints beside the revenue row.
 
 ### Step 4: Operating Expense Modeling
 
-**Fixed/Variable Cost Analysis:**
+Model operating leverage rather than a fixed margin: percentages decline as revenue scales, and each of S&M, R&D and G&A keeps its own line. Where `.agents/skills/dcf-model/references/sector-drivers.md` names a driver for the sector, that driver governs the line instead: software S&M runs against new bookings, biopharma R&D is a commitment rather than a percentage. The percentage-of-revenue rule below is the default for every line the sector reference does not claim.
 
-Operating expenses should model realistic operating leverage:
-- **Sales & Marketing**: Typically 15-40% of revenue depending on business model
-- **Research & Development**: Typically 10-30% for technology companies
-- **General & Administrative**: Typically 8-15% of revenue, shows leverage as company scales
+- **A percentage-driven opex line is based on revenue, not gross profit.** Operating expenses scale with the top line
+- `EBIT = Gross Profit - Total OpEx`
+- State the margin path as an argument: current gross margin to target gross margin, current EBIT margin to target, each with the reason (scale, mix, pricing, a named efficiency programme)
 
-**Key principles:**
-- ALL percentages based on REVENUE, not gross profit
-- Model operating leverage: % should decline as revenue scales
-- Maintain separate line items for S&M, R&D, G&A
-- Calculate EBIT = Gross Profit - Total OpEx
-
-**Margin expansion framework:**
-```
-Current State → Target State (Year 5)
-Gross Margin: X% → Y% (justify based on scale, efficiency)
-EBIT Margin: X% → Y% (result of revenue growth + opex leverage)
-```
+**Done when** the EBIT margin path has a stated reason per period, every line the sector reference claims runs off its named driver, and no opex row references gross profit.
 
 ### Step 5: Free Cash Flow Calculation
 
-**Build FCF in proper sequence:**
-
 ```
 EBIT
-(-) Taxes (EBIT × Tax Rate)
-= NOPAT (Net Operating Profit After Tax)
-(+) D&A (non-cash expense, % of revenue)
-(-) CapEx (% of revenue, typically 4-8%)
-(-) Δ NWC (change in working capital)
+(-) Taxes (EBIT x tax rate)
+= NOPAT
+(+) D&A (non-cash, % of revenue)
+(-) CapEx (% of revenue)
+(-) Change in NWC
 = Unlevered Free Cash Flow
 ```
 
-**Working Capital Modeling:**
-- Calculate as % of revenue change (delta revenue)
-- Typical range: -2% to +2% of revenue change
-- Negative number = source of cash (working capital release)
-- Positive number = use of cash (working capital build)
+State which free cash flow definition the model runs on and hold it: an unlevered stream discounts at WACC to enterprise value, a levered stream discounts at cost of equity to equity value. Mixing them is the most expensive error in this file. Audit for the three contaminations: interest expense inside an unlevered stream, the tax shield counted both in the cash flow and in the WACC, and non-operating income left in EBIT.
 
-**Maintenance vs Growth CapEx:**
-- Maintenance CapEx: Sustains current operations (~2-3% revenue)
-- Growth CapEx: Supports expansion (additional 2-5% revenue)
-- Total CapEx should align with company's growth strategy
+- **Working capital**: computed on the change in revenue, not the level. Negative is a source of cash, positive a use
+- **Maintenance against growth capex**: name the split, because the terminal year should carry maintenance rather than the growth ramp
 
-### Step 6: Cost of Capital (WACC) Research
+**Done when** the FCF row is a formula over NOPAT, D&A, capex and the NWC change, and the cash flow definition is written on the sheet.
 
-**CAPM Methodology for Cost of Equity:**
+### Step 6: Cost of Capital (WACC)
 
 ```
-Cost of Equity = Risk-Free Rate + Beta × Equity Risk Premium
-
-Where:
-- Risk-Free Rate = Current 10-Year Treasury Yield (use macro MCP: `get_treasury_rates()`)
-- Beta = 5-year monthly stock beta vs market index
-- Equity Risk Premium = use macro MCP: `get_market_risk_premium()` (typically 5.0-6.0%)
-```
-
-**Cost of Debt Calculation:**
-
-```
-After-Tax Cost of Debt = Pre-Tax Cost of Debt × (1 - Tax Rate)
-
-Determine Pre-Tax Cost of Debt from:
-- Credit rating (if available)
-- Current yield on company bonds
-- Interest expense / Total Debt from financials
-```
-
-**Capital Structure Weights:**
-
-```
-Market Value Equity = Current Stock Price × Shares Outstanding
-Net Debt = Total Debt - Cash & Equivalents
+Cost of Equity = Risk-Free Rate + Beta x Equity Risk Premium
+After-Tax Cost of Debt = Pre-Tax Cost of Debt x (1 - Tax Rate)
+Market Value Equity = Price x Diluted Shares
+Net Debt = Total Debt - Cash
 Enterprise Value = Market Cap + Net Debt
-
-Equity Weight = Market Cap / Enterprise Value
-Debt Weight = Net Debt / Enterprise Value
-
-WACC = (Cost of Equity × Equity Weight) + (After-Tax Cost of Debt × Debt Weight)
+WACC = Cost of Equity x Equity Weight + After-Tax Cost of Debt x Debt Weight
 ```
 
-**Special Cases:**
-- **Net Cash Position**: If Cash > Debt, Net Debt is NEGATIVE
-  - Debt Weight may be negative
-  - WACC calculation adjusts accordingly
-- **No Debt**: WACC = Cost of Equity
+Pre-tax cost of debt comes from the credit rating, the yield on the company's own bonds, or interest expense over average total debt, in that order of preference.
 
-**Typical WACC Ranges:**
-- Large Cap, Stable: 7-9%
-- Growth Companies: 9-12%
-- High Growth/Risk: 12-15%
+**Basis discipline.** Every WACC component is a defensible choice, and the provenance comment on its blue input is where the defence lives. Each comment records:
 
-### Step 7: Discount Rate Application (5-10 Year Forecast)
+| Component | The comment states |
+|---|---|
+| Risk-free rate | the tenor, the source, and the date |
+| Beta | the source, the observation window and frequency, and whether it is levered or relevered |
+| Equity risk premium | the source and its vintage |
+| Cost of debt | which of the three bases above it came from |
+| Capital structure | target or current weights, and market or book values |
 
-**Mid-Year Convention:**
-- Cash flows assumed to occur mid-year
-- Discount Period: 0.5, 1.5, 2.5, 3.5, 4.5, etc.
-- Discount Factor = 1 / (1 + WACC)^Period
+Market values, not book, for the weights. A comment reading "9.2%" is not provenance; a comment reading which tenor, which window and which date is what lets a reviewer disagree with a number rather than merely distrust it.
 
-**Present Value Calculation:**
-```
-For each projection year:
-PV of FCF = Unlevered FCF × Discount Factor
+**Special cases**: with cash above debt, net debt is negative and the debt weight goes with it. With no debt, WACC is the cost of equity.
 
-Example (Year 1):
-FCF = $1,000
-WACC = 10%
-Period = 0.5
-Discount Factor = 1 / (1.10)^0.5 = 0.9535
-PV = $1,000 × 0.9535 = $954
-```
+**Done when** every WACC input carries a basis comment in the form above and the WACC cell is a formula over them.
 
-**Projection Period Selection:**
-- **5 years**: Standard for most analyses
-- **7-10 years**: High growth companies with longer runway
-- **3 years**: Mature, stable businesses
+### Step 7: Discount Rate Application
 
-### Step 8: Terminal Value Calculation
+Mid-year convention: periods run 0.5, 1.5, 2.5 and so on, and `Discount Factor = 1 / (1 + WACC)^Period`. `PV of FCF = Unlevered FCF x Discount Factor`.
 
-**Perpetuity Growth Method (Preferred):**
+Horizon: five years is standard, seven to ten for a company still converging on a defensible margin, three for a mature business. The explicit period should run until the drivers are stable, because everything after it is the terminal value.
+
+**Done when** the discount-factor row is a formula over the period row and the WACC cell, and every period is present.
+
+### Step 8: Terminal Value
+
+**Perpetuity growth (preferred):**
 
 ```
-Terminal FCF = Final Year FCF × (1 + Terminal Growth Rate)
-Terminal Value = Terminal FCF / (WACC - Terminal Growth Rate)
-
-Critical Constraint: Terminal Growth < WACC (otherwise infinite value)
-```
-
-**Terminal Growth Rate Selection:**
-- Conservative: 2.0-2.5% (GDP growth rate)
-- Moderate: 2.5-3.5%
-- Aggressive: 3.5-5.0% (only for market leaders)
-
-**Do not exceed**: Risk-free rate or long-term GDP growth
-
-**Exit Multiple Method (Alternative):**
-```
-Terminal Value = Final Year EBITDA × Exit Multiple
-
-Where Exit Multiple comes from:
-- Industry comparable trading multiples
-- Precedent transaction multiples
-- Typical range: 8-15x EBITDA
-```
-
-**Present Value of Terminal Value:**
-```
+Terminal FCF = Final Year FCF x (1 + g)
+Terminal Value = Terminal FCF / (WACC - g)
 PV of Terminal Value = Terminal Value / (1 + WACC)^Final Period
-
-Where Final Period accounts for timing:
-5-year model with mid-year convention: Period = 4.5
 ```
 
-**Terminal Value Sanity Check:**
-- Should represent 50-70% of Enterprise Value
-- If >75%, model may be over-reliant on terminal assumptions
-- If <40%, check if terminal assumptions are too conservative
+`g` below the risk-free rate and below long-term nominal GDP, and always below WACC or the value is infinite. Conservative is 2.0 to 2.5 percent, moderate 2.5 to 3.5, and anything above that is a claim that the company outgrows the economy forever, which needs a sentence defending it.
+
+**Exit multiple (alternative):** `Terminal Value = Final Year EBITDA x Exit Multiple`, with the multiple taken from where the subject and its peers actually trade.
+
+**The implied-exit-multiple back-check is mandatory, whichever method built the terminal value.** Divide the terminal value by the terminal-year EBITDA and compare the result against the subject's own trading history from `get_historical_valuation` and against the peer set. A perpetuity growth rate that implies an exit multiple far from where the stock has ever traded is the tell that the terminal assumptions are wrong, and it is a finding about the model rather than a footnote. Run it the other way too when the exit-multiple method was used: solve for the perpetuity growth rate that multiple implies, and check it is a rate a company could actually sustain.
+
+**Terminal value share of enterprise value** is a structural finding about horizon adequacy, not a formatting note. Around half to two thirds is normal. Above 80 percent, the model is a claim about the terminal year wearing a forecast, and the answer is a longer explicit period, not a different growth rate. Below about 40 percent, check the terminal assumptions are not too conservative to be credible.
+
+**Done when** both the implied exit multiple and the terminal share of EV are live cells on the sheet with Checks rows against them.
 
 ### Step 9: Enterprise to Equity Value Bridge
 
-**Valuation Summary Structure:**
-
-```
-(+) Sum of PV of Projected FCFs = $X million
-(+) PV of Terminal Value = $Y million
-= Enterprise Value = $Z million
-
-(-) Net Debt [or + Net Cash if negative] = $A million
-= Equity Value = $B million
-
-÷ Diluted Shares Outstanding = C million shares
-= Implied Price per Share = $XX.XX
-
-Current Stock Price = $YY.YY
-Implied Return = (Implied Price / Current Price) - 1 = XX%
-```
-
-**Critical Adjustments:**
-- **Net Debt = Total Debt - Cash & Equivalents**
-  - If positive: Subtract from EV (reduces equity value)
-  - If negative (Net Cash): Add to EV (increases equity value)
-- **Use Diluted Shares**: Includes options, RSUs, convertible securities
-- **Other adjustments** (if applicable):
-  - Minority interests
-  - Pension liabilities
-  - Operating lease obligations
-
-**Valuation Output Format:**
 ```csv
 Valuation Component,Amount ($M)
 PV Explicit FCFs,X.X
@@ -319,816 +195,131 @@ PV Terminal Value,Y.Y
 Enterprise Value,Z.Z
 (-) Net Debt,A.A
 Equity Value,B.B
-,,
-Shares Outstanding (M),C.C
+Diluted Shares (M),C.C
 Implied Price per Share,$XX.XX
-Current Share Price,$YY.YY
-Implied Upside/(Downside),+XX%
+Current Share Price (as of DATE),$YY.YY
+Implied Return,+XX%
 ```
 
-### Step 10: Sensitivity Analysis
+**Anchor to spot.** The current price and the implied return sit next to the fair value in the output block, both as-of stamped. Without them a fair value below spot reads as an unexplained number rather than as the sell case it is, and a reader cannot tell a 4 percent gap from a 40 percent one without arithmetic you should have done.
 
-Build **three sensitivity tables** at the bottom of the DCF sheet showing how valuation changes with different assumptions:
+Net debt is total debt less cash: positive subtracts from EV, negative (net cash) adds. Use diluted shares. Where they exist and matter, bridge the other claims too: minority interests, unfunded pension, and operating leases when they are not already in debt.
 
-1. **WACC vs Terminal Growth** - Shows enterprise value sensitivity to discount rate and perpetuity growth
-2. **Revenue Growth vs EBIT Margin** - Shows impact of top-line growth and operating leverage
-3. **Beta vs Risk-Free Rate** - Shows sensitivity to cost of equity components
+**Done when** the bridge is a formula chain from enterprise value to implied price, and the implied-return cell references the spot cell rather than a typed number.
 
-**Implementation**: These are simple 2D grids (NOT Excel's "Data Table" feature) with formulas in each cell. Each cell must contain a full DCF recalculation for that specific assumption combination. See Critical Constraints section for detailed requirements on populating all 75 cells programmatically using openpyxl.
+### Step 10: Scenarios and Sensitivities
 
-<correct_patterns>
+**Pick the grid from the decision, not from habit.** WACC against terminal growth answers "how much of this is the discount rate", which is often not the question:
 
-This section contains all the CORRECT patterns to follow when building DCF models.
+| The question | The grid |
+|---|---|
+| How much of the value is the discount rate and the terminal assumption | WACC against terminal growth |
+| Is the value in growth or in operating leverage | Revenue growth against EBIT margin |
+| How much rides on the cost-of-equity inputs | Beta against risk-free rate |
+| What does the market already require | Reverse DCF, below, rather than a grid |
+| Where does the case break | The mechanical bear case, below |
 
-### Scenario Block Selection Pattern - Follow This Approach
+Three grids stacked at the bottom of the DCF sheet is the default; swap one for the question actually being asked when it differs.
 
-**Assumptions are organized in separate blocks for each scenario:**
+**Grid construction.** Use odd dimensions, 5x5 as standard and 7x7 where the range matters, so the grid has a true centre cell. Build each axis as `[base - 2*step, base - step, base, base + step, base + 2*step]`, which puts the model's own assumption in the middle row header and the middle column header, where a reader can see which cell is the actual forecast. The centre cell therefore has to equal the model's headline output. That is the check that the grid is wired correctly, and the build script asserts it: after `recalc.py`, reopen the workbook with `data_only=True`, read the centre of every grid against the output that grid varies, and fail the build if they differ. `.agents/skills/xlsx/SKILL.md` requires this assertion; do not skip it. Highlight the centre cell (bold, `BDD7EE` fill) so the base case is visually anchored. Every data cell in all three grids, 75 in total, holds a full DCF recalculation formula written by an openpyxl loop, so the grids work the moment the user opens the file.
 
-**CRITICAL STRUCTURE - Three rows per section header:**
+**Weak sensitivity designs.** Each of these produces a grid that looks like analysis and carries none:
 
-```csv
-BEAR CASE ASSUMPTIONS (section header, merge cells across)
-Assumption,FY1,FY2,FY3,FY4,FY5
-Revenue Growth (%),12%,10%,9%,8%,7%
-EBIT Margin (%),45%,44%,43%,42%,41%
+- **Dependent axes.** Beta against WACC, or revenue growth against revenue CAGR: one axis moves the other, so the corners are worlds that cannot exist
+- **Off-centre base.** The grid is built around something other than the model's own assumption, so the centre rule above cannot hold and the reader cannot see which cell is the actual forecast
+- **A range too narrow to inform.** Every cell rounds to the same story; widen the step until the corners are genuinely different cases
+- **Sensitising a non-driver.** The grid moves the output by a rounding error while the real driver sits fixed. If the corner cells differ by less than a few percent, sensitise something else
+- **A haircut bear case.** A percentage cut to the base target is not a scenario, because nothing in the business had to happen for it
 
-BASE CASE ASSUMPTIONS (section header, merge cells across)
-Assumption,FY1,FY2,FY3,FY4,FY5
-Revenue Growth (%),16%,14%,12%,10%,9%
-EBIT Margin (%),48%,49%,50%,51%,52%
+**The bear case is mechanical.** It is driven by a stated change to a driver, with the arithmetic shown: demand falls to this level, or the gross margin resets to that one, or the exit multiple derates to where the stock traded in the last downturn. The case then names what breaks, through which line item, to what number. Under the bear case, check that liquidity, covenants and maturities still work rather than only reporting a lower target: a company that cannot fund the bear case has a different downside from one that can.
 
-BULL CASE ASSUMPTIONS (section header, merge cells across)
-Assumption,FY1,FY2,FY3,FY4,FY5
-Revenue Growth (%),20%,18%,15%,13%,11%
-EBIT Margin (%),50%,51%,52%,53%,54%
-```
+**Each case records where it came from**: the model, a source, the user, your own judgement, or purely illustrative, with an as-of. A bull case taken from management's own targets is a different object from one you built.
 
-**Each scenario block MUST have a column header row** showing the projection years (FY2025E, FY2026E, etc.) immediately below the section title. Without this, users cannot tell which assumption value corresponds to which year.
+**Probabilities complete or nothing is weighted.** A probability-weighted fair value is published only when the three cases satisfy the completeness rule in `.agents/skills/research-conventions/references/judgment.md`; otherwise the cases ship unweighted and labelled an illustrative skew, and no weighted fair value appears in the model or the message.
 
-**How to reference assumptions - Create a consolidation column:**
-1. Case selector cell (e.g., B6) contains 1=Bear, 2=Base, or 3=Bull
-2. Create a consolidation column with INDEX or OFFSET formulas to pull from the correct scenario block
-3. Projection formulas reference the consolidation column (clean cell references)
-4. Each scenario block contains full set of DCF assumptions across projection years
+#### Reverse DCF
 
-**Recommended consolidation column pattern (using INDEX):**
-`=INDEX(B10:D10, 1, $B$6)`
+Solve for what the current price already embeds, and present it beside your forecast. It converts "my model says X" into "the market is underwriting Y, and here is why I disagree", which is the only form of a valuation that is arguable.
 
-**NOT this - scattered IF statements throughout:**
-`=IF($B$6=1,[Bear block cell],IF($B$6=2,[Base block cell],[Bull block cell]))`
+Build it as a small block on the DCF sheet:
 
-The consolidation column approach centralizes logic and makes the model easier to audit.
+1. Copy the driver most of the value hangs on, usually the revenue CAGR over the explicit period or the terminal EBIT margin, into a blue input cell of its own, labelled `Solved market-implied <driver>`. A driver with a direct algebraic inverse (a single-stage growth or margin) stays a formula; only a driver that needs root-finding earns the solved cell
+2. Wire a parallel valuation chain off that cell through to an implied price of its own, and leave it live. Compact is fine: re-use the forecast rows and recompute only the cells the solved driver changes. The chain stays separate from the forward valuation, so the residual row in step 5 keeps testing the solved value rather than reading back the forward price
+3. In the build script, bisect on that cell until the implied price equals the spot price to within a cent, and write the solved value in as the blue input under the xlsx skill's solved-value exception: a `Solved:` comment naming the target cell and the re-solve command. Everything downstream stays a live formula, so a reader can nudge the solved driver and watch the price move; a nudged value is a trial value until the residual row reads OK again
+4. Link the solved driver and your own forecast for the same driver into two cells side by side with the gap as a formula between them, and state beside them that the implied driver holds every other assumption fixed
+5. Add the residual row on `Checks`: the reverse block's implied price minus the spot price cell, column C testing within one cent, so the row fails as soon as spot or any other input moves and the solved value no longer fits
 
-### Correct Revenue Projection Pattern
+The output sentence is the point: the price today requires this growth rate or this margin, our forecast is that one, and the difference is the position.
 
-**Create a consolidation column with INDEX formulas, then reference it in projections:**
+**Done when** the three grids are populated with full recalculation formulas and their centre cells assert, the bear case names a driver and a broken line item, and the reverse block ties to spot.
 
-**Step 1 - Consolidation column for FY1 growth:**
-`=INDEX([Bear FY1 growth]:[Bull FY1 growth], 1, $B$6)`
+## Valuation Judgement
 
-**Step 2 - Revenue projection references the consolidation column:**
-`Revenue Year 1: =D29*(1+$E$10)`
+A model that computes is an arithmetic exercise. It becomes a valuation when it answers these seven, which are the DCF rendering of the seven questions in `.agents/skills/research-conventions/references/judgment.md`, in the delivery message and in the model's own summary block:
 
-Where:
-- D29 = Prior year revenue
-- $E$10 = Consolidation column cell for FY1 growth (contains INDEX formula)
-- $B$6 = Case selector (1=Bear, 2=Base, 3=Bull)
+1. **What is the market implying today?** From the reverse DCF, in the driver's own units
+2. **What do we disagree with, and on what evidence?** One driver, one reason
+3. **What has to happen for the fair value to be reached, and where does that path sit against consensus?** The specific path, not the growth rate, reconciled in the consensus bridge below
+4. **What breaks it?** The mechanical bear case, through a named line item, to a number
+5. **Which dated event converts the gap into price?** The catalyst, with its date and whether it is scheduled, likely or speculative
+6. **Which observation would make us wrong?** The reading, in the driver's own units, that retires the case, and when it prints
+7. **What does the number imply doing?** With the conditions that would change it
 
-**This approach is cleaner than embedding IF statements in every projection formula** and makes it much easier to audit which scenario assumptions are being used.
+**Consensus bridge.** Reconcile the model's next one or two years against the published consensus for the same periods, line by line, and state where and why they differ. Consensus is not a target to match, it is the estimate path the price is set against, so a model that quietly sits 20 percent below it without saying so is hiding its own thesis. Include the consensus vintage and the analyst count.
 
-### Correct FCF Formula Pattern
+**A range, not a point.** Deliver a valuation band with the drivers that move you across it and say which end you sit at and why. Precision is bounded by the evidence: a fair value quoted to the cent off an assumed terminal growth rate claims a confidence the inputs do not carry.
 
-**Use consolidation columns with INDEX formulas, then reference them in FCF calculations:**
+**The stance.** Close on what the number implies, in the closed action vocabulary and under the input gates in `.agents/skills/research-conventions/references/judgment.md`, with the conditions that would change it. A fair-value range with no stance leaves the reader to do the work the model was built for.
 
-**Consolidation column approach:**
-```csv
-Item,Formula,Reference
-D&A,=E29*$E$21,$E$21 = consolidation column for D&A %
-CapEx,=E29*$E$22,$E$22 = consolidation column for CapEx %
-Δ NWC,=(E29-D29)*$E$23,$E$23 = consolidation column for NWC %
-Unlevered FCF,=E57+E58-E60-E62,E57=NOPAT E58=D&A E60=CapEx E62=Δ NWC
-```
+**Done when** all seven questions are answered in the delivery, the consensus bridge names its vintage, and the stance carries the conditions that would change it.
 
-**Each consolidation column cell contains an INDEX formula** that pulls from the appropriate scenario block based on case selector. This keeps projection formulas clean and auditable.
+## Checks Sheet
 
-Before writing formulas, confirm scenario block row locations and set up consolidation columns.
+Every model workbook carries a `Checks` sheet. The four-column layout, the verdict formula, the roll-up and the read-back after recalculation are the sheet contract under *Financial Model Conventions* in `.agents/skills/xlsx/SKILL.md`. The rows a DCF has to carry:
 
-### Correct Cell Comment Format
+| Check | Column B holds | Verdict |
+|---|---|---|
+| Revenue build ties to the margin build | Projected revenue minus the revenue the margin rows are applied to | FAIL |
+| EBITDA equals revenue times margin | EBITDA minus revenue times the selected EBITDA margin | FAIL |
+| D&A ties | D&A minus revenue times the selected D&A percentage | FAIL |
+| Change in NWC ties | Change in NWC minus the revenue change times the selected NWC percentage | FAIL |
+| FCF formula integrity | Unlevered FCF minus (NOPAT + D&A - CapEx - change in NWC) | FAIL |
+| Discount factors positive | `=MIN(<discount factor row>)`; column C tests `>0` | FAIL |
+| Terminal value positive | The terminal value cell; column C tests `>0` | FAIL |
+| EV equals PV of FCF plus PV of TV | Enterprise value minus (sum of PV FCFs + PV of terminal value) | FAIL |
+| Equity bridge ties | Equity value minus (enterprise value - net debt) | FAIL |
+| Implied price equals equity value over shares | Implied price minus equity value divided by diluted shares | FAIL |
+| Implied return ties to spot | Implied return minus (implied price divided by the spot cell, less one) | FAIL |
+| WACC greater than terminal growth | WACC minus terminal growth; column C tests `>0` | FAIL |
+| Terminal value share of EV within band | PV of terminal value divided by enterprise value; column C tests `<0.80` | WARN |
+| Implied exit multiple computed | The implied exit multiple cell minus terminal value divided by terminal-year EBITDA | FAIL |
+| Reverse DCF ties to spot | The reverse block's implied price minus the spot price cell; column C tests within `0.01`. This is the residual row the solved driver's `Solved:` comment points at | FAIL |
+| Scenario blocks are distinct | `=SUMPRODUCT((<bear assumption block><><bull assumption block>)*1)`; column C tests `>0`. The `*1` form is the one every engine evaluates; `--(...)` returns 0 in IronCalc | FAIL |
+| Share price falls as WACC rises | Bottom-centre cell of the WACC grid minus its top-centre cell; column C tests `<0` | FAIL |
+| Share price rises as g rises | Right-centre cell of the WACC grid minus its left-centre cell; column C tests `>0` | FAIL |
+| Grid centre reproduces the headline | The grid's centre cell minus the output that grid varies, under the centre rule in Step 10: the implied share price for the WACC and exit-multiple grids, and whichever output the third grid varies. One row per grid, and the row `audit.py` `sensitivity_centre` reads to learn which output a grid designates | FAIL |
 
-**Every hardcoded value needs this format:**
+The build script writes this sheet **last**, once every other sheet exists and its row positions are locked, so the check formulas point at final addresses. Comments on blue inputs are `audit.py`'s job, under `provenance`, so no row here counts them. A FAIL blocks delivery: fix the model, not the check. A WARN either gets a fix or gets its reason in column D and one sentence in the delivery saying why the forecast is right and the band is not.
 
-"Source: [System/Document], [Date], [Reference], [URL if applicable]"
-
-**Examples:**
-```csv
-Item,Source Comment
-Stock price,Source: get_company_overview 2025-10-12 Close price
-Shares outstanding,Source: fundamentals MCP get_financial_statements FY2024
-Historical revenue,Source: fundamentals MCP get_financial_statements FY2024
-Beta,Source: get_company_overview 2025-10-12 5-year monthly beta
-Risk-free rate,Source: macro MCP get_treasury_rates 2025-10-12 10Y yield
-Consensus estimates,Source: get_company_overview analyst consensus
-```
-
-### Correct Assumption Table Structure
-
-**CRITICAL: Each scenario block requires THREE structural elements:**
-
-1. **Section header row** (merged cells): e.g., "BEAR CASE ASSUMPTIONS"
-2. **Column header row** showing years - THIS IS REQUIRED, DO NOT SKIP
-3. **Data rows** with assumption values
-
-**Structure:**
-```csv
-BEAR CASE ASSUMPTIONS (section header - merge across columns A:G)
-Assumption,FY1,FY2,FY3,FY4,FY5
-Revenue Growth (%),X%,X%,X%,X%,X%
-EBIT Margin (%),X%,X%,X%,X%,X%
-Terminal Growth,X%,,,,
-WACC,X%,,,,
-
-BASE CASE ASSUMPTIONS (section header - merge across columns A:G)
-Assumption,FY1,FY2,FY3,FY4,FY5
-Revenue Growth (%),X%,X%,X%,X%,X%
-EBIT Margin (%),X%,X%,X%,X%,X%
-Terminal Growth,X%,,,,
-WACC,X%,,,,
-
-BULL CASE ASSUMPTIONS (section header - merge across columns A:G)
-Assumption,FY1,FY2,FY3,FY4,FY5
-Revenue Growth (%),X%,X%,X%,X%,X%
-EBIT Margin (%),X%,X%,X%,X%,X%
-Terminal Growth,X%,,,,
-WACC,X%,,,,
-```
-
-**WITHOUT the column header row showing projection years (FY2025E, FY2026E, etc.), users cannot tell which assumption value corresponds to which year. This row is MANDATORY.**
-
-**Then create a consolidation column** (typically the next column to the right) that uses INDEX formulas to pull from the selected scenario block based on the case selector. This consolidation column is what your projection formulas reference.
-
-### Correct Row Planning Process
-
-**1. Write ALL headers and labels FIRST:**
-```csv
-Row,Content
-1,[Company Name] DCF Model
-2,Ticker | Date | Year End
-4,Case Selector
-7,KEY ASSUMPTIONS
-26,Assumption headers
-27-31,Growth assumptions
-...,...
-```
-
-**2. Write ALL section dividers and blank rows**
-
-**3. THEN write formulas using the locked row positions**
-
-**4. Test formulas immediately after creation**
-
-**Think of it like construction:**
-- Good: Pour foundation, then build walls (stable structure)
-- Bad: Build walls, then pour foundation (walls collapse)
-
-**Excel version:**
-- Good: Add headers, then write formulas (formulas stable)
-- Bad: Write formulas, then add headers (formulas break)
-
-### Correct Sensitivity Table Implementation
-
-**IMPORTANT**: These are NOT Excel's "Data Table" feature. These are simple grids where you write regular formulas using openpyxl. Yes, this means ~75 formulas total (3 tables × 25 cells each), but this is straightforward and required.
-
-**Programmatic Population with Formulas:**
-
-Each sensitivity table must be fully populated with formulas that recalculate the implied share price for each combination of assumptions. **Do not use Excel's Data Table feature** (it requires manual intervention and cannot be automated via openpyxl).
-
-**Implementation approach - CONCRETE EXAMPLE:**
-
-**Table Structure (5x5 grid):**
-```csv
-WACC vs Terminal Growth,2.0%,2.5%,3.0%,3.5%,4.0%
-8.0%,[B88 formula],[C88 formula],[D88 formula],[E88 formula],[F88 formula]
-9.0%,[B89 formula],[C89 formula],[D89 formula],[E89 formula],[F89 formula]
-...,...,...,...,...,...
-```
-
-**Formula Pattern - Cell B88 (WACC=8.0%, Terminal Growth=2.0%):**
-
-The formula in B88 should recalculate the implied price using:
-- WACC from row header: `$A88` (8.0%)
-- Terminal Growth from column header: `B$87` (2.0%)
-
-**Recommended approach:** Reference the main DCF calculation but substitute these values.
-
-**Example formula structure:**
-`=([SUM of PV FCFs using $A88 as discount rate] + [Terminal Value using B$87 as growth rate and $A88 as WACC] - [Net Debt]) / [Shares]`
-
-**CRITICAL - Write a formula for EVERY cell in the 5x5 grid (25 cells per table, 75 cells total).** Use openpyxl to write these formulas programmatically in a loop. Do NOT skip this step or leave placeholder text.
-
-**Python implementation pattern:**
-```python
-# Pseudocode for populating sensitivity table
-for row_idx, wacc_value in enumerate(wacc_range):
-    for col_idx, term_growth_value in enumerate(term_growth_range):
-        # Build formula that uses wacc_value and term_growth_value
-        formula = f"=<DCF recalc using {wacc_value} and {term_growth_value}>"
-        ws.cell(row=start_row+row_idx, column=start_col+col_idx).value = formula
-```
-
-**The sensitivity tables must work immediately when the model is opened, with no manual steps required from the user.**
-
-</correct_patterns>
-
-<common_mistakes>
-
-This section contains all the WRONG patterns to avoid when building DCF models.
-
-### WRONG: Simplified Sensitivity Table Approximations or Placeholder Text
-
-**Don't use linear approximations:**
-
-```
-// WRONG - Linear approximation
-B97: =B88*(1+(0.096-0.116))    // Assumes linear relationship
-
-// WRONG - Division shortcut
-B105: =B88/(1+(E48-0.07))      // Doesn't recalculate full DCF
-```
-
-**Don't leave placeholder text:**
-```
-// WRONG - Placeholder note
-"Note: Use Excel Data Table feature (Data → What-If Analysis → Data Table) to populate sensitivity tables."
-
-// WRONG - Empty cells
-[leaving cells blank because "this is complex"]
-```
-
-**Don't confuse terminology:**
-- ❌ "Sensitivity tables need Excel's Data Table feature" (NO - that's a specific Excel tool we can't use)
-- ✅ "Sensitivity tables are simple grids with formulas in each cell" (YES - this is what we build)
-
-**Why these shortcuts are wrong:**
-- Linear approximation formulas don't actually recalculate the DCF - they just apply simple math adjustments
-- The relationships are not linear, so the results will be inaccurate
-- Placeholder text requires manual user intervention
-- Model is not immediately usable when delivered
-- Not professional or client-ready
-- Empty cells = incomplete deliverable
-
-**Common rationalization to REJECT:**
-"Writing 75+ formulas feels complex, so I'll leave a note for the user to complete it manually."
-
-**Reality:** Writing 75 formulas is straightforward when you use a loop in Python with openpyxl. Each formula follows the same pattern - just substitute the row/column values. This is a required part of the deliverable.
-
-**Instead:** Populate every sensitivity cell with formulas that recalculate the full DCF for that specific combination of assumptions
-
-### WRONG: Missing Cell Comments
-
-**Don't do this:**
-- Create all hardcoded inputs without comments
-- Think "I'll add them later"
-- Write "TODO: add source"
-- Leave blue inputs without documentation
-
-**Why it's wrong:**
-- Can't verify where data came from
-- Fails xlsx skill requirements
-- Not audit-ready
-- Wastes time fixing later
-
-**Instead:** Add cell comment AS EACH hardcoded value is created
-
-### WRONG: Formula Row References Off
-
-**Symptom:**
-The FCF section references wrong assumption rows:
-`D&A:  =E29*$E$34    // Should be $E$21, but referencing wrong row`
-`CapEx: =E29*$E$41   // Should be $E$22, but row shifted`
-
-**Why this happens:**
-1. Formulas written first
-2. Then headers inserted
-3. All row references shifted
-4. Now formulas point to wrong cells → #REF! errors
-
-**Instead:** Lock row layout FIRST, then write formulas
-
-### WRONG: Single Row for Each Assumption Across Scenarios
-
-**Don't structure assumptions like this:**
-```csv
-Assumption,Bear,Base,Bull
-Revenue Growth FY1,10%,13%,16%
-Revenue Growth FY2,9%,12%,15%
-```
-This vertical layout makes it hard to see the progression across years within each scenario.
-
-**Why it's wrong:**
-- Makes it difficult to see assumptions evolving across years within each scenario
-- Harder to compare scenario assumptions across full projection period
-- Less intuitive for reviewing scenario logic
-
-**Instead:**
-- Create separate blocks for each scenario (Bear, Base, Bull)
-- Within each block, show assumptions horizontally across projection years
-- This makes each scenario's assumptions easier to review as a cohesive set
-
-### WRONG: No Borders
-
-**Don't deliver a model without borders:**
-- No section delineation
-- All cells blend together
-- Hard to read and unprofessional
-
-**Why it's wrong:**
-- Not client-ready
-- Difficult to navigate
-- Looks amateur
-
-**Instead:** Add borders around all major sections
-
-### WRONG: Wrong Font Colors or No Font Color Distinction
-
-**Don't do this:**
-- All text is black
-- Only use fill colors (no font color changes)
-- Mix up which cells are blue vs black
-
-**Why it's wrong:**
-- Can't distinguish inputs from formulas
-- Auditing becomes impossible
-- Violates xlsx skill requirements
-
-**Instead:** Blue text for ALL hardcoded inputs, black text for ALL formulas, green for sheet links
-
-### WRONG: Operating Expenses Based on Gross Profit
-
-**Don't do this:**
-`S&M: =E33*0.15    // E33 = Gross Profit (WRONG)`
-
-**Why it's wrong:**
-- Operating expenses scale with revenue, not gross profit
-- Produces unrealistic margin progression
-- Not how businesses actually operate
-
-**Instead:**
-`S&M: =E29*0.15    // E29 = Revenue (CORRECT)`
-
-### TOP 5 ERRORS SUMMARY
-
-1. **Formula row references off** → Define ALL row positions BEFORE writing formulas
-2. **Missing cell comments** → Add comments AS cells are created, not at end
-3. **Simplified sensitivity tables** → Populate all cells with full DCF recalc formulas, not approximations
-4. **Scenario block references wrong** → Ensure IF formulas pull from correct Bear/Base/Bull blocks
-5. **No borders** → Add professional section borders for client-ready appearance
-
-In addition, be aware of these errors:
-
-### WACC Calculation Errors
-- Mixing book and market values in capital structure
-- Using equity beta instead of asset/unlevered beta incorrectly
-- Wrong tax rate application to cost of debt
-- Incorrect risk-free rate (must use current 10Y Treasury)
-- Failure to adjust for net debt vs net cash position
-
-### Growth Assumption Flaws
-- Terminal growth > WACC (creates infinite value)
-- Projection growth rates inconsistent with historical performance
-- Ignoring industry growth constraints
-- Revenue growth not aligned with unit economics
-- Margin expansion without operational justification
-
-### Terminal Value Mistakes
-- Using wrong growth method (perpetuity vs exit multiple)
-- Terminal value >80% of enterprise value (suggests over-reliance)
-- Inconsistent terminal margins with steady state assumptions
-- Wrong discount period for terminal value
-
-### Cash Flow Projection Errors
-- Operating expenses based on gross profit instead of revenue
-- D&A/CapEx percentages misaligned with business model
-- Working capital changes not properly calculated
-- Tax rate inconsistency between years
-- NOPAT calculation errors
-
-**These errors are the most common. Re-read this section before starting any DCF build.**
-
-</common_mistakes>
-
-## Excel File Creation
-
-For all Excel formatting, number formats, and color standards, follow the guidelines in `.agents/skills/xlsx/SKILL.md`.
-
-After generating Excel, run recalculation: `python .agents/skills/xlsx/scripts/recalc.py model.xlsx 30`
-
-## Quality Rubric
-
-Every DCF model must maximize for:
-1. **Realistic revenue and margin assumptions** based on historical performance
-2. **Appropriate cost of capital calculation** with proper CAPM methodology
-3. **Comprehensive sensitivity analysis** showing valuation ranges
-4. **Clear terminal value calculation** with supporting rationale
-5. **Professional model structure** enabling scenario analysis
-6. **Transparent documentation** of all key assumptions
-
-## Input Requirements
-
-### Minimum Required Inputs
-1. **Company identifier**: Ticker symbol or company name
-2. **Growth assumptions**: Revenue growth rates for projection period (or "use consensus")
-3. **Optional parameters**:
-   - Projection period (default: 5 years)
-   - Scenario cases (Bear/Base/Bull growth and margin assumptions)
-   - Terminal growth rate (default: 2.5-3.0%)
-   - Specific WACC inputs if not using CAPM
-
-## Excel Model Structure
-
-### Sheet Architecture
-
-Create **two sheets**:
-
-1. **DCF** - Main valuation model with sensitivity analysis at bottom
-2. **WACC** - Cost of capital calculation
-
-**CRITICAL**: Sensitivity tables go at the BOTTOM of the DCF sheet (not on a separate sheet). This keeps all valuation outputs together.
-
-### Formula Recalculation (MANDATORY)
-
-After creating or modifying the Excel model, run recalculation:
-
-```bash
-python .agents/skills/xlsx/scripts/recalc.py [path_to_excel_file] [timeout_seconds]
-```
-
-Example:
-```bash
-python .agents/skills/xlsx/scripts/recalc.py $WORK_DIR/work/{task}/AAPL_DCF_Model.xlsx 30
-```
-
-**Fix all errors** and re-run until status is "success" before delivering the model. See `.agents/skills/xlsx/SKILL.md` for output format and error handling details.
-
-### Formatting Standards
-
-For all Excel formatting, number formats, and color standards, follow the guidelines in `.agents/skills/xlsx/SKILL.md`.
-
-After generating Excel, run recalculation: `python .agents/skills/xlsx/scripts/recalc.py model.xlsx 30`
-
-### DCF Sheet Detailed Structure
-
-**Section 1: Header**
-```csv
-Row,Content
-1,[Company Name] DCF Model
-2,Ticker: [XXX] | Date: [Date] | Year End: [FYE]
-3,Blank
-4,Case Selector Cell (1=Bear 2=Base 3=Bull)
-5,Case Name Display (formula: =IF([Selector]=1"Bear"IF([Selector]=2"Base""Bull")))
-```
-
-**Section 2: Market Data (NOT case dependent)**
-```csv
-Item,Value
-Current Stock Price,$XX.XX
-Shares Outstanding (M),XX.X
-Market Cap ($M),[Formula]
-Net Debt ($M),XXX [or Net Cash if negative]
-```
-
-**Section 3: DCF Scenario Assumptions**
-
-Create separate assumption blocks for each scenario (Bear, Base, Bull) with DCF-specific assumptions (Revenue Growth %, EBIT Margin %, Tax Rate %, D&A % of Revenue, CapEx % of Revenue, NWC Change % of ΔRev, Terminal Growth Rate, WACC) laid out horizontally across projection years. Each block must include section header, column header row showing the projection years (FY1, FY2, etc.), and data rows. See `<correct_patterns>` section "Correct Assumption Table Structure" for the exact layout.
-
-**Section 4: Historical & Projected Financials**
-
-**Reference a consolidation column (e.g., "Selected Case") that pulls from scenario blocks**, not scattered IF formulas in every projection row.
-
-```csv
-Income Statement ($M),2020A,2021A,2022A,2023A,2024E,2025E,2026E
-Revenue,XXX,XXX,XXX,XXX,[=E29*(1+$E$10)],[=F29*(1+$E$11)],[=G29*(1+$E$12)]
-  % growth,XX%,XX%,XX%,XX%,[=E29/D29-1],[=F29/E29-1],[=G29/F29-1]
-,,,,,,
-Gross Profit,XXX,XXX,XXX,XXX,[=E29*E33],[=F29*F33],[=G29*G33]
-  % margin,XX%,XX%,XX%,XX%,[=E33/E29],[=F33/F29],[=G33/G29]
-,,,,,,
-Operating Expenses:,,,,,,,
-  S&M,XXX,XXX,XXX,XXX,[=E29*0.15],[=F29*0.14],[=G29*0.13]
-  R&D,XXX,XXX,XXX,XXX,[=E29*0.12],[=F29*0.11],[=G29*0.10]
-  G&A,XXX,XXX,XXX,XXX,[=E29*0.08],[=F29*0.07],[=G29*0.07]
-  Total OpEx,XXX,XXX,XXX,XXX,[=E36+E37+E38],[=F36+F37+F38],[=G36+G37+G38]
-,,,,,,
-EBIT,XXX,XXX,XXX,XXX,[=E33-E39],[=F33-F39],[=G33-G39]
-  % margin,XX%,XX%,XX%,XX%,[=E41/E29],[=F41/F29],[=G41/G29]
-,,,,,,
-Taxes,(XX),(XX),(XX),(XX),[=E41*$E$24],[=F41*$E$24],[=G41*$E$24]
-  Tax rate,XX%,XX%,XX%,XX%,[=E43/E41],[=F43/F41],[=G43/G41]
-,,,,,,
-NOPAT,XXX,XXX,XXX,XXX,[=E41-E43],[=F41-F43],[=G41-G43]
-```
-
-**Key Formula Pattern**:
-- Revenue growth: `=E29*(1+$E$10)` where $E$10 is consolidation column for Year 1 growth
-- NOT: `=E29*(1+IF($B$6=1,$B$10,IF($B$6=2,$C$10,$D$10)))`
-
-This approach is cleaner, easier to audit, and prevents formula errors by centralizing the scenario logic.
-
-**Section 5: Free Cash Flow Build**
-
-**CRITICAL**: Verify row references point to the CORRECT assumption rows. Test formulas immediately after creation.
-
-```csv
-Cash Flow ($M),2020A,2021A,2022A,2023A,2024E,2025E,2026E
-NOPAT,XXX,XXX,XXX,XXX,[=E45],[=F45],[=G45]
-(+) D&A,XXX,XXX,XXX,XXX,[=E29*$E$21],[=F29*$E$21],[=G29*$E$21]
-    % of Rev,XX%,XX%,XX%,XX%,[=E58/E29],[=F58/F29],[=G58/G29]
-(-) CapEx,(XX),(XX),(XX),(XX),[=E29*$E$22],[=F29*$E$22],[=G29*$E$22]
-    % of Rev,XX%,XX%,XX%,XX%,[=E60/E29],[=F60/F29],[=G60/G29]
-(-) Δ NWC,(XX),(XX),(XX),(XX),[=(E29-D29)*$E$23],[=(F29-E29)*$E$23],[=(G29-F29)*$E$23]
-    % of Δ Rev,XX%,XX%,XX%,XX%,[=E62/(E29-D29)],[=F62/(F29-E29)],[=G62/(G29-F29)]
-,,,,,,
-Unlevered FCF,XXX,XXX,XXX,XXX,[=E57+E58-E60-E62],[=F57+F58-F60-F62],[=G57+G58-G60-G62]
-```
-
-**Row reference examples** (based on layout planning):
-- $E$21 = D&A % assumption (consolidation column, row 21)
-- $E$22 = CapEx % assumption (consolidation column, row 22)
-- $E$23 = NWC % assumption (consolidation column, row 23)
-- E29 = Revenue for year (row 29)
-- E45 = NOPAT for year (row 45)
-
-**Before writing formulas**: Confirm these row numbers match the actual layout. Test one column, then copy across.
-
-**Section 6: Discounting & Valuation**
-```csv
-DCF Valuation,2024E,2025E,2026E,2027E,2028E,Terminal
-Unlevered FCF ($M),XXX,XXX,XXX,XXX,XXX,
-Period,0.5,1.5,2.5,3.5,4.5,
-Discount Factor,0.XX,0.XX,0.XX,0.XX,0.XX,
-PV of FCF ($M),XXX,XXX,XXX,XXX,XXX,
-,,,,,,
-Terminal FCF ($M),,,,,,,XXX
-Terminal Value ($M),,,,,,,XXX
-PV Terminal Value ($M),,,,,,,XXX
-,,,,,,
-Valuation Summary ($M),,,,,,
-Sum of PV FCFs,XXX,,,,,
-PV Terminal Value,XXX,,,,,
-Enterprise Value,XXX,,,,,
-(-) Net Debt,(XX),,,,,
-Equity Value,XXX,,,,,
-,,,,,,
-Shares Outstanding (M),XX.X,,,,,
-IMPLIED PRICE PER SHARE,$XX.XX,,,,,
-Current Stock Price,$XX.XX,,,,,
-Implied Upside/(Downside),XX%,,,,,
-```
-
-### WACC Sheet Structure
-
-```csv
-COST OF EQUITY CALCULATION,,
-Risk-Free Rate (10Y Treasury),X.XX%,[macro MCP: get_treasury_rates()]
-Beta (5Y monthly),X.XX,[Input]
-Equity Risk Premium,X.XX%,[macro MCP: get_market_risk_premium()]
-Cost of Equity,X.XX%,[Calculated blue]
-,,
-COST OF DEBT CALCULATION,,
-Credit Rating,AA-,[Yellow input]
-Pre-Tax Cost of Debt,X.XX%,[Yellow input]
-Tax Rate,XX.X%,[Link to DCF sheet]
-After-Tax Cost of Debt,X.XX%,[Calculated blue]
-,,
-CAPITAL STRUCTURE,,
-Current Stock Price,$XX.XX,[Link to DCF]
-Shares Outstanding (M),XX.X,[Link to DCF]
-Market Capitalization ($M),"X,XXX",[Calculated]
-,,
-Total Debt ($M),XXX,[Yellow input]
-Cash & Equivalents ($M),XXX,[Yellow input]
-Net Debt ($M),XXX,[Calculated]
-,,
-Enterprise Value ($M),"X,XXX",[Calculated]
-,,
-WACC CALCULATION,Weight,Cost,Contribution
-Equity,XX.X%,X.X%,X.XX%
-Debt,XX.X%,X.X%,X.XX%
-,,
-WEIGHTED AVERAGE COST OF CAPITAL,X.XX%,[Green output]
-```
-
-**Key WACC Formulas:**
-```
-Market Cap = Price × Shares
-Net Debt = Total Debt - Cash
-Enterprise Value = Market Cap + Net Debt
-Equity Weight = Market Cap / EV
-Debt Weight = Net Debt / EV
-WACC = (Cost of Equity × Equity Weight) + (After-tax Cost of Debt × Debt Weight)
-```
-
-### Sensitivity Analysis (Bottom of DCF Sheet)
-
-**TERMINOLOGY REMINDER**: "Sensitivity tables" = simple 2D grids with row headers, column headers, and formulas in each data cell. NOT Excel's "Data Table" feature (Data → What-If Analysis → Data Table). You will use openpyxl to write regular Excel formulas into each cell.
-
-**Location**: Rows 87+ on DCF sheet (NOT a separate sheet)
-
-**Three sensitivity tables, vertically stacked:**
-
-1. **WACC vs Terminal Growth** (rows 87-100) - 5x5 grid = 25 cells with formulas
-2. **Revenue Growth vs EBIT Margin** (rows 102-115) - 5x5 grid = 25 cells with formulas
-3. **Beta vs Risk-Free Rate** (rows 117-130) - 5x5 grid = 25 cells with formulas
-
-**Total formulas to write: 75** (this is required, not optional)
-
-**CRITICAL**: All sensitivity table cells must be populated programmatically with formulas using openpyxl. DO NOT use linear approximation shortcuts. DO NOT leave placeholder text or notes about manual steps. DO NOT rationalize leaving cells empty because "it's complex" - use a Python loop to generate the formulas.
-
-**Table Setup:**
-1. Create table structure with row/column headers (the assumption values to test)
-2. Populate EVERY data cell with a formula that:
-   - Uses the row header value (e.g., WACC = 9.0%)
-   - Uses the column header value (e.g., Terminal Growth = 3.0%)
-   - Recalculates the full DCF with those specific assumptions
-   - Returns the implied share price for that scenario
-3. All cells must contain working formulas when delivered
-4. Format cells with conditional formatting: Green scale for higher values, red scale for lower values
-5. Bold the base case cell
-6. Leave 1-2 blank rows between tables
-
-**No manual intervention required** - the sensitivity tables must be fully functional when the user opens the file.
-
-## Case Selector Implementation
-
-**Three-Case Framework:**
-
-### Bear Case
-- Conservative revenue growth (low end of historical range)
-- Margin compression or no expansion
-- Higher WACC (risk premium increase)
-- Lower terminal growth rate
-- Higher CapEx assumptions
-
-### Base Case
-- Consensus or management guidance revenue growth
-- Moderate margin expansion based on operating leverage
-- Current market-implied WACC
-- GDP-aligned terminal growth (2.5-3.0%)
-- Standard CapEx assumptions
-
-### Bull Case
-- Optimistic revenue growth (high end of projections)
-- Significant margin expansion
-- Lower WACC (reduced risk premium)
-- Higher terminal growth (3.5-5.0%)
-- Reduced CapEx intensity
-
-**Formula Implementation:**
-
-**DO NOT use nested IF formulas scattered throughout.** Instead, create a consolidation column that uses INDEX or OFFSET formulas to pull from the appropriate scenario block.
-
-**Recommended pattern (using INDEX):**
-`=INDEX(B10:D10, 1, $B$6)` where `B10:D10` = Bear/Base/Bull values, `1` = row offset, `$B$6` = case selector cell (1, 2, or 3)
-
-**Then reference the consolidation column** in all projections:
-`Revenue Year 1: =D29*(1+$E$10)` where $E$10 is the consolidation column value for Year 1 growth.
-
-This approach centralizes scenario logic, making the model easier to audit and maintain.
-
-## Deliverables Structure
-
-**File naming**: `[Ticker]_DCF_Model_[Date].xlsx`
-
-**Two sheets**:
-1. **DCF** - Complete model with Bear/Base/Bull cases + three sensitivity tables at bottom (WACC vs Terminal Growth, Revenue Growth vs EBIT Margin, Beta vs Risk-Free Rate)
-2. **WACC** - Cost of capital calculation
-
-**Key features**: Case selector (1/2/3), consolidation column with INDEX/OFFSET formulas, color-coded cells, cell comments on all inputs, professional borders
-
-## Best Practices
-
-### Model Construction
-1. **Build incrementally**: Complete each section before moving to next
-2. **Test as building**: Enter sample numbers to verify formulas
-3. **Use consistent structure**: Similar calculations follow similar patterns
-4. **Comment complex formulas**: Add notes for unusual calculations
-5. **Build in checks**: Sum checks and balance checks where applicable
-
-### Documentation
-1. **Document all assumptions**: Explain reasoning behind key inputs
-2. **Cite data sources**: Note where each data point came from
-3. **Explain methodology**: Describe any non-standard approaches
-4. **Flag uncertainties**: Highlight areas with limited visibility
-
-### Quality Control
-1. **Cross-check calculations**: Verify math in multiple ways
-2. **Stress test assumptions**: Run sensitivity to ensure model is robust
-3. **Peer review**: Have someone else check formulas
-4. **Version control**: Save versions as work progresses
-
-## Common Variations
-
-### High-Growth Technology Companies
-- Longer projection period (7-10 years)
-- Higher initial growth rates (20-30%)
-- Significant margin expansion over time
-- Higher WACC (12-15%)
-- Model unit economics (users, ARPU, etc.)
-
-### Mature/Stable Companies
-- Shorter projection period (3-5 years)
-- Modest growth rates (GDP +1-3%)
-- Stable margins
-- Lower WACC (7-9%)
-- Focus on cash generation and capital allocation
-
-### Cyclical Companies
-- Model through economic cycle
-- Normalize margins at mid-cycle
-- Consider trough and peak scenarios
-- Adjust beta for cyclicality
-
-### Multi-Segment Companies
-- Separate DCFs for each business unit
-- Different growth rates and margins by segment
-- Sum-of-parts valuation
-- Consider synergies
-
-## Troubleshooting
-
-**If you encounter errors or unreasonable results, read [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) for detailed debugging guidance.**
-
-## Workflow Integration
-
-### At Start of DCF Build
-
-1. **Gather market data**:
-   - Use `get_company_overview` tool for stock price, beta, shares outstanding, analyst consensus
-   - Use macro MCP: `get_treasury_rates()` for risk-free rate (10Y)
-   - Use macro MCP: `get_market_risk_premium()` for equity risk premium
-   - Use web search/fetch as supplement if needed
-
-2. **Gather historical financials**:
-   - Use fundamentals MCP: `get_financial_statements(symbol, 'all', 'annual', 5)` for income/balance/cash flow
-   - Use fundamentals MCP: `get_financial_ratios(symbol)` for ratios
-   - Use fundamentals MCP: `get_growth_metrics(symbol)` for growth rates
-   - Request from user if specific data is needed
-
-3. **Begin model construction** using the DCF methodology detailed in this skill
-
-### During Model Construction
-
-1. **Build Excel model** using openpyxl with formulas (not hardcoded values)
-2. **Follow xlsx skill conventions** for formula construction and formatting
-3. **Apply fill colors only if requested** by user or if specific brand guidelines are provided
-
-### Before Delivering Model (MANDATORY)
-
-1. **Verify structure**:
-   - Scenario blocks for Bear/Base/Bull with assumptions across projection years
-   - Case selector functional with formulas referencing correct scenario blocks
-   - Sensitivity tables at bottom of DCF sheet (not separate sheet)
-   - Font colors: Blue inputs, black formulas, green sheet links
-   - Cell comments on ALL hardcoded inputs
-   - Professional borders around major sections
-
-2. **Recalculate formulas**: Run `python .agents/skills/xlsx/scripts/recalc.py model.xlsx 30`
-
-3. **Check output**:
-   - If `status` is `"success"` → Continue to step 4
-   - If `status` is `"errors_found"` → Check `error_summary` and read [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) for debugging guidance
-
-4. **Fix errors and re-run recalc.py** until status is "success"
-
-5. **Spot-check formulas**:
-   - Test one FCF formula - does it reference the correct assumption rows?
-   - Change case selector - does the consolidation column update properly?
-   - Verify revenue formulas reference consolidation column (not nested IF formulas)
-
-6. **Deliver model**
-
-### Available Data Sources
-
-- **fundamentals MCP**: `get_financial_statements`, `get_financial_ratios`, `get_growth_metrics`, `get_historical_valuation`
-- **macro MCP**: `get_treasury_rates`, `get_market_risk_premium`
-- **`get_company_overview` tool**: stock price, beta, shares, analyst consensus, growth estimates
-- **Web search/fetch**: supplement for additional market data
-- **User-provided data**: historical financials, custom assumptions
-
-## Final Output Checklist
-
-Before delivering DCF model:
-
-**Required:**
-- Run `python .agents/skills/xlsx/scripts/recalc.py model.xlsx 30` until status is "success" (zero formula errors)
-- Two sheets: DCF (with sensitivity at bottom), WACC
-- Font colors: Blue=inputs, Black=formulas, Green=sheet links
-- Cell comments on ALL hardcoded inputs
-- Sensitivity tables fully populated with formulas
-- Professional borders around major sections
-
-**Validation:**
-- OpEx based on revenue (not gross profit)
-- Terminal value 50-70% of EV
-- Terminal growth < WACC
-- Tax rate 21-28%
-- File naming: `[Ticker]_DCF_Model_[Date].xlsx`
+## Verify Before Delivering
+
+File: `[Ticker]_DCF_Model_[Date].xlsx` under `$WORK_DIR/work/{task}/`.
+
+1. **Structure**: the four sheets of `references/workbook-patterns.md`; scenario blocks with the year header row; the case selector driving a consolidation column; grids at the bottom of the DCF sheet with odd dimensions; the `Checks` sheet; blue inputs, black formulas, green links; a comment on every hardcoded input; borders around major sections
+2. **`python .agents/skills/xlsx/scripts/recalc.py model.xlsx 30`** until status is "success"; on errors read `.agents/skills/dcf-model/TROUBLESHOOTING.md`
+3. **`python .agents/skills/xlsx/scripts/audit.py model.xlsx --strict`** and fix every `fail`
+4. **Assert the grid centres**: reopen with `data_only=True` and confirm every centre cell still equals the output its grid varies, under the centre rule in Step 10
+5. **Assert the case selector is live**: write 1, recalc, read the implied price; write 3, recalc, read it again. The two differ and the bear price is below the bull price. A selector that does not move the output means the consolidation column is wired to a dead cell, and every grid built on it is decoration
+6. **Read the `Checks` sheet back** with `data_only=True`: any FAIL blocks delivery, and the `Overall` roll-up and the `Diagnostics open` count are read back the same way
+7. **Spot-check formulas**: one FCF formula against its assumption rows, and one revenue formula against the consolidation column rather than a nested IF
+8. **Restore the base case** (selector 2), then recalculate once more and read the implied price, the fair-value range and the `Checks` roll-up back with `data_only=True` before saving. Steps 5 and 6 left bear and bull values cached; without this pass the delivered file shows a base selector over another case's numbers
+9. **The valuation, in the delivery message**:
+   - Fair value stated as a range, with spot and the implied return beside it, both as-of stamped
+   - Terminal value share of EV and the implied exit multiple, each with its comparison
+   - Reverse DCF: the market-implied driver, our forecast, and the gap
+   - Consensus bridge with its vintage
+   - A mechanical bear case naming a driver and a broken line item
+   - The seven questions answered, and a stance with the conditions that would change it
+   - The readiness posture, with the input responsible if it is below decision-grade
+
+**The gate**: `recalc.py` reports "success", `audit.py --strict` reports no `fail`, the `Checks` roll-up reads OK with the base case restored, and every bullet of step 9 is in the message. A model short of any of the four is not delivered.

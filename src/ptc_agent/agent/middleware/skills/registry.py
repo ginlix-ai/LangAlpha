@@ -29,7 +29,7 @@ class SkillDefinition:
         name: Unique skill identifier
         description: Human-readable description of what the skill does
         tools: List of LangChain tools included in this skill
-        tool_names: Names of externally-registered tools gated by this skill —
+        tool_names: Names of externally-registered tools gated by this skill,
             for per-thread factory tools that can't be instantiated at import
             time (e.g. RunWorkflow). The tool object is registered by the agent
             factory; the skill only controls its visibility.
@@ -40,9 +40,9 @@ class SkillDefinition:
             bundle that declares it; that path never appears here.
         exposure: Which agent mode(s) can use this skill ("ptc", "flash", or "both")
         system_gate: Deployment kill switch for skills owned by a config section
-            rather than the feature catalog — False drops the skill everywhere.
+            rather than the feature catalog. False drops the skill everywhere.
         source_dir: Absolute host directory containing ``<name>/SKILL.md`` for
-            user-tier skills — lets the loader read the body without any
+            user-tier skills. It lets the loader read the body without any
             ``skill_dirs`` search. None for platform skills.
         origin: Whose content this is. "user" entries get trust framing in the
             manifest and the user-tier wire shape in the API.
@@ -96,7 +96,7 @@ def _is_enabled(
     """Availability gate: skills whose deployment switch or owning feature is
     off drop out of every accessor (listings, lookups, sandbox sync).
 
-    ``feature_resolver`` defaults to the system gate — the no-user-context
+    ``feature_resolver`` defaults to the system gate, the no-user-context
     default these accessors run under. The agent build injects a per-user
     resolver (via ``get_skill_registry``) so a user's opt-in/out is honored
     when skills are assembled for that build. ``system_gate`` is a deployment
@@ -129,7 +129,7 @@ def _matches_mode(skill: SkillDefinition, mode: SkillMode | None) -> bool:
 SKILL_REGISTRY: dict[str, SkillDefinition] = {
     "user-profile": SkillDefinition(
         name="user-profile",
-        description="Manage user profile: watchlists, portfolio, and preferences",
+        description="Manage user profile including watchlists, portfolio, and preferences.",
         tools=USER_PROFILE_TOOLS,
         skill_md_path="skills/user-profile/SKILL.md",
         # Flash-only: PTC edits user data via .agents/user/profile/*.json through
@@ -139,7 +139,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "onboarding": SkillDefinition(
         name="onboarding",
-        description="First-time user onboarding: collect stocks, risk tolerance, and preferences",
+        description="First-time user onboarding to set up investment profile, watchlists, portfolio, and preferences.",
         tools=ONBOARDING_TOOLS,
         skill_md_path="skills/onboarding/SKILL.md",
         exposure="hidden",
@@ -148,19 +148,19 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         name="chart-annotation",
         # Keep this text in sync with the `description:` in
         # plugins/langalpha_deliverables/skills/chart-annotation/SKILL.md
-        # frontmatter — both are live (this one drives PTC discovery; the
+        # frontmatter, both are live (this one drives PTC discovery; the
         # frontmatter drives the sandbox/Flash skill manifest), so they must
         # not drift.
         description=(
             "Draw price lines, trendlines, zones, and event markers directly on a "
-            "stock's price chart — reach for it whenever you'd otherwise describe a "
+            "stock's price chart. Reach for it whenever you'd otherwise describe a "
             "level, pattern, or event in prose. Renders live on MarketView and as a "
             "clickable preview card in any other chat."
         ),
         tools=CHART_ANNOTATION_TOOLS,
         skill_md_path="skills/chart-annotation/SKILL.md",
         # Discoverable in both modes so the agent can self-load it whenever the
-        # user asks to annotate — including from the standalone chat page, where
+        # user asks to annotate, including from the standalone chat page, where
         # the result renders as a preview card. MarketView also injects it
         # proactively (with the active symbol) for turn-1 availability.
         exposure="both",
@@ -181,7 +181,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         tools=[],
         # Guidance-only skill: the watch_market tool (subsystem c) and the
         # <market-watch> stamping middleware (subsystem b) are registered
-        # whenever the market_watch feature resolves enabled — this skill
+        # whenever the market_watch feature resolves enabled. This skill
         # just tells the agent how to use them. Activated by the frontend
         # Watch toggle via additional_context.
         skill_md_path="skills/market-watch/SKILL.md",
@@ -191,7 +191,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "secretary": SkillDefinition(
         name="secretary",
-        description="Manage workspaces, dispatch research, monitor running analyses",
+        description="Workspace and research management. Dispatch analyses, monitor running agents, manage workspaces and threads.",
         tools=[],
         skill_md_path="skills/secretary/SKILL.md",
         exposure="flash",
@@ -199,7 +199,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "automation": SkillDefinition(
         name="automation",
-        description="Create and manage scheduled automations (cron jobs, one-time tasks)",
+        description="Create and manage scheduled and price-triggered automations.",
         tools=AUTOMATION_TOOLS,
         skill_md_path="skills/automation/SKILL.md",
         exposure="both",
@@ -212,7 +212,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         # factory tool registered in agent.py, so it's gated by name here.
         description=(
             "Orchestrate parallel subagent pipelines from a JavaScript workflow "
-            "script — fan out work across many items (tickers, filings, findings) "
+            "script. Fan out work across many items (tickers, filings, findings) "
             "then synthesize, or run a saved workflow by name. "
             "Unlocks the RunWorkflow tool."
         ),
@@ -224,35 +224,54 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "pdf": SkillDefinition(
         name="pdf",
-        description="PDF manipulation: extract text/tables, create, merge/split documents, and fill forms",
+        description="Read, fill and build PDFs: inspect structure and fonts, extract text and tables with pdfplumber and poppler, fill and flatten AcroForms with pypdf, create with reportlab, merge, split and encrypt with qpdf, and verify by rendering the page and looking at it",
         tools=[],
         skill_md_path="skills/pdf/SKILL.md",
         exposure="ptc",
     ),
     "docx": SkillDefinition(
         name="docx",
-        description="Word document creation, editing, tracked changes, comments, and text extraction",
+        description="Word documents a human will review and edit: build with python-docx, edit an existing file in place with tracked changes and comment threads, render, validate",
         tools=[],
         skill_md_path="skills/docx/SKILL.md",
         exposure="ptc",
     ),
     "pptx": SkillDefinition(
         name="pptx",
-        description="Presentation creation, editing, layouts, speaker notes, and slide manipulation",
+        description="PowerPoint decks built with pptxgenjs and native charts, existing decks edited in place with python-pptx, then rendered to images and audited for overflow, overlap, bounds and typography before delivery",
         tools=[],
         skill_md_path="skills/pptx/SKILL.md",
         exposure="ptc",
     ),
     "xlsx": SkillDefinition(
         name="xlsx",
-        description="Spreadsheet creation, editing, formulas, data analysis, and visualization",
+        description="Excel workbooks with live formulas: build or edit .xlsx models with openpyxl, recalculate with IronCalc or LibreOffice, audit conventions, profile messy uploads, render for review",
         tools=[],
         skill_md_path="skills/xlsx/SKILL.md",
         exposure="ptc",
     ),
+    "research-conventions": SkillDefinition(
+        name="research-conventions",
+        # Keep in sync with the `description:` in
+        # plugins/langalpha_research/skills/research-conventions/SKILL.md
+        # frontmatter (this drives PTC discovery; the frontmatter drives the
+        # sandbox skill manifest).
+        description=(
+            "The evidence, judgement, intake and market-data rules every "
+            "research deliverable follows. Read before the first deliverable "
+            "of a research task; when a number has no source; when two "
+            "sources disagree; when a figure may be stale; when deciding what "
+            "to ask the user; before any valuation, thesis or recommendation."
+        ),
+        tools=[],
+        # No `command`: the shared layer is read by the research skills that
+        # point into it, never invoked as a slash command of its own.
+        skill_md_path="skills/research-conventions/SKILL.md",
+        exposure="ptc",
+    ),
     "comps-analysis": SkillDefinition(
         name="comps-analysis",
-        description="Comparable company analysis: operating metrics, valuation multiples, peer benchmarking",
+        description="Comparable company analysis: peer set, operating metrics, valuation multiples, statistics and an implied value. Triggers on comps, trading comparables, how does it trade against peers, peer benchmarking, what multiple should it get.",
         tools=[],
         skill_md_path="skills/comps-analysis/SKILL.md",
         exposure="ptc",
@@ -260,7 +279,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "dcf-model": SkillDefinition(
         name="dcf-model",
-        description="DCF valuation: free cash flow projections, WACC, terminal value, sensitivity analysis",
+        description="Build a DCF valuation in Excel: FCF projections, WACC, terminal value, scenarios, sensitivity grids, reverse DCF. Triggers on build a DCF, what is it worth, intrinsic value, fair value, price target from cash flows.",
         tools=[],
         skill_md_path="skills/dcf-model/SKILL.md",
         exposure="ptc",
@@ -268,15 +287,23 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "earnings-preview": SkillDefinition(
         name="earnings-preview",
-        description="Pre-earnings analysis: consensus estimates, key metrics to watch, bull/base/bear scenarios",
+        description="Pre-print setup for a company about to report: the expectation bar, EPS-quality watch, call questions, scenarios and the reaction framework. Triggers on earnings preview, what to watch for [company] earnings, pre-earnings setup, preview Q[N].",
         tools=[],
         skill_md_path="skills/earnings-preview/SKILL.md",
         exposure="ptc",
         command="earnings-preview",
     ),
+    "company-profile": SkillDefinition(
+        name="company-profile",
+        description="One-page company profile slide, four quadrants of overview, financial summary, share price chart and key facts. Also the compact profile paragraph when it has to sit inside a memo, a deck or a chat reply. Triggers on one-page profile, tear sheet, company snapshot, profile slide, quick profile of [company].",
+        tools=[],
+        skill_md_path="skills/company-profile/SKILL.md",
+        exposure="ptc",
+        command="company-profile",
+    ),
     "idea-generation": SkillDefinition(
         name="idea-generation",
-        description="Stock screening and idea generation: quantitative screens, thematic analysis, shortlist",
+        description="Find long and short candidates across a universe when no name is on the table yet: mandate, universe validation, archetype screens, thematic sweep, triage, idea cards, idea log. Triggers on idea generation, stock screen, find ideas, what looks interesting, screen for, new ideas, pitch me something.",
         tools=[],
         skill_md_path="skills/idea-generation/SKILL.md",
         exposure="ptc",
@@ -284,7 +311,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "check-model": SkillDefinition(
         name="check-model",
-        description="Financial model audit: structural checks, formula validation, integrity testing",
+        description="Audit a model somebody already built, and report on it without editing it: structure, formulas, integrity identities, source tie-out and reasonableness, ending in a routed issue log. Triggers on check my formulas, QA this spreadsheet, audit model, model review, something is off in my model, why does my balance sheet not balance.",
         tools=[],
         skill_md_path="skills/check-model/SKILL.md",
         exposure="ptc",
@@ -292,7 +319,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "morning-note": SkillDefinition(
         name="morning-note",
-        description="Daily research briefing: overnight news, pre-market movers, earnings, macro events",
+        description="Daily research briefing on overnight news, pre-market movers, earnings and macro events. Triggers on morning note, morning meeting, what happened overnight, morning call prep, daily note, trade idea for the open.",
         tools=[],
         skill_md_path="skills/morning-note/SKILL.md",
         exposure="ptc",
@@ -300,7 +327,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "catalyst-calendar": SkillDefinition(
         name="catalyst-calendar",
-        description="Event tracker: earnings dates, economic releases, conferences, regulatory events",
+        description="Dated events ranked by what they can change: earnings, regulatory decisions, flow events, macro releases, with prep owners and a weekly preview. Triggers on catalyst calendar, upcoming events, what is coming up, earnings calendar, event calendar, catalyst tracker, what should I prepare for.",
         tools=[],
         skill_md_path="skills/catalyst-calendar/SKILL.md",
         exposure="ptc",
@@ -308,7 +335,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "check-deck": SkillDefinition(
         name="check-deck",
-        description="Investment deck QC: number consistency, data-narrative alignment, IB language, formatting audit",
+        description="QC an investment deck (a .pptx) before it circulates: number consistency, chart and narrative alignment, source coverage, language, then a circulation verdict. Triggers on check this deck, deck QC, review my presentation, is this ready to send, proofread the pitch book.",
         tools=[],
         skill_md_path="skills/check-deck/SKILL.md",
         exposure="ptc",
@@ -316,7 +343,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "thesis-tracker": SkillDefinition(
         name="thesis-tracker",
-        description="Investment thesis scorecard: track pillars, risks, catalysts, and conviction over time",
+        description="Keep a live thesis honest: pillar status, evidence ledger, monitoring triggers, drift detection. Triggers on thesis tracker, thesis update, is the thesis still intact, post-earnings thesis check, portfolio thesis review, re-underwrite.",
         tools=[],
         skill_md_path="skills/thesis-tracker/SKILL.md",
         exposure="ptc",
@@ -324,15 +351,31 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "model-update": SkillDefinition(
         name="model-update",
-        description="Update financial model with new quarterly actuals, revised estimates, and updated price target",
+        description="Refresh an existing financial model after a print, a guidance change, a consensus move, a filing, a KPI release or a capital-structure change. Triggers on update the model, roll it forward, the new quarter is out, revise estimates, refresh the price target.",
         tools=[],
         skill_md_path="skills/model-update/SKILL.md",
         exposure="ptc",
         command="model-update",
     ),
+    "impact-analysis": SkillDefinition(
+        name="impact-analysis",
+        description="Translate a macro, policy, rate, commodity, geopolitical or industry shock into equity exposure through a named transmission channel. Triggers on what does X mean for, impact of, exposure to, who benefits from, tariff, rate cut, oil shock, new regulation.",
+        tools=[],
+        skill_md_path="skills/impact-analysis/SKILL.md",
+        exposure="ptc",
+        command="impact-analysis",
+    ),
+    "trade-pitch": SkillDefinition(
+        name="trade-pitch",
+        description="Turn finished analysis on one named security into a position: variant view, falsifiable evidence, scenario tree, expression, risk and monitoring. Triggers on pitch this name, should I buy, a long idea or short idea on a named stock, position, trade recommendation, risk reward.",
+        tools=[],
+        skill_md_path="skills/trade-pitch/SKILL.md",
+        exposure="ptc",
+        command="trade-pitch",
+    ),
     "3-statements": SkillDefinition(
         name="3-statements",
-        description="Integrated 3-statement financial model: linked income statement, balance sheet, and cash flow",
+        description="Build or repair an integrated three-statement model: linked IS, BS and CF, supporting schedules, scenarios and a Checks sheet. Triggers on three-statement model, build me a model, link the statements, populate this template, make my balance sheet balance.",
         tools=[],
         skill_md_path="skills/3-statements/SKILL.md",
         exposure="ptc",
@@ -340,7 +383,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "earnings-analysis": SkillDefinition(
         name="earnings-analysis",
-        description="Post-earnings analysis report: beat/miss breakdown, estimate revisions, thesis impact, charts",
+        description="Post-print earnings update for a covered name: beat/miss decomposition, EPS quality, transcript debate map, estimate revisions, thesis impact. Also the call-only ask that wants the transcript Q&A and the debate map alone. Triggers on earnings update, post-earnings report, analyze quarterly results, Q[N] update, what management said on the call.",
         tools=[],
         skill_md_path="skills/earnings-analysis/SKILL.md",
         exposure="ptc",
@@ -348,7 +391,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "sector-overview": SkillDefinition(
         name="sector-overview",
-        description="Industry landscape report: market size, competitive dynamics, company profiles, valuation context",
+        description="Sector and industry landscape report, built on the sector's own archetypes, metrics and valuation lenses. Triggers on sector overview, industry landscape, industry primer, sector deep dive, market map.",
         tools=[],
         skill_md_path="skills/sector-overview/SKILL.md",
         exposure="ptc",
@@ -356,7 +399,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "competitive-analysis": SkillDefinition(
         name="competitive-analysis",
-        description="Competitive landscape analysis: positioning, scorecards, moat assessment, market share trends",
+        description="Competitive landscape analysis: positioning, scorecards, moat assessment, market share trends. Triggers on competitive analysis, competitive landscape, competitor benchmarking, moat assessment, market share, who are the competitors.",
         tools=[],
         skill_md_path="skills/competitive-analysis/SKILL.md",
         exposure="ptc",
@@ -379,7 +422,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "interactive-dashboard": SkillDefinition(
         name="interactive-dashboard",
-        description="Interactive web dashboards: stock trackers, sector heatmaps, portfolio monitors — served via preview URL",
+        description="Interactive web dashboards: stock trackers, sector heatmaps, portfolio monitors, served via preview URL",
         tools=[],
         skill_md_path="skills/interactive-dashboard/SKILL.md",
         exposure="ptc",
@@ -387,7 +430,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "initiating-coverage": SkillDefinition(
         name="initiating-coverage",
-        description="Full equity research initiation: company research, financial model, valuation, charts, 30-50 page report",
+        description="First-time coverage of a company, or a refresh of coverage already published, run one task per request by default: company research, financial model, valuation, charts, then a 30 to 50 page report with a model. Triggers on initiation report, initiate coverage, initiating coverage, full equity research report, refresh the initiation.",
         tools=[],
         skill_md_path="skills/initiating-coverage/SKILL.md",
         exposure="ptc",
@@ -395,7 +438,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "web-scraping": SkillDefinition(
         name="web-scraping",
-        description="Web scraping with Scrapling: fast HTTP, browser rendering, anti-bot bypass, CSS/XPath selectors, multi-page spiders",
+        description="Web scraping: scrape_page / scrape_pages MCP tools for fetching pages as markdown, HTML, or text (fast HTTP, browser rendering, anti-bot stealth), plus the direct Scrapling Python API for selectors, sessions, and spiders",
         tools=[],
         skill_md_path="skills/web-scraping/SKILL.md",
         exposure="ptc",
@@ -411,7 +454,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "ui-design": SkillDefinition(
         name="ui-design",
-        description="Design-quality reference for financial-research HTML output: typography, color, composition, and avoiding generic AI aesthetics",
+        description="Design-quality reference for financial-research visual output: typography, color, composition, and avoiding generic AI aesthetics",
         tools=[],
         skill_md_path="skills/ui-design/SKILL.md",
         exposure="ptc",
@@ -516,7 +559,7 @@ def get_skill_registry(
 def get_sandbox_skill_names() -> set[str]:
     """Get names of skills that should be synced to sandbox.
 
-    Returns skills with exposure "ptc" or "both" — NOT "flash" (flash-only
+    Returns skills with exposure "ptc" or "both", NOT "flash" (flash-only
     skills are never accessed in sandboxes).
 
     Returns:

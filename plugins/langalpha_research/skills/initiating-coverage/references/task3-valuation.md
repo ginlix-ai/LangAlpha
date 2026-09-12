@@ -106,19 +106,20 @@ This workflow document focuses on execution steps. Reference the methodology fil
 
 **1. Determine Risk-Free Rate**
    - Use 10-year Treasury yield (check current rate)
-   - Example: 4.0-4.5% as of late 2024
+   - Call `get_treasury_rates` for the 10-year yield and print its as-of date beside it.
 
 **2. Determine Cost of Equity (CAPM)**
    ```
    Cost of Equity = Risk-Free Rate + Beta × Equity Risk Premium
 
    Inputs:
-   - Risk-Free Rate: [Current 10-year Treasury, e.g., 4.2%]
-   - Beta: [Company beta from Bloomberg/FactSet or peer average]
-   - Equity Risk Premium: 5-6% (historical average)
+   - Risk-Free Rate: [10-year yield from get_treasury_rates, with its as-of date]
+   - Beta: [from `get_financial_ratios`, or the peer-set average when the name has too little history]
+   - Equity Risk Premium: [Call get_market_risk_premium and print its as-of date]
 
    Example:
-   Cost of Equity = 4.2% + 1.3 × 5.5% = 11.35%
+   Cost of Equity = rf + beta x ERP
+   rf and ERP come from get_treasury_rates and get_market_risk_premium, with their as-of dates.
    ```
 
 **3. Determine Cost of Debt**
@@ -308,10 +309,10 @@ Base Case: Rev CAGR = 25%, EBITDA Margin = 32% → $56
 - Revenue growth rate
 - EBITDA margin
 
-**Data sources:**
-- FactSet, CapitalIQ, Bloomberg (preferred)
-- Company 10-Ks/10-Qs for actuals
-- Consensus estimates from Yahoo Finance, Seeking Alpha (if pro tools unavailable)
+**Data sources**, in tier order (`.agents/skills/research-conventions/references/evidence.md`):
+- `get_financial_statements`, `get_financial_ratios` and `get_historical_valuation` from the fundamentals MCP server for peer financials and multiples
+- `get_company_overview` for consensus estimates, with its vintage recorded
+- The peers' own 10-Ks and 10-Qs via `get_sec_filing` for reported actuals, which beat any normalized series when the two disagree
 
 #### C. Calculate Valuation Multiples
 
@@ -349,7 +350,7 @@ Median               38.9     3.5x    3.2x    15.2x      13.8x      25x   17%   
 Minimum              28.5     2.8x    2.6x    12.8x      11.2x      20x   12%     22%
 
 Note: Market data as of [Date]. LTM = Last Twelve Months. NTM = Next Twelve Months.
-Source: FactSet, company filings, [Analyst] estimates.
+Source: fundamentals MCP server, company filings, our estimates.
 ```
 
 **CRITICAL**: The statistical summary (max/75th/median/25th/min) is MANDATORY.
@@ -416,7 +417,7 @@ Q1 2023  Comp E       PE Firm        $3.2B    3.5x    13.5x      25%      Carve-
 
 Median                                        4.0x    15.8x      32%
 
-Source: CapitalIQ, company filings, press releases.
+Source: company filings and press releases via get_sec_filing and WebSearch.
 ```
 
 #### B. Apply to Target Company
@@ -514,7 +515,7 @@ Current Price:          $42.00 (as of [Date])
 Price Target:           $59.00 (12-month)
 Upside/(Downside):      +40.5%
 
-Rating:                 BUY / OUTPERFORM
+Rating:                 Buy (add)
 
 Valuation Methodology:  Based on weighted average of DCF (50%),
                        trading comparables (40%), and precedent
@@ -663,12 +664,7 @@ Create the following deliverables:
 
 **IMPORTANT**: Do NOT create a separate Excel file. Add these tabs to the existing financial model from Task 2. This keeps all quantitative data in one place.
 
-**Tabs to add:**
-- DCF tab with full calculations
-- Sensitivity analysis tab
-- Comps tab with peer data
-- Precedent transactions tab (if applicable)
-- Valuation summary tab
+**Tabs to add:** the Task 3 sheets of the workbook manifest in `.agents/skills/initiating-coverage/SKILL.md`, then extend `Cover` and `Checks` to cover them.
 
 ---
 
@@ -682,7 +678,7 @@ A successful valuation analysis should:
 5. Document all key assumptions with clear rationale
 6. Perform sanity checks
 7. Arrive at defensible price target
-8. Provide clear buy/hold/sell recommendation
+8. Print one rating, Buy, Hold or Sell, beside its action verb
 9. Identify 3-5 key catalysts
 10. Identify 3-5 key risks
 11. Be auditable and transparent

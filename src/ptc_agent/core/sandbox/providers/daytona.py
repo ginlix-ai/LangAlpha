@@ -631,7 +631,8 @@ class DaytonaProvider(SandboxProvider):
                 " && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1"
                 " && rm /tmp/node.tar.xz",
                 *[f"npm install -g {pkg}" for pkg in pkgs],
-                "npm install -g docx pptxgenjs",
+                # Same pin as Dockerfile.sandbox: the pptx skill and its checks target 4.0.1.
+                "npm install -g docx pptxgenjs@4.0.1",
                 "GH_ARCH=$(dpkg --print-architecture)"
                 " && curl -fsSL https://github.com/cli/cli/releases/download/"
                 "v2.87.3/gh_2.87.3_linux_${GH_ARCH}.tar.gz -o /tmp/gh.tar.gz"

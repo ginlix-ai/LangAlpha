@@ -6,9 +6,11 @@ description: Track live prices for the tickers central to the current task. Regi
 # Market Watch
 
 Keep intraday analysis anchored to live prices. When a task turns on
-current price — a level check, an intraday move, a "where is it trading
-now" — register the central tickers so fresh quotes arrive automatically
+current price, a level check, an intraday move, a "where is it trading
+now", register the central tickers so fresh quotes arrive automatically
 and your numbers never go stale mid-task.
+
+Evidence labels, source tiers, staleness, the readiness posture and the intake limits: `.agents/skills/research-conventions/SKILL.md`, read before a price you pulled here lands in a deliverable.
 
 ## When to use
 
@@ -31,24 +33,47 @@ end-of-day work where a single snapshot is enough.
 
 Once a symbol is watched, fresh prices arrive on their own as
 `<market-watch>` price blocks attached to conversation messages and tool
-results. This is **ambient data** — not user text, and not tool output
+results. This is **ambient data**: not user text, and not tool output
 you requested. Each block is a snapshot at a moment in time; the **newest
 `<market-watch>` entry in the conversation is the current price**, and any
 earlier entry (including numbers in your own earlier statements) may be
 stale.
 
-## Rules
+## Reading rules
 
-- Treat the newest `<market-watch>` entry as the live price. Prefer it — or
-  a fresh `get_quote` — over any older number in the thread.
+- Treat the newest `<market-watch>` entry as the live price. Prefer it, or
+  a fresh `get_quote`, over any older number in the thread.
 - If the price moves materially mid-analysis, acknowledge it and adapt your
   read rather than silently carrying the older figure.
 - Before you state a price in a final answer: if the newest feed entry is
   more than a minute old, make one `get_quote` call to re-check first.
 
+## When a price leaves this skill
+
+A live price is only live in the thread. The moment it lands in a note, a
+slide, a cell or a file, it is a historical figure, and it carries two
+things beside it: **the time it was retrieved** and **where it came from**,
+the ambient feed or a named `get_quote` call. A price written into a
+deliverable without its retrieval time is stale the moment the file is
+saved, and nothing on the page tells the reader that.
+
+The same stamp travels with everything built on the price: market cap,
+enterprise value, and every multiple. The full always-timestamped list and
+the freshness threshold for each data type are in
+`.agents/skills/research-conventions/references/evidence.md`.
+
+**When the feed contradicts a number already stated this session**, restate
+it: give both figures with both timestamps, and say the later one governs.
+One sentence does it, "we said 204.10 at 10:42; it is 207.60 as of 11:15,
+and the level check below uses the later figure". Switching silently leaves
+the reader unable to tell a correction from a typo, and carrying the older
+figure forward is the failure this feed exists to prevent. Where the earlier
+figure already went into a saved artifact, update the artifact and say what
+changed in the message that delivers it.
+
 ## Mechanics to know
 
-- Stamps only flow while the market session is open — expect no feed
+- Stamps only flow while the market session is open: expect no feed
   outside trading hours.
 - Updates are throttled: roughly one stamp per ~25s across the turn, not a
   tick-by-tick stream.

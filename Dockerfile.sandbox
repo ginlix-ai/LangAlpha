@@ -41,7 +41,7 @@ RUN apt-get update \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
     && rm /tmp/node.tar.xz \
     # -- NPM global packages --
-    && npm install -g playwright docx pptxgenjs \
+    && npm install -g playwright docx pptxgenjs@4.0.1 \
     && PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright \
        npx playwright install --with-deps chromium \
     # -- GitHub CLI (multi-arch: amd64 / arm64) --
@@ -83,6 +83,7 @@ RUN apt-get update \
 # Set the env var so the Python playwright package finds them at runtime
 # regardless of which user runs the sandbox.
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright
+ENV NODE_PATH=/usr/local/lib/node_modules
 
 # ---------- Python packages ----------
 # Mirrors DEFAULT_DEPENDENCIES in src/ptc_agent/core/sandbox/_defaults.py
@@ -100,7 +101,7 @@ RUN echo 'curl_cffi>=0.14' > /tmp/overrides.txt \
     pillow opencv-python-headless scikit-image \
     openpyxl xlrd python-docx pypdf \
     beautifulsoup4 lxml pyyaml \
-    defusedxml pdfplumber reportlab "markitdown[pptx]" \
+    defusedxml pdfplumber reportlab python-pptx ironcalc firecrawl-anydoc "markitdown[docx,pptx,xlsx]" \
     "scrapling[all]" html-to-markdown trafilatura youtube-transcript-api \
     playwright \
     tqdm tabulate \

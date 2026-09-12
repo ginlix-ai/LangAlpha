@@ -1,6 +1,6 @@
 ---
 name: interactive-dashboard
-description: "Interactive web dashboards: stock trackers, sector heatmaps, portfolio monitors — served via preview URL"
+description: "Interactive web dashboards: stock trackers, sector heatmaps, portfolio monitors, served via preview URL"
 ---
 
 # Interactive Dashboard

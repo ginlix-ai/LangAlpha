@@ -22,9 +22,9 @@ This document provides step-by-step instructions for executing Task 4 (Chart Gen
   - DCF sensitivity table
   - Comparable companies data
   - Valuation ranges
-- **Required**: External market data
-  - Historical stock price data (Yahoo Finance, Bloomberg)
-  - Historical valuation multiples (optional for chart 34)
+- **Required**: Market data, pulled live
+  - Historical stock prices from `get_daily_prices`, with the retrieval date recorded
+  - Historical valuation multiples from `get_historical_valuation` (for chart 34)
 
 **⚠️ CRITICAL: DO NOT START THIS TASK UNLESS TASKS 1, 2, AND 3 ARE COMPLETE**
 
@@ -32,7 +32,7 @@ This task requires outputs from all three previous tasks. Starting without them 
 
 **IF ANY OF TASKS 1, 2, OR 3 ARE NOT COMPLETE**: Stop immediately and inform the user which tasks need to be completed first. The specific requirements are:
 - Task 1: Company research document (for 9 charts)
-- Task 2: Financial model with all 6 tabs (for 8 charts)
+- Task 2: Financial model holding every Task 2 sheet of the workbook manifest in `.agents/skills/initiating-coverage/SKILL.md` (for 8 charts)
 - Task 3: Valuation tabs added to the model (for 6 charts)
 - External data access (for 2 charts)
 
@@ -71,14 +71,14 @@ Do not attempt to create placeholder charts or skip charts due to missing data.
 - [ ] Valuation ranges calculated? (for chart 32 ⭐)
 
 ### External Data Verification
-- [ ] Can access historical stock price data? (Yahoo Finance, Bloomberg for chart 01)
+- [ ] Historical stock prices pulled from `get_daily_prices`? (for chart 01)
 - [ ] Can access historical valuation data? (Optional, for chart 34)
 
 **IF ANY VERIFICATION FAILS**:
 - Missing Task 1? → Complete Task 1 (Company Research) first
 - Missing Task 2? → Complete Task 2 (Financial Modeling) first
 - Missing Task 3? → Complete Task 3 (Valuation Analysis) first
-- Missing external data? → Gather from Yahoo Finance, Bloomberg, or similar sources
+- Missing market data? → Pull it from `get_daily_prices` and `get_historical_valuation` and record the retrieval date
 
 ---
 
@@ -136,6 +136,8 @@ Create all 25 of these charts. Each has a specific purpose in Task 5:
 - chart_33: Price Target Scenarios
 - chart_34: Historical Valuation Multiples
 
+A preliminary or watchlist initiation publishes no target price, so it omits the valuation charts that need one, chart_33 above all.
+
 **Total: 25 Required Charts**
 
 ### 10 OPTIONAL Charts (For 30-35 Range)
@@ -191,8 +193,8 @@ Understanding where each chart's data comes from:
 - chart_33: Price Target Scenarios → Valuation Summary tab (or calculate from scenarios)
 
 ### From External Sources - 2 charts
-- chart_01: Stock Price Performance → Yahoo Finance, Bloomberg, Alpha Vantage
-- chart_34: Historical Valuation Multiples → Yahoo Finance, Bloomberg (historical P/E, EV/EBITDA)
+- chart_01: Stock Price Performance → `get_daily_prices`
+- chart_34: Historical Valuation Multiples → `get_historical_valuation` (historical P/E, EV/EBITDA)
 
 **IMPORTANT**: Require ALL three tasks (1, 2, 3) complete PLUS external data access to create all 25 required charts.
 
@@ -235,54 +237,72 @@ LABEL_FONT_SIZE = 10
 #### A. Extract Revenue Data
 ```python
 # Revenue by Product (from Task 2 model)
-years = [2020, 2021, 2022, 2023, 2024, 2025, 2026, 2027, 2028, 2029]
+from openpyxl import load_workbook
+import re
 
-# Extract from Excel or define manually from model
-product_a = [100, 120, 145, 175, 210, 252, 302, 363, 435, 522]
-product_b = [80, 95, 115, 138, 165, 198, 238, 285, 342, 411]
-product_c = [50, 62, 78, 98, 122, 153, 191, 239, 299, 374]
-product_d = [30, 38, 48, 61, 77, 97, 122, 153, 191, 239]
+wb = load_workbook('[Company]_Financial_Model_[Date].xlsx', data_only=True)
+
+def series(ws, label):
+    row = next(row for row in ws.iter_rows(values_only=True) if row[0] == label)
+    values = [value for value in row[1:] if type(value) in (int, float)]
+    if not values:
+        raise ValueError(f'{ws.title}: {label} has no recalculated numeric values')
+    return values
+
+# Use the workbook's exact column A labels in the calls below.
+revenue = wb['Revenue Model']
+year_row = next(row for row in revenue.iter_rows(values_only=True)
+                if re.fullmatch(r'\d{4}[AE]?', str(row[1])))
+years = [int(str(value)[:4]) for value in year_row[1:]
+         if re.fullmatch(r'\d{4}[AE]?', str(value))]
+product_a = series(revenue, 'Category A Total')
+product_b = series(revenue, 'Category B Total')
+product_c = series(revenue, 'Category C Total')
+product_d = series(revenue, 'Category D Total')
 
 # Revenue by Geography
-north_america = [150, 180, 220, 265, 320, 384, 461, 553, 664, 797]
-europe = [80, 95, 115, 140, 170, 204, 245, 294, 353, 423]
-asia_pacific = [40, 50, 63, 80, 101, 127, 159, 199, 249, 311]
-rest_of_world = [20, 25, 32, 40, 51, 64, 80, 100, 125, 156]
+north_america = series(revenue, 'NA Total')
+europe = series(revenue, 'Europe Total')
+asia_pacific = series(revenue, 'Asia-Pacific Total')
+rest_of_world = series(revenue, 'Rest of World Total')
 ```
 
 #### B. Extract Margin Data
 ```python
 # Margin evolution
-gross_margin = [58.0, 59.2, 60.5, 61.8, 63.0, 64.5, 66.0, 67.0, 67.5, 68.0]
-ebitda_margin = [12.0, 15.5, 18.8, 22.0, 25.0, 28.0, 30.5, 32.0, 33.0, 34.0]
-fcf_margin = [8.0, 11.0, 14.5, 18.0, 21.0, 24.0, 26.5, 28.0, 29.0, 30.0]
+gross_margin = [value * 100 for value in series(wb['Income Statement'], 'Gross Margin %')]
+ebitda_margin = [value * 100 for value in series(wb['Income Statement'], 'EBITDA Margin %')]
+fcf_margin = [value * 100 for value in series(wb['Cash Flow Statement'], 'FCF Margin %')]
 ```
 
 #### C. Extract DCF Sensitivity Data
 ```python
 # DCF Sensitivity (from Task 3 valuation)
-wacc_values = [7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
-terminal_growth = [1.5, 2.0, 2.5, 3.0, 3.5]
+sensitivity = wb['Sensitivity Analysis']
+terminal_growth = [value * 100 for value in series(sensitivity, 'WACC')]
+header = next(cell.row for cell in sensitivity['A'] if cell.value == 'WACC')
+wacc_rows = []
+for row in sensitivity.iter_rows(min_row=header + 1, values_only=True):
+    if type(row[0]) not in (int, float):
+        break
+    wacc_rows.append(row[0])
+wacc_values = [value * 100 for value in wacc_rows]
 
 # Price per share matrix (rows = WACC, columns = terminal growth)
-dcf_sensitivity = np.array([
-    [66, 71, 76, 82, 89],
-    [58, 62, 67, 72, 78],
-    [52, 55, 59, 63, 68],
-    [47, 50, 53, 56, 60],
-    [42, 45, 48, 51, 54],
-    [39, 41, 44, 46, 49]
-])
+dcf_sensitivity = np.rint([series(sensitivity, wacc) for wacc in wacc_rows]).astype(int)
 ```
 
 #### D. Extract Valuation Ranges
 ```python
 # Valuation Football Field (from Task 3)
-valuation_methods = ['DCF Analysis', 'Trading Comps\n(NTM)', 'Precedent\nTransactions']
-valuation_low = [48, 45, 52]
-valuation_high = [62, 57, 66]
-current_price = 50
-target_price = 55
+valuation = wb['Valuation Summary']
+valuation_methods = [cell.value for cell in valuation['A']
+                     if cell.value in ('DCF Analysis', 'Trading Comps (NTM)', 'Precedent Trans.')]
+valuation_low = [series(valuation, method)[0] for method in valuation_methods]
+valuation_high = [series(valuation, method)[2] for method in valuation_methods]
+current_price = series(valuation, 'Current Price')[0]
+target_price = series(valuation, 'Rounded Price Target')[0]
+wb.close()
 ```
 
 ### Step 3: Create Mandatory Charts
@@ -906,7 +926,7 @@ Create a zip file containing all chart files and the chart index:
 
 **Example**: `Tesla_Charts_2024-10-28.zip`
 
-**Why this matters**: Task 5 will embed ALL charts created (25-35) throughout the report. The report requires visual density (1 chart per 200-300 words), so all charts serve a purpose—either for specific analytical sections or for visual storytelling and page density.
+**Why this matters**: Task 5 will embed ALL charts created (25-35) throughout the report. The report requires visual density (1 chart per 200-300 words), so all charts serve a purpose, either for a specific analytical section or for visual storytelling and page density.
 - Verify all 25-35 charts are present
 - Extract charts for Task 5 (Report Assembly)
 

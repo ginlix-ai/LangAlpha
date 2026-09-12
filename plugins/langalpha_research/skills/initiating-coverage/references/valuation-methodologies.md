@@ -1,13 +1,20 @@
 # Valuation Methodologies for Equity Research
 
-This reference document provides comprehensive guidance on the three primary valuation methodologies used in equity research: Discounted Cash Flow (DCF), Trading Comparables, and Precedent Transactions.
+Deferred reference for `initiating-coverage`. Load it in Task 3 when choosing a method, when the business is capital intensive or financed by someone else, or when building the target-price bridge. Mechanics for DCF, trading comparables and precedent transactions follow the method sections below.
 
-## Table of Contents
+## Choosing a method
 
-1. [Discounted Cash Flow (DCF) Analysis](#discounted-cash-flow-dcf-analysis)
-2. [Trading Comparables Analysis](#trading-comparables-analysis)
-3. [Precedent Transactions Analysis](#precedent-transactions-analysis)
-4. [Valuation Reconciliation](#valuation-reconciliation)
+Method choice is an argument, not a default, and each method has a caveat that travels with its output wherever that output appears. State the caveat in the section that uses the method and in any summary that repeats its number.
+
+| Method | Fits when | Caveat that travels with it |
+|---|---|---|
+| DCF | cash flows are projectable and the capital structure is stable | the terminal value's share of total value, the discount-rate build, and the sensitivity range |
+| Trading comparables | five or more genuinely comparable peers report on a basis that can be aligned | peer-set quality and calendarisation: which four quarters went into each LTM and NTM figure, per company, per `.agents/skills/research-conventions/references/market-data-rules.md` |
+| Sum of the parts | segments are separately disclosed and separately valuable | segment disclosure quality, corporate-cost allocation, and leakage between segments |
+| Precedent transactions | a live market prices this asset class and the deals are recent | deal vintage, the control premium, and the synergy assumption inside each multiple |
+| Book value and asset based | the assets are marked and the marks mean something | mark reliability and reserve adequacy, stated per asset class |
+| Event driven | value turns on a dated binary outcome | the probability and timing assumptions, shown separately from the payoffs |
+| Revenue multiple | see the demotion rule under trading comparables | it is preliminary market context, not valuation support, while material debt, leases or dilution sit outside the comparison |
 
 ---
 
@@ -95,7 +102,7 @@ Cost of Equity = Risk-Free Rate + Beta × Equity Risk Premium
 ```
 - Risk-Free Rate: 10-year Treasury yield
 - Beta: Regression of stock returns vs. market (or use comparable beta)
-- Equity Risk Premium: Historical average ~5-6%
+- Equity Risk Premium: Call `get_market_risk_premium` and print its as-of date beside it.
 
 **Cost of Debt:**
 ```
@@ -183,7 +190,7 @@ Trading comps values a company based on how similar companies are valued in the 
 **Required Data:**
 - Current stock price and shares outstanding
 - Latest fiscal year financial statements
-- Next-year (NTM) estimates from consensus
+- NTM estimates: the sum of the next four quarterly consensus mean estimates, per `.agents/skills/research-conventions/references/market-data-rules.md`
 - Historical growth rates
 
 **Calculate Market Metrics:**
@@ -247,6 +254,21 @@ Implied Price Per Share = $45.00
 - **P/E**: Profitable companies with stable cap structure (consumer, retail)
 - **Sector-specific**: P/B for banks, EV/Production for oil & gas, EV/Subscriber for media
 
+### The revenue-multiple demotion rule
+
+An equity-value-to-revenue multiple prices the top line and ignores everything between it and the equity holder. While material debt, capitalised leases, prospective dilution or a customer-funded buildout sit outside the comparison, a revenue multiple is **preliminary market context**: label it that way in the heading, in the table and in every summary that repeats it, keep it out of the football field, and do not let a target price rest on it.
+
+It becomes valuation support once the comparison moves to enterprise value including leases, on a fully diluted share count, against peers computed the same way.
+
+### EPS basis for a P/E target
+
+A P/E target is a multiple times an earnings number, so the earnings number needs the same defence as the multiple.
+
+- Where GAAP EPS is distorted by non-recurring items, use recurring or operating EPS and show the bridge from GAAP to it.
+- Where GAAP EPS is used anyway, say why it is the right basis for this company.
+- Where an adjusted figure is used, cite the reconciliation and state, adjustment by adjustment, which ones we accept, which we reject and which are unproven. Stock-based compensation is a recurring cost of employing people; excluding it is a decision to state, not one to inherit from the company's presentation.
+- Peer multiples in the same table use the same basis, or the table names which peer sits on which basis.
+
 ### Premium/Discount Analysis
 
 Apply premiums or discounts based on:
@@ -291,7 +313,7 @@ Precedent transactions values a company based on prices paid for similar compani
 **Sources:**
 - SEC filings (S-4, 8-K, proxy statements)
 - Press releases and investor presentations
-- M&A databases (CapIQ, FactSet, Bloomberg)
+- Deal announcements and merger filings via `get_sec_filing` and `WebSearch`
 
 #### 3. Calculate Transaction Multiples
 
@@ -353,6 +375,22 @@ Implied Control Premium = $5,850M / $4,950M - 1 = 18%
 
 ---
 
+## The financed-growth gate
+
+Fires whenever the equity case depends on capital the company does not yet have: capital intensity, debt maturities, lease obligations, prospective dilution, or a buildout funded by customer prepayments. Growth financed by someone else is a different asset from growth funded out of operations, and the difference lands on the equity holder.
+
+Until all five of these exist, the report carries no positive ownership conclusion:
+
+1. **Pro-forma fully diluted capitalisation bridge.** Current shares, plus options, restricted stock, convertibles, warrants and any announced issuance, arriving at the diluted count the target price divides by.
+2. **Enterprise-value bridge including leases.** Market cap, plus gross debt, plus capitalised operating leases, plus preferred and minority interest, less cash, each component sourced to a filing page.
+3. **Interest and refinancing burden.** Interest cover at the current rate, the maturity ladder by year, and what refinancing at today's cost does to earnings and to covenant headroom.
+4. **Maintenance against growth capex.** Split them: only the growth half buys the growth the thesis assumes, and only the maintenance half is unavoidable in a downturn.
+5. **After-financing returns.** Return on the incremental capital net of its cost, with a sensitivity across financing cost, utilisation and dilution.
+
+Where one of the five is missing, the output is a preliminary or watchlist initiation naming that specific gap, per `.agents/skills/initiating-coverage/references/report-modes.md`. A multiple that ignores the capital stack is not a substitute for the gate; it is the failure the gate exists to catch.
+
+---
+
 ## Valuation Reconciliation
 
 ### Creating a Valuation Bridge
@@ -396,8 +434,23 @@ Bear Case: $38 - $40
 Base Case: $42 - $46
 Bull Case: $48 - $52
 
-Recommendation: BUY with target price of $45 (midpoint of base case)
+Rating: Buy (add). Target price $42 to $46, point $45.
 ```
+
+### The target-price bridge
+
+A target price ships with the whole path from the current price to it. All eight, or the target is not ready:
+
+1. Current price with its as-of, and the fully diluted share count behind the market cap.
+2. The target as a range with a point inside it, rather than a bare point.
+3. Implied return from the current price, and the horizon it is earned over.
+4. The method that produced it, and why that method fits this company.
+5. The three or four assumptions the target is most sensitive to.
+6. The multiple the target implies, checked against the company's own history and against the peer set.
+7. The sensitivity range: what the target becomes under the bull and bear input sets.
+8. The consensus target where one is available, with the gap explained rather than noted.
+
+A multi-year case that multiplies forward earnings by an exit multiple is not a return until it is discounted: show a present value with the discount rate stated, or an annualised return against a stated hurdle, per `.agents/skills/research-conventions/references/judgment.md`.
 
 ### Sanity Checks
 

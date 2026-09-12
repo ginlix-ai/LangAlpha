@@ -1,6 +1,6 @@
 ---
 name: chart-annotation
-description: Draw price lines, trendlines, zones, and event markers directly on a stock's price chart — reach for it whenever you'd otherwise describe a level, pattern, or event in prose. Renders live on MarketView and as a clickable preview card in any other chat.
+description: Draw price lines, trendlines, zones, and event markers directly on a stock's price chart. Reach for it whenever you'd otherwise describe a level, pattern, or event in prose. Renders live on MarketView and as a clickable preview card in any other chat.
 ---
 
 # Chart Annotation Skill
@@ -13,7 +13,7 @@ describing it in prose. Reach for this skill whenever you would otherwise
 say "look at the level around 205" or "notice the downtrend from October to
 December".
 
-**MarketView** is the app's live, TradingView-style price chart page (pan,
+**MarketView** is the app's live, trading-chart style price chart page (pan,
 zoom, switch timeframes). You do **not** need the user to be on it to
 annotate. If they are, the drawing appears on their live chart immediately. If
 they are in any other chat, the same drawing renders as a clickable preview

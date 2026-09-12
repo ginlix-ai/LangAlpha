@@ -45,7 +45,10 @@ DEFAULT_DEPENDENCIES = [
     "defusedxml",
     "pdfplumber",
     "reportlab",
-    "markitdown[pptx]",
+    "python-pptx",
+    "ironcalc",
+    "firecrawl-anydoc",
+    "markitdown[docx,pptx,xlsx]",
     # Web scraping
     "scrapling[all]",
     "html-to-markdown",

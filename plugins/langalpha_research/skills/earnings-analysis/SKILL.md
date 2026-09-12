@@ -1,229 +1,100 @@
 ---
 name: earnings-analysis
-description: "Post-earnings analysis report: beat/miss breakdown, estimate revisions, thesis impact, charts"
-license: "Derived from anthropics/financial-services-plugins (Apache-2.0). Modified for langalpha."
+description: "Post-print earnings update for a covered name: beat/miss decomposition, EPS quality, transcript debate map, estimate revisions, thesis impact. Also the call-only ask that wants the transcript Q&A and the debate map alone. Triggers on earnings update, post-earnings report, analyze quarterly results, Q[N] update, what management said on the call."
 ---
 
-# Equity Research Earnings Update
+# Earnings Update
 
-Create professional **EARNINGS UPDATE REPORTS** analyzing quarterly results for companies already under coverage, following institutional standards (JPMorgan, Goldman Sachs, Morgan Stanley format).
+A post-print report on a company already under coverage: what changed this quarter, whether the change recurs, what it does to estimates, and what it does to the thesis. Eight to twelve pages of DOCX, inside 48 hours of the release, written for a reader who already knows the company.
 
-**Key Characteristics:**
-- **Length**: 8-12 pages
-- **Word Count**: 3,000-5,000 words
-- **Tables**: 1-3 summary tables (NOT comprehensive)
-- **Figures**: 8-12 charts
-- **Turnaround**: 1-2 days (within 24-48 hours of earnings)
-- **Audience**: Clients already familiar with the company
-- **Focus**: What's NEW - beat/miss, updated estimates, thesis impact
-- **Font**: Times New Roman throughout (unless user specifies otherwise)
+Route elsewhere when the request is a first-time initiation (`.agents/skills/initiating-coverage/SKILL.md`), a pre-print setup (`.agents/skills/earnings-preview/SKILL.md`), or a same-morning reaction blurb (`.agents/skills/morning-note/SKILL.md`).
 
-## When to Use
+Evidence labels, source tiers, staleness, the readiness posture and the intake limits: `.agents/skills/research-conventions/SKILL.md`, read before the first deliverable.
 
-Use when the user requests:
-- "Create an earnings update for [Company] Q3 2024"
-- "Analyze [Company]'s quarterly results"
-- "Post-earnings report for [Company]"
-- "Q1/Q2/Q3/Q4 update for [Company]"
+## Output modes
 
-**Do NOT use if:**
-- User requests "initiation report" → Use different skill
-- User requests "flash note" or "quick take" → Different format
-- Company is not already covered → Need initiation first
+| Mode | Fires when | Contract |
+|---|---|---|
+| Deep dive | the default | every phase present, the length budget below, assembled as a DOCX through `.agents/skills/docx/SKILL.md` |
+| One-pager | the user asks for a one-pager, quick take or flash note | one page, in this order: decision box, beat/miss table with revenue and EPS variance, EPS-quality verdict, debate map, changed estimate lines with old against new. Delivered in chat unless the user asked for a document, and as a DOCX through `.agents/skills/docx/SKILL.md` when they did. No chart minimum |
+| Debate map alone | the whole ask is the call or the Q&A | the transcript Q&A map and the debate map, each side carrying a falsifier tied to a dated catalyst. Delivered in chat, no report and no charts around them |
 
-## Critical Requirements
+A mode is chosen once and holds, and a shorter mode is rebuilt at that depth rather than truncated (`.agents/skills/research-conventions/references/depth.md`). Missing inputs never shorten the note: a missing artifact stays visible as a labelled gap in the section that wanted it, using the absence vocabulary below.
 
-### 1. Speed & Timeliness
-- Publish within 24-48 hours of earnings release
-- Focus on NEW information only
-- Don't rehash company background extensively
+The length budget, the chart count and the DOCX assembly belong to the deep dive. A short mode is complete on the contract in its own row; the freshness gate, the evidence contract and the tier 1 hard fails in `references/best-practices.md` bind every mode.
 
-### 2. Beat/Miss Analysis
-- Lead with whether company beat or missed estimates
-- Quantify variances (e.g., "Revenue beat by $120M or 3%")
-- Explain WHY results differed from expectations
+## Evidence contract
 
-### 3. Summary Format
-- Keep tables to 1-3 (summary only, not comprehensive)
-- No full P&L/Cash Flow/Balance Sheet (just key metrics)
-- Assume reader has seen initiation report
+Every user-facing number and every quote carries a **findable** citation: the artifact plus a location pointer that puts a reader on the figure in under thirty seconds. A location pointer is a page plus table, a page plus section heading, a slide number, or a transcript line range with the speaker. The document name alone is not a citation.
 
-### 4. Citations & Source Attribution ⭐⭐⭐ MANDATORY
+Sources resolve down one **ladder**, highest first:
 
-**CRITICAL**: Properly cite all data with SPECIFIC sources and CLICKABLE HYPERLINKS.
+1. The filed 10-Q or 10-K for the quarter.
+2. The 8-K exhibit that carried the results.
+3. The earnings press release.
+4. The investor deck and the prepared remarks.
+5. The transcript, which is narrative support and never the source for a filed number.
 
-**Include specific citations WITH CLICKABLE LINKS in every figure and table:**
+When a document was reissued, cite the final version and keep the original timestamp beside it.
 
-```
-Source: Q3 2024 10-Q filed November 8, 2024; Company earnings release
-        [Hyperlink "10-Q" to: https://www.sec.gov/cgi-bin/viewer?accession=...]
-        [Hyperlink "earnings release" to: https://investor.company.com/news/q3-2024]
-```
+- Guidance that lives only in call commentary and in no filed document is labelled **call-only guidance** wherever it appears.
+- Every non-GAAP figure appears with its closest GAAP comparable and the reconciliation source that bridges them.
+- Consensus names the estimate set and its as-of timestamp, or states that the timestamp is unavailable.
+- Absence is one of four words, never a blank and never a bare n/a: **not guided** (the company declined to guide it), **not disclosed** (the company does not publish it), **not provided** (it exists but is absent from the materials in hand), **source not found** (searched and unresolved, which is the `needs-source` label in `.agents/skills/research-conventions/references/evidence.md`).
+- Every source ships as a hyperlink with display text, so a reader sees "10-Q" rather than the raw address, and SEC links point at the EDGAR viewer. The closing Sources section lists every material with its date and its link.
 
-**HOW HYPERLINKS SHOULD APPEAR IN WORD:**
-- Document names appear as blue, underlined clickable links
-- Reader can Ctrl+Click to open source directly
-- Not plain text URLs - formatted hyperlinks with display text
+The delivered document is self-contained: a reader holding only the DOCX can follow every number in it without opening the model or the chart folder.
 
-**REQUIRED SOURCES LIST:**
+## The run
 
-Cite in every earnings update:
-- ✅ Earnings release (with date and URL)
-- ✅ 10-Q filing (with filing date and EDGAR link)
-- ✅ Earnings call transcript (with date)
-- ✅ Investor presentation/supplemental materials (if available)
-- ✅ Consensus estimates source (Bloomberg/FactSet/etc. with date)
-- ✅ Prior guidance (from previous quarter's materials)
+Five phases. Each ends on its stated criterion; the detail behind each lives in `references/workflow.md`.
 
-**REFERENCE SECTION WITH CLICKABLE HYPERLINKS:**
+### Phase 1: Freshness gate
 
-Include "Sources" section at end of report:
+Training data is old and the wrong quarter is the most expensive mistake this skill can make. Write down today's date, search for the most recent release rather than assuming which quarter is latest, and open the actual materials.
 
-```
-SOURCES & REFERENCES
+**Complete when** today's date, the release date, the transcript date and the filing date are all written down; the release is within 90 days of today; and every artifact names the same fiscal period, taken verbatim from the event name per `.agents/skills/research-conventions/references/market-data-rules.md`.
 
-Earnings Materials (Q3 2024):
-• Earnings Release (November 7, 2024)
-  [Hyperlink entire line to: https://investor.company.com/news/q3-2024-earnings]
+### Phase 2: Extraction and beat/miss
 
-• Form 10-Q (Filed November 8, 2024)
-  [Hyperlink to: https://www.sec.gov/cgi-bin/viewer?accession=...]
+Pull reported results, pre-print consensus and our own prior estimates into one comparison, then decompose the variance by segment, geography, product and channel.
 
-• Earnings Call Transcript (November 7, 2024)
-  [Hyperlink to: https://seekingalpha.com/article/...]
+**Complete when** every headline metric has reported, expected and variance side by side; each cell carries a findable citation; every rate variance is stated in basis points; and reported and constant-currency figures sit in separate columns.
 
-• Investor Presentation (November 7, 2024)
-  [Hyperlink to: https://investor.company.com/presentations/q3-2024.pdf]
-```
+### Phase 3: Quality and drivers
 
-**VERIFICATION CHECKLIST:**
-- [ ] Every figure has source with specific document and date
-- [ ] Every table has source with document reference
-- [ ] Beat/miss analysis cites consensus source with date
-- [ ] Guidance changes cite current and prior guidance sources
-- [ ] Key statistics have footnotes
-- [ ] Sources section lists all materials with URLs
-- [ ] ALL URLs are CLICKABLE HYPERLINKS (not plain text)
-- [ ] All SEC filings hyperlinked to EDGAR viewer
+The analytical core: the EPS-quality screen, the two or three load-bearing drivers, the cash-quality check, the guidance read, the transcript Q&A map and the debate map.
 
-### 5. Updated Estimates
-- Update forward estimates based on results
-- Show old vs. new estimates clearly
-- Explain what changed and why
+**Complete when** the EPS-quality screen has either produced a recurring-EPS bridge or recorded "no material trigger identified"; two to three drivers are named with what moved, why it moved and what it does to forward expectations; the cash-quality module reconciles earnings to cash; and the debate map carries a falsifier on each side tied to a dated catalyst.
 
-## High-Level Workflow
+### Phase 4: Estimates, valuation and model update
 
-The earnings update process follows 5 phases:
+Revise forward estimates, restate or move the price target, and produce the model update in packet form unless the user supplied a workbook and asked for it to be written.
 
-### Phase 1: Data Collection (30-60 minutes)
+**Complete when** every changed line shows old, new and a one-clause reason; the price target is explicitly changed or explicitly maintained with its reason; and the update mode (packet or apply) is stated in the delivery message.
 
-**🚨🚨🚨 CRITICAL: TRAINING DATA IS OUTDATED 🚨🚨🚨**
+### Phase 5: Charts, report and gates
 
-**BEFORE STARTING - COMPLETE THESE 4 STEPS IN ORDER:**
-1. **CHECK TODAY'S DATE** - Write down the current date
-2. **SEARCH FOR LATEST** - Use web search: "[Company] latest earnings results"
-3. **VERIFY THE DATE** - Confirm earnings release is within last 3 months
-4. **CHECK TRANSCRIPT DATE** - Verify transcript date matches release date
+In the deep dive, build eight to twelve charts and assemble the DOCX through `.agents/skills/docx/SKILL.md`. In a short mode, skip the charts and the document. Either way, run the three quality gates in `references/best-practices.md`.
 
-**COMMON MISTAKE**: Using outdated earnings calls from training data instead of searching for the latest.
+**Complete when** the hard-fail list is clean, the delivery checklist is ticked for everything the chosen mode produces, the judgement gate passes on a note that answers what changed rather than summarising the quarter, and one posture from the ladder in `.agents/skills/research-conventions/SKILL.md` is stated near the top.
 
-**REQUIREMENTS:**
-- ✅ Search for latest earnings - do NOT rely on training data
-- ✅ Write down today's date and the release date found
-- ✅ Verify release date is within 3 months of today
-- ✅ Verify transcript date matches release date
-- ✅ If dates don't match or are old (>3 months), search again
+## Length budget (deep dive)
 
-**See [references/workflow.md](references/workflow.md)** for detailed search procedures and verification steps.
+| Dimension | Target |
+|---|---|
+| Pages | 8 to 12 |
+| Words | 3,000 to 5,000 |
+| Summary tables | 1 to 3, never a full P&L |
+| Charts | 8 to 12, quarterly trends and changes |
+| Typography | set by `.agents/skills/docx/SKILL.md` |
 
-### Phase 2: Analysis (2-3 hours)
-- Beat/miss analysis for each key metric
-- Segment/geographic/product breakdown
-- Margin and guidance analysis
-- Update financial model and estimates
+## Deliverable
 
-**See [references/workflow.md](references/workflow.md)** for detailed analysis framework.
+`[Company]_Q[X]_[Year]_Earnings_Update.docx`, for example `Nike_Q2_FY24_Earnings_Update.docx`. Charts come from Python (matplotlib, pandas). A workbook update is optional and follows the packet-or-apply rule in Phase 4.
 
-### Phase 3: Chart Generation (1-2 hours)
-Create 8-12 charts focusing on quarterly trends and what's new:
-- Quarterly revenue progression
-- Quarterly EPS progression
-- Quarterly margin trends
-- Revenue by segment/geography
-- Key operating metrics
-- Beat/miss summary
-- Estimate revisions
-- Valuation charts
+## Reference files
 
-**See [references/workflow.md](references/workflow.md)** for chart specifications.
-
-### Phase 4: Report Creation (2-3 hours)
-Create 8-12 page DOCX report with specific structure.
-
-**See [references/report-structure.md](references/report-structure.md)** for complete page-by-page templates and formatting requirements.
-
-**High-level structure:**
-- Page 1: Earnings summary with rating and price target
-- Pages 2-3: Detailed results analysis
-- Pages 4-5: Key metrics & guidance
-- Pages 6-7: Updated investment thesis
-- Pages 8-10: Valuation & estimates
-- Pages 11-12: Appendix (optional)
-
-### Phase 5: Quality Check & Delivery (30 minutes)
-Verify content, formatting, accuracy, and timeliness before delivery.
-
-**See [references/best-practices.md](references/best-practices.md)** for quality checklist and common mistakes to avoid.
-
-## Output Specification
-
-**Primary Deliverable**: DOCX report (8-12 pages)
-**File Name**: `[Company]_Q[Quarter]_[Year]_Earnings_Update.docx`
-**Example**: `Nike_Q2_FY24_Earnings_Update.docx`
-
-**Contents:**
-- Page 1: Summary with rating, price target, key takeaways
-- Pages 2-3: Detailed results analysis
-- Pages 4-5: Key metrics and guidance
-- Pages 6-7: Updated thesis assessment
-- Pages 8-10: Valuation and estimates
-- Pages 11-12: Appendix (optional)
-- 8-12 embedded charts
-- 1-3 summary tables
-- Complete sources section with clickable hyperlinks
-
-**Optional Deliverable**: XLS model update (optional for earnings updates)
-
-## Key Differences from Initiation Report
-
-| Aspect | Earnings Update | Initiation Report |
-|--------|----------------|-------------------|
-| **Length** | 8-12 pages | 30-50 pages |
-| **Words** | 3,000-5,000 | 10,000-15,000 |
-| **Tables** | 1-3 summary | 12-20 comprehensive |
-| **Figures** | 8-12 | 25-35 |
-| **Turnaround** | 1-2 days | 3-6 weeks |
-| **Scope** | Quarterly results | Complete company |
-| **Focus** | What's NEW | Everything |
-| **Company Background** | Brief mention | 6-10 pages |
-| **XLS Model** | Optional | Required |
-
-## Resources
-
-### references/workflow.md
-Detailed Phase 1-5 instructions with step-by-step procedures for data collection, analysis, chart generation, and report creation.
-
-### references/report-structure.md
-Complete page-by-page templates, table formats, and formatting requirements for the DOCX report.
-
-### references/best-practices.md
-Examples of good/bad headlines, tips for success, common mistakes to avoid, and comprehensive quality checklist.
-
-## Dependencies
-
-**Required:**
-- Python (matplotlib, pandas, seaborn) for chart generation
-- DOCX skill for report creation
-
-**Optional:**
-- XLS skill for model updates (not required for earnings updates)
+- The phase you are running, its steps and its tables: `references/workflow.md`.
+- Writing a page or a section of the report, or the exact shape of the decision box, the recurring-EPS bridge, the Q&A map or the debate map: `references/report-structure.md`.
+- Before delivery, and whenever a headline or a claim needs calibrating: `references/best-practices.md`.
