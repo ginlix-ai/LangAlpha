@@ -1,6 +1,6 @@
 ---
 name: secretary
-description: Workspace and research management — dispatch analyses, monitor running agents, manage workspaces and threads.
+description: Workspace and research management. Dispatch analyses, monitor running agents, manage workspaces and threads.
 ---
 
 # Secretary Skill

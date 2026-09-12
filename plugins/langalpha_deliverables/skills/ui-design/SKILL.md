@@ -15,7 +15,7 @@ Read this **before** producing any styled output — it covers design taste: typ
 
 ## The Tone: Research Desk, Not Marketing Page
 
-The audience is a portfolio manager, analyst, or sophisticated investor reading a research note. They want **dense, scannable, credible** information design — the visual language of a sell-side note, a Bloomberg terminal, or a quality print newspaper's business section. Not a SaaS hero page.
+The audience is a portfolio manager, analyst, or sophisticated investor reading a research note. They want **dense, scannable, credible** information design: the visual language of a sell-side note, a market-data terminal, or a quality print newspaper's business section. Not a SaaS hero page.
 
 This means:
 - Information density over whitespace theatre. A research reader expects a high signal-per-screen ratio.

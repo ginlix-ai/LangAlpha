@@ -1,6 +1,6 @@
 ---
 name: run-workflow
-description: Orchestrate parallel subagent pipelines from a JavaScript workflow script — fan out work across many items (tickers, filings, findings) then synthesize, or run a saved workflow by name. Unlocks the RunWorkflow tool.
+description: Orchestrate parallel subagent pipelines from a JavaScript workflow script. Fan out work across many items (tickers, filings, findings) then synthesize, or run a saved workflow by name. Unlocks the RunWorkflow tool.
 ---
 
 # Programmatic Workflows (RunWorkflow)

@@ -83,3 +83,18 @@ def test_command_shortcuts():
     commands = get_command_to_skill_map("ptc")
     assert commands.get("html-report") == "html-report"
     assert "ui-design" not in commands.values()
+
+
+def _shipped_names() -> list[str]:
+    from ptc_agent.config.plugins import bundled_skill_dirs
+
+    shipped = {p.parent.name for root in bundled_skill_dirs() for p in root.glob("*/SKILL.md")}
+    return sorted(name for name in SKILL_REGISTRY if name in shipped)
+
+
+@pytest.mark.parametrize("name", _shipped_names())
+def test_registry_description_mirrors_frontmatter(name, shipped_skill_md):
+    """The registry description is what discovery shows the model; the frontmatter is what
+    the agent reads once the skill loads. The two are one string, verbatim."""
+    frontmatter = yaml.safe_load(_FRONTMATTER_RE.match(shipped_skill_md(name).read_text(encoding="utf-8")).group(1))
+    assert frontmatter["description"] == SKILL_REGISTRY[name].description, name

@@ -2,13 +2,12 @@
 
 ## Anthropic Financial Services Plugins
 
-The following skills are derived from
-[anthropics/financial-services-plugins](https://github.com/anthropics/financial-services-plugins),
-copyright 2025 Anthropic, PBC, licensed under the Apache License, Version 2.0.
-
-These files have been modified to replace enterprise data source references
-(S&P Kensho, Daloopa, FactSet, Bloomberg) with langalpha's own data layer
-(FMP-backed MCP servers and native LangChain tools).
+The research skills listed below began as adaptations of
+[anthropics/financial-services-plugins](https://github.com/anthropics/financial-services-plugins)
+at commit 86726dfc, with later guidance taken from commit 69cbc81 (2026-08-24),
+Copyright Anthropic, PBC, licensed under the Apache License, Version 2.0. They
+have since been rewritten to run on langalpha's own data layer and document
+skills, and the workflows, references and scripts they carry are langalpha's.
 
 **Affected files:**
 
@@ -38,12 +37,14 @@ These files have been modified to replace enterprise data source references
 - `plugins/langalpha_research/skills/competitive-analysis/SKILL.md`
 - `plugins/langalpha_research/skills/competitive-analysis/references/frameworks.md`
 - `plugins/langalpha_research/skills/competitive-analysis/references/schemas.md`
+- `plugins/langalpha_research/skills/competitive-analysis/references/unit-economics.md`
 - `plugins/langalpha_research/skills/initiating-coverage/SKILL.md`
 - `plugins/langalpha_research/skills/initiating-coverage/references/task1-company-research.md`
 - `plugins/langalpha_research/skills/initiating-coverage/references/task2-financial-modeling.md`
 - `plugins/langalpha_research/skills/initiating-coverage/references/task3-valuation.md`
 - `plugins/langalpha_research/skills/initiating-coverage/references/task4-chart-generation.md`
 - `plugins/langalpha_research/skills/initiating-coverage/references/task5-report-assembly.md`
+- `plugins/langalpha_research/skills/initiating-coverage/references/task5-assembly-phases.md`
 - `plugins/langalpha_research/skills/initiating-coverage/references/valuation-methodologies.md`
 - `plugins/langalpha_research/skills/initiating-coverage/assets/quality-checklist.md`
 - `plugins/langalpha_research/skills/initiating-coverage/assets/report-template.md`
