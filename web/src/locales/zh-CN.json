@@ -123,7 +123,8 @@
     "collapse": "收起侧边栏",
     "expand": "展开侧边栏",
     "resize": "调整侧边栏宽度",
-    "plugins": "插件"
+    "plugins": "插件",
+    "orders": "订单"
   },
   "account": {
     "menuLabel": "账号菜单"
@@ -2284,7 +2285,88 @@
       "rejectedAction": "已拒绝 {{vendor}} {{tool}}",
       "refused": "连接器拒绝了此调用",
       "rejected": "你拒绝了此调用",
-      "noArguments": "无参数"
+      "noArguments": "无参数",
+      "orderAction": {
+        "place": "下单",
+        "replace": "改单",
+        "cancel": "撤单",
+        "confirm": "确认下单",
+        "stage": "预设订单",
+        "unstage": "删除预设订单",
+        "exercise": "行权",
+        "cancelExercise": "撤销行权"
+      },
+      "orderField": {
+        "account": "账户",
+        "instrument": "标的",
+        "assetClass": "资产类别",
+        "side": "方向",
+        "quantity": "数量",
+        "notional": "金额",
+        "orderType": "订单类型",
+        "limitPrice": "限价",
+        "stopPrice": "止损价",
+        "timeInForce": "有效期",
+        "session": "交易时段",
+        "note": "备注"
+      },
+      "orderStatus": {
+        "proposed": "等待你批准",
+        "approved": "已批准，尚未发出",
+        "rejectedByUser": "你拒绝了这笔订单",
+        "refused": "已拒绝，未发出",
+        "submitting": "正在发往券商",
+        "submitted": "已发往券商",
+        "submittedStaged": "已预设，请在 {{vendor}} 确认",
+        "submittedStagedUnnamed": "已预设，等待你确认",
+        "pendingConfirm": "等待在券商端确认",
+        "working": "在券商挂单中",
+        "partiallyFilled": "部分成交",
+        "filled": "全部成交",
+        "cancelled": "已撤单",
+        "rejectedByVendor": "券商拒绝了这笔订单",
+        "failed": "未送达券商即失败",
+        "unknown": "结果未知"
+      },
+      "orderStatusShort": {
+        "proposed": "待批准",
+        "approved": "已批准",
+        "rejectedByUser": "已拒绝",
+        "refused": "未发出",
+        "submitting": "发送中",
+        "submitted": "已发出",
+        "submittedStaged": "已预设",
+        "pendingConfirm": "待确认",
+        "working": "挂单中",
+        "partiallyFilled": "部分成交",
+        "filled": "已成交",
+        "cancelled": "已撤单",
+        "rejectedByVendor": "券商拒绝",
+        "failed": "失败",
+        "unknown": "未知"
+      },
+      "orderOutcome": {
+        "orderId": "订单号",
+        "filled": "成交数量",
+        "avgFillPrice": "成交均价",
+        "fill": "成交",
+        "filledOf": "已成交 {{filled}} / {{qty}}",
+        "filledAt": "已成交 {{filled}}，成交价 {{price}}",
+        "fees": "费用",
+        "failure": "原因",
+        "decisionMessage": "你的原因"
+      },
+      "orderApproval": {
+        "notAnswered": "未获回应",
+        "reasonPlaceholder": "拒绝原因（可选）",
+        "arguments": "参数",
+        "approved": "已批准",
+        "rejected": "已拒绝"
+      },
+      "orderReceipt": {
+        "viewInOrders": "在订单页查看",
+        "openAt": "在 {{vendor}} 中打开"
+      }
     }
   },
   "setup": {
@@ -2779,6 +2861,134 @@
       "security4b": "API。"
     }
   },
+  "orders": {
+    "title": "订单",
+    "description": "智能体在券商处发起的每一笔订单，以及最终的结果。",
+    "empty": {
+      "noOrders": "暂无订单。智能体下单后会显示在这里。",
+      "noBrokerage": "尚未连接券商。在插件页连接一个之后，智能体下的每一笔订单都会显示在这里。",
+      "noBrokerageAction": "连接券商"
+    },
+    "noMatches": "没有符合筛选条件的订单。",
+    "loadFailed": "订单加载失败。",
+    "loadMore": "加载更多",
+    "loading": "加载中",
+    "hideValues": "隐藏金额",
+    "showValues": "显示金额",
+    "column": {
+      "created": "时间",
+      "mode": "类型",
+      "vendor": "券商",
+      "action": "操作",
+      "instrument": "标的",
+      "side": "方向",
+      "size": "数量",
+      "price": "类型与价格",
+      "status": "状态"
+    },
+    "stopLine": "止损价 {{price}}",
+    "filter": {
+      "vendor": "券商",
+      "mode": "类型",
+      "status": "状态",
+      "assetClass": "资产类别",
+      "all": "全部",
+      "clear": "清除"
+    },
+    "action": {
+      "place": "下单",
+      "replace": "改单",
+      "cancel": "撤单",
+      "confirm": "确认",
+      "stage": "预设",
+      "unstage": "取消预设",
+      "exercise": "行权",
+      "cancel_exercise": "取消行权"
+    },
+    "side": {
+      "buy": "买入",
+      "sell": "卖出",
+      "sell_short": "卖空",
+      "buy_to_cover": "买入平仓"
+    },
+    "orderType": {
+      "market": "市价",
+      "limit": "限价",
+      "stop": "止损",
+      "stop_limit": "止损限价",
+      "market_if_touched": "触价市价",
+      "limit_if_touched": "触价限价",
+      "auction": "集合竞价",
+      "auction_limit": "竞价限价"
+    },
+    "timeInForce": {
+      "day": "当日有效",
+      "gtc": "撤销前有效",
+      "overnight": "夜盘有效",
+      "overnight_next_day": "夜盘至次日",
+      "at_the_open": "开盘时执行"
+    },
+    "assetClass": {
+      "equity": "股票",
+      "option": "期权",
+      "option_combo": "期权组合",
+      "future": "期货",
+      "crypto": "加密货币",
+      "warrant": "权证",
+      "other": "其他"
+    },
+    "detail": {
+      "title": "订单",
+      "notFound": "无法查看这笔订单。",
+      "loadFailed": "暂时无法加载这笔订单，正在重试。",
+      "none": "无记录",
+      "order": "订单内容",
+      "target": "目标订单",
+      "assetClass": "资产类别",
+      "instrument": "标的",
+      "side": "方向",
+      "size": "数量",
+      "orderType": "订单类型",
+      "fill": "成交",
+      "filledQty": "已成交",
+      "avgFillPrice": "成交均价",
+      "fees": "费用",
+      "timeInForce": "有效期",
+      "session": "交易时段",
+      "note": "备注",
+      "timeline": "时间线",
+      "created": "发起",
+      "decided": "决定",
+      "executed": "发送",
+      "completed": "结束",
+      "approval": "审批",
+      "approvalRequired": "发送前已询问",
+      "approvalNotRequired": "无需询问直接发送",
+      "decisionMessage": "决定说明",
+      "failure": "失败原因",
+      "failureKind": "类别",
+      "failureCode": "代码",
+      "failureMessage": "信息",
+      "route": "路由",
+      "provenance": "来源",
+      "vendor": "券商",
+      "account": "账户",
+      "tool": "工具",
+      "vendorOrderId": "券商订单号",
+      "attemptId": "记录编号",
+      "parent": "替代",
+      "thread": "对话",
+      "openThread": "打开对话"
+    },
+    "statusGroup": {
+      "awaiting": "等待你批准",
+      "open": "进行中",
+      "filled": "已成交",
+      "cancelled": "已撤单",
+      "rejected": "已拒绝",
+      "failed": "失败"
+    }
+  },
   "plugins": {
     "title": "插件",
     "description": "在所有工作区中可供智能体使用的 MCP 服务器、技能与凭据。",
@@ -2839,7 +3049,8 @@
         },
         "trading": {
           "label": "实盘下单",
-          "desc": "使用账户中的真实资金买入、卖出、改单和撤单。"
+          "desc": "使用账户中的真实资金买入、卖出、改单和撤单。除非你在下方关闭，每笔订单都会先征询你的确认。",
+          "needs": "需同时开启账户与持仓，才能跟踪已下的订单。"
         }
       },
       "consent": {
@@ -3155,6 +3366,17 @@
       "toolAccessNote": "PTC 工具由智能体在代码中调用；直接工具是应用可展示的单次调用。下方单个工具的设置优先于这些开关。",
       "groupDefaults": "按工具组默认方式调用",
       "groupDefaultsDesc": "开启后，由每个工具组决定其工具的调用方式，支持的工具作为应用可展示的单次调用运行；关闭后，该行可切换的工具全部由智能体在代码中调用。",
+      "orderApprovalLive": "每笔实盘订单前先询问",
+      "orderApprovalLiveDesc": "每笔实盘订单都会先停下等待你确认。关闭后，智能体会直接动用真实资金下单。",
+      "orderApprovalPaper": "每笔模拟订单前先询问",
+      "orderApprovalPaperDesc": "模拟订单不涉及真实资金，默认直接执行。开启后，每笔也会等你确认。",
+      "orderApprovalStaged": "在券商挂出预设订单前先询问",
+      "orderApprovalStagedDesc": "预设会把订单写入你的真实账户，由你自己发出。它本身不会成交，但账户是真实的。",
+      "orderModeLive": "实盘",
+      "orderModePaper": "模拟",
+      "orderModeStaged": "预设",
+      "orderModeTitle": "该工具作用的订单类型",
+      "viewOrders": "查看订单",
       "binding_ptc": "PTC",
       "binding_direct": "直接",
       "binding_both": "两者",
@@ -3162,7 +3384,21 @@
       "bindingCustom": "自定义",
       "bindingReset": "重置",
       "bindingResetAria": "将 {{name}} 重置为该行默认",
-      "bindingPinned": "实盘下单工具仅作为应用可展示的直接调用运行。"
+      "bindingPinned": "下单工具仅作为应用可展示的直接调用运行。",
+      "asksFirst": "先询问",
+      "asksFirstTitle": "每次调用都会先停下等待你确认",
+      "searchPlaceholder": "筛选工具",
+      "searchClear": "清除工具筛选",
+      "searchEmpty": "没有匹配的工具。",
+      "bulkSelectAll": "全选 {{count}} 项",
+      "bulkSelectAllAria": "选择当前显示的所有工具",
+      "bulkSelectGroupAria": "选择 {{name}} 中的所有工具",
+      "bulkSelectToolAria": "选择 {{name}}",
+      "bulkSelected": "已选 {{count}} 项",
+      "bulkBindingAria": "所选工具的调用方式",
+      "bulkReset": "恢复默认",
+      "bulkClear": "取消选择",
+      "bulkSkipped": "{{count}} 项跳过，该方式不被允许"
     }
   }
 }

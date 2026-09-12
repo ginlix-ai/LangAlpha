@@ -12,7 +12,7 @@ import {
   ListError,
   ListSkeleton,
   SectionHeader,
-} from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+} from '@/components/mcp/McpPrimitives';
 import type { SkillInfo } from '@/pages/ChatAgent/utils/api';
 import { groupBy, matchesFilter } from '../utils/groupOrigins';
 import { withDetail } from '../utils/detailParam';

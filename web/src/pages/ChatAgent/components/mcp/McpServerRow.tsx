@@ -15,7 +15,7 @@ import {
   ServerNameLine,
   ServerRowShell,
   TagBadge,
-} from './McpPrimitives';
+} from '@/components/mcp/McpPrimitives';
 import { PluginOriginBadge } from '@/pages/Plugins/components/PluginBadges';
 import { isHostDiscovered, isOauthBroken, showsWorkspaceDetail } from './mcpState';
 import type { EffectiveServer } from '../../utils/api';

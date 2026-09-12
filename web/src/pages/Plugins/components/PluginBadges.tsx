@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { MetaText, TagBadge } from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+import { MetaText, TagBadge } from '@/components/mcp/McpPrimitives';
 import { isPluginSuppressed, type PluginProvenancedRow } from '../utils/provenance';
 
 /**

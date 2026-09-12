@@ -138,6 +138,16 @@ export const queryKeys = {
     list:   () => [...queryKeys.plugins.all, 'list'],
     detail: (name: string) => [...queryKeys.plugins.all, 'detail', name],
   },
+  // The user's order attempts. The list is paged by the server on a keyset
+  // cursor, so a filter set is its own list rather than a client-side view of
+  // one: the key carries the filters, and changing one starts a new page 1.
+  orders: {
+    all:    ['orders'],
+    lists:  () => [...queryKeys.orders.all, 'list'],
+    any:    () => [...queryKeys.orders.all, 'any'],
+    list:   (filters: Record<string, string | string[]>) => [...queryKeys.orders.lists(), filters],
+    detail: (attemptId: string) => [...queryKeys.orders.all, 'detail', attemptId],
+  },
   // Workspace-tier vault. Scoped under the workspace id so a mutation
   // invalidates that workspace's secrets AND blueprints (the recommended-
   // credentials list is derived from them) without touching a sibling's cache.

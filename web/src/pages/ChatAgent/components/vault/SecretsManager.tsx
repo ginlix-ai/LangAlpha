@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { KeyRound, Plus } from 'lucide-react';
-import { ListEmpty, ListError, ListHeader, ListSkeleton } from '../mcp/McpPrimitives';
+import { ListEmpty, ListError, ListHeader, ListSkeleton } from '@/components/mcp/McpPrimitives';
 import { formatApiErrorDetail, type VaultBlueprint } from '../../utils/api';
 import { BlueprintCards } from './BlueprintCards';
 import { EMPTY_DRAFT, SecretAddForm, SecretEditForm, type SecretDraft } from './SecretEditor';

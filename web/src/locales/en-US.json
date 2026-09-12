@@ -123,7 +123,8 @@
     "collapse": "Collapse sidebar",
     "expand": "Expand sidebar",
     "resize": "Resize sidebar",
-    "plugins": "Plugins"
+    "plugins": "Plugins",
+    "orders": "Orders"
   },
   "account": {
     "menuLabel": "Account menu"
@@ -2305,7 +2306,88 @@
       "rejectedAction": "Rejected {{vendor}} {{tool}}",
       "refused": "The connector refused this call",
       "rejected": "You rejected this call",
-      "noArguments": "No arguments"
+      "noArguments": "No arguments",
+      "orderAction": {
+        "place": "Place order",
+        "replace": "Replace order",
+        "cancel": "Cancel order",
+        "confirm": "Confirm order",
+        "stage": "Stage order",
+        "unstage": "Remove staged order",
+        "exercise": "Exercise option",
+        "cancelExercise": "Cancel exercise"
+      },
+      "orderField": {
+        "account": "Account",
+        "instrument": "Instrument",
+        "assetClass": "Asset class",
+        "side": "Side",
+        "quantity": "Quantity",
+        "notional": "Amount",
+        "orderType": "Order type",
+        "limitPrice": "Limit price",
+        "stopPrice": "Stop price",
+        "timeInForce": "Time in force",
+        "session": "Session",
+        "note": "Note"
+      },
+      "orderStatus": {
+        "proposed": "Awaiting your approval",
+        "approved": "Approved, not yet sent",
+        "rejectedByUser": "You rejected this order",
+        "refused": "Refused, never sent",
+        "submitting": "Sending to the brokerage",
+        "submitted": "Sent to the brokerage",
+        "submittedStaged": "Staged, confirm in {{vendor}}",
+        "submittedStagedUnnamed": "Staged, awaiting your confirmation",
+        "pendingConfirm": "Waiting for confirmation at the brokerage",
+        "working": "Working at the brokerage",
+        "partiallyFilled": "Partially filled",
+        "filled": "Filled",
+        "cancelled": "Cancelled",
+        "rejectedByVendor": "Rejected by the brokerage",
+        "failed": "Failed before the brokerage answered",
+        "unknown": "Outcome unknown"
+      },
+      "orderStatusShort": {
+        "proposed": "Awaiting approval",
+        "approved": "Approved",
+        "rejectedByUser": "Rejected",
+        "refused": "Refused",
+        "submitting": "Sending",
+        "submitted": "Sent",
+        "submittedStaged": "Staged",
+        "pendingConfirm": "Confirming",
+        "working": "Working",
+        "partiallyFilled": "Partial fill",
+        "filled": "Filled",
+        "cancelled": "Cancelled",
+        "rejectedByVendor": "Broker rejected",
+        "failed": "Failed",
+        "unknown": "Unknown"
+      },
+      "orderOutcome": {
+        "orderId": "Order id",
+        "filled": "Filled quantity",
+        "avgFillPrice": "Average fill price",
+        "fill": "Fill",
+        "filledOf": "Filled {{filled}} of {{qty}}",
+        "filledAt": "Filled {{filled}} at {{price}}",
+        "fees": "Fees",
+        "failure": "Reason",
+        "decisionMessage": "Your reason"
+      },
+      "orderApproval": {
+        "notAnswered": "Not answered",
+        "reasonPlaceholder": "Reason for rejecting, optional",
+        "arguments": "Arguments",
+        "approved": "Approved",
+        "rejected": "Rejected"
+      },
+      "orderReceipt": {
+        "viewInOrders": "View in Orders",
+        "openAt": "Open in {{vendor}}"
+      }
     }
   },
   "setup": {
@@ -2802,6 +2884,134 @@
       "security4b": "API is allowed."
     }
   },
+  "orders": {
+    "title": "Orders",
+    "description": "Every order the agent proposed at a broker, and what happened to it.",
+    "empty": {
+      "noOrders": "No orders yet. When the agent places one, it lands here.",
+      "noBrokerage": "No brokerage connected. Connect one on the Plugins page and every order the agent places lands here.",
+      "noBrokerageAction": "Connect a brokerage"
+    },
+    "noMatches": "No orders match these filters.",
+    "loadFailed": "Could not load orders.",
+    "loadMore": "Load more",
+    "loading": "Loading",
+    "hideValues": "Hide amounts",
+    "showValues": "Show amounts",
+    "column": {
+      "created": "Time",
+      "mode": "Mode",
+      "vendor": "Broker",
+      "action": "Action",
+      "instrument": "Instrument",
+      "side": "Side",
+      "size": "Size",
+      "price": "Type and price",
+      "status": "Status"
+    },
+    "stopLine": "Stop {{price}}",
+    "filter": {
+      "vendor": "Broker",
+      "mode": "Mode",
+      "status": "Status",
+      "assetClass": "Asset class",
+      "all": "All",
+      "clear": "Clear"
+    },
+    "action": {
+      "place": "Place",
+      "replace": "Replace",
+      "cancel": "Cancel",
+      "confirm": "Confirm",
+      "stage": "Stage",
+      "unstage": "Unstage",
+      "exercise": "Exercise",
+      "cancel_exercise": "Cancel exercise"
+    },
+    "side": {
+      "buy": "Buy",
+      "sell": "Sell",
+      "sell_short": "Sell short",
+      "buy_to_cover": "Buy to cover"
+    },
+    "orderType": {
+      "market": "Market",
+      "limit": "Limit",
+      "stop": "Stop",
+      "stop_limit": "Stop limit",
+      "market_if_touched": "Market if touched",
+      "limit_if_touched": "Limit if touched",
+      "auction": "Auction",
+      "auction_limit": "Auction limit"
+    },
+    "timeInForce": {
+      "day": "Day",
+      "gtc": "Good till cancelled",
+      "overnight": "Overnight",
+      "overnight_next_day": "Overnight into the next day",
+      "at_the_open": "At the open"
+    },
+    "assetClass": {
+      "equity": "Equity",
+      "option": "Option",
+      "option_combo": "Option combo",
+      "future": "Future",
+      "crypto": "Crypto",
+      "warrant": "Warrant",
+      "other": "Other"
+    },
+    "detail": {
+      "title": "Order",
+      "notFound": "This order is not available.",
+      "loadFailed": "This order could not be loaded. Retrying.",
+      "none": "Not recorded",
+      "order": "Order",
+      "target": "Target order",
+      "assetClass": "Asset class",
+      "instrument": "Instrument",
+      "side": "Side",
+      "size": "Size",
+      "orderType": "Order type",
+      "fill": "Fill",
+      "filledQty": "Filled",
+      "avgFillPrice": "Average fill price",
+      "fees": "Fees",
+      "timeInForce": "Time in force",
+      "session": "Session",
+      "note": "Note",
+      "timeline": "Timeline",
+      "created": "Proposed",
+      "decided": "Decided",
+      "executed": "Sent",
+      "completed": "Settled",
+      "approval": "Approval",
+      "approvalRequired": "Asked before sending",
+      "approvalNotRequired": "Sent without asking",
+      "decisionMessage": "Decision note",
+      "failure": "Failure",
+      "failureKind": "Kind",
+      "failureCode": "Code",
+      "failureMessage": "Message",
+      "route": "Route",
+      "provenance": "Where it came from",
+      "vendor": "Broker",
+      "account": "Account",
+      "tool": "Tool",
+      "vendorOrderId": "Broker order",
+      "attemptId": "Attempt",
+      "parent": "Replaces",
+      "thread": "Conversation",
+      "openThread": "Open the conversation"
+    },
+    "statusGroup": {
+      "awaiting": "Awaiting your approval",
+      "open": "Open at the broker",
+      "filled": "Filled",
+      "cancelled": "Cancelled",
+      "rejected": "Rejected",
+      "failed": "Failed"
+    }
+  },
   "plugins": {
     "title": "Plugins",
     "description": "MCP servers, skills, and credentials available to your agent in every workspace.",
@@ -2862,7 +3072,8 @@
         },
         "trading": {
           "label": "Live orders",
-          "desc": "Buy, sell, replace and cancel with real money in your account."
+          "desc": "Buy, sell, replace and cancel with real money in your account. Each order asks you first unless you turn that off below.",
+          "needs": "Needs Account and positions, so placed orders can be followed."
         }
       },
       "consent": {
@@ -3183,6 +3394,17 @@
       "toolAccessNote": "PTC tools are called from the agent's code; Direct tools are single calls the app can show. A tool's own setting below beats these switches.",
       "groupDefaults": "Use each tool group's default",
       "groupDefaultsDesc": "On, each tool group decides how its tools run, so those built for it run as single calls the app can show. Off, everything this row can move runs from the agent's code.",
+      "orderApprovalLive": "Ask before every live order",
+      "orderApprovalLiveDesc": "Every live order stops for your confirmation first. Turned off, the agent spends real money without asking.",
+      "orderApprovalPaper": "Ask before every paper order",
+      "orderApprovalPaperDesc": "Paper orders spend nothing, so they run without stopping. Turn this on to confirm each one anyway.",
+      "orderApprovalStaged": "Ask before staging an order at the broker",
+      "orderApprovalStagedDesc": "Staging writes an order into your real account for you to send yourself. Nothing is placed, but the account is real.",
+      "orderModeLive": "live",
+      "orderModePaper": "paper",
+      "orderModeStaged": "staged",
+      "orderModeTitle": "The kind of order this tool acts on",
+      "viewOrders": "View orders",
       "binding_ptc": "PTC",
       "binding_direct": "Direct",
       "binding_both": "Both",
@@ -3190,7 +3412,21 @@
       "bindingCustom": "custom",
       "bindingReset": "Reset",
       "bindingResetAria": "Reset {{name}} to the row default",
-      "bindingPinned": "Live order tools run only as direct calls the app can show."
+      "bindingPinned": "Order tools run only as direct calls the app can show.",
+      "asksFirst": "asks first",
+      "asksFirstTitle": "Stops for your confirmation on every call",
+      "searchPlaceholder": "Filter tools",
+      "searchClear": "Clear tool filter",
+      "searchEmpty": "No tools match that filter.",
+      "bulkSelectAll": "Select all {{count}}",
+      "bulkSelectAllAria": "Select every tool shown",
+      "bulkSelectGroupAria": "Select every tool in {{name}}",
+      "bulkSelectToolAria": "Select {{name}}",
+      "bulkSelected": "{{count}} selected",
+      "bulkBindingAria": "How the agent reaches the selected tools",
+      "bulkReset": "Reset to default",
+      "bulkClear": "Clear selection",
+      "bulkSkipped": "{{count}} skipped, not allowed"
     }
   }
 }

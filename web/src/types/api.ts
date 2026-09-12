@@ -323,5 +323,30 @@ export interface ChatMessageBody {
   llm_model?: string;
   reasoning_effort?: string;
   fast_mode?: true;
-  hitl_response?: Record<string, { decisions: Array<{ type: string }> }>;
+  hitl_response?: HitlResponseBody;
 }
+
+/** One answer on a resume: the verdict, plus the user's own message if they
+ *  typed one. */
+export interface HitlDecisionBody {
+  type: string;
+  message?: string;
+}
+
+/**
+ * What one interrupt is answered with.
+ *
+ * `decisions` stays positional and answers every request the interrupt raised,
+ * in the order it raised them. `order_decisions` answers the keyed ones by
+ * attempt id, and both travel together on a mixed interrupt so neither half
+ * has to be inferred from the other. A keyed request missing from the map is
+ * refused by the server, so the client sends every one of them rather than
+ * letting absence stand for approval.
+ */
+export interface HitlResumeEntry {
+  decisions: HitlDecisionBody[];
+  order_decisions?: Record<string, HitlDecisionBody>;
+}
+
+/** The `hitl_response` map a resume sends, keyed by interrupt id. */
+export type HitlResponseBody = Record<string, HitlResumeEntry>;

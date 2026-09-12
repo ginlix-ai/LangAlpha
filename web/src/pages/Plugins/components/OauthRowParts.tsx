@@ -3,7 +3,7 @@ import { AlertTriangle, Link2, Link2Off, Monitor, RefreshCw } from 'lucide-react
 
 import { Loader } from '@/components/ui/loader';
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu';
-import { MetaText } from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+import { MetaText } from '@/components/mcp/McpPrimitives';
 import { canDisconnectOauth } from '@/pages/ChatAgent/components/mcp/mcpState';
 import type { McpOauthStatus } from '@/pages/ChatAgent/utils/api';
 import { connectBlock, type Brokerage } from '../brokerages';

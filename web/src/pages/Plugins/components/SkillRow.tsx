@@ -14,7 +14,7 @@ import {
   ServerNameLine,
   ServerRowShell,
   TagBadge,
-} from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+} from '@/components/mcp/McpPrimitives';
 import type { SkillInfo } from '@/pages/ChatAgent/utils/api';
 import { PluginOriginBadge, PluginSuppressedBadge } from './PluginBadges';
 

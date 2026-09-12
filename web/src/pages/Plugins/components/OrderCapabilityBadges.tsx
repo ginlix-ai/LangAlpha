@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { TagBadge } from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+import { TagBadge } from '@/components/mcp/McpPrimitives';
 import { activeRungs, type Brokerage } from '../brokerages';
 
 /**

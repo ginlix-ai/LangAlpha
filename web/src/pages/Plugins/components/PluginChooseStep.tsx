@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { TagBadge } from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+import { TagBadge } from '@/components/mcp/McpPrimitives';
 import type { PluginCandidate } from '@/pages/ChatAgent/utils/api';
 import { StepError } from './StepError';
 

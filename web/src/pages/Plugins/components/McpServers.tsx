@@ -31,7 +31,7 @@ import {
   ListError,
   ListHeader,
   ListSkeleton,
-} from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+} from '@/components/mcp/McpPrimitives';
 import {
   formatApiErrorDetail,
   type BuiltinMcpServer,

@@ -71,9 +71,12 @@ export function directToolDisplayName(
   return parsed ? humanizeKey(parsed.tool) : null;
 }
 
-// account_id, acc_id, acct_id and their camelCase spellings: vendors name
-// this field either way, and the collapsed row masks it however it arrives.
-const ACCOUNT_KEY = /(^|_)acc(oun)?t?_?id$/i;
+// Every spelling a vendor has used for "which account": account_id, acc_id and
+// acct_id, the number forms (account_number, rhs_account_number, acc_no), the
+// bare `account`, and each of those in camelCase. One expression rather than a
+// list, because the surfaces that mask this field all read it from here and a
+// spelling missing from one of them is the whole account on screen.
+const ACCOUNT_KEY = /(^|_)acc(oun)?t?(_?(id|no|num|number))?$/i;
 
 export function isAccountIdKey(key: string): boolean {
   return ACCOUNT_KEY.test(key);
@@ -87,14 +90,29 @@ export function maskAccountId(value: unknown): string {
   return `${MASK}${s.slice(-4)}`;
 }
 
+/**
+ * The masked form of one field, or null when the field is not an account id to
+ * mask.
+ *
+ * Only a scalar is an id. `account` is one of the spellings, and a key by that
+ * name can hold the whole account record, which `maskAccountId` would reduce
+ * to four dots and the tail of "[object Object]", losing it rather than
+ * protecting it. A record is masked field by field instead.
+ */
+export function maskedAccountValue(key: string, value: unknown): string | null {
+  if (!isAccountIdKey(key)) return null;
+  if (typeof value === 'number') return maskAccountId(value);
+  return typeof value === 'string' && value !== '' ? maskAccountId(value) : null;
+}
+
 /** Mask every account id in `value`, at any depth, before it is serialized. */
-function maskDeep(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(maskDeep);
+export function maskAccountIdsDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(maskAccountIdsDeep);
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([k, v]) => [
         k,
-        isAccountIdKey(k) ? maskAccountId(v) : maskDeep(v),
+        maskedAccountValue(k, v) ?? maskAccountIdsDeep(v),
       ]),
     );
   }
@@ -106,7 +124,7 @@ function shortValue(value: unknown): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   try {
-    const s = JSON.stringify(maskDeep(value));
+    const s = JSON.stringify(maskAccountIdsDeep(value));
     return s.length > 40 ? `${s.slice(0, 37)}...` : s;
   } catch {
     return String(value);
@@ -114,9 +132,10 @@ function shortValue(value: unknown): string {
 }
 
 /**
- * One line of `key value` pairs for the collapsed row. Account ids are masked
- * here and only here: the row is glanceable by anyone looking over a shoulder,
- * while the expanded views show what was actually sent.
+ * One line of `key value` pairs for the collapsed row. Account ids are masked,
+ * as they are everywhere the chat draws a direct call: the id is worth nothing
+ * to the person reading their own screen and everything to anyone looking over
+ * their shoulder.
  */
 export function summarizeDirectToolArgs(
   args: Record<string, unknown> | null | undefined,
@@ -126,7 +145,7 @@ export function summarizeDirectToolArgs(
   const entries = Object.entries(args).filter(([, v]) => v !== undefined);
   if (entries.length === 0) return null;
   const parts = entries.slice(0, maxEntries).map(([k, v]) =>
-    `${k} ${isAccountIdKey(k) ? maskAccountId(v) : shortValue(v)}`,
+    `${k} ${maskedAccountValue(k, v) ?? shortValue(v)}`,
   );
   const more = entries.length - maxEntries;
   if (more > 0) parts.push(`+${more}`);

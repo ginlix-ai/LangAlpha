@@ -24,6 +24,7 @@ import {
   setMcpCatalogServerEnabled,
   setMcpCatalogServerBinding,
   mergeToolBinding,
+  mergeOrderApproval,
   importMcpCatalogServers,
   disconnectMcpOauth,
   refreshMcpOauthSchemas,
@@ -524,6 +525,12 @@ export function useSetMcpServerBinding() {
                   }),
                   ...(body.binding_preset !== undefined && {
                     binding_preset: body.binding_preset,
+                  }),
+                  ...(body.order_approval !== undefined && {
+                    order_approval: mergeOrderApproval(
+                      s.order_approval,
+                      body.order_approval,
+                    ),
                   }),
                 }
               : s,

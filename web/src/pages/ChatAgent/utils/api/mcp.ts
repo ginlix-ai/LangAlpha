@@ -11,6 +11,7 @@ import {
   type McpOAuthFlow,
 } from '@/lib/desktop';
 import { foldToolName } from '@/pages/ChatAgent/utils/directTools';
+import type { OrderAction, OrderMode } from '@/types/orders';
 
 //
 // Per-workspace effective list mixes built-in servers with workspace-added
@@ -70,9 +71,55 @@ export interface McpToolSummary {
    * Python. Absent means unrestricted.
    */
   allowed?: McpToolBinding[];
+  /** The call stops for the user's confirmation. Such a tool cannot be `both`. */
+  approval?: boolean;
+  /**
+   * What this tool does to an order, or null for every tool that touches none.
+   * The kind of order is the whole cost of the call, so it is what the row
+   * badges and what the gate above it is keyed by.
+   */
+  order?: McpToolOrder | null;
 }
 
 export type McpToolBinding = 'ptc' | 'direct' | 'both';
+
+/** The catalog's names for the order vocabulary, which is one vocabulary: the
+ *  gate a row configures here and the interrupt a stopped call raises have to
+ *  agree on what `staged` means, so both read the wire types. */
+export type McpOrderAction = OrderAction;
+export type McpOrderMode = OrderMode;
+
+export interface McpToolOrder {
+  action: McpOrderAction;
+  mode: McpOrderMode;
+}
+
+/**
+ * Whether an order of each kind stops for the user, one answer per mode.
+ * Three and not one because the three cost different things: a live order
+ * spends real money, a staged one writes into the real account without placing
+ * anything, and a paper one spends nothing. A response carries all three keys.
+ */
+export interface McpOrderApproval {
+  live: boolean;
+  paper: boolean;
+  staged: boolean;
+}
+
+/** What a mode falls back to on a row nobody has set, mirroring the server's
+ *  own defaults so the switch never draws a state the backend disagrees with. */
+export const ORDER_APPROVAL_DEFAULTS: Readonly<McpOrderApproval> = {
+  live: true,
+  paper: false,
+  staged: true,
+};
+
+/** The gate as it stands, filling in whatever the row has never been asked. */
+export function orderApprovalOf(
+  stored: McpOrderApproval | null | undefined,
+): McpOrderApproval {
+  return { ...ORDER_APPROVAL_DEFAULTS, ...(stored ?? {}) };
+}
 
 /** The one row-wide override: send everything the row may move through the
  * sandbox. Null, the only other state, leaves each group's own default in force. */
@@ -89,6 +136,18 @@ export interface McpServerBindingPatch {
   tool_binding_set?: Record<string, McpToolBinding>;
   tool_binding_unset?: string[];
   binding_preset?: McpBindingPreset | null;
+  /** Only the modes that changed; the server merges them onto the stored map.
+   *  Sending the whole map would let one switch write back the other two as
+   *  this tab last read them. */
+  order_approval?: Partial<McpOrderApproval>;
+}
+
+/** The server's merge, mirrored for the optimistic view. */
+export function mergeOrderApproval(
+  stored: McpOrderApproval | null | undefined,
+  patch: Partial<McpOrderApproval>,
+): McpOrderApproval {
+  return { ...orderApprovalOf(stored), ...patch };
 }
 
 /** The server's merge, mirrored for the optimistic view: a delta replaces
@@ -263,12 +322,10 @@ export interface CatalogServer {
    * reach Flash at all. */
   has_direct_tools?: boolean;
   binding_preset?: McpBindingPreset | null;
-  /**
-   * Retained but inert. The backend keeps the column for a later stage and
-   * nothing reads it now: live order tools run as direct calls the app can
-   * show, and no call stops for confirmation.
-   */
-  order_approval?: boolean;
+  /** Whether an order stops for confirmation, per kind of order. Absent on a
+   *  backend that predates the map; `ORDER_APPROVAL_DEFAULTS` is the answer
+   *  then, and it is the answer for a key the row has never been asked. */
+  order_approval?: McpOrderApproval;
   /** Host-side discovered tool count for the current config (OAuth servers). */
   tool_count?: number | null;
   /** Path on this origin to the mark the server declared in its handshake.
@@ -346,6 +403,12 @@ export interface CapabilityGroup {
    * backend that predates it, which reads as "not a rung" and costs a badge.
    */
   rung?: boolean;
+  /**
+   * Other groups this one needs granted to be in force. The consent dialog
+   * links its switches by it, so no vendor's rule is restated in this build.
+   * Absent on a backend that predates it, which links nothing.
+   */
+  requires?: string[];
 }
 
 export async function getBrokerages(): Promise<Brokerage[]> {
@@ -540,6 +603,12 @@ export async function getMcpCatalog(): Promise<CatalogServerList> {
  * side to the row's current config — empty until a discovery has run). */
 export async function getMcpCatalogServerTools(name: string): Promise<{
   server_name: string;
+  /** The kinds of order this vendor has at all, which is not the same as the
+   *  kinds its snapshot shows: the curation is the vendor's shape and the
+   *  snapshot is one moment of discovery, so a row whose tools have never been
+   *  read still gets the gates that will govern them. Empty on a server that
+   *  places no orders, and on a backend that predates the field. */
+  order_modes: McpOrderMode[];
   tools: McpToolSummary[];
   discovered_at: string | null;
 }> {
@@ -548,6 +617,7 @@ export async function getMcpCatalogServerTools(name: string): Promise<{
   );
   return {
     server_name: data.server_name ?? name,
+    order_modes: data.order_modes ?? [],
     tools: data.tools ?? [],
     discovered_at: data.discovered_at ?? null,
   };

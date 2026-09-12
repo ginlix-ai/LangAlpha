@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { ListChecks, Search, X } from 'lucide-react';
-import { HeaderButton } from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+import { HeaderButton } from '@/components/mcp/McpPrimitives';
 
 /**
  * The tab-level filter row, shared by all three lists: one generous search

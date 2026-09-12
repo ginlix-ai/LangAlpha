@@ -1,4 +1,12 @@
 /** SSE event type union and per-event interfaces */
+import type {
+  OrderAction,
+  OrderFailure,
+  OrderMode,
+  OrderMoney,
+  OrderStatus,
+  OrderSummary,
+} from './orders';
 
 /**
  * `error_type` on a task's terminal frame when the credit gate stopped it,
@@ -265,6 +273,81 @@ export interface Attachment {
   [key: string]: unknown;
 }
 
+export type {
+  OrderAction,
+  OrderFailure,
+  OrderInstrument,
+  OrderMode,
+  OrderMoney,
+  OrderStatus,
+  OrderSummary,
+} from './orders';
+
+/**
+ * The order a stopped call would place, as the server summarizes it: the
+ * normalized order plus who would place it and how.
+ *
+ * The interrupt and the receipt are drawn from this one map. Only `action` and
+ * `mode` are guaranteed; every other field is what the vendor's adapter could
+ * normalize out of the arguments, so each is read on its own and a missing one
+ * is simply not drawn. This rides an order path where showing a stale or
+ * invented number is worse than showing none.
+ */
+export interface OrderProposal extends OrderSummary {
+  action: OrderAction;
+  mode: OrderMode;
+  vendor?: string | null;
+  tool?: string | null;
+  /** The vendor account, masked on every surface that draws it. */
+  account_ref?: string | null;
+}
+
+/** What the brokerage answered, mapped onto the attempt lifecycle. */
+export interface OrderOutcome {
+  status: OrderStatus;
+  /** The vendor's own word for the state, kept because ours is a mapping. */
+  raw_status?: string | null;
+  vendor_order_id?: string | null;
+  /**
+   * Where the user has to go to finish this themselves. A staged instruction
+   * only becomes an order once it is opened in the vendor's own client, and
+   * this link is the only way there, so it is the card's primary affordance
+   * whenever the vendor sent one.
+   */
+  action_url?: string | null;
+  /** The tokens a later cancel needs (exchange, market, contract id). */
+  route?: Record<string, string> | null;
+  filled_qty?: string | null;
+  avg_fill_price?: string | null;
+  fees?: OrderMoney | null;
+  failure?: OrderFailure | null;
+  /** The reason a person typed when they rejected the order. The receipt is
+   *  where the settled card reads it back from, so it survives a reload. */
+  decision_message?: string | null;
+  executed_at?: string | null;
+  completed_at?: string | null;
+}
+
+/**
+ * The order receipt on a tool result's artifact, under `order_receipt`.
+ *
+ * One attempt's whole story: what was asked (`order`, the same map the
+ * approval card was drawn from) and what came back (`outcome`). It rides the
+ * ToolMessage, so a reload replaying the checkpoint draws the same card. A
+ * rejected, refused or failed attempt carries one too, which is what lets the
+ * card render an order that never reached a brokerage.
+ */
+export interface OrderReceipt {
+  attempt_id: string;
+  vendor?: string | null;
+  tool?: string | null;
+  action?: OrderAction | null;
+  mode?: OrderMode | null;
+  account_ref?: string | null;
+  order?: OrderProposal | null;
+  outcome: OrderOutcome;
+}
+
 export interface ActionRequest {
   type?: string;
   name?: string;
@@ -279,6 +362,14 @@ export interface ActionRequest {
   thread_id?: string;
   report_back?: boolean;
   tool_call_id?: string;
+  /**
+   * The order attempt this request answers for. Its presence is what makes a
+   * request keyed: the resume answers it by this id rather than by its slot,
+   * and history settles its card by this id rather than by position.
+   */
+  attempt_id?: string;
+  /** The order this call would place, or null for a call that places none. */
+  order?: OrderProposal | null;
   /** credit_pause: the quota service's denial copy, relayed verbatim. */
   message?: string;
 }
@@ -286,6 +377,10 @@ export interface ActionRequest {
 export interface InterruptEvent extends BaseSSEEvent {
   event: 'interrupt';
   interrupt_id?: string;
+  /** `order_approval` for an interrupt raised by the order gate. Its action
+   *  requests still carry the HITL shape, so the card renders the same way;
+   *  the kind is what says the requests are keyed. */
+  kind?: string;
   action_requests?: ActionRequest[];
   thread_id?: string;
   role?: string;

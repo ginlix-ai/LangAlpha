@@ -4,7 +4,7 @@ import { Loader } from '@/components/ui/loader';
 import {
   EnabledToggle,
   TagBadge,
-} from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+} from '@/components/mcp/McpPrimitives';
 import { useSkillContent } from '@/hooks/useSkills';
 import { createDateFormatter } from '@/lib/format';
 import type { SkillInfo } from '@/pages/ChatAgent/utils/api';

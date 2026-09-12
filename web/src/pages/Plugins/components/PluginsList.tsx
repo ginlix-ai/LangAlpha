@@ -9,7 +9,7 @@ import {
   ListError,
   ListHeader,
   ListSkeleton,
-} from '@/pages/ChatAgent/components/mcp/McpPrimitives';
+} from '@/components/mcp/McpPrimitives';
 import { usePlugins } from '@/hooks/usePlugins';
 import {
   deletePlugin,
