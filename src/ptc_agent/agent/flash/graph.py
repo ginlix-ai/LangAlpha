@@ -16,6 +16,7 @@ def build_flash_graph(
     store: Any | None = None,
     response_format: Any | None = None,
     direct_mcp: Any | None = None,
+    order_ledger: Any | None = None,
 ) -> Any:
     """Build flash agent graph without sandbox.
 
@@ -41,4 +42,5 @@ def build_flash_graph(
         store=store,
         response_format=response_format,
         direct_mcp=direct_mcp,
+        order_ledger=order_ledger,
     )

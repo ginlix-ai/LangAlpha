@@ -56,10 +56,22 @@ class HITLDecision(BaseModel):
 
 
 class HITLResponse(BaseModel):
-    """Response to a HITL interrupt containing decisions for each action request."""
+    """Response to a HITL interrupt: positional decisions, keyed order verdicts.
+
+    ``decisions`` answers the stock interrupt, where slot i is the answer to
+    action request i. ``order_decisions`` answers an order interrupt, where the
+    key is the attempt the verdict is about: an order authorizes one execution
+    of one call, so its answer cannot be positional, and an attempt nobody
+    names is refused rather than allowed through.
+    """
 
     decisions: List[HITLDecision] = Field(
-        description="List of decisions corresponding to each action request in the interrupt"
+        default_factory=list,
+        description="List of decisions corresponding to each action request in the interrupt",
+    )
+    order_decisions: Optional[Dict[str, HITLDecision]] = Field(
+        default=None,
+        description="Verdict per order attempt id, for an order_approval interrupt",
     )
 
 
@@ -132,14 +144,22 @@ def summarize_hitl_response_map(hitl_response: Mapping[str, Any]) -> Dict[str, A
 
     for interrupt_id, response in hitl_response.items():
         if hasattr(response, "decisions"):
-            decisions = getattr(response, "decisions")
+            decisions = list(getattr(response, "decisions") or [])
+            orders = getattr(response, "order_decisions", None) or {}
         elif isinstance(response, dict):
-            decisions = response.get("decisions") or []
+            decisions = list(response.get("decisions") or [])
+            orders = response.get("order_decisions") or {}
         else:
             raise TypeError(
                 "Unsupported HITL response type: "
                 f"interrupt_id={interrupt_id} type={type(response)!r}"
             )
+        # A declined order is a declined turn: the summary drives the stored
+        # feedback_action, and reading only the positional slots would file a
+        # rejected order as an approval.
+        decisions.extend(
+            orders.values() if hasattr(orders, "values") else []
+        )
 
         for decision in decisions:
             if hasattr(decision, "type"):
@@ -158,7 +178,10 @@ def summarize_hitl_response_map(hitl_response: Mapping[str, Any]) -> Dict[str, A
                 any_reject = True
                 if message:
                     msg = str(message).strip()
-                    if msg:
+                    # The web answers an order in its positional slot and
+                    # under order_decisions both, so the same reason arrives
+                    # twice; it is stored once.
+                    if msg and msg not in reject_messages:
                         reject_messages.append(msg)
 
     feedback_action = "DECLINED" if any_reject else "APPROVED"

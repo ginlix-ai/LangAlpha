@@ -49,11 +49,13 @@ def _interrupt_item(thread_id: str, interrupt: dict[str, Any]) -> dict[str, Any]
         action_requests = value
     elif isinstance(value, str):
         action_requests = [{"description": value}]
+    kind = value.get("kind") if isinstance(value, dict) else None
     return {
         "event": "interrupt",
         "data": {
             "thread_id": thread_id,
             "interrupt_id": interrupt.get("id"),
+            **({"kind": kind} if isinstance(kind, str) else {}),
             "action_requests": action_requests,
             "role": "assistant",
             "finish_reason": "interrupt",

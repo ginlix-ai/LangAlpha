@@ -11,7 +11,9 @@ from langgraph.errors import GraphBubbleUp
 from ptc_agent.agent.middleware.direct_mcp import (
     METADATA_KEY,
     DirectMcpPolicyMiddleware,
+    direct_tool_middleware,
     direct_tool_summary,
+    refused_message,
 )
 from ptc_agent.agent.middleware.tool.error_handling import format_tool_error
 
@@ -32,10 +34,10 @@ class _ToolSet:
     def __init__(self, tools, reason=None):
         self.tools = tools
         self.reason = reason
-        self.asked: list[tuple[str, str]] = []
+        self.asked: list[tuple[str, str, bool]] = []
 
-    async def check(self, server, tool):
-        self.asked.append((server, tool))
+    async def check(self, server, tool, approval=False):
+        self.asked.append((server, tool, approval))
         return self.reason
 
 
@@ -46,6 +48,17 @@ async def _ran(request):
 DIRECT = _tool(
     "mcp__moomoo__sim_trade_input_order",
     stamp={"server": "moomoo", "tool": "sim_trade_input_order"},
+)
+
+# Approval only ever rides on an order tool: nothing else is gated.
+GATED = _tool(
+    "mcp__moomoo__trading_order_place",
+    stamp={
+        "server": "moomoo",
+        "tool": "trading_order_place",
+        "order": {"action": "place", "mode": "live"},
+        "approval": True,
+    },
 )
 
 
@@ -64,7 +77,7 @@ async def test_direct_tool_runs_when_the_port_allows_it():
     mw = DirectMcpPolicyMiddleware(toolset)
     out = await mw.awrap_tool_call(_Request(DIRECT.name), _ran)
     assert out.content == "ran"
-    assert toolset.asked == [("moomoo", "sim_trade_input_order")]
+    assert toolset.asked == [("moomoo", "sim_trade_input_order", False)]
 
 
 @pytest.mark.asyncio
@@ -176,7 +189,7 @@ async def test_a_policy_check_that_raises_is_stamped_like_the_call():
     # the vendor call does, and it sits before the handler: left outside the
     # guard it would be the one remaining path that unwinds without identity.
     class Broken(_ToolSet):
-        async def check(self, server, tool):
+        async def check(self, server, tool, approval=False):
             raise ConnectionError("connection row unavailable")
 
     mw = DirectMcpPolicyMiddleware(Broken([DIRECT]))
@@ -225,3 +238,65 @@ class TestDirectToolSummaryImportHint:
             [_tool("mcp__acme__bad", stamp={"server": "acme", "tool": "---", "sandboxed": True})]
         )
         assert "importable" not in line
+
+
+class TestDirectToolMiddleware:
+    """What a turn installs for its directly bound tools, and in what order."""
+
+    def test_the_order_gate_wraps_the_consent_gate(self):
+        # The first wrapper is the outermost, so a consent refusal comes back
+        # through the order gate and settles the attempt it consumed.
+        stack = direct_tool_middleware(_ToolSet([GATED]), object())
+        assert [type(m).__name__ for m in stack] == [
+            "OrderGovernanceMiddleware",
+            "DirectMcpPolicyMiddleware",
+        ]
+
+    def test_without_a_ledger_nothing_governs_an_order(self):
+        stack = direct_tool_middleware(_ToolSet([GATED]), None)
+        assert [type(m).__name__ for m in stack] == ["DirectMcpPolicyMiddleware"]
+
+    def test_a_turn_with_no_direct_tools_installs_nothing(self):
+        assert direct_tool_middleware(_ToolSet([]), object()) == []
+        assert direct_tool_middleware(None, object()) == []
+
+
+@pytest.mark.asyncio
+async def test_the_gate_stamp_is_what_the_port_is_asked_about():
+    """The port refuses a call bound ungated on a row that now gates it, so it
+    has to be told what this turn stamped rather than re-deriving it."""
+    toolset = _ToolSet([GATED])
+    mw = DirectMcpPolicyMiddleware(toolset)
+    out = await mw.awrap_tool_call(_Request(GATED.name), _ran)
+    assert out.content == "ran"
+    assert toolset.asked == [("moomoo", "trading_order_place", True)]
+
+
+class TestRefusedMessage:
+    """The one builder both gates refuse through."""
+
+    def test_the_caller_owns_the_whole_sentence(self):
+        # The order gate names the order in its own words, so a prefix added
+        # here would arrive in the middle of somebody else's sentence.
+        out = refused_message(
+            {"id": "call-1", "name": "mcp__moomoo__place"},
+            "an order (live place at moomoo) runs only on the async path",
+            {"server": "moomoo", "tool": "trading_order_place"},
+        )
+        assert out.status == "error"
+        assert out.tool_call_id == "call-1"
+        assert out.content.startswith("an order")
+        assert out.artifact[METADATA_KEY] == {
+            "server": "moomoo",
+            "tool": "trading_order_place",
+        }
+
+    def test_a_receipt_rides_beside_the_stamp(self):
+        out = refused_message(
+            {"id": "call-1", "name": "mcp__moomoo__place"},
+            "refused",
+            {"server": "moomoo", "tool": "trading_order_place"},
+            receipt={"order_attempt": {"id": "900001"}},
+        )
+        assert out.artifact["order_attempt"] == {"id": "900001"}
+        assert out.artifact[METADATA_KEY]["server"] == "moomoo"

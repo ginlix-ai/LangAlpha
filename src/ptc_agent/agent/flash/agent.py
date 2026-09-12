@@ -31,10 +31,11 @@ from ptc_agent.agent.middleware.openai_prompt_caching import (
     OpenAIPromptCachingMiddleware,
 )
 from ptc_agent.agent.middleware.direct_mcp import (
-    DirectMcpPolicyMiddleware,
     DirectToolSet,
+    direct_tool_middleware,
     direct_tool_summary,
 )
+from ptc_agent.agent.middleware.order_governance import OrderLedger
 from ptc_agent.agent.middleware.skills.registry import (
     build_effective_skill_registry,
 )
@@ -189,15 +190,15 @@ class FlashAgent:
         store: Any | None = None,
         response_format: Any | None = None,
         direct_mcp: DirectToolSet | None = None,
+        order_ledger: OrderLedger | None = None,
     ) -> Any:
         """Create a Flash agent with minimal middleware stack.
 
         No MCP registry and no sandbox. ``direct_mcp`` is the one MCP surface
         Flash has: tools bound to the model as JSON tools through the relay,
         checked per call against the connection's current status and consent.
-        That check refuses; it does not ask. The per-call confirmation a live
-        order wants is what ``order_approval`` is reserved for, and it is not
-        built yet, so nothing here stops an order to put it to the user.
+        An order is stopped against the same durable attempt the PTC path
+        writes, so the user confirms before the vendor sees it.
 
         Args:
             checkpointer: Optional LangGraph checkpointer for state persistence
@@ -287,11 +288,10 @@ class FlashAgent:
 
         main_middleware.append(SteeringMiddleware())
 
-        # Consent is re-read per call here, so a tool the connection no longer
-        # covers is refused rather than reaching the vendor.
-        if direct_tools:
-            main_middleware.append(DirectMcpPolicyMiddleware(direct_mcp))
-            tools.extend(direct_tools)
+        # Consent is re-read per call, and an order is stopped against its own
+        # durable attempt before the vendor sees it.
+        main_middleware.extend(direct_tool_middleware(direct_mcp, order_ledger))
+        tools.extend(direct_tools)
 
         # AskUserQuestion middleware (needed for onboarding and preference updates)
         ask_user_middleware = AskUserMiddleware()

@@ -218,6 +218,7 @@ async def build_ptc_graph_with_session(
     namespace_owner: Any | None = None,
     disable_subagents: bool = False,
     direct_mcp: Any | None = None,
+    order_ledger: Any | None = None,
 ) -> Any:
     """Build a BackgroundSubagentOrchestrator from a pre-acquired session (WorkspaceManager path)."""
     workspace_id = session.conversation_id
@@ -278,6 +279,7 @@ async def build_ptc_graph_with_session(
         # byte-stable. None → create_agent computes from the registry.
         tool_summary=getattr(session, "mcp_tool_summary", None),
         direct_mcp=direct_mcp,
+        order_ledger=order_ledger,
     )
 
     logger.debug(
