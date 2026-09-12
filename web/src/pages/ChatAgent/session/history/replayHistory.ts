@@ -34,14 +34,13 @@ import type {
   TokenUsage, SSEEvent, HistoryInterruptInfo, SubagentHistoryData, PairState,
 } from '../types';
 import { PROPOSAL_INTERRUPT_TYPES, PROPOSAL_DATA_KEY_MAP, resolvePendingHistoryInterrupt, setCardStatus, setCardFields } from '../interrupts/buckets';
-import { recordInterruptClaims, type HistoryInterruptClaim } from '../interrupts/claims';
+import { createApprovalEvidence, recordApprovalEvidence } from '../interrupts/claims';
 import { projectHistoryInterrupt } from '../interrupts/fromHistoryEvent';
 import {
   batchToolApprovalFields,
   readHitlDecisions,
-  toolApprovalActionIndex,
-  toolApprovalDecisionFields,
-  type HitlDecision,
+  readOrderDecisions,
+  resolveApprovalDecision,
 } from '../interrupts/toolApprovalCard';
 import type { HistoryRuntime } from '../runtime';
 
@@ -122,15 +121,12 @@ export async function loadConversationHistory(
     // Track pending HITL interrupts from history to resolve status on next user_message
     const pendingHistoryInterrupts: HistoryInterruptInfo[] = [];
     // What each still-running resume turn answered, kept for the whole replay
-    // because the claim can arrive BEFORE the interrupt it answers: the tip
+    // because the evidence can arrive BEFORE the interrupt it answers: the tip
     // interrupt is appended once at the end of a checkpoint replay carrying no
     // turn_index, so a reload taken before the resume commits its boundary
     // replays it last — after the stamp that already answered it. See
-    // interrupts/claims.ts for why only a live resume records one.
-    const claimedInterrupts = new Map<string, HistoryInterruptClaim>();
-    // The decision list behind each of those claims, kept for the same reason
-    // and separately because it settles a batch card by card, not by interrupt.
-    const claimedToolDecisions = new Map<string, HitlDecision[]>();
+    // interrupts/claims.ts for why only a live resume records any.
+    const evidence = createApprovalEvidence();
 
     // Track subagent events by task ID for this history load
     // Map<taskId, { messages: Array, events: Array, description?: string, type?: string }>
@@ -330,12 +326,7 @@ export async function loadConversationHistory(
         }
         // The resolvers below settle the cards already on screen; this keeps
         // the same evidence for the interrupts still ahead of us.
-        recordInterruptClaims(claimedInterrupts, event);
-        if (!event.run_id) {
-          for (const [id, list] of Object.entries(readHitlDecisions(event.metadata) || {})) {
-            if (Array.isArray(list)) claimedToolDecisions.set(id, list);
-          }
-        }
+        recordApprovalEvidence(evidence, event);
 
         // Resolve pending plan_approval interrupt from content (empty = approved, non-empty = rejected).
         resolvePendingHistoryInterrupt(
@@ -358,6 +349,7 @@ export async function loadConversationHistory(
         {
           const hitlAnswers = event.metadata?.hitl_answers as Record<string, unknown> | undefined;
           const hitlDecisions = readHitlDecisions(event.metadata);
+          const orderDecisions = readOrderDecisions(event.metadata);
           const content = typeof event.content === 'string' ? event.content.trim() : '';
           const resumedIds = event.metadata?.hitl_interrupt_ids as string[] | undefined;
           // One call per resumed id, and one per card behind it: an interrupt
@@ -376,6 +368,10 @@ export async function loadConversationHistory(
                 (p) => p.type === 'tool_approval' && p.interruptId === interruptId,
               ).length,
             );
+            const lookup = {
+              positional: hitlDecisions?.[interruptId],
+              attempt: (attemptId: string) => orderDecisions?.[attemptId],
+            };
             for (;;) {
               const idx = pendingHistoryInterrupts.findIndex(
                 (p) => p.type === 'tool_approval' && p.interruptId === interruptId,
@@ -388,10 +384,9 @@ export async function loadConversationHistory(
               // invisible copy and leave the visible cards pending, with the
               // pending set already dropped so nothing could answer them. The
               // credit pause settles by id for the same reason.
-              const decided = toolApprovalDecisionFields(
-                hitlDecisions?.[interruptId],
-                toolApprovalActionIndex(matched.proposalId!, interruptId),
-              );
+              const decided = matched.target
+                ? resolveApprovalDecision(matched.target, lookup)
+                : null;
               rt.setMessages((prev) =>
                 setCardFields(
                   prev,
@@ -911,8 +906,7 @@ export async function loadConversationHistory(
       // Handle interrupt events during history replay
       if (eventType === 'interrupt') {
         projectHistoryInterrupt(rt, event, {
-          currentActivePairIndex, assistantMessagesByPair, pairStateByPair, pendingHistoryInterrupts, claimedInterrupts,
-          claimedToolDecisions,
+          currentActivePairIndex, assistantMessagesByPair, pairStateByPair, pendingHistoryInterrupts, evidence,
         });
         return;
       }

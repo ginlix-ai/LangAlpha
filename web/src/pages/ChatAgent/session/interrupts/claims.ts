@@ -20,6 +20,9 @@
  */
 
 import type { SSEEvent } from '../types';
+import {
+  readHitlDecisions, readOrderDecisions, type DecisionLookup, type HitlDecision,
+} from './toolApprovalCard';
 
 /** One live resume turn's record of one interrupt it answered. */
 export interface HistoryInterruptClaim {
@@ -37,17 +40,40 @@ export interface HistoryInterruptClaim {
 }
 
 /**
+ * Everything the still-running resumes in a replay recorded about the
+ * interrupts they answered, kept in one place because a claim, its decision
+ * list and its keyed verdicts all answer the same card and all outlive the
+ * event that carried them.
+ */
+export interface ApprovalEvidence {
+  /** `hitl_answers` plus the resume's content, per interrupt. */
+  claims: Map<string, HistoryInterruptClaim>;
+  /** `hitl_decisions` per interrupt, which settles a batch card by card. */
+  positional: Map<string, HitlDecision[]>;
+  /** `order_decisions` per attempt. Not scoped to an interrupt at all: an
+   *  attempt is answered once, wherever its card ended up. */
+  byAttempt: Map<string, HitlDecision>;
+}
+
+export function createApprovalEvidence(): ApprovalEvidence {
+  return { claims: new Map(), positional: new Map(), byAttempt: new Map() };
+}
+
+/**
  * Record what one replayed `user_message` answered, if it is still running.
  *
  * A terminal turn carries its run id and a live one does not, so `run_id` is
  * the gate: only a live resume can leave the interrupt it answered trailing
  * behind it.
  */
-export function recordInterruptClaims(
-  claims: Map<string, HistoryInterruptClaim>,
-  event: SSEEvent,
-): void {
+export function recordApprovalEvidence(evidence: ApprovalEvidence, event: SSEEvent): void {
   if (event.run_id) return;
+  for (const [id, list] of Object.entries(readHitlDecisions(event.metadata) || {})) {
+    if (Array.isArray(list)) evidence.positional.set(id, list);
+  }
+  for (const [attemptId, decision] of Object.entries(readOrderDecisions(event.metadata) || {})) {
+    if (decision && typeof decision === 'object') evidence.byAttempt.set(attemptId, decision);
+  }
   const claimedIds = event.metadata?.hitl_interrupt_ids;
   if (!Array.isArray(claimedIds)) return;
   const ids = claimedIds.filter((id): id is string => typeof id === 'string');
@@ -59,7 +85,7 @@ export function recordInterruptClaims(
   const content = typeof event.content === 'string' ? event.content : '';
   for (const interruptId of ids) {
     const value = answers && interruptId in answers ? answers[interruptId] : undefined;
-    claims.set(interruptId, {
+    evidence.claims.set(interruptId, {
       // Anything that is neither a string nor null is treated as unrecorded
       // rather than trusted into a card that gates spend and deletion.
       ...(value === null || typeof value === 'string' ? { answer: value } : {}),
@@ -67,6 +93,14 @@ export function recordInterruptClaims(
       batched: ids.length > 1,
     });
   }
+}
+
+/** The verdicts one interrupt's cards are settled from, as one lookup. */
+export function evidenceLookup(evidence: ApprovalEvidence, interruptId: string): DecisionLookup {
+  return {
+    positional: evidence.positional.get(interruptId),
+    attempt: (attemptId: string) => evidence.byAttempt.get(attemptId),
+  };
 }
 
 /** What a claim proves about its interrupt's outcome. */

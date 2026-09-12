@@ -280,6 +280,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     handleApproveSecretaryAction,
     handleRejectSecretaryAction,
     handleResumeCreditPause,
+    handleApproveToolCall,
+    handleRejectToolCall,
     tokenUsage,
     threadId: currentThreadId,
     threadModels,
@@ -880,6 +882,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const stableApproveSecretaryAction = useStableHandler(handleApproveSecretaryAction);
   const stableRejectSecretaryAction = useStableHandler(handleRejectSecretaryAction);
   const stableResumeCreditPause = useStableHandler(handleResumeCreditPause);
+  const stableApproveToolCall = useStableHandler(handleApproveToolCall);
+  const stableRejectToolCall = useStableHandler(handleRejectToolCall);
   const stableEditMessage = useStableHandler((id: string, content: string) =>
     handleEditMessage(id, content, chatInputRef.current?.getModelOptions?.()));
   const stableRegenerate = useStableHandler((id: string) =>
@@ -916,6 +920,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     onApproveSecretaryAction: stableApproveSecretaryAction,
     onRejectSecretaryAction: stableRejectSecretaryAction,
     onResumeCreditPause: stableResumeCreditPause,
+    onApproveToolCall: stableApproveToolCall,
+    onRejectToolCall: stableRejectToolCall,
     onEditMessage: stableEditMessage,
     onRegenerate: stableRegenerate,
     onRetry: stableRetry,
@@ -929,7 +935,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     stableAnswerQuestion, stableSkipQuestion, stableApproveCreateWorkspace,
     stableRejectCreateWorkspace, stableApproveStartQuestion, stableRejectStartQuestion,
     stableApprovePTCAgent, stableRejectPTCAgent, stableApproveSecretaryAction,
-    stableRejectSecretaryAction, stableResumeCreditPause,
+    stableRejectSecretaryAction, stableResumeCreditPause, stableApproveToolCall, stableRejectToolCall,
     stableEditMessage, stableRegenerate, stableRetry,
     stableThumbUp, stableThumbDown, stableReportWithAgent, stableSendMessage,
   ]);

@@ -1,6 +1,6 @@
 /**
  * Model-fallback divider rendering in MessageContentSegments:
- * the expandable error detail — a "View error" toggle (not "View summary")
+ * the expandable error detail, a "View error" toggle (not "View summary")
  * reveals the failed model's error text in the panel below the divider.
  * (The switch-to-working-model action lives in ChatView's suggestion pill,
  * not on the divider.)
@@ -14,7 +14,7 @@ import '@testing-library/jest-dom';
 import { MessageContentSegments } from '../MessageList';
 
 // ---------------------------------------------------------------------------
-// Mocks (same shape as MessageList.lifecycle.test.tsx — keep the module light)
+// Mocks (same shape as MessageList.lifecycle.test.tsx, keep the module light)
 // ---------------------------------------------------------------------------
 
 vi.mock('framer-motion', async () => {
@@ -68,6 +68,8 @@ vi.mock('../charts/InlineArtifactCards', async () => {
   const React = await vi.importActual<typeof import('react')>('react');
   return {
     INLINE_ARTIFACT_TOOLS: new Set<string>(['fetch_sample_chart']),
+    isInlineArtifactReady: (name: string, artifact: unknown) =>
+      !!artifact && name === 'fetch_sample_chart',
     InlineStockPriceCard: () => React.createElement('div', { 'data-testid': 'inline-chart' }),
     InlineCompanyOverviewCard: () => null,
     InlineMarketIndicesCard: () => null,
@@ -123,7 +125,7 @@ const textSeg = (order: number, content = 'placeholder answer text') => ({
 // Error-detail expander
 // ---------------------------------------------------------------------------
 
-describe('model_fallback divider — error detail expander', () => {
+describe('model_fallback divider, error detail expander', () => {
   it('uses the error toggle labels and reveals the detail text', () => {
     render(
       <MessageContentSegments
@@ -161,7 +163,7 @@ describe('model_fallback divider — error detail expander', () => {
 // No switch action on the divider (it lives in ChatView's suggestion pill)
 // ---------------------------------------------------------------------------
 
-describe('model_fallback divider — no inline switch action', () => {
+describe('model_fallback divider, no inline switch action', () => {
   it('renders only the error toggle, no other buttons', () => {
     render(
       <MessageContentSegments

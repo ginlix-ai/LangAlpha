@@ -59,7 +59,7 @@ interface MessageContentSegmentsProps {
   pendingToolCallChunks?: Record<string, Record<string, unknown>>;
   isStreaming?: boolean;
   hasError?: boolean;
-  /** Classified error data from the backend — used by TextMessageContent so
+  /** Classified error data from the backend, used by TextMessageContent so
    *  inline error cards can render hints without re-parsing the raw text. */
   structuredError?: import('@/utils/rateLimitError').StructuredError;
   isAssistant?: boolean;
@@ -131,6 +131,7 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
     onApprovePTCAgent, onRejectPTCAgent,
     onApproveSecretaryAction, onRejectSecretaryAction,
     onResumeCreditPause,
+    onApproveToolCall, onRejectToolCall,
     onWidgetSendPrompt,
   } = useMessageActions();
 
@@ -139,7 +140,7 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nextExpiryRef = useRef<number | null>(null);
 
-  // Schedule timer for next expiry — runs after every render since nextExpiryRef
+  // Schedule timer for next expiry, runs after every render since nextExpiryRef
   // is set during render, from the memoized renderBlocks below.
   useEffect(() => {
     if (expiryTimerRef.current) clearTimeout(expiryTimerRef.current);
@@ -249,7 +250,7 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
           return (
             <ActivityBlock
               key={block.key}
-              items={(block as ActivityRenderBlock).items as any} // TODO: type properly — ActivityItem[] not exported
+              items={(block as ActivityRenderBlock).items as any} // TODO: type properly, ActivityItem[] not exported
               preparingToolCall={blockIdx === lastActivityBlockIdx ? preparingToolCall : null}
               isStreaming={isStreaming ?? false}
               isFirst={blockIdx === 0}
@@ -331,7 +332,7 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
           return (
             <PlanApprovalCard
               key={block.key}
-              planData={pd as any} // TODO: type properly — PlanData not exported
+              planData={pd as any} // TODO: type properly, PlanData not exported
               onApprove={readOnly ? undefined : onApprovePlan}
               onReject={readOnly ? undefined : onRejectPlan}
               onDetailClick={readOnly ? undefined : () => onPlanDetailClick?.(pd)}
@@ -345,7 +346,7 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
           return (
             <UserQuestionCard
               key={block.key}
-              questionData={qd as any} // TODO: type properly — QuestionData not exported
+              questionData={qd as any} // TODO: type properly, QuestionData not exported
               onAnswer={readOnly ? undefined : (answer: string) => onAnswerQuestion!(answer, (block as UserQuestionRenderBlock).segment.questionId!, qd.interruptId as string)}
               onSkip={readOnly ? undefined : () => onSkipQuestion!((block as UserQuestionRenderBlock).segment.questionId!, qd.interruptId as string)}
             />
@@ -359,7 +360,7 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
           return (
             <CreateWorkspaceCard
               key={block.key}
-              proposalData={wd as any} // TODO: type properly — ProposalData not exported
+              proposalData={wd as any} // TODO: type properly, ProposalData not exported
               onApprove={onApproveCreateWorkspace ? () => onApproveCreateWorkspace(wd) : undefined}
               onReject={onRejectCreateWorkspace ? () => onRejectCreateWorkspace(wd) : undefined}
             />
@@ -373,7 +374,7 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
           return (
             <StartQuestionCard
               key={block.key}
-              proposalData={sqd as any} // TODO: type properly — ProposalData not exported
+              proposalData={sqd as any} // TODO: type properly, ProposalData not exported
               onApprove={onApproveStartQuestion ? () => onApproveStartQuestion(sqd) : undefined}
               onReject={onRejectStartQuestion ? () => onRejectStartQuestion(sqd) : undefined}
             />
@@ -431,17 +432,31 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
           const approvalId = (block as ToolApprovalRenderBlock).segment.proposalId!;
           const ta = toolApprovals[approvalId];
           if (!ta) return null;
-          // Nothing raises a tool approval any more and nothing answers one,
-          // so every card here is a record of a thread that stopped on one
-          // before that: settled or not, it renders read-only. An unanswered
-          // one is not armed either (useChatMessages leaves it out of the
-          // interactive set), so the composer stays open beside it.
+          const interruptId = ta.interruptId;
+          const position = { index: ta.actionIndex, count: ta.actionCount };
+          const attemptId = ta.attemptId;
+          // The window between the click and the tool's answer. An order card
+          // holds its shape across it rather than settling on a verdict no
+          // receipt has confirmed yet, and this is the only place that can
+          // tell: the join is the tool call the interrupt named. `isInProgress`
+          // rather than the stream's own flag, which is false while a turn sits
+          // on its interrupt; a replayed call is reconstructed as complete, so
+          // a turn killed before its result settles rather than waiting forever.
+          const approvedCall = ta.toolCallId ? toolCallProcesses[ta.toolCallId] : undefined;
+          const resultPending = !!approvedCall?.isInProgress && !approvedCall?.toolCallResult;
+          // The same join read the other way. A call history rebuilt as
+          // complete with no result will never get one, so the card has no
+          // receipt to defer to and the ledger is the only record of what the
+          // brokerage did. Absent the call entirely, nothing here can tell.
+          const resultLost = !!approvedCall && !approvedCall.isInProgress && !approvedCall.toolCallResult;
           return (
             <ToolApprovalCard
               key={block.key}
               data={ta}
-              onApprove={undefined}
-              onReject={undefined}
+              resultPending={resultPending}
+              resultLost={resultLost}
+              onApprove={!readOnly && onApproveToolCall && interruptId ? () => onApproveToolCall(approvalId, interruptId, position, attemptId) : undefined}
+              onReject={!readOnly && onRejectToolCall && interruptId ? (message?: string) => onRejectToolCall(approvalId, interruptId, position, message, attemptId) : undefined}
             />
           );
         }

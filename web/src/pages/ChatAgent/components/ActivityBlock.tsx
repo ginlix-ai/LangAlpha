@@ -19,8 +19,8 @@ import { DotLoader } from '@/components/ui/dot-loader';
 import { useAnimatedText } from '@/components/ui/animated-text';
 import Markdown from './Markdown';
 import {
-  INLINE_ARTIFACT_TOOLS,
   INLINE_ARTIFACT_MAP,
+  isInlineArtifactReady,
 } from './charts/InlineArtifactCards';
 import { useTranslation } from 'react-i18next';
 import './ActivityBlock.css';
@@ -37,7 +37,7 @@ function getFilePathFromArgs(args: Record<string, unknown> | undefined): string 
 
 /**
  * The agent occasionally reads `.agents/user/profile/README.md` to recall the
- * JSON schema for portfolio/watchlist/preference. That's plumbing chatter — it
+ * JSON schema for portfolio/watchlist/preference. That's plumbing chatter, it
  * doesn't represent meaningful work to a human reader and the README itself
  * has no user-facing surface to open. Hide these rows from the timeline (and
  * from the accordion summary fingerprint/counts) so the chat stays focused
@@ -84,7 +84,7 @@ interface ActivityItem {
   isFailed?: boolean;
   _recentlyCompleted?: boolean;
   _liveState?: LiveState;
-  /** Intermediate chart-annotation draw — render as an ordinary row, never a
+  /** Intermediate chart-annotation draw, render as an ordinary row, never a
    *  card (the latest draw per chart owns the card; set in MessageList). */
   _annotationStep?: boolean;
   content?: string;
@@ -121,7 +121,7 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
   const reduceMotion = useReducedMotion();
   const prevCompletedIdsRef = useRef<Set<string | undefined>>(new Set());
   // Stable per-instance id pair for the toggle button + the timeline panel it
-  // controls — assistive tech needs both `aria-expanded`/`aria-controls` and
+  // controls, assistive tech needs both `aria-expanded`/`aria-controls` and
   // a labelled region to announce the accordion correctly.
   const reactId = useId();
   const summaryButtonId = `activity-summary-${reactId}`;
@@ -136,13 +136,12 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
     for (const item of items) {
       // Drop README schema-doc reads at the partition layer so they're invisible
       // to every downstream consumer (live row, accordion summary, category
-      // counts, new-item animation tracker) — no need for per-site guards.
+      // counts, new-item animation tracker), no need for per-site guards.
       if (shouldHideTimelineItem(item)) continue;
       if (item._liveState === 'completed') {
         if (
           item.type === 'tool_call' &&
-          INLINE_ARTIFACT_TOOLS.has(item.toolName || '') &&
-          item.toolCallResult?.artifact &&
+          isInlineArtifactReady(item.toolName, item.toolCallResult?.artifact) &&
           !item._annotationStep
         ) {
           inlineCharts.push(item);
@@ -193,8 +192,8 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
     .join('|'), [completedItems]);
   // Slot = what we emit in the header. `memory` and `profile` each collapse
   // read+write into a single fragment whose verb flips on any write (each is
-  // conceptually one surface — the user's memory, the user's profile data).
-  // `fileRead`/`fileEdit` and `memo`/`memoWrite` stay separate — distinct
+  // conceptually one surface, the user's memory, the user's profile data).
+  // `fileRead`/`fileEdit` and `memo`/`memoWrite` stay separate, distinct
   // file/memo paths shouldn't collide under one label, and any memo
   // modification is surfaced distinctly so a future regression letting the
   // agent mutate a memo is visible.
@@ -260,11 +259,11 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
         if (f.slot === 'reasoning') return t('toolArtifact.nReasoning', { count: f.count });
         if (f.slot === 'skill') return t('toolArtifact.categoryCount.skill', { count: f.count });
         if (f.slot === 'memory') {
-          // No count for memory — any write/edit overrules pure-read framing.
+          // No count for memory, any write/edit overrules pure-read framing.
           return t(f.modified ? 'toolArtifact.categoryCount.memoryUpdated' : 'toolArtifact.categoryCount.memoryRead');
         }
         if (f.slot === 'profile') {
-          // Same single-surface framing as memory — verb flips on any write.
+          // Same single-surface framing as memory, verb flips on any write.
           return t(f.modified ? 'toolArtifact.categoryCount.profileUpdated' : 'toolArtifact.categoryCount.profileRead');
         }
         if (f.slot === 'fileRead') return t('toolArtifact.categoryCount.fileRead', { count: f.count });
@@ -299,10 +298,7 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
             if (!ChartComponent) return null;
             return (
               <div key={`chart-${item.id || idx}`}>
-                <ChartComponent
-                  artifact={artifact}
-                  onClick={() => onToolCallClick?.(item)}
-                />
+                <ChartComponent artifact={artifact} onClick={() => onToolCallClick?.(item)} />
               </div>
             );
           })}
@@ -554,7 +550,7 @@ interface ToolCallLiveRowProps {
  *
  * Active state:    2px left rule (.nrow.state-active::before) + label shimmer
  *                  + gentle icon pulse.
- * Completing state: no badge — row dims via opacity 0.7 and the title flips
+ * Completing state: no badge, row dims via opacity 0.7 and the title flips
  *                  to past tense. (We deliberately dropped the green ✓ to
  *                  avoid the SaaS-default badge look.)
  * Failed state:    gray ✕ badge overlaid on the tool icon + past-tense title.
@@ -673,7 +669,7 @@ interface ReasoningRowProps {
 /** Extract a leading `**subtitle**` line from reasoning content so we can
  * promote it into the row title and strip it from the body.
  *
- * Conservative on purpose — leaves content alone unless we see the o1-style
+ * Conservative on purpose, leaves content alone unless we see the o1-style
  * "header line, blank line, body" pattern:
  *   - bold appears at the very start (after optional whitespace)
  *   - bold spans a single line, no inner newlines or asterisks
@@ -857,7 +853,7 @@ const EditToolRow = memo(function EditToolRow({ item, onOpenFile }: EditToolRowP
   const newStr = (args.new_string || args.newString || '') as string;
   const hasDiff = !!(oldStr || newStr);
   // For user-profile paths the row title already names the entity
-  // ("Updated portfolio") — appending `portfolio.json` as a pill is redundant
+  // ("Updated portfolio"), appending `portfolio.json` as a pill is redundant
   // noise. Skip the filename fallback in that case; the title-as-button
   // branch below preserves click-to-open.
   const info = filePath ? classifyAgentPath(filePath) : null;

@@ -39,6 +39,7 @@ vi.mock('../Markdown', () => ({
 
 vi.mock('../charts/InlineArtifactCards', () => ({
   INLINE_ARTIFACT_TOOLS: new Set<string>(),
+  isInlineArtifactReady: () => false,
   INLINE_ARTIFACT_MAP: {},
   InlineStockPriceCard: () => null,
   InlineCompanyOverviewCard: () => null,

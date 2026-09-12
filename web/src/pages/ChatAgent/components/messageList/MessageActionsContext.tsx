@@ -15,6 +15,7 @@
  */
 import React from 'react';
 import type { FeedbackResult, SubagentInfo, ToolCallProcessRecord } from './types';
+import type { ToolApprovalPosition } from '@/types/chat';
 
 export interface MessageActions {
   onOpenSubagentTask?: (info: SubagentInfo) => void;
@@ -36,6 +37,13 @@ export interface MessageActions {
   onApproveSecretaryAction?: (proposalData: Record<string, unknown>) => void;
   onRejectSecretaryAction?: (proposalData: Record<string, unknown>) => void;
   onResumeCreditPause?: (pauseId: string, interruptId: string) => void;
+  /** `position` is the card's slot among its interrupt's action requests. The
+   *  resume must answer all of them in order, and only the card knows where it
+   *  sits, so it says rather than the hook looking it up. */
+  /** `attemptId` rides along for a call the order gate keyed: the resume names
+   *  it rather than trusting the slot, so a batch cannot misassign a verdict. */
+  onApproveToolCall?: (approvalId: string, interruptId: string, position: ToolApprovalPosition, attemptId?: string) => void;
+  onRejectToolCall?: (approvalId: string, interruptId: string, position: ToolApprovalPosition, message?: string, attemptId?: string) => void;
   onEditMessage?: (messageId: string, content: string) => void;
   onRegenerate?: (messageId: string) => void;
   onRetry?: () => void;

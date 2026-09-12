@@ -71,6 +71,8 @@ vi.mock('../charts/InlineArtifactCards', () => {
   const NullCard = () => null;
   return {
     INLINE_ARTIFACT_TOOLS: new Set<string>(['draw_chart_annotation']),
+    isInlineArtifactReady: (name: string, artifact: unknown) =>
+      !!artifact && name === 'draw_chart_annotation',
     InlineStockPriceCard: NullCard,
     InlineCompanyOverviewCard: NullCard,
     InlineMarketIndicesCard: NullCard,
@@ -97,7 +99,7 @@ const baseProps = {
   isAssistant: true,
 } satisfies Partial<SegmentsProps>;
 
-// `cumulative` is the full annotation set returned by that draw — each draw is a
+// `cumulative` is the full annotation set returned by that draw, each draw is a
 // superset of the previous, mirroring the backend's cumulative artifact.
 // `symbol` selects the chart instance (chart_id = SYMBOL:1day) so a test can
 // drive draws against more than one chart in a single turn.
@@ -133,7 +135,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('MessageContentSegments — chart-annotation draws', () => {
+describe('MessageContentSegments, chart-annotation draws', () => {
   it('pins one card (fed the latest cumulative artifact); later draws fold into the accordion', () => {
     const props: SegmentsProps = {
       ...baseProps,
@@ -151,7 +153,7 @@ describe('MessageContentSegments — chart-annotation draws', () => {
     render(<MessageContentSegments {...props} />);
 
     // Exactly one card, and it shows the LATEST cumulative set (2), not the
-    // first draw's (1) — i.e. pinned at the first draw but fed the newest data.
+    // first draw's (1), i.e. pinned at the first draw but fed the newest data.
     const cards = screen.getAllByTestId('annotation-card');
     expect(cards).toHaveLength(1);
     expect(cards[0]).toHaveAttribute('data-count', '2');
@@ -160,7 +162,7 @@ describe('MessageContentSegments — chart-annotation draws', () => {
     expect(accordion).toBeInTheDocument();
     // Pin-to-FIRST: the card sits at the anchor (first) draw, so it renders
     // BEFORE the accordion holding the later draw. If the card were pinned at the
-    // latest draw instead, it would follow the accordion — guard against that swap.
+    // latest draw instead, it would follow the accordion, guard against that swap.
     expect(
       cards[0].compareDocumentPosition(accordion) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();

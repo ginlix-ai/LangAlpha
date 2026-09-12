@@ -4,6 +4,7 @@
  */
 
 import { isToolResultFailure, toolNameOf } from '../subagents/subagentStatus';
+import { ownerOfToolCall } from '../toolCallOwner';
 import { isTaskAgentId } from '../../utils/agentId';
 import { deriveTaskSegment, applyTaskSegment, applyLaunchReply } from '../subagents/taskSegmentBuilder';
 import type { SubagentTaskRecord } from '@/types/chat';
@@ -448,9 +449,12 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
     return false;
   }
 
-  setMessages((prev: MessageRecord[]) =>
-    prev.map((msg: MessageRecord) => {
-      if (msg.id !== assistantMessageId) return msg;
+  setMessages((prev: MessageRecord[]) => {
+    // The message that made the call, which is an earlier one whenever a gate
+    // stopped it: the resume answers it in the next turn.
+    const targetId = ownerOfToolCall(prev, toolCallId) ?? assistantMessageId;
+    return prev.map((msg: MessageRecord) => {
+      if (msg.id !== targetId) return msg;
 
       const toolCallProcesses = { ...((msg.toolCallProcesses as Record<string, Record<string, unknown>>) || {}) };
       const subagentTasks = { ...((msg.subagentTasks as Record<string, SubagentTaskRecord>) || {}) };
@@ -485,8 +489,8 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
         toolCallProcesses,
         subagentTasks,
       };
-    })
-  );
+    });
+  });
 
   return true;
 }
