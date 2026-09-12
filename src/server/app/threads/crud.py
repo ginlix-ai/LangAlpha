@@ -229,6 +229,7 @@ async def delete_thread_endpoint(thread_id: str, x_user_id: CurrentUserId):
 
     Permanently deletes the thread and all associated data due to CASCADE constraints.
     """
+    from src.server.database.order_attempts import refuse_attempts_on_thread_delete
     from src.server.services.thread_mutation import (
         MutationConflict,
         MutationUnavailable,
@@ -251,6 +252,10 @@ async def delete_thread_endpoint(thread_id: str, x_user_id: CurrentUserId):
             async with ThreadMutationRunner.get_instance().exclusive(
                 thread_id, "delete"
             ) as mutation:
+                # Before the delete and on its session: nothing is left that
+                # could answer or spend an order still waiting in this thread,
+                # and a refusal outliving a failed delete fails closed.
+                await refuse_attempts_on_thread_delete(thread_id, conn=mutation.conn)
                 await delete_thread(thread_id, conn=mutation.conn)
         except MutationConflict as e:
             raise HTTPException(status_code=409, detail=e.detail)
