@@ -90,3 +90,35 @@ async def test_only_a_placement_no_frame_carried_is_failed_unread():
     # Failed, not refused: nothing decided against this order.
     assert "SET status = 'failed'" in conn.sql
     assert conn.params[1] == 120.0
+
+
+@pytest.mark.asyncio
+async def test_an_undispatched_row_is_left_to_the_undispatched_sweep():
+    """A row that never left the host is not the vendor match's to settle.
+
+    It has no order on any book to be found by, so the fingerprint match could
+    only adopt somebody else's identical order. The two sweeps divide on
+    ``dispatched_at``, and they had to: ``submitting_grace_seconds`` may be set
+    as low as 90 while the undispatched sweep waits the longer of that and the
+    token's 120s life, so a grace under 120 handed those rows here first.
+    """
+    conn = _Conn()
+
+    @asynccontextmanager
+    async def _connection():
+        yield conn
+
+    with patch(
+        "src.server.database.order_reconciliation.get_db_connection", _connection
+    ):
+        await list_stale_attempts(
+            submitting_grace_seconds=90, open_after_seconds=60, limit=50
+        )
+
+    assert "status = 'submitting' AND dispatched_at IS NOT NULL" in conn.sql
+    # The other arm is untouched. An ``unknown`` status means a call came back
+    # with something, so that frame did leave, whatever it came back with.
+    assert "(status = 'unknown' AND vendor_order_id IS NULL)" in conn.sql
+    # No new parameter: the predicate is a column test, so the grace still lands
+    # in the same slot and every existing caller is unchanged.
+    assert conn.params[1] == 90.0

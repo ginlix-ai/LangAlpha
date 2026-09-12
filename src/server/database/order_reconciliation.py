@@ -38,10 +38,22 @@ from src.server.utils.pg_sanitize import SafeJson, strip_pg_nul_str
 
 logger = logging.getLogger(__name__)
 
-# One pass per fleet. The lock is held across the vendor calls, not only the
-# SQL, because the point is that two workers do not ask the same brokerage the
-# same question and then race to write the two answers.
+# The pass lock covers the SQL-only head of a pass, where two workers would
+# otherwise double-refuse the same row or hand each other the same candidates.
+# It is deliberately not held across the vendor calls: those are per account and
+# slow, and one brokerage stalling under a fleet-wide key stopped reconciliation
+# for every other user until it answered.
 PASS_LOCK_KEY = "order_attempts:reconcile"
+
+
+def group_lock_key(user_id: str, server: str) -> str:
+    """The lock one account's vendor reads are held under.
+
+    What the fleet key was actually protecting is a pair of workers asking one
+    brokerage the same question and racing to write the two answers, and that
+    question is only ever the same within a single ``(user, server)``.
+    """
+    return f"{PASS_LOCK_KEY}:{user_id}:{server}"
 
 _CANDIDATE_COLUMNS = """
     attempt_id, user_id, workspace_id, thread_id, server, vendor, tool, action,
@@ -241,10 +253,10 @@ async def record_observation(
 
 
 @asynccontextmanager
-async def reconcile_pass_lock() -> AsyncIterator[bool]:
-    """Hold the single-runner lock for one pass, or yield False when it is held.
+async def _try_session_lock(key: str) -> AsyncIterator[bool]:
+    """Hold a session advisory lock, or yield False when someone else has it.
 
-    Session-scoped rather than transaction-scoped: a pass makes network calls
+    Session-scoped rather than transaction-scoped: a holder makes network calls
     between its statements, and wrapping those in a transaction would pin a
     connection inside an open snapshot for the length of a brokerage's latency.
     """
@@ -253,13 +265,13 @@ async def reconcile_pass_lock() -> AsyncIterator[bool]:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))",
-                    (PASS_LOCK_KEY,),
+                    (key,),
                 )
                 row = await cur.fetchone()
         except BaseException:
             # The lock may already have been granted: a session lock survives a
             # cancelled fetch, so release it rather than pool a locked session.
-            await release_session_lock(conn, PASS_LOCK_KEY)
+            await release_session_lock(conn, key)
             raise
         if not (row and row[0]):
             yield False
@@ -267,7 +279,26 @@ async def reconcile_pass_lock() -> AsyncIterator[bool]:
         try:
             yield True
         finally:
-            await release_session_lock(conn, PASS_LOCK_KEY)
+            await release_session_lock(conn, key)
+
+
+@asynccontextmanager
+async def reconcile_pass_lock() -> AsyncIterator[bool]:
+    """Hold the single-runner lock for a pass head, or False when it is held."""
+    async with _try_session_lock(PASS_LOCK_KEY) as held:
+        yield held
+
+
+@asynccontextmanager
+async def reconcile_group_lock(user_id: str, server: str) -> AsyncIterator[bool]:
+    """Hold one account's read lock, or False when a sibling worker has it.
+
+    A group another worker is already reading is skipped rather than waited on,
+    the same way a pass is. Its rows keep their ``swept_at`` stamp, so the next
+    pass finds them at the head of the queue rather than losing them.
+    """
+    async with _try_session_lock(group_lock_key(user_id, server)) as held:
+        yield held
 
 
 async def list_stale_attempts(
@@ -305,7 +336,15 @@ async def list_stale_attempts(
                        AND (
                              (
                                (
-                                 status = 'submitting'
+                                 -- Dispatched, because a ``submitting`` row that
+                                 -- never left the host has no order on any book
+                                 -- to be found by, and fingerprinting it against
+                                 -- the vendor would adopt somebody else's. Those
+                                 -- rows are ``fail_undispatched_attempts``, whose
+                                 -- window is the longer of this grace and the
+                                 -- token's life, so a shorter grace used to hand
+                                 -- them here first.
+                                 (status = 'submitting' AND dispatched_at IS NOT NULL)
                                  OR (status = 'unknown' AND vendor_order_id IS NULL)
                                )
                                AND updated_at < NOW() - make_interval(secs => %s)

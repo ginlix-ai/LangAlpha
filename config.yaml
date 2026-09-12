@@ -231,6 +231,18 @@ news_poll:
     - provider: null       # Provider-chain general feed / Market tab (news:general:<limit>)
       limit: 50
 
+# Order reconciliation: asks each connected brokerage what became of an order
+# the host stopped watching, so a lost answer settles and a working order
+# becomes filled without a user in the loop. Reads only, never places anything.
+order_reconcile:
+  enabled: true
+  interval_seconds: 60            # How often a worker attempts a pass
+  submitting_grace_seconds: 120   # Age at which an unanswered call is presumed lost
+  approved_grace_seconds: 600     # Age at which an approval no call spent is refused
+  open_after_seconds: 60          # Re-read an open order no more often than this
+  batch_limit: 50                 # Attempts examined per pass
+  match_window_seconds: 900       # How long after the attempt a listed order may be placed
+
 # RunWorkflow programmatic subagent orchestration
 workflow:
   enabled: true                  # Expose the RunWorkflow tool to the PTC main agent
