@@ -1,368 +1,146 @@
-# Report Structure and Templates
+# Report Structure
 
-This document provides complete page-by-page templates and formatting requirements for the earnings update DOCX report.
+Deferred reference for `earnings-analysis`. Load it while writing the DOCX, or when a section needs its exact shape. Page ranges are the eight-to-twelve-page deep dive; the one-pager mode compresses the same order into its stated length.
 
-## Complete Report Structure
+| Pages | Section |
+|---|---|
+| 1 | Summary, decision box, investment impact, updated estimates |
+| 2 to 3 | Results analysis: revenue, profitability, recurring-EPS bridge |
+| 4 to 5 | Operating metrics, guidance, cash quality |
+| 6 to 7 | Debate map, thesis impact, transcript Q&A map |
+| 8 to 10 | Valuation and estimate detail |
+| 11 to 12 | Appendix, optional |
 
-**REPORT STRUCTURE:**
+## Page 1: Summary
 
----
+Header block: company and ticker, quarter and fiscal year, report date, rating with its direction (maintain, raise, lower), price with its as-of, and the price target old against new.
 
-## PAGE 1: EARNINGS SUMMARY
-
-**Top Section - Header:**
-```
-[COMPANY NAME] ([TICKER])
-[QUARTER] [YEAR] EARNINGS UPDATE
-
-[Current Date]
-
-Rating: [MAINTAIN/RAISE/LOWER] [RATING]
-Price (as of [date]): $XX.XX
-Price Target: [OLD → NEW if changed, or MAINTAIN $XXX]
-```
-
-**Top Section - Quick Summary Box:**
-```
-EARNINGS SUMMARY
-─────────────────────────────────────────────────
-Q[X] [YEAR] RESULTS: [BEAT / INLINE / MISS]
-
-                Reported    Est      Variance
-Revenue         $X,XXX      $X,XXX   +$XXX (+X%)
-EPS (Adj)       $X.XX       $X.XX    +$X.XX (+X%)
-
-Key Takeaways:
-■ [Takeaway 1 - one sentence]
-■ [Takeaway 2 - one sentence]
-■ [Takeaway 3 - one sentence]
-```
-
-**Main Content - Investment Impact (3-4 bullets):**
-
-Use ■ character with **bold headers** and paragraph-length explanations:
+Then the results box:
 
 ```
-■ **Results beat on strong [segment/geography/product], maintaining positive momentum**
+Q[X] FY[YEAR] RESULTS: BEAT / IN LINE / MISS
 
-Q[X] revenue of $X.XB exceeded our $X.XB estimate by X% and consensus by X%,
-driven primarily by [specific driver]. [Segment] revenue grew X% YoY (vs. our
-X% estimate), while [segment] grew X% (vs. X% estimate). Management highlighted
-[specific products/initiatives] as key growth drivers and maintained confident
-tone on outlook. The beat demonstrates [thesis point], reinforcing our positive
-view.
-
-■ **Margins expanded XXbps YoY despite [headwind], showcasing operational leverage**
-
-[Detailed margin analysis paragraph...]
-
-■ **Guidance raised / maintained / lowered - implies [interpretation]**
-
-[Detailed guidance analysis paragraph...]
-
-■ **Maintaining [RATING] with [raised/unchanged] $XXX price target**
-
-[Investment conclusion paragraph...]
+                Reported    Consensus    Variance
+Revenue         $X,XXX      $X,XXX       +$XXX (+X%)
+EPS (adj)       $X.XX       $X.XX        +$X.XX
+[Key metric]    XXX         XXX          +X%
 ```
 
-**Bottom Section - Updated Estimates Table:**
+### The decision box
+
+Directly under the results box, four fixed lines and nothing else. This is what a reader who stops after page 1 takes away.
+
+| Line | Says |
+|---|---|
+| Thesis | strengthened, weakened, unchanged or mixed, in one clause with the reason |
+| Estimate revision | the direction and rough size for the next four quarters, and when the revision lands |
+| Stock and valuation skew | what the print did to the risk and reward at the current price |
+| Next catalyst | the dated event that settles the open question, with its date |
+
+The next-catalyst line names a real scheduled event or a reporting cadence. When nothing is scheduled, it says so and names the observable that would move first.
+
+### Investment impact
+
+Three or four bullets, each a bold conclusion followed by a paragraph carrying the evidence. Lead every one with a number.
 
 ```
-UPDATED FINANCIAL ESTIMATES
-─────────────────────────────────────────────────────────────────
-                     FY2024E (OLD)  FY2024E (NEW)  Change  FY2025E (NEW)
-Revenue ($M)         XX,XXX         XX,XXX         +X%     XX,XXX
-Revenue Growth (%)   X.X%           X.X%           +XXbps  X.X%
-Gross Margin (%)     XX.X%          XX.X%          +XXbps  XX.X%
-EBITDA ($M)          X,XXX          X,XXX          +X%     X,XXX
-EBITDA Margin (%)    XX.X%          XX.X%          +XXbps  XX.X%
-EPS (Adjusted) ($)   X.XX           X.XX           +X%     X.XX
-P/E (x)              XX.Xx          XX.Xx          -X%     XX.Xx
+- **Revenue beat 3% on direct-to-consumer, and the mix shift looks structural**
 
-Note: "E" = Estimate. Old estimates from [prior report date].
-Source: Company data, [Firm Name] estimates.
+  Revenue of $13.5B beat consensus of $13.2B by $300M (2%), with direct-to-consumer
+  up 18% y/y against our 12% estimate and wholesale down 5% against flat. Management
+  attributed the gap to digital demand and two product launches. Direct-to-consumer
+  is now 42% of revenue against 38% a year ago, which is the channel-shift line of
+  the thesis showing up in the numbers rather than in the commentary.
 ```
 
----
+### Updated estimates table
 
-## PAGES 2-3: DETAILED RESULTS ANALYSIS
+Old against new for the current and next fiscal year, with a change column, ending on the multiple the target rests on. Rate lines change in basis points, level lines in percent. The reason each line moved goes in the body, not in the table.
 
-Break down results by:
+## Pages 2 to 3: Results analysis
 
-### Revenue Analysis (1 page)
-- Total revenue beat/miss explanation
-- Segment/geographic/product breakdown
-- YoY and sequential trends
-- Comparison to guidance (if provided)
+**Revenue.** The beat or miss against both our estimate and consensus, then the decomposition by segment, geography, product or channel, then the trend against the prior four quarters and against guidance. One quarterly progression table, columns Q[X-3] through Q[X] with year-over-year and sequential change.
 
-**Table: Quarterly Revenue Progression**
-```
-                        Q[X-3]  Q[X-2]  Q[X-1]  Q[X]    YoY Chg  QoQ Chg
-Total Revenue ($M)      X,XXX   X,XXX   X,XXX   X,XXX   +X%      +X%
-  [Segment A] ($M)      XXX     XXX     XXX     XXX     +X%      +X%
-  [Segment B] ($M)      XXX     XXX     XXX     XXX     +X%      +X%
-  [Segment C] ($M)      XXX     XXX     XXX     XXX     +X%      +X%
+**Profitability.** Gross, operating and net margin over the same four quarters, each change in basis points, with the drivers split into what helped and what hurt. Below-the-line items get their own paragraph: interest, other income, mark-to-market, FX remeasurement, tax rate.
 
-Note: Q[X] = [Quarter] [Year]
-Source: Company reports, [Firm Name] analysis
-```
+### The recurring-EPS bridge
 
-### Profitability Analysis (1 page)
-- Gross margin analysis (drivers, trends)
-- Operating margin analysis
-- Below-the-line items (interest, tax, etc.)
-- EPS reconciliation (adjusted vs. GAAP)
+Include this whenever the EPS-quality screen in `.agents/skills/earnings-analysis/references/workflow.md` step 5 fired. Five rows, three columns:
 
-**Table: Margin Analysis**
-```
-                        Q[X-3]  Q[X-2]  Q[X-1]  Q[X]    YoY Chg
-Gross Margin (%)        XX.X%   XX.X%   XX.X%   XX.X%   +XXbps
-Operating Margin (%)    XX.X%   XX.X%   XX.X%   XX.X%   +XXbps
-Net Margin (%)          XX.X%   XX.X%   XX.X%   XX.X%   +XXbps
+| Step | Amount per share | Source and treatment |
+|---|---|---|
+| Reported diluted EPS | $X.XX | 10-Q, page N, consolidated statements of operations |
+| Non-operating and non-recurring items | ±$X.XX | each item named, with its source and whether we accept, reject or flag the adjustment as unproven |
+| Tax normalisation | ±$X.XX | effective rate used against the guided or trailing rate, with the arithmetic |
+| Share-count normalisation | ±$X.XX | diluted share count used and why it differs from the reported count |
+| Estimated recurring EPS | $X.XX | model-derived, per the evidence labels |
 
-Key Drivers:
-+ [Positive driver 1]
-+ [Positive driver 2]
-- [Negative driver 1]
-- [Negative driver 2]
-```
+Close with one line naming the consensus basis actually used for the surprise, since a bridge against the wrong basis restates the same error more precisely.
 
-**Embed 2-3 charts on these pages:**
-- Chart 1: Quarterly revenue progression
-- Chart 2: Quarterly EPS progression
-- Chart 3: Margin trends
+When the screen did not fire, the section carries the single line "no material trigger identified" and the trigger list is not reproduced.
 
----
+## Pages 4 to 5: Metrics, guidance and cash
 
-## PAGES 4-5: KEY METRICS & GUIDANCE
+**Operating metrics.** The metrics this company is run on, four quarters wide, with our estimate and the variance beside the current quarter. A metric the company stopped disclosing keeps its row and carries the absence word.
 
-### Business Metrics (1 page)
-- Customer count, ARPU, units, store count, etc.
-- Whatever metrics company emphasizes
-- Comparison to expectations
-- Trends and outlook
+**Guidance.** New against prior against consensus, in one table, with the implied quarterly path where only an annual figure was given. Then our assessment: what has to be true for the guide to hold, this management's history against its own guides, and whether the conservatism is steady or fading. Call-only guidance is labelled in the table itself.
 
-**Table: Key Operating Metrics**
-```
-                        Q[X-3]  Q[X-2]  Q[X-1]  Q[X]    YoY Chg  Our Est  Var
-[Metric 1]              XXX     XXX     XXX     XXX     +X%      XXX      +X%
-[Metric 2]              XXX     XXX     XXX     XXX     +X%      XXX      +X%
-[Metric 3]              XXX     XXX     XXX     XXX     +X%      XXX      +X%
+**Cash quality.** Operating cash flow, capex, free cash flow and the working-capital swing by component, with the same four-quarter window. State in one sentence whether cash confirms or contradicts the reported earnings.
 
-Source: Company reports
-```
+## Pages 6 to 7: Debate and thesis
 
-### Guidance & Outlook (1 page)
-- What guidance was provided (if any)
-- Comparison to prior guidance
-- Comparison to Street estimates
-- Our assessment of achievability
-- Key assumptions
+### Debate map
 
-**If guidance provided:**
-```
-MANAGEMENT GUIDANCE vs. ESTIMATES
-─────────────────────────────────────────────────────────────────
-                     New Guidance    Old Guidance    Change    Street
-FY2024E Revenue      $XX-XXB         $XX-XXB         Raised    $XX.XB
-FY2024E EPS          $X.XX-X.XX      $X.XX-X.XX      Raised    $X.XX
+The section that carries the disagreement rather than resolving it prematurely.
 
-Our Take: [Brief assessment of guidance]
-```
+| Side | The case in one sentence | What changed this quarter | Falsifier | Catalyst that settles it |
+|---|---|---|---|---|
+| Bull | | | | |
+| Bear | | | | |
 
-**Embed 2-3 charts:**
-- Chart 4: Key metrics trends
-- Chart 5: Guidance vs. Street comparison
-- Chart 6: Revenue by segment/geography
+Each falsifier is an observable with a threshold and a source that will show it. Each catalyst is a scheduled event or a real reporting cadence, never an invented date.
 
----
+### Thesis impact
 
-## PAGES 6-7: UPDATED INVESTMENT THESIS
+One block per thesis pillar: the pillar as originally written, its status (strengthened, unchanged, weakened), and 150 to 200 words on the specific evidence from this print that moved it. A pillar the quarter said nothing about is marked unchanged and given one line, not a paragraph.
 
-### Thesis Impact Assessment (1-2 pages)
+### Transcript Q&A map
 
-For each key thesis pillar, assess impact of results:
+The table from `.agents/skills/earnings-analysis/references/workflow.md` step 9, ordered by how much of the call each topic consumed. Quotes carry the speaker and a transcript line range. When there is no transcript, the section states which artifact is missing, when it is expected, and which questions it would answer.
+
+## Pages 8 to 10: Valuation and estimates
+
+Updated DCF inputs, each changed input showing old against new. Updated comparable multiples with the peer set named and each peer's basis stated per `.agents/skills/research-conventions/references/market-data-rules.md`. Then the price target: the method, the weights, the implied multiple, and the arithmetic from the multiple to the target.
+
+The detailed estimate table runs the full P&L progression for the current and next fiscal year, old against new against change, with segment lines where the model carries them.
+
+## Pages 11 to 12: Appendix, optional
+
+Quarterly model detail, extended transcript excerpts, peer results where the peer set has reported, and anything that supports a page-1 claim without belonging on page 1.
+
+## Formatting
+
+- **Charts**: caption "Figure N. Title" above, source line below, units matching the table beside them.
+- **Tables**: header row shaded, source line at the bottom, one currency and one scale throughout.
+- **Notation**: A for actual, E for estimate, applied to every period label (Q3'24A, Q4'24E).
+- **Style**: lead with the number, "vs." rather than "versus", and no sentence that would be equally true of any company in the sector.
+- **Section titles state the finding**, not the topic: "Margin expansion is mix, not cost" beats "Margin analysis".
+- **Hyperlinks**: display text rather than raw addresses, blue and underlined, SEC filings pointing at the EDGAR viewer, and every link opened once to confirm it resolves.
+
+## Citation examples
+
+The evidence contract in `SKILL.md` requires the artifact plus a location pointer. In practice:
 
 ```
-■ **Thesis Pillar 1: [Original thesis statement]**
+Revenue of $2.45B beat consensus of $2.39B by $60M (2.5%).
+  Consensus: get_company_overview, as of the close before the release.
+  Reported: Q3 FY2024 earnings release, page 1, summary table. [linked]
 
-Status: [STRENGTHENED / UNCHANGED / WEAKENED]
+Management raised FY2024 revenue guidance to $9.8-10.0B from $9.5-9.7B.
+  Q3 FY2024 earnings call, CFO prepared remarks, lines 84-97. Call-only guidance:
+  the range does not appear in the 8-K exhibit. Prior range: Q2 release, page 2. [linked]
 
-Q[X] results [supported / challenged] this thesis pillar because [specific
-evidence from results]. [Detailed analysis of 150-200 words explaining how
-results impact this specific thesis element.]
-
-■ **Thesis Pillar 2: [Original thesis statement]**
-
-[Similar analysis]
-
-■ **Thesis Pillar 3: [Original thesis statement]**
-
-[Similar analysis]
-```
-
-### Risks Update (0.5 pages)
-- Any new risks identified?
-- Have existing risks been mitigated or worsened?
-- Brief assessment
-
-**Embed 1-2 charts:**
-- Chart 7: Valuation vs. historical
-- Chart 8: Estimate revision comparison
-
----
-
-## PAGES 8-10: VALUATION & ESTIMATES
-
-### Updated Valuation (1-2 pages)
-
-**DCF Update:**
-```
-Updated DCF inputs based on Q[X] results:
-- Revenue growth FY24E: X.X% → X.X% (raised/lowered)
-- EBIT margin FY24E: XX.X% → XX.X%
-- Terminal growth: X.X% (unchanged)
-- WACC: X.X% (unchanged)
-
-Updated DCF fair value: $XXX (prior: $XXX)
-```
-
-**Comparable Companies:**
-```
-[Company] trades at XX.Xx NTM P/E vs. peer median of XX.Xx (-X% discount).
-Given [rationale], we believe [premium/discount/inline] valuation is warranted.
-```
-
-**Price Target Methodology:**
-```
-Our $XXX price target (prior: $XXX) is based on:
-- XX% DCF
-- XX% NTM P/E of XX.Xx (vs. peers at XX.Xx)
-- XX% EV/EBITDA
-
-Implied upside: +XX% from current price of $XXX
-```
-
-### Updated Estimates Detail
-
-Provide updated estimates for at least current year and next year:
-
-```
-DETAILED ESTIMATE UPDATES
-─────────────────────────────────────────────────────────────────
-                            FY2024E                 FY2025E
-                     Old      New      Change    New Estimate
-Revenue ($B)         XX.X     XX.X     +X.X%     XX.X
-  [Segment A]        XX.X     XX.X     +X.X%     XX.X
-  [Segment B]        XX.X     XX.X     +X.X%     XX.X
-
-Gross Profit ($B)    XX.X     XX.X     +X.X%     XX.X
-Gross Margin (%)     XX.X%    XX.X%    +XXbps    XX.X%
-
-EBITDA ($B)          X.X      X.X      +X.X%     X.X
-EBITDA Margin (%)    XX.X%    XX.X%    +XXbps    XX.X%
-
-Operating Income     X.X      X.X      +X.X%     X.X
-Op Margin (%)        XX.X%    XX.X%    +XXbps    XX.X%
-
-Net Income ($B)      X.X      X.X      +X.X%     X.X
-EPS - Adjusted ($)   X.XX     X.XX     +X.X%     X.XX
-EPS - GAAP ($)       X.XX     X.XX     +X.X%     X.XX
-
-P/E (x)              XX.Xx    XX.Xx              XX.Xx
-EV/EBITDA (x)        XX.Xx    XX.Xx              XX.Xx
-
-Source: [Firm Name] estimates
-```
-
-**Embed 1-2 charts:**
-- Chart 9: P/E or EV/EBITDA bands
-- Chart 10: Price target walk (old → new)
-
----
-
-## PAGES 11-12: APPENDIX (Optional)
-
-### Detailed Quarterly Models (if space allows)
-- Income statement detail
-- Cash flow highlights
-- Balance sheet highlights
-
-### Call Transcript Highlights (optional)
-- Key Q&A excerpts
-- Notable management quotes
-
-### Peer Comparison (if peers have reported)
-- How results compare to competitors
-- Market share implications
-
-**Embed final charts:**
-- Chart 11: Peer comparison
-- Chart 12: Additional supporting charts
-
----
-
-## FORMATTING REQUIREMENTS
-
-### 1. Page 1 Requirements
-- Clear rating (MAINTAIN OUTPERFORM, RAISE TO BUY, etc.)
-- Updated price target prominently displayed
-- Summary table with old/new estimates
-- 3-4 paragraph-length bullets with ■ character
-
-### 2. All Tables Requirements
-- Source line at bottom
-- Clear column headers
-- Shading for header rows
-
-### 3. All Charts Requirements
-- "Figure X - [Title]" caption above
-- "Source: [Source]" line below
-- Professional styling
-
-### 4. Year Notation
-- Use A for actual (Q3'24A)
-- Use E for estimate (Q4'24E)
-
-### 5. Writing Style
-- Lead with numbers ("Revenue grew 15% to $1.2B" not "Strong revenue growth")
-- Use "vs." not "versus"
-- Be direct and concise
-- Focus on what's NEW
-
-### 6. Hyperlink Requirements ⭐⭐⭐
-- ALL URLs must be clickable hyperlinks in Word
-- Blue, underlined text that opens on Ctrl+Click
-- Display text meaningful (not raw URL)
-- Every source citation should have clickable link where applicable
-- No plain text URLs - always format as hyperlinks
-
-## Citation Examples for Specific Content
-
-### For Beat/Miss Analysis:
-```
-Revenue of $2.45B beat consensus of $2.39B by $60M (2.5%)¹
-
-¹ Bloomberg consensus as of market close November 6, 2024; Company earnings release November 7, 2024
-  [Hyperlink "earnings release" to: https://investor.company.com/news/q3-2024-earnings]
-```
-
-### For Guidance:
-```
-Management raised FY2024 revenue guidance to $9.8-10.0B from prior $9.5-9.7B²
-
-² Q3 2024 Earnings Call, November 7, 2024, CFO prepared remarks
-  [Hyperlink "Earnings Call" to: https://seekingalpha.com/article/...]
-  Prior guidance from Q2 earnings call August 8, 2024
-  [Hyperlink "Q2 earnings call" to August transcript]
-```
-
-### For Key Metrics:
-```
-Enterprise customers grew 23% YoY to 845, with net revenue retention at 128%³
-
-³ Q3 2024 10-Q, page 23
-  [Hyperlink "10-Q" to: https://www.sec.gov/cgi-bin/viewer?accession=...]
-  Q3 2024 Investor Presentation slide 8
-  [Hyperlink "Investor Presentation" to PDF]
+Enterprise customers grew 23% y/y to 845, with net retention at 128%.
+  Q3 FY2024 10-Q, page 23, supplemental metrics table. [linked]
+  Investor presentation, slide 8, same figures. [linked]
 ```

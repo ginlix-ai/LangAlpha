@@ -13,13 +13,7 @@ This document provides step-by-step instructions for executing Task 2 (Financial
   - OR: Pre-extracted historical financials provided by user
 - **Optional**: Company research (Task 1) for business context
 
-**Output**: Excel Financial Model (.xlsx) with 6 essential tabs:
-1. Revenue Model
-2. Income Statement
-3. Cash Flow Statement
-4. Balance Sheet
-5. Scenarios
-6. DCF Inputs
+**Output**: Excel Financial Model (.xlsx) holding the Task 2 sheets of the workbook manifest in `.agents/skills/initiating-coverage/SKILL.md`.
 
 ---
 
@@ -230,7 +224,7 @@ Total Revenue Growth %  -       X%      X%      X%      X%      X%      X%      
 - Show YoY growth % for each category
 - Must have granular sub-categories (not just 3-5 top-level categories)
 - Show mix shift over time
-- Link all projections to Assumptions tab
+- Link all projections to the blue input cells on the Revenue Model tab
 
 #### B. Revenue by Geography (15-20 rows)
 
@@ -296,7 +290,7 @@ TOTAL REVENUE           XX      XX      XX      XX      XX      XX      XX      
 2. **Link to revenue**
    - Calculate COGS as % of revenue
    - Model gross margin by year
-   - Link to Assumptions tab
+   - Link to the blue input cells on the Income Statement tab
 
 #### B. R&D Expenses
 ```
@@ -334,7 +328,7 @@ Total G&A               XX      XX      XX      XX      XX      XX      XX      
 
 #### E. Depreciation & Amortization
 - Link to CapEx schedule
-- Apply depreciation rates from Assumptions
+- Apply depreciation rates from the blue input cells on the Income Statement tab
 - Calculate annual D&A
 
 ### Step 4: Build Income Statement
@@ -578,13 +572,13 @@ Cumulative FCF 2025-2029 ($M)   $XXX        $XXX        $XXX
 
 ### Model Integrity
 - All formulas link properly across sheets
-- No hardcoded numbers in projections (except in Assumptions tab)
+- No hardcoded numbers in projections (except the blue input cells on each tab)
 - No circular references
 - Balance sheet balances for all years
 - Scenario switching works properly
 
 ### Completeness
-- All 6 essential tabs: Revenue Model, Income Statement, Cash Flow Statement, Balance Sheet, Scenarios, DCF Inputs
+- Every Task 2 sheet of the workbook manifest in `.agents/skills/initiating-coverage/SKILL.md`
 - 40-50 line items in Income Statement
 - 20-30 rows in Revenue Model (product breakdown)
 - 15-20 rows in Revenue Model (geography breakdown)
@@ -619,7 +613,7 @@ Example: `Tesla_Financial_Model_2024-10-27.xlsx`
 ## Success Criteria
 
 A successful financial model should:
-1. Have all 6 essential tabs (Revenue Model, Income Statement, Cash Flow Statement, Balance Sheet, Scenarios, DCF Inputs)
+1. Hold every Task 2 sheet of the workbook manifest in `.agents/skills/initiating-coverage/SKILL.md`
 2. Be fully dynamic (change assumption → model updates)
 3. Have no hardcoded numbers in projections
 4. Include detailed revenue breakdowns (20-30 rows by product, 15-20 rows by geography)

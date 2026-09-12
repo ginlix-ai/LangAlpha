@@ -5,7 +5,7 @@ This template provides the structure for creating a comprehensive equity researc
 **NOTE:** The actual report MUST be created using the DOCX skill. DO NOT generate markdown content.
 
 **CRITICAL REQUIREMENTS:**
-1. **Generate 20-30+ chart images** using Python (matplotlib/plotly) BEFORE creating the Word document
+1. **Generate 25-35 chart images** using Python (matplotlib/plotly) BEFORE creating the Word document
 2. **Use DOCX skill**: Create professional report with proper styles, headers/footers, and formatting
 3. **Embed actual chart images**: Insert the generated PNG/JPG chart files into the Word document at appropriate locations
 4. **NO MARKDOWN**: Do not generate markdown content. Use DOCX skill to create a .docx file.
@@ -13,16 +13,16 @@ This template provides the structure for creating a comprehensive equity researc
 **CRITICAL FORMATTING GUIDANCE:**
 - **MAXIMUM DENSITY**: Every page should be packed with information. Intersperse text, charts, and tables throughout.
 - **NO ORPHANED SECTIONS**: Never have a section header alone or a single chart on its own page.
-- **20-30+ ACTUAL CHART IMAGES**: Generate charts as image files, then embed within text sections using DOCX skill.
+- **25-35 ACTUAL CHART IMAGES**: Generate charts as image files, then embed within text sections using DOCX skill.
 
 ---
 
-## PAGE 1: INVESTMENT UPDATE (MOST IMPORTANT PAGE)
+## PAGE 1: INITIATING COVERAGE (MOST IMPORTANT PAGE)
 
-**CRITICAL**: Page 1 is NOT a traditional executive summary. It is an **Investment Update** with a specific institutional format used by professional equity research firms.
+**CRITICAL**: Page 1 is NOT a traditional executive summary. It is an **Initiating Coverage** page with a specific institutional format used by professional equity research firms.
 
 **IMPORTANT STRUCTURAL NOTES:**
-- This is an "Investment Update" or "Company Update" page, not "Executive Summary"
+- The header reads "INITIATING COVERAGE", never "Company Update" and never "Executive Summary"
 - Uses a rating box in top left corner
 - Features stock price performance chart (Figure 1) prominently
 - Contains 3-4 detailed bullet points with ■ character
@@ -34,7 +34,7 @@ This template provides the structure for creating a comprehensive equity researc
 
 **TOP LEFT - RATING BOX:**
 ```
-Rating:             [OUTPERFORM / NEUTRAL / UNDERWEIGHT / etc.]
+Rating:             [Buy / Hold / Sell] ([action verb])
 Price ([Date]):     $[XX.XX]
 Target Price:       $[XX.XX]
 52-Week Range:      $[XX.XX] - $[XX.XX]
@@ -60,7 +60,7 @@ Source: Company data, [Firm Name] estimates.
 
 **MAIN CONTENT - GRAY HEADER BAR:**
 ```
-[OUTPERFORM / NEUTRAL / etc.] RECOMMENDATION / COMPANY UPDATE
+[Buy / Hold / Sell] RECOMMENDATION / INITIATING COVERAGE
 ```
 
 **MAIN CONTENT - DETAILED BULLETS (3-4 bullets):**
@@ -137,14 +137,14 @@ For tables with multiple data sources:
 ```
 Figure X - [Descriptive Title]
 [Table content]
-Source: Company filings, FactSet, [Firm Name] estimates.
+Source: Company filings, fundamentals MCP server, our estimates.
 ```
 
 ### Placement Guidelines
 
 - Figures should be numbered in order of appearance in the report
 - First figure (Figure 1) is typically the stock price chart or revenue growth trajectory on Page 1
-- Each figure must have its caption directly below the visual
+- Each figure must have its caption directly above the visual
 - Source line should be in smaller font, italicized, at the very bottom of the figure
 
 ---
@@ -152,23 +152,23 @@ Source: Company filings, FactSet, [Firm Name] estimates.
 ## PAGE 2: TABLE OF CONTENTS
 
 ```
-Executive Summary....................................................1
+Initiating Coverage..................................................1
 Investment Thesis & Risks..........................................3
 Company Overview.......................................................6
   Business Description & History................................6
   Management & Ownership..........................................8
   Products & Technology...........................................9
   Customers & Go-to-Market......................................11
-Growth Outlook & Drivers...........................................13
-Financial Analysis & Performance.................................16
-  Historical Performance........................................16
-  Financial Projections.........................................19
-Industry Overview & Competitive Landscape.....................21
-  Market Size & TAM..............................................21
-  Competitive Analysis..........................................23
-  Industry Trends................................................25
-Valuation Analysis..................................................27
-Appendices & Disclosures...........................................31
+Growth Outlook & Drivers...........................................18
+Financial Analysis & Performance.................................21
+  Historical Performance........................................21
+  Financial Projections.........................................26
+Industry Overview & Competitive Landscape.....................31
+  Market Size & TAM..............................................31
+  Competitive Analysis..........................................33
+  Industry Trends................................................35
+Valuation Analysis..................................................37
+Appendices & Disclosures...........................................41
 ```
 
 ---
@@ -179,7 +179,9 @@ Appendices & Disclosures...........................................31
 
 ### Investment Thesis
 
-**[Thesis Pillar 1]: [Title - e.g., "Large and Growing TAM"]**
+Three to five pillars. Every pillar carries all four required parts (evidence, quantified consequence, strongest counterargument, monitored signal) and every heading states the finding rather than the topic: see `.agents/skills/initiating-coverage/references/argument-standards.md` for the shape and the worked weak-against-strong example.
+
+**[Thesis Pillar 1]: [Title stating the finding, e.g., "Switching costs are showing up in price, not just retention"]**
 
 [Opening sentence with key statistic]
 
@@ -214,7 +216,19 @@ Appendices & Disclosures...........................................31
 
 **[EMBED CHART: Margin Expansion Pathway]** - Waterfall or line chart showing path to margin improvement
 
+### Key Debates
+
+The contested points, three to five rows, placed immediately after the thesis so a reader meets the disagreement before the risk list. Columns and rules in `.agents/skills/initiating-coverage/references/argument-standards.md`.
+
+| Debate | Consensus view | Our view | Evidence | Why the market may be wrong | Next event that resolves it | What would change our mind |
+|---|---|---|---|---|---|---|
+
+The last column names an observation, a threshold and a date. Cut any row where the market is not genuinely split.
+
 ### Investment Risks
+
+Each risk carries five fields: the risk, why it matters to this thesis (name the pillar it attacks), the leading indicator, the mechanical downside through a named line item, and the mitigation or monitoring plan. Risks that would read the same in a report on any company in the sector are cut rather than reworded.
+
 
 **Company-Specific Risks**
 
@@ -240,7 +254,7 @@ Appendices & Disclosures...........................................31
 
 ---
 
-## PAGES 8-19: COMPANY 101
+## PAGES 6-17: COMPANY 101
 
 ### Company Description (1 page)
 
@@ -355,7 +369,7 @@ Traction:
 
 ---
 
-## PAGES 20-22: GROWTH OUTLOOK
+## PAGES 18-20: GROWTH OUTLOOK
 
 ### Growth Framework Overview
 
@@ -397,7 +411,7 @@ Traction:
 
 ---
 
-## PAGES 21-24: FINANCIAL ANALYSIS & PERFORMANCE
+## PAGES 21-30: FINANCIAL ANALYSIS & PERFORMANCE
 
 **LAYOUT PRINCIPLE**: This section should be VERY DENSE with 5-7 charts interspersed with financial tables. Each page should have multiple elements (table + 1-2 charts).
 
@@ -505,7 +519,7 @@ Series B [Date]    $XM       $XM          [Investor]
 
 ---
 
-## PAGES 26-31: INDUSTRY OVERVIEW
+## PAGES 31-36: INDUSTRY OVERVIEW
 
 ### Industry Definition & Market Size
 
@@ -582,7 +596,7 @@ Implied Revenue Potential:       $XXbn
 
 ---
 
-## PAGES 32-34: VALUATION ANALYSIS
+## PAGES 37-40: VALUATION ANALYSIS
 
 ### Valuation Methodology Summary
 
@@ -655,7 +669,7 @@ Median                   XX.X     X.Xx     X.Xx     XX.X       XX.X       XX%   
 25th Percentile          XX.X     X.Xx     X.Xx     XX.X       XX.X       XX%     XX%
 Min                      XX.X     X.Xx     X.Xx     XX.X       XX.X       XX%     XX%
 
-Source: FactSet, company filings, [Firm Name] estimates.
+Source: Company filings, fundamentals MCP server, our estimates.
 ```
 
 **Implied Valuation**
@@ -673,7 +687,7 @@ Date        Target       Acquirer      Deal      EV/Rev   EV/EBITDA  Premium
 ────────────────────────────────────────────────────────────────────
 Median                                          X.Xx     XX.X       XX%
 
-Source: Capital IQ, company filings, [Firm Name] estimates.
+Source: Company filings and press releases, our estimates.
 ```
 
 **Control Premium Analysis**
@@ -709,7 +723,8 @@ Current Price:              $XX.XX ([Date])
 Price Target:               $YY.YY
 Upside/Downside:            ZZ%
 
-Recommendation:             BUY / HOLD / SELL
+Rating:                     Buy / Hold / Sell
+Action:                     [action verb]
 Time Horizon:               12 months
 
 Catalysts:
@@ -720,7 +735,7 @@ Catalysts:
 
 ---
 
-## PAGES 35+: APPENDICES & DISCLOSURES
+## PAGES 41+: APPENDICES & DISCLOSURES
 
 ### Appendix A: Detailed Financial Model
 [Reference to Excel model]
@@ -745,11 +760,11 @@ Catalysts:
 
 ## GRAPHICS & CHARTS TO INCLUDE
 
-**TARGET: 20-30+ charts throughout the report**
+**TARGET: 25-35 charts throughout the report**
 
 **CRITICAL PRINCIPLE**: Charts should be embedded within text sections, NOT grouped on separate pages. Every page (except TOC) should have at least one chart or table.
 
-### Page 1 - Executive Summary (3 charts)
+### Page 1 - Initiating Coverage page (3 charts)
 1. Revenue/ARR growth trajectory (line chart, historical + projected)
 2. Key metrics dashboard (multi-panel chart)
 3. Market positioning or margin progression
@@ -775,7 +790,7 @@ Catalysts:
 17. Product roadmap (timeline)
 18. Geographic expansion (map with timeline)
 
-### Pages 21-24 - Financials (7 charts) ⭐ CRITICAL SECTION
+### Pages 21-30 - Financials (7 charts) ⭐ CRITICAL SECTION
 19. Revenue growth trajectory (line with annotations)
 20. **Revenue by product/segment** (stacked area) ⭐ MUST HAVE
 21. **Revenue by geography** (stacked bar) ⭐ MUST HAVE
@@ -785,7 +800,7 @@ Catalysts:
 25. Key operating metrics dashboard (multi-panel)
 26. Scenario comparison (grouped bar: Bear/Base/Bull)
 
-### Pages 25-30 - Industry Overview (6 charts)
+### Pages 31-36 - Industry Overview (6 charts)
 27. Market size evolution (area chart with CAGR)
 28. Competitive landscape map (2×2)
 29. Market share pie chart
@@ -793,7 +808,7 @@ Catalysts:
 31. TAM segmentation
 32. Industry trend charts
 
-### Pages 31-34 - Valuation (5 charts)
+### Pages 37-40 - Valuation (5 charts)
 33. DCF sensitivity analysis (heat map)
 34. DCF waterfall (PV of cash flows → equity value)
 35. Trading comps scatter plot (growth vs. multiple)
@@ -816,13 +831,13 @@ Catalysts:
 
 ## NOTES ON USING THIS TEMPLATE
 
-1. **PAGE 1 IS CRITICAL:** The executive summary on page 1 must contain ALL key information - fast facts, financial snapshot, 3 charts, valuation summary, thesis, and risks. This is the most important page.
+1. **PAGE 1 IS CRITICAL:** The Initiating Coverage page must contain ALL key information - fast facts, financial snapshot, 3 charts, valuation summary, thesis, and risks. This is the most important page.
 
 2. **MAXIMUM DENSITY:** Professional equity research is EXTREMELY information-dense. Every page should be packed with interspersed text, charts, and tables. Aim for 60-80% page coverage with minimal white space.
 
 3. **NO ORPHANED SECTIONS:** Never have a section header alone, or a single chart/table on its own page. Always combine elements. Example: DON'T put "Financial Snapshot" on page 6 by itself - integrate it with surrounding content.
 
-4. **20-30+ CHARTS:** Include extensive graphics throughout, with specific emphasis on:
+4. **25-35 CHARTS:** Include extensive graphics throughout, with specific emphasis on:
    - **Revenue by product/segment** (stacked area chart)
    - **Revenue by geography** (stacked bar chart)
    - **Financial performance trends** (multiple charts)
@@ -838,7 +853,7 @@ Catalysts:
 
 9. **Proofread:** Always proofread for accuracy, especially financial data and calculations
 
-10. **Executive Summary Last:** While it appears on page 1, write this section last after completing the full analysis
+10. **Initiating Coverage page Last:** While it appears on page 1, write this section last after completing the full analysis
 
 11. **Balance:** Present both positive and negative aspects objectively
 
