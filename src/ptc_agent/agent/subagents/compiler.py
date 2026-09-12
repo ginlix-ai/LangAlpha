@@ -53,6 +53,7 @@ _FLASH_SUBAGENT_DEFAULTS: dict[str, bool] = {
     "subagent_coordination": False,
     "data_processing": False,
     "visualizations": False,
+    "trading_constraints": False,
     "output_guidelines": False,
     "workspace_context": False,
     "ask_user_guidelines": False,
