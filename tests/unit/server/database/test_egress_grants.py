@@ -541,7 +541,7 @@ class TestToolPolicy:
         else: the relay is told to refuse a sandbox caller every one of them,
         so an order cannot be placed from inside an ``execute_code``."""
         db.server_urls[CONNECTION_ID] = "https://mcp.moomoo.com/mcp"
-        db.capabilities[CONNECTION_ID] = ["market_data", "trading"]
+        db.capabilities[CONNECTION_ID] = ["market_data", "account", "trading"]
         await _sync(OWNER, CONNECTION_ID)
         row = db.grants[(WORKSPACE_ID, GRANT_KIND_OAUTH_MCP, CONNECTION_ID)]
         direct = set(json.loads(row["tool_direct_only"]))

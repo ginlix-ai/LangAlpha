@@ -54,6 +54,7 @@ class RelayError(StrEnum):
     METHOD_BLOCKED = "method_blocked"
     TOOL_BLOCKED = "tool_blocked"
     POLICY_MISSING = "policy_missing"
+    EXECUTION_REQUIRED = "execution_required"
     REFRESH_IN_PROGRESS = "refresh_in_progress"
     # open_upstream
     DESTINATION_BLOCKED = "destination_blocked"

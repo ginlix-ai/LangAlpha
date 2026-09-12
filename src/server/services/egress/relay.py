@@ -15,15 +15,26 @@ reach the sandbox.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 import httpx
 
+from ptc_agent.agent.provenance.types import hash_args
 from src.config.env import EGRESS_RELAY_SECRET
 from src.server.database.egress_grants import fetch_grant_for_relay
+from src.server.database.order_attempts import claim_dispatch, fetch_attempt_status
+from src.server.services.brokerage_capabilities import order_tool
+from src.server.services.brokerage_orders import AttemptStatus
 from src.server.services.brokerages import brokerage_for_url
 from src.server.services.egress import RelayError, RelayRejection, folded_contains
+from src.server.services.egress.execution_token import (
+    EXECUTION_HEADER,
+    ExecutionTokenError,
+    parse_execution_token,
+    verify_execution_token,
+)
 from src.server.services.egress.jsonrpc import (
     CanonicalRequest,
     JsonRpcRejected,
@@ -93,6 +104,14 @@ RESPONSE_HEADER_ALLOWLIST = frozenset(
 )
 
 
+@dataclass(frozen=True)
+class OrderFrame:
+    """The attempt an order frame was authorized by, kept for the audit line."""
+
+    attempt_id: str
+    vendor: str
+    tool: str
+    user_id: str
 
 
 @dataclass
@@ -101,6 +120,7 @@ class PreparedRelay:
     grant: dict
     canonical: CanonicalRequest
     token: AccessToken
+    order: OrderFrame | None = None
 
 
 _client: httpx.AsyncClient | None = None
@@ -155,11 +175,109 @@ def authenticate_relay(authorization: str | None) -> RelayClaims:
         raise RelayRejection(401, RelayError.RELAY_AUTH)
 
 
+def _execution_header(headers: Mapping[str, str] | None) -> str:
+    for key, value in (headers or {}).items():
+        if key.lower() == EXECUTION_HEADER.lower():
+            return value or ""
+    return ""
+
+
+async def _authorize_order(
+    canonical: CanonicalRequest,
+    *,
+    claims: RelayClaims,
+    vendor: str,
+    headers: Mapping[str, str] | None,
+) -> OrderFrame:
+    """Let one order frame through, for one attempt, once.
+
+    Everything checked here is derived from the frame or from the row, never
+    taken from the caller's word for it: the arguments are hashed from the body
+    about to be forwarded, the call id comes from the ledger, and the row must
+    already have handed out its single execution. A replayed frame therefore
+    fails on the status, and a re-aimed token fails on the MAC.
+
+    One refusal code for every failure. The caller is either the host, which
+    knows exactly what it sent, or something that should not be here at all.
+    """
+    tool = canonical.tool_name or ""
+    token = _execution_header(headers)
+    if not token:
+        raise RelayRejection(403, RelayError.EXECUTION_REQUIRED, "order not authorized")
+    args_sha256 = (hash_args(canonical.arguments or {}) or {}).get("sha256") or ""
+    try:
+        attempt_id = parse_execution_token(token).attempt_id
+    except ExecutionTokenError:
+        raise RelayRejection(
+            403, RelayError.EXECUTION_REQUIRED, "order not authorized"
+        ) from None
+    row = await fetch_attempt_status(attempt_id)
+    if (
+        row is None
+        or row.get("user_id") != claims.user_id
+        or (row.get("vendor") or "") != vendor
+        or (row.get("args_sha256") or "") != args_sha256
+    ):
+        logger.warning(
+            "[egress_relay] order frame refused: attempt=%s tool=%r vendor=%r "
+            "user=%s (no matching attempt for these arguments)",
+            attempt_id, tool, vendor, claims.user_id,
+        )
+        raise RelayRejection(403, RelayError.EXECUTION_REQUIRED, "order not authorized")
+    try:
+        verify_execution_token(
+            EGRESS_RELAY_SECRET or "",
+            token,
+            tool_call_id=str(row.get("tool_call_id") or ""),
+            tool=tool,
+            args_sha256=args_sha256,
+        )
+    except ExecutionTokenError as e:
+        logger.warning(
+            "[egress_relay] order frame refused: attempt=%s tool=%r vendor=%r "
+            "user=%s (%s)",
+            attempt_id, tool, vendor, claims.user_id, e,
+        )
+        raise RelayRejection(
+            403, RelayError.EXECUTION_REQUIRED, "order not authorized"
+        ) from None
+    if row.get("status") != AttemptStatus.SUBMITTING.value:
+        # The row is the idempotency key: an approved attempt is ``submitting``
+        # for exactly the one call it authorized, so anything else here is a
+        # retry, a replay, or a call that never took its grant.
+        logger.warning(
+            "[egress_relay] order frame refused: attempt=%s tool=%r vendor=%r "
+            "user=%s (attempt is %s, not submitting)",
+            attempt_id, tool, vendor, claims.user_id, row.get("status"),
+        )
+        raise RelayRejection(403, RelayError.EXECUTION_REQUIRED, "order not authorized")
+    return OrderFrame(
+        attempt_id=attempt_id, vendor=vendor, tool=tool, user_id=claims.user_id
+    )
+
+
+def log_order_frame(prepared: PreparedRelay, status: int) -> None:
+    """The relay's one audit line, written where the vendor's answer is known.
+
+    The relay has never logged a success. An order is the one call where the
+    absence of that line is the difference between an account we can explain
+    and one we cannot.
+    """
+    order = prepared.order
+    if order is None:
+        return
+    logger.info(
+        "[egress_relay] order attempt=%s vendor=%s tool=%s user=%s status=%s",
+        order.attempt_id, order.vendor, order.tool, order.user_id, status,
+    )
+
+
 async def prepare_relay(
     grant_id: str,
     *,
     claims: RelayClaims,
     raw_body: bytes,
+    headers: Mapping[str, str] | None = None,
 ) -> PreparedRelay:
     """Authorize the grant + ready the vendor token (sandbox already authed)."""
     try:
@@ -236,6 +354,18 @@ async def prepare_relay(
                 "tool is bound directly to the model and is not callable from the sandbox",
             )
 
+    order: OrderFrame | None = None
+    if canonical.method == "tools/call":
+        # The pin is the destination the grant was issued for, never the row's
+        # name, so the vendor whose order map is read here is the one whose
+        # address is about to be dialled.
+        brokerage = brokerage_for_url(grant["destination_url"])
+        vendor = brokerage.name if brokerage else None
+        if order_tool(vendor, canonical.tool_name or "") is not None:
+            order = await _authorize_order(
+                canonical, claims=claims, vendor=vendor or "", headers=headers
+            )
+
     try:
         token = await ensure_fresh_access_token(grant["connection_id"])
     except TokenUnavailable as e:
@@ -244,7 +374,7 @@ async def prepare_relay(
         raise RelayRejection(401, RelayError.NEEDS_REAUTH, e.reason)
 
     return PreparedRelay(
-        claims=claims, grant=grant, canonical=canonical, token=token
+        claims=claims, grant=grant, canonical=canonical, token=token, order=order
     )
 
 
@@ -294,6 +424,24 @@ def _redirect_host(location: str | None) -> str:
     except ValueError:
         return "<unparseable>"
     return host or "<relative>"
+
+
+async def _claim_order_dispatch(order: OrderFrame) -> None:
+    """Take the one dispatch an order frame gets, right before it is sent.
+
+    The token check reads the row; this writes it. A second copy of the same
+    signed frame, a duplicate on the wire or a retry inside the token's
+    lifetime, finds the claim taken and is refused here rather than executed
+    twice. The 401 retry below re-sends under the claim already taken: a
+    vendor that refused the bearer did not run the order.
+    """
+    if await claim_dispatch(order.attempt_id) is None:
+        logger.warning(
+            "[egress_relay] attempt %s: dispatch already claimed; a second "
+            "frame for tool %r at %s was refused",
+            order.attempt_id, order.tool, order.vendor,
+        )
+        raise RelayRejection(403, RelayError.EXECUTION_REQUIRED)
 
 
 async def open_upstream(
@@ -355,6 +503,8 @@ async def open_upstream(
             raise RelayRejection(502, RelayError.VENDOR_REDIRECT)
         return response
 
+    if prepared.order is not None:
+        await _claim_order_dispatch(prepared.order)
     response = await _send(headers)
     if response.status_code != 401:
         return response
