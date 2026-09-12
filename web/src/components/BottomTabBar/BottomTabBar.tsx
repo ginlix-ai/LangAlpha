@@ -1,16 +1,18 @@
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { NAV_ITEMS, SETTINGS_ITEM } from '../nav/navItems';
+import { SETTINGS_ITEM } from '../nav/navItems';
 import { useNavActive } from '../nav/useNavActive';
+import { useNavItems } from '../nav/useNavItems';
 import './BottomTabBar.css';
-
-const menuItems = [...NAV_ITEMS, SETTINGS_ITEM];
 
 export default function BottomTabBar() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const isActive = useNavActive();
+  // Settings rides at the end of whichever primary items this user can see.
+  const navItems = useNavItems();
+  const menuItems = [...navItems, SETTINGS_ITEM];
   const handleItemClick = (path: string) => {
     if (location.pathname === path) return;
     navigate(path);

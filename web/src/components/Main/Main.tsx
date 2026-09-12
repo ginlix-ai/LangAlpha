@@ -17,6 +17,7 @@ const routeChunks = {
   market: () => import('../../pages/MarketView/MarketView'),
   news: () => import('../../pages/Detail/NewsDetailPage'),
   automations: () => import('../../pages/Automations/Automations'),
+  orders: () => import('../../pages/Orders/Orders'),
   plugins: () => import('../../pages/Plugins/Plugins'),
   settings: () => import('../../pages/Settings/Settings'),
   // Alias so preloading /connectors (the legacy path) warms the right chunk.
@@ -28,6 +29,7 @@ const ChatAgent = React.lazy(routeChunks.chat);
 const MarketView = React.lazy(routeChunks.market);
 const NewsDetailPage = React.lazy(routeChunks.news);
 const Automations = React.lazy(routeChunks.automations);
+const Orders = React.lazy(routeChunks.orders);
 const Plugins = React.lazy(routeChunks.plugins);
 const Settings = React.lazy(routeChunks.settings);
 
@@ -85,6 +87,7 @@ function Main() {
           <Route path="/chat/:workspaceId" element={<ChatAgent />} />
           <Route path="/market" element={<MarketView />} />
           <Route path="/automations" element={<Automations />} />
+          <Route path="/orders" element={<Orders />} />
           <Route path="/plugins" element={<Plugins />} />
           <Route path="/connectors" element={<LegacyConnectorsRedirect />} />
           <Route path="/settings" element={<Settings />} />

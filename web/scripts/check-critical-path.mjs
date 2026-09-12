@@ -28,7 +28,13 @@ const EXPECTED = ['index', 'vendor-dnd', 'vendor-motion', 'vendor-react']
 // model's profile to label its trigger before first paint, which puts
 // modelPreferences.ts, useUpdatePreferences.ts and the dropdown primitive on the
 // critical path for +1.9 kB gz. Nothing moved chunks; the eager set is unchanged.
-const MAX_EAGER_KB = 460
+//
+// Raised 460 -> 465 for the Orders page. The nav decides before first paint
+// whether to offer it, and i18n.ts bundles every locale's JSON into the entry,
+// so that check and the page's en-US and zh-CN strings ride the critical path
+// for about +5 kB gz, 4 of it strings. Nothing moved chunks; the eager set is
+// unchanged.
+const MAX_EAGER_KB = 465
 
 const outDir = process.argv[2] || 'dist'
 const indexPath = join(outDir, 'index.html')

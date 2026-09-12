@@ -5,8 +5,8 @@ import { LayoutGrid, PanelLeftClose, PanelLeftOpen, SquarePen } from 'lucide-rea
 import logoLight from '../../assets/img/logo.svg';
 import logoDark from '../../assets/img/logo-dark.svg';
 import { useTheme } from '../../contexts/ThemeContext';
-import { NAV_ITEMS } from '../nav/navItems';
 import { useNavActive } from '../nav/useNavActive';
+import { useNavItems } from '../nav/useNavItems';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import NavigationPanel from '@/pages/ChatAgent/components/NavigationPanel';
 import NavDisplayOptions from '@/pages/ChatAgent/components/NavDisplayOptions';
@@ -39,6 +39,7 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
   const { t } = useTranslation();
   const { theme } = useTheme();
   const isActive = useNavActive();
+  const navItems = useNavItems();
   const logo = theme === 'light' ? logoDark : logoLight;
 
   const widthRef = useRef(width);
@@ -159,7 +160,7 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
         </button>
         <nav className="sidebar-nav">
           <TooltipProvider delayDuration={300}>
-            {NAV_ITEMS.map((item) => {
+            {navItems.map((item) => {
               const Icon = item.icon;
               const label = t(item.labelKey);
               const active = isActive(item);
@@ -222,7 +223,7 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
           <SquarePen className="sidebar-panel-item-icon" />
           <span>{t('sidebar.newChat')}</span>
         </button>
-        {NAV_ITEMS.filter((item) => item.key !== '/chat').map((item) => {
+        {navItems.filter((item) => item.key !== '/chat').map((item) => {
           const Icon = item.icon;
           const active = isActive(item);
           return (
