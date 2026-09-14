@@ -661,12 +661,20 @@ class LLM:
         """
         if self.api_key_override is not None and self.api_key_override != "":
             return self.api_key_override
+        env_keys = []
         if self.env_key:
-            key = os.getenv(self.env_key)
+            env_keys.append(self.env_key)
+        for env_key in self.provider_info.get("env_key_aliases", []):
+            if env_key and env_key not in env_keys:
+                env_keys.append(env_key)
+        for env_key in env_keys:
+            key = os.getenv(env_key)
             if key:
                 return key
+        if env_keys:
             if self.provider_info.get("access_type") != "local":
-                raise ValueError(f"{self.env_key} environment variable is not set")
+                joined = " or ".join(env_keys)
+                raise ValueError(f"{joined} environment variable is not set")
         return "EMPTY"
 
     def _resolve_base_url(self, param_name: str = "base_url") -> dict:

@@ -120,6 +120,63 @@ class TestSystemProviderRouting:
 
 
 # ---------------------------------------------------------------------------
+# API key env var aliases
+# ---------------------------------------------------------------------------
+
+
+class TestApiKeyEnvAliases:
+    def _build_llm_instance(self):
+        models = {
+            "atlas-test": {
+                "model_id": "qwen/qwen3.5-flash",
+                "provider": "atlascloud",
+                "parameters": {},
+            }
+        }
+        providers = {
+            "atlascloud": {
+                "sdk": "openai",
+                "base_url": "https://api.atlascloud.ai/v1",
+                "env_key": "ATLASCLOUD_API_KEY",
+                "env_key_aliases": ["ATLAS_CLOUD_API_KEY"],
+                "access_type": "api_key",
+                "display_name": "Atlas Cloud",
+            }
+        }
+        mc = _make_model_config_with(models, providers)
+        with patch.object(LLM, "get_model_config", return_value=mc):
+            return LLM("atlas-test")
+
+    def test_resolve_api_key_uses_alias_when_primary_missing(self, monkeypatch):
+        monkeypatch.delenv("ATLASCLOUD_API_KEY", raising=False)
+        monkeypatch.setenv("ATLAS_CLOUD_API_KEY", "alias-key")
+
+        instance = self._build_llm_instance()
+
+        assert instance._resolve_api_key() == "alias-key"
+
+    def test_resolve_api_key_prefers_primary_over_alias(self, monkeypatch):
+        monkeypatch.setenv("ATLASCLOUD_API_KEY", "primary-key")
+        monkeypatch.setenv("ATLAS_CLOUD_API_KEY", "alias-key")
+
+        instance = self._build_llm_instance()
+
+        assert instance._resolve_api_key() == "primary-key"
+
+    def test_missing_api_key_error_lists_primary_and_alias(self, monkeypatch):
+        monkeypatch.delenv("ATLASCLOUD_API_KEY", raising=False)
+        monkeypatch.delenv("ATLAS_CLOUD_API_KEY", raising=False)
+
+        instance = self._build_llm_instance()
+
+        with pytest.raises(
+            ValueError,
+            match="ATLASCLOUD_API_KEY or ATLAS_CLOUD_API_KEY",
+        ):
+            instance._resolve_api_key()
+
+
+# ---------------------------------------------------------------------------
 # Tier in model metadata
 # ---------------------------------------------------------------------------
 
@@ -404,3 +461,31 @@ class TestModelsManifestIntegrity:
         assert modalities and isinstance(modalities, list), (
             f"Chat model '{model_key}' is missing input_modalities"
         )
+
+
+class TestAtlasCloudManifest:
+    def test_provider_config_registered(self):
+        flat = ModelConfig._flatten_providers(_PROVIDERS_RAW["provider_config"])
+        provider = flat["atlascloud"]
+
+        assert provider["sdk"] == "openai"
+        assert provider["base_url"] == "https://api.atlascloud.ai/v1"
+        assert provider["env_key"] == "ATLASCLOUD_API_KEY"
+        assert provider["env_key_aliases"] == ["ATLAS_CLOUD_API_KEY"]
+        assert provider["use_response_api"] is False
+        assert provider["display_name"] == "Atlas Cloud"
+
+    @pytest.mark.parametrize(
+        ("model_key", "model_id"),
+        [
+            ("atlascloud-qwen3.5-flash", "qwen/qwen3.5-flash"),
+            ("atlascloud-deepseek-v4-pro", "deepseek-ai/deepseek-v4-pro"),
+        ],
+    )
+    def test_models_use_atlascloud_provider(self, model_key, model_id):
+        model = _MODELS[model_key]
+
+        assert model["model_id"] == model_id
+        assert model["provider"] == "atlascloud"
+        assert model["visible"] is True
+        assert model["input_modalities"] == ["text"]
