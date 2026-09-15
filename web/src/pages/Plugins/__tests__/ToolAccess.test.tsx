@@ -340,7 +340,8 @@ describe('the tool access section', () => {
     expect(segment('trading_order_place', 'Both')).toBeDisabled();
     expect(segment('trading_order_place', 'Direct')).not.toBeDisabled();
     expect(
-      screen.getAllByText('Order tools run only as direct calls the app can show.').length,
+      screen.getAllByText('Pinned to Direct so each order is one call the app can show.')
+        .length,
     ).toBeGreaterThan(0);
   });
 

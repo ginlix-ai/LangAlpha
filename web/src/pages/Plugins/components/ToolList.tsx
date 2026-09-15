@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, X } from 'lucide-react';
 import { SegmentedControl } from '@/components/ui/segmented-control';
@@ -11,6 +11,7 @@ import type {
 import type { CapabilityGroup } from '../brokerages';
 import { SelectCheckbox } from './SelectCheckbox';
 import {
+  BINDING_PATHS,
   bindingOptions,
   checkStateOf,
   commonBinding,
@@ -137,12 +138,17 @@ export function ToolList({
 
   return (
     <div className="flex flex-col gap-2.5">
+      {/* Before the filter and the rows, because every row ends in a control
+          whose three words mean nothing until this has been read once. A list
+          with nothing movable draws no such control, so it gets no legend. */}
+      {renderControl && movableAll.length > 0 && <ToolPathLegend />}
+
       {tools.length >= FILTER_FROM && (
         <ToolFilter value={query} onChange={setQuery} />
       )}
 
       {selection && movableShown.length > 0 && (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <SelectCheckbox
             state={allState}
             label={t('plugins.detail.bulkSelectAllAria')}
@@ -166,6 +172,17 @@ export function ToolList({
           >
             {t('plugins.detail.bulkSelectAll', { count: movableShown.length })}
           </button>
+          {/* What ticking a box is for, said before anything is ticked. Once
+              something is, the bar below carries the same sentence as an
+              action, and repeating it here would be twice on one screen. */}
+          {targets.length === 0 && (
+            <span
+              className="text-[0.6875rem]"
+              style={{ color: 'var(--color-text-quaternary)' }}
+            >
+              {t('plugins.detail.bulkSelectHint')}
+            </span>
+          )}
         </div>
       )}
 
@@ -192,6 +209,7 @@ export function ToolList({
       {selection && targets.length > 0 && (
         <ToolBulkBar
           count={targets.length}
+          total={movableAll.length}
           value={commonBinding(targets)}
           skipped={skipped}
           busy={bulkBusy}
@@ -206,6 +224,38 @@ export function ToolList({
           }
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * What the three words at the end of every row mean, in what they cost the
+ * user rather than in how they are wired. Prose in the reading order of the
+ * segments, so the line and the control it explains line up left to right.
+ *
+ * A legend rather than a tooltip per segment: the question is which of three
+ * to pick, and an answer you can only reach one at a time by hovering is the
+ * shape that left a 28-tool server unreadable in the first place.
+ */
+function ToolPathLegend() {
+  const { t } = useTranslation();
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
+        {t('plugins.detail.pathLegendTitle')}
+      </p>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-[0.6875rem]">
+        {BINDING_PATHS.map((path) => (
+          <Fragment key={path.binding}>
+            <dt className="font-medium" style={{ color: 'var(--color-text-secondary)' }}>
+              {t(path.label)}
+            </dt>
+            <dd className="min-w-0" style={{ color: 'var(--color-text-tertiary)' }}>
+              {t(path.desc)}
+            </dd>
+          </Fragment>
+        ))}
+      </dl>
     </div>
   );
 }
@@ -478,6 +528,7 @@ function ToolRowCheckbox({
  */
 function ToolBulkBar({
   count,
+  total,
   value,
   skipped,
   busy,
@@ -487,6 +538,9 @@ function ToolBulkBar({
   onClear,
 }: {
   count: number;
+  /** Every tool a change could reach, so the count reads as a share of the
+   *  list rather than as a number the user has to hold against it. */
+  total: number;
   value: McpToolBinding | null;
   /** Selected tools the last apply could not move, and why the note is there. */
   skipped: number;
@@ -526,7 +580,12 @@ function ToolBulkBar({
           className="text-[0.6875rem] font-medium"
           style={{ color: 'var(--color-text-primary)' }}
         >
-          {t('plugins.detail.bulkSelected', { count })}
+          {t('plugins.detail.bulkSelected', { count, total })}
+        </span>
+        {/* The verb the segments are missing. Without it three words sit in a
+            bar beside a count and say nothing about what pressing one does. */}
+        <span className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
+          {t('plugins.detail.bulkRunAs')}
         </span>
         <SegmentedControl
           size="compact"

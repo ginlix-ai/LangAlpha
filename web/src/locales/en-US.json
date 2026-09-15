@@ -3536,7 +3536,7 @@
       "repository": "Repository",
       "license": "License",
       "toolAccess": "Tool access",
-      "toolAccessNote": "PTC tools are called from the agent's code; Direct tools are single calls the app can show. A tool's own setting below beats these switches.",
+      "toolAccessNote": "A tool's own setting in the list below beats these switches, and the list says what each path means.",
       "groupDefaults": "Use each tool group's default",
       "groupDefaultsDesc": "On, each tool group decides how its tools run, so those built for it run as single calls the app can show. Off, everything this row can move runs from the agent's code.",
       "orderApprovalLive": "Ask before every live order",
@@ -3557,7 +3557,7 @@
       "bindingCustom": "custom",
       "bindingReset": "Reset",
       "bindingResetAria": "Reset {{name}} to the row default",
-      "bindingPinned": "Order tools run only as direct calls the app can show.",
+      "bindingPinned": "Pinned to Direct so each order is one call the app can show.",
       "asksFirst": "asks first",
       "asksFirstTitle": "Stops for your confirmation on every call",
       "searchPlaceholder": "Filter tools",
@@ -3567,11 +3567,17 @@
       "bulkSelectAllAria": "Select every tool shown",
       "bulkSelectGroupAria": "Select every tool in {{name}}",
       "bulkSelectToolAria": "Select {{name}}",
-      "bulkSelected": "{{count}} selected",
+      "bulkSelected": "{{count}} of {{total}} selected",
       "bulkBindingAria": "How the agent reaches the selected tools",
       "bulkReset": "Reset to default",
       "bulkClear": "Clear selection",
-      "bulkSkipped": "{{count}} skipped, not allowed"
+      "bulkSkipped": "{{count}} skipped, not allowed",
+      "pathLegendTitle": "How the agent reaches a tool",
+      "pathLegendPtc": "Called from inside the Python the agent writes: many calls and the work on their results in one step, with each tool's schema read only when needed. Suits data tools.",
+      "pathLegendDirect": "The ordinary way an agent calls a tool: one call, the whole result read as is, the full schema in front of it. Suits high-priority or frequent tools.",
+      "pathLegendBoth": "Offered on both paths, and the agent picks per call.",
+      "bulkSelectHint": "Pick several to move them all to one path at once.",
+      "bulkRunAs": "Run as"
     }
   }
 }

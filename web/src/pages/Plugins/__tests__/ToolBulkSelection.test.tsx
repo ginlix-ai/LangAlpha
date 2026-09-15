@@ -197,7 +197,7 @@ describe('picking tools', () => {
     await renderDetail();
     fireEvent.click(groupBox(MARKET));
 
-    expect(within(bar()).getByText('3 selected')).toBeInTheDocument();
+    expect(within(bar()).getByText('3 of 4 selected')).toBeInTheDocument();
     expect(groupBox(MARKET)).toHaveAttribute('aria-checked', 'true');
   });
 
@@ -211,7 +211,7 @@ describe('picking tools', () => {
 
     fireEvent.click(groupBox(MARKET));
     expect(groupBox(MARKET)).toHaveAttribute('aria-checked', 'true');
-    expect(within(bar()).getByText('3 selected')).toBeInTheDocument();
+    expect(within(bar()).getByText('3 of 4 selected')).toBeInTheDocument();
   });
 
   it('clears the group from a full header box', async () => {
@@ -231,7 +231,7 @@ describe('picking tools', () => {
     // The label counts what it would take, so the number is the filter's.
     fireEvent.click(screen.getByRole('button', { name: 'Select all 2' }));
 
-    expect(within(bar()).getByText('2 selected')).toBeInTheDocument();
+    expect(within(bar()).getByText('2 of 4 selected')).toBeInTheDocument();
   });
 
   // The opposite rule, and deliberately so: a selection is keyed by name and
@@ -242,7 +242,7 @@ describe('picking tools', () => {
     fireEvent.click(groupBox(MARKET));
     fireEvent.change(filterBox(), { target: { value: 'depth' } });
 
-    expect(within(bar()).getByText('3 selected')).toBeInTheDocument();
+    expect(within(bar()).getByText('3 of 4 selected')).toBeInTheDocument();
   });
 
   // A pinned tool answers 422 to anything but its pin. It carries the pinned
@@ -257,7 +257,7 @@ describe('picking tools', () => {
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select every tool shown' }));
     // Four movable tools out of six: neither pinned order tool is one of them.
-    expect(within(bar()).getByText('4 selected')).toBeInTheDocument();
+    expect(within(bar()).getByText('4 of 4 selected')).toBeInTheDocument();
   });
 
   it('drops the bar when the selection is cleared', async () => {
