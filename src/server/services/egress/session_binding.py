@@ -27,7 +27,8 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from src.config.env import EGRESS_RELAY_SECRET
-from src.server.database.egress_grants import sync_oauth_grants
+from src.server.database.egress_grants import sync_egress_grants
+from src.server.services.egress.grant_scope import grant_refs
 
 if TYPE_CHECKING:
     from ptc_agent.core.session import Session
@@ -58,12 +59,13 @@ async def sync_egress_relay(
 ) -> RelayBind:
     """Converge grants + relay JWT + sandbox credential file to ``resolved``.
 
-    One grant per OAuth-connected server in the resolved set; grants the
-    workspace no longer resolves are retired in the same transaction (they are
-    an authorization overhang otherwise — the sandbox may still hold their ids
-    and a live JWT). Removal of the last OAuth server also deletes the
-    credential file, decided from the table so it converges on any worker. A
-    no-op when ``resolved`` is already superseded by a newer config version.
+    One grant per server that earns one (``grant_scope`` decides which, and of
+    which kind); grants the workspace no longer resolves are retired in the
+    same transaction (they are an authorization overhang otherwise; the
+    sandbox may still hold their ids and a live JWT). Removal of the last of
+    them also deletes the credential file, decided from the table so it
+    converges on any worker. A no-op when ``resolved`` is already superseded by
+    a newer config version.
 
     ``REFUSED`` only when a credential push was NEEDED and the sandbox refused
     it — the one outcome the caller must not stamp as applied, since nothing
@@ -76,25 +78,26 @@ async def sync_egress_relay(
     caller has a whole composite derived from the same stale resolve, and
     publishing that into the sandbox undoes what the newer resolve just wrote.
     """
-    oauth_servers = [s for s in resolved.servers if s.oauth_connection_id]
-    if oauth_servers and not EGRESS_RELAY_SECRET:
-        logger.warning(
-            "[EGRESS] OAuth-connected MCP servers %s present but "
-            "EGRESS_RELAY_SECRET is unset — they stay unbound",
-            [s.name for s in oauth_servers],
-        )
-        return RelayBind.APPLIED
     # The replacement below is whole-set, so a resolve with no owner is never
-    # authoritative: OAuth connections only resolve for an authenticated user,
-    # and an unowned resolve is indistinguishable from one that resolved empty
+    # authoritative: a grant only resolves for an authenticated user, and an
+    # unowned resolve is indistinguishable from one that resolved empty
     # because the owner was unknown — which would retire every live grant.
     if not user_id:
         return RelayBind.APPLIED
 
-    synced = await sync_oauth_grants(
+    refs = await grant_refs(resolved, user_id=user_id)
+    if refs and not EGRESS_RELAY_SECRET:
+        logger.warning(
+            "[EGRESS] relay-bound MCP servers %s present but "
+            "EGRESS_RELAY_SECRET is unset, they stay unbound",
+            [r.server_name for r in refs],
+        )
+        return RelayBind.APPLIED
+
+    synced = await sync_egress_grants(
         user_id=user_id or "",
         workspace_id=workspace_id,
-        connection_ids=[s.oauth_connection_id for s in oauth_servers],
+        refs=refs,
         config_version=resolved.version,
     )
     # Superseded config: a newer sync owns the grant set, so returning here is
@@ -107,17 +110,18 @@ async def sync_egress_relay(
         return RelayBind.SUPERSEDED
 
     grants: dict[str, str] = {}
-    for srv in oauth_servers:
-        grant_id = synced.grants.get(srv.oauth_connection_id)
+    for ref in refs:
+        grant_id = synced.grants.get(ref.key)
         if grant_id is None:
-            # The connection vanished between resolve and here (disconnect
-            # race): leave this one server unbound, keep binding the rest.
+            # The connection or the row vanished between resolve and here (a
+            # disconnect or delete race): leave this one server unbound, keep
+            # binding the rest.
             logger.warning(
-                "[EGRESS] connection %s gone for server %s — left unbound",
-                srv.oauth_connection_id, srv.name,
+                "[EGRESS] %s %s gone for server %s, left unbound",
+                ref.kind, ref.subject, ref.server_name,
             )
             continue
-        grants[srv.name] = grant_id
+        grants[ref.server_name] = grant_id
 
     if grants or synced.retired or session.egress_binding is not None:
         pushed = await _push_credentials(workspace_id, session, user_id or "", grants)

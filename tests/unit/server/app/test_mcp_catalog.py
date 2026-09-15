@@ -8,9 +8,11 @@ env/header maps verbatim so an edit round-trips them.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import ExitStack, asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 import pytest_asyncio
@@ -30,6 +32,9 @@ def _row(name="remote_server", **overrides):
         "user_mcp_server_id": "11111111-1111-1111-1111-111111111111",
         "user_id": "test-user-123",
         "name": name,
+        # Every catalog SELECT projects it, and background discovery now reads
+        # it before it dials: a row without it is a row nothing probes.
+        "enabled": True,
         "transport": "http",
         "command": None,
         "args": [],
@@ -49,11 +54,12 @@ def _row(name="remote_server", **overrides):
 @pytest.fixture(autouse=True)
 def _probe_kick_always_claimed():
     """Background discovery claims its kick in Postgres before dialling, and
-    these tests have no pool. The throttle itself is pinned in
+    these tests have no pool. The claim answers with the stamp it wrote, which
+    the probe then fences its write on; the throttle itself is pinned in
     test_mcp_discovery_schedule.py."""
     with patch(
         "src.server.services.mcp_oauth.discovery.claim_probe_kick",
-        new=AsyncMock(return_value=True),
+        new=AsyncMock(return_value=datetime.now(UTC)),
     ):
         yield
 
@@ -173,6 +179,42 @@ async def test_create_happy(client):
         )
     assert resp.status_code == 201
     assert resp.json()["name"] == "new_server"
+
+
+@pytest.mark.parametrize("enabled,kicks", [(False, 0), (True, 1)])
+@pytest.mark.asyncio
+async def test_create_kicks_the_probe_only_for_a_row_that_lands_on(
+    client, enabled, kicks
+):
+    """Background discovery refuses a row that is switched off, so a kick for
+    one spends its throttle stamp and returns nothing, while the page reads
+    the stamp as a check in flight and shows it for the whole window. The
+    enable toggle is what earns such a row its first probe.
+    """
+    from src.server.app import mcp_catalog
+
+    with (
+        patch.object(
+            mcp_catalog,
+            "create_catalog_server",
+            new=AsyncMock(return_value=_row(name="new_server", enabled=enabled)),
+        ),
+        patch.object(
+            mcp_catalog, "get_connection", new=AsyncMock(return_value=None)
+        ),
+        patch.object(mcp_catalog, "schedule_catalog_discovery") as sched,
+    ):
+        resp = await client.post(
+            "/api/v1/mcp/servers",
+            json={
+                "name": "new_server",
+                "transport": "http",
+                "url": "https://api.example.com/mcp",
+            },
+        )
+
+    assert resp.status_code == 201
+    assert sched.call_count == kicks
 
 
 @pytest.mark.asyncio
@@ -589,7 +631,7 @@ async def test_update_rediscovers_when_fingerprint_moves_and_consent_stays(clien
         )
         await _drain_rediscovery_tasks()
     assert resp.status_code == 200
-    refresh.assert_awaited_once_with("test-user-123", "remote_server")
+    refresh.assert_awaited_once_with("test-user-123", "remote_server", claimed_at=ANY)
     resync.assert_awaited_once_with("test-user-123")
 
 
@@ -879,6 +921,29 @@ async def test_enable_does_not_revoke(client):
     revoke.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_enable_kicks_the_probe_an_inert_row_never_got(client):
+    """The other half of the switch gate: nothing dials a row before the user
+    switches it on, so the switch is what earns the row its first verdict.
+
+    Unthrottled on purpose. The kick the create or the import spent left a
+    ``probe_kicked_at`` stamp and no snapshot, and a throttled kick lands
+    inside that stamp's window, so the row would stay blank until a self-heal
+    two minutes later.
+    """
+    from src.server.app import mcp_catalog
+
+    async with _toggle_patches(connection=None):
+        with patch.object(mcp_catalog, "schedule_catalog_discovery") as sched:
+            resp = await client.patch(
+                "/api/v1/mcp/servers/remote_server/enabled", json={"enabled": True}
+            )
+    assert resp.status_code == 200
+    assert sched.call_args_list == [
+        call("test-user-123", "remote_server", reason="enable")
+    ]
+
+
 # ---------------------------------------------------------------------------
 # POST import — created secrets must converge like the vault routes' do
 # ---------------------------------------------------------------------------
@@ -975,6 +1040,163 @@ async def test_import_without_created_secrets_skips_convergence(client, _import_
     after.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_import_refuses_a_value_the_vault_rules_reject(client, _import_txn):
+    """An extracted literal never passes through ``CreateSecretRequest``.
+
+    The model sees the ``${vault:NAME}`` ref the extraction put in its place,
+    so without the check here a value no sink can hold lands in the vault and
+    every server it feeds afterwards fails at its own boundary instead.
+    """
+    async with _import_patches() as mocks:
+        resp = await client.post(
+            "/api/v1/mcp/servers/import",
+            json={
+                "mcpServers": {
+                    "srv-one": {
+                        "type": "http",
+                        "url": "https://api.example.com/a",
+                        "headers": {
+                            "Authorization": "EXAMPLE-OPAQUE-TOKEN-AAAAAAAAAA\x00"
+                        },
+                    }
+                }
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["created"] == 0
+    assert body["secrets_created"] == []
+    assert body["results"][0]["status"] == "error"
+    mocks["create_user_secret"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_import_keeps_a_pasted_trailing_newline(client, _import_txn):
+    """Storage no longer rules on what a header can frame.
+
+    A key pasted with its newline is the key, and the header that carries it
+    trims the newline at resolution; refusing the whole import here cost the
+    user an entry over a byte nothing downstream would have sent.
+    """
+    async with _import_patches() as mocks:
+        resp = await client.post(
+            "/api/v1/mcp/servers/import",
+            json={
+                "mcpServers": {
+                    "srv-one": {
+                        "type": "http",
+                        "url": "https://api.example.com/a",
+                        "headers": {
+                            "Authorization": "EXAMPLE-OPAQUE-TOKEN-AAAAAAAAAA\n"
+                        },
+                    }
+                }
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["created"] == 1
+    assert len(body["secrets_created"]) == 1
+    assert mocks["create_user_secret"].await_count == 1
+
+
+async def _settle_discovery() -> None:
+    """Await whatever background discovery the request just scheduled.
+
+    ``schedule_catalog_discovery`` registers its task synchronously, so every
+    kick a request made is in ``_in_flight`` by the time its response is back.
+    """
+    from src.server.services.mcp_oauth import discovery
+
+    for task in list(discovery._in_flight.values()):
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("enabled,dials", [(False, 0), (True, 1)])
+@pytest.mark.asyncio
+async def test_import_dials_only_a_row_the_user_switched_on(
+    client, _import_txn, enabled, dials
+):
+    """The discovery pass refuses to dial a row that is switched off.
+
+    An inert row never reaches the wire: the pass reads it and refuses, so the
+    credential this same import just wrote into the vault does not travel to
+    the address the pasted file named. The enabled half is the identical code
+    path and is what says the refusal is the switch rather than a kick that
+    never fires: there the resolved value goes out.
+
+    The writer here hands back an enabled row, so the import route's own gate
+    passes and the refusal under test is the pass's own; the route gate is
+    pinned separately below.
+    """
+    from src.server.services.mcp_oauth import discovery
+
+    probe = AsyncMock()
+    secret = "EXAMPLE-OPAQUE-TOKEN-AAAAAAAAAA"
+    with (
+        patch.object(
+            discovery,
+            "get_catalog_server",
+            new=AsyncMock(return_value=_row("srv-one", enabled=enabled)),
+        ),
+        patch.object(discovery, "get_connection", new=AsyncMock(return_value=None)),
+        patch.object(
+            discovery,
+            "get_user_secrets_decrypted",
+            new=AsyncMock(return_value={"API_KEY": secret}),
+        ),
+        patch.object(discovery, "bounded_probe", new=probe),
+    ):
+        async with _import_patches(after_secret_change=AsyncMock()):
+            resp = await client.post(
+                "/api/v1/mcp/servers/import",
+                json={
+                    "mcpServers": {
+                        "srv-one": {
+                            "type": "http",
+                            "url": "https://api.example.com/a",
+                            "headers": {"Authorization": secret},
+                        }
+                    }
+                },
+            )
+            assert resp.status_code == 200
+            assert resp.json()["created"] == 1
+            await _settle_discovery()
+
+    assert probe.await_count == dials
+    if dials:
+        assert probe.await_args.args[1]["Authorization"] == secret
+
+
+@pytest.mark.asyncio
+async def test_import_does_not_kick_rows_that_land_switched_off(client, _import_txn):
+    """The other end of the same gate: an imported row lands inert, nothing
+    will dial it, and the kick would only stamp the throttle clock and leave
+    the page reporting a check nothing is making."""
+    from src.server.app import mcp_catalog
+
+    created = AsyncMock(side_effect=lambda u, n, **kw: _row(n, enabled=False))
+    async with _import_patches(create_catalog_server=created):
+        with patch.object(mcp_catalog, "schedule_catalog_discovery") as sched:
+            resp = await client.post(
+                "/api/v1/mcp/servers/import",
+                json={
+                    "mcpServers": {
+                        "srv-one": {"type": "http", "url": "https://api.example.com/a"},
+                        "srv-two": {"command": "npx", "args": ["-y", "@foo/bar"]},
+                    }
+                },
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()["created"] == 2
+    sched.assert_not_called()
+
+
 def test_catalog_fields_match_the_writable_column_set():
     """``update_catalog_server`` now REJECTS unknown keys instead of dropping
     them, so a field added to ``to_catalog_fields`` without a matching column
@@ -986,6 +1208,84 @@ def test_catalog_fields_match_the_writable_column_set():
         name="remote_server", transport="http", url="https://api.example.com/mcp"
     )
     assert set(server.to_catalog_fields()) == set(CATALOG_COLUMNS)
+
+
+def test_the_catalog_select_projects_the_probe_kick_clock():
+    """``_catalog_row_to_dict`` indexes it, so a SELECT that stopped naming the
+    column would KeyError every catalog read rather than quietly returning
+    null."""
+    from src.server.database.mcp_servers import _CATALOG_SELECT
+
+    assert "s.probe_kicked_at" in _CATALOG_SELECT
+
+
+class TestSelfHealKick:
+    """Which rows the list route re-probes, and which it leaves alone."""
+
+    def _kicked(self, rows, snapshots) -> list[str]:
+        from src.server.app import mcp_catalog
+
+        with patch.object(mcp_catalog, "schedule_catalog_discovery") as sched:
+            mcp_catalog._kick_unprobed("u1", rows, snapshots)
+        return [c.args[1] for c in sched.call_args_list]
+
+    def test_a_backfilled_empty_verdict_still_counts_as_unprobed(self):
+        """Migration 044 backfills ``last_probe`` with ``{}``, which reads back
+        as no verdict at all. Without this the row has a snapshot, so it never
+        earned one after deploy and its header grant was never issued."""
+        rows = [_row(name="acme")]
+
+        assert self._kicked(rows, {"acme": {"last_probe": {}}}) == ["acme"]
+
+    def test_an_unreachable_verdict_is_retried(self):
+        rows = [_row(name="acme")]
+        snapshots = {"acme": {"last_probe": {"verdict": "unreachable"}}}
+
+        assert self._kicked(rows, snapshots) == ["acme"]
+
+    def test_a_verdict_the_server_gave_is_left_alone(self):
+        rows = [_row(name="acme")]
+        snapshots = {"acme": {"last_probe": {"verdict": "needs_credential"}}}
+
+        assert self._kicked(rows, snapshots) == []
+
+    def test_a_switched_off_row_is_left_alone(self):
+        """An inert template has no business on the wire, and the pass refuses
+        it anyway: kicking from here spends a task and the row's throttle
+        stamp, and the stamp is what the switch's own kick then lands inside.
+        """
+        rows = [_row(name="acme", enabled=False)]
+
+        assert self._kicked(rows, {}) == []
+
+    def test_a_row_of_a_disabled_plugin_is_left_alone(self):
+        """The plugin switch withholds the row from every runtime without
+        touching the row's own flag, so it is as inert as a switched-off row
+        and its credential has the same claim to stay off the wire."""
+        rows = [_row(name="acme", plugin_name="bundle", plugin_enabled=False)]
+
+        assert self._kicked(rows, {}) == []
+
+    def test_a_row_kicked_seconds_ago_is_not_kicked_again(self):
+        """The pre-check in front of ``claim_probe_kick``: a polling list must
+        not spawn a task per remote row just to be told no in Postgres."""
+        recent = (datetime.now(UTC) - timedelta(seconds=10)).isoformat()
+        rows = [_row(name="acme", probe_kicked_at=recent)]
+
+        assert self._kicked(rows, {}) == []
+
+    def test_a_stale_kick_clock_does_not_hold_the_row_back(self):
+        old = (datetime.now(UTC) - timedelta(seconds=600)).isoformat()
+        rows = [_row(name="acme", probe_kicked_at=old)]
+
+        assert self._kicked(rows, {}) == ["acme"]
+
+    def test_an_sse_row_has_no_host_side_path(self):
+        """The probe dials streamable HTTP, so a legacy row would only ever
+        earn an error snapshot here; it keeps its in-sandbox discovery."""
+        rows = [_row(name="legacy", transport="sse")]
+
+        assert self._kicked(rows, {}) == []
 
 
 # ---------------------------------------------------------------------------
@@ -1112,6 +1412,134 @@ async def test_probe_names_a_missing_secret_instead_of_dialling(client):
     body = resp.json()
     assert body["verdict"] == "missing_secrets"
     assert body["missing_secrets"] == ["API_KEY"]
+    assert probe.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_probe_decrypts_only_the_secrets_its_headers_name(client):
+    """Each vault row is a full S2K derivation, and the header-free probe a
+    URL edit fires names none of them. The route asks for the referenced
+    names, not the vault, and asks for nothing when there are none."""
+    from src.server.services import mcp_probe
+
+    user_vault = AsyncMock(return_value={"API_KEY": "sk-abc"})
+    with (
+        patch(
+            "src.server.database.user_vault_secrets.get_user_secrets_decrypted",
+            new=user_vault,
+        ),
+        patch("src.server.services.mcp_probe._probe", new=AsyncMock(
+            return_value=mcp_probe.ProbeOutcome(ok=True, auth="none", tools=[])
+        )),
+    ):
+        resp = await client.post(
+            "/api/v1/mcp/servers/probe", json={"url": "https://api.example.com/mcp"}
+        )
+        assert resp.status_code == 200
+        user_vault.assert_not_awaited()
+
+        resp = await client.post(
+            "/api/v1/mcp/servers/probe",
+            json={
+                "url": "https://api.example.com/mcp",
+                "headers": {"Authorization": "Bearer ${vault:API_KEY}", "X-B": "${vault:B}"},
+            },
+        )
+        assert resp.status_code == 200
+    user_vault.assert_awaited_once_with("test-user-123", ["API_KEY", "B"])
+
+
+@pytest.mark.asyncio
+async def test_a_probe_whose_caller_hung_up_lets_go_of_its_gate_slot():
+    """The form aborts a superseded probe; a dropped connection cancels nothing
+    on its own. Polled disconnect is what stops the abandoned dial from holding
+    a slot for its whole budget."""
+    from fastapi import HTTPException
+
+    from src.server.app.mcp_catalog import _unless_gone
+
+    released = asyncio.Event()
+
+    async def _slow():
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            released.set()
+            raise
+
+    class _Gone:
+        """Present for the first poll, so the dial is on the wire when the
+        caller goes; gone from the second."""
+
+        polls = 0
+
+        async def is_disconnected(self):
+            self.polls += 1
+            return self.polls > 1
+
+    with patch("src.server.app.mcp_catalog.DISCONNECT_POLL_S", 0.01):
+        with pytest.raises(HTTPException) as exc:
+            await _unless_gone(_Gone(), _slow())
+    assert exc.value.status_code == 499
+    await asyncio.wait_for(released.wait(), 1)
+
+
+@pytest.mark.asyncio
+async def test_a_probe_whose_caller_stayed_answers_normally():
+    from src.server.app.mcp_catalog import _unless_gone
+
+    async def _quick():
+        return "answer"
+
+    class _Here:
+        async def is_disconnected(self):
+            return False
+
+    assert await _unless_gone(_Here(), _quick()) == "answer"
+
+
+@pytest.mark.asyncio
+async def test_probe_trims_a_pasted_newline_off_a_resolved_header(client):
+    """The vault keeps what was pasted; the header sink decides what it can send.
+
+    A literal header value never reaches here with a newline in it, so this is
+    the one path that has to make the call.
+    """
+    stack, probe = _probe_patches(secrets={"API_KEY": "sk-live\n"})
+    with stack:
+        await client.post(
+            "/api/v1/mcp/servers/probe",
+            json={
+                "url": "https://api.example.com/mcp",
+                "headers": {"Authorization": "Bearer ${vault:API_KEY}"},
+            },
+        )
+
+    assert probe.await_args.args[1] == {"Authorization": "Bearer sk-live"}
+
+
+@pytest.mark.asyncio
+async def test_probe_refuses_a_resolved_header_that_would_split_the_request(client):
+    """An embedded newline is a second header, not a credential.
+
+    Refused before the socket, in the same words httpx would have produced a
+    layer down, so the form reads the same whichever side caught it.
+    """
+    from src.server.services.mcp_probe import INVALID_HEADER_VALUE
+
+    stack, probe = _probe_patches(secrets={"API_KEY": "sk-live\nX-Injected: 1"})
+    with stack:
+        resp = await client.post(
+            "/api/v1/mcp/servers/probe",
+            json={
+                "url": "https://api.example.com/mcp",
+                "headers": {"Authorization": "Bearer ${vault:API_KEY}"},
+            },
+        )
+
+    body = resp.json()
+    assert body["verdict"] == "unreachable"
+    assert body["error"] == INVALID_HEADER_VALUE
     assert probe.await_count == 0
 
 
@@ -1564,13 +1992,16 @@ ROBINHOOD_URL = "https://agent.robinhood.com/mcp/trading"
 
 
 @asynccontextmanager
-async def _binding_patches(*, row, connection=None, read=None, lock=None):
+async def _binding_patches(
+    *, row, connection=None, read=None, lock=None, rewrite=None
+):
     """The write is captured rather than performed; ``update`` records the
     ``updates`` the handler decided on, which is the whole contract here.
 
     ``read`` replaces the catalog read (it receives the handler's call, so it
     can answer by whether ``conn`` was passed); ``lock`` replaces the egress
-    lock. Both default to no-ops that return ``row``."""
+    lock; ``rewrite`` replaces the header-grant rewrite. All default to no-ops
+    that return ``row``."""
 
     @asynccontextmanager
     async def _txn():
@@ -1605,6 +2036,10 @@ async def _binding_patches(*, row, connection=None, read=None, lock=None):
         patch(
             "src.server.database.egress_grants.apply_consent_to_active_grants",
             new=AsyncMock(),
+        ),
+        patch(
+            "src.server.database.egress_grants.apply_binding_to_active_header_grants",
+            new=rewrite or AsyncMock(),
         ),
         patch(
             "src.server.app.mcp_catalog._oauth_by_server",
@@ -1890,6 +2325,44 @@ async def test_binding_a_live_connection_outranks_the_row_url(client):
 
 
 @pytest.mark.asyncio
+async def test_binding_rewrites_the_rows_own_header_grants(client):
+    """A header-authenticated row has no connection, so the consent rewrite
+    reaches none of its grants -- and the relay reads the grant, so a sandbox
+    already holding one would keep calling a tool this request just moved onto
+    the direct path."""
+    row = _row("fund_desk", tool_binding={})
+    rewrite = AsyncMock()
+    async with _binding_patches(row=row, connection=None, rewrite=rewrite):
+        resp = await client.patch(
+            "/api/v1/mcp/servers/fund_desk/binding",
+            json={"tool_binding_set": {"desk_quote": "direct"}},
+        )
+    assert resp.status_code == 200, resp.json()
+    rewrite.assert_awaited_once()
+    assert rewrite.await_args.args[:2] == ("test-user-123", "fund_desk")
+    # On the caller's connection, so the map and the policy enforcing it land
+    # in one transaction.
+    assert "conn" in rewrite.await_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_binding_refuses_direct_on_a_legacy_sse_row(client):
+    """The relay dials streamable HTTP, so an ``sse`` row has no address it can
+    reach: a tool bound direct there would leave the sandbox set and never earn
+    a grant, so the write path refuses it rather than storing a binding that
+    takes the tool away from both agents."""
+    row = _row("legacy_desk", transport="sse", tool_binding={})
+    async with _binding_patches(row=row) as update:
+        resp = await client.patch(
+            "/api/v1/mcp/servers/legacy_desk/binding",
+            json={"tool_binding_set": {"desk_quote": "direct"}},
+        )
+    assert resp.status_code == 422
+    assert "sandbox wrapper" in resp.json()["detail"]
+    update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("value", [True, False])
 async def test_binding_writes_the_order_approval_switch(client, value):
     """The resolver reads the column now, so the write is stored rather than
@@ -2058,11 +2531,16 @@ class TestHasDirectTools:
 
     Flash has no sandbox, so a row is reachable from it only through a tool on
     the direct path. The catalog answers it from the snapshot the list already
-    holds, so the page does not have to ask per row.
+    holds, so the page does not have to ask per row. A row with no servable
+    connection authenticates with its own headers, and the grant for those
+    hangs on the probe verdict, so the offer has to hang on it too.
     """
 
-    def _snapshot(self, *names):
-        return {"tools": [{"name": n} for n in names]}
+    def _snapshot(self, *names, verdict=None):
+        snapshot = {"tools": [{"name": n} for n in names]}
+        if verdict is not None:
+            snapshot["last_probe"] = {"verdict": verdict}
+        return snapshot
 
     def test_a_row_with_a_directly_bound_tool_says_so(self):
         from src.server.app.mcp_catalog import _has_direct_tools
@@ -2097,22 +2575,96 @@ class TestHasDirectTools:
         }
         assert _has_direct_tools(row, conn, self._snapshot("quote_kline")) is False
 
-    def test_an_unconnected_row_does_not(self):
+    def test_a_header_authenticated_row_whose_probe_passed_does(self):
+        # No connection is not "no credential": a remote row authenticates
+        # with its own headers, and the sync grants it the same way once a
+        # verdict says those headers work.
         from src.server.app.mcp_catalog import _has_direct_tools
 
-        row = {"transport": "http", "tool_binding": {"quote_kline": "direct"}}
+        row = {
+            "transport": "http",
+            "url": "https://example.com/mcp",
+            "tool_binding": {"quote_kline": "direct"},
+        }
+        snapshot = self._snapshot("quote_kline", verdict="ok_authed")
+        assert _has_direct_tools(row, None, snapshot) is True
+
+    @pytest.mark.parametrize(
+        "verdict", ["credential_rejected", "missing_secrets", "unreachable"]
+    )
+    def test_a_header_row_whose_probe_was_refused_does_not(self, verdict):
+        """The snapshot upsert never downgrades: a row that listed once keeps
+        its tools and its ``ok`` status when a later probe is turned away, and
+        only ``last_probe`` moves. Reading the tools alone offered the Flash
+        toggle for a row whose header grant the sync then refused to write.
+        """
+        from src.server.app.mcp_catalog import _has_direct_tools
+
+        row = {
+            "transport": "http",
+            "url": "https://example.com/mcp",
+            "tool_binding": {"quote_kline": "direct"},
+        }
+        snapshot = self._snapshot("quote_kline", verdict=verdict)
+        assert _has_direct_tools(row, None, snapshot) is False
+
+    def test_a_header_row_with_no_verdict_yet_does_not(self):
+        """A snapshot written before the verdict had a column reads back as
+        nothing having reached the address, which is what the resolver clamps
+        on, so the offer waits for the probe rather than leading it."""
+        from src.server.app.mcp_catalog import _has_direct_tools
+
+        row = {
+            "transport": "http",
+            "url": "https://example.com/mcp",
+            "tool_binding": {"quote_kline": "direct"},
+        }
         assert _has_direct_tools(row, None, self._snapshot("quote_kline")) is False
 
-    def test_a_revoked_connection_does_not(self):
+    def test_an_unconnected_row_with_no_address_does_not(self):
         from src.server.app.mcp_catalog import _has_direct_tools
 
-        row = {"transport": "http", "tool_binding": {"quote_kline": "direct"}}
+        row = {"transport": "stdio", "tool_binding": {"quote_kline": "direct"}}
+        assert _has_direct_tools(row, None, self._snapshot("quote_kline")) is False
+
+    def test_a_revoked_connection_leaves_the_row_to_its_own_headers(self):
+        """The relay and the resolver both read a revoked record as history
+        rather than a claim on the row: the user disconnected, and the headers
+        the row carries may authenticate it now. Answering no here hid the
+        Flash toggle for a row the sync was granting."""
+        from src.server.app.mcp_catalog import _has_direct_tools
+
+        row = {
+            "transport": "http",
+            "url": "https://example.com/mcp",
+            "tool_binding": {"quote_kline": "direct"},
+        }
         conn = {
             "status": "revoked",
             "server_url": "https://example.com/mcp",
             "granted_capabilities": [],
         }
-        assert _has_direct_tools(row, conn, self._snapshot("quote_kline")) is False
+        snapshot = self._snapshot("quote_kline", verdict="ok_authed")
+        assert _has_direct_tools(row, conn, snapshot) is True
+
+    def test_a_connection_needing_repair_still_does_not(self):
+        """Unlike a revoked one: the row is still claimed, the headers are not
+        sent while it is, and the sync binds no grant until it is reconnected.
+        """
+        from src.server.app.mcp_catalog import _has_direct_tools
+
+        row = {
+            "transport": "http",
+            "url": "https://example.com/mcp",
+            "tool_binding": {"quote_kline": "direct"},
+        }
+        conn = {
+            "status": "needs_reauth",
+            "server_url": "https://example.com/mcp",
+            "granted_capabilities": [],
+        }
+        snapshot = self._snapshot("quote_kline", verdict="ok_authed")
+        assert _has_direct_tools(row, conn, snapshot) is False
 
     def test_a_map_naming_a_tool_the_server_never_published_does_not(self):
         # The plan carries every name curation or the map grants; only a
@@ -2138,3 +2690,69 @@ class TestHasDirectTools:
             "granted_capabilities": [],
         }
         assert _has_direct_tools(row, conn, None) is False
+
+
+class TestRelayExecutionWarning:
+    """Activation is the moment to say a deployment cannot run this row.
+
+    The relay carries two shapes: an OAuth connection, whose token only it
+    spends, and an ``http`` row with a tool on the direct path. Warning on the
+    connection alone left the second reporting a clean save while the sync
+    bound nothing, so the tool was gone from both agents with nothing said.
+    """
+
+    @asynccontextmanager
+    async def _patches(self, *, row=None, connection=None, secret=""):
+        with (
+            patch("src.server.app.setup.agent_config", MagicMock()),
+            patch("src.config.env.EGRESS_RELAY_SECRET", secret),
+            patch(
+                "src.server.app.mcp_catalog.get_connection",
+                new=AsyncMock(return_value=connection),
+            ),
+            patch(
+                "src.server.app.mcp_catalog.get_catalog_server",
+                new=AsyncMock(return_value=row),
+            ),
+        ):
+            yield
+
+    async def _warning(self, **kwargs):
+        from src.server.app.mcp_catalog import _relay_execution_warning
+
+        async with self._patches(**kwargs):
+            return await _relay_execution_warning("test-user-123", "fund_desk")
+
+    @pytest.mark.asyncio
+    async def test_a_header_row_with_a_direct_tool_warns(self):
+        row = _row("fund_desk", tool_binding={"desk_quote": "direct"})
+        warning = await self._warning(row=row)
+        assert warning and "EGRESS_RELAY_SECRET" in warning
+
+    @pytest.mark.asyncio
+    async def test_a_header_row_with_nothing_on_the_direct_path_says_nothing(self):
+        row = _row("fund_desk", tool_binding={"desk_quote": "ptc"})
+        assert await self._warning(row=row) is None
+
+    @pytest.mark.asyncio
+    async def test_a_legacy_sse_row_says_nothing(self):
+        """Its stored entry is clamped back to the sandbox, so the relay is
+        not what its tools run through and the warning is not its answer."""
+        row = _row("fund_desk", transport="sse", tool_binding={"desk_quote": "direct"})
+        assert await self._warning(row=row) is None
+
+    @pytest.mark.asyncio
+    async def test_a_revoked_connection_leaves_the_row_to_its_own_binding(self):
+        from src.server.database.mcp_oauth import ConnectionStatus
+
+        revoked = MagicMock(status=ConnectionStatus.REVOKED)
+        ptc_only = _row("fund_desk", tool_binding={"desk_quote": "ptc"})
+        assert await self._warning(row=ptc_only, connection=revoked) is None
+        direct = _row("fund_desk", tool_binding={"desk_quote": "direct"})
+        warning = await self._warning(row=direct, connection=revoked)
+        assert warning and "EGRESS_RELAY_SECRET" in warning
+
+    @pytest.mark.asyncio
+    async def test_an_oauth_connection_warns_without_reading_the_row(self):
+        warning = await self._warning(row=None, connection=MagicMock())
+        assert warning and "EGRESS_RELAY_SECRET" in warning

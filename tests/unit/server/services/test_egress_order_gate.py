@@ -41,6 +41,7 @@ TOOL_CALL_ID = "call_order_gate_0001"
 # The moomoo address, because the gate keys off the vendor the grant is pinned
 # to and moomoo is where ``sim_trade_input_order`` is an order.
 DESTINATION = "https://mcp.moomoo.com/mcp"
+SERVER_NAME = "moomoo"
 ORDER_TOOL = "sim_trade_input_order"
 READ_TOOL = "get_positions"
 ORDER_ARGS = {"code": "US.AAPL", "qty": 1, "price": 50.0, "trd_side": "BUY"}
@@ -59,7 +60,9 @@ def _grant(**overrides) -> dict:
     row = {
         "user_id": USER_ID,
         "workspace_id": WORKSPACE_ID,
+        "kind": "oauth_mcp",
         "connection_id": CONNECTION_ID,
+        "server_name": None,
         "destination_url": DESTINATION,
         "allowed_methods": ["POST"],
         "tool_denylist": [],
@@ -125,11 +128,30 @@ async def _prepare(*, body: bytes | None = None, headers=None, attempt=_UNSET):
             AsyncMock(return_value=_attempt() if attempt is _UNSET else attempt),
         ) as fetch_attempt,
         patch(
-            "src.server.services.egress.relay.ensure_fresh_access_token",
+            "src.server.services.egress.credentials.ensure_fresh_access_token",
             AsyncMock(
                 return_value=AccessToken(
                     access_token="vendor-token", token_type="Bearer", generation=1
                 )
+            ),
+        ),
+        # Resolving this kind's bearer reads the row behind the connection, so
+        # a deliverable one has to be there for any call to be prepared.
+        patch(
+            "src.server.services.egress.credentials.get_connection_by_id",
+            AsyncMock(
+                return_value=SimpleNamespace(user_id=USER_ID, server_name=SERVER_NAME)
+            ),
+        ),
+        patch(
+            "src.server.services.egress.credentials.get_catalog_server",
+            AsyncMock(
+                return_value={
+                    "name": SERVER_NAME,
+                    "enabled": True,
+                    "transport": "http",
+                    "url": DESTINATION,
+                }
             ),
         ),
         patch("src.server.services.egress.relay.EGRESS_RELAY_SECRET", SECRET),

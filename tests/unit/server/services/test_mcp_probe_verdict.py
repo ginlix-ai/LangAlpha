@@ -17,18 +17,24 @@ refuse what would split the request.
 
 The closing section covers where the verdict lands: every guarded snapshot
 write carries one, including the failures, which is the whole reason it needed
-storage of its own.
+storage of its own, and what a crossing of the servable set owes the user's
+workspaces -- in the same transaction the verdict lands in, because a verdict
+that commits without its bump is one nothing re-kicks.
 """
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
 import pytest
 
 from src.server.database.mcp_tool_schemas import SchemaWrite
 from src.server.models.mcp_server import ProbeResult
+from src.server.services.mcp_config import user_row_to_server_config
+from src.server.services.mcp_discovery import mcp_discovery_fingerprint
 from src.server.services.mcp_oauth import discovery
+from src.server.services.mcp_oauth.lifecycle import TokenUnavailable
 from src.server.services.mcp_probe import (
     INVALID_HEADER_VALUE,
     ProbeOutcome,
@@ -180,85 +186,147 @@ def test_the_refusal_reads_the_same_as_the_one_httpx_would_have_raised():
 # ---------------------------------------------------------------------------
 
 
-class _Writes(list):
-    """The captured writes, plus the digest the stubbed write reports having
-    overwritten, which is the one input to the fan-out decision."""
+_ROW = {
+    "name": "authy",
+    # Every catalog SELECT projects these, and the fingerprint the writer
+    # fences on is computed from them, so the row has to be the real shape.
+    "enabled": True,
+    "transport": "http",
+    "command": None,
+    "args": [],
+    "url": "https://api.example.com/mcp",
+    "env": {},
+    "headers": {},
+    "description": "d",
+    "instruction": "i",
+    "tool_exposure_mode": "summary",
+}
 
+
+class _Writes(list):
+    """The captured upsert kwargs, plus what the stubbed write reports having
+    overwritten: the digest and the verdict, which are the two inputs to the
+    fan-out decision. ``row`` is what the write lands, None for one the
+    connection guard refused under the lock."""
+
+    row: dict | None = {"status": "ok"}
+    connection_status: str | None = None
     replaced: str | None = None
+    replaced_verdict: str | None = None
+
+
+class _FakeCursor:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeConn:
+    """Records when the fence transaction exits, so a test can pin that the
+    bump was issued while it was still open."""
+
+    def __init__(self) -> None:
+        self.exited = False
+        self.cur = _FakeCursor()
+
+    @asynccontextmanager
+    async def transaction(self):
+        try:
+            yield self
+        finally:
+            self.exited = True
+
+    def cursor(self) -> _FakeCursor:
+        return self.cur
 
 
 @pytest.fixture
 def writes(monkeypatch):
-    """Captures the fenced snapshot write's kwargs without a database."""
+    """Captures the fenced write's upsert without a database. The fence itself
+    is left real, because the fan-out now rides inside it."""
     captured = _Writes()
+    captured.conn = _FakeConn()
 
-    async def _write(self, *, probe, **kwargs):
-        captured.append({"probe": probe} | kwargs)
+    @asynccontextmanager
+    async def _connection(conn=None):
+        yield captured.conn
+
+    async def _upsert(user_id, server_name, config_hash, **kwargs):
+        captured.append(kwargs)
         return SchemaWrite(
-            {"status": kwargs.get("status", "ok")},
+            captured.row,
+            captured.connection_status,
             replaced_digest=captured.replaced,
+            replaced_verdict=captured.replaced_verdict,
         )
 
-    monkeypatch.setattr(discovery._SnapshotWriter, "write", _write)
+    monkeypatch.setattr(discovery, "get_db_connection", _connection)
+    monkeypatch.setattr(discovery, "get_catalog_server", AsyncMock(return_value=_ROW))
+    monkeypatch.setattr(discovery, "upsert_user_tool_schemas", _upsert)
     return captured
 
 
+@pytest.fixture
+def bump(monkeypatch):
+    """The fan-out itself, stubbed: these tests are about when it fires."""
+    stub = AsyncMock(return_value=None)
+    monkeypatch.setattr(discovery, "bump_user_versions", stub)
+    return stub
+
+
 def _writer() -> "discovery._SnapshotWriter":
-    return discovery._SnapshotWriter("u1", "authy", "fingerprint-1", None)
+    return discovery._SnapshotWriter(
+        "u1", "authy", mcp_discovery_fingerprint(user_row_to_server_config(_ROW)), None
+    )
 
 
 @pytest.mark.asyncio
-async def test_a_failing_probe_writes_its_verdict_with_the_error_row(writes):
+async def test_a_failing_probe_writes_its_verdict_with_the_error_row(writes, bump):
     await _writer().settle(
         _outcome(auth="credential", http_status=401, error="401 Unauthorized")
     )
 
     (write,) = writes
     assert write["status"] == "error"
-    assert write["probe"].verdict == "needs_credential"
-    assert write["probe"].http_status == 401
+    assert write["last_probe"]["verdict"] == "needs_credential"
+    assert write["last_probe"]["http_status"] == 401
 
 
 @pytest.mark.asyncio
-async def test_a_successful_probe_writes_the_verdict_beside_the_tools(
-    writes, monkeypatch
-):
-    monkeypatch.setattr(
-        discovery, "bump_user_workspaces_mcp_version", AsyncMock(return_value=None)
-    )
-
+async def test_a_successful_probe_writes_the_verdict_beside_the_tools(writes, bump):
     await _writer().settle(
         _outcome(ok=True, auth="none", tools=[{"name": "quote"}])
     )
 
     (write,) = writes
     assert write["status"] == "ok"
-    assert write["probe"].verdict == "ok"
-    assert write["probe"].error == ""
+    assert write["last_probe"]["verdict"] == "ok"
+    assert write["last_probe"]["error"] == ""
 
 
 @pytest.mark.asyncio
-async def test_the_stored_verdict_is_plain_json(writes, monkeypatch):
+async def test_the_stored_verdict_is_plain_json(writes, bump):
     """It rides into a jsonb column, so a datetime or a model instance would
     only fail at the adapter."""
     import json
 
     await _writer().settle(_outcome(auth="none", error="timeout"))
 
-    json.dumps(writes[0]["probe"].model_dump(mode="json"))
+    json.dumps(writes[0]["last_probe"])
 
 
 @pytest.mark.asyncio
-async def test_the_fan_out_follows_what_the_write_replaced(writes, monkeypatch):
+async def test_the_fan_out_follows_what_the_write_replaced(writes, bump):
     """Two workers can probe one row at once (an explicit kick is not
     throttled) and both read the stored digest before either write lands.
     Deciding the bump from that pre-read let the second writer publish a
     surface no workspace was ever told to re-resolve."""
-    bump = AsyncMock(return_value=None)
-    monkeypatch.setattr(discovery, "bump_user_workspaces_mcp_version", bump)
     outcome = _outcome(ok=True, auth="none", tools=[{"name": "quote"}])
 
     writes.replaced = discovery._schema_digest(outcome.tools)
+    writes.replaced_verdict = "ok"
     await _writer().settle(outcome)
 
     bump.assert_not_awaited()
@@ -267,3 +335,178 @@ async def test_the_fan_out_follows_what_the_write_replaced(writes, monkeypatch):
     await _writer().settle(outcome)
 
     bump.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_fan_out_is_issued_before_the_fence_commits(writes, monkeypatch):
+    """The regression this shape fixes: a verdict that commits without its bump
+    leaves every warm session holding grants the row no longer earns, and the
+    next probe carries the same verdict, so it crosses nothing and the bump is
+    never made up."""
+    seen = []
+
+    async def _bump(cur, user_id):
+        seen.append((writes.conn.exited, cur, user_id))
+
+    monkeypatch.setattr(discovery, "bump_user_versions", _bump)
+
+    await _writer().settle(_outcome(ok=True, auth="none", tools=[{"name": "quote"}]))
+
+    assert seen == [(False, writes.conn.cur, "u1")]
+    assert writes.conn.exited
+
+
+@pytest.mark.asyncio
+async def test_the_fence_takes_the_catalog_row_exclusively(writes, bump):
+    """A shared lock stops an edit but not a second probe, and on a config's
+    FIRST probe there is no snapshot row downstream for the pair to serialize
+    on either: both read no replaced verdict, so an ok-then-rejected pair
+    crosses nothing and the warm session keeps a grant the row has lost."""
+    await _writer().settle(_outcome(ok=True, auth="none", tools=[{"name": "quote"}]))
+
+    kwargs = discovery.get_catalog_server.await_args.kwargs
+    assert kwargs["for_update"] is True
+    assert "for_share" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_a_write_refused_under_the_lock_fans_nothing_out(writes, bump):
+    """A disconnect that commits during the network phase already purged both
+    tiers; the refused write has nothing to publish, so the bump that would
+    push it to every workspace must not fire either."""
+    writes.row = None
+    writes.connection_status = "revoked"
+
+    with pytest.raises(TokenUnavailable) as caught:
+        await _writer().settle(
+            _outcome(ok=True, auth="none", tools=[{"name": "quote"}])
+        )
+
+    assert caught.value.reason == "revoked"
+    bump.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Crossing the servable set: the fan-out the digest alone cannot see
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_row_that_stops_answering_fans_the_bump_out(writes, bump):
+    """The regression. The no-downgrade upsert keeps the tools, the status and
+    the digest of a row that listed once and now 401s, so ``last_probe`` is the
+    only thing that moved, and a warm PTC session re-resolves its grants only
+    when the config version does. The direct tool and its ``header_mcp`` grant
+    otherwise outlive the verdict that retired them."""
+    writes.replaced_verdict = "ok_authed"
+
+    await _writer().settle(
+        _outcome(auth="credential", http_status=401, sent_credential=True)
+    )
+
+    bump.assert_awaited_once_with(writes.conn.cur, "u1")
+
+
+@pytest.mark.asyncio
+async def test_a_row_that_was_already_failing_fans_nothing_out(writes, bump):
+    """A self-heal pass re-probes an unreachable row every two minutes, and a
+    bump per pass would rebuild every workspace's wrappers for a row that has
+    not moved."""
+    writes.replaced_verdict = "unreachable"
+
+    await _writer().settle(_outcome(auth="none", error="timeout"))
+
+    bump.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_recovery_with_the_same_tools_fans_the_bump_out(writes, bump):
+    """The other direction, and the reason the digest is not the whole test: a
+    vendor outage that ends comes back with the tool surface it left with, so
+    the digest matches and the retired grant would never be re-issued."""
+    outcome = _outcome(ok=True, auth="none", tools=[{"name": "quote"}])
+    writes.replaced = discovery._schema_digest(outcome.tools)
+    writes.replaced_verdict = "unreachable"
+
+    await _writer().settle(outcome)
+
+    bump.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_token_that_cannot_be_minted_fans_out_like_any_other_failure(
+    writes, bump
+):
+    """``fail`` also lands the OAuth arm's verdict, and a connection whose token
+    will not mint costs the row its grant exactly as a 401 does."""
+    writes.replaced_verdict = "ok_authed"
+
+    await _writer().fail(
+        probe_result(
+            ProbeOutcome(
+                ok=False, auth="oauth", error="token unavailable: needs_reauth"
+            )
+        )
+    )
+
+    bump.assert_awaited_once_with(writes.conn.cur, "u1")
+
+
+# ---------------------------------------------------------------------------
+# The wire: which of a row's headers survive into the handshake
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_row_cannot_overwrite_the_preflights_own_protocol_version(monkeypatch):
+    """The preflight merges the row's map over its own headers, so before the
+    strip widened, a row spelling ``MCP-Protocol-Version`` announced one version
+    in the header and another in the initialize body it never wrote."""
+    from types import SimpleNamespace
+
+    from src.server.services import mcp_probe
+    from src.server.services.mcp_oauth.tokens import PROTOCOL_VERSION
+    from src.server.utils.egress_guard import PinnedTarget
+
+    sent: list[dict] = []
+
+    async def _pin(url, **kwargs):
+        return PinnedTarget(
+            url="https://93.184.216.34/rpc",
+            host="mcp.invalid",
+            ip="93.184.216.34",
+            authority="mcp.invalid",
+        )
+
+    async def _pinned_request(client, method, url, *, headers=None, **kwargs):
+        sent.append(dict(headers or {}))
+        # 500 ends the preflight before the SDK session, which is as far as
+        # this test needs the handshake to get.
+        return SimpleNamespace(status_code=500, headers={})
+
+    monkeypatch.setattr(mcp_probe, "pin_public_url", _pin)
+    monkeypatch.setattr(mcp_probe, "pinned_request", _pinned_request)
+
+    outcome = await mcp_probe.probe_remote_server(
+        "https://mcp.invalid/rpc",
+        {
+            "MCP-Protocol-Version": "1999-01-01",
+            "Mcp-Session-Id": "forged",
+            "host": "elsewhere.invalid",
+            "X-Api-Key": "k-123",
+        },
+    )
+
+    assert outcome.http_status == 500
+    probe = sent[0]
+    assert probe["MCP-Protocol-Version"] == PROTOCOL_VERSION
+    # No alternate-casing duplicate riding alongside the one the probe framed.
+    assert [k for k in probe if k.lower() == "mcp-protocol-version"] == [
+        "MCP-Protocol-Version"
+    ]
+    assert not any(k.lower() == "mcp-session-id" for k in probe)
+    assert not any(k.lower() == "host" for k in probe)
+    # The credential itself still travels, and still counts as one sent: the
+    # verdict for a 401 turns on it.
+    assert probe["X-Api-Key"] == "k-123"
+    assert outcome.sent_credential is True

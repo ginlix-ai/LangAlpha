@@ -192,7 +192,10 @@ def _rediscover_catalog_rows(user_id: str, names: list[str]) -> None:
     """Kick the host-side probe for each purged name that is a catalog row.
 
     A workspace-local fork shares the name and is not in the catalog; the
-    scheduler answers None for it and the sandbox path refills it as before.
+    scheduler answers None for it and the sandbox path refills it as before. A
+    row the user has switched off is refused for the reason it is refused
+    everywhere else: its snapshot stays purged until the switch, which is what
+    kicks the next probe.
     """
     # Lazy: discovery imports the DB layer this module's callers sit above.
     from src.server.services.mcp_oauth.discovery import schedule_catalog_discovery

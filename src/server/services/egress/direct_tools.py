@@ -23,7 +23,7 @@ import json
 import logging
 import re
 import warnings
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from hashlib import sha1
@@ -34,7 +34,7 @@ from langchain_core.tools import BaseTool
 from ptc_agent.agent.middleware.direct_mcp import METADATA_KEY
 from ptc_agent.agent.middleware.order_governance import execution_token
 from src.config.env import EGRESS_RELAY_LOOPBACK_URL, EGRESS_RELAY_SECRET
-from src.server.database.mcp_oauth import SERVABLE, get_connection
+from src.server.database.mcp_oauth import SERVABLE, ConnectionStatus, get_connection
 from src.server.services.brokerage_capabilities import (
     denied_tools,
     order_tool,
@@ -44,7 +44,12 @@ from src.server.services.egress import folded_contains
 from src.server.services.egress.execution_token import EXECUTION_HEADER
 from src.server.services.egress.relay_jwt import CALLER_HOST, mint_relay_jwt
 from src.server.services.mcp_tool_split import DirectServerTools, DirectTool
-from src.server.services.tool_binding import inputs_from_row, order_payload, order_policy
+from src.server.services.tool_binding import (
+    inputs_from_row,
+    order_payload,
+    order_policy,
+    resolve_plan,
+)
 
 if TYPE_CHECKING:
     from ptc_agent.core.session import Session
@@ -223,9 +228,11 @@ class DirectMCPBinding:
     """The tools bound for one turn, the clients behind them, and the policy.
 
     ``check`` is the port ``DirectMcpPolicyMiddleware`` calls per tool call. It
-    reads the connection row again rather than the set bound at turn start:
-    consent withdrawn on the Plugins page mid-turn, or a connection that went
-    to ``needs_reauth``, refuses the next call instead of the next turn.
+    reads the server's own row again rather than the set bound at turn start:
+    consent withdrawn on the Plugins page mid-turn, a connection that went to
+    ``needs_reauth``, a row or its plugin switched off, a tool moved back to
+    the sandbox, or an order gate switched on, refuses the next call instead
+    of the next turn.
     """
 
     user_id: str | None = None
@@ -241,50 +248,91 @@ class DirectMCPBinding:
         if not self.user_id:
             return "no user is attached to this turn"
         connection = await get_connection(self.user_id, server)
-        if connection is None:
-            return f"{server} is no longer connected"
-        if connection.status not in SERVABLE:
+        # A revoked record is history, not a claim on the row: the user
+        # disconnected, and the row's own headers may authenticate it now.
+        if connection is not None and connection.status is ConnectionStatus.REVOKED:
+            connection = None
+        if connection is not None and connection.status not in SERVABLE:
             return f"{server} needs to be reconnected before it can be used"
-        vendor = vendor_for_url(connection.server_url)
-        denied = denied_tools(vendor, connection.granted_capabilities or ())
+        from src.server.database.mcp_servers import get_catalog_server
+
+        try:
+            row = await get_catalog_server(self.user_id, server)
+        except Exception:
+            # Fails closed, because the alternative is judging the call against
+            # a row nobody could read: the consent, the binding and the gate all
+            # come off this one read.
+            logger.warning(
+                "[DIRECT_MCP] %r/%r: catalog re-read failed",
+                server,
+                tool,
+                exc_info=True,
+            )
+            return f"{server} could not be read just now; send this again"
+        identity = self._identity(connection, row)
+        if identity is None:
+            return f"{server} is switched off or no longer connected"
+        vendor, granted = identity
+        denied = denied_tools(vendor, granted)
         if denied and folded_contains(denied, tool):
             return f"the connection to {server} does not permit {tool}"
+        # Resolved the way the binder resolved it, so a tool the user moved
+        # back to the sandbox mid-turn stops being callable here. The relay's
+        # own direct-only gate cannot catch this one: it refuses a sandbox
+        # caller reaching a direct tool, and this call arrives as the host.
+        plan = resolve_plan(vendor, granted, inputs_from_row(row))
+        if not folded_contains(plan.direct, tool):
+            return (
+                f"{tool} is no longer bound directly; "
+                "send this again to reach it from the sandbox"
+            )
         # The interrupt is wired from the stamp made at turn start, so a switch
         # to asking about orders would otherwise not reach a tool already bound:
         # the call would run ungated for the rest of the turn. Refusing sends
         # the user back through a turn whose tools carry the current answer.
-        if not approval and await self._now_needs_approval(server, tool, vendor):
+        if not approval and self._now_needs_approval(tool, vendor, row):
             return (
                 f"{tool} now needs your approval on every call; "
                 "send this again so it can ask you first"
             )
         return None
 
-    async def _now_needs_approval(
-        self, server: str, tool: str, vendor: str | None
+    def _identity(
+        self, connection: Any, row: Mapping[str, Any] | None
+    ) -> tuple[str | None, Sequence[str]] | None:
+        """Whose rules judge this call and what was consented to, or None when
+        the server is gone or out of delivery.
+
+        A connection answers both, and its own address outranks the row's:
+        consent was given for what the token was issued for. A
+        header-authenticated row answers with its own address and consent to
+        nothing, which is what denies a curated vendor's whole curation to a
+        row that never went through a consent screen.
+        """
+        # The row governs either credential kind: a live token says nothing
+        # about a server the user has taken out of delivery. A plugin's disable
+        # leaves its rows' own flag alone, and the plugin's is what takes them
+        # out of delivery -- the relay reads both the same way.
+        if row is None or not row.get("enabled") or row.get("plugin_enabled") is False:
+            return None
+        if connection is not None:
+            return (
+                vendor_for_url(connection.server_url),
+                connection.granted_capabilities or (),
+            )
+        return vendor_for_url(row.get("url")), ()
+
+    def _now_needs_approval(
+        self, tool: str, vendor: str | None, row: Mapping[str, Any] | None
     ) -> bool:
         """Whether the row gates this tool right now, not at turn start.
 
-        The order map is asked first because it can answer alone: a tool that
-        mutates no order is gated by nothing the row says, and re-reading the
-        row to learn that would put a catalog read on every ungated direct
-        call. Fails closed on a read that errors, because the alternative is
-        running an ungated order against a row nobody could read.
+        The order map answers first because it answers alone: a tool that
+        mutates no order is gated by nothing a row can say, so the row's
+        switches are read only for one that does.
         """
-        from src.server.database.mcp_servers import get_catalog_server
-
         if order_tool(vendor, tool) is None:
             return False
-        try:
-            row = await get_catalog_server(self.user_id or "", server)
-        except Exception:
-            logger.warning(
-                "[DIRECT_MCP] %r/%r: approval re-read failed",
-                server,
-                tool,
-                exc_info=True,
-            )
-            return True
         policy = order_policy(
             vendor, tool, order_approval=inputs_from_row(row).order_approval
         )

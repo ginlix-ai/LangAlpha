@@ -304,7 +304,10 @@ class TestNoVaultDiscovery:
         _url, headers = ns["_resolve_http"](
             ns["_SERVER_CONFIGS"]["user_http"], discovery=True
         )
-        assert headers["Authorization"] == "Bearer "
+        # Trailing space trimmed with the rest of the value rule: a placeholder
+        # header still has to be one HTTP can frame, so the secret-less probe
+        # reaches the server and reads its 401.
+        assert headers["Authorization"] == "Bearer"
 
 
 class TestDiscoveryUsesSecrets:

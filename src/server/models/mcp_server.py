@@ -133,6 +133,12 @@ def _validate_header_map(mapping: dict[str, str]) -> dict[str, str]:
     _validate_secret_map(mapping, kind="header", key_re=ENV_KEY_RE)
     if len(mapping) > MAX_HEADERS:
         raise ValueError(f"at most {MAX_HEADERS} headers may be configured")
+    # HTTP field names are case-insensitive and the relay folds the map to
+    # lowercase, so two spellings of one name silently keep whichever lands
+    # last; which one that is nobody configured.
+    lowered = {key.lower() for key in mapping}
+    if len(lowered) != len(mapping):
+        raise ValueError("header names must be unique case-insensitively")
     for key, value in mapping.items():
         if len(value) > MAX_HEADER_VALUE_CHARS:
             raise ValueError(
@@ -716,9 +722,11 @@ class EffectiveServer(BaseModel):
     # reveals the inherited one again.
     shadows_inherited: bool = False
     # Inherited (origin='user') rows only: the owner's OAuth connection status
-    # for this server, INCLUDING 'revoked' — so the UI can say "Disconnected,
-    # reconnect in Plugins" instead of waiting on a discovery that can
-    # never run. None = the server has no OAuth connection at all.
+    # for this server while a connection still claims it, so the UI can say
+    # "reconnect in Plugins" instead of waiting on a discovery that can never
+    # run. None once revoked as well as when there was never a connection: the
+    # row is served by its own headers from then on, and Plugins is where the
+    # revoked status lives and the reconnect is offered.
     oauth_status: Optional[ConnectionStatus] = None
     # DISABLED built-ins only: whether the disable is this workspace's marker
     # row or the account-wide user disable — the latter renders read-only here
@@ -1003,6 +1011,20 @@ def snapshot_probe(snapshot: dict[str, Any] | None) -> ProbeResult | None:
         return ProbeResult.model_validate(stored)
     except ValidationError:
         return None
+
+
+def probe_ok(snapshot: dict[str, Any] | None) -> bool:
+    """Whether a snapshot's stored verdict says the row listed its tools.
+
+    ``ok`` or ``ok_authed``: the server answered a listing, openly or with the
+    credentials the row itself carries. Every other verdict is a server that
+    answered a challenge, and an absent one is an address nothing has reached,
+    so both read as unusable. The header grant and the direct binding of a
+    connection-less row hang off this one answer, because a row that earned one
+    without the other is a tool the model cannot call or one it cannot reach.
+    """
+    probe = snapshot_probe(snapshot)
+    return probe is not None and probe.verdict in OK_VERDICTS
 
 
 def catalog_row_to_response(

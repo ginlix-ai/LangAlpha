@@ -27,9 +27,12 @@ what it is about: ``mcp_builtin`` (this build's own servers), ``mcp_brokerages``
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import ValidationError
 
 from src.server.app.mcp_icons import icon_url
@@ -63,6 +66,7 @@ from src.server.models.mcp_server import (
     CatalogServerList,
     EnabledInput,
     McpServerInput,
+    ParsedMcpServer,
     ProbeInput,
     ProbeResult,
     WorkspaceScopedServer,
@@ -78,15 +82,18 @@ from src.server.services.mcp_catalog import (
 )
 from src.server.services.mcp_import import ImportScope, run_mcp_import
 from src.server.services.mcp_oauth.discovery import (
-    REMOTE_TRANSPORTS,
+    SELF_HEAL_INTERVAL_S,
+    RejectedHeaderValue,
     resolve_header_refs,
     schedule_catalog_discovery,
+    vault_ref_names,
 )
 from src.server.services.mcp_probe import (
-    ProbeOutcome,
     bounded_probe,
     effective_secrets_for_probe,
+    missing_secrets_result,
     probe_result,
+    rejected_header_result,
 )
 from src.server.services.vault_invalidation import USER_TIER, after_secret_change
 from src.server.utils.api import CurrentUserId, handle_api_exceptions
@@ -184,27 +191,47 @@ def _has_direct_tools(row: dict, conn: dict | None, snapshot: dict | None) -> bo
     than by asking per row, which is the observer behind every server the user
     owns that the rows deliberately do not carry.
 
+    Read the same way ``resolve_mcp_config`` plans the row: a servable
+    connection says which vendor's rules apply and what was consented to,
+    while a row without one is judged by its own address, its own headers and
+    consent to nothing. A revoked connection is history rather than a claim on
+    the row, so it falls to that header path. A connection that needs repair
+    answers no on its own; the sync binds no grant for it, so nothing it lists
+    could be called.
+
     Intersected with what the snapshot actually published, because a plan
     carries every name the vendor's curation grants whether or not this server
     published it, while ``build_direct_entries`` can only bind a schema it
     holds. Reading ``plan.direct`` alone would offer Flash on a connection
     whose scope toggle saves cleanly and then gives Flash nothing to call.
     """
+    from src.server.models.mcp_server import probe_ok
     from src.server.services.brokerage_capabilities import vendor_for_url
-    from src.server.services.egress import folded_contains
+    from src.server.services.egress import fold_tool_name, folded
     from src.server.services.tool_binding import inputs_from_row, resolve_plan
 
-    if conn is None or ConnectionStatus(conn["status"]) not in SERVABLE:
+    status = ConnectionStatus(conn["status"]) if conn is not None else None
+    if status is ConnectionStatus.REVOKED:
+        conn = None
+    elif status is not None and status not in SERVABLE:
+        return False
+    # The flag has to agree with the grant the sync would write, and a header
+    # row's grant hangs on this verdict alone (``grant_scope._probe_ok``): the
+    # no-downgrade upsert keeps the tools and the ok status a refused probe
+    # never took away.
+    if conn is None and not probe_ok(snapshot):
         return False
     published = (snapshot or {}).get("tools") or []
     names = [name for t in published if (name := t.get("name"))]
+    vendor_url = conn.get("server_url") if conn is not None else row.get("url")
     plan = resolve_plan(
-        vendor_for_url(conn.get("server_url")),
-        conn.get("granted_capabilities") or (),
+        vendor_for_url(vendor_url),
+        (conn.get("granted_capabilities") or ()) if conn is not None else (),
         inputs_from_row(row),
         candidates=names,
     )
-    return any(folded_contains(plan.direct, n) for n in names)
+    direct = folded(plan.direct)
+    return any(fold_tool_name(n) in direct for n in names)
 
 
 async def _snapshots_by_server(
@@ -245,13 +272,54 @@ async def _snapshots_by_server(
     return accepted
 
 
+def _kicked_recently(row: dict) -> bool:
+    """Whether this row's probe clock was stamped inside the self-heal window.
+
+    ``claim_probe_kick`` is still the guard every worker agrees on; this is the
+    cheap pre-check in front of it, so a polling list does not spawn a task per
+    remote row only to be told no.
+    """
+    stamp = row.get("probe_kicked_at")
+    if not stamp:
+        return False
+    try:
+        kicked = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return False
+    if kicked.tzinfo is None:
+        kicked = kicked.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - kicked).total_seconds() < SELF_HEAL_INTERVAL_S
+
+
 def _kick_unprobed(user_id: str, rows: list[dict], snapshots: dict[str, dict]) -> None:
-    """Self-heal: a remote row nothing has probed under its current config gets
-    its probe now. Rows from before host-side discovery covered them, and rows
-    whose kick was lost to a restart, both land here; the scheduler throttles
-    so a polling list is not a probe loop."""
+    """Self-heal: a live remote row nothing has probed under its current config
+    gets its probe now.
+
+    Rows from before host-side discovery covered them, rows whose snapshot
+    predates the verdict column, rows whose kick was lost to a restart, and
+    rows whose one probe never reached the server all land here. Only
+    ``unreachable`` is retried: every other verdict is the server's own answer,
+    and only a config or vault change earns a new one.
+    """
+    from src.server.models.mcp_server import snapshot_probe
+
     for row in rows:
-        if row.get("transport") in REMOTE_TRANSPORTS and row["name"] not in snapshots:
+        # An inert template is never dialled in the background, so a kick from
+        # here would only spend a task and a throttle stamp to be told no by
+        # the discovery pass. Its first probe comes from the switch.
+        if not row.get("enabled") or row.get("plugin_enabled") is False:
+            continue
+        # The host-side probe dials streamable HTTP, so an ``sse`` row has no
+        # path from here at all and keeps its in-sandbox discovery.
+        if row.get("transport") != "http":
+            continue
+        probe = snapshot_probe(snapshots.get(row["name"]))
+        unprobed = (
+            row["name"] not in snapshots
+            or probe is None
+            or probe.verdict == "unreachable"
+        )
+        if unprobed and not _kicked_recently(row):
             schedule_catalog_discovery(
                 user_id, row["name"], reason="self-heal", throttle=True
             )
@@ -298,7 +366,11 @@ async def list_servers(
 ) -> CatalogServerList:
     """The user's catalog; ``all_scopes`` adds the scope-management inventory:
     per-server tombstone workspaces (the "active in" deny-list) and every
-    workspace-local server across the user's workspaces."""
+    workspace-local server across the user's workspaces.
+
+    Not a pure read: a remote row with no verdict gets its probe kicked here
+    (stamping ``probe_kicked_at``), throttled per row, so a listing is what
+    heals a row whose probe was lost."""
     rows = await list_catalog_servers(user_id)
     oauth = await _oauth_by_server(user_id)
     snapshots = await _snapshots_by_server(user_id, rows)
@@ -364,8 +436,13 @@ async def create_server(
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     # The probe runs now rather than at the user's next turn: the row's tool
-    # count and its auth verdict are what the page shows next.
-    schedule_catalog_discovery(user_id, server.name, reason="create")
+    # count and its auth verdict are what the page shows next. Only for a row
+    # that landed switched on: the background pass refuses an inert one, so
+    # the enable toggle is what schedules the first probe for the rest, and a
+    # kick here would spend the throttle stamp and leave the page reporting a
+    # check nothing is making.
+    if row.get("enabled"):
+        schedule_catalog_discovery(user_id, server.name, reason="create")
     response = catalog_row_to_response(row)
     # A brand-new name has no connection, but a recreate over a name whose
     # connection row outlived the old catalog entry does.
@@ -373,9 +450,39 @@ async def create_server(
     return response
 
 
+# How often a probe in flight looks for the client that asked for it.
+DISCONNECT_POLL_S = 0.5
+
+
+async def _unless_gone(request: Request, coro):
+    """Run ``coro`` until it answers or the caller hangs up, whichever first.
+
+    The form aborts a superseded probe, but a dropped connection does not
+    cancel a handler on its own, so without this every edit toward a slow
+    address left the last probe holding a gate slot for its whole budget.
+    """
+    task = asyncio.ensure_future(coro)
+    try:
+        while not task.done():
+            if await request.is_disconnected():
+                task.cancel()
+                # Settle the cancellation here so the gate slot is free by
+                # the time this returns, not at some later tick.
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+                raise HTTPException(status_code=499, detail="Client disconnected")
+            await asyncio.wait({task}, timeout=DISCONNECT_POLL_S)
+        return task.result()
+    finally:
+        if not task.done():
+            task.cancel()
+
+
 @router.post("/servers/probe")
 @handle_api_exceptions("probe MCP server", logger)
-async def probe_server(body: ProbeInput, user_id: CurrentUserId) -> ProbeResult:
+async def probe_server(
+    body: ProbeInput, request: Request, user_id: CurrentUserId
+) -> ProbeResult:
     """Ask a remote address what it offers, with the headers the form holds,
     before anything is saved.
 
@@ -383,20 +490,19 @@ async def probe_server(body: ProbeInput, user_id: CurrentUserId) -> ProbeResult:
     Nothing is written: the form shows the verdict and the save that follows
     schedules the discovery that caches it.
     """
-    headers, missing = resolve_header_refs(
-        body.headers, await effective_secrets_for_probe(user_id, body.workspace_id)
+    secrets = await effective_secrets_for_probe(
+        user_id, body.workspace_id, vault_ref_names(body.headers)
     )
+    try:
+        headers, missing = resolve_header_refs(body.headers, secrets)
+    except RejectedHeaderValue:
+        # The same answer httpx would have produced one layer down, minus the
+        # round trip and minus the value quoted back in the error it raises.
+        return rejected_header_result()
     if missing:
-        return probe_result(
-            ProbeOutcome(
-                ok=False, auth="credential",
-                error="missing vault secret(s): " + ", ".join(missing),
-            ),
-            missing_secrets=missing,
-        )
-    return probe_result(
-        await bounded_probe(body.url, headers), include_tools=True
-    )
+        return missing_secrets_result(missing)
+    outcome = await _unless_gone(request, bounded_probe(body.url, headers))
+    return probe_result(outcome, include_tools=True)
 
 
 @router.get("/servers/{name}")
@@ -508,7 +614,14 @@ async def update_server(
     )
     if edit is None:
         raise HTTPException(status_code=404, detail="MCP server not found")
-    response = catalog_row_to_response(edit.row)
+    # The snapshot outlives an edit that leaves the discovery fingerprint
+    # alone, and the page reads the row it gets back: without it the tool count
+    # and the probe verdict blank out on every save that changed nothing about
+    # discovery. An edit that DID move the fingerprint misses here, which is
+    # the right answer -- the rediscovery the edit schedules owns the refill.
+    response = catalog_row_to_response(
+        edit.row, snapshot=(await _snapshots_by_server(user_id, [edit.row])).get(name)
+    )
     # After the revoke inside the edit, so one that just severed the connection
     # does not warn about headers it has now made effective.
     response.warnings = await _write_warnings(user_id, server)
@@ -543,12 +656,18 @@ async def import_servers(
             user_id, secret.name, secret.value, secret.description, conn=conn
         )
 
-    async def persist(conn, server: McpServerInput) -> bool:
+    landed_enabled: set[str] = set()
+
+    async def persist(
+        conn, server: McpServerInput, entry: ParsedMcpServer
+    ) -> bool:
         # No ON CONFLICT arm here — a raced duplicate raises ValueError, so a
         # successful call always means "created".
-        await create_catalog_server(
+        row = await create_catalog_server(
             user_id, server.name, conn=conn, **server.to_catalog_fields()
         )
+        if row.get("enabled"):
+            landed_enabled.add(server.name)
         return True
 
     existing_names = {r["name"] for r in await list_catalog_servers(user_id)}
@@ -577,9 +696,11 @@ async def import_servers(
     for name in dict.fromkeys(report.secrets_created):
         await after_secret_change(USER_TIER, user_id, name, user_id=user_id)
     # After the secrets landed, so a row whose header refs one of them probes
-    # with the value rather than a missing-secret error.
+    # with the value rather than a missing-secret error. Only for a row that
+    # landed switched on: the background pass refuses an inert one, so the
+    # enable toggle is what schedules the first probe for the rest.
     for result in report.results:
-        if result.get("status") == "created":
+        if result.get("status") == "created" and result["name"] in landed_enabled:
             schedule_catalog_discovery(user_id, result["name"], reason="import")
 
     return {
@@ -591,19 +712,40 @@ async def import_servers(
 
 
 async def _relay_execution_warning(user_id: str, name: str) -> str | None:
-    """OAuth-connected servers execute only via the egress relay — activation
-    is the moment to tell the user their deployment can't actually run them."""
+    """A row the relay has to carry runs only through it, and activation is the
+    moment to tell the user their deployment cannot actually run it.
+
+    Two shapes need the warning: an OAuth connection, whose token only the
+    relay spends, and an ``http`` row with a tool on the direct path, which the
+    model reaches by dialing the relay too. The second is read off the row's
+    own binding map rather than its probe verdict: over-warning a row that is
+    failing its probe costs a sentence, while waiting for a verdict would keep
+    the warning from the silent case it exists for, where the sync binds
+    nothing and the tool is gone from both agents.
+    """
     from src.config.env import EGRESS_RELAY_SECRET
     from src.server.app import setup
+    from src.server.services.brokerage_capabilities import vendor_for_url
     from src.server.services.egress.reachability import (
         effective_relay_base_url,
         relay_reachability_warning,
     )
+    from src.server.services.tool_binding import inputs_from_row, resolve_plan
 
     if setup.agent_config is None:
         return None
-    if await get_connection(user_id, name) is None:
-        return None
+    connection = await get_connection(user_id, name)
+    # A revoked connection is history, not a claim on the row (the rule the
+    # resolver and the relay apply), so the row is judged by its own binding.
+    if connection is None or connection.status is ConnectionStatus.REVOKED:
+        row = await get_catalog_server(user_id, name)
+        if row is None or row.get("transport") != "http":
+            return None
+        # Planned off the row's own address and consent to nothing, the way
+        # every other reader plans a row that has no connection.
+        plan = resolve_plan(vendor_for_url(row.get("url")), (), inputs_from_row(row))
+        if not plan.direct:
+            return None
     if not EGRESS_RELAY_SECRET:
         return (
             "The egress relay is disabled (EGRESS_RELAY_SECRET is not set), so "
@@ -677,6 +819,7 @@ async def set_binding(
     tabs editing different tools of one row from overwriting each other.
     """
     from src.server.database.egress_grants import (
+        apply_binding_to_active_header_grants,
         apply_consent_to_active_grants,
         lock_user_egress_state,
     )
@@ -721,9 +864,11 @@ async def set_binding(
                 **order_approval_overrides(row.get("order_approval")),
                 **{k: bool(v) for k, v in body.order_approval.items()},
             }
-        # A stdio row has no address for the relay, so no tool on it can take
-        # the direct path however the request or its group is worded.
-        relayable = row.get("transport") != "stdio"
+        # The relay dials streamable HTTP, so only an ``http`` row has an
+        # address it can reach: a legacy ``sse`` row keeps its sandbox
+        # discovery and never earns a grant, so no tool on it can take the
+        # direct path however the request or its group is worded.
+        relayable = row.get("transport") == "http"
         vendor = vendor_for_url(
             connection.server_url
             if connection is not None and connection.status in SERVABLE
@@ -771,8 +916,15 @@ async def set_binding(
             raise HTTPException(status_code=404, detail="MCP server not found")
         if connection is not None:
             await apply_consent_to_active_grants(connection.connection_id, conn=db)
+        # And the row's own grants: a header grant is keyed by name and carries
+        # no connection, so the rewrite above never reaches one.
+        await apply_binding_to_active_header_grants(user_id, name, conn=db)
     oauth = await _oauth_by_server(user_id)
-    return decorated(updated, oauth.get(name))
+    # A binding change moves no discovery fingerprint, so the row's snapshot is
+    # still its own; dropping it here blanked the tool count and the verdict on
+    # every path toggle.
+    snapshot = (await _snapshots_by_server(user_id, [updated])).get(name)
+    return decorated(updated, oauth.get(name), snapshot=snapshot)
 
 
 @router.patch("/servers/{name}/enabled")
@@ -784,13 +936,19 @@ async def set_enabled(
     row, warning = await apply_catalog_enabled(user_id, name, body.enabled)
     if row is None:
         raise HTTPException(status_code=404, detail="MCP server not found")
-    if body.enabled and row.get("transport") in REMOTE_TRANSPORTS:
+    if body.enabled and row.get("transport") == "http":
         # A row going live is about to be inherited by every workspace; the
         # snapshot under its current config, if any, is reused, and a missing
-        # one is fetched now. Throttled: the toggle is often flipped twice.
+        # one is fetched now. Unthrottled, because this is usually the row's
+        # FIRST probe: nothing dials an inert template, so the kick its create
+        # or its import spent left a ``probe_kicked_at`` stamp and no verdict,
+        # and a throttled kick would be refused by that stamp and leave the row
+        # blank for the rest of the self-heal window. A toggle flipped twice
+        # costs one extra dial at most, and only until a verdict lands: a
+        # settled snapshot of any status stops this branch.
         snapshot = (await _snapshots_by_server(user_id, [row])).get(name)
         if snapshot is None:
-            schedule_catalog_discovery(user_id, name, reason="enable", throttle=True)
+            schedule_catalog_discovery(user_id, name, reason="enable")
     out: dict = {"name": name, "enabled": body.enabled}
     if warning:
         out["warnings"] = [warning]

@@ -88,7 +88,9 @@ def _grant() -> dict:
     return {
         "user_id": USER_ID,
         "workspace_id": WORKSPACE_ID,
+        "kind": "oauth_mcp",
         "connection_id": CONNECTION_ID,
+        "server_name": None,
         "destination_url": VENDOR_URL,
         "allowed_methods": ["POST"],
         "tool_denylist": None,
@@ -270,6 +272,17 @@ class _Harness:
                 access_token=VENDOR_TOKEN, token_type="Bearer", generation=1
             )
 
+        async def _connection_by_id(connection_id: str, **kwargs):
+            return SimpleNamespace(user_id=USER_ID, server_name=SERVER_NAME)
+
+        async def _catalog_server(user_id: str, name: str, **kwargs):
+            return {
+                "name": SERVER_NAME,
+                "enabled": True,
+                "transport": "http",
+                "url": VENDOR_URL,
+            }
+
         with ExitStack() as stack:
             p = stack.enter_context
             p(patch("src.server.services.egress.relay.EGRESS_RELAY_SECRET", SECRET))
@@ -278,8 +291,22 @@ class _Harness:
             p(patch("src.server.services.egress.relay.get_relay_client", lambda: vendor_client))
             p(
                 patch(
-                    "src.server.services.egress.relay.ensure_fresh_access_token",
+                    "src.server.services.egress.credentials.ensure_fresh_access_token",
                     _ensure_token,
+                )
+            )
+            # Resolving this kind's bearer reads the row behind the connection,
+            # so a deliverable one has to be there for any call to resolve.
+            p(
+                patch(
+                    "src.server.services.egress.credentials.get_connection_by_id",
+                    _connection_by_id,
+                )
+            )
+            p(
+                patch(
+                    "src.server.services.egress.credentials.get_catalog_server",
+                    _catalog_server,
                 )
             )
             # Unreachable cache → the relay limiter's documented fail-open.

@@ -31,6 +31,7 @@ from src.server.models.mcp_server import (
 from src.server.models.plugin import ComponentResult, InstallReport
 from src.server.services.mcp_config import reserved_catalog_names
 from src.server.services.mcp_import import ImportScope, run_mcp_import
+from src.server.services.mcp_oauth.discovery import schedule_catalog_discovery
 from src.server.services.plugins.mcp import McpEntryPlan
 
 logger = logging.getLogger(__name__)
@@ -147,28 +148,26 @@ async def fan_out_servers(
 
     existing_rows = await list_catalog_servers(user_id)
     existing_names = {r["name"] for r in existing_rows}
-    # First key wins, not last: two package keys can normalize to one MCP name
-    # (`foo-bar` and `foo.bar`), and the import loop creates the first and
-    # skips the rest as duplicates. Keeping the last key would stamp the
-    # created row with the skipped entry's provenance, so a later update would
-    # reconcile it against the wrong entry.
-    key_by_name: dict[str, str] = {}
-    for plan in installable:
-        key_by_name.setdefault(plan.name, plan.key)
 
     async def create_secret(conn, secret) -> None:
         await create_user_secret(
             user_id, secret.name, secret.value, secret.description, conn=conn
         )
 
-    async def persist(conn, server: McpServerInput) -> bool:
+    async def persist(
+        conn, server: McpServerInput, entry: ParsedMcpServer
+    ) -> bool:
+        # Provenance comes from the entry that actually landed, never from the
+        # name: two package keys can normalize to one MCP name (`foo-bar` and
+        # `foo_bar`), and whichever of them the import loop rejects is not the
+        # one a later plugin update should reconcile this row against.
         await create_catalog_server(
             user_id,
             server.name,
             conn=conn,
             enabled=True,
             plugin_id=plugin_id,
-            plugin_server_key=key_by_name[server.name],
+            plugin_server_key=entry.original_name,
             **server.to_catalog_fields(),
         )
         return True
@@ -211,5 +210,14 @@ async def fan_out_servers(
                 warnings=_entry_warnings(plan) if status == "created" else [],
             )
         )
+    # These rows land ENABLED, so they are in delivery the moment they commit
+    # and nothing else on this path probes them. A remote row with no verdict
+    # of its own earns no egress grant, which leaves its direct tools and Flash
+    # dark until a catalog listing self-heals it.
+    for result in mcp_report.results:
+        if result["status"] == "created":
+            schedule_catalog_discovery(
+                user_id, result["name"], reason="plugin-install"
+            )
     report.secrets_created.extend(mcp_report.secrets_created)
     report.servers_created += mcp_report.created

@@ -20,8 +20,10 @@ from src.server.services.mcp_config import (
     ResolvedMCP,
     State,
     resolve_mcp_config,
+    user_row_to_server_config,
     workspace_row_to_server_config,
 )
+from src.server.services.mcp_discovery import mcp_discovery_fingerprint
 from src.server.services.plugins.bundled import ComponentOwners
 
 
@@ -72,11 +74,14 @@ async def _resolve(
     user_disabled=None,
     disabled_bundles=None,
     bundle_owns=None,
+    schemas=None,
 ):
-    """Run resolve_mcp_config with all five DB reads mocked.
+    """Run resolve_mcp_config with all six DB reads mocked.
 
     ``bundle_owns`` maps a bundle name to the built-in names it ships, which
-    is the only thing the resolver asks the bundle reader for.
+    is the only thing the resolver asks the bundle reader for. ``schemas`` is
+    the user tier's discovery snapshots, which carry the probe verdict that
+    decides whether a header row may bind a tool direct.
     """
     owners = ComponentOwners(
         servers={
@@ -107,6 +112,10 @@ async def _resolve(
                     bundles=frozenset(disabled_bundles or ()),
                 )
             ),
+        ),
+        patch(
+            "src.server.database.mcp_tool_schemas.get_user_tool_schemas",
+            new=AsyncMock(return_value=list(schemas or [])),
         ),
         patch(
             "src.server.services.plugins.bundled.component_owners",
@@ -475,6 +484,33 @@ class TestResolveInheritedLayer:
         # A revoked connection never binds a server to the relay.
         assert by_name["gone"].oauth_connection_id is None
 
+    async def test_a_revoked_connection_leaves_a_plain_header_row(self):
+        # Revoked is history, not a claim on the row: it carries no OAuth label
+        # either, so the row is served by its own headers and discovered like
+        # any header row. Plugins keeps the revoked status and offers the
+        # reconnect.
+        base = _base_config(MCPServerConfig(name="alpha"))
+        connections = [
+            {
+                "connection_id": "conn-1",
+                "server_name": "acme",
+                "server_url": "https://acme.example.test/mcp",
+                "status": "revoked",
+            }
+        ]
+
+        resolved = await _resolve(
+            base,
+            rows=[],
+            user_rows=[_user_row("acme", headers={"X-Api-Key": "k"})],
+            connections=connections,
+        )
+
+        entry = next(e for e in resolved.entries if e.name == "acme")
+        assert entry.oauth_status is None
+        assert entry.host_side_oauth is False
+        assert entry.config.oauth_connection_id is None
+
     async def test_url_change_since_consent_forces_reconnect(self):
         # The connection's consented server_url no longer matches the catalog
         # row URL (edited since connect): the token was issued for a different
@@ -617,6 +653,10 @@ class TestResolveInheritedLayer:
                 "src.server.database.account_disables.list_account_disables",
                 new=AsyncMock(return_value=AccountDisables(frozenset(), frozenset())),
             ),
+            patch(
+                "src.server.database.mcp_tool_schemas.get_user_tool_schemas",
+                new=AsyncMock(return_value=[]),
+            ),
         ):
             resolved = await resolve_mcp_config(base, "user-1", "ws-1")
 
@@ -685,3 +725,119 @@ class TestUserBuiltinDisables:
 
         disabled = _entries(resolved, Origin.BUILTIN, State.DISABLED)
         assert disabled[0].disabled_scope == "workspace"
+
+
+# ---------------------------------------------------------------------------
+# Direct bindings on a header-authenticated row
+# ---------------------------------------------------------------------------
+
+TOOL = "list_funds"
+
+
+def _bound_row(name="fund_desk", **overrides):
+    """A catalog row whose stored map asks for one tool on the direct path."""
+    return _user_row(name, tool_binding={TOOL: "direct"}, **overrides)
+
+
+def _schema_row(row, verdict, *, connection_id=None):
+    """The user-tier discovery snapshot this row's fingerprint would match."""
+    cfg = user_row_to_server_config(row, oauth_connection_id=connection_id)
+    return {
+        "server_name": row["name"],
+        "config_hash": mcp_discovery_fingerprint(cfg),
+        "status": "ok",
+        "tools": [{"name": TOOL}],
+        "last_probe": {} if verdict is None else {"verdict": verdict},
+    }
+
+
+@pytest.mark.asyncio
+class TestHeaderRowDirectBinding:
+    async def _entry(self, row, *, schemas=None, connections=None):
+        resolved = await _resolve(
+            _base_config(MCPServerConfig(name="alpha")),
+            rows=[],
+            user_rows=[row],
+            schemas=schemas,
+            connections=connections,
+        )
+        return next(e for e in resolved.entries if e.name == row["name"]), resolved
+
+    async def test_an_unprobed_row_keeps_its_direct_tool_in_the_sandbox(self):
+        # Nothing has reached the address, so the header grant the direct path
+        # needs cannot be issued: binding the tool direct now would take it out
+        # of the sandbox with nothing to replace it.
+        row = _bound_row()
+
+        entry, resolved = await self._entry(row)
+
+        assert entry.binding_plan.direct == frozenset()
+        assert entry.binding_plan.sandbox_excluded == frozenset()
+        assert resolved.binding_plans_by_name == {}
+        assert entry.awaiting_probe is True
+
+    async def test_a_missing_snapshot_reads_the_same_as_an_empty_verdict(self):
+        row = _bound_row()
+
+        entry, _ = await self._entry(row, schemas=[_schema_row(row, None)])
+
+        assert entry.binding_plan.direct == frozenset()
+        assert entry.awaiting_probe is True
+
+    @pytest.mark.parametrize("verdict", ["ok", "ok_authed"])
+    async def test_a_clean_verdict_releases_the_stored_override(self, verdict):
+        row = _bound_row()
+
+        entry, resolved = await self._entry(
+            row, schemas=[_schema_row(row, verdict)]
+        )
+
+        assert entry.binding_plan.direct == frozenset({TOOL})
+        assert entry.binding_plan.sandbox_excluded == frozenset({TOOL})
+        assert entry.awaiting_probe is False
+
+    @pytest.mark.parametrize(
+        "verdict",
+        ["needs_credential", "credential_rejected", "oauth", "missing_secrets",
+         "unreachable"],
+    )
+    async def test_a_server_that_answered_otherwise_keeps_the_tool_wrapped(
+        self, verdict
+    ):
+        # A verdict is the server's answer, not an absence: the tool stays in
+        # the sandbox and nothing is owed another probe on this account.
+        row = _bound_row()
+
+        entry, _ = await self._entry(row, schemas=[_schema_row(row, verdict)])
+
+        assert entry.binding_plan.direct == frozenset()
+        assert entry.awaiting_probe is False
+
+    async def test_an_oauth_connected_row_binds_direct_without_a_verdict(self):
+        # The connection is the credential there, and its own lifecycle says
+        # whether the relay can spend it.
+        row = _bound_row("broker")
+        connections = [
+            {
+                "connection_id": "conn-1",
+                "server_name": "broker",
+                "server_url": row["url"],
+                "status": "connected",
+            }
+        ]
+
+        entry, resolved = await self._entry(row, connections=connections)
+
+        assert entry.binding_plan.direct == frozenset({TOOL})
+        assert entry.awaiting_probe is False
+
+    async def test_a_stdio_row_is_unchanged_and_asks_for_no_probe(self):
+        # It has no address the relay could dial, so it is clamped for a
+        # reason a probe could never lift.
+        row = _bound_row(transport="stdio", command="npx", url=None)
+
+        entry, resolved = await self._entry(row)
+
+        assert entry.binding_plan.direct == frozenset()
+        assert entry.awaiting_probe is False
+

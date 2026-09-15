@@ -50,6 +50,37 @@ def looks_like_secret(key: str, value: str) -> bool:
     return len(v) >= _OPAQUE_TOKEN_MIN_LEN and " " not in v and not v.isdigit()
 
 
+# A placeholder is the other half of the same question: ``<your-api-key>`` is
+# what a vendor's docs print where the key goes, so the same spelling in two
+# servers is two blanks rather than one shared credential. Mirrored by
+# ``isPlaceholder`` in
+# web/src/pages/ChatAgent/components/mcp/mcpImportPlaceholders.ts, which offers
+# the user a field per server before the blob is sent.
+_PLACEHOLDER_ANGLE_RE = re.compile(r"^<[^<>]{1,80}>\Z")
+# Hint words that read as a stand-in wherever they sit in the value:
+# ``your-api-key``, ``REPLACE_ME``, ``paste-token-here``.
+_PLACEHOLDER_HINT_RE = re.compile(
+    r"(?i)\b(your[-_ ]?|replace[-_ ]?me|change[-_ ]?me|todo|placeholder|"
+    r"insert[-_ ]|paste[-_ ])"
+)
+# Words that only read as a stand-in when they are the whole value. ``xxx`` is a
+# blank; ``sk-live-xxxx9f8e`` is a key.
+_PLACEHOLDER_ALONE_RE = re.compile(r"(?i)^(x{3,}|example)\Z")
+_PLACEHOLDER_MAX_LEN = 64
+
+
+def looks_like_placeholder(value: str) -> bool:
+    """Heuristic: is this literal a blank the user still has to fill in?"""
+    v = (value or "").strip()
+    if not v:
+        return False
+    if _PLACEHOLDER_ANGLE_RE.match(v):
+        return True
+    return len(v) <= _PLACEHOLDER_MAX_LEN and bool(
+        _PLACEHOLDER_ALONE_RE.match(v) or _PLACEHOLDER_HINT_RE.search(v)
+    )
+
+
 def iter_arg_flag_pairs(args) -> "list[tuple[int, str, str]]":
     """``(value_index, flag, value)`` for space-separated ``--token VALUE`` pairs.
 

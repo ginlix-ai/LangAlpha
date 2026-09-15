@@ -13,9 +13,16 @@ replaces:
   * ``relay.fetch_grant_for_relay`` — the authorization read
   * ``relay.pin_public_url`` — the SSRF guard (real one in ``TestSsrfPosture``)
   * ``relay.get_relay_client`` — the shared upstream client (httpx.MockTransport)
-  * ``relay.{ensure_fresh_access_token,current_access_token,
-    mark_connection_needs_reauth}`` — the vendor credential, the 401 re-read,
-    and the needs_reauth report (the relay never writes connection status)
+  * ``relay.{current_access_token,mark_connection_needs_reauth}``: the 401
+    re-read and the needs_reauth report (the relay never writes connection
+    status)
+  * ``credentials.ensure_fresh_access_token``: the vendor credential, which
+    the relay resolves per grant kind rather than minting itself
+  * ``credentials.{get_connection_by_id,get_catalog_server}``: the catalog row
+    behind an OAuth connection, which has to still be deliverable for that
+    kind's bearer to resolve at all
+  * ``relay.schedule_catalog_discovery``, the re-probe a header row's vendor
+    refusal schedules, captured as ``env.kicks``
 """
 
 from __future__ import annotations
@@ -33,8 +40,10 @@ from httpx import ASGITransport, AsyncClient
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 
+from src.server.database.mcp_oauth import ConnectionStatus
 from src.server.services.egress.jsonrpc import MAX_BODY_BYTES
 from src.server.services.egress.limits import RelayLimited
+from src.server.services.egress.relay import close_relay_client, get_relay_client
 from src.server.services.egress.relay_jwt import mint_relay_jwt
 from src.server.services.mcp_oauth.lifecycle import AccessToken
 from src.server.utils.egress_guard import PinnedTarget
@@ -55,6 +64,8 @@ OTHER_WORKSPACE_ID = "66666666-7777-8888-9999-000000000000"
 SANDBOX_ID = "sbx-egress-unit-0001"
 GRANT_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 CONNECTION_ID = "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb"
+
+OAUTH_SERVER = "vendor_desk"
 
 VENDOR_HOST = "mcp.vendor-under-test.example"
 DESTINATION = f"https://{VENDOR_HOST}/mcp"
@@ -78,13 +89,28 @@ def _grant(**overrides) -> dict:
     row = {
         "user_id": USER_ID,
         "workspace_id": WORKSPACE_ID,
+        "kind": "oauth_mcp",
         "connection_id": CONNECTION_ID,
+        "server_name": None,
         "destination_url": DESTINATION,
         "allowed_methods": ["POST"],
         "tool_denylist": None,
         "tool_direct_only": None,
         "grant_status": "active",
         "connection_status": "connected",
+    }
+    row.update(overrides)
+    return row
+
+
+def _oauth_row(**overrides) -> dict:
+    """The catalog row an OAuth connection is bound to, as the reader hands it
+    back. Its own switches govern the connection's calls too."""
+    row = {
+        "name": OAUTH_SERVER,
+        "enabled": True,
+        "transport": "http",
+        "url": DESTINATION,
     }
     row.update(overrides)
     return row
@@ -214,10 +240,19 @@ class RelayEnv:
             access_token=ACCESS_TOKEN, token_type="Bearer", generation=1
         )
         self.token_error: Exception | None = None
+        # The connection an ``oauth_mcp`` grant names, and the catalog row it
+        # is bound to: the relay reads the row for either kind, so a call of
+        # this kind resolves only while a deliverable row is behind it.
+        self.oauth_connection: SimpleNamespace | None = SimpleNamespace(
+            connection_id=CONNECTION_ID, user_id=USER_ID, server_name=OAUTH_SERVER
+        )
+        self.oauth_row: dict | None = _oauth_row()
         # What a re-read after a vendor 401 finds stored right now.
         self.connection: AccessToken | None = None
         # (connection_id, generation) the relay reported as vendor-rejected.
         self.reauth_reports: list[tuple[str, int]] = []
+        # (user_id, server_name, reason, throttle) the relay asked to re-probe.
+        self.kicks: list[tuple[str, str, str, bool]] = []
         # Default-port destination → the Host authority is the bare hostname.
         self.pin = PinnedTarget(
             url=DESTINATION, host=VENDOR_HOST, ip=PINNED_IP, authority=VENDOR_HOST
@@ -252,6 +287,12 @@ async def env():
             raise e.token_error
         return e.token
 
+    async def _connection_by_id(connection_id: str, **kwargs):
+        return e.oauth_connection
+
+    async def _oauth_catalog_server(user_id: str, name: str, **kwargs):
+        return e.oauth_row
+
     async def _current_token(connection_id: str):
         return e.connection
 
@@ -259,18 +300,39 @@ async def env():
         e.reauth_reports.append((connection_id, seen_token_generation))
         return True
 
+    def _schedule(user_id: str, name: str, *, reason: str, throttle: bool = False):
+        e.kicks.append((user_id, name, reason, throttle))
+
     with ExitStack() as stack:
         p = stack.enter_context
         p(patch("src.server.services.egress.relay.EGRESS_RELAY_SECRET", SECRET))
         p(patch("src.server.services.egress.relay.fetch_grant_for_relay", _fetch_grant))
         p(patch("src.server.services.egress.relay.pin_public_url", _pin))
         p(patch("src.server.services.egress.relay.get_relay_client", lambda: e.vendor.client))
-        p(patch("src.server.services.egress.relay.ensure_fresh_access_token", _ensure_token))
+        p(patch("src.server.services.egress.credentials.ensure_fresh_access_token", _ensure_token))
+        p(
+            patch(
+                "src.server.services.egress.credentials.get_connection_by_id",
+                _connection_by_id,
+            )
+        )
+        p(
+            patch(
+                "src.server.services.egress.credentials.get_catalog_server",
+                _oauth_catalog_server,
+            )
+        )
         p(patch("src.server.services.egress.relay.current_access_token", _current_token))
         p(
             patch(
                 "src.server.services.egress.relay.mark_connection_needs_reauth",
                 _mark_needs_reauth,
+            )
+        )
+        p(
+            patch(
+                "src.server.services.egress.relay.schedule_catalog_discovery",
+                _schedule,
             )
         )
         # Real acquire_slot with an unreachable cache → the documented fail-open.
@@ -789,6 +851,26 @@ class TestGrantAuthorization:
         assert _error(resp) == "needs_reauth"
         assert env.vendor.sends == 0
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "overrides",
+        [{"enabled": False}, {"plugin_enabled": False}],
+        ids=["switched-off", "plugin-switched-off"],
+    )
+    async def test_a_row_taken_out_of_delivery_refuses_this_kind_too(
+        self, env, client, overrides
+    ):
+        # The grant and the bearer both outlive the switch, and the row is the
+        # only thing that says this server is out of delivery, so resolution
+        # has to read it whichever credential the call authenticates with.
+        env.oauth_row = _oauth_row(**overrides)
+
+        resp = await _post(client, token=_jwt())
+
+        assert resp.status_code == 401
+        assert _error(resp) == "needs_reauth"
+        assert env.vendor.sends == 0
+
 
 # ===========================================================================
 # 3. Body handling — strict JSON-RPC canonicalization
@@ -1112,6 +1194,36 @@ class TestInboundHeaders:
         assert resp.headers["content-type"] == "application/json"
 
     @pytest.mark.asyncio
+    async def test_a_cookie_the_vendor_sets_for_one_user_never_rides_another_users_call(
+        self, env, client
+    ):
+        # Driven through the real shared client, not the vendor double's own: the
+        # jar that would replay it lives on the client every user's call shares.
+        # Imported at module scope because ``env`` patches the relay's name.
+        vendor = env.set_vendor(
+            _vendor_json(headers={"set-cookie": "vendor_session=user-a; Path=/"}),
+            _vendor_json(),
+        )
+        await vendor.client.aclose()
+        vendor.client = get_relay_client()
+        vendor.client._transport = httpx.MockTransport(vendor._handle)
+        try:
+            first = await _post(client, token=_jwt())
+            env.grant = _grant(user_id=OTHER_USER_ID, workspace_id=OTHER_WORKSPACE_ID)
+            env.oauth_connection.user_id = OTHER_USER_ID
+            second = await _post(
+                client,
+                token=_jwt(user_id=OTHER_USER_ID, workspace_id=OTHER_WORKSPACE_ID),
+            )
+        finally:
+            await close_relay_client()
+
+        assert (first.status_code, second.status_code) == (200, 200)
+        assert vendor.sends == 2
+        assert "cookie" not in vendor.last.headers
+        assert len(vendor.client.cookies) == 0
+
+    @pytest.mark.asyncio
     async def test_mcp_session_id_is_returned_to_the_sandbox(self, env, client):
         env.set_vendor(
             _vendor_json(
@@ -1233,6 +1345,19 @@ class TestVendor401Disambiguation:
         assert _error(resp) is None
         assert env.vendor.sends == 1
         assert env.reauth_reports == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_an_oauth_refusal_schedules_no_catalog_probe(
+        self, env, client, status
+    ):
+        """The connection carries this news as ``needs_reauth``, and a probe
+        would re-ask the question the retry above already answered."""
+        env.set_vendor(_vendor_json(status=status))
+
+        await _post(client, token=_jwt())
+
+        assert env.kicks == []
 
     @pytest.mark.asyncio
     async def test_unreachable_vendor_is_a_502_not_a_reauth_prompt(self, env, client):
@@ -1785,3 +1910,335 @@ class TestSsrfPosture:
             assert pool._keepalive_expiry >= 10 * httpx.Limits().keepalive_expiry
         finally:
             await close_relay_client()
+
+
+# ---------------------------------------------------------------------------
+# Header-authenticated grants: the second kind, whose credential is the
+# catalog row's own headers resolved against the user's vault at request time.
+# ---------------------------------------------------------------------------
+
+
+HEADER_SERVER = "fund_desk"
+DESK_KEY = "vault-resolved-desk-key-0001"
+
+
+def _header_grant(**overrides) -> dict:
+    """A ``header_mcp`` row: no connection, a server name, and no credential."""
+    row = {
+        "user_id": USER_ID,
+        "workspace_id": WORKSPACE_ID,
+        "kind": "header_mcp",
+        "connection_id": None,
+        "server_name": HEADER_SERVER,
+        "destination_url": DESTINATION,
+        "allowed_methods": ["POST"],
+        "tool_denylist": None,
+        "tool_direct_only": None,
+        "grant_status": "active",
+        "connection_status": None,
+    }
+    row.update(overrides)
+    return row
+
+
+def _catalog_row(**overrides) -> dict:
+    row = {
+        "name": HEADER_SERVER,
+        "enabled": True,
+        "transport": "http",
+        "url": DESTINATION,
+        "headers": {"X-Api-Key": "${vault:DESK_KEY}"},
+    }
+    row.update(overrides)
+    return row
+
+
+class TestHeaderCredential:
+    """The relay resolves this kind's headers per request, from the row.
+
+    Everything here is about the one thing the grant deliberately does not
+    store: a header grant names a row, so the credential has to be re-read on
+    every call, and every way that read can fail has to fail closed before the
+    vendor is dialled.
+    """
+
+    @pytest.fixture
+    def row(self):
+        holder = {
+            "row": _catalog_row(),
+            "secrets": {"DESK_KEY": DESK_KEY},
+            "connection": None,
+            "asked": [],
+        }
+
+        async def _get_catalog_server(user_id: str, name: str, **kwargs):
+            return holder["row"]
+
+        async def _secrets(user_id: str, names=None):
+            holder["asked"].append((user_id, list(names or [])))
+            return {k: v for k, v in holder["secrets"].items() if k in (names or ())}
+
+        async def _get_connection(user_id: str, name: str):
+            return holder["connection"]
+
+        with (
+            patch(
+                "src.server.services.egress.credentials.get_catalog_server",
+                _get_catalog_server,
+            ),
+            patch(
+                "src.server.services.egress.credentials.get_user_secrets_decrypted",
+                _secrets,
+            ),
+            patch(
+                "src.server.services.egress.credentials.get_connection",
+                _get_connection,
+            ),
+        ):
+            yield holder
+
+    @pytest.mark.asyncio
+    async def test_the_rows_resolved_header_reaches_the_vendor(self, env, client, row):
+        env.grant = _header_grant()
+
+        response = await _post(client, token=_jwt())
+
+        assert response.status_code == 200
+        sent = env.vendor.last.headers
+        assert sent["x-api-key"] == DESK_KEY
+        # The reference itself is a vault lookup key, never a credential.
+        assert "${vault:" not in str(dict(sent))
+        # The user tier, narrowed to the refs the row uses: the same vault the
+        # probe resolved to earn this row's verdict, so a workspace entry of
+        # the same name cannot shadow the value that was verified.
+        assert row["asked"] == [(USER_ID, ["DESK_KEY"])]
+
+    @pytest.mark.asyncio
+    async def test_a_row_cannot_speak_for_the_relay(self, env, client, row):
+        # Mcp-Name is what a header-routing vendor dispatches on, and the gate
+        # judged the name in the body; a row header must not split the two.
+        env.grant = _header_grant()
+        row["row"] = _catalog_row(
+            headers={"X-Api-Key": "${vault:DESK_KEY}", "Mcp-Name": "place_order"}
+        )
+
+        response = await _post(client, token=_jwt())
+
+        assert response.status_code == 200
+        sent = env.vendor.last.headers
+        assert sent["x-api-key"] == DESK_KEY
+        assert sent.get("mcp-name") != "place_order"
+
+    @pytest.mark.asyncio
+    async def test_a_row_cannot_overwrite_the_negotiated_protocol_or_session(
+        self, env, client, row
+    ):
+        # The MCP client negotiates both, the credential map is applied last,
+        # and a row spelling either name would desync the wire from the body
+        # or forge a session. The sandbox runtime drops the same names.
+        env.grant = _header_grant()
+        row["row"] = _catalog_row(
+            headers={
+                "X-Api-Key": "${vault:DESK_KEY}",
+                "Mcp-Session-Id": "row-forged-session",
+                "MCP-Protocol-Version": "1999-01-01",
+            }
+        )
+
+        response = await _post(
+            client,
+            token=_jwt(),
+            headers={
+                "mcp-session-id": "negotiated-session",
+                "mcp-protocol-version": "2025-06-18",
+            },
+        )
+
+        assert response.status_code == 200
+        sent = env.vendor.last.headers
+        assert sent["x-api-key"] == DESK_KEY
+        assert sent["mcp-session-id"] == "negotiated-session"
+        assert sent["mcp-protocol-version"] == "2025-06-18"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["connected", "needs_reauth", "refresh_ambiguous"])
+    async def test_a_connection_that_still_claims_the_row_is_refused(
+        self, env, client, row, status
+    ):
+        # The user was told the headers are not sent while the row is
+        # OAuth-connected; an expired token does not quietly change that.
+        env.grant = _header_grant()
+        row["connection"] = SimpleNamespace(status=ConnectionStatus(status))
+
+        response = await _post(client, token=_jwt())
+
+        assert response.status_code == 401
+        assert env.vendor.sends == 0
+
+    @pytest.mark.asyncio
+    async def test_a_revoked_connection_is_history(self, env, client, row):
+        env.grant = _header_grant()
+        row["connection"] = SimpleNamespace(status=ConnectionStatus.REVOKED)
+
+        assert (await _post(client, token=_jwt())).status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_no_oauth_token_is_minted_for_this_kind(self, env, client, row):
+        # A header grant has no connection, so reaching for one would be a
+        # lookup on None rather than a credential.
+        env.grant = _header_grant()
+        env.token_error = AssertionError("the OAuth lifecycle must not be consulted")
+
+        assert (await _post(client, token=_jwt())).status_code == 200
+        assert "authorization" not in env.vendor.last.headers
+
+    @pytest.mark.asyncio
+    async def test_a_sandbox_authorization_header_cannot_forge_one(
+        self, env, client, row
+    ):
+        # The credential goes on last precisely so the caller cannot supply it.
+        env.grant = _header_grant()
+
+        await _post(
+            client, token=_jwt(), headers={"x-api-key": "caller-supplied-key"}
+        )
+
+        assert env.vendor.last.headers["x-api-key"] == DESK_KEY
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"enabled": False},
+            {"plugin_enabled": False},
+            {"transport": "stdio", "url": None},
+            {"transport": "sse"},
+            {"url": "https://somewhere-else.example/mcp"},
+        ],
+        ids=[
+            "switched-off",
+            "plugin-switched-off",
+            "no-longer-remote",
+            "legacy-sse",
+            "repointed",
+        ],
+    )
+    async def test_a_row_that_can_no_longer_authenticate_is_refused(
+        self, env, client, row, overrides
+    ):
+        # Resolution is the second half of revocation: the grant row may still
+        # be active, and the call still must not reach the vendor.
+        env.grant = _header_grant()
+        row["row"] = _catalog_row(**overrides)
+
+        response = await _post(client, token=_jwt())
+
+        assert response.status_code == 401
+        assert _error(response) == "needs_reauth"
+        assert env.vendor.sends == 0
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_row_is_refused(self, env, client, row):
+        env.grant = _header_grant()
+        row["row"] = None
+
+        response = await _post(client, token=_jwt())
+
+        assert response.status_code == 401
+        assert env.vendor.sends == 0
+
+    @pytest.mark.asyncio
+    async def test_an_unset_vault_secret_never_reaches_the_vendor(
+        self, env, client, row
+    ):
+        # Sending the literal ``${vault:NAME}`` would come back as a rejected
+        # key, which reads as a wrong credential rather than an absent one.
+        env.grant = _header_grant()
+        row["secrets"] = {}
+
+        response = await _post(client, token=_jwt())
+
+        assert response.status_code == 401
+        assert _error(response) == "needs_reauth"
+        assert env.vendor.sends == 0
+
+    @pytest.mark.asyncio
+    async def test_a_pasted_trailing_newline_is_trimmed_not_refused(
+        self, env, client, row
+    ):
+        # The vault stores what was pasted, newline and all, because a PEM
+        # needs it. This header is the sink that has to decide, and a trailing
+        # newline is the byte the user did not mean to type.
+        env.grant = _header_grant()
+        row["secrets"] = {"DESK_KEY": DESK_KEY + "\n"}
+
+        response = await _post(client, token=_jwt())
+
+        assert response.status_code == 200
+        assert env.vendor.last.headers["x-api-key"] == DESK_KEY
+
+    @pytest.mark.asyncio
+    async def test_a_newline_inside_the_secret_never_reaches_the_vendor(
+        self, env, client, row
+    ):
+        # An embedded newline is a second header the policy never saw, so this
+        # refuses the way a missing ref does rather than sending a truncated
+        # or a smuggled value.
+        env.grant = _header_grant()
+        row["secrets"] = {"DESK_KEY": "first-line\r\nX-Injected: 1"}
+
+        response = await _post(client, token=_jwt())
+
+        assert response.status_code == 401
+        assert _error(response) == "needs_reauth"
+        assert env.vendor.sends == 0
+
+    @pytest.mark.asyncio
+    async def test_a_rotated_secret_takes_effect_without_a_resync(
+        self, env, client, row
+    ):
+        env.grant = _header_grant()
+        await _post(client, token=_jwt())
+        row["secrets"] = {"DESK_KEY": "rotated-desk-key-0002"}
+
+        await _post(client, token=_jwt())
+
+        assert env.vendor.last.headers["x-api-key"] == "rotated-desk-key-0002"
+
+    @pytest.mark.asyncio
+    async def test_a_vendor_401_is_relayed_rather_than_retried(self, env, client, row):
+        # Nothing rotates behind these headers, so a 401 is the vendor's final
+        # answer; retrying it would only spend the same key twice.
+        env.grant = _header_grant()
+        env.set_vendor(_vendor_json(401), _vendor_json(200))
+
+        response = await _post(client, token=_jwt())
+
+        assert response.status_code == 401
+        assert env.vendor.sends == 1
+        assert env.reauth_reports == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_a_vendor_refusal_schedules_the_probe_that_records_it(
+        self, env, client, row, status
+    ):
+        # Nothing else re-probes a header row that starts failing: the
+        # self-heal retries only the rows already reading unreachable, so
+        # without this the Plugins page and every later turn keep the server
+        # healthy while every call is refused. Throttled, so a failing tool
+        # costs one probe per self-heal interval rather than one per call.
+        env.grant = _header_grant()
+        env.set_vendor(_vendor_json(status=status))
+
+        response = await _post(client, token=_jwt())
+
+        assert response.status_code == status
+        assert env.kicks == [(USER_ID, HEADER_SERVER, "relay-rejected", True)]
+
+    @pytest.mark.asyncio
+    async def test_a_vendor_that_answers_schedules_nothing(self, env, client, row):
+        env.grant = _header_grant()
+
+        assert (await _post(client, token=_jwt())).status_code == 200
+        assert env.kicks == []

@@ -291,7 +291,20 @@ def _resolve_http(cfg, *, discovery=False):
     resolved = _resolve_all(
         cfg, [cfg.url, *(cfg.headers[n] for n in names)], discovery=discovery
     )
-    return resolved[0], dict(zip(names, resolved[1:]))
+    headers = {}
+    for name, value in zip(names, resolved[1:]):
+        # The host's resolve_header_refs rule, mirrored: the vault keeps a pasted
+        # trailing newline, and a break inside the value would split the request.
+        # httpx's own refusal quotes the value, so only the name is reported.
+        value = value.rstrip()
+        if "\r" in value or "\n" in value:
+            raise RuntimeError(
+                "Header " + repr(name) + " for server " + repr(cfg.name)
+                + " resolves to a value HTTP cannot frame (a line break inside"
+                " the value); fix the header or its vault secret in Plugins"
+            )
+        headers[name] = value
+    return resolved[0], headers
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +316,7 @@ def _resolve_http(cfg, *, discovery=False):
 # runs inside the sandbox and cannot import server code, so the duplication is
 # structural; tests/unit/core/test_relay_error_hints.py fails on any drift.
 _RELAY_ERROR_HINTS = {
-    "needs_reauth": "the OAuth connection needs re-authorization; reconnect the server in Plugins",
+    "needs_reauth": "this server's credential no longer resolves: reconnect it, or fix its header or vault secret, in Plugins",
     "relay_auth": "this sandbox's relay credentials are invalid or expired",
     "bad_request": "the relay rejected this JSON-RPC frame as malformed or oversized",
     "not_found": "no active grant for this server; reconnect it in Plugins",
@@ -955,19 +968,34 @@ def _call_mcp_tool_stdio(server_name: str, tool_name: str, arguments: dict[str, 
 # ---------------------------------------------------------------------------
 
 
-# Protocol-owned header names a configured header map must never supply: the
-# config would silently desync the wire header from the body ``_meta`` (or
-# forge a session), and dict-key casing would even send both spellings.
-_RESERVED_MCP_HEADERS = frozenset(
-    {"mcp-protocol-version", "mcp-method", "mcp-name", "mcp-session-id"}
-)
+# Header names a configured header map must never supply. The protocol-owned
+# ones would silently desync the wire header from the body ``_meta`` (or forge
+# a session); the framing ones belong to whoever frames the request, and
+# dict-key casing would even send both spellings. Mirrors the host's
+# ``egress_guard.RESERVED_HEADERS`` value for value, spelled out because this
+# module is uploaded into the sandbox and cannot import server code. A unit
+# test pins the two equal, so a row reads the same on every path that sends it.
+_RESERVED_HEADERS = frozenset({
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "te",
+    "upgrade",
+    "expect",
+    "content-encoding",
+    "mcp-protocol-version",
+    "mcp-method",
+    "mcp-name",
+    "mcp-session-id",
+})
 
 
 def _mcp_headers(method: str, mcp_name: str, proto: dict, extra: dict) -> dict:
     """Spec headers for one HTTP request. Modern adds Mcp-Method/Mcp-Name
     (MCP-Protocol-Version must equal the body _meta); legacy echoes the
     captured Mcp-Session-Id. Configured headers are applied last, minus the
-    reserved protocol names. Tool-declared x-mcp-header params are not
+    reserved names. Tool-declared x-mcp-header params are not
     emitted — a known limitation for third-party servers that rely on them."""
     headers = {"Accept": "application/json, text/event-stream"}
     headers["MCP-Protocol-Version"] = proto["version"]
@@ -985,7 +1013,7 @@ def _mcp_headers(method: str, mcp_name: str, proto: dict, extra: dict) -> dict:
     elif proto.get("session_id"):
         headers["Mcp-Session-Id"] = proto["session_id"]
     for name, value in (extra or {}).items():
-        if name.lower() in _RESERVED_MCP_HEADERS:
+        if name.lower() in _RESERVED_HEADERS:
             continue
         headers[name] = value
     return headers

@@ -12,7 +12,7 @@ import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
@@ -93,11 +93,12 @@ async def client():
 @pytest.fixture(autouse=True)
 def _probe_kick_always_claimed():
     """Background discovery claims its kick in Postgres before dialling, and
-    these tests have no pool. The throttle itself is pinned in
+    these tests have no pool. The claim answers with the stamp it wrote, which
+    the probe then fences its write on; the throttle itself is pinned in
     test_mcp_discovery_schedule.py."""
     with patch(
         "src.server.services.mcp_oauth.discovery.claim_probe_kick",
-        new=AsyncMock(return_value=True),
+        new=AsyncMock(return_value=datetime.now(timezone.utc)),
     ):
         yield
 
@@ -536,17 +537,17 @@ async def test_list_workspace_ref_satisfied_by_the_user_tier(client):
 
 @pytest.mark.asyncio
 async def test_list_surfaces_oauth_status_on_inherited_rows(client):
-    """A disconnected OAuth server must say so — not sit on 'pending' while
-    the UI shows a Verifying state nothing can ever resolve. The status map
-    includes 'revoked' (unlike oauth_connection_id, which is None by then);
-    workspace-origin rows never carry it."""
+    """An OAuth connection the user still has to repair must say so, not sit on
+    'pending' while the UI shows a Verifying state nothing can ever resolve. A
+    revoked one is not in that set: the resolver drops it, so the row reaches
+    this list as a plain header row. Workspace-origin rows never carry it."""
     ws = _ws()
     base = _agent_config([])
     inherited = _inherited_server()
     local = _workspace_server(name="local_fork")
     resolved = resolved_mcp(
         inherited=[inherited], local=[local],
-        oauth_status={"robinhood": "revoked"},
+        oauth_status={"robinhood": "needs_reauth"},
     )
     with (
         patch("src.server.app.mcp_servers.db_get_workspace", new=AsyncMock(return_value=ws)),
@@ -559,7 +560,7 @@ async def test_list_surfaces_oauth_status_on_inherited_rows(client):
 
     by_name = {s["name"]: s for s in resp.json()["servers"]}
     assert by_name["robinhood"]["origin"] == "user"
-    assert by_name["robinhood"]["oauth_status"] == "revoked"
+    assert by_name["robinhood"]["oauth_status"] == "needs_reauth"
     assert by_name["robinhood"]["status"] == "pending"
     assert by_name["local_fork"]["oauth_status"] is None
 
@@ -1145,12 +1146,14 @@ async def test_promote_creates_template(client):
     ws = _ws()
     base = _agent_config([])
     create = AsyncMock(return_value=_catalog_row())
+    kick = MagicMock()
     with (
         patch("src.server.app.mcp_servers.db_get_workspace", new=AsyncMock(return_value=ws)),
         patch("src.server.app.setup.agent_config", base),
         patch("src.server.app.mcp_servers.list_workspace_servers", new=AsyncMock(return_value=[_promotable_row()])),
         patch("src.server.app.mcp_servers.get_catalog_server", new=AsyncMock(return_value=None)),
         patch("src.server.app.mcp_servers.create_catalog_server", new=create),
+        patch("src.server.app.mcp_servers.schedule_catalog_discovery", new=kick),
     ):
         resp = await client.post(
             f"/api/v1/workspaces/{ws['workspace_id']}/mcp/servers/remote_server/promote",
@@ -1164,6 +1167,40 @@ async def test_promote_creates_template(client):
     _, kwargs = create.await_args
     assert kwargs["url"] == "https://api.example.com/mcp"
     assert kwargs["headers"] == {"Authorization": "${vault:API_KEY}"}
+    # A minted row carries no verdict of its own, and without one it earns no
+    # egress grant: its direct tools and Flash stay dark until something else
+    # happens to probe it.
+    kick.assert_called_once_with(USER, "remote_server", reason="promote")
+
+
+@pytest.mark.asyncio
+async def test_promote_with_remove_source_switches_the_row_on_before_the_kick(client):
+    """The pass dials only a row that is on, and a minted template is off
+    until remove_source flips it. A kick that fired before the flip would read
+    the inert row and return, leaving the moved server with no verdict."""
+    ws = _ws()
+    base = _agent_config([])
+    order: list[str] = []
+    enable = AsyncMock(side_effect=lambda *a, **k: order.append("enable"))
+    kick = MagicMock(side_effect=lambda *a, **k: order.append("kick"))
+    with (
+        patch("src.server.app.mcp_servers.db_get_workspace", new=AsyncMock(return_value=ws)),
+        patch("src.server.app.setup.agent_config", base),
+        patch("src.server.app.mcp_servers.list_workspace_servers", new=AsyncMock(return_value=[_promotable_row()])),
+        patch("src.server.app.mcp_servers.get_catalog_server", new=AsyncMock(return_value=None)),
+        patch("src.server.app.mcp_servers.create_catalog_server", new=AsyncMock(return_value=_catalog_row(enabled=False))),
+        patch("src.server.app.mcp_servers.set_catalog_server_enabled", new=enable),
+        patch("src.server.app.mcp_servers.delete_workspace_server", new=AsyncMock(return_value=True)),
+        patch("src.server.app.mcp_servers._schedule_proactive_apply"),
+        patch("src.server.app.mcp_servers.schedule_catalog_discovery", new=kick),
+    ):
+        resp = await client.post(
+            f"/api/v1/workspaces/{ws['workspace_id']}/mcp/servers/remote_server/promote",
+            json={"overwrite": False, "remove_source": True},
+        )
+    assert resp.status_code == 201
+    assert resp.json()["enabled"] is True
+    assert order == ["enable", "kick"]
 
 
 @pytest.mark.asyncio
@@ -1420,7 +1457,7 @@ async def test_promote_overwrite_rediscovers_when_consent_survives(client):
         )
         await _drain_rediscovery_tasks()
     assert resp.status_code == 201
-    refresh.assert_awaited_once_with(USER, "remote_server")
+    refresh.assert_awaited_once_with(USER, "remote_server", claimed_at=ANY)
     resync.assert_awaited_once_with(USER)
 
 

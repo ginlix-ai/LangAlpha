@@ -233,6 +233,23 @@ def test_header_rejects_bare_host_env_value():
         McpServerInput(**_http(headers={"Authorization": "${SECRET}"}))
 
 
+def test_headers_colliding_only_in_case_are_rejected():
+    # The probe and the sandbox keep both spellings, while the relay folds the
+    # map to lowercase and keeps whichever lands last, so the value on the wire
+    # is not the one the owner can point at in the form.
+    with pytest.raises(ValidationError):
+        McpServerInput(
+            **_http(headers={"Authorization": "a", "authorization": "b"})
+        )
+
+
+def test_two_distinct_header_names_still_pass():
+    srv = McpServerInput(
+        **_http(headers={"Authorization": "a", "X-Trace": "b"})
+    )
+    assert srv.headers == {"Authorization": "a", "X-Trace": "b"}
+
+
 @pytest.mark.parametrize("key", ["1bad", "has space", "a" * 129])
 def test_env_key_rejected(key):
     with pytest.raises(ValidationError):

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
 from typing import Literal
@@ -123,10 +123,12 @@ class ResolvedServer:
     config: MCPServerConfig
     origin: Origin
     state: State
-    # OAuth connection status INCLUDING revoked (unlike the config's
-    # ``oauth_connection_id``, which only binds live connections) — lets
-    # consumers tell "never OAuth" from "OAuth but disconnected". Only ever
-    # set on ``USER``-origin entries.
+    # OAuth connection status for a row a connection still claims, a repairable
+    # one (``needs_reauth``) included, so consumers can tell "never OAuth" from
+    # "OAuth but needs repair". A revoked connection is history and leaves this
+    # None: the row is served by its own headers from then on, and the Plugins
+    # catalog, which keeps the revoked status on its own rows, is where the
+    # reconnect is offered. Only ever set on ``USER``-origin entries.
     oauth_status: ConnectionStatus | None = None
     # DISABLED built-ins only: whether the disable came from this workspace's
     # marker row or the account-wide user disable. A scalar, not a new State —
@@ -146,6 +148,11 @@ class ResolvedServer:
     # or both), with the set the sandbox must not wrap and the set whose calls
     # stop for the user. None for a server nothing binds directly.
     binding_plan: BindingPlan | None = None
+    # A connection-less http row whose stored bindings ask for a direct tool
+    # while nothing has probed the address yet: the plan above is clamped to
+    # the sandbox, and the first verdict is what releases it. False once a
+    # probe has answered, however it answered.
+    awaiting_probe: bool = False
 
     @property
     def name(self) -> str:
@@ -155,9 +162,10 @@ class ResolvedServer:
     def host_side_oauth(self) -> bool:
         """Whether this server's tools are discovered host-side, never in-sandbox.
 
-        True for a DISCONNECTED OAuth server too: ``oauth_connection_id`` is
-        None once revoked, but the sandbox still holds no vendor token, so a
-        probe from there could only cache a junk failure.
+        True while a connection still claims the row, even a repairable one: the
+        sandbox holds no vendor token, so a probe from there could only cache a
+        junk failure. A revoked connection makes no such claim, so the row is
+        served by its own headers and discovered like any header row.
         """
         return bool(self.config.oauth_connection_id) or (
             self.origin is Origin.USER and self.oauth_status is not None
@@ -388,6 +396,7 @@ async def resolve_mcp_config(
         get_workspace_servers_and_version,
         list_enabled_user_servers,
     )
+    from src.server.models.mcp_server import probe_ok, snapshot_probe
     from src.server.services.brokerages import brokerage_names
 
     # Built-ins from the global config, enabled only, in declaration order.
@@ -437,14 +446,39 @@ async def resolve_mcp_config(
             version=version,
         )
 
+    # A revoked connection is history, not a claim on the row: it neither binds
+    # the row nor labels it OAuth, so the row resolves as the header row it is
+    # and is planned and discovered off its own headers, the same reading the
+    # catalog and the relay already take. (One connection per name is a table
+    # invariant, so one filtered pass builds both maps.)
     oauth_status_by_name = {
-        c["server_name"]: ConnectionStatus(c["status"]) for c in connections
+        c["server_name"]: status
+        for c in connections
+        if (status := ConnectionStatus(c["status"])) is not ConnectionStatus.REVOKED
     }
     connection_by_server = {
         c["server_name"]: c
         for c in connections
-        if oauth_status_by_name[c["server_name"]] is not ConnectionStatus.REVOKED
+        if c["server_name"] in oauth_status_by_name
     }
+
+    # A stored ``direct`` override on a header-authenticated row is honoured
+    # only once the host probe has said those headers work, because the egress
+    # grant that makes the direct path callable is issued on the same verdict
+    # (``grant_scope._probe_ok``). Honouring it earlier would take the tool out
+    # of the sandbox with nothing to replace it, so an unprobed row clamps to
+    # the sandbox exactly like a stdio one and the override goes live the
+    # moment a verdict lands. Read only where some row could be in that
+    # position: an OAuth row is decided by its connection instead.
+    snapshots = None
+    if any(
+        row.get("transport") == "http" and row["name"] not in connection_by_server
+        for row in user_rows
+    ):
+        from src.server.database.mcp_tool_schemas import get_user_tool_schemas
+        from src.server.services.mcp_discovery import ToolSnapshotIndex
+
+        snapshots = ToolSnapshotIndex(user_rows=await get_user_tool_schemas(user_id))
 
     disabled_builtins: set[str] = set()
     tombstoned_user_names: set[str] = set()
@@ -523,7 +557,7 @@ async def resolve_mcp_config(
             # The catalog URL was edited since consent (or a write path missed
             # the revoke): the stored token was issued for a different host.
             # Never bind it — leave the server un-connected so no grant is
-            # created and sync_oauth_grants retires any prior one; surface
+            # created and sync_egress_grants retires any prior one; surface
             # needs_reauth so the UI prompts re-consent to the new URL. This is
             # defense-in-depth behind the edit-time revoke and the grant's own
             # server_url pinning.
@@ -603,21 +637,43 @@ async def resolve_mcp_config(
             )
         return denied_tools(vendor, capabilities or ())
 
-    def _binding_plan(cfg: MCPServerConfig) -> BindingPlan | None:
-        """Which path each granted tool takes. Same identity rule as the
-        denial: the consented URL, never the row name. A direct call dials the
-        relay under the connection's grant, so without a connection there is
-        nothing to bind and the plan is None whatever the row asks for."""
+    def _binding_plan(cfg: MCPServerConfig) -> tuple[BindingPlan, bool]:
+        """Which path each granted tool takes, and whether a probe still gates
+        it. Same identity rule as the denial: the consented URL, never the row
+        name.
+
+        A row with no connection is planned off its own address and consent to
+        nothing: a header-authenticated server has no consent record to read,
+        and a curated vendor's tools are all denied by that emptiness anyway.
+        What survives is what the row itself asked for, and whether it may ask
+        at all is the row's transport -- a stdio server has no address the
+        relay could dial, so ``inputs_from_row`` clamps every one of its tools
+        back to the sandbox -- and, for an http row, whether the probe has said
+        the headers work.
+        """
         connection = connection_by_server.get(cfg.name)
-        if connection is None:
-            return None
-        return resolve_plan(
-            vendor_for_url(connection.get("server_url")),
-            connection.get("granted_capabilities") or (),
-            inputs_from_row(user_row_by_name.get(cfg.name)),
+        inputs = inputs_from_row(user_row_by_name.get(cfg.name))
+        if connection is not None:
+            return resolve_plan(
+                vendor_for_url(connection.get("server_url")),
+                connection.get("granted_capabilities") or (),
+                inputs,
+            ), False
+        # Planning off ``()`` is deliberate: a row that never went through a
+        # consent screen is denied a curated vendor's whole curation, while
+        # its uncurated tools still take the path the row asked for.
+        vendor = vendor_for_url(cfg.url)
+        plan = resolve_plan(vendor, (), inputs)
+        snapshot = snapshots.snapshot(cfg) if snapshots is not None else None
+        if not inputs.relayable or probe_ok(snapshot):
+            return plan, False
+        return (
+            resolve_plan(vendor, (), replace(inputs, relayable=False)),
+            bool(plan.direct) and snapshot_probe(snapshot) is None,
         )
 
     def _user_entry(cfg: MCPServerConfig, state: State) -> ResolvedServer:
+        plan, awaiting_probe = _binding_plan(cfg)
         return ResolvedServer(
             config=cfg,
             origin=Origin.USER,
@@ -625,7 +681,8 @@ async def resolve_mcp_config(
             oauth_status=oauth_status_by_name.get(cfg.name),
             plugin_name=plugin_name_by_server.get(cfg.name),
             denied_tools=_denied_tools(cfg),
-            binding_plan=_binding_plan(cfg),
+            binding_plan=plan,
+            awaiting_probe=awaiting_probe,
         )
 
     # Entry order IS the API's row order: the running set first (built-ins,
