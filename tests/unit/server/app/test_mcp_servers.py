@@ -91,6 +91,18 @@ async def client():
 
 
 @pytest.fixture(autouse=True)
+def _probe_kick_always_claimed():
+    """Background discovery claims its kick in Postgres before dialling, and
+    these tests have no pool. The throttle itself is pinned in
+    test_mcp_discovery_schedule.py."""
+    with patch(
+        "src.server.services.mcp_oauth.discovery.claim_probe_kick",
+        new=AsyncMock(return_value=True),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _no_user_level_rows():
     """Default the user-level (Connectors) reads to empty.
 
@@ -1306,7 +1318,7 @@ async def _drain_rediscovery_tasks():
 
     from src.server.services.mcp_oauth import discovery
 
-    pending = list(discovery._rediscovery_tasks)
+    pending = list(discovery._discovery_tasks)
     if pending:
         await asyncio.gather(*pending)
     for _ in range(3):
@@ -1394,7 +1406,7 @@ async def test_promote_overwrite_rediscovers_when_consent_survives(client):
             new=AsyncMock(return_value=_oauth_connection()),
         ),
         patch(
-            "src.server.services.mcp_oauth.discovery.refresh_user_tool_schemas",
+            "src.server.services.mcp_oauth.discovery.discover_catalog_server",
             new=refresh,
         ),
         patch(
@@ -1417,7 +1429,7 @@ async def test_promote_overwrite_skips_rediscovery_when_consent_moved(client):
     """The reconnect the revoke forces runs its own discovery, and refreshing a
     just-revoked connection could only 409."""
     ws = _ws()
-    refresh = AsyncMock()
+    refresh = AsyncMock(return_value={"status": "ok"})
     moved = "https://moved.example.com/mcp"
     with (
         patch("src.server.app.mcp_servers.db_get_workspace", new=AsyncMock(return_value=ws)),
@@ -1443,7 +1455,7 @@ async def test_promote_overwrite_skips_rediscovery_when_consent_moved(client):
             new=AsyncMock(return_value=True),
         ),
         patch(
-            "src.server.services.mcp_oauth.discovery.refresh_user_tool_schemas",
+            "src.server.services.mcp_oauth.discovery.discover_catalog_server",
             new=refresh,
         ),
     ):

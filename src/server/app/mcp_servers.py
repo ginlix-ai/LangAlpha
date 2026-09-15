@@ -64,6 +64,11 @@ from src.server.services.mcp_config import (
     resolve_mcp_config,
 )
 from src.server.services.mcp_discovery import ToolSnapshotIndex
+from src.server.services.mcp_oauth.discovery import (
+    REMOTE_TRANSPORTS,
+    discover_catalog_server,
+)
+from src.server.services.mcp_oauth.lifecycle import TokenUnavailable
 from src.server.services.mcp_import import ImportScope, run_mcp_import
 from src.server.services.vault_invalidation import refs_for_server
 from src.server.models.mcp_server import (
@@ -902,16 +907,37 @@ async def discover_server(
         or entry.origin is Origin.BUILTIN
     ):
         raise HTTPException(status_code=404, detail="MCP server not found")
+    server = entry.config
+    if entry.origin is Origin.USER and server.transport in REMOTE_TRANSPORTS:
+        # An inherited remote row is discovered from the host, whatever it
+        # authenticates with: the OAuth bearer never enters a sandbox, and a
+        # header row's snapshot has to land where Plugins reads it. Same
+        # debounce as the sandbox path, against the user tier.
+        cached = ToolSnapshotIndex(
+            user_rows=await get_user_tool_schemas(user_id)
+        ).snapshot(server, accept=_settled_and_fresh)
+        if cached is not None:
+            return {"server": _discovery_row_to_dict(cached)}
+        try:
+            row = await discover_catalog_server(user_id, name)
+        except TokenUnavailable as e:
+            # A connection the user has to repair: reconnecting, not probing,
+            # is the fix, and the row's connection status already says so.
+            raise HTTPException(
+                status_code=409,
+                detail=f"OAuth connection is {e.reason}; manage the connection "
+                "from Plugins instead.",
+            )
+        if row is not None:
+            if row.get("status") == "ok":
+                _schedule_session_mcp_refresh(workspace_id, user_id)
+            return {"server": _discovery_row_to_dict(row)}
     if entry.host_side_oauth:
-        # OAuth servers are discovered host-side (on connect and via the
-        # Plugins refresh) — never probed from the sandbox; reconnecting,
-        # not probing, is the fix for a disconnected one.
         raise HTTPException(
             status_code=409,
             detail="OAuth servers are discovered host-side; manage the "
             "connection from Plugins instead.",
         )
-    server = entry.config
 
     # Debounce: if the cached snapshot is for this server's CURRENT config and is
     # fresh + settled, return it without re-running discovery. A stale-hash

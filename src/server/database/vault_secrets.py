@@ -10,6 +10,7 @@ return plaintext.
 
 import logging
 from dataclasses import dataclass
+from collections.abc import Collection
 from typing import Any
 
 from psycopg.rows import dict_row
@@ -118,17 +119,24 @@ async def _reveal(tier: _VaultTier, owner_id: str, name: str) -> str | None:
             return row["plaintext"] if row else None
 
 
-async def _decrypted(tier: _VaultTier, owner_id: str) -> dict[str, str]:
+async def _decrypted(
+    tier: _VaultTier, owner_id: str, names: Collection[str] | None = None
+) -> dict[str, str]:
+    # Each row decrypted is a full S2K derivation, so a caller that knows which
+    # names it needs (the relay, per request) names them rather than paying
+    # for the whole vault.
     enc_key = _get_encryption_key()
+    only = "" if names is None else " AND name = ANY(%s)"
+    params = (enc_key, owner_id) if names is None else (enc_key, owner_id, list(names))
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"""
                 SELECT name, pgp_sym_decrypt(value, %s) AS plaintext
                 FROM {tier.table}
-                WHERE {tier.owner_col} = %s
+                WHERE {tier.owner_col} = %s{only}
                 """,
-                (enc_key, owner_id),
+                params,
             )
             rows = await cur.fetchall()
             return {r["name"]: r["plaintext"] for r in rows}
@@ -319,7 +327,9 @@ async def delete_secret(workspace_id: str, name: str) -> bool:
 
 
 async def get_effective_secrets(
-    workspace_id: str, user_id: str | None = None
+    workspace_id: str,
+    user_id: str | None = None,
+    names: Collection[str] | None = None,
 ) -> dict[str, str]:
     """The secret set a workspace actually sees: the owner's user-level secrets
     shadowed by the workspace's own.
@@ -330,7 +340,8 @@ async def get_effective_secrets(
     workspace-only leaves an inherited server's credential in the clear.
 
     ``user_id`` is read off the workspace row when omitted; callers that
-    already hold the owner should pass it.
+    already hold the owner should pass it. ``names`` narrows both tiers, for a
+    caller that knows the few refs it resolves.
     """
     # A deployment without the encryption key cannot have written any vault
     # secret (every write encrypts with it), so "no secrets" is the true
@@ -348,8 +359,8 @@ async def get_effective_secrets(
         workspace = await get_workspace(workspace_id)
         user_id = (workspace or {}).get("user_id")
 
-    secrets = await _decrypted(WORKSPACE_TIER, workspace_id)
+    secrets = await _decrypted(WORKSPACE_TIER, workspace_id, names)
     if not user_id:
         return secrets
-    user_secrets = await get_user_secrets_decrypted(user_id)
+    user_secrets = await get_user_secrets_decrypted(user_id, names)
     return {**user_secrets, **secrets} if user_secrets else secrets

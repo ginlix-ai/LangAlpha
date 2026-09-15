@@ -6,8 +6,9 @@ resolved values, so a vault VALUE change churns no fingerprint anywhere. These
 tests pin the compensating purges — in particular that the user-tier purge also
 clears the per-workspace rows, which is where an inherited server's in-sandbox
 discovery actually lands — plus the user-tier upsert's under-lock re-read of the
-OAuth connection, without which a discovery that overtakes a disconnect writes
-its snapshot back.
+OAuth connection, which runs in both directions: without it a discovery that
+overtakes a disconnect writes its snapshot back, and a header probe that
+overtakes a connect publishes the wrong account's tools.
 """
 
 from __future__ import annotations
@@ -79,11 +80,23 @@ def _stored_row(owner_col: str = "user_id", **overrides) -> dict:
         "status": "ok",
         "error": "",
         "observed_meta": {},
+        "last_probe": {},
         "discovered_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
     }
     if owner_col == "user_id":
         row["schema_digest"] = "digest-1"
     return row | overrides
+
+
+def _prior_row(**overrides) -> dict:
+    """What the under-lock read of the row this write is about to replace sees."""
+    return {"schema_digest": "digest-0", "last_probe": {}} | overrides
+
+
+def _unclaimed(*rest) -> list:
+    """``fetchone`` returns for a user-tier write holding no connection_id: the
+    guard's by-name read runs first and finds nothing claiming the row."""
+    return [None, *rest]
 
 
 # ---------------------------------------------------------------------------
@@ -229,8 +242,10 @@ async def test_workspace_purge_bumps_only_its_own_workspace(schema_mock_db):
 
 @pytest.mark.asyncio
 async def test_workspace_upsert_never_probes_the_connection_table(schema_mock_db):
-    """The workspace tier has no OAuth connection to check — in-sandbox
-    discovery writes it — so the guard must stay off this path entirely."""
+    """The workspace tier has no OAuth connection to check (in-sandbox
+    discovery writes it), so the guard must stay off this path entirely.
+    Both arms: this tier passes no connection_id, which is exactly what makes
+    the user tier take its by-name read instead."""
     schema_mock_db.fetchone.side_effect = [_stored_row("workspace_id")]
 
     row = await mts.upsert_tool_schemas("ws-1", "authy", "hash-1", status="ok")
@@ -271,7 +286,8 @@ async def test_user_upsert_skips_a_connection_that_left_the_servable_set(
     schema_mock_db.fetchone.side_effect = [{"status": status}]
 
     write = await mts.upsert_user_tool_schemas(
-        "user-1", "authy", "hash-1", status="ok", connection_id="c-1"
+        "user-1", "authy", "hash-1", status="ok", connection_id="c-1",
+        last_probe={},  # required now; this test is about the connection guard
     )
 
     assert write.row is None
@@ -288,7 +304,8 @@ async def test_user_upsert_skips_when_the_connection_row_is_gone(schema_mock_db)
     schema_mock_db.fetchone.side_effect = [None]
 
     write = await mts.upsert_user_tool_schemas(
-        "user-1", "authy", "hash-1", status="ok", connection_id="c-1"
+        "user-1", "authy", "hash-1", status="ok", connection_id="c-1",
+        last_probe={},  # required now; this test is about the connection guard
     )
 
     assert write.row is None
@@ -300,17 +317,21 @@ async def test_user_upsert_skips_when_the_connection_row_is_gone(schema_mock_db)
 @pytest.mark.parametrize("status", ["connected", "refresh_ambiguous"])
 async def test_user_upsert_writes_for_a_servable_connection(schema_mock_db, status):
     # refresh_ambiguous is servable: the old access token works until expiry.
-    schema_mock_db.fetchone.side_effect = [{"status": status}, _stored_row()]
+    schema_mock_db.fetchone.side_effect = [
+        {"status": status}, _prior_row(), _stored_row()
+    ]
 
     write = await mts.upsert_user_tool_schemas(
-        "user-1", "authy", "hash-1", status="ok", connection_id="c-1"
+        "user-1", "authy", "hash-1", status="ok", connection_id="c-1",
+        last_probe={},  # required now; this test is about the connection guard
     )
 
     assert write.row["status"] == "ok"
     assert write.connection_status is None
-    probe, delete, insert = _statements(schema_mock_db)
+    probe, delete, prior, insert = _statements(schema_mock_db)
     assert "FOR SHARE" in probe[0]
     assert delete[0].startswith("DELETE FROM user_mcp_tool_schemas")
+    assert "FOR UPDATE" in prior[0]
     assert insert[0].startswith("INSERT INTO user_mcp_tool_schemas")
 
 
@@ -320,10 +341,13 @@ async def test_user_upsert_locks_the_connection_row_before_writing(schema_mock_d
     write-skew under READ COMMITTED — it reads the pre-commit status and
     inserts anyway. FOR SHARE is what serializes this against the disconnect's
     status UPDATE, and it has to be taken before the write, not after."""
-    schema_mock_db.fetchone.side_effect = [{"status": "connected"}, _stored_row()]
+    schema_mock_db.fetchone.side_effect = [
+        {"status": "connected"}, _prior_row(), _stored_row()
+    ]
 
     await mts.upsert_user_tool_schemas(
-        "user-1", "authy", "hash-1", status="ok", connection_id="c-1"
+        "user-1", "authy", "hash-1", status="ok", connection_id="c-1",
+        last_probe={},  # required now; this test is about the connection guard
     )
 
     (probe_sql, probe_params), *rest = _statements(schema_mock_db)
@@ -336,16 +360,207 @@ async def test_user_upsert_locks_the_connection_row_before_writing(schema_mock_d
 
 
 @pytest.mark.asyncio
-async def test_user_upsert_without_a_connection_id_does_not_probe(schema_mock_db):
-    """Only callers holding a connection can guard on one; the parameter stays
-    optional so a connection-less write is unchanged."""
-    schema_mock_db.fetchone.side_effect = [_stored_row()]
+@pytest.mark.parametrize("status", ["connected", "needs_reauth", "refresh_ambiguous"])
+async def test_a_header_write_is_refused_while_a_connection_claims_the_row(
+    schema_mock_db, status
+):
+    """The same race the other way round, which no fingerprint can see: the row
+    had no connection when this probe read it, an OAuth callback created one
+    while it was on the network, and execution now sends the relay's token.
+    Landing these tools publishes the API-key account's surface to a session
+    holding the OAuth account's credential. Anything short of revoked claims
+    the row, which is how every other reader of this table claims it."""
+    schema_mock_db.fetchone.side_effect = [{"status": status}]
 
     write = await mts.upsert_user_tool_schemas(
-        "user-1", "authy", "hash-1", status="ok"
+        "user-1", "authy", "hash-1", status="ok", last_probe={}
+    )
+
+    assert write.row is None
+    assert write.connection_status == status
+    ((guard_sql, guard_params),) = _statements(schema_mock_db)
+    assert guard_sql == (
+        "SELECT status FROM user_mcp_oauth_connections "
+        "WHERE user_id = %s AND server_name = %s FOR SHARE"
+    )
+    assert guard_params == ("user-1", "authy")
+
+
+@pytest.mark.asyncio
+async def test_a_header_write_lands_over_a_revoked_connection(schema_mock_db):
+    """A revoked row claims nothing: the user disconnected, so the headers are
+    what this server is dialled with again and the snapshot is theirs. Rows here
+    are never deleted, so this is what a disconnected server looks like
+    forever."""
+    schema_mock_db.fetchone.side_effect = [
+        {"status": "revoked"}, _prior_row(), _stored_row()
+    ]
+
+    write = await mts.upsert_user_tool_schemas(
+        "user-1", "authy", "hash-1", status="ok", last_probe={}
+    )
+
+    assert write.row["status"] == "ok"
+    assert write.connection_status is None
+
+
+@pytest.mark.asyncio
+async def test_a_header_write_lands_when_nothing_has_connected_the_row(
+    schema_mock_db,
+):
+    """The ordinary header row, and what the extra read buys it: one lock-read
+    before the write, then the same three statements as before."""
+    schema_mock_db.fetchone.side_effect = _unclaimed(_prior_row(), _stored_row())
+
+    write = await mts.upsert_user_tool_schemas(
+        "user-1", "authy", "hash-1", status="ok", last_probe={}
     )
 
     assert write.row["status"] == "ok"
     sqls = [sql for sql, _ in _statements(schema_mock_db)]
+    assert len(sqls) == 4
+    assert sqls[0].startswith("SELECT status FROM user_mcp_oauth_connections")
+    assert not any("user_mcp_oauth_connections" in sql for sql in sqls[1:])
+
+
+# ---------------------------------------------------------------------------
+# User-tier upsert: the probe verdict is the row's one always-fresh field
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_verdict_is_never_kept_on_a_downgrade(schema_mock_db):
+    """The blocker this column exists for: a server that discovered fine and now
+    answers 401 kept serving ``ok`` with a populated error, because the
+    no-downgrade arm held every field the UI read. The tools are still valid, so
+    they stay; the verdict describes the probe and must always be the new one."""
+    schema_mock_db.fetchone.side_effect = _unclaimed(_prior_row(), _stored_row())
+
+    await mts.upsert_user_tool_schemas(
+        "user-1", "authy", "hash-1", status="error",
+        last_probe={"verdict": "credential_rejected"},
+    )
+
+    insert_sql = _statements(schema_mock_db)[-1][0]
+    assert "last_probe = EXCLUDED.last_probe" in insert_sql
+    for kept in ("tools", "status", "observed_meta", "discovered_at"):
+        assert f"{kept} = CASE WHEN t.status = 'ok'" in insert_sql
+
+
+@pytest.mark.asyncio
+async def test_the_verdict_rides_the_insert_as_its_own_value(schema_mock_db):
+    schema_mock_db.fetchone.side_effect = _unclaimed(_prior_row(), _stored_row())
+
+    await mts.upsert_user_tool_schemas(
+        "user-1", "authy", "hash-1", status="ok",
+        last_probe={"verdict": "ok_authed"},
+    )
+
+    _guard, _delete, _prior, (_sql, params) = _statements(schema_mock_db)
+    assert params[-1].obj == {"verdict": "ok_authed"}
+
+
+@pytest.mark.asyncio
+async def test_a_row_with_no_verdict_reads_back_as_an_empty_object(schema_mock_db):
+    """Rows written before this column exists, and the workspace tier, which has
+    no host-side probe at all. The projection turns both into "unprobed"."""
+    schema_mock_db.fetchone.side_effect = _unclaimed(
+        _prior_row(), _stored_row(last_probe=None)
+    )
+
+    write = await mts.upsert_user_tool_schemas(
+        "user-1", "authy", "hash-1", last_probe={}
+    )
+
+    assert write.row["last_probe"] == {}
+
+
+# ---------------------------------------------------------------------------
+# User-tier upsert: what this write replaced, digest and verdict, read under
+# its own lock
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_user_upsert_reports_the_digest_it_replaced(schema_mock_db):
+    """The caller's fan-out decision. Read here rather than before the write
+    because two workers may discover one row at once: both see the stored
+    digest, and the one that lands second would otherwise compare against a
+    value its own write had already replaced and skip the bump."""
+    schema_mock_db.fetchone.side_effect = _unclaimed(_prior_row(), _stored_row())
+
+    write = await mts.upsert_user_tool_schemas(
+        "user-1", "authy", "hash-1", status="ok", schema_digest="digest-1",
+        last_probe={},
+    )
+
+    assert write.replaced_digest == "digest-0"
+    _guard, _delete, (prior_sql, prior_params), (insert_sql, _) = _statements(
+        schema_mock_db
+    )
+    assert prior_sql == (
+        "SELECT schema_digest, last_probe FROM user_mcp_tool_schemas "
+        "WHERE user_id = %s AND server_name = %s AND config_hash = %s FOR UPDATE"
+    )
+    assert prior_params == ("user-1", "authy", "hash-1")
+    assert insert_sql.startswith("INSERT INTO user_mcp_tool_schemas")
+
+
+@pytest.mark.asyncio
+async def test_a_first_snapshot_replaced_nothing(schema_mock_db):
+    """None, not the empty string: nothing was there, so every digest is a
+    change and the caller bumps."""
+    schema_mock_db.fetchone.side_effect = _unclaimed(None, _stored_row())
+
+    write = await mts.upsert_user_tool_schemas(
+        "user-1", "authy", "hash-1", status="ok", schema_digest="digest-1",
+        last_probe={},
+    )
+
+    assert write.replaced_digest is None
+
+
+@pytest.mark.asyncio
+async def test_the_user_upsert_reports_the_verdict_it_replaced(schema_mock_db):
+    """Read beside the digest because the digest cannot see it: the
+    no-downgrade rule holds tools, status and digest still while ``last_probe``
+    moves, and a row that stops answering still has to cost its grant."""
+    schema_mock_db.fetchone.side_effect = _unclaimed(
+        _prior_row(last_probe={"verdict": "ok_authed"}), _stored_row()
+    )
+
+    write = await mts.upsert_user_tool_schemas(
+        "user-1", "authy", "hash-1", status="error",
+        last_probe={"verdict": "credential_rejected"},
+    )
+
+    assert write.replaced_verdict == "ok_authed"
+
+
+@pytest.mark.asyncio
+async def test_an_unprobed_row_replaced_no_verdict(schema_mock_db):
+    """A row written before the verdict had a column reads back ``{}``, which is
+    not a verdict and must not settle a fan-out decision as if it were one."""
+    schema_mock_db.fetchone.side_effect = _unclaimed(
+        _prior_row(last_probe={}), _stored_row()
+    )
+
+    write = await mts.upsert_user_tool_schemas(
+        "user-1", "authy", "hash-1", status="ok", last_probe={}
+    )
+
+    assert write.replaced_verdict is None
+
+
+@pytest.mark.asyncio
+async def test_the_workspace_tier_takes_no_digest_lock(schema_mock_db):
+    """It has no digest column and no fan-out to decide, so the extra statement
+    would be a round trip and a row lock bought for nothing."""
+    schema_mock_db.fetchone.side_effect = [_stored_row("workspace_id")]
+
+    write_row = await mts.upsert_tool_schemas("ws-1", "authy", "hash-1", status="ok")
+
+    assert write_row["status"] == "ok"
+    sqls = [sql for sql, _ in _statements(schema_mock_db)]
     assert len(sqls) == 2
-    assert not any("user_mcp_oauth_connections" in sql for sql in sqls)
+    assert not any("FOR UPDATE" in sql for sql in sqls)

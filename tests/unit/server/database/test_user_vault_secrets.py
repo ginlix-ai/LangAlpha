@@ -98,6 +98,33 @@ async def test_reveal_user_secret_does_not_decrypt_the_whole_vault(
 
 
 @pytest.mark.asyncio
+async def test_a_named_read_decrypts_only_those_rows(vault_mock_db):
+    """The relay resolves one row's refs on every call, and each row decrypted
+    is a full S2K derivation, so the narrowing has to reach the statement."""
+    vault_mock_db.fetchall.return_value = [{"name": "DESK_KEY", "plaintext": "v"}]
+
+    assert await uvs.get_user_secrets_decrypted("user-1", ["DESK_KEY"]) == {
+        "DESK_KEY": "v"
+    }
+
+    sql, params = vault_mock_db.execute.call_args.args
+    assert "name = ANY(%s)" in sql
+    assert params == ("test-key", "user-1", ["DESK_KEY"])
+
+
+@pytest.mark.asyncio
+async def test_an_unnamed_read_still_takes_the_whole_vault(vault_mock_db):
+    """The sandbox push has no name list; the filter must stay opt-in."""
+    vault_mock_db.fetchall.return_value = []
+
+    await uvs.get_user_secrets_decrypted("user-1")
+
+    sql, params = vault_mock_db.execute.call_args.args
+    assert "name = ANY(%s)" not in sql
+    assert params == ("test-key", "user-1")
+
+
+@pytest.mark.asyncio
 async def test_user_tier_queries_the_user_table(vault_mock_db):
     vault_mock_db.fetchall.return_value = [{"name": "A"}, {"name": "B"}]
 
@@ -226,7 +253,7 @@ async def test_owner_is_read_from_the_workspace_when_omitted(
     )
 
     assert await get_effective_secrets("ws-1") == {"OTHER": "u"}
-    user.assert_awaited_once_with("user-9")
+    user.assert_awaited_once_with("user-9", None)
 
 
 @pytest.mark.asyncio

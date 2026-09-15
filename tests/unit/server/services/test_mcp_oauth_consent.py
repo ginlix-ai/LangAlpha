@@ -21,8 +21,11 @@ import pytest
 
 from src.server.database.mcp_oauth import ConnectionStatus
 from src.server.database.mcp_tool_schemas import SchemaWrite
-from src.server.services.mcp_oauth.discovery import refresh_user_tool_schemas
-from src.server.utils.egress_guard import PinnedTarget
+from src.server.services.mcp_oauth.discovery import (
+    discover_catalog_server,
+    refresh_user_tool_schemas,
+)
+from src.server.services.mcp_probe import ProbeOutcome
 from src.server.services.mcp_oauth.lifecycle import (
     TokenUnavailable,
     revoke_if_consent_moved,
@@ -200,6 +203,38 @@ async def test_refresh_refuses_a_non_servable_connection(status):
 
 
 @pytest.mark.asyncio
+async def test_discovery_never_sends_the_headers_of_a_claimed_row():
+    """A connection short of revoked claims the row, so discovery answers as
+    the OAuth path does rather than probing with the row's own headers.
+
+    The relay and the write-time warning both read a non-revoked connection as
+    owning the row; a header probe here would earn the row a verdict against
+    credentials no call is ever allowed to spend.
+    """
+    probe = AsyncMock()
+    with (
+        patch(
+            "src.server.services.mcp_oauth.discovery.get_catalog_server",
+            new=AsyncMock(return_value=_catalog_row()),
+        ),
+        patch(
+            "src.server.services.mcp_oauth.discovery.get_connection",
+            new=AsyncMock(
+                return_value=_connection(status=ConnectionStatus.NEEDS_REAUTH)
+            ),
+        ),
+        patch(
+            "src.server.services.mcp_oauth.discovery.bounded_probe",
+            new=probe,
+        ),
+    ):
+        with pytest.raises(TokenUnavailable) as e:
+            await discover_catalog_server(USER, SERVER)
+    assert e.value.reason == ConnectionStatus.NEEDS_REAUTH.value
+    probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_refresh_still_runs_for_an_ambiguous_connection():
     # refresh_ambiguous is servable: the old access token keeps working until
     # it expires, so re-discovery is still worth attempting.
@@ -267,37 +302,16 @@ async def test_refresh_accepts_the_consented_url_in_any_spelling():
 # ---------------------------------------------------------------------------
 
 
-class _FakeTool:
-    name = "search"
-    description = "d"
-    input_schema = {"type": "object"}
-
-
-class _FakeClient:
-    """Stands in for the SDK session: one tool, no network."""
-
-    def __init__(self, transport):
-        self._transport = transport
-
-    async def __aenter__(self):
-        return SimpleNamespace(
-            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[_FakeTool()])),
-            # A real session always exposes this, so the stand-in does too.
-            server_info=None,
-        )
-
-    async def __aexit__(self, *exc):
-        return False
-
-
-@asynccontextmanager
-async def _fake_http_client(*args, **kwargs):
-    yield SimpleNamespace(follow_redirects=False)
+_ONE_TOOL = ProbeOutcome(
+    ok=True, auth="oauth",
+    tools=[{"name": "search", "description": "d", "input_schema": {"type": "object"}}],
+)
 
 
 def _network_returning_one_tool(*, upsert, bump, catalog=None):
     """Everything from the entry gates to the write stubbed out, so the write
-    and the fan-out are the only observable effects of a successful run."""
+    and the fan-out are the only observable effects of a successful run. The
+    network is the probe module's one call, answered with one tool."""
     stack = ExitStack()
     for target, new in (
         _DB,
@@ -307,20 +321,8 @@ def _network_returning_one_tool(*, upsert, bump, catalog=None):
          AsyncMock(return_value=_connection())),
         ("src.server.services.mcp_oauth.discovery.ensure_fresh_access_token",
          AsyncMock(return_value=SimpleNamespace(header=lambda: "Bearer t"))),
-        # Function-scope imports in discovery read these module attributes at
-        # call time, so patching the source modules covers both.
-        ("src.server.utils.egress_guard.pin_public_url",
-         AsyncMock(return_value=PinnedTarget(
-             url="https://203.0.113.7/mcp", host="mcp.example.com",
-             ip="203.0.113.7", authority="mcp.example.com",
-         ))),
-        ("src.server.services.mcp_oauth.http.pinned_discovery_client",
-         _fake_http_client),
-        ("src.server.services.mcp_oauth.discovery.streamable_http_client",
-         lambda *a, **k: object()),
-        ("src.server.services.mcp_oauth.discovery.Client", _FakeClient),
-        ("src.server.services.mcp_oauth.discovery.get_user_tool_schemas",
-         AsyncMock(return_value=[])),
+        ("src.server.services.mcp_oauth.discovery.bounded_probe",
+         AsyncMock(return_value=_ONE_TOOL)),
         ("src.server.services.mcp_oauth.discovery.bump_user_workspaces_mcp_version",
          bump),
         ("src.server.services.mcp_oauth.discovery.upsert_user_tool_schemas",

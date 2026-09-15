@@ -99,6 +99,9 @@ def _tier(base, probes, workspaces=("ws-1",)):
         purge_and_bump=purge_bump,
         bump=bump,
         workspaces=AsyncMock(return_value=list(workspaces)),
+        # The user tier's rediscovery hook spawns a task that reaches the
+        # database; stubbed so a unit run never fires one.
+        rediscover=lambda user_id, names: None,
     )
 
 

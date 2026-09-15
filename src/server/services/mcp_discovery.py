@@ -84,9 +84,13 @@ class ToolSnapshotIndex:
     (``source='user'``) server reads its USER-tier snapshot first, because the
     host-side OAuth discovery that writes it is purged on disconnect and
     refreshed on connect, whereas the per-workspace snapshot's fingerprint is
-    OAuth-blind and can outlive a disconnect/reconnect. The tier is chosen by
-    which one HAS a matching snapshot, before any status filter, so a rejected
-    user-tier row never falls through to a stale workspace one.
+    OAuth-blind and can outlive a disconnect/reconnect. A tier the row is
+    missing from, or whose row ``accept`` rejects, falls through to the next:
+    every remote row now gets a user-tier row from the host-side probe, so a
+    host-side failure must not hide the answer the sandbox wrote. An OAuth
+    server is the exception -- its user tier is the whole answer, since a row
+    there says the token is dead and the snapshot beneath it was taken before
+    the connection existed.
 
     Rows are supplied by the caller (each lane already reads what it needs);
     the index owns only the acceptance rule.
@@ -109,20 +113,26 @@ class ToolSnapshotIndex:
     ) -> dict[str, Any] | None:
         """The current-config snapshot for ``server``, or None.
 
-        ``accept`` further filters the row the tier precedence selected (e.g.
-        ok-only, or a freshness window); a rejected row reads as no snapshot.
+        ``accept`` further filters each tier's row (e.g. ok-only, or a
+        freshness window); a tier whose row it rejects is passed over for the
+        next one, except on an OAuth server, which reads its user tier alone.
         """
         key = (server.name, mcp_discovery_fingerprint(server))
-        tiers = (
-            (self._user, self._workspace)
-            if getattr(server, "source", None) == "user"
-            else (self._workspace,)
-        )
+        if getattr(server, "source", None) != "user":
+            tiers = (self._workspace,)
+        elif getattr(server, "oauth_connection_id", None):
+            # The sandbox never holds this server's credential, so its
+            # snapshot predates the connection (the fingerprint is
+            # OAuth-exempt, so it still matches) and must not stand in for a
+            # host-side row saying the token no longer works.
+            tiers = (self._user,)
+        else:
+            tiers = (self._user, self._workspace)
         for tier in tiers:
             row = tier.get(key)
-            if row is None:
+            if row is None or (accept is not None and not accept(row)):
                 continue
-            return row if (accept is None or accept(row)) else None
+            return row
         return None
 
     def ok(self, server: MCPServerConfig) -> dict[str, Any] | None:

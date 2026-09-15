@@ -1,4 +1,5 @@
-"""Tests for the user MCP catalog router (app/mcp_catalog.py).
+"""Tests for the user MCP catalog router (app/mcp_catalog.py) and the three
+routers that share its prefix (builtins, brokerages, icons).
 
 Covers list/get/create/update/delete, 409 on duplicate, 404 on missing, the
 name-mismatch guard on PUT, and that the owner-scoped responses echo the stored
@@ -45,11 +46,26 @@ def _row(name="remote_server", **overrides):
     return base
 
 
+@pytest.fixture(autouse=True)
+def _probe_kick_always_claimed():
+    """Background discovery claims its kick in Postgres before dialling, and
+    these tests have no pool. The throttle itself is pinned in
+    test_mcp_discovery_schedule.py."""
+    with patch(
+        "src.server.services.mcp_oauth.discovery.claim_probe_kick",
+        new=AsyncMock(return_value=True),
+    ):
+        yield
+
+
 @pytest_asyncio.fixture
 async def client():
+    from src.server.app.mcp_brokerages import router as brokerages
+    from src.server.app.mcp_builtin import router as builtin
     from src.server.app.mcp_catalog import router
+    from src.server.app.mcp_icons import router as icons
 
-    app = create_test_app(router)
+    app = create_test_app(router, builtin, brokerages, icons)
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as c:
@@ -510,7 +526,7 @@ async def _drain_rediscovery_tasks():
 
     from src.server.services.mcp_oauth import discovery as mc
 
-    pending = list(mc._rediscovery_tasks)
+    pending = list(mc._discovery_tasks)
     if pending:
         await asyncio.gather(*pending)
     for _ in range(3):
@@ -554,7 +570,7 @@ async def test_update_rediscovers_when_fingerprint_moves_and_consent_stays(clien
             new=AsyncMock(return_value=connection),
         ),
         patch(
-            "src.server.services.mcp_oauth.discovery.refresh_user_tool_schemas",
+            "src.server.services.mcp_oauth.discovery.discover_catalog_server",
             new=refresh,
         ),
         patch(
@@ -581,7 +597,7 @@ async def test_update_rediscovers_when_fingerprint_moves_and_consent_stays(clien
 async def test_update_skips_rediscovery_when_fingerprint_is_unchanged(client):
     """Prompt-only edits (description) leave the fingerprint alone — the cached
     snapshot still serves, so no discovery round-trip is spent."""
-    refresh = AsyncMock()
+    refresh = AsyncMock(return_value={"status": "ok"})
     connection = _connected()
     with (
         patch(
@@ -601,7 +617,7 @@ async def test_update_skips_rediscovery_when_fingerprint_is_unchanged(client):
             new=AsyncMock(return_value=connection),
         ),
         patch(
-            "src.server.services.mcp_oauth.discovery.refresh_user_tool_schemas",
+            "src.server.services.mcp_oauth.discovery.discover_catalog_server",
             new=refresh,
         ),
     ):
@@ -645,7 +661,7 @@ async def test_update_skips_rediscovery_when_the_edit_revoked_consent(client):
             new=AsyncMock(return_value=True),
         ),
         patch(
-            "src.server.services.mcp_oauth.discovery.refresh_user_tool_schemas",
+            "src.server.services.mcp_oauth.discovery.discover_catalog_server",
             new=refresh,
         ),
     ):
@@ -690,7 +706,7 @@ async def test_update_rediscovery_swallows_an_unusable_connection(client):
             new=AsyncMock(return_value=connection),
         ),
         patch(
-            "src.server.services.mcp_oauth.discovery.refresh_user_tool_schemas",
+            "src.server.services.mcp_oauth.discovery.discover_catalog_server",
             new=refresh,
         ),
         patch(
@@ -802,7 +818,8 @@ async def test_delete_happy_and_404(client):
 
 
 @asynccontextmanager
-async def _toggle_patches(*, connection, row=True):
+async def _toggle_patches(*, connection, row=None):
+    row = {"name": "remote_server", "transport": "http", "enabled": True} if row is None else row
     revoke = AsyncMock()
     with (
         patch(
@@ -972,6 +989,148 @@ def test_catalog_fields_match_the_writable_column_set():
 
 
 # ---------------------------------------------------------------------------
+# POST probe: the add form's answer, computed once on the host
+# ---------------------------------------------------------------------------
+
+
+def _probe_patches(outcome=None, secrets=None):
+    """Patch the caller's vault and the socket, but nothing between them.
+
+    The seam is the dial itself, so the gate, the ``sent_credential`` flag the
+    verdict turns on, and the route's own header resolution all still run.
+    """
+    from src.server.services.mcp_probe import ProbeOutcome
+
+    probe = AsyncMock(
+        return_value=outcome or ProbeOutcome(ok=True, auth="none", tools=[])
+    )
+    stack = ExitStack()
+    stack.enter_context(
+        patch(
+            "src.server.app.mcp_catalog.effective_secrets_for_probe",
+            new=AsyncMock(return_value=secrets or {}),
+        )
+    )
+    stack.enter_context(patch("src.server.services.mcp_probe._probe", new=probe))
+    return stack, probe
+
+
+@pytest.mark.asyncio
+async def test_probe_answers_with_the_full_verdict_shape(client):
+    """The wire contract the add form and the catalog row both read. Every key
+    is present on every answer, so a client never has to tell "absent" from
+    "false"."""
+    stack, _probe = _probe_patches()
+    with stack:
+        resp = await client.post(
+            "/api/v1/mcp/servers/probe", json={"url": "https://api.example.com/mcp"}
+        )
+
+    assert resp.status_code == 200
+    assert set(resp.json()) == {
+        "verdict", "tools", "server_info", "error",
+        "http_status", "missing_secrets", "probed_at",
+    }
+
+
+@pytest.mark.asyncio
+async def test_probe_previews_the_tools_it_saw(client):
+    from src.server.services.mcp_probe import ProbeOutcome
+
+    stack, _probe = _probe_patches(
+        ProbeOutcome(
+            ok=True, auth="none",
+            tools=[{"name": "quote", "description": "One quote", "input_schema": {}}],
+        )
+    )
+    with stack:
+        resp = await client.post(
+            "/api/v1/mcp/servers/probe", json={"url": "https://api.example.com/mcp"}
+        )
+
+    body = resp.json()
+    assert body["verdict"] == "ok"
+    assert body["tools"] == [{"name": "quote", "description": "One quote"}]
+
+
+@pytest.mark.asyncio
+async def test_probe_tells_a_rejected_key_from_an_unconnected_server(client):
+    """Both are a bare 401 on the wire. Only this process knows a credential was
+    sent, which is why the verdict is computed here and not in the client."""
+    from src.server.services.mcp_probe import ProbeOutcome
+
+    challenge = ProbeOutcome(ok=False, auth="credential", http_status=401)
+
+    stack, _ = _probe_patches(challenge)
+    with stack:
+        anonymous = await client.post(
+            "/api/v1/mcp/servers/probe", json={"url": "https://api.example.com/mcp"}
+        )
+    stack, _ = _probe_patches(challenge, secrets={"API_KEY": "sk-live"})
+    with stack:
+        credentialed = await client.post(
+            "/api/v1/mcp/servers/probe",
+            json={
+                "url": "https://api.example.com/mcp",
+                "headers": {"Authorization": "Bearer ${vault:API_KEY}"},
+            },
+        )
+
+    assert anonymous.json()["verdict"] == "needs_credential"
+    assert credentialed.json()["verdict"] == "credential_rejected"
+
+
+@pytest.mark.asyncio
+async def test_probe_resolves_a_vault_ref_before_dialling(client):
+    stack, probe = _probe_patches(secrets={"API_KEY": "sk-live"})
+    with stack:
+        await client.post(
+            "/api/v1/mcp/servers/probe",
+            json={
+                "url": "https://api.example.com/mcp",
+                "headers": {"Authorization": "Bearer ${vault:API_KEY}"},
+            },
+        )
+
+    assert probe.await_args.args[1] == {"Authorization": "Bearer sk-live"}
+
+
+@pytest.mark.asyncio
+async def test_probe_names_a_missing_secret_instead_of_dialling(client):
+    """Sending the literal ``${vault:...}`` string would come back a rejected
+    key, so a ref with no value is answered without a round trip."""
+    stack, probe = _probe_patches()
+    with stack:
+        resp = await client.post(
+            "/api/v1/mcp/servers/probe",
+            json={
+                "url": "https://api.example.com/mcp",
+                "headers": {"Authorization": "Bearer ${vault:API_KEY}"},
+            },
+        )
+
+    body = resp.json()
+    assert body["verdict"] == "missing_secrets"
+    assert body["missing_secrets"] == ["API_KEY"]
+    assert probe.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_probe_refuses_a_transport(client):
+    """Dropped from the input: the probe dials streamable HTTP whatever the
+    form intends to save, so a client still sending one is describing a choice
+    this endpoint does not have."""
+    stack, _probe = _probe_patches()
+    with stack:
+        resp = await client.post(
+            "/api/v1/mcp/servers/probe",
+            json={"url": "https://api.example.com/mcp", "transport": "sse"},
+        )
+
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # Brokerages — shipped connectors, off until the user turns one on
 # ---------------------------------------------------------------------------
 
@@ -1017,10 +1176,10 @@ async def test_enabling_an_unconfigured_brokerage_creates_it_and_switches_it_on(
     async with _toggle_patches(connection=None, row=live):
         with (
             patch(
-                "src.server.app.mcp_catalog.get_catalog_server",
+                "src.server.app.mcp_brokerages.get_catalog_server",
                 new=AsyncMock(return_value=None),
             ),
-            patch("src.server.app.mcp_catalog.create_catalog_server", new=created),
+            patch("src.server.app.mcp_brokerages.create_catalog_server", new=created),
         ):
             resp = await client.patch(
                 "/api/v1/mcp/brokerages/robinhood/enabled", json={"enabled": True}
@@ -1048,11 +1207,11 @@ async def test_enabling_a_configured_brokerage_never_rewrites_it(client):
     created = AsyncMock()
     with (
         patch(
-            "src.server.app.mcp_catalog.get_catalog_server",
+            "src.server.app.mcp_brokerages.get_catalog_server",
             new=AsyncMock(return_value=stored),
         ),
         patch("src.server.app.mcp_catalog.set_catalog_server_enabled", new=toggled),
-        patch("src.server.app.mcp_catalog.create_catalog_server", new=created),
+        patch("src.server.app.mcp_brokerages.create_catalog_server", new=created),
     ):
         resp = await client.patch(
             "/api/v1/mcp/brokerages/robinhood/enabled", json={"enabled": True}
@@ -1069,7 +1228,7 @@ async def test_disabling_a_configured_brokerage_goes_through_the_same_route(clie
     stored = _row(name="ibkr")
     async with _toggle_patches(connection=None, row={**stored, "enabled": False}):
         with patch(
-            "src.server.app.mcp_catalog.get_catalog_server",
+            "src.server.app.mcp_brokerages.get_catalog_server",
             new=AsyncMock(return_value=stored),
         ):
             resp = await client.patch(
@@ -1094,7 +1253,7 @@ async def test_disabling_a_brokerage_revokes_its_grants(client):
         connection=connection, row={**stored, "enabled": False}
     ) as revoke:
         with patch(
-            "src.server.app.mcp_catalog.get_catalog_server",
+            "src.server.app.mcp_brokerages.get_catalog_server",
             new=AsyncMock(return_value=stored),
         ):
             resp = await client.patch(
@@ -1111,10 +1270,10 @@ async def test_disabling_one_that_was_never_configured_creates_nothing(client):
     created = AsyncMock()
     with (
         patch(
-            "src.server.app.mcp_catalog.get_catalog_server",
+            "src.server.app.mcp_brokerages.get_catalog_server",
             new=AsyncMock(return_value=None),
         ),
-        patch("src.server.app.mcp_catalog.create_catalog_server", new=created),
+        patch("src.server.app.mcp_brokerages.create_catalog_server", new=created),
     ):
         resp = await client.patch(
             "/api/v1/mcp/brokerages/ibkr/enabled", json={"enabled": False}
@@ -1194,7 +1353,7 @@ async def test_a_plugins_row_is_not_adopted_as_a_brokerage(client):
     toggled = AsyncMock()
     with (
         patch(
-            "src.server.app.mcp_catalog.get_catalog_server",
+            "src.server.app.mcp_brokerages.get_catalog_server",
             new=AsyncMock(return_value=stored),
         ),
         patch("src.server.app.mcp_catalog.set_catalog_server_enabled", new=toggled),
@@ -1212,7 +1371,7 @@ async def test_unknown_brokerage_is_not_a_way_to_create_a_row(client):
     """The name is looked up in the shipped registry before anything else, so
     the route cannot be used to write an arbitrary server."""
     created = AsyncMock()
-    with patch("src.server.app.mcp_catalog.create_catalog_server", new=created):
+    with patch("src.server.app.mcp_brokerages.create_catalog_server", new=created):
         resp = await client.patch(
             "/api/v1/mcp/brokerages/not_a_broker/enabled", json={"enabled": True}
         )
@@ -1225,11 +1384,11 @@ async def test_brokerage_create_reports_the_catalog_cap(client):
     """The cap is the DB layer's to enforce; this route must not swallow it."""
     with (
         patch(
-            "src.server.app.mcp_catalog.get_catalog_server",
+            "src.server.app.mcp_brokerages.get_catalog_server",
             new=AsyncMock(return_value=None),
         ),
         patch(
-            "src.server.app.mcp_catalog.create_catalog_server",
+            "src.server.app.mcp_brokerages.create_catalog_server",
             new=AsyncMock(side_effect=ValueError("Maximum of 50 ... reached")),
         ),
     ):
@@ -1274,11 +1433,11 @@ class TestBuiltinToolsSeparateEmptyFromUnknown:
 
     @pytest.mark.asyncio
     async def test_a_connected_builtin_reports_its_tools(self):
-        from src.server.app.mcp_catalog import get_builtin_server_tools
+        from src.server.app.mcp_builtin import get_builtin_server_tools
 
         tool = SimpleNamespace(name="quote", description="d", input_schema={})
         registry = self._registry(price=SimpleNamespace(tools=[tool]))
-        with patch("src.server.app.mcp_catalog.builtin_names", return_value={"price"}), \
+        with patch("src.server.app.mcp_builtin.builtin_names", return_value={"price"}), \
              patch("ptc_agent.core.mcp_registry.get_global_registry", return_value=registry):
             out = await get_builtin_server_tools("price", "u-1")
         assert out["connected"] is True
@@ -1288,10 +1447,10 @@ class TestBuiltinToolsSeparateEmptyFromUnknown:
     async def test_a_connected_builtin_with_no_tools_is_still_connected(self):
         # The genuinely empty case. It has to stay distinguishable from the one
         # below or the fix is pointless.
-        from src.server.app.mcp_catalog import get_builtin_server_tools
+        from src.server.app.mcp_builtin import get_builtin_server_tools
 
         registry = self._registry(price=SimpleNamespace(tools=[]))
-        with patch("src.server.app.mcp_catalog.builtin_names", return_value={"price"}), \
+        with patch("src.server.app.mcp_builtin.builtin_names", return_value={"price"}), \
              patch("ptc_agent.core.mcp_registry.get_global_registry", return_value=registry):
             out = await get_builtin_server_tools("price", "u-1")
         assert out["connected"] is True
@@ -1299,11 +1458,11 @@ class TestBuiltinToolsSeparateEmptyFromUnknown:
 
     @pytest.mark.asyncio
     async def test_a_builtin_this_worker_never_connected_says_so(self):
-        from src.server.app.mcp_catalog import get_builtin_server_tools
+        from src.server.app.mcp_builtin import get_builtin_server_tools
 
         # Configured (so not a 404) but absent from the registry: this is what
         # a dropped connector looks like from here.
-        with patch("src.server.app.mcp_catalog.builtin_names", return_value={"price"}), \
+        with patch("src.server.app.mcp_builtin.builtin_names", return_value={"price"}), \
              patch("ptc_agent.core.mcp_registry.get_global_registry",
                    return_value=self._registry()):
             out = await get_builtin_server_tools("price", "u-1")
@@ -1312,9 +1471,9 @@ class TestBuiltinToolsSeparateEmptyFromUnknown:
 
     @pytest.mark.asyncio
     async def test_no_registry_at_all_is_also_unknown_not_empty(self):
-        from src.server.app.mcp_catalog import get_builtin_server_tools
+        from src.server.app.mcp_builtin import get_builtin_server_tools
 
-        with patch("src.server.app.mcp_catalog.builtin_names", return_value={"price"}), \
+        with patch("src.server.app.mcp_builtin.builtin_names", return_value={"price"}), \
              patch("ptc_agent.core.mcp_registry.get_global_registry", return_value=None):
             out = await get_builtin_server_tools("price", "u-1")
         assert out["connected"] is False
@@ -1323,9 +1482,9 @@ class TestBuiltinToolsSeparateEmptyFromUnknown:
     async def test_an_unknown_name_is_still_a_404(self):
         from fastapi import HTTPException
 
-        from src.server.app.mcp_catalog import get_builtin_server_tools
+        from src.server.app.mcp_builtin import get_builtin_server_tools
 
-        with patch("src.server.app.mcp_catalog.builtin_names", return_value={"price"}):
+        with patch("src.server.app.mcp_builtin.builtin_names", return_value={"price"}):
             with pytest.raises(HTTPException) as exc:
                 await get_builtin_server_tools("nope", "u-1")
         assert exc.value.status_code == 404
@@ -1343,9 +1502,9 @@ class TestCapabilitiesInForceAndCapabilitiesRemembered:
 
     @staticmethod
     def _decorate(status: str, granted):
-        from src.server.app.mcp_catalog import _decorated
+        from src.server.app.mcp_catalog import decorated
 
-        return _decorated(
+        return decorated(
             _row(), {"status": status, "granted_capabilities": granted}
         )
 
@@ -1379,10 +1538,10 @@ class TestCapabilitiesInForceAndCapabilitiesRemembered:
     def test_a_group_whose_requirement_was_declined_is_not_drawn_granted(self):
         """The badges read the grant, so it has to be the one the relay enforces:
         live orders stored without account access are refused, and drawn off."""
-        from src.server.app.mcp_catalog import _decorated
+        from src.server.app.mcp_catalog import decorated
         from src.server.services.brokerages import brokerage_by_name
 
-        response = _decorated(
+        response = decorated(
             _row(),
             {
                 "status": "connected",

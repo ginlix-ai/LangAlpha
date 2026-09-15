@@ -205,7 +205,19 @@ async def _commit_entry(
     Postgres owns the rollback: a vault cap, a duplicate, or a lost insert race
     aborts the whole entry, so there is no compensation to write (or to get
     wrong) on the way out.
+
+    The values are checked here rather than by the writers: an extracted
+    literal never passes through ``CreateSecretRequest``, and the model that
+    would have caught a pasted newline sees the ``${vault:NAME}`` ref that
+    replaced it.
     """
+    from src.server.models.vault import validate_secret_value
+
+    for secret in secrets:
+        try:
+            validate_secret_value(secret.value)
+        except ValueError as e:
+            raise ValueError(f"{secret.name}: {e}") from e
     try:
         async with get_db_connection() as conn:
             async with conn.transaction():

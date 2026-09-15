@@ -11,51 +11,35 @@ replaces the whole row and the edit form has to round-trip them.
 Endpoints (user-scoped):
 - GET    /api/v1/mcp/servers
 - POST   /api/v1/mcp/servers
+- POST   /api/v1/mcp/servers/probe
+- POST   /api/v1/mcp/servers/import
 - GET    /api/v1/mcp/servers/{name}
 - GET    /api/v1/mcp/servers/{name}/tools
 - PUT    /api/v1/mcp/servers/{name}
 - PATCH  /api/v1/mcp/servers/{name}/enabled
 - PATCH  /api/v1/mcp/servers/{name}/binding
 - DELETE /api/v1/mcp/servers/{name}
-- GET    /api/v1/mcp/builtin-servers
-- GET    /api/v1/mcp/builtin-servers/{name}/tools
-- PATCH  /api/v1/mcp/builtin-servers/{name}/enabled
-- GET    /api/v1/mcp/brokerages
-- PATCH  /api/v1/mcp/brokerages/{name}/enabled
-- GET    /api/v1/mcp/brokerages/{name}/icon
-- GET    /api/v1/mcp/server-icons/{handle}
+
+The rest of the ``/api/v1/mcp`` prefix is not the user catalog and lives with
+what it is about: ``mcp_builtin`` (this build's own servers), ``mcp_brokerages``
+(the shipped connectors) and ``mcp_icons`` (the marks servers declare).
 """
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Body, HTTPException, Response
+from fastapi import APIRouter, Body, HTTPException
 from pydantic import ValidationError
 
+from src.server.app.mcp_icons import icon_url
 from src.server.database.mcp_oauth import (
     SERVABLE,
     ConnectionStatus,
     get_connection,
     list_connections,
 )
-from src.server.services.brand_icons import (
-    icon_response,
-    icon_response_for_handle,
-    publish_icon_source,
-)
-from src.server.services.mcp_identity import icon_source
-from src.server.services.plugins.bundled import component_owners
-from src.server.services.brokerages import (
-    BROKERAGES,
-    Brokerage,
-    brokerage_by_name,
-)
-from src.server.services.mcp_config import builtin_names, reserved_catalog_names
-from src.server.database.account_disables import (
-    list_account_disables,
-    set_account_disable,
-)
+from src.server.services.mcp_config import reserved_catalog_names
 from src.server.database.mcp_servers import (
     MAX_CATALOG_SERVERS_PER_USER,
     create_catalog_server,
@@ -75,16 +59,14 @@ from src.server.database.user_vault_secrets import (
 )
 from src.server.models.mcp_server import (
     BindingInput,
-    BrokerageList,
-    BuiltinServer,
-    BuiltinServerList,
     CatalogServer,
     CatalogServerList,
     EnabledInput,
     McpServerInput,
+    ProbeInput,
+    ProbeResult,
     WorkspaceScopedServer,
     _format_validation_error,
-    brokerage_to_response,
     catalog_row_to_response,
     isolation_warnings,
     parse_mcp_servers_payload,
@@ -95,6 +77,17 @@ from src.server.services.mcp_catalog import (
     reject_reserved_catalog_name,
 )
 from src.server.services.mcp_import import ImportScope, run_mcp_import
+from src.server.services.mcp_oauth.discovery import (
+    REMOTE_TRANSPORTS,
+    resolve_header_refs,
+    schedule_catalog_discovery,
+)
+from src.server.services.mcp_probe import (
+    ProbeOutcome,
+    bounded_probe,
+    effective_secrets_for_probe,
+    probe_result,
+)
 from src.server.services.vault_invalidation import USER_TIER, after_secret_change
 from src.server.utils.api import CurrentUserId, handle_api_exceptions
 
@@ -102,11 +95,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/mcp", tags=["MCP Catalog"])
 
-async def _oauth_for_server(user_id: str, name: str) -> dict | None:
+async def oauth_for_server(user_id: str, name: str) -> dict | None:
     """One row's connection, for a response that is only ever about one row.
 
     Shaped like a row from the map below rather than handed over as the record
-    it arrives as, so :func:`_decorated` has one thing to read. Same swallow as
+    it arrives as, so :func:`decorated` has one thing to read. Same swallow as
     the map too: the connection is decoration here, and losing it must not fail
     the write that just succeeded.
     """
@@ -139,7 +132,7 @@ async def _oauth_by_server(user_id: str) -> dict[str, dict]:
         return {}
 
 
-def _decorated(row: dict, conn: dict | None, **extra) -> CatalogServer:
+def decorated(row: dict, conn: dict | None, **extra) -> CatalogServer:
     """A catalog response carrying what its OAuth connection knows.
 
     One helper for every path that has a connection in hand, because they all
@@ -217,13 +210,15 @@ def _has_direct_tools(row: dict, conn: dict | None, snapshot: dict | None) -> bo
 async def _snapshots_by_server(
     user_id: str, rows: list[dict]
 ) -> dict[str, dict]:
-    """server_name → its accepted snapshot, hash-gated to the CURRENT config.
+    """server_name → its snapshot under the CURRENT config, whatever its status.
 
-    Same acceptance rule as the workspace effective list (``ToolSnapshotIndex``
-    owns it), so everything read off it here matches what workspaces serve. The
-    whole snapshot rather than one derived number, because the tool count and
-    the server's own identity are two facts from the same accepted row and a
-    second reducer would re-litigate the acceptance rule to find them.
+    Hash-gated the way the workspace effective list is (``ToolSnapshotIndex``
+    owns the rule), so a stale config's row is never read. Every status rather
+    than only ``ok``: the probe's failure is a fact the page has to show, and
+    it lives on the same row as the tools would. Callers that want tools check
+    ``ok_snapshot`` themselves. The whole snapshot rather than one derived
+    number, because the tool count, the auth verdict and the server's own
+    identity are facts from the same row.
 
     Pure decoration: any failure degrades to no snapshots, never a 500.
     """
@@ -242,7 +237,7 @@ async def _snapshots_by_server(
     accepted: dict[str, dict] = {}
     for row in rows:
         try:
-            snapshot = index.ok(user_row_to_server_config(row))
+            snapshot = index.snapshot(user_row_to_server_config(row))
         except Exception:  # noqa: BLE001 — malformed row: just omit it
             continue
         if snapshot is not None:
@@ -250,13 +245,16 @@ async def _snapshots_by_server(
     return accepted
 
 
-async def _icon_url(server_info: dict | None) -> str | None:
-    """This origin's path to the mark a server's handshake named, if any."""
-    source = icon_source(server_info)
-    if source is None:
-        return None
-    handle = await publish_icon_source(source)
-    return None if handle is None else f"/api/v1/mcp/server-icons/{handle}"
+def _kick_unprobed(user_id: str, rows: list[dict], snapshots: dict[str, dict]) -> None:
+    """Self-heal: a remote row nothing has probed under its current config gets
+    its probe now. Rows from before host-side discovery covered them, and rows
+    whose kick was lost to a restart, both land here; the scheduler throttles
+    so a polling list is not a probe loop."""
+    for row in rows:
+        if row.get("transport") in REMOTE_TRANSPORTS and row["name"] not in snapshots:
+            schedule_catalog_discovery(
+                user_id, row["name"], reason="self-heal", throttle=True
+            )
 
 
 async def _oauth_headers_warning(user_id: str, server: McpServerInput) -> str | None:
@@ -304,19 +302,18 @@ async def list_servers(
     rows = await list_catalog_servers(user_id)
     oauth = await _oauth_by_server(user_id)
     snapshots = await _snapshots_by_server(user_id, rows)
+    _kick_unprobed(user_id, rows, snapshots)
     servers = []
     for r in rows:
         snapshot = snapshots.get(r["name"])
         meta = (snapshot or {}).get("observed_meta") or {}
         servers.append(
-            _decorated(
+            decorated(
                 r,
                 oauth.get(r["name"]),
-                tool_count=(
-                    len(snapshot.get("tools") or []) if snapshot is not None else None
-                ),
-                icon_url=await _icon_url(meta.get("server_info")),
+                icon_url=await icon_url(meta.get("server_info")),
                 has_direct_tools=_has_direct_tools(r, oauth.get(r["name"]), snapshot),
+                snapshot=snapshot,
             )
         )
     workspace_servers: list[WorkspaceScopedServer] = []
@@ -366,11 +363,40 @@ async def create_server(
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    # The probe runs now rather than at the user's next turn: the row's tool
+    # count and its auth verdict are what the page shows next.
+    schedule_catalog_discovery(user_id, server.name, reason="create")
     response = catalog_row_to_response(row)
     # A brand-new name has no connection, but a recreate over a name whose
     # connection row outlived the old catalog entry does.
     response.warnings = await _write_warnings(user_id, server)
     return response
+
+
+@router.post("/servers/probe")
+@handle_api_exceptions("probe MCP server", logger)
+async def probe_server(body: ProbeInput, user_id: CurrentUserId) -> ProbeResult:
+    """Ask a remote address what it offers, with the headers the form holds,
+    before anything is saved.
+
+    Declared before ``/servers/{name}`` so the literal path wins the match.
+    Nothing is written: the form shows the verdict and the save that follows
+    schedules the discovery that caches it.
+    """
+    headers, missing = resolve_header_refs(
+        body.headers, await effective_secrets_for_probe(user_id, body.workspace_id)
+    )
+    if missing:
+        return probe_result(
+            ProbeOutcome(
+                ok=False, auth="credential",
+                error="missing vault secret(s): " + ", ".join(missing),
+            ),
+            missing_secrets=missing,
+        )
+    return probe_result(
+        await bounded_probe(body.url, headers), include_tools=True
+    )
 
 
 @router.get("/servers/{name}")
@@ -380,7 +406,8 @@ async def get_server(name: str, user_id: CurrentUserId) -> CatalogServer:
     if not row:
         raise HTTPException(status_code=404, detail="MCP server not found")
     oauth = await _oauth_by_server(user_id)
-    return _decorated(row, oauth.get(name))
+    snapshot = (await _snapshots_by_server(user_id, [row])).get(name)
+    return decorated(row, oauth.get(name), snapshot=snapshot)
 
 
 @router.get("/servers/{name}/tools")
@@ -549,6 +576,11 @@ async def import_servers(
     # path purges its snapshot, bumps the version, or pushes to a live sandbox.
     for name in dict.fromkeys(report.secrets_created):
         await after_secret_change(USER_TIER, user_id, name, user_id=user_id)
+    # After the secrets landed, so a row whose header refs one of them probes
+    # with the value rather than a missing-secret error.
+    for result in report.results:
+        if result.get("status") == "created":
+            schedule_catalog_discovery(user_id, result["name"], reason="import")
 
     return {
         "results": report.results,
@@ -582,7 +614,7 @@ async def _relay_execution_warning(user_id: str, name: str) -> str | None:
     return relay_reachability_warning(provider, effective_relay_base_url(provider))
 
 
-async def _apply_catalog_enabled(
+async def apply_catalog_enabled(
     user_id: str, name: str, enabled: bool
 ) -> tuple[dict | None, str | None]:
     """The one place a *switch* flips a catalog row. Returns the row and
@@ -740,7 +772,7 @@ async def set_binding(
         if connection is not None:
             await apply_consent_to_active_grants(connection.connection_id, conn=db)
     oauth = await _oauth_by_server(user_id)
-    return _decorated(updated, oauth.get(name))
+    return decorated(updated, oauth.get(name))
 
 
 @router.patch("/servers/{name}/enabled")
@@ -749,9 +781,16 @@ async def set_enabled(
     name: str, body: EnabledInput, user_id: CurrentUserId
 ) -> dict:
     """Flip a user server live/inert."""
-    row, warning = await _apply_catalog_enabled(user_id, name, body.enabled)
+    row, warning = await apply_catalog_enabled(user_id, name, body.enabled)
     if row is None:
         raise HTTPException(status_code=404, detail="MCP server not found")
+    if body.enabled and row.get("transport") in REMOTE_TRANSPORTS:
+        # A row going live is about to be inherited by every workspace; the
+        # snapshot under its current config, if any, is reused, and a missing
+        # one is fetched now. Throttled: the toggle is often flipped twice.
+        snapshot = (await _snapshots_by_server(user_id, [row])).get(name)
+        if snapshot is None:
+            schedule_catalog_discovery(user_id, name, reason="enable", throttle=True)
     out: dict = {"name": name, "enabled": body.enabled}
     if warning:
         out["warnings"] = [warning]
@@ -771,268 +810,3 @@ async def delete_server(name: str, user_id: CurrentUserId) -> dict:
         raise HTTPException(status_code=404, detail="MCP server not found")
     return {"ok": True}
 
-
-# ---------------------------------------------------------------------------
-# Builtins — process-global servers with a per-user account-wide toggle
-# ---------------------------------------------------------------------------
-
-
-@router.get("/builtin-servers")
-@handle_api_exceptions("list builtin MCP servers", logger)
-async def list_builtin_servers(
-    user_id: CurrentUserId, all_scopes: bool = False
-) -> BuiltinServerList:
-    """The process-global builtins with this user's account-wide enabled state.
-
-    A separate route from the catalog list on purpose: builtins are config,
-    not rows, and the catalog wire shape stays untouched. ``all_scopes`` adds
-    each builtin's per-workspace disable-markers for the "active in" checklist.
-    """
-    from src.server.app import setup
-
-    if setup.agent_config is None:
-        # Startup race: report an empty list rather than 500.
-        return BuiltinServerList(servers=[])
-    from ptc_agent.core.mcp_registry import get_global_registry
-
-    # Provenance, not state: a server whose bundle is off keeps its own
-    # enabled flag and travels with ``plugin_enabled=False``, the same way a
-    # catalog row explains a plugin holding it down. Both kinds, one read.
-    disables = await list_account_disables(user_id)
-    owners = component_owners().servers
-    registry = get_global_registry()
-    connectors = registry.connectors if registry else {}
-    marked: dict[str, list[str]] = {}
-    if all_scopes:
-        for m in await list_scope_markers_for_user(user_id):
-            if m["source"] == "builtin":
-                marked.setdefault(m["name"], []).append(m["workspace_id"])
-    servers = []
-    for s in setup.agent_config.mcp.servers:
-        if not getattr(s, "enabled", True):
-            continue
-        connector = connectors.get(s.name)
-        owner = owners.get(s.name)
-        servers.append(
-            BuiltinServer(
-                name=s.name,
-                description=s.description or "",
-                transport=s.transport,
-                enabled=s.name not in disables.servers,
-                icon_url=await _icon_url(
-                    connector.server_info if connector else None
-                ),
-                plugin_name=owner,
-                plugin_enabled=(
-                    owner not in disables.bundles if owner is not None else None
-                ),
-                disabled_workspace_ids=sorted(marked.get(s.name, [])),
-            )
-        )
-    return BuiltinServerList(servers=servers)
-
-
-@router.patch("/builtin-servers/{name}/enabled")
-@handle_api_exceptions("toggle builtin MCP server", logger)
-async def set_builtin_enabled(
-    name: str, body: EnabledInput, user_id: CurrentUserId
-) -> dict:
-    """Account-wide toggle for a builtin — applies to every workspace of the
-    user, and no workspace marker can re-enable it. The DB layer fans the
-    ``mcp_config_version`` bump out in the same transaction."""
-    if name not in builtin_names():
-        raise HTTPException(status_code=404, detail="Unknown builtin server")
-    await set_account_disable(user_id, "server", name, disabled=not body.enabled)
-    return {"name": name, "enabled": body.enabled}
-
-
-@router.get("/builtin-servers/{name}/tools")
-@handle_api_exceptions("list builtin MCP server tools", logger)
-async def get_builtin_server_tools(name: str, user_id: CurrentUserId) -> dict:
-    """The tools a builtin reported, read from the frozen process registry.
-
-    A separate route from the catalog's tool snapshot because the two are
-    discovered by different things at different times. A catalog server is the
-    user's, and it is discovered when they add or refresh it, so its schemas
-    live in their rows. A builtin is config: this process connected to it at
-    startup and froze what it reported, which is the same answer for every
-    user and is already in memory here.
-
-    ``connected`` is the field that keeps this honest. A server whose startup
-    connect failed is dropped from the registry and never retried, because the
-    snapshot is frozen for the life of the process, so this worker has no
-    answer for it while its siblings answer normally. Reporting that as an
-    empty tool list would state as fact something only this process believes;
-    the caller is told the difference and says so.
-    """
-    if name not in builtin_names():
-        raise HTTPException(status_code=404, detail="Unknown builtin server")
-    from ptc_agent.core.mcp_registry import get_global_registry
-
-    registry = get_global_registry()
-    connector = registry.connectors.get(name) if registry else None
-    return {
-        "server_name": name,
-        "connected": connector is not None,
-        "tools": [
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.input_schema,
-            }
-            for tool in (connector.tools if connector else [])
-        ],
-        # The catalog's field, always null here: a builtin is discovered once
-        # per process rather than at a moment the user did something, so a
-        # timestamp would date this worker's boot, not the server's schemas.
-        "discovered_at": None,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Brokerages — shipped connectors, off until the user turns one on
-# ---------------------------------------------------------------------------
-
-
-@router.get("/brokerages")
-@handle_api_exceptions("list brokerage connectors", logger)
-async def list_brokerages(user_id: CurrentUserId) -> BrokerageList:
-    """The brokerage connectors this build ships.
-
-    Static and user-independent: whether one is configured is answered by the
-    catalog list, which the page already holds and joins on ``name``. Behind
-    the same auth as the rest of the router regardless: its only reader is the
-    page, which is holding a token already, so there is nothing an exception
-    here would buy.
-    """
-    return BrokerageList(brokerages=[brokerage_to_response(b) for b in BROKERAGES])
-
-
-async def _create_brokerage_row(user_id: str, brokerage: Brokerage) -> None:
-    """Bring a shipped brokerage into the user's catalog, inert.
-
-    Inert and then toggled, never created live: the switch is the only thing
-    that should decide a row's enabled state, and it is the one that already
-    knows what each direction owes an OAuth connection.
-    """
-    if brokerage.name in builtin_names():
-        raise HTTPException(
-            status_code=409,
-            detail=f"{brokerage.name!r} collides with a built-in server name",
-        )
-    try:
-        # Through the same validator every user-written row passes, so our own
-        # definition cannot be the one payload that skips the URL policy. Its
-        # ValidationError is a ValueError, so it answers here rather than
-        # escaping the decorator as an untyped 500.
-        server = McpServerInput(
-            name=brokerage.name,
-            transport="http",
-            url=brokerage.url,
-            description=brokerage.description,
-        )
-        await create_catalog_server(user_id, server.name, **server.to_catalog_fields())
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    logger.info(
-        "[mcp_catalog] brokerage %s configured for user %s", brokerage.name, user_id
-    )
-
-
-@router.patch("/brokerages/{name}/enabled")
-@handle_api_exceptions("toggle brokerage connector", logger)
-async def set_brokerage_enabled(
-    name: str, body: EnabledInput, user_id: CurrentUserId
-) -> CatalogServer:
-    """Turn a shipped brokerage on or off, creating its row the first time.
-
-    One route for both, so the page never has to know whether a row exists yet
-    — which also keeps it from being the thing that chooses the endpoint URL.
-
-    An existing row is toggled and never rewritten. Once it is the user's, its
-    URL is theirs to edit, and a row they built themselves under this name is
-    still theirs; silently restoring our address on every enable would undo a
-    deliberate edit at the moment they were only reaching for the switch.
-    """
-    brokerage = brokerage_by_name(name)
-    if brokerage is None:
-        raise HTTPException(status_code=404, detail="Unknown brokerage")
-
-    existing = await get_catalog_server(user_id, name)
-    # A plugin-owned row under a brokerage name is not the user's own edit, and
-    # this route would adopt it and hand it the vendor's identity: the tab joins
-    # by name, so it would be presented as this broker while Connect went to
-    # whatever address the plugin chose. New installs cannot claim these names
-    # any more; one installed before they were reserved still can, so refuse it
-    # here rather than trusting that no such row exists. The row stays usable
-    # on the Connectors tab, under the plugin that owns it.
-    if existing and existing.get("plugin_id"):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"{name!r} is a server installed by a plugin, so it cannot be "
-                "managed as a brokerage connector. Open it on the Connectors tab."
-            ),
-        )
-
-    if existing is None:
-        if not body.enabled:
-            raise HTTPException(
-                status_code=404,
-                detail=f"{name!r} is not configured, so there is nothing to disable",
-            )
-        await _create_brokerage_row(user_id, brokerage)
-
-    # The same apply every other switch on this page goes through. These are the
-    # rows that can place orders, so a weaker disable than the server beside them
-    # is the last thing they should have.
-    row, warning = await _apply_catalog_enabled(user_id, name, body.enabled)
-    if row is None:
-        # Deleted between the read and the write.
-        raise HTTPException(status_code=404, detail="MCP server not found")
-
-    # A recreate over a name whose OAuth connection outlived the old row is
-    # already connected, so read the status rather than assuming none. One row,
-    # so one lookup: listing every connection to decorate a single response is
-    # a second round trip that answers the same question.
-    response = _decorated(row, await _oauth_for_server(user_id, name))
-    if warning:
-        response.warnings = [warning]
-    return response
-
-
-@router.get("/server-icons/{handle}")
-async def get_server_icon(handle: str) -> Response:
-    """The mark an MCP server declared for itself, proxied.
-
-    Unauthenticated for the same reason the brokerage route is: an ``<img>``
-    cannot carry a bearer token, and there is nothing here to authenticate
-    anyway. The handle is the whole access control. It is minted only while
-    listing a user's own servers, so the set of resolvable sources is exactly
-    the set some user's server declared, and a route that took the URL outright
-    would fetch whatever any caller named.
-
-    What comes back is bytes we fetched, never a redirect to the server's own
-    address: resolving on the host means one fetch serves everyone, instead of
-    every render of the page telling a third party who is looking.
-    """
-    return await icon_response_for_handle(handle)
-
-
-@router.get("/brokerages/{name}/icon")
-async def get_brokerage_icon(name: str) -> Response:
-    """The broker's own logo, proxied from their site.
-
-    Unauthenticated because it has nothing to authenticate: the only input is
-    a name this build ships, so the answer is the same public logo for every
-    caller and no user's configuration is read to produce it. Serving it under
-    the user's bearer token was never an option anyway — an ``<img>`` cannot
-    send one, and routing brand art through a fetch-to-blob just to carry a
-    credential that guards nothing is machinery for its own sake.
-
-    404 is a normal answer, not an error: a vendor may simply have no usable
-    mark, and the row draws its monogram instead. It carries a cache header so
-    a page full of rows does not re-ask on every render.
-    """
-    brokerage = brokerage_by_name(name)
-    return await icon_response(brokerage.site if brokerage else None)

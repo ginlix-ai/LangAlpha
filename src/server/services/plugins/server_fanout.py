@@ -8,7 +8,9 @@ sse entries are held back rather than installed — they are probed and
 reported ``upgradable`` for the wizard's consent step.
 """
 
+import asyncio
 import logging
+from dataclasses import dataclass
 
 from pydantic import ValidationError
 
@@ -33,6 +35,61 @@ from src.server.services.plugins.mcp import McpEntryPlan
 
 logger = logging.getLogger(__name__)
 
+# One package decides how many endpoints get probed, and mcp.json puts no
+# ceiling on its entry count. The probe gate (``services/mcp_probe._gate``,
+# shared with every other caller on this worker) bounds the sockets but not
+# the clock: 10,000 stalling entries a handful at a time is hours of held
+# request. This cap is what bounds the phase; with the gate to itself that is
+# a few probe timeouts, and contention from other callers stretches it, which
+# is the trade the shared gate makes for never opening more sockets than it.
+MAX_PROBED_ENTRIES = 32
+
+
+@dataclass(frozen=True)
+class _SseProbe:
+    """Whether one held-back sse endpoint answers streamable HTTP."""
+
+    ok: bool
+    detail: str = ""
+
+
+async def _probe_sse_entries(plans: list[McpEntryPlan]) -> dict[str, _SseProbe]:
+    """Probe the held-back sse endpoints, keyed by mcp.json entry key.
+
+    An auth challenge counts as success: a server that asks for a credential
+    has proved it speaks streamable HTTP, and supplying one is the connector
+    flow's job rather than the probe's. Entries past the cap come back not-ok
+    with the reason rather than dropped, so the caller still reports them as
+    the ordinary un-upgradable sse entries an unprobed one is.
+    """
+    from src.server.services.mcp_probe import bounded_probe
+
+    async def one(plan: McpEntryPlan) -> tuple[str, _SseProbe]:
+        outcome = await bounded_probe(plan.config["url"], {})
+        if outcome.ok:
+            return plan.key, _SseProbe(True)
+        if outcome.auth in ("credential", "oauth"):
+            return plan.key, _SseProbe(
+                True,
+                "endpoint requires authentication (streamable HTTP confirmed)",
+            )
+        logger.info(
+            "[plugins] sse upgrade probe failed for %s: %s",
+            plan.config["url"], outcome.error,
+        )
+        return plan.key, _SseProbe(False, outcome.error)
+
+    probed = dict(
+        await asyncio.gather(*(one(p) for p in plans[:MAX_PROBED_ENTRIES]))
+    )
+    for plan in plans[MAX_PROBED_ENTRIES:]:
+        probed[plan.key] = _SseProbe(
+            False,
+            "not probed: the package declares more than "
+            f"{MAX_PROBED_ENTRIES} legacy sse entries",
+        )
+    return probed
+
 
 def _entry_warnings(plan: McpEntryPlan) -> list[str]:
     """Isolation nudges for an installed entry; policy-only, never blocking."""
@@ -55,16 +112,7 @@ async def fan_out_servers(
     sse_plans = [
         p for p in plans if p.skip_code is None and p.transport == "sse"
     ]
-    probed = {}
-    if sse_plans:
-        from src.server.services.plugins.probe import probe_all
-
-        probed = {
-            r.key: r
-            for r in await probe_all(
-                [(p.key, p.config["url"]) for p in sse_plans]
-            )
-        }
+    probed = await _probe_sse_entries(sse_plans) if sse_plans else {}
     for plan in plans:
         report.diagnostics.extend(plan.diagnostics)
         if plan.skip_code is not None:

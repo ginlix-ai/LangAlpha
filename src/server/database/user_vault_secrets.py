@@ -6,6 +6,7 @@ parameterized by the tier descriptor below. User secrets are merged with
 workspace secrets at sandbox push, workspace winning on name collision.
 """
 
+from collections.abc import Collection
 from typing import Any
 
 from src.server.database.vault_secrets import (
@@ -41,9 +42,11 @@ async def reveal_user_secret(user_id: str, name: str) -> str | None:
     return await _reveal(USER_TIER, user_id, name)
 
 
-async def get_user_secrets_decrypted(user_id: str) -> dict[str, str]:
-    """Return {name: plaintext_value} for sandbox injection."""
-    return await _decrypted(USER_TIER, user_id)
+async def get_user_secrets_decrypted(
+    user_id: str, names: Collection[str] | None = None
+) -> dict[str, str]:
+    """Return {name: plaintext_value} for sandbox injection, or only ``names``."""
+    return await _decrypted(USER_TIER, user_id, names)
 
 
 async def get_user_secret_names(user_id: str) -> set[str]:
