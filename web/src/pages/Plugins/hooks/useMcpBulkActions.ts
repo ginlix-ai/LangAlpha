@@ -13,7 +13,7 @@ import {
 import type { BulkAction } from '../components/BulkActionBar';
 import type { BulkScopeSpec } from '../components/BulkScopeMenu';
 import type { ScopeWorkspace } from '../components/ScopeControl';
-import type { BulkTarget } from '../components/useBulkSelection';
+import { bulkSelectionKey, type BulkTarget } from '../components/useBulkSelection';
 import { isPluginOwned } from '../utils/provenance';
 import type { PluginListSurface } from './usePluginListSurface';
 import { useScopeBulk } from './useScopeBulk';
@@ -47,7 +47,7 @@ export function useMcpBulkActions({
   workspaceServers: readonly WorkspaceScopedMcpServer[];
   surface: PluginListSurface;
   workspaces: ScopeWorkspace[];
-}): { actions: BulkAction[]; scope: BulkScopeSpec; count: number } {
+}): { actions: BulkAction[]; scope: BulkScopeSpec; count: number; selectionKey: string } {
   const { t } = useTranslation();
   const { selected } = surface.selection;
 
@@ -145,5 +145,5 @@ export function useMcpBulkActions({
     },
   ];
 
-  return { actions, scope, count: rows.length };
+  return { actions, scope, count: rows.length, selectionKey: bulkSelectionKey(rows.map(rowKey)) };
 }

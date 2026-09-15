@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest';
 import { act, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import React from 'react';
@@ -45,9 +45,11 @@ let userVaultData: UserVaultData | undefined;
 let userVaultError: Error | null = null;
 let userVaultLoading = false;
 
+let userBlueprints: { name: string; label: string; description?: string }[] = [];
+
 vi.mock('@/hooks/useUserVault', () => ({
   useUserVaultSecrets: () => ({ data: userVaultData, isLoading: userVaultLoading, error: userVaultError }),
-  useUserVaultBlueprints: () => ({ data: { blueprints: [], remaining_slots: 0 } }),
+  useUserVaultBlueprints: () => ({ data: { blueprints: userBlueprints, remaining_slots: 20 } }),
   useCreateUserVaultSecret: () => ({ mutateAsync: userVault.create, isPending: false }),
   useUpdateUserVaultSecret: () => ({ mutateAsync: userVault.update, isPending: false }),
   useDeleteUserVaultSecret: () => ({ mutateAsync: userVault.del, isPending: false }),
@@ -139,6 +141,7 @@ beforeEach(() => {
   userVaultData = { secrets: [], remaining_slots: 20 };
   userVaultError = null;
   userVaultLoading = false;
+  userBlueprints = [];
   wsVault.get.mockResolvedValue([]);
   wsVault.blueprints.mockResolvedValue({ blueprints: [], remaining_slots: 20 });
   mockGetSandboxStats.mockResolvedValue({
@@ -215,23 +218,26 @@ describe('SecretsManager via the user vault adapter — create', () => {
   });
 
   it('normalizes the typed name so the mutation only ever sees a legal one', async () => {
-    // The name field is the guard: it upper-cases, drops anything outside
-    // [A-Z0-9_], and strips leading digits, so what reaches `onCreate` always
-    // satisfies the backend's name rule. (`vault.nameInvalid` still backstops
-    // the prefill deep-link, which sets the name without passing through here.)
-    userVault.create.mockResolvedValue({ name: 'BAD_NAME' });
+    // The name field is the guard: it upper-cases, maps anything outside
+    // [A-Z0-9_] to `_`, and strips leading digits, so what reaches `onCreate`
+    // always satisfies the backend's name rule. Illegal characters become `_`
+    // rather than vanishing, which is what lets a hand-typed name reproduce
+    // the name suggested beside a header row (one shared helper does both).
+    // (`vault.nameInvalid` still backstops the prefill deep-link, which sets
+    // the name without passing through here.)
+    userVault.create.mockResolvedValue({ name: 'BAD_NAME_' });
     renderWithProviders(<PluginSecrets />);
 
     fireEvent.click(screen.getByRole('button', { name: /add secret/i }));
     const nameInput = screen.getByPlaceholderText('SECRET_NAME');
     fireEvent.change(nameInput, { target: { value: '9bad-name!' } });
-    expect((nameInput as HTMLInputElement).value).toBe('BADNAME');
+    expect((nameInput as HTMLInputElement).value).toBe('BAD_NAME_');
 
     fireEvent.change(screen.getByPlaceholderText('Secret value'), { target: { value: 'x' } });
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
 
     await waitFor(() =>
-      expect(userVault.create).toHaveBeenCalledWith({ name: 'BADNAME', value: 'x', description: undefined }),
+      expect(userVault.create).toHaveBeenCalledWith({ name: 'BAD_NAME_', value: 'x', description: undefined }),
     );
   });
 
@@ -520,7 +526,7 @@ describe('SecretsManager via the workspace adapter — delete and errors', () =>
   });
 });
 
-describe('SecretsManager — the two ports drive the same state machine', () => {
+describe('SecretsManager: the two ports drive the same state machine', () => {
   it('opens an edit form scoped to the clicked row in either scope', async () => {
     // Same interaction, both adapters: the edit form replaces exactly one row.
     userVaultData = {
@@ -540,5 +546,108 @@ describe('SecretsManager — the two ports drive the same state machine', () => 
     fireEvent.click(screen.getAllByTitle('Edit')[1]);
     expect(screen.getByPlaceholderText('New value (leave empty to keep current)')).toBeInTheDocument();
     expect(screen.getByText('WS_FIRST')).toBeInTheDocument();
+  });
+});
+
+// ===========================================================================
+// The add form as a disclosure: the button that opens it, the labels on it,
+// the keystroke that closes it, and what stays on screen beside it.
+// ===========================================================================
+
+describe('SecretsManager: the add form opens as a disclosure', () => {
+  it('turns the Add Secret button into the form\'s cancel while it is open', () => {
+    renderWithProviders(<PluginSecrets />);
+
+    const add = screen.getByRole('button', { name: /add secret/i });
+    expect(add).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(add);
+
+    expect(screen.queryByRole('button', { name: /add secret/i })).not.toBeInTheDocument();
+    const toggle = screen.getByRole('button', { expanded: true });
+    expect(toggle).toHaveTextContent(/cancel/i);
+    // It points at the region it opened, so a screen reader can follow it there.
+    const region = document.getElementById(toggle.getAttribute('aria-controls')!);
+    expect(region).toContainElement(screen.getByPlaceholderText('SECRET_NAME'));
+  });
+
+  it('closes again from the same button', async () => {
+    renderWithProviders(<PluginSecrets />);
+    fireEvent.click(screen.getByRole('button', { name: /add secret/i }));
+    fireEvent.click(screen.getByRole('button', { expanded: true }));
+
+    await waitFor(() => expect(screen.queryByPlaceholderText('SECRET_NAME')).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /add secret/i })).toBeInTheDocument();
+  });
+
+  it('names every field above it, not only inside it', () => {
+    renderWithProviders(<PluginSecrets />);
+    fireEvent.click(screen.getByRole('button', { name: /add secret/i }));
+
+    expect(screen.getByLabelText('Name')).toBe(screen.getByPlaceholderText('SECRET_NAME'));
+    expect(screen.getByLabelText('Value')).toBe(screen.getByPlaceholderText('Secret value'));
+    expect(screen.getByLabelText('Description')).toBe(
+      screen.getByPlaceholderText('Description (optional)'),
+    );
+  });
+
+  it('closes on Escape from inside the form', async () => {
+    renderWithProviders(<PluginSecrets />);
+    fireEvent.click(screen.getByRole('button', { name: /add secret/i }));
+    fireEvent.keyDown(screen.getByPlaceholderText('SECRET_NAME'), { key: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByPlaceholderText('SECRET_NAME')).not.toBeInTheDocument());
+    expect(userVault.create).not.toHaveBeenCalled();
+  });
+
+  it('ignores Escape while the save is in flight', async () => {
+    // Backing out of a form whose create is already on the wire would leave
+    // the user with no sight of how it landed.
+    userVault.create.mockImplementation(() => new Promise(() => {}));
+    // The file's beforeEach only clears calls, which keeps implementations, so
+    // a create that never settles would be the one every later test gets.
+    onTestFinished(() => {
+      userVault.create.mockReset();
+    });
+    renderWithProviders(<PluginSecrets />);
+
+    fireEvent.click(screen.getByRole('button', { name: /add secret/i }));
+    fireEvent.change(screen.getByPlaceholderText('SECRET_NAME'), { target: { value: 'SLOW_TOKEN' } });
+    fireEvent.change(screen.getByPlaceholderText('Secret value'), { target: { value: 'v' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(userVault.create).toHaveBeenCalled());
+    fireEvent.keyDown(screen.getByPlaceholderText('SECRET_NAME'), { key: 'Escape' });
+
+    expect(screen.getByPlaceholderText('SECRET_NAME')).toBeInTheDocument();
+  });
+
+  it('keeps the recommended credentials on screen while the form is open', () => {
+    // The cards are what tell the user which name the server is looking for.
+    userBlueprints = [{ name: 'ACME_API_KEY', label: 'Acme API key' }];
+    renderWithProviders(<PluginSecrets />);
+
+    fireEvent.click(screen.getByText('Set up'));
+
+    expect(screen.getByText('Recommended credentials')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('SECRET_NAME')).toHaveValue('ACME_API_KEY');
+  });
+});
+
+describe('SecretsManager: the edit form opens as a disclosure', () => {
+  it('closes on Escape without sending an update', async () => {
+    userVaultData = { secrets: [userSecret('EDIT_TOKEN')], remaining_slots: 19 };
+    renderWithProviders(<PluginSecrets />);
+
+    fireEvent.click(screen.getByTitle('Edit'));
+    const value = screen.getByPlaceholderText('New value (leave empty to keep current)');
+    expect(screen.getByLabelText('New value')).toBe(value);
+    fireEvent.keyDown(value, { key: 'Escape' });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByPlaceholderText('New value (leave empty to keep current)'),
+      ).not.toBeInTheDocument(),
+    );
+    expect(userVault.update).not.toHaveBeenCalled();
   });
 });

@@ -23,23 +23,53 @@ import { cn } from '@/lib/utils';
  */
 
 const WIDTH = {
+  narrow: 'max-w-md',
   standard: 'max-w-lg',
   wide: 'max-w-2xl',
 } as const;
 
+/**
+ * Padding is the shell's decision, not the caller's. A caller handing in its
+ * own classes could silently delete the footer's safe-area inset, because
+ * tailwind-merge resolves a later `py-*` over the `pb-[max(...)]` that keeps a
+ * bottom sheet clear of the home indicator, and every detail overlay lost it
+ * that way. Header, body and footer all read their horizontal padding here, so
+ * the three edges cannot drift apart either.
+ */
+const DENSITY = {
+  /** Forms and wizards: compact rows, buttons close to the fields. */
+  form: {
+    x: 'px-5',
+    body: 'pb-5 gap-4',
+    footer: 'pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]',
+  },
+  /** Detail overlays: longer sections, read at a roomier rhythm. */
+  reading: {
+    x: 'px-6',
+    body: 'pt-5 pb-5 gap-5',
+    footer: 'pt-4 pb-[max(1rem,env(safe-area-inset-bottom))]',
+  },
+} as const;
+
 const NOOP = () => {};
 
-/** Page scroll is held while any shell is mounted; a nested pair releases once. */
+/**
+ * Page scroll is held while any shell is mounted, and a nested pair releases
+ * once. The capture is module-level and happens on the outermost lock only: a
+ * nested shell reading the body for itself would read 'hidden', and restore
+ * that if the outer shell unmounted first.
+ */
 let lockCount = 0;
+let lockedOverflow = '';
 function useScrollLock() {
   useEffect(() => {
     if (typeof document === 'undefined') return;
+    if (lockCount === 0) lockedOverflow = document.body.style.overflow;
     lockCount += 1;
-    const previous = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
       lockCount -= 1;
-      if (lockCount === 0) document.body.style.overflow = previous;
+      if (lockCount === 0) document.body.style.overflow = lockedOverflow;
     };
   }, []);
 }
@@ -48,19 +78,24 @@ export function ModalShell({
   labelId,
   title,
   subtitle,
+  header,
   onClose,
   dismissable = true,
   closeDisabled = false,
   width = 'standard',
   zIndex = 1010,
+  density = 'form',
   footer,
-  bodyClassName,
-  testId,
   children,
 }: {
   labelId: string;
-  title: React.ReactNode;
+  title?: React.ReactNode;
   subtitle?: React.ReactNode;
+  /**
+   * A whole header of the caller's own (an identity tile with its controls)
+   * in place of the title block. It must render the element `labelId` names.
+   */
+  header?: React.ReactNode;
   onClose: () => void;
   /** False while the dialog owns work the user cannot get back by reopening. */
   dismissable?: boolean;
@@ -68,10 +103,10 @@ export function ModalShell({
   closeDisabled?: boolean;
   width?: keyof typeof WIDTH;
   zIndex?: number;
+  /** How roomy the panel sits: a form, or a detail overlay's reading rhythm. */
+  density?: keyof typeof DENSITY;
   /** Pinned under the scroll body; lay the buttons out yourself. */
   footer?: React.ReactNode;
-  bodyClassName?: string;
-  testId?: string;
   children: React.ReactNode;
 }) {
   const { t } = useTranslation();
@@ -80,6 +115,7 @@ export function ModalShell({
   const backdrop = useBackdropDismiss<HTMLDivElement>(close);
   const reducedMotion = useReducedMotion();
   const isMobile = useIsMobile();
+  const space = DENSITY[density];
   useScrollLock();
 
   // The panel follows the measured height of its content.
@@ -143,11 +179,10 @@ export function ModalShell({
         aria-modal="true"
         aria-labelledby={labelId}
         tabIndex={-1}
-        data-testid={testId}
         className={cn(
           'relative w-full flex flex-col overflow-hidden',
           WIDTH[width],
-          isMobile ? 'rounded-t-2xl' : 'rounded-lg',
+          isMobile ? 'rounded-t-3xl' : 'rounded-lg',
         )}
         style={{
           backgroundColor: 'var(--color-bg-elevated)',
@@ -185,26 +220,32 @@ export function ModalShell({
               <X className="h-4 w-4" />
             </button>
           )}
-          <div className="shrink-0 px-5 pt-5 pb-3 pr-12">
-            <h3 id={labelId} className="text-lg font-semibold" style={{ color: 'var(--color-text-primary)' }}>
-              {title}
-            </h3>
-            {subtitle && (
-              <p className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>
-                {subtitle}
-              </p>
-            )}
-          </div>
+          {header ? (
+            <div className={cn('shrink-0 pt-5 pb-4', space.x)} style={{ borderBottom: '1px solid var(--color-border-muted)' }}>
+              {header}
+            </div>
+          ) : (
+            <div className={cn('shrink-0 pt-5 pb-3 pr-12', space.x)}>
+              <h3 id={labelId} className="text-lg font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+                {title}
+              </h3>
+              {subtitle && (
+                <p className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>
+                  {subtitle}
+                </p>
+              )}
+            </div>
+          )}
           <div
             ref={contentRef}
-            className={cn('min-h-0 flex-1 overflow-y-auto px-5 pb-5 flex flex-col gap-4', bodyClassName)}
+            className={cn('min-h-0 flex-1 overflow-y-auto flex flex-col', space.x, space.body)}
             style={{ overscrollBehaviorY: 'contain' }}
           >
             {children}
           </div>
           {footer && (
             <div
-              className="shrink-0 px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+              className={cn('shrink-0', space.x, space.footer)}
               style={{ borderTop: '1px solid var(--color-border-muted)' }}
             >
               {footer}

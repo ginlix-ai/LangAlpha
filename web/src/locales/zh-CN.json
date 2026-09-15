@@ -2984,6 +2984,12 @@
       "security3": "所有智能体输出都会经过泄漏检测扫描。工具结果中发现的任何密钥值都会在到达模型前自动脱敏。",
       "security4a": "代码校验阻止直接访问内部密钥存储 — 仅允许使用",
       "security4b": "API。"
+    },
+    "fields": {
+      "name": "名称",
+      "value": "值",
+      "newValue": "新值",
+      "description": "描述"
     }
   },
   "orders": {
@@ -3123,7 +3129,7 @@
       "mcp": "连接器",
       "skills": "技能",
       "secrets": "密钥",
-      "plugins": "插件",
+      "plugins": "软件包",
       "brokerages": "券商"
     },
     "servers": {
@@ -3265,10 +3271,6 @@
       "shellOutdatedHint": "当前版本的桌面应用无法完成连接。请更新桌面应用，或在浏览器中连接。",
       "shellOutdatedNote": "桌面应用需要更新"
     },
-    "import": {
-      "disabledNudgeTitle": "导入的服务器为关闭状态",
-      "disabledNudgeDesc": "导入的服务器默认关闭。逐个开启后才会在你的工作区中生效。"
-    },
     "secrets": {
       "title": "密钥库",
       "scopeHint": "此处的密钥用于你的 MCP 服务器，并在所有工作区可用。同名的工作区密钥会在该工作区内覆盖此处的值。",
@@ -3329,9 +3331,9 @@
       "movePluginBlocked": "由 {{plugin}} 提供；其组件保留在账户层级"
     },
     "list": {
-      "title": "已安装插件",
+      "title": "你的插件",
       "install": "安装插件",
-      "hint": "插件是 MCP 服务器和技能的组合包。其组件会带着插件名出现在 MCP 和技能标签页中；此处的开关会同时切换全部组件。",
+      "hint": "插件是 MCP 服务器和技能的组合包。其组件会带着插件名出现在连接器和技能标签页中；此处的开关会同时切换全部组件。内置插件随应用提供，不计入上限。",
       "empty": "尚未安装插件。可以从 zip 文件或公开 git 地址安装。",
       "atCap": "已达插件数量上限（{{max}}）"
     },
@@ -3434,7 +3436,8 @@
       "scopeOnlyIn": "仅限所选工作区 ({{count}})",
       "scopeMoveTo": "移入工作区 ({{count}})",
       "scopeApply": "应用到 {{count}} 项",
-      "noChanges": "所选项无需更改"
+      "noChanges": "所选项无需更改",
+      "pickRows": "选择要操作的行"
     },
     "filter": {
       "placeholder": "筛选",

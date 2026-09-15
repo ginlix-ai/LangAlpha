@@ -22,3 +22,169 @@
 .enter-fade-up-d4 { animation-delay: 240ms; }
 .enter-fade-up-d5 { animation-delay: 80ms; }
 .enter-fade-up-d6 { animation-delay: 160ms; }
+
+/* === Dialog overlay fade ===
+
+   The one animation the Radix dialog layer draws for itself. It is a keyframe
+   rather than a transition because Radix holds a closing element mounted only
+   while an animation is running, so a transition would fade the overlay in and
+   then cut it. Timings are the backdrop's in `lib/motion.ts` (quick in, exit
+   out); the curve is the house entrance curve. */
+@keyframes overlay-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes overlay-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+.overlay-fade[data-state='open'] {
+  animation: overlay-fade-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.overlay-fade[data-state='closed'] {
+  animation: overlay-fade-out 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* === Radix surface motion ===
+
+   Enter and exit for the floating surfaces Radix mounts and unmounts: menus,
+   popovers, hover cards, dialogs, the mobile sheet and toasts. Keyframes for
+   the same reason `overlay-fade` is one: a closing element stays mounted only
+   while its animation runs, so a transition would play the entrance and then
+   cut the exit off.
+
+   Durations are `DURATION` in `lib/motion.ts` (quick for a menu, enter for a
+   dialog, exit for anything leaving) on the house entrance curve. */
+
+/* --- A small surface popping open at its anchor: menus, popovers, hover
+       cards. `data-side` is Radix's own answer for which side of the trigger
+       it landed on, so the nudge always travels away from the trigger. --- */
+@keyframes pop-in {
+  from { opacity: 0; transform: translate(var(--pop-x, 0), var(--pop-y, 0)) scale(0.95); }
+  to   { opacity: 1; transform: translate(0, 0) scale(1); }
+}
+
+@keyframes pop-out {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(0.95); }
+}
+
+.pop-in[data-side='bottom'] { --pop-y: -0.5rem; }
+.pop-in[data-side='top']    { --pop-y: 0.5rem; }
+.pop-in[data-side='left']   { --pop-x: 0.5rem; }
+.pop-in[data-side='right']  { --pop-x: -0.5rem; }
+
+.pop-in[data-state='open'] {
+  animation: pop-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.pop-in[data-state='closed'] {
+  animation: pop-out 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* --- Centred fixed surfaces: the dialog, and the chart annotation modal that
+       builds its own. The keyframe carries the centring translate itself,
+       because an animated `transform` replaces the one positioning the
+       element rather than composing with it. --- */
+@keyframes center-pop-in {
+  from { opacity: 0; transform: translate(-50%, -48%) scale(0.95); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes center-pop-out {
+  from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  to   { opacity: 0; transform: translate(-50%, -48%) scale(0.95); }
+}
+
+.pop-in-center[data-state='open'] {
+  animation: center-pop-in 280ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.pop-in-center[data-state='closed'] {
+  animation: center-pop-out 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* --- The mobile bottom sheet arrives from the edge it is pinned to. Swipe to
+       dismiss drives the CSS `translate` property instead of `transform`, so
+       a drag and this animation never fight over one declaration. --- */
+@keyframes sheet-in {
+  from { opacity: 0; transform: translateY(100%); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes sheet-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(100%); }
+}
+
+.sheet-in[data-state='open'] {
+  animation: sheet-in 280ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.sheet-in[data-state='closed'] {
+  animation: sheet-out 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* --- Toasts enter from whichever edge the viewport is pinned to (top on a
+       phone, bottom from `sm` up) and leave to the right, the same direction a
+       swipe sends them. --- */
+@keyframes toast-in-top {
+  from { opacity: 0; transform: translateY(-100%); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes toast-in-bottom {
+  from { opacity: 0; transform: translateY(100%); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes toast-out-right {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(100%); }
+}
+
+.toast-slide[data-state='open'] {
+  animation: toast-in-top 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (min-width: 640px) {
+  .toast-slide[data-state='open'] { animation-name: toast-in-bottom; }
+}
+
+.toast-slide[data-state='closed'],
+.toast-slide[data-swipe='end'] {
+  animation: toast-out-right 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* --- The image lightbox scrim. React mounts and unmounts it outright, so an
+       entrance is the only half there is to draw. --- */
+@keyframes scrim-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.scrim-in {
+  animation: scrim-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Near-zero rather than `none`: the animation still has to end for Radix to
+   unmount the closing element. */
+@media (prefers-reduced-motion: reduce) {
+  .overlay-fade[data-state='open'],
+  .overlay-fade[data-state='closed'],
+  .pop-in[data-state='open'],
+  .pop-in[data-state='closed'],
+  .pop-in-center[data-state='open'],
+  .pop-in-center[data-state='closed'],
+  .sheet-in[data-state='open'],
+  .sheet-in[data-state='closed'],
+  .toast-slide[data-state='open'],
+  .toast-slide[data-state='closed'],
+  .toast-slide[data-swipe='end'],
+  .scrim-in {
+    animation-duration: 0.01ms;
+  }
+}

@@ -1,7 +1,14 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { KeyRound, Plus } from 'lucide-react';
-import { ListEmpty, ListError, ListHeader, ListSkeleton } from '@/components/mcp/McpPrimitives';
+import { KeyRound, Plus, X } from 'lucide-react';
+import {
+  HeaderButton,
+  ListEmpty,
+  ListError,
+  ListHeader,
+  ListSkeleton,
+} from '@/components/mcp/McpPrimitives';
+import { Disclosure } from '@/components/ui/Disclosure';
 import { formatApiErrorDetail, type VaultBlueprint } from '../../utils/api';
 import { BlueprintCards } from './BlueprintCards';
 import { EMPTY_DRAFT, SecretAddForm, SecretEditForm, type SecretDraft } from './SecretEditor';
@@ -31,6 +38,54 @@ type SecretsMode =
   | { kind: 'confirmDelete'; name: string; pending: boolean };
 
 const IDLE: SecretsMode = { kind: 'idle' };
+
+/**
+ * Keeps the last non-null value so a form that is folding closed still has
+ * something to render on the way out. Without it the mode flips to idle in one
+ * frame, the fields vanish, and the fold animates an empty box. What is kept is
+ * a draft holding plaintext, so `release` gives it back the moment the fold
+ * that paints it is gone.
+ */
+function useLastPresent<T>(value: T | null): [T | null, () => void] {
+  const last = useRef<T | null>(null);
+  if (value !== null) last.current = value;
+  const release = useCallback(() => {
+    last.current = null;
+  }, []);
+  return [value ?? last.current, release];
+}
+
+/**
+ * The same, remembered per row. The list folds one editor closed as it opens
+ * another, so a single slot hands the closing row the incoming row's value and
+ * it folds on an empty box anyway, which is the thing being prevented. Entries
+ * leave with their row's fold, so the map holds the folds on screen rather than
+ * every row the session has edited.
+ */
+function useLastPresentByKey<T>(
+  value: T | null,
+  key: string | null,
+): [Map<string, T>, (key: string) => void] {
+  const remembered = useRef(new Map<string, T>());
+  if (value !== null && key !== null) remembered.current.set(key, value);
+  const release = useCallback((released: string) => {
+    remembered.current.delete(released);
+  }, []);
+  return [remembered.current, release];
+}
+
+/**
+ * Calls `onGone` once the folded content has actually left the tree.
+ * `AnimatePresence` holds an exiting child mounted until its animation
+ * finishes, so this unmount *is* the end of the fold, with no duration constant
+ * to keep in step with the one the animation is really running.
+ */
+function OnFoldGone({ onGone, children }: { onGone: () => void; children: React.ReactNode }) {
+  const latest = useRef(onGone);
+  latest.current = onGone;
+  useEffect(() => () => latest.current(), []);
+  return <>{children}</>;
+}
 
 export interface SecretItem {
   id: string;
@@ -82,12 +137,18 @@ export function SecretsManager({
   const { t } = useTranslation();
 
   const [mode, setMode] = useState<SecretsMode>(IDLE);
+  // Read from the fold-gone callbacks, which fire during an unmount and so
+  // cannot trust the render that scheduled them: reopening a form mid-exit
+  // unmounts the old content after the new draft is already remembered.
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   const [revealing, setRevealing] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<Record<string, string>>({});
   // Bumped on every successful delete or update; a reveal resolving under an
   // older epoch discards its value instead of caching it.
   const revealEpoch = useRef(0);
   const [error, setError] = useState<string | null>(null);
+  const addFormId = useId();
 
   useEffect(() => {
     if (!prefillSecretName) return;
@@ -105,6 +166,11 @@ export function SecretsManager({
     setMode((m) =>
       m.kind === 'add' || m.kind === 'edit' ? { ...m, draft: { ...m.draft, ...patch } } : m,
     );
+  }
+
+  function closeForm() {
+    setMode(IDLE);
+    setError(null);
   }
 
   function forget(name: string) {
@@ -194,28 +260,50 @@ export function SecretsManager({
     }
   }
 
+  const addMode = mode.kind === 'add' ? mode : null;
+  const editMode = mode.kind === 'edit' ? mode : null;
+  // The forms fold rather than pop, so each needs its content for one more
+  // beat after the mode has already moved on.
+  const [foldingAdd, releaseFoldingAdd] = useLastPresent(addMode);
+  const [foldingEditByName, releaseFoldingEdit] = useLastPresentByKey(
+    editMode,
+    editMode?.name ?? null,
+  );
+  const adding = addMode !== null;
+
+  function handleAddFoldGone() {
+    if (modeRef.current.kind !== 'add') releaseFoldingAdd();
+  }
+
+  function handleEditFoldGone(name: string) {
+    const current = modeRef.current;
+    if (current.kind !== 'edit' || current.name !== name) releaseFoldingEdit(name);
+  }
+
   if (loading) {
     return <ListSkeleton rows={2} />;
   }
-
-  const adding = mode.kind === 'add';
 
   return (
     <div className="flex flex-col gap-4">
       <ListHeader icon={KeyRound} title={title} count={secrets.length} max={maxSecrets}>
         {secrets.length < maxSecrets && (
-          <button
-            type="button"
+          // The button is the form's toggle, so it says which way it points:
+          // a primary Add while the form is closed, a quiet Cancel while it is
+          // open. A primary button that re-opens what is already open reads as
+          // the action having failed.
+          <HeaderButton
+            variant={adding ? 'secondary' : 'primary'}
+            icon={adding ? X : Plus}
+            aria-expanded={adding}
+            aria-controls={addFormId}
             onClick={() => {
               setMode(adding ? IDLE : { kind: 'add', draft: EMPTY_DRAFT, blueprint: null, saving: false });
               setError(null);
             }}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors"
-            style={{ color: 'var(--color-btn-primary-text)', backgroundColor: 'var(--color-btn-primary-bg)' }}
           >
-            <Plus className="h-3 w-3" />
-            {t('vault.addSecret')}
-          </button>
+            {adding ? t('common.cancel') : t('vault.addSecret')}
+          </HeaderButton>
         )}
       </ListHeader>
 
@@ -227,7 +315,10 @@ export function SecretsManager({
 
       {(error || loadError) && <ListError>{error || loadError}</ListError>}
 
-      {blueprints.length > 0 && !adding && (
+      {/* Stays put while the form is open: these cards are what tell the user
+          which name the server is looking for, and hiding them the moment the
+          form needs that name is hiding the answer to the question on screen. */}
+      {blueprints.length > 0 && (
         <BlueprintCards
           blueprints={blueprints}
           atCap={secrets.length >= maxSecrets}
@@ -244,57 +335,76 @@ export function SecretsManager({
         />
       )}
 
-      {mode.kind === 'add' && (
-        <SecretAddForm
-          draft={mode.draft}
-          blueprint={mode.blueprint}
-          saving={mode.saving}
-          onChange={patchDraft}
-          onCancel={() => { setMode(IDLE); setError(null); }}
-          onSave={handleCreate}
-        />
-      )}
+      <Disclosure open={adding} id={addFormId}>
+        {foldingAdd && (
+          <OnFoldGone onGone={handleAddFoldGone}>
+            {/* Keyed by the blueprint so picking a different card while the
+                form is open remounts it, and the cursor lands on the field
+                that card left empty. */}
+            <SecretAddForm
+              key={foldingAdd.blueprint?.name ?? 'blank'}
+              draft={foldingAdd.draft}
+              blueprint={foldingAdd.blueprint}
+              saving={foldingAdd.saving}
+              onChange={patchDraft}
+              onCancel={closeForm}
+              onSave={handleCreate}
+            />
+          </OnFoldGone>
+        )}
+      </Disclosure>
 
       {/* Secret list */}
       {secrets.length === 0 && !adding ? (
         <ListEmpty>{emptyText}</ListEmpty>
       ) : (
         <div className="flex flex-col gap-1">
-          {secrets.map((secret) => (
-            <div key={secret.id}>
-              {mode.kind === 'edit' && mode.name === secret.name ? (
-                <SecretEditForm
-                  name={secret.name}
-                  draft={mode.draft}
-                  saving={mode.saving}
-                  onChange={patchDraft}
-                  onCancel={() => setMode(IDLE)}
-                  onSave={handleUpdate}
-                />
-              ) : (
-                <SecretRow
-                  secret={secret}
-                  revealedValue={revealed[secret.name]}
-                  revealing={revealing === secret.name}
-                  confirmingDelete={mode.kind === 'confirmDelete' && mode.name === secret.name}
-                  deletePending={mode.kind === 'confirmDelete' && mode.pending}
-                  onToggleReveal={() => handleRevealToggle(secret.name)}
-                  onEdit={() => {
-                    setMode({
-                      kind: 'edit',
-                      name: secret.name,
-                      draft: { ...EMPTY_DRAFT, description: secret.description },
-                      saving: false,
-                    });
-                    setError(null);
-                  }}
-                  onRequestDelete={() => setMode({ kind: 'confirmDelete', name: secret.name, pending: false })}
-                  onCancelDelete={() => setMode(IDLE)}
-                  onConfirmDelete={handleDelete}
-                />
-              )}
-            </div>
-          ))}
+          {secrets.map((secret) => {
+            const editingThis = editMode?.name === secret.name;
+            const foldingThis = foldingEditByName.get(secret.name) ?? null;
+            return (
+              <div key={secret.id}>
+                {/* Two folds, one row: the editor grows as the resting row
+                    collapses, so the list never jumps by a row height. */}
+                <Disclosure open={!!editingThis}>
+                  {foldingThis && (
+                    <OnFoldGone onGone={() => handleEditFoldGone(secret.name)}>
+                      <SecretEditForm
+                        name={foldingThis.name}
+                        draft={foldingThis.draft}
+                        saving={foldingThis.saving}
+                        onChange={patchDraft}
+                        onCancel={closeForm}
+                        onSave={handleUpdate}
+                      />
+                    </OnFoldGone>
+                  )}
+                </Disclosure>
+                <Disclosure open={!editingThis}>
+                  <SecretRow
+                    secret={secret}
+                    revealedValue={revealed[secret.name]}
+                    revealing={revealing === secret.name}
+                    confirmingDelete={mode.kind === 'confirmDelete' && mode.name === secret.name}
+                    deletePending={mode.kind === 'confirmDelete' && mode.pending}
+                    onToggleReveal={() => handleRevealToggle(secret.name)}
+                    onEdit={() => {
+                      setMode({
+                        kind: 'edit',
+                        name: secret.name,
+                        draft: { ...EMPTY_DRAFT, description: secret.description },
+                        saving: false,
+                      });
+                      setError(null);
+                    }}
+                    onRequestDelete={() => setMode({ kind: 'confirmDelete', name: secret.name, pending: false })}
+                    onCancelDelete={closeForm}
+                    onConfirmDelete={handleDelete}
+                  />
+                </Disclosure>
+              </div>
+            );
+          })}
         </div>
       )}
 

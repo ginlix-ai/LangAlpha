@@ -10,7 +10,7 @@ import type { SkillInfo } from '@/pages/ChatAgent/utils/api';
 import type { BulkAction } from '../components/BulkActionBar';
 import type { BulkScopeSpec } from '../components/BulkScopeMenu';
 import type { ScopeWorkspace } from '../components/ScopeControl';
-import type { BulkTarget } from '../components/useBulkSelection';
+import { bulkSelectionKey, type BulkTarget } from '../components/useBulkSelection';
 import type { PluginListSurface } from './usePluginListSurface';
 import { useScopeBulk } from './useScopeBulk';
 import { skillRowKey } from './useSkillActions';
@@ -22,7 +22,7 @@ export function useSkillBulkActions(
   visibleSkills: readonly SkillInfo[],
   surface: PluginListSurface,
   workspaces: ScopeWorkspace[],
-): { actions: BulkAction[]; scope: BulkScopeSpec; count: number } {
+): { actions: BulkAction[]; scope: BulkScopeSpec; count: number; selectionKey: string } {
   const { t } = useTranslation();
   const selected = visibleSkills.filter((s) =>
     surface.selection.selected.has(skillRowKey(s)),
@@ -110,5 +110,10 @@ export function useSkillBulkActions(
     },
   ];
 
-  return { actions, scope, count: selected.length };
+  return {
+    actions,
+    scope,
+    count: selected.length,
+    selectionKey: bulkSelectionKey(selected.map(skillRowKey)),
+  };
 }

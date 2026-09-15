@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { motion, useReducedMotion } from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { ChevronDown, Plus } from 'lucide-react';
 import {
   DropdownMenu,
@@ -19,6 +19,7 @@ import { PluginsList } from './components/PluginsList';
 import { ADD_INTENT_TAB, ADD_PARAM, type AddIntent } from './utils/addParam';
 import { DETAIL_KIND_TAB, parseDetail } from './utils/detailParam';
 import './Plugins.css';
+import { DURATION, EASE_OUT } from '@/lib/motion';
 import { useToggleBrokerage } from '@/hooks/useMcpServers';
 import { canBeginMcpOAuth } from '@/lib/desktop';
 import { readConnectOutcome } from './connectOutcome';
@@ -37,6 +38,22 @@ import { useConnectReturn } from './connectReturn';
 
 const TABS = ['plugins', 'brokerages', 'mcp', 'skills', 'secrets'] as const;
 type Tab = (typeof TABS)[number];
+
+/**
+ * The custom payload is the slide direction and nothing else: +1 for a tab to
+ * the right, -1 to the left, 0 for a swap that does not slide at all. A zero
+ * collapses every variant onto the centred one, so there is one number to read
+ * rather than three flags to combine.
+ */
+const TAB_CONTENT = {
+  enter: (dir: number) => ({ opacity: dir ? 0 : 1, x: 16 * dir }),
+  center: { opacity: 1, x: 0 },
+  exit: (dir: number) => ({
+    opacity: dir ? 0 : 1,
+    x: -12 * dir,
+    transition: { duration: dir ? DURATION.exit : 0, ease: EASE_OUT },
+  }),
+};
 
 // Explicit key map (not a template literal) so the i18n parity test can see
 // every tab label -- it reads bare `plugins.` literals, and a template would
@@ -70,6 +87,23 @@ function Plugins() {
     'plugins';
   const pageRef = useRef<HTMLDivElement>(null);
   useScrollMemory(pageRef, 'page:plugins');
+
+  // A switch carrying an Add intent or a detail ref is on its way to a dialog,
+  // and content sliding under a backdrop that is fading in reads as a flicker,
+  // so it swaps at once. Read off the URL rather than latched at the click: a
+  // click on the tab already showing changes no URL, so a latch set there was
+  // never cleared and the next Add or deep link slid anyway.
+  const instant = searchParams.has(ADD_PARAM) || !!detailRef;
+  // Content moves the way the underline does: a tab to the right slides
+  // the new content in from the right, the old one out to the left.
+  const prevTabRef = useRef(activeTab);
+  const dir =
+    reducedMotion || instant
+      ? 0
+      : Math.sign(TABS.indexOf(activeTab) - TABS.indexOf(prevTabRef.current));
+  useEffect(() => {
+    prevTabRef.current = activeTab;
+  }, [activeTab]);
 
   const handleTabChange = (tab: Tab) => {
     setSearchParams({ tab }, { replace: true });
@@ -220,13 +254,30 @@ function Plugins() {
             ))}
           </div>
 
-          <div className="plugins-content">
-            {activeTab === 'plugins' && <PluginsList />}
-            {activeTab === 'brokerages' && <Brokerages />}
-            {activeTab === 'mcp' && <McpServers />}
-            {activeTab === 'skills' && <SkillsList />}
-            {activeTab === 'secrets' && <PluginSecrets />}
-          </div>
+          {/* The old content leaves before the new one mounts (mode wait),
+              so the column never holds both and doubles its height. */}
+          <AnimatePresence initial={false} mode="wait" custom={dir}>
+            <motion.div
+              key={activeTab}
+              className="plugins-content"
+              custom={dir}
+              variants={TAB_CONTENT}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              transition={
+                dir
+                  ? { duration: DURATION.enter, ease: EASE_OUT, opacity: { duration: DURATION.fold } }
+                  : { duration: 0 }
+              }
+            >
+              {activeTab === 'plugins' && <PluginsList />}
+              {activeTab === 'brokerages' && <Brokerages />}
+              {activeTab === 'mcp' && <McpServers />}
+              {activeTab === 'skills' && <SkillsList />}
+              {activeTab === 'secrets' && <PluginSecrets />}
+            </motion.div>
+          </AnimatePresence>
         </div>
       </div>
     </div>

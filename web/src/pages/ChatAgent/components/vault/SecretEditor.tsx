@@ -1,7 +1,9 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ExternalLink, Eye, EyeOff } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
+import { Field } from '@/components/mcp/McpPrimitives';
+import { normalizeSecretName } from '@/lib/secretNames';
 import type { VaultBlueprint } from '../../utils/api';
 
 /**
@@ -35,9 +37,26 @@ const inputStyle: React.CSSProperties = {
   border: '1px solid var(--color-border-muted)',
 };
 
-function FormShell({ accented = false, children }: { accented?: boolean; children: React.ReactNode }) {
+/** Escape backs out of an open form, the same gesture that dismisses the
+ *  inline confirm strip. Scoped to the form rather than the window so a
+ *  keystroke aimed here never also closes the panel the form sits in; while a
+ *  save is in flight there is nothing to back out of, so it stays inert. */
+function FormShell({
+  accented = false,
+  onEscape,
+  children,
+}: {
+  accented?: boolean;
+  onEscape?: () => void;
+  children: React.ReactNode;
+}) {
   return (
     <div
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape' || !onEscape) return;
+        e.stopPropagation();
+        onEscape();
+      }}
       className="flex flex-col gap-2 p-3 rounded-lg"
       style={{
         backgroundColor: 'var(--color-bg-card)',
@@ -54,12 +73,16 @@ function FormShell({ accented = false, children }: { accented?: boolean; childre
 }
 
 function ValueField({
+  id,
+  inputRef,
   value,
   visible,
   placeholder,
   onChange,
   onToggleVisible,
 }: {
+  id: string;
+  inputRef?: React.Ref<HTMLInputElement>;
   value: string;
   visible: boolean;
   placeholder: string;
@@ -69,6 +92,8 @@ function ValueField({
   return (
     <div className="relative">
       <input
+        id={id}
+        ref={inputRef}
         type={visible ? 'text' : 'password'}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -82,7 +107,6 @@ function ValueField({
         onClick={onToggleVisible}
         className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded transition-colors hover:bg-foreground/10"
         style={{ color: 'var(--color-text-tertiary)' }}
-        tabIndex={-1}
       >
         {visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
       </button>
@@ -90,10 +114,19 @@ function ValueField({
   );
 }
 
-function DescriptionField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+function DescriptionField({
+  id,
+  value,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
   const { t } = useTranslation();
   return (
     <input
+      id={id}
       type="text"
       value={value}
       onChange={(e) => onChange(e.target.value)}
@@ -159,6 +192,19 @@ export function SecretAddForm({
   onSave: () => void;
 }) {
   const { t } = useTranslation();
+  const formId = useId();
+  const nameId = `${formId}-name`;
+  const valueId = `${formId}-value`;
+  const descriptionId = `${formId}-description`;
+
+  // Focus lands on the first field with work left in it, decided once on
+  // mount: a blueprint card and the "Set up NAME" deep link both arrive with
+  // the name already filled, and a cursor sent there would have to be moved.
+  const [focusValue] = useState(() => draft.name.trim().length > 0);
+  const focusRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    focusRef.current?.focus({ preventScroll: true });
+  }, []);
 
   // Safe regex compile for the active blueprint. Invalid patterns from a
   // misconfigured agent_config.yaml must not crash the UI — on failure we just
@@ -175,7 +221,7 @@ export function SecretAddForm({
     presetRegex !== null && draft.value.length > 0 && !presetRegex.test(draft.value);
 
   return (
-    <FormShell>
+    <FormShell onEscape={saving ? undefined : onCancel}>
       {blueprint && (
         <div className="flex items-center justify-between text-xs" style={{ color: 'var(--color-text-secondary)' }}>
           <span>
@@ -195,24 +241,30 @@ export function SecretAddForm({
           )}
         </div>
       )}
-      <input
-        type="text"
-        value={draft.name}
-        onChange={(e) =>
-          onChange({ name: e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '').replace(/^[0-9]+/, '') })
-        }
-        placeholder="SECRET_NAME"
-        className={`${inputClass} font-mono`}
-        style={inputStyle}
-        maxLength={64}
-      />
-      <ValueField
-        value={draft.value}
-        visible={draft.valueVisible}
-        placeholder={t('vault.valuePlaceholder')}
-        onChange={(value) => onChange({ value })}
-        onToggleVisible={() => onChange({ valueVisible: !draft.valueVisible })}
-      />
+      <Field label={t('vault.fields.name')} htmlFor={nameId}>
+        <input
+          id={nameId}
+          type="text"
+          value={draft.name}
+          onChange={(e) => onChange({ name: normalizeSecretName(e.target.value) })}
+          placeholder="SECRET_NAME"
+          className={`${inputClass} font-mono`}
+          style={inputStyle}
+          maxLength={64}
+          ref={focusValue ? undefined : focusRef}
+        />
+      </Field>
+      <Field label={t('vault.fields.value')} htmlFor={valueId}>
+        <ValueField
+          id={valueId}
+          inputRef={focusValue ? focusRef : undefined}
+          value={draft.value}
+          visible={draft.valueVisible}
+          placeholder={t('vault.valuePlaceholder')}
+          onChange={(value) => onChange({ value })}
+          onToggleVisible={() => onChange({ valueVisible: !draft.valueVisible })}
+        />
+      </Field>
       {valueHintFailing && (
         <div className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
           {t('vault.valueHintInvalid', { label: blueprint?.label ?? t('vault.tokenFallback') })}
@@ -220,7 +272,13 @@ export function SecretAddForm({
           <span className="ml-1 opacity-70">{t('vault.valueHintStillSave')}</span>
         </div>
       )}
-      <DescriptionField value={draft.description} onChange={(description) => onChange({ description })} />
+      <Field label={t('vault.fields.description')} htmlFor={descriptionId}>
+        <DescriptionField
+          id={descriptionId}
+          value={draft.description}
+          onChange={(description) => onChange({ description })}
+        />
+      </Field>
       <FormActions
         submitLabel={t('common.save')}
         saving={saving}
@@ -248,19 +306,36 @@ export function SecretEditForm({
   onSave: () => void;
 }) {
   const { t } = useTranslation();
+  const formId = useId();
+  const valueId = `${formId}-value`;
+  const descriptionId = `${formId}-description`;
+  const focusRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    focusRef.current?.focus({ preventScroll: true });
+  }, []);
   return (
-    <FormShell accented>
+    <FormShell accented onEscape={saving ? undefined : onCancel}>
       <div className="text-sm font-mono font-medium" style={{ color: 'var(--color-text-primary)' }}>
         {name}
       </div>
-      <ValueField
-        value={draft.value}
-        visible={draft.valueVisible}
-        placeholder={t('vault.editValuePlaceholder')}
-        onChange={(value) => onChange({ value })}
-        onToggleVisible={() => onChange({ valueVisible: !draft.valueVisible })}
-      />
-      <DescriptionField value={draft.description} onChange={(description) => onChange({ description })} />
+      <Field label={t('vault.fields.newValue')} htmlFor={valueId}>
+        <ValueField
+          id={valueId}
+          inputRef={focusRef}
+          value={draft.value}
+          visible={draft.valueVisible}
+          placeholder={t('vault.editValuePlaceholder')}
+          onChange={(value) => onChange({ value })}
+          onToggleVisible={() => onChange({ valueVisible: !draft.valueVisible })}
+        />
+      </Field>
+      <Field label={t('vault.fields.description')} htmlFor={descriptionId}>
+        <DescriptionField
+          id={descriptionId}
+          value={draft.description}
+          onChange={(description) => onChange({ description })}
+        />
+      </Field>
       <FormActions
         submitLabel={t('vault.update')}
         saving={saving}

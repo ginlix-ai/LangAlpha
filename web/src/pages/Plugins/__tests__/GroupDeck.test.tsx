@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { Server } from 'lucide-react';
@@ -9,7 +9,9 @@ import type { BulkSelection } from '../components/useBulkSelection';
 /**
  * The origin-deck contract: small groups render flat, larger groups fold
  * into a card stack until expanded — the cover is the real first row, kept
- * mounted but inert — and filter/select mode force every row visible.
+ * mounted but inert, and openable in the same click that unfolds when the
+ * caller names its open action, and filter/select mode force every row
+ * visible.
  * Expansion persists per deck id in localStorage.
  */
 
@@ -92,6 +94,33 @@ describe('GroupDeck', () => {
     expect(cover.contains(screen.getByTestId('row-0'))).toBe(true);
     fireEvent.click(cover);
     expect(screen.queryByTestId('deck-cover-t:cover')).not.toBeInTheDocument();
+  });
+
+  it('opens the cover row and unfolds the deck in one click', () => {
+    const onCoverOpen = vi.fn();
+    renderWithProviders(
+      <GroupDeck id="t:open" title="Open" icon={Server} count={4} onCoverOpen={onCoverOpen}>
+        {rows(4)}
+      </GroupDeck>,
+    );
+    // The cover row's own box: the click the user aimed at the card.
+    fireEvent.click(screen.getByTestId('row-0'));
+    expect(onCoverOpen).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('deck-cover-t:open')).not.toBeInTheDocument();
+  });
+
+  it('unfolds without opening anything from outside the cover row', () => {
+    const onCoverOpen = vi.fn();
+    renderWithProviders(
+      <GroupDeck id="t:sliver" title="Sliver" icon={Server} count={4} onCoverOpen={onCoverOpen}>
+        {rows(4)}
+      </GroupDeck>,
+    );
+    // The sliver layers below the cover: the deck's own chrome, so they stay
+    // a pure expand target even when the cover opens its row.
+    fireEvent.click(screen.getByTestId('deck-cover-t:sliver').lastElementChild!);
+    expect(onCoverOpen).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('deck-cover-t:sliver')).not.toBeInTheDocument();
   });
 
   it('collapses back from the expanded header', () => {

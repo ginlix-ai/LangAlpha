@@ -3012,6 +3012,12 @@
       "security3": "All agent output is scanned by leak detection. Any secret value found in tool results is automatically redacted before reaching the model.",
       "security4a": "Direct file access to the internal secret store is blocked by code validation — only the",
       "security4b": "API is allowed."
+    },
+    "fields": {
+      "name": "Name",
+      "value": "Value",
+      "newValue": "New value",
+      "description": "Description"
     }
   },
   "orders": {
@@ -3151,7 +3157,7 @@
       "mcp": "Connectors",
       "skills": "Skills",
       "secrets": "Secrets",
-      "plugins": "Plugins",
+      "plugins": "Packages",
       "brokerages": "Brokerages"
     },
     "servers": {
@@ -3293,10 +3299,6 @@
       "shellOutdatedHint": "This version of the desktop app cannot complete a connection. Update it, or connect from your browser.",
       "shellOutdatedNote": "Desktop app needs updating"
     },
-    "import": {
-      "disabledNudgeTitle": "Imported switched off",
-      "disabledNudgeDesc": "Imported servers start off. Switch each one on to make it available in your workspaces."
-    },
     "secrets": {
       "title": "Vault",
       "scopeHint": "Secrets here back your MCP servers and are available in every workspace. A workspace secret with the same name overrides the value in that workspace.",
@@ -3357,9 +3359,9 @@
       "movePluginBlocked": "Owned by {{plugin}}; its components stay at the account level"
     },
     "list": {
-      "title": "Installed plugins",
+      "title": "Your plugins",
       "install": "Install plugin",
-      "hint": "A plugin bundles MCP servers and skills. Its components appear in the MCP and Skills tabs with the plugin's name; the toggle here switches all of them at once.",
+      "hint": "A plugin bundles MCP servers and skills. Its components appear in the Connectors and Skills tabs with the plugin's name; the toggle here switches all of them at once. Built-in plugins ship with the app and do not count toward the limit.",
       "empty": "No plugins installed. Install one from a zip file or a public git URL.",
       "atCap": "Plugin limit reached ({{max}})"
     },
@@ -3467,7 +3469,8 @@
       "scopeOnlyIn": "Only in workspaces ({{count}})",
       "scopeMoveTo": "Move into workspace ({{count}})",
       "scopeApply": "Apply to {{count}}",
-      "noChanges": "Nothing to change for this selection"
+      "noChanges": "Nothing to change for this selection",
+      "pickRows": "Select rows to act on them"
     },
     "filter": {
       "placeholder": "Filter",

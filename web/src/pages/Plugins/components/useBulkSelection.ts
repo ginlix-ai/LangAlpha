@@ -59,13 +59,15 @@ export function useBulkSelection(): BulkSelection {
 }
 
 /**
- * A value that changes whenever the chosen set does. The Set itself is rebuilt
- * on every toggle so its identity says nothing, and its size says too little:
- * dropping two rows and picking two others leaves the count exactly where it
- * was, which is how an armed confirm outlived the rows it was armed on.
+ * A value that changes whenever the rows an action would reach do. Keyed by
+ * the selected rows ON SCREEN, not the retained selection: a selection
+ * survives a filter change on purpose, so a confirm armed on the rows one
+ * filter showed would otherwise fire on the rows the next filter shows. The
+ * Set's identity says nothing (rebuilt on every toggle) and its size too
+ * little: dropping two rows and picking two others leaves the count as it was.
  */
-export function bulkSelectionKey(selection: BulkSelection): string {
-  return [...selection.selected].sort().join('\u0000');
+export function bulkSelectionKey(targetKeys: Iterable<string>): string {
+  return [...targetKeys].sort().join('\u0000');
 }
 
 /** ServerRowShell selection props for one row, or nothing outside select mode. */

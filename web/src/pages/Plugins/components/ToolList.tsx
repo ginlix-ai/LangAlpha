@@ -167,7 +167,7 @@ export function ToolList({
                 allState !== 'all',
               )
             }
-            className="text-[0.6875rem] hover:underline underline-offset-2"
+            className="text-xs hover:underline underline-offset-2"
             style={{ color: 'var(--color-text-tertiary)' }}
           >
             {t('plugins.detail.bulkSelectAll', { count: movableShown.length })}
@@ -177,7 +177,7 @@ export function ToolList({
               action, and repeating it here would be twice on one screen. */}
           {targets.length === 0 && (
             <span
-              className="text-[0.6875rem]"
+              className="text-xs"
               style={{ color: 'var(--color-text-quaternary)' }}
             >
               {t('plugins.detail.bulkSelectHint')}
@@ -241,10 +241,10 @@ function ToolPathLegend() {
   const { t } = useTranslation();
   return (
     <div className="flex flex-col gap-1">
-      <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
+      <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
         {t('plugins.detail.pathLegendTitle')}
       </p>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-[0.6875rem]">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-xs">
         {BINDING_PATHS.map((path) => (
           <Fragment key={path.binding}>
             <dt className="font-medium" style={{ color: 'var(--color-text-secondary)' }}>
@@ -272,7 +272,13 @@ function ToolFilter({
   const { t } = useTranslation();
   const label = t('plugins.detail.searchPlaceholder');
   return (
-    <div className="relative rings-within">
+    <div
+      className="relative rings-within owns-its-edge rounded-md"
+      style={{
+        backgroundColor: 'var(--color-bg-input)',
+        border: '1px solid var(--color-border-muted)',
+      }}
+    >
       <Search
         className="h-3 w-3 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
         style={{ color: 'var(--color-text-tertiary)' }}
@@ -284,12 +290,8 @@ function ToolFilter({
         placeholder={label}
         aria-label={label}
         spellCheck={false}
-        className="text-xs pl-7 pr-7 py-1.5 rounded-md w-full"
-        style={{
-          color: 'var(--color-text-primary)',
-          backgroundColor: 'var(--color-bg-input)',
-          border: '1px solid var(--color-border-muted)',
-        }}
+        className="text-xs pl-7 pr-7 py-1.5 w-full bg-transparent border-none"
+        style={{ color: 'var(--color-text-primary)' }}
       />
       {value && (
         <button
@@ -472,7 +474,7 @@ function ToolProse({ tool }: { tool: McpToolSummary }) {
   return (
     <div className="flex flex-col gap-0.5 min-w-0">
       <span
-        className="text-[0.6875rem] font-medium break-all"
+        className="text-xs font-medium break-all"
         style={{
           color: 'var(--color-text-secondary)',
           fontFamily: "'JetBrains Mono', 'Menlo', monospace",
@@ -482,7 +484,7 @@ function ToolProse({ tool }: { tool: McpToolSummary }) {
       </span>
       {tool.description && (
         <span
-          className="text-[0.6875rem] line-clamp-2"
+          className="text-xs line-clamp-2"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
           {tool.description}
@@ -577,14 +579,14 @@ function ToolBulkBar({
         }}
       >
         <span
-          className="text-[0.6875rem] font-medium"
+          className="text-xs font-medium"
           style={{ color: 'var(--color-text-primary)' }}
         >
           {t('plugins.detail.bulkSelected', { count, total })}
         </span>
         {/* The verb the segments are missing. Without it three words sit in a
             bar beside a count and say nothing about what pressing one does. */}
-        <span className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
+        <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
           {t('plugins.detail.bulkRunAs')}
         </span>
         <SegmentedControl
@@ -599,7 +601,7 @@ function ToolBulkBar({
           type="button"
           disabled={busy}
           onClick={onReset}
-          className="px-1.5 py-0.5 text-[0.6875rem] rounded transition-colors hover:bg-foreground/10 disabled:opacity-50"
+          className="px-1.5 py-0.5 text-xs rounded transition-colors hover:bg-foreground/10 disabled:opacity-50"
           style={{ color: 'var(--color-text-secondary)' }}
         >
           {t('plugins.detail.bulkReset')}
@@ -607,19 +609,19 @@ function ToolBulkBar({
         <button
           type="button"
           onClick={onClear}
-          className="px-1.5 py-0.5 text-[0.6875rem] rounded transition-colors hover:bg-foreground/10"
+          className="px-1.5 py-0.5 text-xs rounded transition-colors hover:bg-foreground/10"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
           {t('plugins.detail.bulkClear')}
         </button>
       </div>
       {skipped > 0 && (
-        <p className="pt-1 text-[0.625rem]" style={{ color: 'var(--color-text-quaternary)' }}>
+        <p className="pt-1 text-xs" style={{ color: 'var(--color-text-quaternary)' }}>
           {t('plugins.detail.bulkSkipped', { count: skipped })}
         </p>
       )}
       {error && (
-        <p role="alert" className="pt-1 text-[0.625rem]" style={{ color: 'var(--color-loss)' }}>
+        <p role="alert" className="pt-1 text-xs" style={{ color: 'var(--color-loss)' }}>
           {error}
         </p>
       )}

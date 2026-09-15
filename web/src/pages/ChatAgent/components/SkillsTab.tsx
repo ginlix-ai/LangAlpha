@@ -149,12 +149,14 @@ export function SkillsTab({ workspaceId }: { workspaceId: string }) {
         />
       )}
 
-      {uploadOpen && (
-        <SkillUploadModal
-          onClose={() => setUploadOpen(false)}
-          onUpload={(file, onProgress) => uploadMutation.mutateAsync({ file, onProgress })}
-        />
-      )}
+      <AnimatePresence>
+        {uploadOpen && (
+          <SkillUploadModal
+            onClose={() => setUploadOpen(false)}
+            onUpload={(file, onProgress) => uploadMutation.mutateAsync({ file, onProgress })}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

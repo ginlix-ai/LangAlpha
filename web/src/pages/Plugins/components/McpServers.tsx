@@ -682,6 +682,7 @@ export function McpServers() {
       {selection.selecting && (
         <BulkActionBar
           count={bulk.count}
+          selectionKey={bulk.selectionKey}
           actions={bulk.actions}
           scope={bulk.scope}
           progress={surface.progress}

@@ -301,7 +301,7 @@ export function ServerDetail({
       }
     >
       {description && (
-        <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+        <p className="text-sm leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
           {description}
         </p>
       )}
@@ -330,11 +330,11 @@ export function ServerDetail({
               onPatch={(body) => write(SERVER, body)}
             />
             {serverRefusal && (
-              <p role="alert" className="text-[0.6875rem]" style={{ color: 'var(--color-loss)' }}>
+              <p role="alert" className="text-xs" style={{ color: 'var(--color-loss)' }}>
                 {serverRefusal}
               </p>
             )}
-            <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-quaternary)' }}>
+            <p className="text-xs" style={{ color: 'var(--color-text-quaternary)' }}>
               {t('plugins.detail.toolAccessNote')}
             </p>
           </div>

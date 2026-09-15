@@ -14,6 +14,7 @@ export function PluginDialog({
   subtitle,
   onClose,
   dismissable = true,
+  footer,
   children,
 }: {
   title: string;
@@ -23,6 +24,8 @@ export function PluginDialog({
   /** False while the step owns work the user cannot get back by reopening —
    *  an install in flight, whose report is the only copy of what happened. */
   dismissable?: boolean;
+  /** Pinned under the scroll body. */
+  footer?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const titleId = useId();
@@ -34,7 +37,7 @@ export function PluginDialog({
       onClose={onClose}
       dismissable={dismissable}
       zIndex={1015}
-      bodyClassName="gap-0"
+      footer={footer}
     >
       {children}
     </ModalShell>

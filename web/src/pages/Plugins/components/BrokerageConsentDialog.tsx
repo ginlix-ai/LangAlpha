@@ -61,6 +61,36 @@ export function BrokerageConsentDialog({
     setGranted((selected) => toggleGrant(vendor, selected, key));
   }
 
+  const footer = (
+    <div className="flex items-center justify-end gap-2">
+      {/* Live while pending, unlike the toggles and Confirm beside it. The
+          request in flight is a registration at the vendor, not a connect,
+          and backing out of it costs the user nothing; a Cancel that greys
+          out the moment it is pressed leaves a slow vendor holding the
+          dialog open with no way out but the escape key. */}
+      <button
+        type="button"
+        onClick={onCancel}
+        className="px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10"
+        style={{ color: 'var(--color-text-tertiary)' }}
+      >
+        {t('plugins.servers.deleteConfirmNo')}
+      </button>
+      <button
+        type="button"
+        onClick={() => onConfirm(granted)}
+        disabled={pending}
+        className="px-3 py-1.5 text-xs rounded-md transition-colors disabled:opacity-50"
+        style={{
+          color: 'var(--color-btn-primary-text)',
+          backgroundColor: 'var(--color-btn-primary-bg)',
+        }}
+      >
+        {pending ? t('common.loading') : t('plugins.oauth.connect')}
+      </button>
+    </div>
+  );
+
   return (
     <PluginDialog
       title={t('plugins.brokerages.consent.title', { server: label })}
@@ -69,6 +99,7 @@ export function BrokerageConsentDialog({
       // The connect is running and the page is about to leave for the vendor;
       // closing here would strand a flow this dialog can no longer stop.
       dismissable={!pending}
+      footer={footer}
     >
       <div className="flex flex-col gap-4">
         {vendor?.exclusive_connection && (
@@ -96,7 +127,7 @@ export function BrokerageConsentDialog({
                       {groupLabel}
                     </p>
                     <p
-                      className="text-[0.6875rem] mt-0.5"
+                      className="text-xs mt-0.5"
                       style={{ color: 'var(--color-text-tertiary)' }}
                     >
                       {t(`plugins.brokerages.capabilities.${group.key}.desc`)}
@@ -105,7 +136,7 @@ export function BrokerageConsentDialog({
                         needs, and unticking that unticks this. */}
                     {(group.requires?.length ?? 0) > 0 && (
                       <p
-                        className="text-[0.6875rem] mt-0.5"
+                        className="text-xs mt-0.5"
                         style={{ color: 'var(--color-text-tertiary)' }}
                       >
                         {t(`plugins.brokerages.capabilities.${group.key}.needs`)}
@@ -130,33 +161,6 @@ export function BrokerageConsentDialog({
           {t('plugins.brokerages.consent.footnote')}
         </p>
 
-        <div className="flex items-center justify-end gap-2">
-          {/* Live while pending, unlike the toggles and Confirm beside it. The
-              request in flight is a registration at the vendor, not a connect,
-              and backing out of it costs the user nothing; a Cancel that greys
-              out the moment it is pressed leaves a slow vendor holding the
-              dialog open with no way out but the escape key. */}
-          <button
-            type="button"
-            onClick={onCancel}
-            className="px-3 py-1.5 rounded text-xs hover:bg-foreground/10"
-            style={{ color: 'var(--color-text-tertiary)' }}
-          >
-            {t('plugins.servers.deleteConfirmNo')}
-          </button>
-          <button
-            type="button"
-            onClick={() => onConfirm(granted)}
-            disabled={pending}
-            className="px-3 py-1.5 rounded text-xs disabled:opacity-50"
-            style={{
-              color: 'var(--color-btn-primary-text)',
-              backgroundColor: 'var(--color-btn-primary-bg)',
-            }}
-          >
-            {pending ? t('common.loading') : t('plugins.oauth.connect')}
-          </button>
-        </div>
       </div>
     </PluginDialog>
   );
