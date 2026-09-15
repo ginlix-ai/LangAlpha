@@ -17,7 +17,7 @@
  * balance: they are the thing most at risk.
  */
 import { test, expect, mockAPI } from './fixtures.js';
-import { keyboardFocus, outlineOn, tabTo, unpainted } from './helpers/focusPaint.js';
+import { edgeOn, keyboardFocus, outlineOn, tabTo, unpainted } from './helpers/focusPaint.js';
 
 // The account button in the sidebar footer, chosen because it is a plain
 // DropdownMenu over the shared ui/ wrapper -- whatever is true here is true of
@@ -243,6 +243,7 @@ const CLICKED = [
     // always-on pseudo-class, so it rang on a click for its own reasons.
     field: 'a shared ui/ Input',
     sel: SHARED_INPUT,
+    edge: true,
     open: async (page) => {
       await page.goto('/chat');
       await page.getByRole('button', { name: /new workspace/i }).first().click();
@@ -251,7 +252,7 @@ const CLICKED = [
 ];
 
 test.describe('a text field clicked with the mouse', () => {
-  for (const { field, sel, open } of CLICKED) {
+  for (const { field, sel, open, edge } of CLICKED) {
     test(`leaves no ring on ${field}`, async ({ page }) => {
       if (open) await open(page);
       const target = page.locator(sel);
@@ -268,7 +269,51 @@ test.describe('a text field clicked with the mouse', () => {
       const clicked = await outlineOn(page, sel);
       expect(clicked.focused).toBe(true);
       expect(unpainted(clicked.style, clicked.color)).toBe(true);
+      if (edge) {
+        // A bordered field marks the click with its edge, not a ring: the
+        // accent border and the one-pixel soft halo the focused-field rule in
+        // tokens.css draws. A ring-2 is 2px, so the width is the tell.
+        await expect.poll(() => edgeOn(page, sel)).toMatchObject({ accent: true, halo: true });
+      } else {
+        expect(clicked.shadow).toBe(resting.shadow);
+      }
+    });
+  }
+});
+
+/**
+ * The focused edge is a shadow, and a shadow draws on a field with no border
+ * as well: a faint rectangle inside a box that is already lit. So a borderless
+ * field inside an edge-owning box (the composer, the dashboard search form, a
+ * `rings-within` pill) must stay exactly as it rested, and the box is what
+ * takes the edge. This is the regression a global field rule reopens first.
+ */
+test.describe('a borderless field inside a box that owns the edge', () => {
+  const BOXED = [
+    { field: 'the chat composer', sel: COMPOSER, box: '.chat-input-container' },
+    { field: 'the dashboard search box', sel: SEARCH, box: '.dashboard-search-form' },
+    {
+      field: 'the Workspaces search box',
+      sel: WORKSPACE_SEARCH,
+      box: WORKSPACE_PILL,
+      open: (page) => page.goto('/chat'),
+    },
+  ];
+
+  for (const { field, sel, box, open } of BOXED) {
+    test(`keeps ${field} quiet and lights its box on a click`, async ({ page }) => {
+      if (open) await open(page);
+      const target = page.locator(sel);
+      await expect(target).toBeVisible();
+      const resting = await outlineOn(page, sel);
+
+      await target.click();
+      const clicked = await outlineOn(page, sel);
+      expect(clicked.focused).toBe(true);
+      expect(unpainted(clicked.style, clicked.color)).toBe(true);
       expect(clicked.shadow).toBe(resting.shadow);
+      // The boxes transition their edge, so the read waits for it to settle.
+      await expect.poll(() => edgeOn(page, box)).toMatchObject({ accent: true });
     });
   }
 });
@@ -362,12 +407,11 @@ test.describe('a field whose container is the indicator', () => {
     expect(await outlineOn(page, PILL)).toMatchObject({ style: 'solid' });
   });
 
-  test('leaves the pill unringed on a click', async ({ page }) => {
-    const resting = await outlineOn(page, PILL);
+  test('leaves the pill unringed on a click, wearing the edge instead', async ({ page }) => {
     await page.getByPlaceholder('Search workspaces...').click();
     const clicked = await outlineOn(page, PILL);
     expect(unpainted(clicked.style, clicked.color)).toBe(true);
-    expect(clicked.shadow).toBe(resting.shadow);
+    await expect.poll(() => edgeOn(page, PILL)).toMatchObject({ accent: true, halo: true });
   });
 
   test('leaves the field itself unringed either way, so the two never stack', async ({ page }) => {

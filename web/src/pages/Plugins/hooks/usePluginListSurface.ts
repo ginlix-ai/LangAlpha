@@ -10,9 +10,10 @@ import {
 
 /**
  * The list chrome every Plugins tab wears: the search box, the state pills,
- * select mode with its bulk runner, and the two verdicts that depend on all of
- * them — whether a deck must stay open, and whether a narrowed list has
- * anything left to show.
+ * select mode with its bulk runner, the verdicts that depend on all of them
+ * (must a deck stay open, has a narrowed list anything left to show, does a
+ * section survive the narrowing), and the one call that drops the narrowing
+ * again.
  *
  * The verdicts are the reason this is a hook rather than four `useState`s.
  * They were being re-derived per section, and MCP derived them from its own
@@ -48,6 +49,8 @@ export interface PluginListSurface {
    * the notice above already says why, and a bare header reads as a glitch.
    */
   keepsSection: (sectionRows: number) => boolean;
+  /** Drop both narrowing controls at once, the way the empty state offers. */
+  reset: () => void;
 }
 
 export function usePluginListSurface(
@@ -77,5 +80,9 @@ export function usePluginListSurface(
       matchesStateFilter(stateFilter, enabled, attention),
     noMatches: (visibleTotal) => narrowed && visibleTotal === 0,
     keepsSection: (sectionRows) => sectionRows > 0 || !narrowed,
+    reset: () => {
+      setFilter('');
+      setStateFilter('all');
+    },
   };
 }

@@ -5,7 +5,6 @@ import {
   validateArg,
   isValidSecretValue,
   collectVaultRefs,
-  SUGGESTED_COMMANDS,
   DESCRIPTION_MAX,
   INSTRUCTION_MAX,
 } from '../mcpSchemas';
@@ -39,19 +38,25 @@ describe('mcpSchemas — name shape', () => {
 });
 
 describe('mcpSchemas — command shape', () => {
-  it.each([...SUGGESTED_COMMANDS])('accepts suggested command %s', (command) => {
+  // Published MCP servers are launched every one of these ways, and the schema
+  // filters none of them out: running what the user asked for in their own
+  // sandbox beats making most of the ecosystem uninstallable.
+  it.each([
+    'npx',
+    'uvx',
+    'uv',
+    'python3',
+    'node',
+    'docker',
+    'deno',
+    'bun',
+    'go',
+    'java',
+    '/usr/local/bin/my-server',
+    './server',
+  ])('accepts command %s', (command) => {
     expect(validateMcpServer(stdio({ command })).ok).toBe(true);
   });
-
-  // Published MCP servers are launched every one of these ways. A picker that
-  // knows only the node/python ones makes the rest uninstallable, which is a
-  // worse outcome than running what the user asked for in their own sandbox.
-  it.each(['docker', 'deno', 'bun', 'go', 'java', '/usr/local/bin/my-server', './server'])(
-    'accepts unlisted command %s',
-    (command) => {
-      expect(validateMcpServer(stdio({ command })).ok).toBe(true);
-    },
-  );
 
   it.each([['empty', ''], ['blank', '   ']])('rejects %s command', (_label, command) => {
     expect(validateMcpServer(stdio({ command })).ok).toBe(false);
@@ -118,12 +123,32 @@ describe('mcpSchemas — secret value policy (vault-ref vs bare $VAR)', () => {
     expect(isValidSecretValue('')).toBe(true);
   });
 
+  it('rejects two spellings of one header name', () => {
+    const result = validateMcpServer(
+      http({ headers: { Authorization: 'Bearer a', authorization: 'Bearer b' } }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.map((e) => e.message)).toContain('header names must be unique case-insensitively');
+  });
+
+  it('keeps env names case-sensitive', () => {
+    const result = validateMcpServer(
+      stdio({ env: { Token: 'a', token: 'b' } }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts a ref embedded in a literal, the shape an auth header takes', () => {
+    expect(isValidSecretValue('Bearer ${vault:TOKEN}')).toBe(true);
+    expect(isValidSecretValue('use ${vault:X} here')).toBe(true);
+  });
+
   it.each([
     ['bare braced env', '${MY_TOKEN}'],
     ['bare dollar env', '$MY_TOKEN'],
     ['embedded bare env', 'prefix-${SECRET}-suffix'],
     ['malformed vault ref', '${vault:bad'],
-    ['partial vault ref text', 'use ${vault:X} here'],
+    ['malformed ref beside a good one', '${vault:A} ${vault:'],
   ])('rejects %s', (_label, value) => {
     expect(isValidSecretValue(value)).toBe(false);
   });

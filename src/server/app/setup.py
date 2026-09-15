@@ -1112,6 +1112,9 @@ from src.server.app.memory import router as memory_router
 from src.server.app.workflows import include_workflow_router
 from src.server.app.egress_relay import router as egress_relay_router
 from src.server.app.mcp_catalog import router as mcp_catalog_router
+from src.server.app.mcp_brokerages import router as mcp_brokerages_router
+from src.server.app.mcp_builtin import router as mcp_builtin_router
+from src.server.app.mcp_icons import router as mcp_icons_router
 from src.server.app.mcp_oauth import router as mcp_oauth_router
 from src.server.app.plugins import router as plugins_router
 from src.server.app.user_vault import router as user_vault_router
@@ -1202,6 +1205,15 @@ include_workflow_router(app)  # /api/v1/workflows/* - Reusable JavaScript workfl
 app.include_router(
     mcp_catalog_router
 )  # /api/v1/mcp/servers - User-level MCP servers (Plugins backing store)
+app.include_router(
+    mcp_builtin_router
+)  # /api/v1/mcp/builtin-servers - This build's own MCP servers, per-user toggle
+app.include_router(
+    mcp_brokerages_router
+)  # /api/v1/mcp/brokerages - Shipped brokerage connectors
+app.include_router(
+    mcp_icons_router
+)  # /api/v1/mcp/server-icons/{handle} - Marks MCP servers declare, proxied
 app.include_router(
     mcp_oauth_router
 )  # /api/v1/mcp/servers/{name}/oauth + /api/v1/mcp/oauth/callback - MCP OAuth

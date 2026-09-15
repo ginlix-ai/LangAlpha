@@ -77,6 +77,19 @@ describe('workspace vault mutations refresh the workspace MCP list', () => {
     );
     expect(keys).toContainEqual(queryKeys.mcp.workspace(WS));
   });
+
+  // A probe verdict is an answer about one vault, cached with staleTime:
+  // Infinity, so `missing_secrets` outlives the secret that answers it unless
+  // this scope's verdicts are dropped. Only this scope: a sibling workspace's
+  // vault has not changed.
+  it('drops this workspace scope of probe verdicts and no other', async () => {
+    const keys = await invalidatedBy(
+      () => useCreateWorkspaceVaultSecret(WS),
+      (m) => m.mutateAsync({ name: 'K', value: 'v' }),
+    );
+    expect(keys).toContainEqual(queryKeys.mcp.probes(WS));
+    expect(keys).not.toContainEqual(queryKeys.mcp.probes('ws-2'));
+  });
 });
 
 describe('user vault mutations refresh catalog and workspace MCP lists', () => {
@@ -104,5 +117,12 @@ describe('user vault mutations refresh catalog and workspace MCP lists', () => {
       (m) => m.mutateAsync('K'),
     );
     expect(keys).toContainEqual(queryKeys.mcp.all);
+  });
+
+  // Probe verdicts ride under that prefix, in every scope: a user-tier secret
+  // resolves for a workspace probe too, so all of them just changed answer.
+  it('covers every scope of probe verdicts through the prefix', () => {
+    expect(queryKeys.mcp.probes(WS).slice(0, queryKeys.mcp.all.length)).toEqual(queryKeys.mcp.all);
+    expect(queryKeys.mcp.probes('').slice(0, queryKeys.mcp.all.length)).toEqual(queryKeys.mcp.all);
   });
 });

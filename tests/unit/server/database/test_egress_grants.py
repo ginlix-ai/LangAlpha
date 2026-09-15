@@ -22,9 +22,12 @@ from unittest.mock import patch
 import pytest
 
 from src.server.database.egress_grants import (
+    GRANT_KIND_HEADER_MCP,
     GRANT_KIND_OAUTH_MCP,
+    GrantRef,
+    apply_binding_to_active_header_grants,
     apply_consent_to_active_grants,
-    sync_oauth_grants,
+    sync_egress_grants,
 )
 from src.server.services.writer_guard import advisory_key
 
@@ -59,6 +62,14 @@ class _Cursor:
         self.server_urls: dict[str, str] = {}
         # connection_id -> stored granted_capabilities; absent means NULL.
         self.capabilities: dict[str, list[str] | None] = {}
+        # connection_id -> the catalog row it belongs to, so the header
+        # upsert's "this row is somebody's OAuth grant already" predicate has
+        # something to see.
+        self.connection_names: dict[str, str] = {}
+        # name -> the catalog row, as ``user_mcp_servers`` holds it. Only rows
+        # listed here exist; ``enabled``/``transport``/``url`` default to what
+        # a live remote row says so a test only states what it changes.
+        self.servers: dict[str, dict] = {}
         self.grants: dict[tuple, dict] = {}  # (workspace, kind, conn) -> row
         self._rows: list[dict] = []
         self._row: dict | None = None
@@ -88,10 +99,72 @@ class _Cursor:
                         connection_id, "https://mcp.example.com/own"
                     ),
                     "granted_capabilities": self.capabilities.get(connection_id),
+                    **self._joined(connection_id),
                 }
                 for connection_id in wanted
                 if self._connections.get(connection_id) == owner
             ]
+        elif sql.lstrip().startswith("SELECT") and "user_mcp_servers s" in sql:
+            # The header policy read, under the same owner predicate its
+            # INSERT uses.
+            owner, wanted = params
+            self._rows = [
+                {"name": name, **self._server(name)}
+                for name in wanted
+                if self.servers.get(name, {}).get("user_id", OWNER) == owner
+                and name in self.servers
+            ]
+        elif sql.lstrip().startswith("INSERT") and "kind, server_name" in sql:
+            (
+                _user_id, workspace_id, kind,
+                policy_names, denylists, allowlists, policy_required, direct_only,
+                owner, server_names, revoked,
+            ) = params
+            policy = dict(
+                zip(
+                    policy_names,
+                    zip(
+                        denylists, allowlists, policy_required, direct_only,
+                        strict=True,
+                    ),
+                )
+            )
+            self._rows = []
+            for name in server_names:
+                server = self.servers.get(name)
+                # The source SELECT, predicate for predicate: the row must
+                # exist, be this user's, be live, be streamable HTTP (the one
+                # transport the relay dials), have an address, and carry no
+                # OAuth connection short of a revoked one.
+                if server is None or server.get("user_id", OWNER) != owner:
+                    continue
+                row = self._server(name)
+                if not row["enabled"] or row["transport"] != "http":
+                    continue
+                if not row["url"]:
+                    continue
+                if any(
+                    self._connections.get(cid) == owner
+                    and self.statuses.get(cid, "connected") != revoked
+                    for cid, cname in self.connection_names.items()
+                    if cname == name
+                ):
+                    continue
+                grant = self.grants.setdefault(
+                    (workspace_id, kind, name),
+                    {"grant_id": f"grant-for-{name}", "status": "revoked"},
+                )
+                grant["status"] = "active"
+                grant["destination_url"] = row["url"]
+                (
+                    grant["tool_denylist"],
+                    grant["tool_allowlist"],
+                    grant["policy_required"],
+                    grant["tool_direct_only"],
+                ) = policy.get(name, (None, None, False, None))
+                self._rows.append(
+                    {"server_name": name, "grant_id": grant["grant_id"]}
+                )
         elif sql.lstrip().startswith("INSERT"):
             # The servable list is unpacked as optional on purpose: the fake
             # filters on status only while the statement actually binds one, so
@@ -140,19 +213,46 @@ class _Cursor:
                     {"connection_id": connection_id, "grant_id": row["grant_id"]}
                 )
         else:
-            workspace_id, kind, keep = params
+            workspace_id, keep = params
             self._rows = []
+            # Every kind, not this call's: the set being replaced belongs to
+            # the workspace, so a grant of another kind the refs no longer name
+            # is the same overhang.
             stale = [
                 row
-                for (ws, k, _c), row in self.grants.items()
+                for (ws, _k, _subject), row in self.grants.items()
                 if ws == workspace_id
-                and k == kind
                 and row["status"] == "active"
                 and row["grant_id"] not in keep
             ]
             for row in stale:
                 row["status"] = "revoked"
             self.rowcount = len(stale)
+
+    def _joined(self, connection_id: str) -> dict:
+        """The ``user_mcp_servers`` half of the policy read's LEFT JOIN.
+
+        A connection is always held by a catalog row, and only an ``http`` row
+        can hold one, so a test that registers no row still joins onto what an
+        untouched live remote row says.
+        """
+        row = self._server(self.connection_names.get(connection_id, ""))
+        return {
+            k: row[k]
+            for k in ("transport", "tool_binding", "binding_preset", "order_approval")
+        }
+
+    def _server(self, name: str) -> dict:
+        """One catalog row, filled out the way an untouched live remote row is."""
+        stored = self.servers.get(name) or {}
+        return {
+            "url": stored.get("url", f"https://{name}.example.test/mcp"),
+            "enabled": stored.get("enabled", True),
+            "transport": stored.get("transport", "http"),
+            "tool_binding": stored.get("tool_binding") or {},
+            "binding_preset": stored.get("binding_preset"),
+            "order_approval": stored.get("order_approval") or {},
+        }
 
     async def fetchall(self) -> list[dict]:
         return self._rows
@@ -166,16 +266,11 @@ class _Cursor:
     def grant_writes(self) -> list[tuple[str, tuple, int]]:
         """Only the statements that touch grant rows — the prep reads excluded.
 
-        The policy read is one of those: it reads the connections table to
-        decide what each grant may permit, and writes no grant row itself.
+        The policy reads are those: they read the connection or the catalog row
+        to decide what each grant may permit, and write no grant row
+        themselves.
         """
-        return [
-            s
-            for s in self.statements
-            if "pg_advisory_xact_lock" not in s[0]
-            and "mcp_config_version" not in s[0]
-            and "granted_capabilities" not in s[0]
-        ]
+        return [s for s in self.statements if "sandbox_egress_grants" in s[0]]
 
 
 @pytest.fixture
@@ -208,10 +303,21 @@ def db():
 
 
 async def _sync(user_id: str, *connection_ids: str, config_version: int = VERSION):
-    return await sync_oauth_grants(
+    return await _sync_refs(
+        user_id,
+        [
+            GrantRef(GRANT_KIND_OAUTH_MCP, f"server-{c}", connection_id=c)
+            for c in connection_ids
+        ],
+        config_version=config_version,
+    )
+
+
+async def _sync_refs(user_id: str, refs, *, config_version: int = VERSION):
+    return await sync_egress_grants(
         user_id=user_id,
         workspace_id=WORKSPACE_ID,
-        connection_ids=list(connection_ids),
+        refs=list(refs),
         config_version=config_version,
     )
 
@@ -220,7 +326,9 @@ class TestOwnership:
     @pytest.mark.asyncio
     async def test_the_owner_gets_a_grant(self, db):
         synced = await _sync(OWNER, CONNECTION_ID)
-        assert synced.grants == {CONNECTION_ID: f"grant-for-{CONNECTION_ID}"}
+        assert synced.grants == {
+            (GRANT_KIND_OAUTH_MCP, CONNECTION_ID): f"grant-for-{CONNECTION_ID}"
+        }
 
     @pytest.mark.asyncio
     async def test_another_users_connection_yields_no_grant(self, db):
@@ -237,7 +345,9 @@ class TestOwnership:
     @pytest.mark.asyncio
     async def test_one_bad_id_does_not_cost_the_others_their_grants(self, db):
         synced = await _sync(OWNER, UNKNOWN_CONNECTION_ID, CONNECTION_ID)
-        assert synced.grants == {CONNECTION_ID: f"grant-for-{CONNECTION_ID}"}
+        assert synced.grants == {
+            (GRANT_KIND_OAUTH_MCP, CONNECTION_ID): f"grant-for-{CONNECTION_ID}"
+        }
 
     @pytest.mark.asyncio
     async def test_the_predicate_is_in_the_sql_not_the_caller(self, db):
@@ -290,7 +400,9 @@ class TestConnectionStatusFilter:
 
         synced = await _sync(OWNER, CONNECTION_ID)
 
-        assert synced.grants == {CONNECTION_ID: f"grant-for-{CONNECTION_ID}"}
+        assert synced.grants == {
+            (GRANT_KIND_OAUTH_MCP, CONNECTION_ID): f"grant-for-{CONNECTION_ID}"
+        }
 
     @pytest.mark.asyncio
     async def test_a_revoked_connections_grant_is_retired_not_reactivated(self, db):
@@ -300,7 +412,11 @@ class TestConnectionStatusFilter:
         # The stale catalog still names it, so the resolver still asks for it.
         synced = await _sync(OWNER, CONNECTION_ID, OTHER_CONNECTION_ID)
 
-        assert synced.grants == {OTHER_CONNECTION_ID: f"grant-for-{OTHER_CONNECTION_ID}"}
+        assert synced.grants == {
+            (GRANT_KIND_OAUTH_MCP, OTHER_CONNECTION_ID): (
+                f"grant-for-{OTHER_CONNECTION_ID}"
+            )
+        }
         assert synced.retired == 1
         assert db.active_grant_ids() == {f"grant-for-{OTHER_CONNECTION_ID}"}
 
@@ -400,7 +516,9 @@ class TestConfigVersionCAS:
     async def test_a_matching_version_proceeds(self, db):
         synced = await _sync(OWNER, CONNECTION_ID, config_version=VERSION)
         assert synced is not None
-        assert synced.grants == {CONNECTION_ID: f"grant-for-{CONNECTION_ID}"}
+        assert synced.grants == {
+            (GRANT_KIND_OAUTH_MCP, CONNECTION_ID): f"grant-for-{CONNECTION_ID}"
+        }
 
     @pytest.mark.asyncio
     async def test_a_deleted_workspace_replaces_nothing(self, db):
@@ -572,6 +690,155 @@ class TestToolPolicy:
         assert {"trading_order_place", "quote_stock_quote"} <= denied
 
 
+class TestHeaderGrants:
+    """The second kind: a catalog row that authenticates with its own headers.
+
+    Which rows are *offered* here is ``grant_scope``'s answer; what this layer
+    owes is that the offer is checked against the row rather than taken on
+    trust, exactly as the OAuth half checks the connection. The row supplies
+    the destination, and a row that is not this user's, not live, not remote or
+    already somebody's OAuth grant produces nothing.
+    """
+
+    def _ref(self, name: str = "fuyao_meta") -> GrantRef:
+        return GrantRef(GRANT_KIND_HEADER_MCP, name)
+
+    @pytest.mark.asyncio
+    async def test_a_live_remote_row_gets_a_grant_pinned_to_its_address(self, db):
+        db.servers["fuyao_meta"] = {"url": "https://fuyao.example.test/mcp"}
+
+        synced = await _sync_refs(OWNER, [self._ref()])
+
+        assert synced.grants == {
+            (GRANT_KIND_HEADER_MCP, "fuyao_meta"): "grant-for-fuyao_meta"
+        }
+        row = db.grants[(WORKSPACE_ID, GRANT_KIND_HEADER_MCP, "fuyao_meta")]
+        # The address comes from the row inside the INSERT, never from the
+        # caller: there is no destination parameter to pass.
+        assert row["destination_url"] == "https://fuyao.example.test/mcp"
+
+    @pytest.mark.asyncio
+    async def test_a_row_that_is_not_in_the_catalog_gets_nothing(self, db):
+        assert (await _sync_refs(OWNER, [self._ref()])).grants == {}
+
+    @pytest.mark.asyncio
+    async def test_another_users_row_gets_nothing(self, db):
+        db.servers["fuyao_meta"] = {"user_id": INTRUDER}
+        assert (await _sync_refs(OWNER, [self._ref()])).grants == {}
+
+    @pytest.mark.asyncio
+    async def test_a_disabled_row_gets_nothing(self, db):
+        """The upsert reactivates, so the predicate has to be in the statement.
+
+        Without it a row switched off between the resolve and this write would
+        have its previous grant flipped back to active.
+        """
+        db.servers["fuyao_meta"] = {"enabled": False}
+        assert (await _sync_refs(OWNER, [self._ref()])).grants == {}
+
+    @pytest.mark.asyncio
+    async def test_a_stdio_row_gets_nothing(self, db):
+        """There is no address for the relay to dial, so there is no grant."""
+        db.servers["fuyao_meta"] = {"transport": "stdio", "url": ""}
+        assert (await _sync_refs(OWNER, [self._ref()])).grants == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["connected", "refresh_ambiguous", "needs_reauth"])
+    async def test_a_row_with_a_connection_gets_nothing(self, db, status):
+        """One row, one credential: while a connection claims the row, it is
+        the grant, servable or not.
+
+        Both kinds at once would leave the relay holding two answers for one
+        address, and the second one would spend a credential the user last
+        consented to somewhere else. An expired token is not a disconnect:
+        the user was told the row's headers are not sent while it is
+        connected, and only revoking says otherwise.
+        """
+        db.connection_names[CONNECTION_ID] = "fuyao_meta"
+        db.statuses[CONNECTION_ID] = status
+        db.servers["fuyao_meta"] = {}
+        assert (await _sync_refs(OWNER, [self._ref()])).grants == {}
+
+    @pytest.mark.asyncio
+    async def test_a_revoked_connection_leaves_the_row_to_its_headers(self, db):
+        db.connection_names[CONNECTION_ID] = "fuyao_meta"
+        db.statuses[CONNECTION_ID] = "revoked"
+        db.servers["fuyao_meta"] = {}
+        assert (await _sync_refs(OWNER, [self._ref()])).grants == {
+            (GRANT_KIND_HEADER_MCP, "fuyao_meta"): "grant-for-fuyao_meta"
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_row_decides_which_tools_the_sandbox_may_not_call(self, db):
+        """The direct set is the row's own binding map, since it has no consent.
+
+        It is what the relay refuses a sandbox caller, and it is the reason the
+        policy is computed for this kind at all.
+        """
+        db.servers["fuyao_meta"] = {"tool_binding": {"list_markets": "direct"}}
+
+        await _sync_refs(OWNER, [self._ref()])
+
+        row = db.grants[(WORKSPACE_ID, GRANT_KIND_HEADER_MCP, "fuyao_meta")]
+        assert set(json.loads(row["tool_direct_only"])) == {"list_markets"}
+        # Nothing curates this address, so there is no denial to carry.
+        assert row["tool_denylist"] is None
+        assert row["policy_required"] is False
+
+    @pytest.mark.asyncio
+    async def test_the_insert_carries_every_predicate_the_fake_models(self, db):
+        """The fake reimplements this SELECT's predicates, so only the
+        statement text can prove the SQL still spells them.
+
+        Dropping ``s.enabled = TRUE`` from the INSERT fails nothing else here:
+        the cursor would keep filtering on its own copy and every test above
+        would stay green while a disabled row got its grant back.
+        """
+        db.servers["fuyao_meta"] = {}
+        await _sync_refs(OWNER, [self._ref()])
+
+        insert = next(
+            sql
+            for sql, _params, _depth in db.grant_writes()
+            if sql.lstrip().startswith("INSERT") and "kind, server_name" in sql
+        )
+        for predicate in (
+            "s.enabled = TRUE",
+            "s.transport = 'http'",
+            "COALESCE(s.url, '') <> ''",
+            "NOT EXISTS",
+            "c.status <> %s",
+        ):
+            assert predicate in insert
+
+    @pytest.mark.asyncio
+    async def test_retirement_sweeps_both_kinds_together(self, db):
+        """The set being replaced is the workspace's, not one kind's.
+
+        A sweep scoped to the kind being written would leave the other kind's
+        grants active for a workspace that no longer resolves them, which is
+        the overhang the whole-set replacement exists to close.
+        """
+        db.servers["fuyao_meta"] = {}
+        await _sync_refs(
+            OWNER,
+            [
+                self._ref(),
+                GrantRef(
+                    GRANT_KIND_OAUTH_MCP, "server-conn", connection_id=CONNECTION_ID
+                ),
+            ],
+        )
+        assert db.active_grant_ids() == {
+            "grant-for-fuyao_meta", f"grant-for-{CONNECTION_ID}"
+        }
+
+        synced = await _sync_refs(OWNER, [self._ref()])
+
+        assert synced.retired == 1
+        assert db.active_grant_ids() == {"grant-for-fuyao_meta"}
+
+
 class TestApplyConsentToActiveGrants:
     """Narrowing consent has to bite when the user confirms it.
 
@@ -732,7 +999,7 @@ class TestApplyConsentToActiveGrants:
     async def test_it_takes_the_syncs_own_lock_before_it_reads(self):
         """Otherwise the sync it races writes the pre-narrowing policy back.
 
-        ``sync_oauth_grants`` reads the connection's consent inside its
+        ``sync_egress_grants`` reads the connection's consent inside its
         transaction and writes the grant from it. Interleaved, this update lands
         between those two and the sync's upsert overwrites it -- and no version
         bump can save it, because the sync CASed successfully before any of this
@@ -747,3 +1014,106 @@ class TestApplyConsentToActiveGrants:
         assert all(s[2] > 0 for s in locks)
         assert update[2] > 0
         assert statements.index(update) > statements.index(locks[-1])
+
+
+HEADER_SERVER = "fund_desk"
+
+
+class TestApplyBindingToActiveHeaderGrants:
+    """The header half of the same contract, keyed by the row instead.
+
+    ``apply_consent_to_active_grants`` matches on ``connection_id``, so it
+    reaches no grant of a row that authenticates with its own headers. A
+    binding change still has to bite at once: the relay reads the grant, so a
+    tool moved onto the direct path stayed callable from a sandbox already
+    holding one until some later sync happened to run.
+    """
+
+    @staticmethod
+    def _db(row: dict | None):
+        statements: list[tuple[str, tuple, int]] = []
+        depth = [0]
+
+        class _C:
+            rowcount = 1
+
+            async def execute(self, sql, params=None):
+                statements.append((sql, params, depth[0]))
+
+            async def fetchone(self):
+                return row
+
+        @asynccontextmanager
+        async def _cursor_cm(**kwargs):
+            yield _C()
+
+        @asynccontextmanager
+        async def _transaction():
+            depth[0] += 1
+            try:
+                yield
+            finally:
+                depth[0] -= 1
+
+        class _Conn:
+            cursor = staticmethod(_cursor_cm)
+            transaction = staticmethod(_transaction)
+
+        @asynccontextmanager
+        async def _fake_db(conn=None):
+            yield _Conn()
+
+        return _fake_db, statements
+
+    async def _run(self, row: dict | None):
+        fake, statements = self._db(row)
+        with patch("src.server.database.egress_grants.get_db_connection", new=fake):
+            count = await apply_binding_to_active_header_grants(OWNER, HEADER_SERVER)
+        return count, statements
+
+    @staticmethod
+    def _row(**over):
+        row = {
+            "url": "https://mcp.example.com/own",
+            "transport": "http",
+            "tool_binding": {"desk_quote": "direct"},
+            "binding_preset": None,
+            "order_approval": None,
+        }
+        row.update(over)
+        return row
+
+    @pytest.mark.asyncio
+    async def test_it_writes_the_direct_set_the_row_now_records(self):
+        count, statements = await self._run(self._row())
+        update = next(s for s in statements if s[0].lstrip().startswith("UPDATE"))
+        _, _, _, direct_only, user_id, kind, name = update[1]
+        assert count == 1
+        assert json.loads(direct_only) == ["desk_quote"]
+        # Keyed the way a header grant is: the owner, the kind and the row's
+        # name, never a connection.
+        assert (user_id, kind, name) == (OWNER, GRANT_KIND_HEADER_MCP, HEADER_SERVER)
+        assert "status = 'active'" in update[0]
+
+    @pytest.mark.asyncio
+    async def test_a_tool_moved_off_the_direct_path_stops_being_excluded(self):
+        """Idempotent in both directions, or the sandbox stays shut out."""
+        _, statements = await self._run(self._row(tool_binding={"desk_quote": "ptc"}))
+        update = next(s for s in statements if s[0].lstrip().startswith("UPDATE"))
+        assert update[1][3] is None
+
+    @pytest.mark.asyncio
+    async def test_it_takes_the_owners_lock_and_holds_it_over_the_write(self):
+        _, statements = await self._run(self._row())
+        locks = [s for s in statements if "pg_advisory_xact_lock" in s[0]]
+        assert [s[1][0] for s in locks] == [advisory_key("EGU", OWNER)]
+        update = next(s for s in statements if s[0].lstrip().startswith("UPDATE"))
+        assert all(s[2] > 0 for s in locks)
+        assert statements.index(update) > statements.index(locks[-1])
+
+    @pytest.mark.asyncio
+    async def test_a_row_that_is_gone_writes_nothing(self):
+        count, statements = await self._run(None)
+        assert count == 0
+        assert not any(s[0].lstrip().startswith("UPDATE") for s in statements)
+

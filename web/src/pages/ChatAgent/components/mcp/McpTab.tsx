@@ -20,7 +20,12 @@ import {
   useCreateWorkspaceVaultSecret,
 } from '@/hooks/useWorkspaceVault';
 import { toast } from '@/components/ui/use-toast';
-import { formatApiErrorDetail, type EffectiveServer, type McpServerInput } from '../../utils/api';
+import {
+  formatApiErrorDetail,
+  probeMcpServer,
+  type EffectiveServer,
+  type McpServerInput,
+} from '../../utils/api';
 import { McpServerRow } from './McpServerRow';
 import { McpServerModal } from './McpServerModal';
 import { McpImportModal } from './McpImportModal';
@@ -363,26 +368,32 @@ export function McpTab({ workspaceId, onOpenVaultTab }: McpTabProps) {
           )}
       </div>
 
-      {modalOpen && (
-        <McpServerModal
-          secretNames={secretNames}
-          initial={editing}
-          allowDiscover={!!editing && sandboxRunning}
-          onClose={closeModal}
-          onSubmit={submit}
-          onDiscover={editing ? handleDiscoverFromModal : undefined}
-          createSecret={createSecretMutation.mutateAsync}
-          saving={addMutation.isPending || updateMutation.isPending}
-          submitError={submitError}
-        />
-      )}
+      <AnimatePresence>
+        {modalOpen && (
+          <McpServerModal
+            secretNames={secretNames}
+            initial={editing}
+            allowDiscover={!!editing && sandboxRunning}
+            onClose={closeModal}
+            onSubmit={submit}
+            onDiscover={editing ? handleDiscoverFromModal : undefined}
+            onProbe={(body, signal) => probeMcpServer({ ...body, workspace_id: workspaceId }, signal)}
+            probeScope={workspaceId}
+            createSecret={createSecretMutation.mutateAsync}
+            saving={addMutation.isPending || updateMutation.isPending}
+            submitError={submitError}
+          />
+        )}
+      </AnimatePresence>
 
-      {importOpen && (
-        <McpImportModal
-          onClose={closeImport}
-          onImport={(payload) => importMutation.mutateAsync(payload)}
-        />
-      )}
+      <AnimatePresence>
+        {importOpen && (
+          <McpImportModal
+            onClose={closeImport}
+            onImport={(payload) => importMutation.mutateAsync(payload)}
+          />
+        )}
+      </AnimatePresence>
 
     </div>
   );

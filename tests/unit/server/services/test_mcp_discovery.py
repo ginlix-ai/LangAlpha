@@ -734,13 +734,25 @@ class TestToolSnapshotIndex:
         )
         assert [t["name"] for t in index.ok(srv)["tools"]] == ["fresh"]
 
-    def test_rejected_user_row_does_not_fall_through_to_the_workspace_tier(self):
-        # The workspace snapshot of an OAuth server is OAuth-blind and can
-        # outlive a disconnect — serving it after the user tier said "error"
-        # is exactly the staleness the precedence exists to prevent.
+    def test_a_rejected_user_row_falls_through_to_the_workspace_tier(self):
+        # Every remote row gets a user-tier row from the host-side probe now,
+        # so a host probe that failed would otherwise hide the snapshot the
+        # sandbox wrote and drop the server from both paths.
         srv = self._srv(source="user")
         index = ToolSnapshotIndex(
-            workspace_rows=[self._row(srv, tools=[_tool("stale")])],
+            workspace_rows=[self._row(srv, tools=[_tool("in_sandbox")])],
+            user_rows=[self._row(srv, status="error")],
+        )
+        assert [t["name"] for t in index.ok(srv)["tools"]] == ["in_sandbox"]
+
+    def test_an_oauth_server_reads_its_user_tier_alone(self):
+        # A user-tier error row on an OAuth server says the token is dead, and
+        # the workspace snapshot under it was taken before the connection
+        # existed (the fingerprint is OAuth-exempt, so it still matches).
+        # Falling through would bind tools no call can reach.
+        srv = self._srv(source="user", oauth_connection_id="conn-1")
+        index = ToolSnapshotIndex(
+            workspace_rows=[self._row(srv, tools=[_tool("in_sandbox")])],
             user_rows=[self._row(srv, status="error")],
         )
         assert index.ok(srv) is None

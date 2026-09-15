@@ -7,7 +7,12 @@ import { renderWithProviders } from '@/test/utils';
 import type { CatalogServer, CatalogServerList } from '@/pages/ChatAgent/utils/api';
 // Aliased rather than wrapped: the field list is shared, the name this file
 // already calls it by is not worth churning 21 call sites over.
-import { catalogServer as makeCatalogServer, httpCatalogServer } from '@/test/factories';
+import {
+  catalogProbe,
+  catalogServer as makeCatalogServer,
+  httpCatalogServer,
+} from '@/test/factories';
+import { PROBE_KICK_WINDOW_MS } from '@/pages/ChatAgent/components/mcp/mcpState';
 
 /**
  * The Plugins → MCP tab, `Your servers` list. Every mutation here is fire-and-report: the
@@ -388,6 +393,78 @@ describe('McpServers — delete', () => {
 // OAuth connect / reconnect
 // ---------------------------------------------------------------------------
 
+/**
+ * What the host-side check tells a row. The verdict is computed on the server
+ * -- the only side that knows whether a credential was sent -- so the row reads
+ * one word and never re-derives it from a status code.
+ */
+describe('McpServers: what the probe verdict does to a row', () => {
+  it('takes the Connect button away from a server that turned out to be open', () => {
+    catalogData = makeCatalog([makeOauthServer({ probe: catalogProbe({ verdict: 'ok' }) })]);
+    renderWithProviders(<McpServers />);
+    expect(screen.queryByRole('button', { name: /^connect$/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/checking/i)).not.toBeInTheDocument();
+  });
+
+  it('keeps it, and says why, for a server that asked for OAuth', () => {
+    catalogData = makeCatalog([makeOauthServer({ probe: catalogProbe({ verdict: 'oauth' }) })]);
+    renderWithProviders(<McpServers />);
+    expect(screen.getByRole('button', { name: /^connect$/i })).toBeInTheDocument();
+    expect(screen.getByText(/connect to list tools/i)).toBeInTheDocument();
+  });
+
+  it('warns with what the wire said when the address does not answer', () => {
+    catalogData = makeCatalog([
+      makeOauthServer({
+        probe: catalogProbe({ verdict: 'unreachable', error: 'getaddrinfo ENOTFOUND' }),
+      }),
+    ]);
+    renderWithProviders(<McpServers />);
+    expect(screen.getByText('getaddrinfo ENOTFOUND')).toBeInTheDocument();
+  });
+
+  it('separates a rejected credential from an absent one', () => {
+    catalogData = makeCatalog([
+      makeOauthServer({ name: 'rejected', probe: catalogProbe({ verdict: 'credential_rejected' }) }),
+      makeOauthServer({ name: 'wanted', probe: catalogProbe({ verdict: 'needs_credential' }) }),
+    ]);
+    renderWithProviders(<McpServers />);
+    expect(screen.getByText(/credential rejected/i)).toBeInTheDocument();
+    expect(screen.getByText(/needs a credential/i)).toBeInTheDocument();
+  });
+
+  // "checking" is a promise that a verdict is on its way, and it is only true
+  // while the list is still asking for one. Told to every remote row without a
+  // verdict, it was a sentence a row nobody ever probed wore for the life of
+  // the tab.
+  it('says a row is still being checked while the kick can still land', () => {
+    catalogData = makeCatalog([
+      makeOauthServer({ probe_kicked_at: new Date().toISOString() }),
+    ]);
+    renderWithProviders(<McpServers />);
+    expect(screen.getByText(/checking/i)).toBeInTheDocument();
+  });
+
+  it('goes quiet once the kick has aged out, and still offers Connect', () => {
+    catalogData = makeCatalog([
+      makeOauthServer({
+        probe_kicked_at: new Date(Date.now() - PROBE_KICK_WINDOW_MS - 1_000).toISOString(),
+      }),
+    ]);
+    renderWithProviders(<McpServers />);
+    expect(screen.queryByText(/checking/i)).not.toBeInTheDocument();
+    // A row with no verdict is still a row the user may connect: the gate is
+    // deliberately lenient about one, and going quiet must not tighten it.
+    expect(screen.getByRole('button', { name: /^connect$/i })).toBeInTheDocument();
+  });
+
+  it('says nothing at all about a row nothing ever kicked a probe for', () => {
+    catalogData = makeCatalog([makeOauthServer({ probe_kicked_at: null })]);
+    renderWithProviders(<McpServers />);
+    expect(screen.queryByText(/checking/i)).not.toBeInTheDocument();
+  });
+});
+
 describe('McpServers — OAuth connect affordance', () => {
   it('offers Connect on a never-connected remote server and navigates to the vendor', async () => {
     catalogData = makeCatalog([makeOauthServer({ oauth_status: null })]);
@@ -495,7 +572,7 @@ describe('McpServers — OAuth connect affordance', () => {
     );
   });
 
-  it('starts nothing when the user backs out of it', () => {
+  it('starts nothing when the user backs out of it', async () => {
     brokerages = [EXCLUSIVE_VENDOR];
     catalogData = makeCatalog([
       makeOauthServer({ name: 'ibkr', url: EXCLUSIVE_VENDOR.url, oauth_status: null }),
@@ -507,7 +584,10 @@ describe('McpServers — OAuth connect affordance', () => {
       within(screen.getByRole('dialog')).getByRole('button', { name: /cancel/i }),
     );
 
-    expect(screen.queryByText(/replaces whichever one is connected now/i)).toBeNull();
+    // The dialog leaves after its exit animation.
+    await waitFor(() =>
+      expect(screen.queryByText(/replaces whichever one is connected now/i)).toBeNull(),
+    );
     expect(mockStartMcpOauth).not.toHaveBeenCalled();
   });
 
@@ -817,6 +897,7 @@ describe('McpServers — create and edit', () => {
     renderWithProviders(<McpServers />);
 
     fireEvent.click(screen.getByRole('button', { name: /add server/i }));
+    fireEvent.change(screen.getByTestId('mcp-entry'), { target: { value: 'npx -y @scope/thing' } });
     fireEvent.change(screen.getByPlaceholderText('my_server'), { target: { value: 'new_server' } });
     fireEvent.click(screen.getByRole('button', { name: /^add$/i }));
 
@@ -832,6 +913,7 @@ describe('McpServers — create and edit', () => {
     renderWithProviders(<McpServers />);
 
     fireEvent.click(screen.getByRole('button', { name: /add server/i }));
+    fireEvent.change(screen.getByTestId('mcp-entry'), { target: { value: 'npx -y @scope/thing' } });
     fireEvent.change(screen.getByPlaceholderText('my_server'), { target: { value: 'new_server' } });
     fireEvent.click(screen.getByRole('button', { name: /^add$/i }));
 
@@ -870,6 +952,7 @@ describe('McpServers — create and edit', () => {
     renderWithProviders(<McpServers />);
 
     fireEvent.click(screen.getByText('Edit'));
+    fireEvent.click(await screen.findByRole('button', { name: /advanced/i }));
     fireEvent.change(await screen.findByPlaceholderText('What this server does'), {
       target: { value: 'edited description' },
     });
@@ -894,7 +977,7 @@ describe('McpServers — create and edit', () => {
 describe('McpServers — import', () => {
   const BLOB = '{"mcpServers":{"imported_server":{"command":"npx","args":["-y","pkg"]}}}';
 
-  it('reports the per-server outcome and nudges that imports land switched off', async () => {
+  it('reports the per-server outcome and offers to switch each import on', async () => {
     mutateAsync.import.mockResolvedValue({
       results: [{ name: 'imported_server', original_name: 'imported_server', renamed: false, status: 'created' }],
       created: 1,
@@ -911,10 +994,13 @@ describe('McpServers — import', () => {
     // The result view names what happened, including the auto-vaulted secret.
     await waitFor(() => expect(screen.getByText(/Imported 1 of 1 server/i)).toBeInTheDocument());
     expect(screen.getByText('PLACEHOLDER_TOKEN')).toBeInTheDocument();
-    // …and the page nudges that nothing is live yet.
-    expect(toast).toHaveBeenCalledWith(
-      expect.objectContaining({ title: 'Imported switched off' }),
+    // Imported rows start off; the result view switches them on through the
+    // same toggle mutation the row uses.
+    fireEvent.click(screen.getByTestId('mcp-import-enable-imported_server'));
+    await waitFor(() =>
+      expect(mutateAsync.toggle).toHaveBeenCalledWith({ name: 'imported_server', enabled: true }),
     );
+    expect(await screen.findByText('On')).toBeInTheDocument();
   });
 
   it('does not nudge when the import created nothing', async () => {
@@ -968,7 +1054,7 @@ describe('McpServers — filtered and empty', () => {
     await waitFor(() =>
       expect(screen.getByTestId('server-row-owned_one')).toBeInTheDocument(),
     );
-    expect(screen.queryByText('No matches')).not.toBeInTheDocument();
+    expect(screen.queryByText(/No servers match/)).not.toBeInTheDocument();
   });
 
   it('shows the notice exactly once when nothing anywhere matches', async () => {
@@ -979,7 +1065,10 @@ describe('McpServers — filtered and empty', () => {
 
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'zzzz' } });
 
-    await waitFor(() => expect(screen.getAllByText('No matches')).toHaveLength(1));
+    // The notice names what was asked for, so the assertion reads the query back.
+    await waitFor(() =>
+      expect(screen.getAllByText('No servers match "zzzz".')).toHaveLength(1),
+    );
   });
 
   it('still invites a first server when every catalog row is plugin-owned', () => {

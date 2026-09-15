@@ -96,6 +96,38 @@ describe('a server with no capability groups', () => {
     expect(screen.queryByTestId('tool-count-flat')).toBeNull();
   });
 
+  /**
+   * The legend is the only thing on screen saying what PTC, Direct and Both
+   * cost the user, and every row ends in those three words. It is tied to the
+   * control, not to the list: a list whose tools the server all pins draws no
+   * choice, so an explanation of three choices would be answering a question
+   * the page never asks.
+   */
+  it('explains the three paths only where a tool can actually move', () => {
+    const { unmount } = renderWithProviders(
+      <ToolList
+        groups={[]}
+        granted={null}
+        tools={FLAT}
+        renderControl={() => null}
+        onBulkPatch={() => {}}
+      />,
+    );
+    expect(screen.getByText('How the agent reaches a tool')).toBeInTheDocument();
+    unmount();
+
+    renderWithProviders(
+      <ToolList
+        groups={[]}
+        granted={null}
+        tools={FLAT.map((t) => ({ ...t, binding_source: 'policy' }) as McpToolSummary)}
+        renderControl={() => null}
+        onBulkPatch={() => {}}
+      />,
+    );
+    expect(screen.queryByText('How the agent reaches a tool')).toBeNull();
+  });
+
   // The same rows carry a box and a control when the caller has both, and the
   // only header over them is the list's own select-all: there is no bucket to
   // stand for, so a second box would stand for the whole list twice.

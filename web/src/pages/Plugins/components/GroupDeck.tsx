@@ -85,6 +85,7 @@ export function GroupDeck({
   enabledCount,
   badge,
   action,
+  onCoverOpen,
   defaultExpanded = false,
   forceExpanded = false,
   selection,
@@ -101,6 +102,8 @@ export function GroupDeck({
   badge?: React.ReactNode;
   /** Trailing header affordance (e.g. jump to the owning plugin's card). */
   action?: React.ReactNode;
+  /** Open the detail view of the row the collapsed cover is showing. */
+  onCoverOpen?: () => void;
   defaultExpanded?: boolean;
   /** Filter and select mode both need every row visible. */
   forceExpanded?: boolean;
@@ -196,6 +199,7 @@ export function GroupDeck({
     </>
   );
   const Chevron = expanded ? ChevronUp : ChevronDown;
+  const coverOpens = !expanded && !!onCoverOpen;
 
   return (
     <div className="flex flex-col gap-1.5" data-testid={`deck-${id}`}>
@@ -251,9 +255,14 @@ export function GroupDeck({
           one continuous unfold, never a remount, with the sliver layers
           folding away in the same motion. Collapsed, `inert` makes the rows
           decorative (no focus, no clicks) and the whole body is one expand
-          target. Slivers keep their border at full strength: the card fill
-          alone is invisible on the light page. The clip is safe to keep
-          permanently — row selection rings are inset shadows. */}
+          target. Where a caller names the cover row's own open action, that
+          row's box does both: a stack's cover still reads as a card, so a
+          click on it unfolds the deck AND opens the card it was aimed at,
+          instead of spending the first click on the fold. The sliver layers
+          stay pure expand, so unfolding without opening anything is still
+          one click. Slivers keep their border at full strength: the card
+          fill alone is invisible on the light page. The clip is safe to keep
+          permanently, since row selection rings are inset shadows. */}
       <div
         aria-hidden={expanded ? undefined : true}
         data-testid={expanded ? undefined : `deck-cover-${id}`}
@@ -261,10 +270,14 @@ export function GroupDeck({
         onClick={expanded ? undefined : () => setExpanded(true)}
       >
         <motion.div
-          className="overflow-hidden"
+          // The clip's box IS the cover row's box, so it is the hit zone for
+          // opening that row, and the hover twin the row cannot light itself
+          // (its own :hover never matches under `pointer-events-none`).
+          className={coverOpens ? 'overflow-hidden group/cover' : 'overflow-hidden'}
           initial={false}
           animate={{ height: expanded ? 'auto' : (coverH ?? 0) }}
           transition={bodyTransition}
+          onClick={coverOpens ? onCoverOpen : undefined}
         >
           <div
             ref={rowsRef}
@@ -272,7 +285,11 @@ export function GroupDeck({
             // Margins, not gap: each row owns the space above it, so a
             // presence exit collapses row + spacing together. A container
             // gap survives until unmount and snaps away in one frame.
-            className={`flex flex-col [&>*+*]:mt-1.5${expanded ? '' : ' pointer-events-none'}`}
+            className={`flex flex-col [&>*+*]:mt-1.5${expanded ? '' : ' pointer-events-none'}${
+              coverOpens
+                ? ' group-hover/cover:[&>*:first-child]:bg-[var(--color-bg-card-hover)]'
+                : ''
+            }`}
           >
             {children}
           </div>

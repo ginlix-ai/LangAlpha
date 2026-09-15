@@ -541,3 +541,31 @@ class TestStdioIsNeverRelayable:
     def test_inputs_read_relayable_off_the_row_transport(self):
         assert inputs_from_row({"transport": "stdio"}).relayable is False
         assert inputs_from_row({"transport": "http"}).relayable is True
+
+
+class TestOnlyHttpRowsReachTheRelay:
+    """The relay dials streamable HTTP, so a legacy ``sse`` row has no address
+    it can reach. A tool bound direct on one would leave the sandbox set and
+    never earn a grant, vanishing from both agents, so the clamp keeps every
+    tool on such a row in the sandbox."""
+
+    def test_an_sse_row_is_not_relayable(self):
+        assert inputs_from_row({"transport": "sse"}).relayable is False
+
+    def test_an_sse_rows_direct_override_clamps_to_ptc(self):
+        inputs = inputs_from_row(
+            {"transport": "sse", "tool_binding": {"desk_quote": "direct"}}
+        )
+        resolved = resolve_tool(None, "desk_quote", inputs)
+        assert (resolved.binding, resolved.source) == ("ptc", "policy")
+
+    def test_the_same_override_stands_on_an_http_row(self):
+        inputs = inputs_from_row(
+            {"transport": "http", "tool_binding": {"desk_quote": "direct"}}
+        )
+        resolved = resolve_tool(None, "desk_quote", inputs)
+        assert (resolved.binding, resolved.source) == ("direct", "override")
+
+    def test_a_stored_direct_entry_leaves_an_sse_row_on_its_next_write(self):
+        relayable = inputs_from_row({"transport": "sse"}).relayable
+        assert strip_disallowed_overrides(None, {"desk_quote": "direct"}, relayable) == {}

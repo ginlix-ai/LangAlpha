@@ -146,7 +146,7 @@ function ResetPassword() {
   }
 
   return (
-    <div className="login-page">
+    <div className="login-page owns-its-edge">
       <WavesBackground />
       <div className="login-page__card">{body}</div>
     </div>

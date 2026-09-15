@@ -40,7 +40,7 @@ export function CapabilityList({
             <GrantGlyph on={on} settled={settled} />
             <div className="min-w-0">
               <p
-                className="text-xs font-medium"
+                className="text-sm font-medium"
                 style={{
                   color:
                     // Amber only where it is both real and granted. A declined
@@ -56,7 +56,7 @@ export function CapabilityList({
                 {t(`plugins.brokerages.capabilities.${group.key}.label`)}
               </p>
               <p
-                className="text-[0.6875rem] mt-0.5"
+                className="text-xs mt-0.5"
                 style={{
                   color: on
                     ? 'var(--color-text-tertiary)'

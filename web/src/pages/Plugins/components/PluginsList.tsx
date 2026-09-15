@@ -5,7 +5,6 @@ import { AnimatePresence } from 'framer-motion';
 import { Blocks, Boxes, FolderGit2, Package, Plus } from 'lucide-react';
 import {
   HeaderButton,
-  ListEmpty,
   ListError,
   ListHeader,
   ListSkeleton,
@@ -30,12 +29,13 @@ import { useDetailParam } from '../hooks/useDetailParam';
 import { usePluginListSurface } from '../hooks/usePluginListSurface';
 import { BulkActionBar, type BulkAction } from './BulkActionBar';
 import { EmptyState } from './EmptyState';
+import { FilterEmpty } from './FilterEmpty';
 import { GroupDeck } from './GroupDeck';
 import { ListControls } from './ListControls';
 import { PluginCard } from './PluginCard';
 import { PluginDetail } from './PluginDetail';
 import { PluginInstallWizard } from './PluginInstallWizard';
-import { rowSelection } from './useBulkSelection';
+import { bulkSelectionKey, rowSelection } from './useBulkSelection';
 
 /**
  * The Plugins tab body: Agent Plugins packages, grouped by install origin (the
@@ -215,7 +215,12 @@ export function PluginsList() {
           }
         />
       ) : surface.noMatches(visible.length) ? (
-        <ListEmpty>{t('plugins.filter.noMatches')}</ListEmpty>
+        <FilterEmpty
+          noun={t('plugins.filter.nounPlugins')}
+          filter={surface.filter}
+          stateFilter={surface.stateFilter}
+          onReset={surface.reset}
+        />
       ) : (
         groups.map(([origin, groupPlugins]) => {
           const keys = groupPlugins.map(pluginKey);
@@ -251,6 +256,9 @@ export function PluginsList() {
               icon={GROUP_ICON[origin] ?? FolderGit2}
               count={groupPlugins.length}
               enabledCount={groupPlugins.filter((p) => p.enabled).length}
+              // The collapsed cover shows this group's first card, so a click
+              // on it opens that card rather than only unfolding the deck.
+              onCoverOpen={() => detail.open(groupPlugins[0].name)}
               forceExpanded={surface.forceExpanded}
               selection={selection}
               selectionKeys={keys}
@@ -264,13 +272,16 @@ export function PluginsList() {
       {selection.selecting && (
         <BulkActionBar
           count={selectedPlugins.length}
+          selectionKey={bulkSelectionKey(selectedPlugins.map(pluginKey))}
           actions={actions}
           progress={surface.progress}
           onExit={selection.exit}
         />
       )}
 
-      {wizardOpen && <PluginInstallWizard onClose={() => setWizardOpen(false)} />}
+      <AnimatePresence>
+        {wizardOpen && <PluginInstallWizard onClose={() => setWizardOpen(false)} />}
+      </AnimatePresence>
 
       <AnimatePresence>
         {detailPlugin && (

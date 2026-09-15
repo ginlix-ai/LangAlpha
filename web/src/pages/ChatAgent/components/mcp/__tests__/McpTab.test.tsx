@@ -135,6 +135,7 @@ describe('McpTab — submit error formatting', () => {
 
     // Open the add-server modal, give it a valid name, and submit.
     fireEvent.click(screen.getByRole('button', { name: /add server/i }));
+    fireEvent.change(screen.getByTestId('mcp-entry'), { target: { value: 'npx -y @scope/thing' } });
     fireEvent.change(screen.getByPlaceholderText('my_server'), { target: { value: 'good_name' } });
     fireEvent.click(screen.getByRole('button', { name: /^add$/i }));
 

@@ -152,9 +152,11 @@ class BindingInputs:
     order_approval: Mapping[str, bool] = field(
         default_factory=lambda: dict(ORDER_APPROVAL_DEFAULTS)
     )
-    #: Whether the relay has an address to dial for this row at all. A stdio
-    #: server has no URL by construction, so the direct path cannot exist for
-    #: it however the row or its group is configured.
+    #: Whether the relay has an address to dial for this row at all. The relay
+    #: dials streamable HTTP, so every other transport (stdio, which has no URL
+    #: by construction, and legacy ``sse``) leaves it nothing to reach, and the
+    #: direct path cannot exist for such a row however it or its group is
+    #: configured.
     relayable: bool = True
     folded_overrides: Mapping[str, str] = field(
         init=False, repr=False, compare=False, default_factory=dict
@@ -178,7 +180,10 @@ def inputs_from_row(row: Mapping[str, object] | None) -> BindingInputs:
         overrides=dict(overrides) if isinstance(overrides, Mapping) else {},
         preset=row.get("binding_preset") or None,  # type: ignore[arg-type]
         order_approval=order_approval_map(row.get("order_approval")),
-        relayable=row.get("transport") != "stdio",
+        # ``http`` only: the relay dials streamable HTTP, so a legacy ``sse``
+        # row keeps its sandbox discovery and never earns a grant, and a tool
+        # bound direct on one would vanish from both agents.
+        relayable=row.get("transport") == "http",
     )
 
 

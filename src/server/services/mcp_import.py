@@ -14,20 +14,25 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from pydantic import ValidationError
 
 # looks_like_secret decides which import-time literals get auto-extracted into
 # vault secrets; benign config (``MODE=prod``, ``LOG_LEVEL=ERROR``) stays an
 # inline literal so we don't clutter the vault. Defined in mcp_sanitize so the
-# redaction lanes apply the identical credential test.
+# redaction lanes apply the identical credential test, and so the import dialog
+# and ``looks_like_placeholder`` read a stand-in the same way.
 from ptc_agent.core.mcp_sanitize import (
     VAULT_REF_RE,
     iter_arg_flag_pairs,
+    looks_like_placeholder,
     looks_like_secret,
 )
 from src.server.database.pool import get_db_connection
+
+if TYPE_CHECKING:
+    from src.server.models.mcp_server import ParsedMcpServer
 
 
 def vault_secret_name(server_name: str, key: str, used: set[str]) -> str:
@@ -59,7 +64,10 @@ class PlannedSecret:
 # name turned out to be taken; ValueError is a scope-level refusal (cap, raced
 # duplicate) — either way the transaction is rolled back whole.
 SecretWriter = Callable[[Any, PlannedSecret], Awaitable[None]]
-ServerWriter = Callable[[Any, Any], Awaitable[bool]]
+# ``persist`` is handed the originating entry as well as the validated server:
+# the row's provenance (which mcp.json key installed it) is the entry's, and
+# two entries can normalize to one name, so the name cannot recover it.
+ServerWriter = Callable[[Any, Any, "ParsedMcpServer"], Awaitable[bool]]
 
 
 @dataclass(frozen=True)
@@ -117,8 +125,9 @@ async def run_mcp_import(parsed: list[Any], *, scope: ImportScope) -> ImportRepo
     report = ImportReport()
     seen_names: set[str] = set()
     # Committed state only: an identical token reused across servers is stored
-    # once, but a ref is published here only after its entry lands — so a failed
-    # entry can never leave a later one pointing at a secret that was never made.
+    # once (a placeholder spelling excepted, see ``_ref_for``), but a ref is
+    # published here only after its entry lands, so a failed entry can never
+    # leave a later one pointing at a secret that was never made.
     allocated: dict[str, str] = {}
     used_secret_names = set(scope.existing_secret_names)
 
@@ -154,7 +163,6 @@ async def run_mcp_import(parsed: list[Any], *, scope: ImportScope) -> ImportRepo
             )
             continue
 
-        seen_names.add(entry.name)
         config = dict(entry.config)
         plan = plan_vault_extraction(
             entry.name,
@@ -180,7 +188,7 @@ async def run_mcp_import(parsed: list[Any], *, scope: ImportScope) -> ImportRepo
             continue
 
         try:
-            created = await _commit_entry(scope, server, plan.secrets)
+            created = await _commit_entry(scope, server, entry, plan.secrets)
         except ValueError as e:
             report.results.append({**base, "status": "error", "error": str(e)})
             continue
@@ -188,6 +196,10 @@ async def run_mcp_import(parsed: list[Any], *, scope: ImportScope) -> ImportRepo
             report.results.append({**base, "status": "exists"})
             continue
 
+        # Reserved only once the row exists, like the refs below: an entry that
+        # failed validation or its insert made no row, so a later entry that
+        # normalizes to the same name is the one that gets to land.
+        seen_names.add(entry.name)
         allocated.update(plan.refs)
         used_secret_names.update(s.name for s in plan.secrets)
         report.secrets_created.extend(s.name for s in plan.secrets)
@@ -198,20 +210,35 @@ async def run_mcp_import(parsed: list[Any], *, scope: ImportScope) -> ImportRepo
 
 
 async def _commit_entry(
-    scope: ImportScope, server: Any, secrets: tuple[PlannedSecret, ...]
+    scope: ImportScope,
+    server: Any,
+    entry: Any,
+    secrets: tuple[PlannedSecret, ...],
 ) -> bool:
     """Write one entry's vault secrets and its server row in a single transaction.
 
     Postgres owns the rollback: a vault cap, a duplicate, or a lost insert race
     aborts the whole entry, so there is no compensation to write (or to get
     wrong) on the way out.
+
+    The values are checked here rather than by the writers: an extracted
+    literal never passes through ``CreateSecretRequest``, and the model that
+    would have caught a pasted newline sees the ``${vault:NAME}`` ref that
+    replaced it.
     """
+    from src.server.models.vault import validate_secret_value
+
+    for secret in secrets:
+        try:
+            validate_secret_value(secret.value)
+        except ValueError as e:
+            raise ValueError(f"{secret.name}: {e}") from e
     try:
         async with get_db_connection() as conn:
             async with conn.transaction():
                 for secret in secrets:
                     await scope.create_secret(conn, secret)
-                if not await scope.persist(conn, server):
+                if not await scope.persist(conn, server, entry):
                     raise _NameTaken
     except _NameTaken:
         return False
@@ -237,7 +264,15 @@ def plan_vault_extraction(
     used = set(used_secret_names)
 
     def _ref_for(value: str, key_hint: str) -> str:
-        ref = allocated.get(value) or refs.get(value)
+        # A stand-in is not a credential. Every vendor's docs print
+        # ``<your-api-key>`` where the key goes, so two servers carrying that
+        # spelling are two blanks, and sharing one vault secret between them
+        # would send the key filled in for the first vendor to the second.
+        # Within ONE server the same spelling is still one blank, which is what
+        # the entry-local ``refs`` map keeps.
+        ref = refs.get(value)
+        if ref is None and not looks_like_placeholder(value):
+            ref = allocated.get(value)
         if ref is not None:
             return ref
         name = vault_secret_name(server_name, key_hint, used)

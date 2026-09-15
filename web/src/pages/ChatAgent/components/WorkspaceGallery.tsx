@@ -925,7 +925,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
                 field alone would cut this border and leave the icon outside
                 the indicator. `rings-within` in tokens.css owns the rule. */}
             <div
-              className="rings-within flex items-center gap-2 h-11 px-3 rounded-xl border transition-colors"
+              className="rings-within owns-its-edge flex items-center gap-2 h-11 px-3 rounded-xl border transition-colors"
               style={{
                 backgroundColor: 'var(--color-bg-input)',
                 borderColor: 'var(--color-border-muted)',

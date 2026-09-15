@@ -22,7 +22,7 @@ const DialogOverlay = React.forwardRef<
   <DialogPrimitive.Overlay
     ref={ref}
     className={cn(
-      "fixed inset-0 z-[1030] bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+      "fixed inset-0 z-[1030] bg-[var(--color-bg-overlay-strong)] overlay-fade",
       className
     )}
     {...props} />
@@ -31,11 +31,11 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 
 // Mobile swipe variant: flex column container, no overflow (inner scroll child handles it)
 const DIALOG_MOBILE_SHEET_CLASSES =
-  "fixed left-0 bottom-0 z-[1030] flex flex-col w-full max-w-lg border bg-background shadow-lg duration-200 rounded-t-3xl max-h-[90dvh] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom";
+  "fixed left-0 bottom-0 z-[1030] flex flex-col w-full max-w-lg border bg-background shadow-lg rounded-t-3xl max-h-[90dvh] sheet-in";
 
 // Desktop / centered: single-element grid with native overflow scroll
 const DIALOG_CENTERED_CLASSES =
-  "fixed left-[50%] top-[50%] z-[1030] grid w-full max-w-lg gap-4 border bg-background p-6 shadow-lg duration-200 translate-x-[-50%] translate-y-[-50%] rounded-lg max-h-[85vh] overflow-y-auto data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%]";
+  "fixed left-[50%] top-[50%] z-[1030] grid w-full max-w-lg gap-4 border bg-background p-6 shadow-lg translate-x-[-50%] translate-y-[-50%] rounded-lg max-h-[85vh] overflow-y-auto pop-in-center";
 
 const DialogContent = React.forwardRef<
   React.ComponentRef<typeof DialogPrimitive.Content>,

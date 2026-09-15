@@ -57,7 +57,7 @@ def test_the_web_app_names_the_callback_route_this_app_actually_serves():
     }
     assert len(served) == 1, f"expected one callback route, found {served}"
     named = _js_const(
-        REPO_ROOT / "web/src/pages/ChatAgent/utils/api/mcp.ts", "OAUTH_CALLBACK_PATH"
+        REPO_ROOT / "web/src/pages/ChatAgent/utils/api/mcpOauth.ts", "OAUTH_CALLBACK_PATH"
     )
     assert named == served.pop()
 
@@ -69,7 +69,7 @@ def test_both_constants_are_still_readable(name: str):
     source = (
         REPO_ROOT / "desktop/src/oauth.js"
         if name == "MCP_CALLBACK_PATH"
-        else REPO_ROOT / "web/src/pages/ChatAgent/utils/api/mcp.ts"
+        else REPO_ROOT / "web/src/pages/ChatAgent/utils/api/mcpOauth.ts"
     )
     assert _js_const(source, name).startswith("/")
 

@@ -458,7 +458,8 @@ html {
      own. An outline on the field alone cuts across the container's border and
      leaves whatever else lives in there outside the indicator: the icon on a
      search pill, the chips already entered on a token field. Mark the container
-     and it rings on the field's behalf.
+     and it rings on the field's behalf. Such a container carries
+     `owns-its-edge` too, its sibling opt-out for the focused-field edge below.
 
      Scoped to a direct-child input so a button sharing the container -- a clear
      affordance, a chip's remove -- still rings itself instead of lighting the
@@ -573,6 +574,41 @@ html {
      `outline-none` compiles to this and not to `outline: none`. */
   :root[data-pointer-focus] :focus-visible {
     outline-color: transparent;
+  }
+}
+
+/* Focused text fields.
+
+   The layer above answers one question: does a keyboard ring draw. This
+   answers a different one: does a field the pointer just clicked look
+   focused. It does, by its edge and nothing else -- the accent border that
+   marks the about-to-act moment everywhere else, plus a one-pixel halo of
+   the soft accent so that edge reads on a dark card. No outline and no
+   pointer gate: a field the mouse focused is about to receive typing.
+
+   Unlayered and !important on purpose. Fields set their resting border as
+   an inline style across the app, and inline beats every stylesheet rule
+   except an important one; sweeping the border onto a class would give
+   every field a second place its edge is decided. Only the edge, only
+   while focused, never on a field flagged invalid, and never on a control
+   with no text entry (checkbox, radio, range, file, color), whose focus is
+   the ring's job.
+
+   Every other exception is opt-out by one class a box puts on itself,
+   `owns-its-edge`, so the next edge-owning box declares itself where it is
+   built instead of coming back to edit this selector. It must: the halo is
+   a shadow, and a shadow draws on a borderless field too, as a faint
+   rectangle inside a box already lit. The block below hands that box the
+   edge on its field's behalf, the way `.rings-within` hands it the ring. */
+:where(input, textarea, select):focus:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="color"], [type="submit"], [type="button"], [aria-invalid="true"], .owns-its-edge, .owns-its-edge *) {
+  border-color: var(--color-accent-primary) !important;
+  box-shadow: 0 0 0 1px var(--color-accent-soft) !important;
+}
+
+@supports selector(:has(*)) {
+  .owns-its-edge:has(> :where(input, textarea):focus) {
+    border-color: var(--color-accent-primary) !important;
+    box-shadow: 0 0 0 1px var(--color-accent-soft) !important;
   }
 }
 

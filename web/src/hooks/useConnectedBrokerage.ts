@@ -10,6 +10,7 @@ import { brokerageForUrl } from '@/pages/Plugins/brokerages';
 // first load. The keys and stale times are theirs, so both halves still read
 // and fill the cache the Plugins page uses.
 const mcpApi = () => import('@/pages/ChatAgent/utils/api/mcp');
+const brokerageApi = () => import('@/pages/ChatAgent/utils/api/brokerages');
 
 /**
  * Whether the user has a live connection to one of the shipped brokerages.
@@ -24,7 +25,7 @@ const mcpApi = () => import('@/pages/ChatAgent/utils/api/mcp');
 export function useHasConnectedBrokerage(): boolean | undefined {
   const { data: brokerages } = useQuery({
     queryKey: queryKeys.brokerages.list(),
-    queryFn: () => mcpApi().then((api) => api.getBrokerages()),
+    queryFn: () => brokerageApi().then((api) => api.getBrokerages()),
     staleTime: Infinity,
   });
   const { data: catalog } = useQuery({

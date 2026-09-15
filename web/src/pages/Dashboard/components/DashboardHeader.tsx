@@ -164,7 +164,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
           <div className="dashboard-search-wrapper" ref={dropdownRef}>
             <form
               onSubmit={handleSubmit}
-              className="dashboard-search-form relative group flex items-center gap-2 h-10 px-3 rounded-xl border transition-all"
+              className="dashboard-search-form owns-its-edge relative group flex items-center gap-2 h-10 px-3 rounded-xl border transition-all"
               style={{
                 backgroundColor: 'var(--color-bg-input)',
                 borderColor: searchFocused ? 'var(--color-accent-primary)' : 'var(--color-border-muted)',

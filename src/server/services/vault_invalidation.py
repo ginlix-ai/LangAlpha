@@ -159,6 +159,11 @@ class VaultTier:
     # here: every start path pushes the vault unconditionally, so a stopped
     # workspace already receives the new value the moment it next starts.
     workspaces: Callable[[str], Awaitable[list[str]]]
+    # Re-run host-side discovery for the purged servers that are discovered
+    # from the host (the user tier's remote catalog rows): the purge emptied
+    # their snapshot and no sandbox will refill it. None for a tier whose
+    # snapshots the sandbox owns.
+    rediscover: Callable[[str, list[str]], None] | None = None
 
 
 async def _own_workspace(workspace_id: str) -> list[str]:
@@ -183,6 +188,22 @@ WORKSPACE_TIER = VaultTier(
     workspaces=_own_workspace,
 )
 
+def _rediscover_catalog_rows(user_id: str, names: list[str]) -> None:
+    """Kick the host-side probe for each purged name that is a catalog row.
+
+    A workspace-local fork shares the name and is not in the catalog; the
+    scheduler answers None for it and the sandbox path refills it as before. A
+    row the user has switched off is refused for the reason it is refused
+    everywhere else: its snapshot stays purged until the switch, which is what
+    kicks the next probe.
+    """
+    # Lazy: discovery imports the DB layer this module's callers sit above.
+    from src.server.services.mcp_oauth.discovery import schedule_catalog_discovery
+
+    for name in names:
+        schedule_catalog_discovery(user_id, name, reason="secret-change")
+
+
 USER_TIER = VaultTier(
     label="user",
     log_prefix="[user_vault]",
@@ -190,6 +211,7 @@ USER_TIER = VaultTier(
     purge_and_bump=delete_user_and_workspace_tool_schemas_and_bump,
     bump=bump_user_workspaces_mcp_version,
     workspaces=get_running_workspace_ids_for_user,
+    rediscover=_rediscover_catalog_rows,
 )
 
 
@@ -244,9 +266,10 @@ async def after_secrets_changed(
         # A fast path, not a new failure domain: hand the loop nothing and it
         # reads per name exactly as before, fallback bump included.
         servers = None
+    purged: list[str] = []
     for name in names:
         try:
-            await _purge_and_bump(tier, owner_id, name, user_id, servers=servers)
+            purged += await _purge_and_bump(tier, owner_id, name, user_id, servers=servers)
         except Exception:
             logger.warning(
                 f"{tier.log_prefix} MCP invalidation failed for {tier.label} "
@@ -264,6 +287,7 @@ async def after_secrets_changed(
                     exc_info=True,
                 )
     await _schedule_applies(tier, owner_id, user_id)
+    _schedule_rediscovery(tier, owner_id, purged)
     await _push_secrets(tier, owner_id, user_id)
 
 
@@ -303,8 +327,9 @@ async def _invalidate_mcp(
     CRUD endpoint reports success. Only the purge stays scoped to referencing
     servers, because only their cached discovery can depend on the credential.
     """
+    purged: list[str] = []
     try:
-        await _purge_and_bump(tier, owner_id, secret_name, user_id)
+        purged = await _purge_and_bump(tier, owner_id, secret_name, user_id)
     except Exception:
         logger.warning(
             f"{tier.log_prefix} MCP invalidation failed for {tier.label} "
@@ -323,6 +348,21 @@ async def _invalidate_mcp(
             )
 
     await _schedule_applies(tier, owner_id, user_id)
+    _schedule_rediscovery(tier, owner_id, purged)
+
+
+def _schedule_rediscovery(tier: VaultTier, owner_id: str, names: list[str]) -> None:
+    """Refill what the purge emptied, for the tier that discovers host-side.
+    Its own failure domain, like the applies."""
+    if tier.rediscover is None or not names:
+        return
+    try:
+        tier.rediscover(owner_id, list(dict.fromkeys(names)))
+    except Exception:
+        logger.warning(
+            f"{tier.log_prefix} host-side rediscovery failed for {tier.label} {owner_id}",
+            exc_info=True,
+        )
 
 
 async def _purge_and_bump(
@@ -332,9 +372,10 @@ async def _purge_and_bump(
     user_id: str,
     *,
     servers: list[MCPServerConfig] | None = None,
-) -> None:
+) -> list[str]:
     """The durable half — scan, purge, bump — as ONE failure domain, because a
     partial result here is exactly what the caller's fallback bump covers.
+    Returns the names whose snapshots were purged.
 
     ``servers`` lets a batch caller hand the row set in once. The scan below is
     per name; the rows it scans are not, and re-reading them per name is real
@@ -367,6 +408,7 @@ async def _purge_and_bump(
         f"{tier.label} {owner_id} ({len(referencing)} referencing server(s), "
         f"{len(purge)} snapshot(s) purged)"
     )
+    return purge
 
 
 async def _schedule_applies(tier: VaultTier, owner_id: str, user_id: str) -> None:

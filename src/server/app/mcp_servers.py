@@ -64,6 +64,12 @@ from src.server.services.mcp_config import (
     resolve_mcp_config,
 )
 from src.server.services.mcp_discovery import ToolSnapshotIndex
+from src.server.services.mcp_oauth.discovery import (
+    REMOTE_TRANSPORTS,
+    discover_catalog_server,
+    schedule_catalog_discovery,
+)
+from src.server.services.mcp_oauth.lifecycle import TokenUnavailable
 from src.server.services.mcp_import import ImportScope, run_mcp_import
 from src.server.services.vault_invalidation import refs_for_server
 from src.server.models.mcp_server import (
@@ -72,6 +78,7 @@ from src.server.models.mcp_server import (
     EffectiveServerList,
     EnabledInput,
     McpServerInput,
+    ParsedMcpServer,
     PromoteInput,
     ToolSummary,
     _format_validation_error,
@@ -510,7 +517,15 @@ async def promote_server(
     except ValueError as e:
         # DB layer signals over-cap (or a raced duplicate) by raising ValueError.
         raise HTTPException(status_code=409, detail=str(e))
-    return await _finish(row)
+    response = await _finish(row)
+    # A minted row carries no verdict, and the overwrite arm's edit is what
+    # schedules one on the other path. Without it a template promoted live
+    # earns no egress grant, so its direct tools and Flash stay dark until a
+    # catalog listing happens to self-heal the row. The kick follows _finish
+    # because remove_source is what switches the row on, and the pass dials
+    # only a row that is on.
+    schedule_catalog_discovery(user_id, server.name, reason="promote")
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -656,7 +671,9 @@ async def import_servers(
             workspace_id, secret.name, secret.value, secret.description, conn=conn
         )
 
-    async def persist(conn, server: McpServerInput) -> bool:
+    async def persist(
+        conn, server: McpServerInput, entry: ParsedMcpServer
+    ) -> bool:
         # ON CONFLICT DO NOTHING ⇒ None means the name is taken, not an error.
         return await insert_workspace_server(
             workspace_id, server.name, config=server.to_config_blob(), conn=conn
@@ -902,16 +919,41 @@ async def discover_server(
         or entry.origin is Origin.BUILTIN
     ):
         raise HTTPException(status_code=404, detail="MCP server not found")
+    server = entry.config
+    if entry.origin is Origin.USER and server.transport in REMOTE_TRANSPORTS:
+        # An inherited remote row is discovered from the host, whatever it
+        # authenticates with: the OAuth bearer never enters a sandbox, and a
+        # header row's snapshot has to land where Plugins reads it. Same
+        # debounce as the sandbox path, against the user tier.
+        cached = ToolSnapshotIndex(
+            user_rows=await get_user_tool_schemas(user_id)
+        ).snapshot(server, accept=_settled_and_fresh)
+        if cached is not None:
+            return {"server": _discovery_row_to_dict(cached)}
+        try:
+            row = await discover_catalog_server(user_id, name)
+        except TokenUnavailable as e:
+            # A connection the user has to repair: reconnecting, not probing,
+            # is the fix, and the row's connection status already says so.
+            raise HTTPException(
+                status_code=409,
+                detail=f"OAuth connection is {e.reason}; manage the connection "
+                "from Plugins instead.",
+            )
+        if row is not None:
+            if row.get("status") == "ok":
+                _schedule_session_mcp_refresh(workspace_id, user_id)
+            return {"server": _discovery_row_to_dict(row)}
+        # None: the row has no host-side path -- it is an ``sse`` row, or it
+        # was deleted or turned stdio between the resolve and the re-read. The
+        # checks below judge the entry as it resolved, and a row that is gone
+        # is refused there or probed in the workspace.
     if entry.host_side_oauth:
-        # OAuth servers are discovered host-side (on connect and via the
-        # Plugins refresh) — never probed from the sandbox; reconnecting,
-        # not probing, is the fix for a disconnected one.
         raise HTTPException(
             status_code=409,
             detail="OAuth servers are discovered host-side; manage the "
             "connection from Plugins instead.",
         )
-    server = entry.config
 
     # Debounce: if the cached snapshot is for this server's CURRENT config and is
     # fresh + settled, return it without re-running discovery. A stale-hash
@@ -1037,10 +1079,10 @@ async def _sync_sandbox_grants_now(workspace_id: str, user_id: str) -> None:
     apply still runs, because it is what pushes the new credential file into
     the sandbox.
 
-    The kept set is every OAuth-connected server the workspace resolves, which
-    is the set ``sync_egress_relay`` keeps. Narrowing it to the directly bound
-    ones, as the flash path does, would retire the grants the sandbox wrappers
-    dial through.
+    The kept set is the one ``sync_egress_relay`` keeps, which is why it is
+    read from the same ``grant_scope``: narrowing it to the directly bound
+    servers, as the flash path does, would retire the grants the sandbox
+    wrappers dial through.
     """
     from src.server.app import setup
 
@@ -1048,7 +1090,9 @@ async def _sync_sandbox_grants_now(workspace_id: str, user_id: str) -> None:
     if base_config is None:
         return
     from src.server.services.egress.grant_resync import sync_grants_until_current
+    from src.server.services.egress.grant_scope import grant_refs, user_snapshots
 
+    snapshots = await user_snapshots(user_id)
     # Unlike the flash sibling this one does not raise when the retries are
     # exhausted: ``_schedule_proactive_apply`` runs behind it and re-resolves,
     # so the retirement has somewhere else to land, and failing the toggle
@@ -1057,9 +1101,9 @@ async def _sync_sandbox_grants_now(workspace_id: str, user_id: str) -> None:
         base_config,
         user_id=user_id,
         workspace_id=workspace_id,
-        connection_ids=lambda resolved: [
-            s.oauth_connection_id for s in resolved.servers if s.oauth_connection_id
-        ],
+        refs=lambda resolved: grant_refs(
+            resolved, user_id=user_id, snapshots=snapshots
+        ),
     )
 
 

@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { Pencil, Trash2 } from 'lucide-react';
+import { AlertTriangle, KeyRound, Pencil, Trash2 } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -8,7 +8,11 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { BrandMark } from '@/pages/ChatAgent/components/mcp/BrandMark';
 import { McpOauthPill } from '@/pages/ChatAgent/components/mcp/McpStatusPill';
-import { needsOauthConnect } from '@/pages/ChatAgent/components/mcp/mcpState';
+import {
+  needsOauthConnect,
+  probeRowState,
+  probeStillLanding,
+} from '@/pages/ChatAgent/components/mcp/mcpState';
 import {
   EnabledToggle,
   KebabTrigger,
@@ -28,6 +32,7 @@ import {
   VendorNotes,
 } from './OauthRowParts';
 import { PluginSuppressedBadge } from './PluginBadges';
+import { RowNote } from './RowNote';
 import { ScopeControl, scopeLocked, type ScopeWorkspace } from './ScopeControl';
 import { rowSelection, type BulkSelection } from './useBulkSelection';
 
@@ -97,7 +102,35 @@ export function McpCatalogRow({
   const flashWorkspace = useFlashWorkspace();
   const oauthEligible = server.transport === 'http';
   const status = server.oauth_status ?? null;
-  const unconnected = oauthEligible && needsOauthConnect(status);
+  // What the host-side probe learned about the row, read through the one
+  // verdict table. A row probed and found open or header-authenticated is not
+  // an OAuth row, so it gets no Connect button however http it is. Until the
+  // probe answers, http still reads as OAuth-eligible, the way it always did;
+  // the verdict takes the button away seconds later when the server turns out
+  // not to want one.
+  const probe = probeRowState(server.probe?.verdict);
+  const oauthByProbe = probe?.oauth === 'wants';
+  // Only while a verdict can still arrive. Afterwards the slot goes quiet: a
+  // row with no verdict is a row with no verdict, and Connect already treats
+  // one leniently.
+  const checking = probeStillLanding(server);
+  // What the row can still claim from OAuth. A revoked connection is history
+  // once the headers answer on their own: discovery reads a revoked claim as no
+  // claim and issues the header grant, so the row has to say the server is
+  // usable rather than keep asking for a connection it no longer needs.
+  // `status` still speaks where the connection's own history decides.
+  const claim = status === 'revoked' && probe?.oauth === 'no' ? null : status;
+  // Only a verdict that settled the question takes the button away. A check
+  // that never reached the server learned nothing about auth, so it leaves the
+  // row where an unprobed one sits.
+  const unconnected =
+    oauthEligible && needsOauthConnect(claim) && (!!claim || !probe || probe.oauth !== 'no');
+  // A live OAuth status is the dominant answer, so its pill speaks instead,
+  // and where Connect is on screen it already says what the OAuth note would.
+  const probeNote =
+    !claim && probe?.noteKey && !(oauthByProbe && unconnected)
+      ? { key: probe.noteKey, tone: probe.tone, wire: probe.wire }
+      : null;
   const rowKey = `catalog-${server.name}`;
 
   return (
@@ -119,17 +152,28 @@ export function McpCatalogRow({
           {/* Status line: OAuth pill (state needing attention), then quiet
               metadata — scope, tool count, transport. */}
           <div className="flex items-center gap-2 flex-wrap">
-            {status && <McpOauthPill status={status} />}
+            {claim && <McpOauthPill status={claim} />}
             <MetaText>
               {server.enabled
                 ? t('plugins.servers.enabledState')
                 : t('plugins.servers.disabledState')}
             </MetaText>
-            <ToolCountText status={status} count={server.tool_count} />
+            <ToolCountText status={claim} count={server.tool_count} />
+            {checking && !claim && <MetaText>{t('mcp.probe.rowChecking')}</MetaText>}
+            {unconnected && !claim && oauthByProbe && <MetaText>{t('mcp.probe.rowOauth')}</MetaText>}
             <MetaText>{server.transport}</MetaText>
             <PluginSuppressedBadge row={server} variant="prose" />
             <VendorNotes vendor={vendor} unconnected={unconnected} rowKey={rowKey} />
           </div>
+
+          {probeNote && (
+            <RowNote
+              icon={probeNote.tone === 'warning' ? AlertTriangle : KeyRound}
+              tone={probeNote.tone}
+            >
+              {(probeNote.wire && server.probe?.error) || t(probeNote.key)}
+            </RowNote>
+          )}
 
           {server.description && (
             <p className="text-[0.6875rem] line-clamp-2" style={{ color: 'var(--color-text-tertiary)' }}>
@@ -142,7 +186,7 @@ export function McpCatalogRow({
         <>
           {unconnected && (
             <ConnectButton
-              status={status}
+              status={claim}
               connecting={connecting}
               vendor={vendor}
               registryUnavailable={registryUnavailable}

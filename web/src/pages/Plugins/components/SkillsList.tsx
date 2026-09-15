@@ -8,10 +8,9 @@ import { invalidateSkillFanout } from '@/hooks/usePlugins';
 import {
   ConfirmStrip,
   HeaderButton,
-  ListEmpty,
   ListError,
+  ListHeader,
   ListSkeleton,
-  SectionHeader,
 } from '@/components/mcp/McpPrimitives';
 import type { SkillInfo } from '@/pages/ChatAgent/utils/api';
 import { groupBy, matchesFilter } from '../utils/groupOrigins';
@@ -24,6 +23,7 @@ import { useSkillBulkActions } from '../hooks/useSkillBulkActions';
 import { useWorkspaceOptions } from '../hooks/useWorkspaceOptions';
 import { BulkActionBar } from './BulkActionBar';
 import { EmptyState } from './EmptyState';
+import { FilterEmpty } from './FilterEmpty';
 import { GroupDeck } from './GroupDeck';
 import { ListControls } from './ListControls';
 import { PluginSuppressedBadge } from './PluginBadges';
@@ -82,18 +82,32 @@ export function SkillsList() {
     (s) => s.origin === 'platform' && !s.plugin_name,
   );
   const ownSkills = visible.filter((s) => s.origin === 'user' && !s.plugin_name);
+  // Shipped bundles sit above the user's own section and installed plugins
+  // below it, the order the Connectors tab keeps, so the two component tabs
+  // read as one inventory. The tier is therefore part of the grouping key: a
+  // package whose skills span both belongs in each section, and keying on the
+  // name alone filed all of them under whichever row happened to come first.
   const pluginSections = [
     ...groupBy(
       visible.filter((s) => s.origin !== 'workspace' && s.plugin_name),
-      (s) => s.plugin_name as string,
+      (s) => `${s.origin}\u0000${s.plugin_name as string}`,
     ).entries(),
-  ].sort(([a], [b]) => a.localeCompare(b));
+  ]
+    .map(([key, rows]) => {
+      const [origin, pluginName] = key.split('\u0000');
+      return { origin, pluginName, rows };
+    })
+    .sort((a, b) => a.pluginName.localeCompare(b.pluginName));
+  const shippedSections = pluginSections.filter((s) => s.origin === 'platform');
+  const installedSections = pluginSections.filter((s) => s.origin !== 'platform');
   const workspaceSections = [
     ...groupBy(
       visible.filter((s) => s.origin === 'workspace'),
       (s) => s.workspace_id ?? '',
     ).entries(),
   ].sort(([a], [b]) => (wsNameById.get(a) ?? '').localeCompare(wsNameById.get(b) ?? ''));
+  const hasDecks =
+    platformSkills.length > 0 || pluginSections.length > 0 || workspaceSections.length > 0;
 
   // --- Detail overlay (?detail=skill:NAME [&dws=wsid]) ---
   // Names are unique within a scope; `dws` picks the workspace-tier row when
@@ -203,6 +217,43 @@ export function SkillsList() {
     </button>
   );
 
+  const renderPluginDecks = (sections: typeof pluginSections) =>
+    sections.map(({ origin, pluginName, rows }) =>
+        renderDeck({
+          id: `skills:plugin:${origin}:${pluginName}`,
+          title: pluginName,
+          icon: Blocks,
+          rows,
+          badge: <PluginSuppressedBadge row={rows[0]} />,
+          action: openPluginAction(pluginName),
+          scopeControl: (skill) => (
+            <ScopeControl
+              workspaces={wsOptions}
+              scopeWorkspaceId={null}
+              disabledWorkspaceIds={skill.disabled_workspace_ids ?? []}
+              checklistLocked={scopeLocked(skill)}
+              busy={actions.togglingName === skillRowKey(skill)}
+              moveBlockedReason={
+                // A package's skills live at the account tier; moving one
+                // into a workspace would detach it from its owner as a side
+                // effect of a scope change.
+                t('plugins.scope.movePluginBlocked', { plugin: pluginName })
+              }
+              onSetWorkspaceDisabled={(wsId, disabled) =>
+                actions.setWorkspaceDisabled(skill, wsId, disabled)
+              }
+            />
+          ),
+          // `deletable` means "managed through this surface", not "unowned";
+          // a plugin's skill is listed here and comes back deletable. Same
+          // gate as the bulk bar, which refuses them.
+          deleteOf: (skill) =>
+            skill.deletable && !isPluginOwned(skill)
+              ? () => actions.requestDelete(skill.name, null)
+              : undefined,
+        }),
+      );
+
   if (error) {
     return (
       <ListError>
@@ -226,7 +277,12 @@ export function SkillsList() {
       />
 
       {surface.noMatches(visible.length) && (
-        <ListEmpty>{t('plugins.filter.noMatches')}</ListEmpty>
+        <FilterEmpty
+          noun={t('plugins.filter.nounSkills')}
+          filter={surface.filter}
+          stateFilter={surface.stateFilter}
+          onReset={surface.reset}
+        />
       )}
 
       {platformSkills.length > 0 &&
@@ -249,16 +305,19 @@ export function SkillsList() {
           ),
         })}
 
+      {renderPluginDecks(shippedSections)}
+
       {/* Filtered-empty hides the whole section: the top-level noMatches
           notice already covers it, and a bare header reads as a glitch. */}
       {surface.keepsSection(ownSkills.length) && (
       <div className="flex flex-col [&>*+*]:mt-1.5">
-        <SectionHeader>{t('plugins.skills.yours')}</SectionHeader>
+        <ListHeader icon={BookOpen} title={t('plugins.skills.yours')} count={ownSkills.length} />
         <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
           {t('plugins.skills.inheritHint')}
         </p>
         {ownSkills.length === 0 ? (
           <EmptyState
+            compact={hasDecks}
             message={t('plugins.skills.empty')}
             action={
               <HeaderButton
@@ -297,41 +356,7 @@ export function SkillsList() {
       </div>
       )}
 
-      {pluginSections.map(([pluginName, rows]) =>
-        renderDeck({
-          id: `skills:plugin:${pluginName}`,
-          title: pluginName,
-          icon: Blocks,
-          rows,
-          badge: <PluginSuppressedBadge row={rows[0]} />,
-          action: openPluginAction(pluginName),
-          scopeControl: (skill) => (
-            <ScopeControl
-              workspaces={wsOptions}
-              scopeWorkspaceId={null}
-              disabledWorkspaceIds={skill.disabled_workspace_ids ?? []}
-              checklistLocked={scopeLocked(skill)}
-              busy={actions.togglingName === skillRowKey(skill)}
-              moveBlockedReason={
-                // A package's skills live at the account tier — moving one
-                // into a workspace would detach it from its owner as a side
-                // effect of a scope change.
-                t('plugins.scope.movePluginBlocked', { plugin: pluginName })
-              }
-              onSetWorkspaceDisabled={(wsId, disabled) =>
-                actions.setWorkspaceDisabled(skill, wsId, disabled)
-              }
-            />
-          ),
-          // `deletable` means "managed through this surface", not "unowned" —
-          // a plugin's skill is listed here and comes back deletable. Same
-          // gate as the bulk bar, which refuses them.
-          deleteOf: (skill) =>
-            skill.deletable && !isPluginOwned(skill)
-              ? () => actions.requestDelete(skill.name, null)
-              : undefined,
-        }),
-      )}
+      {renderPluginDecks(installedSections)}
 
       {workspaceSections.map(([wsId, wsSkills]) =>
         renderDeck({
@@ -377,6 +402,7 @@ export function SkillsList() {
       {selection.selecting && (
         <BulkActionBar
           count={bulk.count}
+          selectionKey={bulk.selectionKey}
           actions={bulk.actions}
           scope={bulk.scope}
           progress={surface.progress}
@@ -384,12 +410,14 @@ export function SkillsList() {
         />
       )}
 
-      {uploadOpen && (
-        <SkillUploadModal
-          onClose={() => setUploadOpen(false)}
-          onUpload={(file, onProgress) => uploadMutation.mutateAsync({ file, onProgress })}
-        />
-      )}
+      <AnimatePresence>
+        {uploadOpen && (
+          <SkillUploadModal
+            onClose={() => setUploadOpen(false)}
+            onUpload={(file, onProgress) => uploadMutation.mutateAsync({ file, onProgress })}
+          />
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {detailSkill && (

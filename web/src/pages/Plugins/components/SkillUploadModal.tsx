@@ -1,8 +1,8 @@
 import { useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Upload, X } from 'lucide-react';
+import { Upload } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
-import { useBackdropDismiss, useDialogA11y } from '@/hooks/useDialogA11y';
+import { ModalShell } from '@/components/ui/ModalShell';
 import { formatApiErrorDetail } from '@/pages/ChatAgent/utils/api';
 
 /**
@@ -35,8 +35,6 @@ export function SkillUploadModal({
   // Every dismissal route waits out the upload. It would finish regardless, so
   // closing early saves nothing and only hides the reason if it fails.
   const close = uploading ? NOOP : onClose;
-  const dialogRef = useDialogA11y<HTMLDivElement>(close);
-  const backdrop = useBackdropDismiss<HTMLDivElement>(close);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
@@ -68,45 +66,45 @@ export function SkillUploadModal({
     }
   }
 
-  return (
-    <div
-      className="fixed inset-0 z-[1010] flex items-center justify-center p-4"
-      style={{ backgroundColor: 'var(--color-bg-overlay-strong)' }}
-      {...backdrop}
-    >
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        tabIndex={-1}
-        className="relative w-full max-w-md rounded-lg p-5"
+  const footer = (
+    <div className="flex justify-end gap-2">
+      <button
+        type="button"
+        onClick={close}
+        disabled={uploading}
+        className="px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50 disabled:pointer-events-none"
+        style={{ color: 'var(--color-text-tertiary)' }}
+      >
+        {t('common.cancel')}
+      </button>
+      <button
+        type="button"
+        onClick={handleUpload}
+        disabled={!file || uploading}
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors disabled:opacity-50"
         style={{
-          backgroundColor: 'var(--color-bg-elevated)',
-          border: '1px solid var(--color-border-muted)',
+          color: 'var(--color-btn-primary-text)',
+          backgroundColor: 'var(--color-btn-primary-bg)',
         }}
       >
-        <button
-          onClick={close}
-          disabled={uploading}
-          className="absolute top-3 right-3 p-1 rounded-full transition-colors hover:bg-foreground/10 disabled:opacity-40 disabled:pointer-events-none"
-          style={{ color: 'var(--color-text-primary)' }}
-          aria-label={t('common.close')}
-        >
-          <X className="h-4 w-4" />
-        </button>
+        {uploading && <Loader size={12} className="text-current" />}
+        {uploading
+          ? t('plugins.skills.uploading', { percent: progress })
+          : t('plugins.skills.uploadConfirm')}
+      </button>
+    </div>
+  );
 
-        <h3
-          id={titleId}
-          className="text-lg font-semibold mb-1"
-          style={{ color: 'var(--color-text-primary)' }}
-        >
-          {t('plugins.skills.uploadTitle')}
-        </h3>
-        <p className="text-xs mb-4" style={{ color: 'var(--color-text-tertiary)' }}>
-          {t('plugins.skills.uploadHint')}
-        </p>
-
+  return (
+    <ModalShell
+      labelId={titleId}
+      title={t('plugins.skills.uploadTitle')}
+      subtitle={t('plugins.skills.uploadHint')}
+      onClose={onClose}
+      closeDisabled={uploading}
+      width="narrow"
+      footer={footer}
+    >
         <div
           role="button"
           tabIndex={0}
@@ -147,38 +145,10 @@ export function SkillUploadModal({
         </div>
 
         {error && (
-          <p className="text-xs mt-3" style={{ color: 'var(--color-loss)' }}>
+          <p className="text-xs" style={{ color: 'var(--color-loss)' }}>
             {error}
           </p>
         )}
-
-        <div className="flex justify-end gap-2 mt-4">
-          <button
-            type="button"
-            onClick={close}
-            disabled={uploading}
-            className="px-3 py-1.5 text-xs rounded-md disabled:opacity-50"
-            style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border-muted)' }}
-          >
-            {t('common.cancel')}
-          </button>
-          <button
-            type="button"
-            onClick={handleUpload}
-            disabled={!file || uploading}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md disabled:opacity-50"
-            style={{
-              color: 'var(--color-btn-primary-text)',
-              backgroundColor: 'var(--color-btn-primary-bg)',
-            }}
-          >
-            {uploading && <Loader size={12} className="text-current" />}
-            {uploading
-              ? t('plugins.skills.uploading', { percent: progress })
-              : t('plugins.skills.uploadConfirm')}
-          </button>
-        </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 }

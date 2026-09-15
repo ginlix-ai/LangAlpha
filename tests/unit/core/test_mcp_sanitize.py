@@ -14,6 +14,7 @@ from ptc_agent.core.mcp_sanitize import (
     is_untrusted_server,
     iter_arg_credentials,
     iter_arg_flag_pairs,
+    looks_like_placeholder,
     sanitize_tool_name,
     sanitize_tool_set,
     sanitize_tool_text,
@@ -114,6 +115,26 @@ class TestVaultRefRegex:
     def test_rejects_illegal_secret_name_chars(self):
         assert vault_refs("${vault:bad-name}") == []
         assert vault_refs("${vault:ok_name}") == ["ok_name"]
+
+
+class TestLooksLikePlaceholder:
+    """A blank the user has yet to fill, told apart from a real credential.
+
+    The import loop consults this before sharing one vault secret between two
+    servers, so a false negative sends one vendor's key to another.
+    """
+
+    @pytest.mark.parametrize(
+        "value", ["<your-api-key>", "REPLACE_ME", "xxx", "paste-token-here"]
+    )
+    def test_a_stand_in_is_recognized(self, value):
+        assert looks_like_placeholder(value) is True
+
+    @pytest.mark.parametrize(
+        "value", ["sk-live-9f8e7d6c5b4a3210", "prod", ""]
+    )
+    def test_a_real_value_is_not(self, value):
+        assert looks_like_placeholder(value) is False
 
 
 class TestIterArgCredentials:

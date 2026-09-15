@@ -8,12 +8,15 @@ refresh are not atomic with each other, so the read side cannot assume.
 The same non-atomicity runs the other way at the END of a discovery: a
 disconnect can commit while we are on the network, so the final section pins
 that a write the database guard refused is never dressed up as a fresh
-snapshot, and above all never fans one out.
+snapshot, and above all never fans one out. A rotated vault value moves no
+fingerprint at all, so the section before that one fences on the row's probe
+clock instead.
 """
 
 from __future__ import annotations
 
 from contextlib import ExitStack, asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -21,8 +24,11 @@ import pytest
 
 from src.server.database.mcp_oauth import ConnectionStatus
 from src.server.database.mcp_tool_schemas import SchemaWrite
-from src.server.services.mcp_oauth.discovery import refresh_user_tool_schemas
-from src.server.utils.egress_guard import PinnedTarget
+from src.server.services.mcp_oauth.discovery import (
+    discover_catalog_server,
+    refresh_user_tool_schemas,
+)
+from src.server.services.mcp_probe import ProbeOutcome
 from src.server.services.mcp_oauth.lifecycle import (
     TokenUnavailable,
     revoke_if_consent_moved,
@@ -42,6 +48,9 @@ def _connection(server_url=CONSENTED, status=ConnectionStatus.CONNECTED):
 def _catalog_row(url=CONSENTED):
     return {
         "name": SERVER,
+        # Background discovery reads it before it dials, and every catalog
+        # SELECT projects it: a row without it is a row nothing probes.
+        "enabled": True,
         "transport": "http",
         "command": None,
         "args": [],
@@ -62,10 +71,21 @@ class _FakeTxn:
         return False
 
 
+class _FakeCursor:
+    """The version bump is the only thing on this path that takes a cursor."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
 @asynccontextmanager
 async def _fake_db_conn(conn=None):
-    """The write path opens one transaction to fence on the catalog row."""
-    yield SimpleNamespace(transaction=_FakeTxn)
+    """The write path opens one transaction to fence on the catalog row, and
+    lands its version bump on the same connection before leaving it."""
+    yield SimpleNamespace(transaction=_FakeTxn, cursor=_FakeCursor)
 
 
 _DB = ("src.server.services.mcp_oauth.discovery.get_db_connection", _fake_db_conn)
@@ -200,6 +220,38 @@ async def test_refresh_refuses_a_non_servable_connection(status):
 
 
 @pytest.mark.asyncio
+async def test_discovery_never_sends_the_headers_of_a_claimed_row():
+    """A connection short of revoked claims the row, so discovery answers as
+    the OAuth path does rather than probing with the row's own headers.
+
+    The relay and the write-time warning both read a non-revoked connection as
+    owning the row; a header probe here would earn the row a verdict against
+    credentials no call is ever allowed to spend.
+    """
+    probe = AsyncMock()
+    with (
+        patch(
+            "src.server.services.mcp_oauth.discovery.get_catalog_server",
+            new=AsyncMock(return_value=_catalog_row()),
+        ),
+        patch(
+            "src.server.services.mcp_oauth.discovery.get_connection",
+            new=AsyncMock(
+                return_value=_connection(status=ConnectionStatus.NEEDS_REAUTH)
+            ),
+        ),
+        patch(
+            "src.server.services.mcp_oauth.discovery.bounded_probe",
+            new=probe,
+        ),
+    ):
+        with pytest.raises(TokenUnavailable) as e:
+            await discover_catalog_server(USER, SERVER)
+    assert e.value.reason == ConnectionStatus.NEEDS_REAUTH.value
+    probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_refresh_still_runs_for_an_ambiguous_connection():
     # refresh_ambiguous is servable: the old access token keeps working until
     # it expires, so re-discovery is still worth attempting.
@@ -267,37 +319,16 @@ async def test_refresh_accepts_the_consented_url_in_any_spelling():
 # ---------------------------------------------------------------------------
 
 
-class _FakeTool:
-    name = "search"
-    description = "d"
-    input_schema = {"type": "object"}
-
-
-class _FakeClient:
-    """Stands in for the SDK session: one tool, no network."""
-
-    def __init__(self, transport):
-        self._transport = transport
-
-    async def __aenter__(self):
-        return SimpleNamespace(
-            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[_FakeTool()])),
-            # A real session always exposes this, so the stand-in does too.
-            server_info=None,
-        )
-
-    async def __aexit__(self, *exc):
-        return False
-
-
-@asynccontextmanager
-async def _fake_http_client(*args, **kwargs):
-    yield SimpleNamespace(follow_redirects=False)
+_ONE_TOOL = ProbeOutcome(
+    ok=True, auth="oauth",
+    tools=[{"name": "search", "description": "d", "input_schema": {"type": "object"}}],
+)
 
 
 def _network_returning_one_tool(*, upsert, bump, catalog=None):
     """Everything from the entry gates to the write stubbed out, so the write
-    and the fan-out are the only observable effects of a successful run."""
+    and the fan-out are the only observable effects of a successful run. The
+    network is the probe module's one call, answered with one tool."""
     stack = ExitStack()
     for target, new in (
         _DB,
@@ -307,22 +338,9 @@ def _network_returning_one_tool(*, upsert, bump, catalog=None):
          AsyncMock(return_value=_connection())),
         ("src.server.services.mcp_oauth.discovery.ensure_fresh_access_token",
          AsyncMock(return_value=SimpleNamespace(header=lambda: "Bearer t"))),
-        # Function-scope imports in discovery read these module attributes at
-        # call time, so patching the source modules covers both.
-        ("src.server.utils.egress_guard.pin_public_url",
-         AsyncMock(return_value=PinnedTarget(
-             url="https://203.0.113.7/mcp", host="mcp.example.com",
-             ip="203.0.113.7", authority="mcp.example.com",
-         ))),
-        ("src.server.services.mcp_oauth.http.pinned_discovery_client",
-         _fake_http_client),
-        ("src.server.services.mcp_oauth.discovery.streamable_http_client",
-         lambda *a, **k: object()),
-        ("src.server.services.mcp_oauth.discovery.Client", _FakeClient),
-        ("src.server.services.mcp_oauth.discovery.get_user_tool_schemas",
-         AsyncMock(return_value=[])),
-        ("src.server.services.mcp_oauth.discovery.bump_user_workspaces_mcp_version",
-         bump),
+        ("src.server.services.mcp_oauth.discovery.bounded_probe",
+         AsyncMock(return_value=_ONE_TOOL)),
+        ("src.server.services.mcp_oauth.discovery.bump_user_versions", bump),
         ("src.server.services.mcp_oauth.discovery.upsert_user_tool_schemas",
          upsert),
     ):
@@ -372,7 +390,11 @@ async def test_refresh_writes_and_bumps_when_the_connection_survives():
         row = await refresh_user_tool_schemas(USER, SERVER)
 
     assert row is cached
+    # Same connection, inside the fence: the bump takes the write's cursor
+    # rather than opening a second transaction of its own.
     bump.assert_awaited_once()
+    assert isinstance(bump.await_args.args[0], _FakeCursor)
+    assert bump.await_args.args[1] == USER
     kwargs = upsert.await_args.kwargs
     assert kwargs["connection_id"] == "c-1"
     assert kwargs["status"] == "ok"
@@ -449,6 +471,82 @@ async def test_refresh_discards_a_write_after_the_row_vanished():
     assert e.value.reason == "superseded"
     upsert.assert_not_awaited()
     bump.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# refresh_user_tool_schemas: a rotation that lands mid-discovery
+# ---------------------------------------------------------------------------
+
+
+CLAIMED = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+
+def _kicked_row(stamp: datetime | None) -> dict:
+    """A catalog row carrying the probe clock every catalog SELECT projects,
+    in the ISO spelling the database layer normalizes it to."""
+    return _catalog_row() | {
+        "probe_kicked_at": stamp.isoformat() if stamp is not None else None
+    }
+
+
+@pytest.mark.asyncio
+async def test_refresh_discards_a_write_after_a_newer_probe_claimed_the_row():
+    """The regression: a rotated secret churns no fingerprint, so the probe
+    that dialled with the old value passes the config fence and overwrites the
+    verdict the rotation's own probe just earned, with a
+    ``credential_rejected`` nothing re-kicks."""
+    catalog = AsyncMock(
+        side_effect=[
+            _kicked_row(CLAIMED),
+            _kicked_row(CLAIMED + timedelta(seconds=1)),
+        ]
+    )
+    upsert = AsyncMock()
+    bump = AsyncMock()
+    with _network_returning_one_tool(upsert=upsert, bump=bump, catalog=catalog):
+        with pytest.raises(TokenUnavailable) as e:
+            await refresh_user_tool_schemas(USER, SERVER, claimed_at=CLAIMED)
+
+    assert e.value.reason == "superseded"
+    upsert.assert_not_awaited()
+    bump.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stamp", [CLAIMED, CLAIMED - timedelta(seconds=1)])
+async def test_refresh_lands_when_nothing_reclaimed_the_row(stamp):
+    """Its own stamp, or an older one: either way this probe is still the
+    newest thing that asked, and a fence firing here would leave every
+    background discovery unable to write."""
+    cached = {"server_name": SERVER, "status": "ok", "tools": [], "schema_digest": "d"}
+    catalog = AsyncMock(side_effect=[_kicked_row(stamp), _kicked_row(stamp)])
+    upsert = AsyncMock(return_value=SchemaWrite(cached))
+    with _network_returning_one_tool(
+        upsert=upsert, bump=AsyncMock(), catalog=catalog
+    ):
+        row = await refresh_user_tool_schemas(USER, SERVER, claimed_at=CLAIMED)
+
+    assert row is cached
+
+
+@pytest.mark.asyncio
+async def test_refresh_without_a_claim_keeps_the_fingerprint_as_its_only_fence():
+    """A direct refresh and the add form's probe stamp no clock, so a stamp
+    they never wrote cannot be held against them."""
+    cached = {"server_name": SERVER, "status": "ok", "tools": [], "schema_digest": "d"}
+    catalog = AsyncMock(
+        side_effect=[
+            _kicked_row(CLAIMED),
+            _kicked_row(CLAIMED + timedelta(seconds=1)),
+        ]
+    )
+    upsert = AsyncMock(return_value=SchemaWrite(cached))
+    with _network_returning_one_tool(
+        upsert=upsert, bump=AsyncMock(), catalog=catalog
+    ):
+        row = await refresh_user_tool_schemas(USER, SERVER)
+
+    assert row is cached
 
 
 def test_ipv6_hosts_keep_their_brackets():

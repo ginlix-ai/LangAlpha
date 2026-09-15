@@ -141,7 +141,38 @@ export function permitsBinding(tool: McpToolSummary, binding: McpToolBinding): b
   return tool.allowed == null || tool.allowed.includes(binding);
 }
 
-const BINDINGS: McpToolBinding[] = ['ptc', 'direct', 'both'];
+export interface BindingPath {
+  binding: McpToolBinding;
+  /** The word its segment carries. */
+  label: string;
+  /** What choosing it means for the user, in one line. */
+  desc: string;
+}
+
+/**
+ * The three paths a granted tool can take, in the order they are read. One
+ * declaration for the segments and for the legend that explains them, so the
+ * list cannot end up describing a word the controls no longer use. Keys are
+ * quoted rather than built from the binding, so the tree-wide locale sweep
+ * sees every line these two surfaces can draw.
+ */
+export const BINDING_PATHS: readonly BindingPath[] = [
+  {
+    binding: 'ptc',
+    label: 'plugins.detail.binding_ptc',
+    desc: 'plugins.detail.pathLegendPtc',
+  },
+  {
+    binding: 'direct',
+    label: 'plugins.detail.binding_direct',
+    desc: 'plugins.detail.pathLegendDirect',
+  },
+  {
+    binding: 'both',
+    label: 'plugins.detail.binding_both',
+    desc: 'plugins.detail.pathLegendBoth',
+  },
+];
 
 /**
  * The three bindings as segments, for a tool row and for the bulk bar. Two
@@ -153,10 +184,10 @@ export function bindingOptions(
   /** Absent = every value is offered. */
   isAllowed?: (binding: McpToolBinding) => boolean,
 ): SegmentedOption<McpToolBinding>[] {
-  return BINDINGS.map((binding) => ({
-    value: binding,
-    label: t(`plugins.detail.binding_${binding}`),
-    disabled: isAllowed ? !isAllowed(binding) : false,
+  return BINDING_PATHS.map((path) => ({
+    value: path.binding,
+    label: t(path.label),
+    disabled: isAllowed ? !isAllowed(path.binding) : false,
   }));
 }
 

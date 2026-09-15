@@ -21,7 +21,11 @@ import pytest
 
 from ptc_agent.config.core import MCPServerConfig
 from ptc_agent.core.session import EgressBinding
-from src.server.database.egress_grants import GrantSync
+from src.server.database.egress_grants import (
+    GRANT_KIND_OAUTH_MCP,
+    GrantRef,
+    GrantSync,
+)
 from src.server.services.egress.session_binding import (
     maybe_remint_egress_jwt,
     RelayBind,
@@ -60,11 +64,38 @@ def _session(binding: EgressBinding | None = None):
 
 
 def _resolved(*servers, version: int = VERSION):
-    return SimpleNamespace(servers=list(servers), version=version)
+    # A real ResolvedMCP, because ``grant_scope`` reads the labelled entries
+    # rather than the effective server list.
+    from src.server.services.mcp_config import Origin, ResolvedMCP, ResolvedServer, State
+
+    return ResolvedMCP(
+        entries=tuple(
+            ResolvedServer(config=c, origin=Origin.USER, state=State.ACTIVE)
+            for c in servers
+        ),
+        version=version,
+    )
+
+
+def _ref(connection_id: str, server_name: str) -> GrantRef:
+    return GrantRef(
+        kind=GRANT_KIND_OAUTH_MCP,
+        server_name=server_name,
+        connection_id=connection_id,
+    )
 
 
 def _synced(grants: dict[str, str] | None = None, retired: int = 0):
-    return AsyncMock(return_value=GrantSync(grants=grants or {}, retired=retired))
+    # Keyed the way the sync answers: (kind, subject), OAuth here throughout.
+    return AsyncMock(
+        return_value=GrantSync(
+            grants={
+                (GRANT_KIND_OAUTH_MCP, subject): grant_id
+                for subject, grant_id in (grants or {}).items()
+            },
+            retired=retired,
+        )
+    )
 
 
 @pytest.fixture
@@ -103,12 +134,12 @@ class TestTeardown:
         session = _session(binding=None)
         sync = _synced(retired=2)
         with patch(
-            "src.server.services.egress.session_binding.sync_oauth_grants", sync
+            "src.server.services.egress.session_binding.sync_egress_grants", sync
         ):
             await sync_egress_relay(WS, USER, session, _resolved())
 
         sync.assert_awaited_once_with(
-            user_id=USER, workspace_id=WS, connection_ids=[],
+            user_id=USER, workspace_id=WS, refs=[],
             config_version=VERSION,
         )
         session.sandbox.upload_egress_relay_credentials.assert_awaited_once_with(None)
@@ -120,7 +151,7 @@ class TestTeardown:
         # no-op UPDATE, zero sandbox I/O.
         session = _session(binding=None)
         with patch(
-            "src.server.services.egress.session_binding.sync_oauth_grants", _synced()
+            "src.server.services.egress.session_binding.sync_egress_grants", _synced()
         ):
             await sync_egress_relay(WS, USER, session, _resolved())
 
@@ -133,7 +164,7 @@ class TestTeardown:
         binding = EgressBinding(grants={"srv": "g1"}, jwt_exp=9e9, user_id=USER)
         session = _session(binding=binding)
         with patch(
-            "src.server.services.egress.session_binding.sync_oauth_grants", _synced()
+            "src.server.services.egress.session_binding.sync_egress_grants", _synced()
         ):
             await sync_egress_relay(WS, USER, session, _resolved())
 
@@ -148,7 +179,7 @@ class TestTeardown:
         session = _session(binding=binding)
         session.sandbox.upload_egress_relay_credentials = AsyncMock(return_value=False)
         with patch(
-            "src.server.services.egress.session_binding.sync_oauth_grants", _synced()
+            "src.server.services.egress.session_binding.sync_egress_grants", _synced()
         ):
             ok = await sync_egress_relay(WS, USER, session, _resolved())
 
@@ -171,7 +202,7 @@ class TestUnknownOwner:
         session = _session(binding=None)
         sync = _synced(retired=2)
         with patch(
-            "src.server.services.egress.session_binding.sync_oauth_grants", sync
+            "src.server.services.egress.session_binding.sync_egress_grants", sync
         ):
             await sync_egress_relay(WS, owner, session, _resolved())
 
@@ -185,7 +216,7 @@ class TestUnknownOwner:
         session = _session(binding=None)
         sync = _synced({"conn-1": "g-1"})
         with patch(
-            "src.server.services.egress.session_binding.sync_oauth_grants", sync
+            "src.server.services.egress.session_binding.sync_egress_grants", sync
         ):
             await sync_egress_relay(WS, None, session, _resolved(_server("srv", "conn-1")))
 
@@ -207,14 +238,15 @@ class TestBind:
         session = _session()
         sync = _synced({"conn-a": "grant-a", "conn-b": "grant-b"})
         with patch(
-            "src.server.services.egress.session_binding.sync_oauth_grants", sync
+            "src.server.services.egress.session_binding.sync_egress_grants", sync
         ):
             await sync_egress_relay(WS, USER, session, _resolved(a, b))
 
         # Upsert AND retirement are one call — a workspace is never left with a
         # committed grant set that the retirement half hasn't caught up to.
         sync.assert_awaited_once_with(
-            user_id=USER, workspace_id=WS, connection_ids=["conn-a", "conn-b"],
+            user_id=USER, workspace_id=WS,
+            refs=[_ref("conn-a", "srv_a"), _ref("conn-b", "srv_b")],
             config_version=VERSION,
         )
 
@@ -239,7 +271,7 @@ class TestBind:
         before = srv.model_dump()
         session = _session()
         with patch(
-            "src.server.services.egress.session_binding.sync_oauth_grants",
+            "src.server.services.egress.session_binding.sync_egress_grants",
             _synced({"conn-1": "g-1"}),
         ):
             await sync_egress_relay(WS, USER, session, _resolved(srv))
@@ -253,7 +285,7 @@ class TestBind:
         gone, alive = _server("gone", "conn-gone"), _server("alive", "conn-ok")
         session = _session()
         with patch(
-            "src.server.services.egress.session_binding.sync_oauth_grants",
+            "src.server.services.egress.session_binding.sync_egress_grants",
             _synced({"conn-ok": "grant-ok"}),
         ):
             await sync_egress_relay(WS, USER, session, _resolved(gone, alive))
@@ -275,7 +307,7 @@ class TestBind:
         srv = _server("srv", "conn-1")
         session = _session()
         with patch(
-            "src.server.services.egress.session_binding.sync_oauth_grants",
+            "src.server.services.egress.session_binding.sync_egress_grants",
             _synced({"conn-1": "g-1"}),
         ):
             ok = await sync_egress_relay(WS, USER, session, _resolved(srv))
@@ -294,7 +326,7 @@ class TestBind:
         session = _session()
         session.sandbox.upload_egress_relay_credentials = AsyncMock(return_value=False)
         with patch(
-            "src.server.services.egress.session_binding.sync_oauth_grants",
+            "src.server.services.egress.session_binding.sync_egress_grants",
             _synced({"conn-1": "g-1"}),
         ):
             ok = await sync_egress_relay(WS, USER, session, _resolved(srv))
@@ -314,7 +346,7 @@ class TestBind:
                 "src.server.services.egress.session_binding.EGRESS_RELAY_SECRET", ""
             ),
             patch(
-                "src.server.services.egress.session_binding.sync_oauth_grants", sync
+                "src.server.services.egress.session_binding.sync_egress_grants", sync
             ),
         ):
             ok = await sync_egress_relay(WS, USER, session, _resolved(srv))
@@ -341,7 +373,7 @@ class TestStaleResolver:
         srv = _server("srv", "conn-1")
         session = _session()
         with patch(
-            "src.server.services.egress.session_binding.sync_oauth_grants",
+            "src.server.services.egress.session_binding.sync_egress_grants",
             AsyncMock(return_value=None),
         ):
             await sync_egress_relay(WS, USER, session, _resolved(srv))
@@ -358,7 +390,7 @@ class TestStaleResolver:
         binding = EgressBinding(grants={"srv": "g1"}, jwt_exp=9e9, user_id=USER)
         session = _session(binding=binding)
         with patch(
-            "src.server.services.egress.session_binding.sync_oauth_grants",
+            "src.server.services.egress.session_binding.sync_egress_grants",
             AsyncMock(return_value=None),
         ):
             await sync_egress_relay(WS, USER, session, _resolved())
@@ -374,7 +406,7 @@ class TestStaleResolver:
         session = _session()
         sync = _synced({"conn-1": "g-1"})
         with patch(
-            "src.server.services.egress.session_binding.sync_oauth_grants", sync
+            "src.server.services.egress.session_binding.sync_egress_grants", sync
         ):
             await sync_egress_relay(WS, USER, session, _resolved(srv, version=42))
 

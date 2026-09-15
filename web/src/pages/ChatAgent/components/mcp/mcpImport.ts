@@ -134,23 +134,51 @@ function normalizeEntry(rawName: string, body: unknown): ParsedImportServer {
   };
 }
 
+// The three shapes a config can be written in, read once so the parse below and
+// `mapImportServers` can never disagree about which object is which server.
+const SERVERS_MAP_KEYS = ['mcpServers', 'mcp_servers', 'servers'];
+const SELF_NAMING_FIELDS = ['command', 'url', 'type', 'transport', 'args', 'headers', 'env'];
+
+function selfNaming(obj: Record<string, unknown>): boolean {
+  return typeof obj.name === 'string' && SELF_NAMING_FIELDS.some((k) => k in obj);
+}
+
 /** Find the `{ name: def }` map inside a parsed config object. */
 function unwrapServersMap(payload: unknown): Record<string, unknown> {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return {};
   const obj = payload as Record<string, unknown>;
-  for (const key of ['mcpServers', 'mcp_servers', 'servers']) {
+  for (const key of SERVERS_MAP_KEYS) {
     const inner = obj[key];
     if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
       return inner as Record<string, unknown>;
     }
   }
-  if (
-    typeof obj.name === 'string' &&
-    ['command', 'url', 'type', 'transport', 'args', 'headers', 'env'].some((k) => k in obj)
-  ) {
-    return { [obj.name]: obj };
-  }
+  if (selfNaming(obj)) return { [obj.name as string]: obj };
   return obj;
+}
+
+/**
+ * A copy of the payload with `fn` applied to each raw server definition, left
+ * in the shape the config was written in. The caller edits one server's values
+ * without having to know which of the three shapes it is looking at, and the
+ * payload keeps every field this parser does not model.
+ */
+export function mapImportServers(
+  payload: unknown,
+  fn: (rawName: string, def: unknown) => unknown,
+): unknown {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const obj = payload as Record<string, unknown>;
+  const mapEach = (map: Record<string, unknown>) =>
+    Object.fromEntries(Object.entries(map).map(([k, v]) => [k, fn(k, v)]));
+  for (const key of SERVERS_MAP_KEYS) {
+    const inner = obj[key];
+    if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+      return { ...obj, [key]: mapEach(inner as Record<string, unknown>) };
+    }
+  }
+  if (selfNaming(obj)) return fn(obj.name as string, obj);
+  return mapEach(obj);
 }
 
 /** Normalize an already-parsed JSON object into server entries. */

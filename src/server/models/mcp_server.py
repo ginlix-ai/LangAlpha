@@ -23,6 +23,7 @@ import ipaddress
 import re
 import socket
 from dataclasses import asdict, dataclass, field as dataclass_field
+from datetime import datetime
 from typing import Any, Literal, Optional
 from urllib.parse import urlsplit
 
@@ -101,8 +102,8 @@ _BARE_ENV_RE = re.compile(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?")
 def _validate_secret_map(
     mapping: dict[str, str], *, kind: str, key_re: re.Pattern[str]
 ) -> dict[str, str]:
-    """Validate an env/header map: legal keys, and values that are either a
-    full ``${vault:NAME}`` reference or a plain literal (no host-env refs)."""
+    """Validate an env/header map: legal keys, and values that may embed
+    ``${vault:NAME}`` refs; the value rule is ``_validate_secret_value``."""
     if not isinstance(mapping, dict):
         raise ValueError(f"{kind} must be an object of string→string")
     for key, value in mapping.items():
@@ -113,6 +114,42 @@ def _validate_secret_map(
         if not isinstance(value, str):
             raise ValueError(f"{kind} value for {key!r} must be a string")
         _validate_secret_value(value, kind=kind, key=key)
+    return mapping
+
+
+MAX_HEADERS = 32
+MAX_HEADER_VALUE_CHARS = 4096
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _validate_header_map(mapping: dict[str, str]) -> dict[str, str]:
+    """``_validate_secret_map`` plus the two rules only a header needs.
+
+    A control character makes the value unframable: httpx raises quoting it
+    verbatim, so a key pasted with its trailing newline would land in a log
+    line and in the row's stored probe verdict. The caps bound what one row can
+    put on the wire, since the key is the only part ``ENV_KEY_RE`` bounds.
+    """
+    _validate_secret_map(mapping, kind="header", key_re=ENV_KEY_RE)
+    if len(mapping) > MAX_HEADERS:
+        raise ValueError(f"at most {MAX_HEADERS} headers may be configured")
+    # HTTP field names are case-insensitive and the relay folds the map to
+    # lowercase, so two spellings of one name silently keep whichever lands
+    # last; which one that is nobody configured.
+    lowered = {key.lower() for key in mapping}
+    if len(lowered) != len(mapping):
+        raise ValueError("header names must be unique case-insensitively")
+    for key, value in mapping.items():
+        if len(value) > MAX_HEADER_VALUE_CHARS:
+            raise ValueError(
+                f"header value for {key!r} is longer than "
+                f"{MAX_HEADER_VALUE_CHARS} characters"
+            )
+        if _CONTROL_CHAR_RE.search(value):
+            raise ValueError(
+                f"header value for {key!r} contains a control character; a "
+                "pasted credential must carry no line breaks"
+            )
     return mapping
 
 
@@ -295,7 +332,7 @@ class McpServerInput(BaseModel):
                     f"{self.transport} transport must not set env (headers only)"
                 )
             validate_remote_url(self.url)
-            _validate_secret_map(self.headers, kind="header", key_re=ENV_KEY_RE)
+            _validate_header_map(self.headers)
         return self
 
     def to_config_blob(self) -> dict[str, Any]:
@@ -368,6 +405,88 @@ class BindingInput(BaseModel):
             if not tool or len(tool) > 128:
                 raise ValueError("tool names must be 1-128 characters")
         return self
+
+
+class ProbeInput(BaseModel):
+    """What the add form hands the host-side probe: an address and the headers
+    it would save, nothing persisted. Vault refs are allowed in the headers
+    and resolved from the caller's own vault before the request goes out.
+
+    No transport: the probe dials streamable HTTP whatever the form intends to
+    save, because that is the one transport an address can be asked about from
+    here.
+    """
+
+    url: str
+    headers: dict[str, str] = Field(default_factory=dict)
+    # A workspace whose vault should also answer the refs, for the workspace
+    # tab's form. Ownership is checked by the route.
+    workspace_id: Optional[str] = None
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _validate(self) -> "ProbeInput":
+        validate_remote_url(self.url)
+        _validate_header_map(self.headers)
+        return self
+
+
+class ProbeTool(BaseModel):
+    """One tool an ad-hoc probe saw, for the add form's preview.
+
+    Name and description only: the form is deciding whether to save an address,
+    and no snapshot exists yet for an input schema to belong to.
+    """
+
+    name: str
+    description: str = ""
+
+
+#: What a probe can conclude. ``ok`` is an open server that listed its tools,
+#: ``ok_authed`` one that accepted the credential we sent. The two 401/403 arms
+#: differ by whether we sent a credential at all, which is the difference
+#: between "connect this" and "the key is wrong". ``oauth`` is a challenge with
+#: authorization-server metadata behind it, ``missing_secrets`` a vault ref the
+#: user has not filled in yet (nothing was dialled), and ``unreachable``
+#: everything the wire could not turn into one of the others.
+ProbeVerdict = Literal[
+    "ok",
+    "ok_authed",
+    "needs_credential",
+    "credential_rejected",
+    "oauth",
+    "missing_secrets",
+    "unreachable",
+]
+
+#: The verdicts that mean the server answered a listing with what it holds.
+OK_VERDICTS: frozenset[ProbeVerdict] = frozenset({"ok", "ok_authed"})
+
+
+class ProbeResult(BaseModel):
+    """What one probe concluded about a remote address.
+
+    ``verdict`` is the whole answer: it folds the HTTP status, the challenge
+    behind it and whether a credential was sent into one word, and it is
+    computed where the probe ran because only that side knows the last of the
+    three. A reader that re-derives it from ``http_status`` gets the two 401
+    arms backwards.
+    """
+
+    verdict: ProbeVerdict
+    # The ad-hoc route's preview, empty everywhere else. A catalog row's tools
+    # are its cached snapshot's and outlive a probe that starts failing, so
+    # carrying them here would tie them to this verdict.
+    tools: list[ProbeTool] = Field(default_factory=list)
+    # ``{name, version, ...}`` as the handshake reported it, None when it
+    # reported none or never got that far.
+    server_info: Optional[dict[str, Any]] = None
+    error: str = ""
+    http_status: Optional[int] = None
+    # Vault names the headers referenced that have no value yet.
+    missing_secrets: list[str] = Field(default_factory=list)
+    probed_at: Optional[datetime] = None
 
 
 class EnabledInput(BaseModel):
@@ -603,9 +722,11 @@ class EffectiveServer(BaseModel):
     # reveals the inherited one again.
     shadows_inherited: bool = False
     # Inherited (origin='user') rows only: the owner's OAuth connection status
-    # for this server, INCLUDING 'revoked' — so the UI can say "Disconnected,
-    # reconnect in Plugins" instead of waiting on a discovery that can
-    # never run. None = the server has no OAuth connection at all.
+    # for this server while a connection still claims it, so the UI can say
+    # "reconnect in Plugins" instead of waiting on a discovery that can never
+    # run. None once revoked as well as when there was never a connection: the
+    # row is served by its own headers from then on, and Plugins is where the
+    # revoked status lives and the reconnect is offered.
     oauth_status: Optional[ConnectionStatus] = None
     # DISABLED built-ins only: whether the disable is this workspace's marker
     # row or the account-wide user disable — the latter renders read-only here
@@ -663,10 +784,21 @@ class CatalogServer(BaseModel):
     # the user had declined, on a flow they entered to fix an expiry rather than
     # to change their mind.
     remembered_capabilities: Optional[list[str]] = None
-    # Host-side discovered tool count for the server's CURRENT config (OAuth
-    # servers only today — that's the only user-level discovery path). None =
-    # no current snapshot; the UI omits the count rather than showing 0.
+    # Host-side discovered tool count for the server's CURRENT config. None =
+    # no accepted snapshot; the UI omits the count rather than showing 0.
     tool_count: Optional[int] = None
+    # The host-side probe's LAST word on this row under its CURRENT config,
+    # None when nothing has probed it yet (a stdio row never is). The last, not
+    # the last good one: the cached tools above deliberately survive a probe
+    # that starts failing, and this is the field that says the server is
+    # refusing now. The UI offers Connect on ``verdict``, never on the
+    # transport.
+    probe: Optional[ProbeResult] = None
+    # When a host-side probe was last claimed for this row, None when none ever
+    # was. The page reads it with ``probe`` to tell a kick still in flight from
+    # a row nothing has ever reached: both leave ``probe`` null, and only this
+    # says which.
+    probe_kicked_at: Optional[datetime] = None
     # Set only when the server's handshake named a mark we can reach. A path on
     # this origin, never the server's own URL: resolving it here means one fetch
     # for everyone instead of every settings-page render telling a third party
@@ -865,22 +997,68 @@ def collect_vault_refs(mapping: dict[str, str] | None) -> list[str]:
     return sorted(names)
 
 
+def snapshot_probe(snapshot: dict[str, Any] | None) -> ProbeResult | None:
+    """The probe verdict stored on a snapshot row, or None if it holds none.
+
+    A row written before the verdict had its own column, or one carrying a word
+    this build no longer publishes, reads as "nothing has probed this" rather
+    than failing the listing it decorates.
+    """
+    stored = (snapshot or {}).get("last_probe") or {}
+    if not stored:
+        return None
+    try:
+        return ProbeResult.model_validate(stored)
+    except ValidationError:
+        return None
+
+
+def probe_ok(snapshot: dict[str, Any] | None) -> bool:
+    """Whether a snapshot's stored verdict says the row listed its tools.
+
+    ``ok`` or ``ok_authed``: the server answered a listing, openly or with the
+    credentials the row itself carries. Every other verdict is a server that
+    answered a challenge, and an absent one is an address nothing has reached,
+    so both read as unusable. The header grant and the direct binding of a
+    connection-less row hang off this one answer, because a row that earned one
+    without the other is a tool the model cannot call or one it cannot reach.
+    """
+    probe = snapshot_probe(snapshot)
+    return probe is not None and probe.verdict in OK_VERDICTS
+
+
 def catalog_row_to_response(
     row: dict[str, Any],
     *,
     oauth_status: ConnectionStatus | None = None,
     granted_capabilities: list[str] | None = None,
     remembered_capabilities: list[str] | None = None,
-    tool_count: int | None = None,
     icon_url: str | None = None,
     has_direct_tools: bool = False,
+    snapshot: dict[str, Any] | None = None,
 ) -> CatalogServer:
     """Shape a DB catalog row for the owner-scoped API.
+
+    ``snapshot`` is the row's user-tier snapshot under its current fingerprint,
+    whatever its status. Both snapshot-derived fields are read off it here, so
+    every path that holds one reports the same facts: the tool count only when
+    the snapshot holds real tools, the verdict from the last probe whether or
+    not it brought any back.
 
     ``env``/``headers`` are echoed verbatim (refs and literals alike — the row
     stores no resolved secret) so an edit round-trips; ``env_refs``/
     ``header_refs`` stay the display-only projection of the vault names.
     """
+    from src.server.services.mcp_discovery import ok_snapshot
+
+    tool_count = (
+        len(snapshot.get("tools") or [])
+        if snapshot is not None and ok_snapshot(snapshot)
+        else None
+    )
+    # The list route already carries the row's tools, so the verdict does not
+    # repeat them: a second copy would be a divergent answer on every listing.
+    probe = snapshot_probe(snapshot)
     return CatalogServer(
         name=row["name"],
         transport=row["transport"],
@@ -891,6 +1069,7 @@ def catalog_row_to_response(
         tool_count=tool_count,
         icon_url=icon_url,
         has_direct_tools=has_direct_tools,
+        probe=probe.model_copy(update={"tools": []}) if probe else None,
         command=row.get("command"),
         args=row.get("args") or [],
         url=row.get("url"),
@@ -905,6 +1084,7 @@ def catalog_row_to_response(
         tool_binding=dict(row.get("tool_binding") or {}),
         binding_preset=row.get("binding_preset"),
         order_approval=order_approval_map(row.get("order_approval")),
+        probe_kicked_at=row.get("probe_kicked_at"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
         # Indexed, not .get(): the plugin LEFT JOIN is part of every catalog

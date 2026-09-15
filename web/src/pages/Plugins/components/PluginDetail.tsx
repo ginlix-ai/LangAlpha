@@ -249,7 +249,7 @@ export function PluginDetail({
         }
       >
         {plugin.description && (
-          <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+          <p className="text-sm leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
             {plugin.description}
           </p>
         )}
@@ -268,20 +268,20 @@ export function PluginDetail({
                   aria-label={t('plugins.detail.openComponentAria', {
                     name: component.name,
                   })}
-                  className="group flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-foreground/10"
+                  className="group flex items-center gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-foreground/10"
                 >
                   <BrandMark
                     name={component.name}
                     kind={component.kind === 'mcp' ? 'server' : 'skill'}
                   />
                   <span
-                    className="min-w-0 flex-1 truncate text-xs font-medium"
+                    className="min-w-0 flex-1 truncate text-sm font-medium"
                     style={{ color: 'var(--color-text-primary)' }}
                   >
                     {component.name}
                   </span>
                   <span
-                    className="text-[0.6875rem] flex-shrink-0"
+                    className="text-xs flex-shrink-0"
                     style={{ color: 'var(--color-text-tertiary)' }}
                   >
                     {component.kind === 'mcp'
@@ -289,7 +289,7 @@ export function PluginDetail({
                       : t('plugins.detail.kindSkill')}
                   </span>
                   <ChevronRight
-                    className="h-3.5 w-3.5 flex-shrink-0 transition-transform duration-150 motion-safe:group-hover:translate-x-0.5"
+                    className="h-4 w-4 flex-shrink-0 transition-transform duration-150 motion-safe:group-hover:translate-x-0.5"
                     style={{ color: 'var(--color-text-quaternary)' }}
                   />
                 </button>

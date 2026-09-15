@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../lib/queryKeys';
 import { FAIL_FAST_OFFLINE } from '../lib/network';
-import { needsDiscoveryProbe } from '../pages/ChatAgent/components/mcp/mcpState';
+import { needsDiscoveryProbe, PROBE_KICK_WINDOW_MS } from '../pages/ChatAgent/components/mcp/mcpState';
 import {
   getWorkspaceMcpServers,
   addWorkspaceMcpServer,
@@ -67,6 +67,11 @@ import {
  * re-deciding it: a bulk MCP action on the Plugins page reaching for the
  * plugin-wide fan-out instead would drop the skills and vault caches too, which
  * an MCP change cannot have altered.
+ *
+ * The radius covers every scope's cached probe verdicts (`queryKeys.mcp.probes`)
+ * on purpose. A user-tier secret resolves for workspace probes as well, so a
+ * user-vault mutation answers `missing_secrets` in every vault at once; a
+ * workspace-vault mutation invalidates only its own scope instead.
  */
 export function invalidateMcpFanout(qc: QueryClient) {
   qc.invalidateQueries({ queryKey: queryKeys.mcp.all });
@@ -188,13 +193,95 @@ export function useWorkspaceMcpServers(workspaceId: string | null | undefined, e
   });
 }
 
+/**
+ * How long the catalog keeps asking while an `http` row's verdict is
+ * outstanding. The host probes a row right after it is saved, imported or
+ * enabled and lands the verdict a few seconds later; nothing pushes that to the
+ * page, so the list re-asks while a verdict is outstanding and stops once every
+ * probeable row has one, or once a slow vendor has clearly stalled.
+ */
+const CATALOG_PROBE_POLL_MS = 3_000;
+// How long a single outstanding set is waited on. Counting evaluations instead
+// counted renders: React Query re-runs this callback on every option change,
+// so the budget was spent by the page rather than by the wait, and any row
+// that never got a verdict left the poll permanently exhausted for the next
+// one. Elapsed time is what the sentence above actually describes.
+//
+// The same window a row renders "checking" for (`PROBE_KICK_WINDOW_MS`): the
+// copy promises a verdict is coming, and this poll is the thing that would go
+// and get it, so the two stopping at different moments is the promise outliving
+// the effort behind it.
+const CATALOG_PROBE_POLL_MAX_MS = PROBE_KICK_WINDOW_MS;
+// The host re-kicks a row whose last verdict was `unreachable`, but at most
+// once per row per this long (`SELF_HEAL_INTERVAL_S`, the list route's
+// throttle). It is deliberately longer than the window above: one window holds
+// exactly one kick, so the poll can never outrun the retry it waits for, and a
+// list fetch landing a whole throttle after a window opened is one the host
+// answered with a fresh kick.
+const CATALOG_KICK_THROTTLE_MS = 120_000;
+
 /** The user's MCP template catalog. */
 export function useMcpCatalog(enabled = true) {
+  // The outstanding set and when the wait on it opened. A change to the set
+  // restarts the clock; the same set running long stops the poll. The signature
+  // is names only, so a row that lands on `unreachable` does not buy itself a
+  // second window: the kick this one is waiting on is the one that answered.
+  const outstanding = useRef<{ sig: string; since: number } | null>(null);
   return useQuery({
     queryKey: queryKeys.mcp.catalog(),
     queryFn: getMcpCatalog,
     enabled,
     staleTime: 60_000,
+    refetchInterval: (query) => {
+      const rows = query.state.data?.servers ?? [];
+      // `http` only, the same set the host will actually probe: it dials
+      // streamable HTTP, so an `sse` row never gets a verdict from here and
+      // counting one kept this poll running for the whole window on every
+      // mount, asking after an answer nothing was going to send.
+      //
+      // An `unreachable` verdict is outstanding too, because the host treats it
+      // that way: the list route re-kicks exactly those rows, so the GET that
+      // renders the failure is the same one that went and asked again. Waiting
+      // only on rows with no verdict at all left the retry's answer (a
+      // recovered server, its grants resynced) to arrive on the next mount or
+      // tab refocus.
+      //
+      // A plugin-disabled row is refused the same way a switched-off one is:
+      // `plugin_enabled: false` suppresses it everywhere regardless of its own
+      // `enabled`, so no verdict is ever coming and the wait runs the whole
+      // window on every mount.
+      const sig = rows
+        .filter(
+          (s) =>
+            s.enabled &&
+            s.plugin_enabled !== false &&
+            s.transport === 'http' &&
+            (s.probe == null || s.probe.verdict === 'unreachable'),
+        )
+        .map((s) => s.name)
+        .sort()
+        .join(',');
+      if (!sig) {
+        outstanding.current = null;
+        return false;
+      }
+      const now = Date.now();
+      // A fetch landing a whole kick throttle after this window opened is one
+      // the host answered by re-kicking, so the wait starts over. The poll
+      // cannot produce that gap itself, the window being far shorter; a remount
+      // or a tab refocus can, and that refetch is exactly the one whose retry
+      // nobody would otherwise be waiting for.
+      let active = outstanding.current;
+      const reKicked =
+        active != null &&
+        query.state.dataUpdatedAt - active.since > CATALOG_KICK_THROTTLE_MS;
+      if (!active || active.sig !== sig || reKicked) {
+        active = { sig, since: now };
+        outstanding.current = active;
+      }
+      if (now - active.since > CATALOG_PROBE_POLL_MAX_MS) return false;
+      return CATALOG_PROBE_POLL_MS;
+    },
   });
 }
 

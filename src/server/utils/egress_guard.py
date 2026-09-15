@@ -21,10 +21,72 @@ from urllib.parse import urlsplit, urlunsplit
 
 __all__ = [
     "EgressBlockedError",
+    "MCP_PROTOCOL_HEADERS",
     "PinnedTarget",
+    "RESERVED_HEADERS",
+    "RESERVED_REQUEST_HEADERS",
     "pin_public_url",
     "resolve_public_ips",
+    "strip_configured_headers",
+    "strip_reserved_headers",
 ]
+
+# Headers no caller may supply: framing and hop-by-hop fields belong to the
+# client that frames the request, and ``Host`` is the pin itself. A dict is
+# case-sensitive where HTTP is not, so a lowercase ``host`` from a config row
+# would ride alongside the pinned one and put two on the wire.
+RESERVED_REQUEST_HEADERS = frozenset({
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "te",
+    "upgrade",
+    "expect",
+    "content-encoding",
+})
+
+
+# Names the MCP protocol owns, on top of the framing ones. Whoever negotiated
+# the session frames these, never configuration: a row spelling the version
+# desyncs the wire header from the body ``_meta`` it has to match, and one
+# spelling a session id forges a session the server never issued.
+MCP_PROTOCOL_HEADERS = frozenset({
+    "mcp-protocol-version",
+    "mcp-method",
+    "mcp-name",
+    "mcp-session-id",
+})
+
+# What a user-configured header map may never carry. The host probe, the egress
+# relay and the sandbox runtime each merge a row's headers into a request they
+# framed themselves, so all three drop exactly this set. Split any of them and
+# the same row probes green on one path and fails on another.
+RESERVED_HEADERS = RESERVED_REQUEST_HEADERS | MCP_PROTOCOL_HEADERS
+
+
+def strip_reserved_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
+    """Drop every :data:`RESERVED_REQUEST_HEADERS` key, matched case-folded.
+
+    The transport's own strip, for a map it is about to re-frame. A caller
+    holding a *configured* map wants :func:`strip_configured_headers` instead:
+    the protocol names this one keeps are ones the transport itself is
+    entitled to send.
+    """
+    return {
+        k: v
+        for k, v in (headers or {}).items()
+        if k.lower() not in RESERVED_REQUEST_HEADERS
+    }
+
+
+def strip_configured_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
+    """Drop every :data:`RESERVED_HEADERS` key, matched case-folded."""
+    return {
+        k: v
+        for k, v in (headers or {}).items()
+        if k.lower() not in RESERVED_HEADERS
+    }
 
 
 class EgressBlockedError(ValueError):
@@ -56,7 +118,7 @@ class PinnedTarget:
         without the restored Host/SNI reaches the right IP under the wrong
         name, and sending the original URL re-resolves the hostname.
         """
-        sent = dict(headers or {})
+        sent = strip_reserved_headers(headers)
         sent["Host"] = self.authority
         return self.url, sent, {"sni_hostname": self.host}
 

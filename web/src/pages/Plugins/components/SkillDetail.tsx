@@ -95,7 +95,7 @@ export function SkillDetail({
       }
     >
       {skill.description && (
-        <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+        <p className="text-sm leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
           {skill.description}
         </p>
       )}
@@ -114,7 +114,7 @@ export function SkillDetail({
           </p>
         ) : (
           <pre
-            className="text-[0.6875rem] leading-relaxed whitespace-pre-wrap break-words rounded-md p-3.5 max-h-96 overflow-y-auto"
+            className="text-xs leading-relaxed whitespace-pre-wrap break-words rounded-md p-3.5 max-h-96 overflow-y-auto"
             style={{
               color: 'var(--color-text-secondary)',
               backgroundColor: 'var(--color-bg-card)',

@@ -8,7 +8,8 @@ import { z } from 'zod';
  * here gives instant feedback and avoids round-tripping obviously-bad input.
  *
  * Discriminated on `transport`:
- *   - stdio → command (allowlist, NO `bash`), args, env (no headers/url)
+ *   - stdio → command (any non-empty word; it runs in the user's own sandbox),
+ *     args, env (no headers/url)
  *   - sse/http → url (https-only, SSRF-hardened), headers (no command/args/env)
  *
  * env/header values are either a single `${vault:NAME}` reference or a plain
@@ -23,20 +24,6 @@ import { z } from 'zod';
 export const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,127}$/;
 
-// Suggestions, not a filter: any command is accepted. These are the launchers
-// most published MCP servers document, offered so the common case is one click
-// while `docker`, `deno`, `bun` and a plain binary path stay typeable.
-export const SUGGESTED_COMMANDS = [
-  'npx',
-  'uvx',
-  'uv',
-  'python3',
-  'node',
-  'docker',
-  'deno',
-  'bun',
-] as const;
-
 // Ordered for the transport picker: http leads because a remote service is the
 // common case, and sse sits beside it as the legacy form of the same thing.
 export const TRANSPORTS = ['http', 'sse', 'stdio'] as const;
@@ -45,9 +32,6 @@ export const EXPOSURE_MODES = ['summary', 'detailed'] as const;
 export const DESCRIPTION_MAX = 512;
 export const INSTRUCTION_MAX = 1024;
 
-// `${vault:NAME}` reference — must be a FULL match for the value to count as a
-// reference (mirrors `VAULT_REF_RE.fullmatch` on the backend).
-const VAULT_REF_FULL_RE = /^\$\{vault:[A-Za-z_][A-Za-z0-9_]{0,127}\}$/;
 // Extract vault names from a value (global, for ref collection / display).
 const VAULT_REF_GLOBAL_RE = /\$\{vault:([A-Za-z_][A-Za-z0-9_]{0,127})\}/g;
 // A bare host-env placeholder like `${VAR}` or `$VAR` — never resolves.
@@ -57,13 +41,18 @@ const BARE_ENV_RE = /\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/;
 // Value-level validation (env + headers)
 // ---------------------------------------------------------------------------
 
-/** True iff `value` is a single full `${vault:NAME}` ref OR a clean literal. */
+/**
+ * True iff `value` is a literal that may EMBED well-formed `${vault:NAME}`
+ * refs. `Authorization: Bearer ${vault:TOKEN}` is the shape an auth header
+ * takes almost everywhere, and the backend and the sandbox both substitute
+ * refs in place (`_validate_secret_value`, `_resolve_vault_refs`), so the
+ * whole-value rule this used to enforce only pushed the scheme word into the
+ * secret. What stays rejected is a malformed ref and a host-env placeholder.
+ */
 export function isValidSecretValue(value: string): boolean {
-  if (VAULT_REF_FULL_RE.test(value)) return true;
-  // A malformed vault ref (`${vault:` present but not a full match) is invalid.
-  if (value.includes('${vault:')) return false;
-  // Any other `${...}` / `$VAR` token is a host-env placeholder → reject.
-  if (BARE_ENV_RE.test(value)) return false;
+  const stripped = value.replace(VAULT_REF_GLOBAL_RE, '');
+  if (stripped.includes('${vault:')) return false;
+  if (BARE_ENV_RE.test(stripped)) return false;
   return true;
 }
 
@@ -99,6 +88,23 @@ export function collectVaultRefs(mapping: Record<string, string> | undefined): s
 
 const secretMapSchema = (kind: 'env' | 'header') =>
   z.record(z.string(), z.string()).superRefine((mapping, ctx) => {
+    // HTTP field names are case-insensitive and the relay folds them, so two
+    // spellings of one header would put the value nobody configured on the
+    // wire. Mirrors `_validate_header_map`; env names are case-sensitive.
+    if (kind === 'header') {
+      const seen = new Set<string>();
+      for (const key of Object.keys(mapping)) {
+        const folded = key.toLowerCase();
+        if (seen.has(folded)) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'header names must be unique case-insensitively',
+            path: [key],
+          });
+        }
+        seen.add(folded);
+      }
+    }
     for (const [key, value] of Object.entries(mapping)) {
       if (!ENV_KEY_RE.test(key)) {
         ctx.addIssue({

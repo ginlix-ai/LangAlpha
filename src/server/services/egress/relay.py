@@ -1,11 +1,11 @@
 """The egress relay's per-request pipeline: authenticate → authorize → attach
-the vendor bearer → stream the exchange through.
+the vendor credential → stream the exchange through.
 
 Stateless per request (``--workers N`` free): the sandbox proves itself with a
 relay JWT, the grant row authorizes exactly one destination captured at grant
-creation, and the vendor access token is read fresh from Postgres each call —
-rotation and revocation are instant by construction, with zero sandbox
-convergence.
+creation, and the vendor credential is resolved fresh from Postgres each call
+(``credentials.py`` per kind), so rotation and revocation are instant by
+construction, with zero sandbox convergence.
 
 Header discipline is allowlist-both-ways: the sandbox's relay Authorization
 never reaches the vendor; the vendor's Set-Cookie / WWW-Authenticate never
@@ -14,21 +14,30 @@ reach the sandbox.
 
 from __future__ import annotations
 
+import http.cookiejar
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
 
 from ptc_agent.agent.provenance.types import hash_args
 from src.config.env import EGRESS_RELAY_SECRET
-from src.server.database.egress_grants import fetch_grant_for_relay
+from src.server.database.egress_grants import (
+    GRANT_KIND_HEADER_MCP,
+    fetch_grant_for_relay,
+)
 from src.server.database.order_attempts import claim_dispatch, fetch_attempt_status
 from src.server.services.brokerage_capabilities import order_tool
 from src.server.services.brokerage_orders import AttemptStatus
 from src.server.services.brokerages import brokerage_for_url
 from src.server.services.egress import RelayError, RelayRejection, folded_contains
+from src.server.services.egress.credentials import (
+    VendorCredential,
+    resolve_vendor_credential,
+)
 from src.server.services.egress.execution_token import (
     EXECUTION_HEADER,
     ExecutionTokenError,
@@ -47,11 +56,9 @@ from src.server.services.egress.relay_jwt import (
     validate_relay_jwt,
 )
 from src.server.services.mcp_oauth import SERVABLE
+from src.server.services.mcp_oauth.discovery import schedule_catalog_discovery
 from src.server.services.mcp_oauth.lifecycle import (
-    AccessToken,
-    TokenUnavailable,
     current_access_token,
-    ensure_fresh_access_token,
     mark_connection_needs_reauth,
 )
 from src.server.utils.egress_guard import EgressBlockedError, pin_public_url
@@ -119,7 +126,7 @@ class PreparedRelay:
     claims: RelayClaims
     grant: dict
     canonical: CanonicalRequest
-    token: AccessToken
+    credential: VendorCredential
     order: OrderFrame | None = None
 
 
@@ -134,6 +141,12 @@ def get_relay_client() -> httpx.AsyncClient:
             http2=True,
             follow_redirects=False,
             trust_env=False,
+            # Every user's calls share this client, so it has to be stateless:
+            # a jar that accepts no domain keeps one vendor's Set-Cookie from
+            # riding the next user's request to the same host.
+            cookies=http.cookiejar.CookieJar(
+                policy=http.cookiejar.DefaultCookiePolicy(allowed_domains=[])
+            ),
             timeout=httpx.Timeout(
                 connect=CONNECT_TIMEOUT_S,
                 write=WRITE_TIMEOUT_S,
@@ -311,7 +324,10 @@ async def prepare_relay(
     ):
         raise RelayRejection(404, RelayError.NOT_FOUND)
 
-    if grant["connection_status"] not in SERVABLE:
+    # A header grant has no connection to be servable: what stands in for this
+    # check is the credential resolution below, which finds no headers to send
+    # the moment the row is deleted, switched off or repointed.
+    if grant["kind"] != GRANT_KIND_HEADER_MCP and grant["connection_status"] not in SERVABLE:
         raise RelayRejection(401, RelayError.NEEDS_REAUTH)
 
     # HTTP-verb grant policy (defaults to ["POST"]). The route is POST-only
@@ -379,16 +395,29 @@ async def prepare_relay(
                 canonical, claims=claims, vendor=vendor or "", headers=headers
             )
 
-    try:
-        token = await ensure_fresh_access_token(grant["connection_id"])
-    except TokenUnavailable as e:
-        if e.reason == "refresh_in_progress":
-            raise RelayRejection(503, RelayError.REFRESH_IN_PROGRESS)
-        raise RelayRejection(401, RelayError.NEEDS_REAUTH, e.reason)
-
     return PreparedRelay(
-        claims=claims, grant=grant, canonical=canonical, token=token, order=order
+        claims=claims,
+        grant=grant,
+        canonical=canonical,
+        credential=await resolve_vendor_credential(grant),
+        order=order,
     )
+
+
+def _grant_label(grant: Mapping[str, Any]) -> str:
+    """What a log line calls the grant: the connection for one kind, the row
+    for the other, since a header grant has no connection to name."""
+    return str(grant.get("connection_id") or grant.get("server_name") or "?")
+
+
+def _upstream_reason(e: httpx.HTTPError) -> str:
+    """What the log may repeat about a failed dial.
+
+    A ``LocalProtocolError`` quotes the header it choked on, and every header
+    this path builds carries the vendor credential, so a protocol failure is
+    named by type and nothing else.
+    """
+    return type(e).__name__ if isinstance(e, httpx.ProtocolError) else str(e)
 
 
 def _vendor_headers(
@@ -412,7 +441,9 @@ def _vendor_headers(
     if prepared.canonical.method == "tools/call":
         headers["mcp-method"] = prepared.canonical.method
         headers["mcp-name"] = prepared.canonical.tool_name or ""
-    headers["authorization"] = prepared.token.header()
+    # Last, and never merged with what came in: the credential is the one part
+    # of this request the caller has no say in.
+    headers.update(prepared.credential.headers)
     return headers
 
 
@@ -457,6 +488,22 @@ async def _claim_order_dispatch(order: OrderFrame) -> None:
         raise RelayRejection(403, RelayError.EXECUTION_REQUIRED)
 
 
+def _schedule_credential_recheck(grant: Mapping[str, Any]) -> None:
+    """Re-probe the catalog row a vendor just turned down, at most once per
+    self-heal interval.
+
+    Header grants only. An OAuth connection has ``needs_reauth`` to carry the
+    same news, and the self-heal the list route runs re-probes only rows that
+    are already unreachable.
+    """
+    if grant.get("kind") != GRANT_KIND_HEADER_MCP:
+        return
+    schedule_catalog_discovery(
+        grant["user_id"], grant["server_name"],
+        reason="relay-rejected", throttle=True,
+    )
+
+
 async def open_upstream(
     prepared: PreparedRelay, incoming_headers: dict[str, str]
 ) -> httpx.Response:
@@ -472,8 +519,8 @@ async def open_upstream(
         # The reason (which names the vendor host and is a DNS-resolution
         # oracle) stays host-side; the sandbox gets only the X-Relay-Error code.
         logger.warning(
-            "[egress_relay] destination pin failed for connection %s: %s",
-            prepared.grant["connection_id"], e,
+            "[egress_relay] destination pin failed for grant %s: %s",
+            _grant_label(prepared.grant), e,
         )
         raise RelayRejection(502, RelayError.DESTINATION_BLOCKED)
 
@@ -495,8 +542,8 @@ async def open_upstream(
             response = await client.send(request, stream=True)
         except httpx.HTTPError as e:
             logger.warning(
-                "[egress_relay] upstream unreachable for connection %s: %s",
-                connection_id, e,
+                "[egress_relay] upstream unreachable for grant %s: %s",
+                _grant_label(prepared.grant), _upstream_reason(e),
             )
             raise RelayRejection(502, RelayError.UPSTREAM_UNREACHABLE)
         if _is_vendor_redirect(response.status_code):
@@ -510,8 +557,9 @@ async def open_upstream(
             # userinfo, and the sandbox is never told any of it.
             await response.aclose()
             logger.warning(
-                "[egress_relay] vendor redirected connection %s to host %s",
-                connection_id, _redirect_host(response.headers.get("location")),
+                "[egress_relay] vendor redirected grant %s to host %s",
+                _grant_label(prepared.grant),
+                _redirect_host(response.headers.get("location")),
             )
             raise RelayRejection(502, RelayError.VENDOR_REDIRECT)
         return response
@@ -519,6 +567,17 @@ async def open_upstream(
     if prepared.order is not None:
         await _claim_order_dispatch(prepared.order)
     response = await _send(headers)
+    if prepared.credential.token is None:
+        # A static credential has no generation to race with, so the vendor's
+        # refusal is its answer and the caller gets it: reporting it as a relay
+        # refusal would hide which side said no. Nothing here can repair it,
+        # but a row nothing re-probes stays healthy on the Plugins page and in
+        # later turns while every call fails, so the relay schedules the probe
+        # that records the refusal as ``credential_rejected`` and the sync that
+        # follows retires the grant.
+        if response.status_code in (401, 403):
+            _schedule_credential_recheck(prepared.grant)
+        return response
     if response.status_code != 401:
         return response
 
@@ -526,7 +585,7 @@ async def open_upstream(
     # stored bundle rotated since our read, retry once with the new token;
     # otherwise the vendor is rejecting a current token → needs_reauth.
     await response.aclose()
-    rejected = prepared.token
+    rejected = prepared.credential.token
     current = await current_access_token(connection_id)
     if current is not None and current.generation > rejected.generation:
         headers["authorization"] = current.header()

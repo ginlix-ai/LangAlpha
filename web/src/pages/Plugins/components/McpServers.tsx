@@ -27,13 +27,13 @@ import { useMcpServerList } from '@/pages/ChatAgent/components/mcp/useMcpServerL
 import {
   ConfirmStrip,
   HeaderButton,
-  ListEmpty,
   ListError,
   ListHeader,
   ListSkeleton,
 } from '@/components/mcp/McpPrimitives';
 import {
   formatApiErrorDetail,
+  probeMcpServer,
   type BuiltinMcpServer,
   type CatalogServer,
 } from '@/pages/ChatAgent/utils/api';
@@ -50,6 +50,7 @@ import { BrokerageConsentDialog } from './BrokerageConsentDialog';
 import { BuiltinMcpRow } from './BuiltinMcpRow';
 import { BulkActionBar } from './BulkActionBar';
 import { EmptyState } from './EmptyState';
+import { FilterEmpty } from './FilterEmpty';
 import { GroupDeck } from './GroupDeck';
 import { ListControls } from './ListControls';
 import { McpCatalogRow } from './McpCatalogRow';
@@ -478,7 +479,12 @@ export function McpServers() {
       />
 
       {surface.noMatches(visibleTotal) && (
-        <ListEmpty>{t('plugins.filter.noMatches')}</ListEmpty>
+        <FilterEmpty
+          noun={t('plugins.filter.nounServers')}
+          filter={surface.filter}
+          stateFilter={surface.stateFilter}
+          onReset={surface.reset}
+        />
       )}
 
       {/* Above every list rather than inside one, because the rows it holds are
@@ -555,6 +561,12 @@ export function McpServers() {
             <ListSkeleton />
           ) : ownServers.length === 0 ? (
             <EmptyState
+              compact={
+                bundleSections.length > 0 ||
+                unownedBuiltins.length > 0 ||
+                pluginSections.length > 0 ||
+                workspaceSections.length > 0
+              }
               // The count above is every catalog row, because that is what the
               // per-account cap counts; the list below is only the ones the
               // user made by hand. Install a plugin that ships a server and
@@ -642,17 +654,19 @@ export function McpServers() {
           other AI connection may be one click quieter for having been reached
           through the MCP list. The hook holds the request until this is
           answered, so nothing has happened yet either way. */}
-      {oauth.pendingConfirm && (
-        <BrokerageConsentDialog
-          key={oauth.pendingConfirm.name}
-          vendor={oauth.pendingConfirm.vendor}
-          name={oauth.pendingConfirm.name}
-          granted={oauth.pendingConfirm.granted}
-          pending={oauth.connectingName === oauth.pendingConfirm.name}
-          onConfirm={oauth.confirmPending}
-          onCancel={oauth.cancelPending}
-        />
-      )}
+      <AnimatePresence>
+        {oauth.pendingConfirm && (
+          <BrokerageConsentDialog
+            key={oauth.pendingConfirm.name}
+            vendor={oauth.pendingConfirm.vendor}
+            name={oauth.pendingConfirm.name}
+            granted={oauth.pendingConfirm.granted}
+            pending={oauth.connectingName === oauth.pendingConfirm.name}
+            onConfirm={oauth.confirmPending}
+            onCancel={oauth.cancelPending}
+          />
+        )}
+      </AnimatePresence>
 
       {deletingName && (
         <ConfirmStrip
@@ -668,6 +682,7 @@ export function McpServers() {
       {selection.selecting && (
         <BulkActionBar
           count={bulk.count}
+          selectionKey={bulk.selectionKey}
           actions={bulk.actions}
           scope={bulk.scope}
           progress={surface.progress}
@@ -675,33 +690,31 @@ export function McpServers() {
         />
       )}
 
-      {modalOpen && (
-        <McpServerModal
-          secretNames={secretNames}
-          initial={editing}
-          allowDiscover={false}
-          onClose={closeModal}
-          onSubmit={submit}
-          createSecret={createSecretMutation.mutateAsync}
-          saving={createMutation.isPending || updateMutation.isPending}
-          submitError={submitError}
-        />
-      )}
+      <AnimatePresence>
+        {modalOpen && (
+          <McpServerModal
+            secretNames={secretNames}
+            initial={editing}
+            allowDiscover={false}
+            onClose={closeModal}
+            onSubmit={submit}
+            onProbe={probeMcpServer}
+            createSecret={createSecretMutation.mutateAsync}
+            saving={createMutation.isPending || updateMutation.isPending}
+            submitError={submitError}
+          />
+        )}
+      </AnimatePresence>
 
-      {importOpen && (
-        <McpImportModal
-          onClose={closeImport}
-          onImport={(payload) => importMutation.mutateAsync(payload)}
-          onImported={(createdNames) => {
-            if (createdNames.length > 0) {
-              toast({
-                title: t('plugins.import.disabledNudgeTitle'),
-                description: t('plugins.import.disabledNudgeDesc'),
-              });
-            }
-          }}
-        />
-      )}
+      <AnimatePresence>
+        {importOpen && (
+          <McpImportModal
+            onClose={closeImport}
+            onImport={(payload) => importMutation.mutateAsync(payload)}
+            onEnable={(name) => toggleMutation.mutateAsync({ name, enabled: true }).then(() => undefined)}
+          />
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
       {detailData && (

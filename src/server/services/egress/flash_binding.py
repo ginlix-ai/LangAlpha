@@ -19,24 +19,17 @@ import logging
 from typing import Any
 
 from src.config.env import EGRESS_RELAY_SECRET
-from src.server.database.egress_grants import sync_oauth_grants
-from src.server.database.mcp_tool_schemas import get_user_tool_schemas
+from src.server.database.egress_grants import sync_egress_grants
 from src.server.services.egress.direct_tools import (
     FLASH_SANDBOX_ID,
     DirectMCPBinding,
     prepare_direct_mcp_tools,
 )
+from src.server.services.egress.grant_scope import grant_refs, user_snapshots
 from src.server.services.mcp_config import resolve_mcp_config
-from src.server.services.mcp_discovery import ToolSnapshotIndex
 from src.server.services.mcp_tool_split import build_direct_entries
 
 logger = logging.getLogger(__name__)
-
-
-def _direct_servers(resolved: Any) -> list[Any]:
-    """The resolved servers Flash can bind: a binding plan, and a connection."""
-    plans = resolved.binding_plans_by_name
-    return [s for s in resolved.servers if s.name in plans and s.oauth_connection_id]
 
 
 async def sync_flash_grants(
@@ -60,9 +53,9 @@ async def sync_flash_grants(
         base_config,
         user_id=user_id,
         workspace_id=workspace_id,
-        connection_ids=lambda resolved: [
-            s.oauth_connection_id for s in _direct_servers(resolved)
-        ],
+        refs=lambda resolved: grant_refs(
+            resolved, user_id=user_id, direct_only=True
+        ),
     )
     if not wrote:
         # Raised rather than logged because the caller's 200 is the claim that
@@ -87,8 +80,11 @@ async def bind_flash_direct_tools(
 
     resolved = await resolve_mcp_config(base_config, user_id, workspace_id)
     plans = resolved.binding_plans_by_name
-    servers = _direct_servers(resolved)
-    if not servers:
+    snapshots = await user_snapshots(user_id)
+    refs = await grant_refs(
+        resolved, user_id=user_id, snapshots=snapshots, direct_only=True
+    )
+    if not refs:
         logger.debug(
             "[DIRECT_MCP] flash: no directly bound server (servers=%s plans=%s)",
             [s.name for s in resolved.servers],
@@ -98,18 +94,18 @@ async def bind_flash_direct_tools(
         # previous turn left behind. Returning early here kept a thread that
         # already held the connector calling after the user took it out of
         # Flash's scope, which no other revocation path covers.
-        await sync_oauth_grants(
+        await sync_egress_grants(
             user_id=user_id,
             workspace_id=workspace_id,
-            connection_ids=[],
+            refs=[],
             config_version=resolved.version,
         )
         return empty
 
-    synced = await sync_oauth_grants(
+    synced = await sync_egress_grants(
         user_id=user_id,
         workspace_id=workspace_id,
-        connection_ids=[s.oauth_connection_id for s in servers],
+        refs=refs,
         config_version=resolved.version,
     )
     if synced is None:
@@ -118,25 +114,28 @@ async def bind_flash_direct_tools(
         logger.info("[DIRECT_MCP] flash resolve superseded; no direct tools this turn")
         return empty
     grants: dict[str, str] = {}
-    for server in servers:
-        grant_id = synced.grants.get(server.oauth_connection_id)
+    for ref in refs:
+        grant_id = synced.grants.get(ref.key)
         if grant_id is None:
-            # The connection vanished between resolve and here (disconnect
-            # race). Fail closed and say so: this server's tools are simply
-            # absent from the turn, and the PTC path warns about the same
-            # miss, so a silent one here is the only place it does not show.
+            # The connection or the row vanished between resolve and here (a
+            # disconnect or delete race). Fail closed and say so: this server's
+            # tools are simply absent from the turn, and the PTC path warns
+            # about the same miss, so a silent one here is the only place it
+            # does not show.
             logger.warning(
-                "[DIRECT_MCP] flash: connection %s gone for server %s, left unbound",
-                server.oauth_connection_id,
-                server.name,
+                "[DIRECT_MCP] flash: %s %s gone for server %s, left unbound",
+                ref.kind,
+                ref.subject,
+                ref.server_name,
             )
             continue
-        grants[server.name] = grant_id
+        grants[ref.server_name] = grant_id
 
-    index = ToolSnapshotIndex(user_rows=await get_user_tool_schemas(user_id))
+    bound_names = {ref.server_name for ref in refs}
+    servers = [s for s in resolved.servers if s.name in bound_names]
     # Flash has no sandbox, so the sandbox half of the split is dropped here.
     _, by_server = build_direct_entries(
-        servers, index, denied=resolved.denied_tools_by_name, plans=plans
+        servers, snapshots, denied=resolved.denied_tools_by_name, plans=plans
     )
 
     return await prepare_direct_mcp_tools(

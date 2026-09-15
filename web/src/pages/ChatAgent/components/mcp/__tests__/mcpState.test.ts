@@ -5,10 +5,19 @@ import {
   isOauthBroken,
   needsDiscoveryProbe,
   needsOauthConnect,
+  PROBE_KICK_WINDOW_MS,
+  probeRowState,
+  probeStillLanding,
   showsWorkspaceDetail,
   type McpLifecycleInput,
 } from '../mcpState';
-import type { EffectiveServer, McpOauthStatus, McpStatus } from '../../../utils/api';
+import type {
+  EffectiveServer,
+  McpOauthStatus,
+  McpStatus,
+  ProbeVerdict,
+} from '../../../utils/api';
+import { httpCatalogServer } from '@/test/factories';
 
 /**
  * The shared MCP selectors. These exist because their consumers must agree —
@@ -321,5 +330,66 @@ describe('deriveLifecycle — the two branches removed as unreachable', () => {
       if (view.kind !== 'progress') continue;
       expect(byPhase[view.phase]).toContain(view.labelKey);
     }
+  });
+});
+
+/**
+ * The row's reading of a stored verdict. Two arms are load-bearing and were
+ * both wrong: `oauth` is the only one that positively asks for a connection,
+ * and `unreachable` is the only one that settled nothing at all.
+ */
+describe('probeRowState', () => {
+  it('has no reading for a row nothing has probed, or for a word it does not know', () => {
+    expect(probeRowState(null)).toBeNull();
+    expect(probeRowState(undefined)).toBeNull();
+    expect(probeRowState('from_a_newer_backend' as ProbeVerdict)).toBeNull();
+  });
+
+  it('asks for a connection on the 401 that names OAuth, and nowhere else', () => {
+    const wants = (['ok', 'ok_authed', 'oauth', 'needs_credential', 'credential_rejected', 'missing_secrets', 'unreachable'] as const)
+      .filter((v) => probeRowState(v)?.oauth === 'wants');
+    expect(wants).toEqual(['oauth']);
+  });
+
+  it('carries a note for the OAuth verdict, for the rows Connect cannot speak for', () => {
+    // Connect is offered on http only, and an sse server that answers 401 still
+    // wants one: that row used to render nothing at all.
+    expect(probeRowState('oauth')?.noteKey).toBe('mcp.probe.rowOauth');
+  });
+
+  it('settles nothing from a check that never reached the server', () => {
+    // `connect: false` here took the button away from an OAuth-eligible server
+    // the user had never connected, over one dropped packet.
+    expect(probeRowState('unreachable')?.oauth).toBe('unknown');
+    expect(probeRowState('unreachable')?.wire).toBe(true);
+    // `missing_secrets` never dialled at all: the check stopped at the vault,
+    // so it is the same kind of silence as a dropped packet, not an answer.
+    expect(probeRowState('missing_secrets')?.oauth).toBe('unknown');
+    // A server that answered is the only thing that rules a connection out.
+    for (const v of ['ok', 'ok_authed', 'needs_credential', 'credential_rejected'] as const) {
+      expect(probeRowState(v)?.oauth).toBe('no');
+    }
+  });
+});
+
+/**
+ * Whether a verdict is still on its way. The copy this answers for promises
+ * something is checking, so it has to agree with the poll that would go and
+ * get the verdict, and that poll asks for enabled `http` rows only.
+ */
+describe('probeStillLanding', () => {
+  const KICKED_AT = '2026-01-01T00:00:00.000Z';
+  const insideWindow = Date.parse(KICKED_AT) + PROBE_KICK_WINDOW_MS - 1_000;
+  const kicked = httpCatalogServer({ probe_kicked_at: KICKED_AT });
+
+  it('is not landing on a disabled row, however recently it was kicked', () => {
+    // The host dials enabled rows only, and the catalog poll stops asking for
+    // this row on the same test: a row kicked and then switched off rendered
+    // "checking" for the whole window with nobody checking.
+    expect(probeStillLanding({ ...kicked, enabled: false }, insideWindow)).toBe(false);
+  });
+
+  it('is landing on the same row while it is enabled', () => {
+    expect(probeStillLanding({ ...kicked, enabled: true }, insideWindow)).toBe(true);
   });
 });

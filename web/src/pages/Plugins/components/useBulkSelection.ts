@@ -58,6 +58,18 @@ export function useBulkSelection(): BulkSelection {
   return { selecting, selected, start, exit, toggle, setMany };
 }
 
+/**
+ * A value that changes whenever the rows an action would reach do. Keyed by
+ * the selected rows ON SCREEN, not the retained selection: a selection
+ * survives a filter change on purpose, so a confirm armed on the rows one
+ * filter showed would otherwise fire on the rows the next filter shows. The
+ * Set's identity says nothing (rebuilt on every toggle) and its size too
+ * little: dropping two rows and picking two others leaves the count as it was.
+ */
+export function bulkSelectionKey(targetKeys: Iterable<string>): string {
+  return [...targetKeys].sort().join('\u0000');
+}
+
 /** ServerRowShell selection props for one row, or nothing outside select mode. */
 export function rowSelection(selection: BulkSelection, key: string) {
   if (!selection.selecting) return {};

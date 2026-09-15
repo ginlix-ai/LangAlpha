@@ -326,22 +326,24 @@ export function Brokerages() {
       {/* What the connection may do, and what making it costs elsewhere. Both
           belong to the lifecycle rather than to this tab, so the same dialog
           opens on the Connectors tab for the same row. */}
-      {oauth.pendingConfirm && (
-        <BrokerageConsentDialog
-          // Keyed by row, because the dialog seeds its toggles once from the
-          // grant it opened on. Reused across rows it would show the previous
-          // row's answer.
-          key={oauth.pendingConfirm.name}
-          vendor={oauth.pendingConfirm.vendor}
-          name={oauth.pendingConfirm.name}
-          granted={oauth.pendingConfirm.granted}
-          pending={oauth.connectingName === oauth.pendingConfirm.name}
-          // The hook still holds the whole request, prepare and rollback
-          // included, so resuming it needs only the answer.
-          onConfirm={oauth.confirmPending}
-          onCancel={oauth.cancelPending}
-        />
-      )}
+      <AnimatePresence>
+        {oauth.pendingConfirm && (
+          <BrokerageConsentDialog
+            // Keyed by row, because the dialog seeds its toggles once from the
+            // grant it opened on. Reused across rows it would show the previous
+            // row's answer.
+            key={oauth.pendingConfirm.name}
+            vendor={oauth.pendingConfirm.vendor}
+            name={oauth.pendingConfirm.name}
+            granted={oauth.pendingConfirm.granted}
+            pending={oauth.connectingName === oauth.pendingConfirm.name}
+            // The hook still holds the whole request, prepare and rollback
+            // included, so resuming it needs only the answer.
+            onConfirm={oauth.confirmPending}
+            onCancel={oauth.cancelPending}
+          />
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {detailData && (

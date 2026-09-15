@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { motion } from 'framer-motion';
 import { Check, Download, MoreVertical, Plus } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
+import { EASE_OUT } from '@/lib/motion';
 
 /**
  * Shared building blocks for the list surfaces: the Plugins page, the
@@ -15,9 +16,6 @@ import { Loader } from '@/components/ui/loader';
 // Matches the spring used across the chat UI (ActivityBlock) so motion feels
 // consistent. The toggle knob's travel IS the state change, so it springs.
 const SPRING_SNAPPY = { type: 'spring' as const, stiffness: 200, damping: 22 };
-
-// House entrance curve (DESIGN.md § Motion): ease-out, no overshoot.
-const EASE_OUT = [0.16, 1, 0.3, 1] as const;
 
 // Rows never travel. A filter answers a question — which servers match — and
 // the answer is the list, not a journey to it; sliding a card in from a
@@ -349,7 +347,8 @@ export function ListHeader({
   icon: React.ComponentType<{ className?: string; style?: React.CSSProperties }>;
   title: string;
   count: number;
-  max: number;
+  /** The per-account cap; a list with none shows the bare count. */
+  max?: number;
   children?: React.ReactNode;
 }) {
   return (
@@ -363,7 +362,7 @@ export function ListHeader({
           className="text-xs px-1.5 py-0.5 rounded"
           style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-bg-card)' }}
         >
-          {count} / {max}
+          {max === undefined ? count : `${count} / ${max}`}
         </span>
       </div>
       {children && <div className="flex items-center gap-1.5">{children}</div>}
@@ -451,7 +450,10 @@ export function ListToolbar({
   );
 }
 
-/** Inline confirm strip (delete / overwrite): message left, verdict buttons right. */
+/** Inline confirm strip (delete / overwrite): message left, verdict buttons
+ *  right, in the house order of Cancel then the action. Focus moves onto
+ *  Cancel when it appears, so a keyboard user lands on the strip and Escape
+ *  backs out of it. */
 export function ConfirmStrip({
   message,
   confirmLabel,
@@ -469,8 +471,19 @@ export function ConfirmStrip({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    cancelRef.current?.focus({ preventScroll: true });
+  }, []);
   return (
     <div
+      role="group"
+      aria-live="polite"
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape') return;
+        e.stopPropagation();
+        onCancel();
+      }}
       className="flex items-center justify-between gap-3 text-[0.6875rem] p-2 rounded"
       style={{
         backgroundColor: 'var(--color-bg-card)',
@@ -481,10 +494,19 @@ export function ConfirmStrip({
       <span className="min-w-0">{message}</span>
       <div className="flex items-center gap-1.5 flex-shrink-0">
         <button
+          ref={cancelRef}
+          type="button"
+          onClick={onCancel}
+          className="px-2 py-1 rounded transition-colors hover:bg-foreground/10"
+          style={{ color: 'var(--color-text-tertiary)' }}
+        >
+          {cancelLabel}
+        </button>
+        <button
           type="button"
           onClick={onConfirm}
           disabled={pending}
-          className="px-2 py-1 rounded disabled:opacity-50"
+          className="px-2 py-1 rounded transition-colors hover:bg-foreground/10 disabled:opacity-50 disabled:pointer-events-none"
           style={
             confirmVariant === 'destructive'
               ? { color: 'var(--color-loss)' }
@@ -492,14 +514,6 @@ export function ConfirmStrip({
           }
         >
           {confirmLabel}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="px-2 py-1 rounded hover:bg-foreground/10"
-          style={{ color: 'var(--color-text-tertiary)' }}
-        >
-          {cancelLabel}
         </button>
       </div>
     </div>
@@ -537,5 +551,53 @@ export function ListEmpty({ children }: { children: React.ReactNode }) {
     <div className="py-8 text-center text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
       {children}
     </div>
+  );
+}
+
+/**
+ * A labelled field in a form on these surfaces: the MCP add/edit modal and the
+ * vault's own secret forms, which had a copy each. The label sits above rather
+ * than inside, because a placeholder that empties on the first keystroke is no
+ * longer there to say which field this is; `htmlFor` is what makes the pair a
+ * real label for a screen reader, and the hint reads under the control it
+ * qualifies.
+ */
+export function Field({
+  label,
+  hint,
+  htmlFor,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  htmlFor?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <label
+        htmlFor={htmlFor}
+        className="text-xs font-medium"
+        style={{ color: 'var(--color-text-secondary)' }}
+      >
+        {label}
+      </label>
+      {children}
+      {hint && (
+        <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
+          {hint}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** The validation line under a field, absent when the field is fine. */
+export function FieldError({ error }: { error?: { message: string } }) {
+  if (!error) return null;
+  return (
+    <p className="text-[0.6875rem]" style={{ color: 'var(--color-loss)' }}>
+      {error.message}
+    </p>
   );
 }

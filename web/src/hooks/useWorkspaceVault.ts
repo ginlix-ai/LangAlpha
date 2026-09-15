@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../lib/queryKeys';
 import {
   createVaultSecret,
@@ -9,6 +9,15 @@ import {
 } from '../pages/ChatAgent/utils/api';
 
 /** React Query hooks for the workspace-level vault (sandbox settings → Vault). */
+
+/**
+ * A pre-save probe verdict is an answer about this vault: `missing_secrets`
+ * stops being true the moment the secret exists, and the verdicts are cached
+ * with `staleTime: Infinity`, so nothing else would ever ask again.
+ */
+function invalidateProbes(queryClient: QueryClient, workspaceId: string) {
+  queryClient.invalidateQueries({ queryKey: queryKeys.mcp.probes(workspaceId) });
+}
 
 export function useWorkspaceVaultSecrets(workspaceId: string, enabled = true) {
   return useQuery({
@@ -45,6 +54,7 @@ export function useCreateWorkspaceVaultSecret(workspaceId: string) {
       // Server rows derive needs_secret from vault state, and a settled MCP
       // list stops polling — without this the pill outlives the fix.
       queryClient.invalidateQueries({ queryKey: queryKeys.mcp.workspace(workspaceId) });
+      invalidateProbes(queryClient, workspaceId);
     },
   });
 }
@@ -62,6 +72,7 @@ export function useUpdateWorkspaceVaultSecret(workspaceId: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaceVault.byWorkspace(workspaceId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.mcp.workspace(workspaceId) });
+      invalidateProbes(queryClient, workspaceId);
     },
   });
 }
@@ -73,6 +84,7 @@ export function useDeleteWorkspaceVaultSecret(workspaceId: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaceVault.byWorkspace(workspaceId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.mcp.workspace(workspaceId) });
+      invalidateProbes(queryClient, workspaceId);
     },
   });
 }

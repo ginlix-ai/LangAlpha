@@ -94,6 +94,23 @@ export const queryKeys = {
       'builtinServerTools',
       name,
     ],
+    // Every pre-save check run against one vault. First in the key so a vault
+    // mutation can drop that vault's verdicts by prefix; `''` is the user
+    // vault, a workspace id is that workspace's.
+    probes: (scope: string) => [...queryKeys.mcp.all, 'probe', scope],
+    // The add form's pre-save check of one address with one set of headers.
+    // Both go in the key because the verdict is about the pair: the same URL
+    // answers differently once a credential rides along. `headers` is a digest
+    // of the map rather than the map itself: a key is cached state, and saying
+    // which credential was in hand needs no more than that, while a row the
+    // user is still filling in still never collides with the finished one. The
+    // scope is part of the question too: the same pair resolves its
+    // `${vault:…}` refs against whichever vault asked.
+    probe: (scope: string, url: string, headers: string) => [
+      ...queryKeys.mcp.probes(scope),
+      url,
+      headers,
+    ],
   },
   // The brokerage connectors this build ships. Deliberately its own family
   // rather than a child of `mcp`: it is static and user-independent, so the

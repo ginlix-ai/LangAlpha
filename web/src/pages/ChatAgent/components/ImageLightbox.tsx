@@ -1,5 +1,6 @@
 import React, { useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 import { useBackdropDismiss } from '@/hooks/useDialogA11y';
 
@@ -11,6 +12,7 @@ interface ImageLightboxProps {
 }
 
 function ImageLightbox({ src, alt, open, onClose }: ImageLightboxProps) {
+  const { t } = useTranslation();
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -28,15 +30,19 @@ function ImageLightbox({ src, alt, open, onClose }: ImageLightboxProps) {
 
   if (!open) return null;
 
+  // A lightbox is a deliberately dark surface, not a dialog scrim: the close
+  // button sits on white at 70% and the image is meant to be the only lit thing
+  // on screen, so the ground stays black in both themes rather than following
+  // the overlay token, which lightens to 45% black under the light palette.
   return createPortal(
     <div
-      className="fixed inset-0 z-[1020] flex items-center justify-center bg-black/90 animate-in fade-in-0 duration-200"
+      className="fixed inset-0 z-[1020] flex items-center justify-center bg-black/90 scrim-in"
       {...backdrop}
     >
       <button
         onClick={onClose}
         className="absolute top-4 right-4 z-10 rounded-full p-2 text-white/70 hover:text-white hover:bg-white/10 transition-colors"
-        aria-label="Close"
+        aria-label={t('common.close')}
       >
         <X className="h-6 w-6" />
       </button>

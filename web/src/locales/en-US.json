@@ -2782,6 +2782,14 @@
     }
   },
   "mcp": {
+    "secret": {
+      "valuePlaceholder": "Value",
+      "fromVault": "Choose from vault",
+      "clear": "Clear",
+      "saveOffer": "Save to vault",
+      "saveAs": "Save as",
+      "save": "Save"
+    },
     "list": {
       "title": "Connectors",
       "addServer": "Add server",
@@ -2848,6 +2856,125 @@
       "noTools": "Connected, no tools reported",
       "toolCount_one": "Connected, {{count}} tool",
       "toolCount_other": "Connected, {{count}} tools"
+    },
+    "modal": {
+      "addTitle": "Add MCP server",
+      "editTitle": "Edit MCP server",
+      "close": "Close",
+      "entryLabel": "Server",
+      "entryHint": "Paste a URL, a command like npx -y <package>, or a JSON config. The rest is worked out from it.",
+      "entryPlaceholder": "https://example.com/mcp  or  npx -y @scope/server",
+      "detectedHttp": "Remote server over HTTP",
+      "detectedStdio": "Local command, runs in your workspace",
+      "detectedSse": "Remote server over legacy SSE",
+      "filledFrom": "Filled from \"{{name}}\".",
+      "filledFromMore_one": "Filled from \"{{name}}\". {{count}} more server in the config: use Import JSON to add them all.",
+      "filledFromMore_other": "Filled from \"{{name}}\". {{count}} more servers in the config: use Import JSON to add them all.",
+      "pasteNoServer": "No server found in the pasted config.",
+      "nameLabel": "Name",
+      "namePlaceholder": "my_server",
+      "nameHint": "Letters, digits and underscores. Suggested from the address; change it if you like.",
+      "argsLabel": "Arguments",
+      "argPlaceholder": "argument",
+      "addArg": "Add argument",
+      "removeArg": "Remove argument",
+      "envLabel": "Environment variables",
+      "envHint": "Paste a value or pick one from the vault.",
+      "envKeyPlaceholder": "ENV_VAR",
+      "headersLabel": "Headers",
+      "headersHint": "Paste the key or pick one from the vault; the check below sends it.",
+      "headerChoiceLabel": "Header",
+      "headerCustom": "Custom header",
+      "headerCustomPlaceholder": "Header name",
+      "headerSends": "Sends {{line}}",
+      "headerHiddenValue": "<value>",
+      "addEntry": "Add entry",
+      "removeEntry": "Remove entry",
+      "blankKey": "Key is required. Entries without a key are not saved.",
+      "duplicateHeader": "Each header name can appear only once",
+      "duplicateEnvKey": "Each variable name can appear only once",
+      "advanced": "Advanced",
+      "transportLabel": "Transport",
+      "transportHint": "Detected from the server field. Override only if the detection is wrong.",
+      "descriptionLabel": "Description",
+      "descriptionHint": "Helps the agent decide when to reach for this server.",
+      "descriptionPlaceholder": "What this server does",
+      "instructionLabel": "Instruction",
+      "instructionHint": "Extra guidance the agent reads before it calls this server's tools.",
+      "instructionPlaceholder": "How the agent should use this server",
+      "exposureLabel": "Tool exposure",
+      "exposureHint": "Detailed lists full tool schemas in the prompt (bounded by caps).",
+      "exposureSummary": "Summary",
+      "exposureDetailed": "Detailed",
+      "discoveryLabel": "Tool discovery",
+      "discoveryForced": "This server has an authenticated header, so discovery must use your secrets to list its tools.",
+      "discoveryHint": "Off (default): tool discovery runs without your vault secrets. Turn on only if this server needs authentication to list its tools.",
+      "discoveryToggle": "Use my secrets during discovery",
+      "stdioCheckNote": "A local command is checked in your workspace after you save.",
+      "testSaved": "Test saved config",
+      "testSavedHint": "Runs discovery against the saved server. Save first to test edits.",
+      "cancel": "Cancel",
+      "save": "Save",
+      "add": "Add"
+    },
+    "probe": {
+      "check": "Check",
+      "checking": "Checking the server…",
+      "ok_one": "Reachable, {{count}} tool",
+      "ok_other": "Reachable, {{count}} tools",
+      "okNoTools": "Reachable, no tools reported",
+      "authNone": "Open server, no credentials needed.",
+      "authCredential": "Accepted the credentials you provided.",
+      "authCredentialMissing": "This server wants a credential. Add it as a header below, then check again.",
+      "authOauth": "This server uses OAuth. Save it, then press Connect on its row to sign in.",
+      "missingSecrets": "No value in your vault yet for: {{names}}",
+      "credentialRejected": "The server rejected that credential.",
+      "saveToCheck": "Save to check the new address with its credential.",
+      "failed": "Could not reach the server",
+      "showTools": "Show tools",
+      "hideTools": "Hide tools",
+      "rowChecking": "checking…",
+      "rowOauth": "Connect to list tools",
+      "rowUnreachable": "unreachable",
+      "rowCredential": "needs a credential",
+      "rowCredentialRejected": "credential rejected",
+      "rowMissingSecrets": "a vault value is missing"
+    },
+    "import": {
+      "title": "Import MCP servers",
+      "hint": "Paste a standard mcpServers config. Inline secrets are saved to your vault automatically.",
+      "close": "Close",
+      "found_one": "Found {{count}} server",
+      "found_other": "Found {{count}} servers",
+      "unparseable_one": "({{count}} can't be parsed)",
+      "unparseable_other": "({{count}} can't be parsed)",
+      "notJson": "Not valid JSON.",
+      "credentialsTitle": "Fill in the placeholders",
+      "credentialsHint": "The config has placeholder values. Enter the real value for each server; each one is stored in your vault.",
+      "credentialPlaceholder": "Paste the real value",
+      "leaveBlankHint": "Leave a field blank to import the placeholder as-is and fill it in later.",
+      "back": "Back",
+      "next": "Next",
+      "cancel": "Cancel",
+      "done": "Done",
+      "import": "Import",
+      "importCount": "Import {{count}}",
+      "imported": "Imported {{created}} of {{total}} servers.",
+      "secretsSaved_one": "Saved {{count}} secret to your vault:",
+      "secretsSaved_other": "Saved {{count}} secrets to your vault:",
+      "from": "(from {{name}})",
+      "status": {
+        "created": "Added",
+        "exists": "Already present",
+        "skipped": "Skipped",
+        "invalid": "Invalid",
+        "error": "Failed"
+      },
+      "enableAll": "Switch all on",
+      "enable": "Switch on",
+      "enabled": "On",
+      "enableHint": "Imported servers start off. Switch them on to use them in your workspaces; each is checked as soon as it is added.",
+      "enableFailed": "Could not switch on {{name}}"
     }
   },
   "vault": {
@@ -2885,6 +3012,12 @@
       "security3": "All agent output is scanned by leak detection. Any secret value found in tool results is automatically redacted before reaching the model.",
       "security4a": "Direct file access to the internal secret store is blocked by code validation — only the",
       "security4b": "API is allowed."
+    },
+    "fields": {
+      "name": "Name",
+      "value": "Value",
+      "newValue": "New value",
+      "description": "Description"
     }
   },
   "orders": {
@@ -3024,7 +3157,7 @@
       "mcp": "Connectors",
       "skills": "Skills",
       "secrets": "Secrets",
-      "plugins": "Plugins",
+      "plugins": "Packages",
       "brokerages": "Brokerages"
     },
     "servers": {
@@ -3166,10 +3299,6 @@
       "shellOutdatedHint": "This version of the desktop app cannot complete a connection. Update it, or connect from your browser.",
       "shellOutdatedNote": "Desktop app needs updating"
     },
-    "import": {
-      "disabledNudgeTitle": "Imported switched off",
-      "disabledNudgeDesc": "Imported servers start off. Switch each one on to make it available in your workspaces."
-    },
     "secrets": {
       "title": "Vault",
       "scopeHint": "Secrets here back your MCP servers and are available in every workspace. A workspace secret with the same name overrides the value in that workspace.",
@@ -3230,9 +3359,9 @@
       "movePluginBlocked": "Owned by {{plugin}}; its components stay at the account level"
     },
     "list": {
-      "title": "Installed plugins",
+      "title": "Your plugins",
       "install": "Install plugin",
-      "hint": "A plugin bundles MCP servers and skills. Its components appear in the MCP and Skills tabs with the plugin's name; the toggle here switches all of them at once.",
+      "hint": "A plugin bundles MCP servers and skills. Its components appear in the Connectors and Skills tabs with the plugin's name; the toggle here switches all of them at once. Built-in plugins ship with the app and do not count toward the limit.",
       "empty": "No plugins installed. Install one from a zip file or a public git URL.",
       "atCap": "Plugin limit reached ({{max}})"
     },
@@ -3340,12 +3469,26 @@
       "scopeOnlyIn": "Only in workspaces ({{count}})",
       "scopeMoveTo": "Move into workspace ({{count}})",
       "scopeApply": "Apply to {{count}}",
-      "noChanges": "Nothing to change for this selection"
+      "noChanges": "Nothing to change for this selection",
+      "pickRows": "Select rows to act on them"
     },
     "filter": {
       "placeholder": "Filter",
       "clear": "Clear filter",
-      "noMatches": "No matches"
+      "noMatches": "No matches",
+      "nounPlugins": "plugins",
+      "nounServers": "servers",
+      "nounSkills": "skills",
+      "reset": "Clear filters",
+      "empty": {
+        "query": "No {{noun}} match \"{{query}}\".",
+        "queryOn": "No enabled {{noun}} match \"{{query}}\".",
+        "queryOff": "No disabled {{noun}} match \"{{query}}\".",
+        "queryAttention": "No {{noun}} needing attention match \"{{query}}\".",
+        "on": "No {{noun}} are enabled.",
+        "off": "No {{noun}} are disabled.",
+        "attention": "Nothing needs attention."
+      }
     },
     "addMenu": {
       "add": "Add",
@@ -3396,7 +3539,7 @@
       "repository": "Repository",
       "license": "License",
       "toolAccess": "Tool access",
-      "toolAccessNote": "PTC tools are called from the agent's code; Direct tools are single calls the app can show. A tool's own setting below beats these switches.",
+      "toolAccessNote": "A tool's own setting in the list below beats these switches, and the list says what each path means.",
       "groupDefaults": "Use each tool group's default",
       "groupDefaultsDesc": "On, each tool group decides how its tools run, so those built for it run as single calls the app can show. Off, everything this row can move runs from the agent's code.",
       "orderApprovalLive": "Ask before every live order",
@@ -3417,7 +3560,7 @@
       "bindingCustom": "custom",
       "bindingReset": "Reset",
       "bindingResetAria": "Reset {{name}} to the row default",
-      "bindingPinned": "Order tools run only as direct calls the app can show.",
+      "bindingPinned": "Pinned to Direct so each order is one call the app can show.",
       "asksFirst": "asks first",
       "asksFirstTitle": "Stops for your confirmation on every call",
       "searchPlaceholder": "Filter tools",
@@ -3427,11 +3570,17 @@
       "bulkSelectAllAria": "Select every tool shown",
       "bulkSelectGroupAria": "Select every tool in {{name}}",
       "bulkSelectToolAria": "Select {{name}}",
-      "bulkSelected": "{{count}} selected",
+      "bulkSelected": "{{count}} of {{total}} selected",
       "bulkBindingAria": "How the agent reaches the selected tools",
       "bulkReset": "Reset to default",
       "bulkClear": "Clear selection",
-      "bulkSkipped": "{{count}} skipped, not allowed"
+      "bulkSkipped": "{{count}} skipped, not allowed",
+      "pathLegendTitle": "How the agent reaches a tool",
+      "pathLegendPtc": "Called from inside the Python the agent writes: many calls and the work on their results in one step, with each tool's schema read only when needed. Suits data tools.",
+      "pathLegendDirect": "The ordinary way an agent calls a tool: one call, the whole result read as is, the full schema in front of it. Suits high-priority or frequent tools.",
+      "pathLegendBoth": "Offered on both paths, and the agent picks per call.",
+      "bulkSelectHint": "Pick several to move them all to one path at once.",
+      "bulkRunAs": "Run as"
     }
   }
 }
