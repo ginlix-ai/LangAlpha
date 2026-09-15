@@ -70,7 +70,7 @@ const inBrowser = () => {
   beginMcpOAuth.mockResolvedValue(undefined);
 };
 
-const { startMcpOauth, LoopbackRequiredError } = await import('../mcp');
+const { startMcpOauth, LoopbackRequiredError } = await import('../mcpOauth');
 
 const body = () => (post.mock.calls.at(-1)?.[1] ?? {}) as Record<string, unknown>;
 

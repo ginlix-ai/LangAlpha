@@ -25,16 +25,17 @@ const T_CALL = /\bt\(\s*['"]([a-zA-Z0-9_.]+)['"]/g;
 // Match `titleKey: 'foo.bar'` / `descriptionKey: 'foo.bar'` / etc. — keys
 // stored in widget definitions, STATUS_UI tables, and PresetMeta. Catches our
 // static metadata references that aren't wrapped in t().
-const KEY_PROP = /\b(?:titleKey|descriptionKey|nameKey|tagKey|bestForKey|labelKey|blurbKey)\s*[:=]\s*['"]([a-zA-Z0-9_.]+)['"]/g;
+const KEY_PROP = /\b(?:titleKey|descriptionKey|nameKey|tagKey|bestForKey|labelKey|blurbKey|messageKey|noteKey)\s*[:=]\s*['"]([a-zA-Z0-9_.]+)['"]/g;
 // Bare quoted keys held in const maps and passed to a helper rather than to
 // `t()` directly: SOURCE_KEY / BUCKET_KEY on the dashboard, the tab-label map
-// and the skill-action failure helper under plugins. Scoped to those two
-// namespaces rather than swept tree-wide, because `isLocaleKey` only checks
+// and the skill-action failure helper under plugins, and the probe verdict
+// tables under mcp. Scoped to those namespaces rather than swept tree-wide,
+// because `isLocaleKey` only checks
 // the first segment and plenty of dotted non-keys (module paths, filenames)
 // would otherwise qualify. The cost of being in this list is that a namespace
 // here may not also be used for storage keys or other dotted identifiers --
 // see `plugins:deckExpanded`, which uses a colon for exactly that reason.
-const KEY_VALUE = /['"]((?:dashboard|plugins|orders)\.[a-zA-Z0-9_.]+)['"]/g;
+const KEY_VALUE = /['"]((?:dashboard|plugins|orders|mcp)\.[a-zA-Z0-9_.]+)['"]/g;
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {

@@ -58,6 +58,16 @@ export function useBulkSelection(): BulkSelection {
   return { selecting, selected, start, exit, toggle, setMany };
 }
 
+/**
+ * A value that changes whenever the chosen set does. The Set itself is rebuilt
+ * on every toggle so its identity says nothing, and its size says too little:
+ * dropping two rows and picking two others leaves the count exactly where it
+ * was, which is how an armed confirm outlived the rows it was armed on.
+ */
+export function bulkSelectionKey(selection: BulkSelection): string {
+  return [...selection.selected].sort().join('\u0000');
+}
+
 /** ServerRowShell selection props for one row, or nothing outside select mode. */
 export function rowSelection(selection: BulkSelection, key: string) {
   if (!selection.selecting) return {};

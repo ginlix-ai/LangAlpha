@@ -422,7 +422,8 @@ describe('the brokerages tab', () => {
         within(connectConfirm()!).getByRole('button', { name: 'Cancel' }),
       );
 
-      expect(connectConfirm()).toBeNull();
+      // The dialog leaves after its exit animation.
+      await waitFor(() => expect(connectConfirm()).toBeNull());
       expect(startConnect).not.toHaveBeenCalled();
       expect(toggleBrokerage).not.toHaveBeenCalled();
     });
@@ -600,7 +601,7 @@ describe('the brokerages tab', () => {
           grantedCapabilities: RH_DEFAULT,
         }),
       );
-      expect(connectConfirm()).toBeNull();
+      await waitFor(() => expect(connectConfirm()).toBeNull());
     });
 
     // The change the whole consent step exists for. A user who connects a

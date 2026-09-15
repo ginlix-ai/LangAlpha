@@ -39,11 +39,15 @@ const MOOMOO: Brokerage = {
 // fixtures here.
 let catalogServers: CatalogServer[] = [];
 
-// Mocked at the module, not the barrel: the broker check imports this client
+// Mocked at the module, not the barrel: the broker check imports these clients
 // itself, when its queries run.
+vi.mock('@/pages/ChatAgent/utils/api/brokerages', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/pages/ChatAgent/utils/api/brokerages')>()),
+  getBrokerages: vi.fn(async () => [MOOMOO]),
+}));
+
 vi.mock('@/pages/ChatAgent/utils/api/mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/pages/ChatAgent/utils/api/mcp')>()),
-  getBrokerages: vi.fn(async () => [MOOMOO]),
   getMcpCatalog: vi.fn(async () => ({
     servers: catalogServers,
     workspace_servers: [],

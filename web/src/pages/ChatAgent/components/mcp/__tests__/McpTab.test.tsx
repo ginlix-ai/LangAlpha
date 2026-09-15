@@ -32,7 +32,6 @@ vi.mock('@/hooks/useMcpServers', () => ({
   useDeleteWorkspaceMcpServer: () => ({ mutateAsync: mutateAsync.del, isPending: false }),
   useDiscoverWorkspaceMcpServer: () => ({ mutateAsync: mutateAsync.discover, isPending: false }),
   useImportWorkspaceMcpServers: () => ({ mutateAsync: mutateAsync.import, isPending: false }),
-  useProbeMcpServer: () => ({ mutateAsync: vi.fn(), isPending: false }),
   usePromoteMcpServerToTemplate: () => ({ mutateAsync: mutateAsync.promote, isPending: false }),
   useMcpCatalog: () => ({ data: catalogData, isLoading: false, error: null }),
   // Catalog CRUD hooks are exercised via the Templates sub-view.

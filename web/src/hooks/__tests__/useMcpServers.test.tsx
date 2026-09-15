@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Mock } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import React, { type ReactNode } from 'react';
@@ -11,9 +11,17 @@ import {
   useDeleteWorkspaceMcpServer,
   useCreateMcpCatalogServer,
   useImportMcpCatalogServers,
+  useMcpCatalog,
   useDelayedFalse,
 } from '../useMcpServers';
-import type { EffectiveServerList } from '../../pages/ChatAgent/utils/api';
+import type {
+  CatalogServer,
+  CatalogServerList,
+  EffectiveServerList,
+  McpTransport,
+  ProbeVerdict,
+} from '../../pages/ChatAgent/utils/api';
+import { PROBE_KICK_WINDOW_MS } from '../../pages/ChatAgent/components/mcp/mcpState';
 
 vi.mock('../../pages/ChatAgent/utils/api', () => ({
   getWorkspaceMcpServers: vi.fn(),
@@ -36,6 +44,7 @@ import {
   deleteWorkspaceMcpServer,
   createMcpCatalogServer,
   importMcpCatalogServers,
+  getMcpCatalog,
 } from '../../pages/ChatAgent/utils/api';
 
 const WS = 'ws-1';
@@ -67,6 +76,42 @@ function makeServer(name: string, enabled: boolean): EffectiveServerList['server
 
 function makeList(servers: EffectiveServerList['servers']): EffectiveServerList {
   return { servers, sandbox_running: true, max_servers: 20, config_version: 1 };
+}
+
+function makeCatalog(
+  transport: McpTransport,
+  verdict?: ProbeVerdict,
+  enabled = true,
+  pluginEnabled: boolean | null = null,
+): CatalogServerList {
+  const server: CatalogServer = {
+    name: 'remote',
+    transport,
+    command: null,
+    args: [],
+    url: 'https://mcp.example.com/mcp',
+    env_refs: [],
+    header_refs: [],
+    description: '',
+    instruction: '',
+    tool_exposure_mode: 'summary',
+    enabled,
+    plugin_enabled: pluginEnabled,
+    created_at: null,
+    updated_at: null,
+    probe: verdict
+      ? {
+          verdict,
+          tools: [],
+          server_info: null,
+          error: '',
+          http_status: null,
+          missing_secrets: [],
+          probed_at: new Date().toISOString(),
+        }
+      : null,
+  };
+  return { servers: [server], max_servers: 20, workspace_servers: [] };
 }
 
 function makeClient() {
@@ -272,5 +317,117 @@ describe('mcp mutations — invalidation', () => {
 
     expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.mcp.all });
     expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.userVault.all });
+  });
+});
+
+/**
+ * The catalog re-asks while a probe verdict is outstanding. `http` is the whole
+ * probeable set (the host dials streamable HTTP), so an `sse` row has no
+ * verdict coming and counting one kept the poll running for the full window on
+ * every mount.
+ *
+ * Outstanding includes `unreachable`, which is the one verdict the list route
+ * re-kicks: the GET that renders the failure is the same one that went and
+ * asked again, so its answer has to be waited on like any other.
+ */
+describe('useMcpCatalog: the outstanding-probe poll', () => {
+  async function pollFor(transport: McpTransport, verdict?: ProbeVerdict) {
+    (getMcpCatalog as Mock).mockResolvedValue(makeCatalog(transport, verdict));
+    const client = makeClient();
+    renderHook(() => useMcpCatalog(), { wrapper: wrapperFor(client) });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const afterFirst = (getMcpCatalog as Mock).mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    return { afterFirst, total: (getMcpCatalog as Mock).mock.calls.length };
+  }
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('keeps asking while an http row has no verdict', async () => {
+    const { afterFirst, total } = await pollFor('http');
+    expect(afterFirst).toBe(1);
+    expect(total).toBeGreaterThan(1);
+  });
+
+  it('leaves an sse row alone: nothing is going to answer for it', async () => {
+    const { afterFirst, total } = await pollFor('sse');
+    expect(afterFirst).toBe(1);
+    expect(total).toBe(1);
+  });
+
+  it('leaves a disabled row alone: the host dials only a row that is on', async () => {
+    (getMcpCatalog as Mock).mockResolvedValue(makeCatalog('http', undefined, false));
+    const client = makeClient();
+    renderHook(() => useMcpCatalog(), { wrapper: wrapperFor(client) });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect((getMcpCatalog as Mock).mock.calls.length).toBe(1);
+  });
+
+  it('leaves a plugin-disabled row alone: the host refuses it like a switched-off one', async () => {
+    // The row keeps `enabled: true`, so only `plugin_enabled` says the host
+    // will not dial it. Counting it ran the poll for the whole window on every
+    // mount, asking after a verdict nobody was going to produce.
+    (getMcpCatalog as Mock).mockResolvedValue(makeCatalog('http', undefined, true, false));
+    const client = makeClient();
+    renderHook(() => useMcpCatalog(), { wrapper: wrapperFor(client) });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect((getMcpCatalog as Mock).mock.calls.length).toBe(1);
+  });
+
+  it('waits on an unreachable row: the list GET that showed it also retried it', async () => {
+    const { afterFirst, total } = await pollFor('http', 'unreachable');
+    expect(afterFirst).toBe(1);
+    expect(total).toBeGreaterThan(1);
+  });
+
+  it('stops on a verdict the host will not re-kick', async () => {
+    const { afterFirst, total } = await pollFor('http', 'credential_rejected');
+    expect(afterFirst).toBe(1);
+    expect(total).toBe(1);
+  });
+
+  it('gives up on a row that stays unreachable past the window', async () => {
+    (getMcpCatalog as Mock).mockResolvedValue(makeCatalog('http', 'unreachable'));
+    const client = makeClient();
+    renderHook(() => useMcpCatalog(), { wrapper: wrapperFor(client) });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PROBE_KICK_WINDOW_MS + 5_000);
+    });
+    const exhausted = (getMcpCatalog as Mock).mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect((getMcpCatalog as Mock).mock.calls.length).toBe(exhausted);
+  });
+
+  it('opens a second window for a refetch that landed a whole kick throttle later', async () => {
+    (getMcpCatalog as Mock).mockResolvedValue(makeCatalog('http', 'unreachable'));
+    const client = makeClient();
+    renderHook(() => useMcpCatalog(), { wrapper: wrapperFor(client) });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PROBE_KICK_WINDOW_MS + 5_000);
+    });
+    // Nothing is polling now, and the host's per-row kick throttle has expired,
+    // so the next fetch (a remount, a tab refocus) re-kicks the row.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180_000);
+    });
+    const exhausted = (getMcpCatalog as Mock).mock.calls.length;
+    await act(async () => {
+      await client.refetchQueries({ queryKey: queryKeys.mcp.catalog() });
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect((getMcpCatalog as Mock).mock.calls.length).toBeGreaterThan(exhausted + 1);
   });
 });

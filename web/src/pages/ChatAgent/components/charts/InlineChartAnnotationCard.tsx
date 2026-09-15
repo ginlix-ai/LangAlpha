@@ -520,7 +520,7 @@ export function InlineChartAnnotationCard({
           <DialogOverlay />
           <DialogPrimitive.Content
             aria-describedby={undefined}
-            className="fixed left-1/2 top-1/2 z-[1030] flex flex-col -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl border bg-background shadow-lg data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
+            className="fixed left-1/2 top-1/2 z-[1030] flex flex-col -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl border bg-background shadow-lg pop-in-center"
             style={{
               width: isMobile ? '96vw' : '75vw',
               height: isMobile ? '88vh' : '80vh',

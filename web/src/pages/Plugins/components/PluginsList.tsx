@@ -270,7 +270,9 @@ export function PluginsList() {
         />
       )}
 
-      {wizardOpen && <PluginInstallWizard onClose={() => setWizardOpen(false)} />}
+      <AnimatePresence>
+        {wizardOpen && <PluginInstallWizard onClose={() => setWizardOpen(false)} />}
+      </AnimatePresence>
 
       <AnimatePresence>
         {detailPlugin && (

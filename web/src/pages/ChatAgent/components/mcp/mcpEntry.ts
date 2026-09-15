@@ -13,10 +13,15 @@ export type EntryParse =
   | { kind: 'remote'; transport: 'http' | 'sse'; url: string }
   | { kind: 'command'; command: string; args: string[] }
   | { kind: 'json'; server: ParsedImportServer; more: number }
-  | { kind: 'json-error'; error: string };
+  | { kind: 'json-error'; error: string }
+  | { kind: 'command-error'; error: string };
 
-/** Split a command line the way a shell would, honoring quotes. */
-export function shellSplit(line: string): string[] {
+/**
+ * Split a command line the way a shell would, reporting a quote that never
+ * closed. An open quote makes the argv a guess, and a server saved with argv
+ * the field does not spell is the one thing the caller has to refuse.
+ */
+function scanCommand(line: string): { argv: string[]; unterminated: boolean } {
   const out: string[] = [];
   let cur = '';
   let quote: '"' | "'" | null = null;
@@ -43,7 +48,13 @@ export function shellSplit(line: string): string[] {
     }
   }
   if (has || cur) out.push(cur);
-  return out;
+  return { argv: out, unterminated: quote !== null };
+}
+
+/** Split a command line the way a shell would, honoring quotes. Lenient on an
+ *  unterminated one: the args editor reads a field still being typed into. */
+export function shellSplit(line: string): string[] {
+  return scanCommand(line).argv;
 }
 
 /** Quote an argv element back into a line only when it needs it. */
@@ -79,7 +90,8 @@ export function parseEntry(raw: string): EntryParse {
   if (/^https?:\/\//i.test(text) && !/\s/.test(text)) {
     return { kind: 'remote', transport: 'http', url: text };
   }
-  const argv = shellSplit(text);
+  const { argv, unterminated } = scanCommand(text);
+  if (unterminated) return { kind: 'command-error', error: 'Unterminated quote in command.' };
   if (argv.length === 0) return { kind: 'empty' };
   const [command, ...args] = argv;
   return { kind: 'command', command, args };

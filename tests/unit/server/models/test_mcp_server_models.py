@@ -640,3 +640,21 @@ def test_probe_input_keeps_the_fields_the_route_does_read():
 
     assert parsed.headers == {"Authorization": "${vault:API_KEY}"}
     assert parsed.workspace_id == "ws-1"
+
+
+def test_the_verdict_vocabulary_matches_the_client_copy():
+    """The client keys two exhaustive tables off its own copy of the union,
+    so a verdict added on this side alone would compile there and render as a
+    failure; the two copies have to move together."""
+    import re
+    from pathlib import Path
+    from typing import get_args
+
+    from src.server.models.mcp_server import ProbeVerdict
+
+    # Anchored to this file, not the CWD: a scoped run from anywhere else
+    # would skip the parity check by failing to find the client copy.
+    repo = Path(__file__).resolve().parents[4]
+    source = (repo / "web/src/pages/ChatAgent/utils/api/mcp.ts").read_text()
+    block = source.split("export type ProbeVerdict =", 1)[1].split(";", 1)[0]
+    assert set(re.findall(r"'([a-z_]+)'", block)) == set(get_args(ProbeVerdict))

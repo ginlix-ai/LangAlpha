@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { KeyRound, X } from 'lucide-react';
+import { Disclosure } from '@/components/ui/Disclosure';
 import { Loader } from '@/components/ui/loader';
 import {
   DropdownMenu,
@@ -8,6 +9,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from '@/components/ui/dropdown-menu';
+import { normalizeSecretName } from '@/lib/secretNames';
 import { formatApiErrorDetail } from '../../utils/api';
 
 /**
@@ -31,10 +33,6 @@ function refName(value: string): string | null {
   return m ? m[1] : null;
 }
 
-function normalizeSecretName(raw: string): string {
-  return raw.toUpperCase().replace(/[^A-Z0-9_]/g, '_').replace(/_+/g, '_').replace(/^[0-9_]+|_+$/g, '');
-}
-
 interface VaultSecretPickerProps {
   /** Current value (a `${vault:NAME}` ref or a literal). */
   value: string;
@@ -49,7 +47,6 @@ interface VaultSecretPickerProps {
   createSecret: (body: { name: string; value: string }) => Promise<unknown>;
   /** The name offered when saving a typed literal, e.g. `FUYAO_FUND_X_API_KEY`. */
   suggestedName?: string;
-  placeholder?: string;
 }
 
 export function VaultSecretPicker({
@@ -58,7 +55,6 @@ export function VaultSecretPicker({
   secretNames,
   createSecret,
   suggestedName = '',
-  placeholder,
 }: VaultSecretPickerProps) {
   const { t } = useTranslation();
   const selectedRef = refName(value);
@@ -119,7 +115,7 @@ export function VaultSecretPicker({
             type="text"
             value={value}
             onChange={(e) => onChange(e.target.value)}
-            placeholder={placeholder ?? t('mcp.secret.valuePlaceholder')}
+            placeholder={t('mcp.secret.valuePlaceholder')}
             className="flex-1 min-w-0 px-2 py-1 text-xs rounded bg-transparent font-mono"
             style={fieldStyle}
             autoComplete="off"
@@ -161,16 +157,16 @@ export function VaultSecretPicker({
         </button>
       )}
 
-      {canOfferSave && saveOpen && (
+      <Disclosure open={canOfferSave && saveOpen} className="flex flex-col gap-1 pt-1">
         <div className="flex flex-col gap-1">
           <div className="flex gap-1.5 items-center">
             <input
               type="text"
               value={saveName}
               aria-label={t('mcp.secret.saveAs')}
-              onChange={(e) => setSaveName(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ''))}
+              onChange={(e) => setSaveName(normalizeSecretName(e.target.value))}
               placeholder="SECRET_NAME"
-              className="flex-1 min-w-0 px-2 py-0.5 text-[0.6875rem] rounded bg-transparent font-mono"
+              className="flex-1 min-w-0 px-2 py-1 text-xs rounded bg-transparent font-mono"
               style={fieldStyle}
               maxLength={64}
               autoFocus
@@ -179,7 +175,7 @@ export function VaultSecretPicker({
               type="button"
               onClick={() => void handleSave()}
               disabled={saving || !saveName}
-              className="inline-flex items-center gap-1 px-2 py-0.5 text-[0.6875rem] rounded disabled:opacity-50"
+              className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded disabled:opacity-50"
               style={{ color: 'var(--color-btn-primary-text)', backgroundColor: 'var(--color-btn-primary-bg)' }}
             >
               {saving && <Loader size={12} className="text-current" />}
@@ -188,7 +184,7 @@ export function VaultSecretPicker({
             <button
               type="button"
               onClick={() => setSaveOpen(false)}
-              className="px-1.5 py-0.5 text-[0.6875rem] rounded hover:bg-foreground/10"
+              className="px-2 py-1 text-xs rounded transition-colors hover:bg-foreground/10"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               {t('common.cancel')}
@@ -198,7 +194,7 @@ export function VaultSecretPicker({
             <div className="text-[0.6875rem]" style={{ color: 'var(--color-loss)' }}>{saveError}</div>
           )}
         </div>
-      )}
+      </Disclosure>
     </div>
   );
 }
