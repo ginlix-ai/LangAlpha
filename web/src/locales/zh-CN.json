@@ -152,9 +152,9 @@
     "untitledThread": "未命名",
     "noConversations": "暂无会话",
     "workspaceFallback": "工作区",
-    "collapseAgents": "收起智能体",
-    "expandAgents": "展开智能体",
-    "removeAgent": "移除智能体"
+    "collapseAgents": "收起 Agent",
+    "expandAgents": "展开 Agent",
+    "removeAgent": "移除 Agent"
   },
   "settings": {
     "title": "用户设置",
@@ -1292,9 +1292,9 @@
     },
     "pills": {
       "plan": "计划",
-      "planTitle": "计划模式 — 智能体先生成计划，经确认后再执行",
+      "planTitle": "计划模式：Agent 先生成计划，经确认后再执行",
       "watch": "盯盘",
-      "watchTitle": "盯盘模式 — 实时跟踪智能体关注的股票价格"
+      "watchTitle": "盯盘模式：实时跟踪 Agent 关注的股票价格"
     },
     "moreTools": "更多工具",
     "widgetContext": {
@@ -1379,12 +1379,12 @@
       "title": "额度已用尽"
     },
     "subagentCard": {
-      "titleFallback": "子智能体任务",
+      "titleFallback": "子 Agent 任务",
       "viewDetails": "查看任务详情",
-      "openUpdated": "点击查看已更新的子智能体",
-      "openResumed": "点击查看已恢复的子智能体",
-      "openRunning": "点击查看运行中的子智能体",
-      "openDetails": "点击查看子智能体详情",
+      "openUpdated": "点击查看已更新的子 Agent",
+      "openResumed": "点击查看已恢复的子 Agent",
+      "openRunning": "点击查看运行中的子 Agent",
+      "openDetails": "点击查看子 Agent 详情",
       "toolUnit_one": "次工具调用",
       "toolUnit_other": "次工具调用",
       "tokenUnit": "tokens"
@@ -1395,22 +1395,22 @@
       "runningWithTool": "运行中：{{tool}}",
       "initializing": "初始化中",
       "instruct": "指示",
-      "errorHeading": "该智能体因错误而停止",
-      "stoppedHeading": "该智能体已停止",
-      "inputPlaceholder": "为该智能体添加指令…",
-      "avatarAlt": "智能体"
+      "errorHeading": "该 Agent 因错误而停止",
+      "stoppedHeading": "该 Agent 已停止",
+      "inputPlaceholder": "为该 Agent 添加指令…",
+      "avatarAlt": "Agent"
     },
     "workflowRun": {
       "titleFallback": "工作流运行",
       "openRunning": "点击查看运行中的工作流",
       "openDetails": "点击查看工作流详情",
       "sharedUnavailable": "分享视图中不提供运行详情",
-      "agents_one": "{{count}} 个智能体",
-      "agents_other": "{{count}} 个智能体",
+      "agents_one": "{{count}} 个 Agent",
+      "agents_other": "{{count}} 个 Agent",
       "done": "已完成 {{count}} 个",
       "tokens": "{{value}} tokens",
       "earlier": "更早的 {{count}} 个",
-      "childFallbackLabel": "智能体 {{n}}",
+      "childFallbackLabel": "Agent {{n}}",
       "childRunning": "运行中",
       "childDone": "已完成",
       "childFailed": "失败",
@@ -1419,7 +1419,7 @@
       "childStopped": "已停止",
       "stop": "停止",
       "stopping": "正在停止…",
-      "statAgents": "智能体",
+      "statAgents": "Agent",
       "statPhases": "阶段",
       "statDuration": "耗时",
       "statTokens": "Tokens",
@@ -1453,12 +1453,12 @@
     },
     "marketWatch": {
       "watching": "正在监控 {{symbols}}",
-      "chipTitle": "正在为智能体监控的股票推送实时价格",
+      "chipTitle": "正在为 Agent 监控的股票推送实时价格",
       "chipTitleUpdated": "监控股票的实时价格 — 更新于 {{time}}",
       "chipAction": "打开实时市场监控",
       "panelTitle": "市场监控",
       "panelUpdated": "更新于 {{time}}",
-      "panelWaiting": "智能体工作时，实时价格将显示在这里。",
+      "panelWaiting": "Agent 工作时，实时价格将显示在这里。",
       "panelEmpty": "当前没有正在监控的股票。"
     },
     "missingWorkspaceOrThread": "缺少工作区或对话信息",
@@ -2600,7 +2600,7 @@
       "newsEventAria": "新闻事件：{{title}}"
     },
     "selection": {
-      "toolTooltip": "选择一个区域或价格水平，向智能体提问",
+      "toolTooltip": "选择一个区域或价格水平，向 Agent 提问",
       "toolRegion": "区域",
       "toolPriceLevel": "价格水平",
       "commentPlaceholder": "添加评论…",
@@ -2608,8 +2608,8 @@
       "commentSave": "保存",
       "cardRegionTitle": "选定区域",
       "cardPriceTitle": "选定价格水平",
-      "cardOpenPreview": "查看智能体看到的内容",
-      "previewSubtitle": "智能体收到的该选择的上下文",
+      "cardOpenPreview": "查看 Agent 看到的内容",
+      "previewSubtitle": "Agent 收到的该选择的上下文",
       "previewKind": "选择",
       "previewTimeRange": "时间范围",
       "previewPrice": "价格",
@@ -2625,7 +2625,7 @@
       "previewBarsCount_other": "{{count}} 根",
       "previewBarsShown": "显示 {{total}} 根中的 {{shown}} 根",
       "previewBarsTruncated": "已降采样以适应",
-      "previewDrawBack": "智能体可以据此分析，并将其判读绘制回图表的同一区域。",
+      "previewDrawBack": "Agent 可以据此分析，并将其判读绘制回图表的同一区域。",
       "editChip": "编辑备注",
       "chipRegion": "区域 · {{symbol}} {{timeframe}}",
       "chipPriceLevel": "价格 ${{price}} · {{symbol}} {{timeframe}}",
@@ -2974,14 +2974,14 @@
     "valueHintStillSave": "你仍然可以保存。",
     "workspace": {
       "title": "密钥库",
-      "empty": "尚未存储密钥。为智能体代码添加 API 密钥或凭据。",
+      "empty": "尚未存储密钥。为 Agent 代码添加 API 密钥或凭据。",
       "usageTitle": "用法",
       "usageAccess": "在代码中访问：",
       "securityTitle": "安全",
       "security1": "密钥使用 AES（pgcrypto）静态加密，绝不会以明文存储在我们的服务器上。",
-      "security2a": "AI 智能体无法直接读取密钥值 — 只能在沙箱代码中调用",
+      "security2a": "AI Agent 无法直接读取密钥值，只能在沙箱代码中调用",
       "security2b": "。",
-      "security3": "所有智能体输出都会经过泄漏检测扫描。工具结果中发现的任何密钥值都会在到达模型前自动脱敏。",
+      "security3": "所有 Agent 输出都会经过泄漏检测扫描。工具结果中发现的任何密钥值都会在到达模型前自动脱敏。",
       "security4a": "代码校验阻止直接访问内部密钥存储 — 仅允许使用",
       "security4b": "API。"
     },
@@ -2994,10 +2994,10 @@
   },
   "orders": {
     "title": "订单",
-    "description": "智能体在券商处发起的每一笔订单，以及最终的结果。",
+    "description": "Agent 在券商处发起的每一笔订单，以及最终的结果。",
     "empty": {
-      "noOrders": "暂无订单。智能体下单后会显示在这里。",
-      "noBrokerage": "尚未连接券商。在插件页连接一个之后，智能体下的每一笔订单都会显示在这里。",
+      "noOrders": "暂无订单。 Agent 下单后会显示在这里。",
+      "noBrokerage": "尚未连接券商。在插件页连接一个之后， Agent 下的每一笔订单都会显示在这里。",
       "noBrokerageAction": "连接券商"
     },
     "noMatches": "没有符合筛选条件的订单。",
@@ -3124,7 +3124,7 @@
   },
   "plugins": {
     "title": "插件",
-    "description": "在所有工作区中可供智能体使用的 MCP 服务器、技能与凭据。",
+    "description": "在所有工作区中可供 Agent 使用的 MCP 服务器、技能与凭据。",
     "tabs": {
       "mcp": "连接器",
       "skills": "技能",
@@ -3188,13 +3188,13 @@
       },
       "consent": {
         "title": "连接“{{server}}”",
-        "subtitle": "选择此连接允许智能体在该券商做哪些事。",
-        "footnote": "未勾选的分组在智能体调用时会被拒绝，而不只是隐藏。之后可重新连接以更改。"
+        "subtitle": "选择此连接允许 Agent 在该券商做哪些事。",
+        "footnote": "未勾选的分组在 Agent 调用时会被拒绝，而不只是隐藏。之后可重新连接以更改。"
       },
       "detail": {
         "broker": "券商",
         "capabilities": "可执行的操作",
-        "capabilitiesNote": "被拒绝的分组在智能体调用时会被拒绝，而不只是隐藏。重新连接可以更改。",
+        "capabilitiesNote": "被拒绝的分组在 Agent 调用时会被拒绝，而不只是隐藏。重新连接可以更改。",
         "declined": "未授予",
         "endpoint": "接入地址",
         "granted": "已授予",
@@ -3203,7 +3203,7 @@
         "offered": "可选",
         "website": "官网",
         "unclassified": "不属于任何分组",
-        "unclassifiedNote": "没有分组涵盖这些工具，因此拒绝某个分组并不会拒绝它们。智能体仍然可以调用。",
+        "unclassifiedNote": "没有分组涵盖这些工具，因此拒绝某个分组并不会拒绝它们。 Agent 仍然可以调用。",
         "unclassifiedNoteUnconnected": "这些工具不属于任何分组，拒绝某个分组不会屏蔽它们。此处尚未连接，因此暂时无法调用。",
         "neverAvailable": "始终不可用",
         "neverAvailableNote": "已刻意保留。无论授权什么都会被拒绝。"
@@ -3211,7 +3211,7 @@
       "exclusiveNote": "会取代该账户已有的 AI 连接",
       "exclusiveWarning": "该账户只允许连接一个 AI 平台，因此在此连接会取代当前已连接的那一个。",
       "grantedNone": "未授予任何操作",
-      "intro": "智能体可读取并交易的券商账户。连接后即可关联你的账户；在此之前不会向券商发送任何数据。",
+      "intro": "Agent 可读取并交易的券商账户。连接后即可关联你的账户；在此之前不会向券商发送任何数据。",
       "none": "此版本未内置券商连接器。",
       "notAdded": "未添加",
       "openInMcp": "在连接器中打开",
@@ -3246,7 +3246,7 @@
       "connectedTitle": "已连接",
       "disconnect": "断开连接",
       "disconnectFailed": "无法断开连接",
-      "disconnectedDesc": "“{{server}}”已断开。可随时重新连接；在此之前智能体调用将失败。",
+      "disconnectedDesc": "“{{server}}”已断开。可随时重新连接；在此之前 Agent 调用将失败。",
       "disconnectedTitle": "已断开",
       "loopback": {
         "no-listener": "无法占用本地端口来接收该券商的回调。请先退出其他正在运行的桌面端，然后重试。",
@@ -3287,8 +3287,8 @@
       "yours": "你的技能",
       "platformBadge": "平台",
       "upload": "上传技能",
-      "inheritHint": "在此上传的技能对你的所有工作区可用。关闭状态的技能仍会在此列出，但不会出现在智能体的菜单中。",
-      "empty": "还没有技能。上传一个包含 SKILL.md 的 zip，教你的智能体一个新工作流。",
+      "inheritHint": "在此上传的技能对你的所有工作区可用。关闭状态的技能仍会在此列出，但不会出现在 Agent 的菜单中。",
+      "empty": "还没有技能。上传一个包含 SKILL.md 的 zip，教你的 Agent 一个新工作流。",
       "toggleFailed": "无法更改技能状态",
       "deleteFailed": "无法删除技能",
       "commandFailed": "无法修改命令",
@@ -3318,7 +3318,7 @@
       "activeIn": "生效于",
       "futureHint": "新建工作区默认启用",
       "flash": "Flash",
-      "flashNote": "Flash 仅能使用绑定为直接调用的工具；PTC 工具需要 PTC 智能体。",
+      "flashNote": "Flash 仅能使用绑定为直接调用的工具；PTC 工具需要 PTC Agent。",
       "moveToWorkspace": "移至工作区",
       "moveToAll": "移至所有工作区",
       "moveToAnother": "移至其他工作区",
@@ -3400,7 +3400,7 @@
       "sseUpgradeFailed": "升级失败",
       "droppedFiles": "未导入：{{files}}",
       "continueToBindings": "继续",
-      "bindingsHint": "该插件声明了所需凭据。值会保存到你的保险库，不会以明文展示给智能体。也可以跳过，稍后在密钥标签页中设置。",
+      "bindingsHint": "该插件声明了所需凭据。值会保存到你的保险库，不会以明文展示给 Agent。也可以跳过，稍后在密钥标签页中设置。",
       "bindingsSkip": "暂时跳过",
       "bindingsSave": "保存 {{count}} 项",
       "bindingPlaceholder": "粘贴值",
