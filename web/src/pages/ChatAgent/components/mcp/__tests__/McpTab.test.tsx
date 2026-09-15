@@ -32,6 +32,7 @@ vi.mock('@/hooks/useMcpServers', () => ({
   useDeleteWorkspaceMcpServer: () => ({ mutateAsync: mutateAsync.del, isPending: false }),
   useDiscoverWorkspaceMcpServer: () => ({ mutateAsync: mutateAsync.discover, isPending: false }),
   useImportWorkspaceMcpServers: () => ({ mutateAsync: mutateAsync.import, isPending: false }),
+  useProbeMcpServer: () => ({ mutateAsync: vi.fn(), isPending: false }),
   usePromoteMcpServerToTemplate: () => ({ mutateAsync: mutateAsync.promote, isPending: false }),
   useMcpCatalog: () => ({ data: catalogData, isLoading: false, error: null }),
   // Catalog CRUD hooks are exercised via the Templates sub-view.
@@ -135,6 +136,7 @@ describe('McpTab — submit error formatting', () => {
 
     // Open the add-server modal, give it a valid name, and submit.
     fireEvent.click(screen.getByRole('button', { name: /add server/i }));
+    fireEvent.change(screen.getByTestId('mcp-entry'), { target: { value: 'npx -y @scope/thing' } });
     fireEvent.change(screen.getByPlaceholderText('my_server'), { target: { value: 'good_name' } });
     fireEvent.click(screen.getByRole('button', { name: /^add$/i }));
 

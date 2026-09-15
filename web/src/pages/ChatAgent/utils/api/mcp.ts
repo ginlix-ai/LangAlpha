@@ -321,6 +321,21 @@ export interface CatalogServer {
   /** Whether any tool on this row binds directly, and so whether the row can
    * reach Flash at all. */
   has_direct_tools?: boolean;
+  /**
+   * The host-side probe's last word on the row under its current config:
+   * `ok` or `error` (with `probe_error`), or null when nothing has probed it
+   * yet. A stdio row is never probed from the host and stays null.
+   */
+  probe_status?: 'ok' | 'error' | null;
+  probe_error?: string | null;
+  probed_at?: string | null;
+  /**
+   * What the wire showed about authentication: `oauth` (a 401 with OAuth
+   * metadata behind it), `credential` (a 401/403 without, or headers that
+   * were accepted), `none` (listed without any), or null when unknown. The
+   * Connect button is offered on this, never on the transport alone.
+   */
+  auth?: McpAuthRequirement | null;
   binding_preset?: McpBindingPreset | null;
   /** Whether an order stops for confirmation, per kind of order. Absent on a
    *  backend that predates the map; `ORDER_APPROVAL_DEFAULTS` is the answer
@@ -524,6 +539,38 @@ export interface McpImportResultRow {
   status: 'created' | 'exists' | 'skipped' | 'invalid' | 'error';
   reason?: string;
   error?: string;
+}
+
+export type McpAuthRequirement = 'none' | 'credential' | 'oauth' | 'unknown';
+
+export interface McpProbeInput {
+  transport?: 'http' | 'sse';
+  url: string;
+  headers?: Record<string, string>;
+  /** Resolve `${vault:NAME}` refs against this workspace's vault as well. */
+  workspace_id?: string;
+}
+
+/** What `POST /api/v1/mcp/servers/probe` learned; nothing is persisted. */
+export interface McpProbeResult {
+  status: 'ok' | 'error';
+  auth: McpAuthRequirement;
+  tool_count: number | null;
+  tools: McpToolSummary[];
+  server_info: { name?: string; version?: string } | null;
+  error: string;
+  http_status: number | null;
+  /** Vault names the headers referenced that have no value yet. */
+  missing_secrets: string[];
+}
+
+/**
+ * Ask a remote address what it offers, with the headers the form holds, before
+ * anything is saved. The add form calls this as the user types.
+ */
+export async function probeMcpServer(body: McpProbeInput): Promise<McpProbeResult> {
+  const { data } = await api.post<McpProbeResult>('/api/v1/mcp/servers/probe', body);
+  return data;
 }
 
 export interface McpImportResult {

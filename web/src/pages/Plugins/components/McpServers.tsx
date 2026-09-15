@@ -13,6 +13,7 @@ import {
   useUpdateMcpCatalogServer,
   useDeleteMcpCatalogServer,
   useToggleMcpCatalogServer,
+  useProbeMcpServer,
   useImportMcpCatalogServers,
   useSetMcpServerEnabledInWorkspace,
   useAdoptMcpServerToWorkspace,
@@ -90,6 +91,7 @@ export function McpServers() {
   const deleteMutation = useDeleteMcpCatalogServer();
   const toggleMutation = useToggleMcpCatalogServer();
   const importMutation = useImportMcpCatalogServers();
+  const probeMutation = useProbeMcpServer();
   const createSecretMutation = useCreateUserVaultSecret();
   const wsEnableMutation = useSetMcpServerEnabledInWorkspace();
   const adoptMutation = useAdoptMcpServerToWorkspace();
@@ -682,6 +684,7 @@ export function McpServers() {
           allowDiscover={false}
           onClose={closeModal}
           onSubmit={submit}
+          onProbe={probeMutation.mutateAsync}
           createSecret={createSecretMutation.mutateAsync}
           saving={createMutation.isPending || updateMutation.isPending}
           submitError={submitError}

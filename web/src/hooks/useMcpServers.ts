@@ -27,12 +27,14 @@ import {
   mergeToolBinding,
   mergeOrderApproval,
   importMcpCatalogServers,
+  probeMcpServer,
   disconnectMcpOauth,
   refreshMcpOauthSchemas,
   getBrokerages,
   setBrokerageEnabled,
   type CatalogServerList,
   type EffectiveServerList,
+  type McpProbeInput,
   type McpServerBindingPatch,
   type McpServerInput,
 } from '../pages/ChatAgent/utils/api';
@@ -189,12 +191,47 @@ export function useWorkspaceMcpServers(workspaceId: string | null | undefined, e
 }
 
 /** The user's MCP template catalog. */
+/**
+ * How long the catalog keeps asking after a remote row without a probe verdict
+ * appears. The host probes a row right after it is saved, imported or enabled
+ * and lands the verdict a few seconds later; nothing pushes that to the page,
+ * so the list re-asks while a verdict is outstanding and stops once every
+ * remote row has one, or once a slow vendor has clearly stalled.
+ */
+const CATALOG_PROBE_POLL_MS = 3_000;
+const CATALOG_PROBE_POLL_MAX = 15;
+
 export function useMcpCatalog(enabled = true) {
+  const polls = useRef(0);
   return useQuery({
     queryKey: queryKeys.mcp.catalog(),
     queryFn: getMcpCatalog,
     enabled,
     staleTime: 60_000,
+    refetchInterval: (query) => {
+      const rows = query.state.data?.servers ?? [];
+      const outstanding = rows.some(
+        (s) => s.transport !== 'stdio' && s.probe_status == null,
+      );
+      if (!outstanding) {
+        polls.current = 0;
+        return false;
+      }
+      if (polls.current >= CATALOG_PROBE_POLL_MAX) return false;
+      polls.current += 1;
+      return CATALOG_PROBE_POLL_MS;
+    },
+  });
+}
+
+/**
+ * The add form's pre-save check of a remote address. No invalidation: the
+ * probe writes nothing, and the save that follows fans out on its own.
+ */
+export function useProbeMcpServer() {
+  return useMutation({
+    ...FAIL_FAST_OFFLINE,
+    mutationFn: (body: McpProbeInput) => probeMcpServer(body),
   });
 }
 

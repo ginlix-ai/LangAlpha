@@ -4,7 +4,7 @@ import { AlertTriangle, Link2, Link2Off, Monitor, RefreshCw } from 'lucide-react
 import { Loader } from '@/components/ui/loader';
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import { MetaText } from '@/components/mcp/McpPrimitives';
-import { canDisconnectOauth } from '@/pages/ChatAgent/components/mcp/mcpState';
+import { canDisconnectOauth, isOauthBroken } from '@/pages/ChatAgent/components/mcp/mcpState';
 import type { McpOauthStatus } from '@/pages/ChatAgent/utils/api';
 import { connectBlock, type Brokerage } from '../brokerages';
 import { RowNote } from './RowNote';
@@ -85,7 +85,11 @@ export function VendorNotes({
   );
 }
 
-/** How many tools the last good discovery found, once there is a connection. */
+/**
+ * How many tools the last good discovery found. An open or header-auth row
+ * has a count without ever having an OAuth status; only a broken connection
+ * makes the count stale enough to hide.
+ */
 export function ToolCountText({
   status,
   count,
@@ -94,7 +98,7 @@ export function ToolCountText({
   count: number | null | undefined;
 }) {
   const { t } = useTranslation();
-  if (status !== 'connected' || typeof count !== 'number' || count <= 0) return null;
+  if (isOauthBroken(status) || typeof count !== 'number' || count <= 0) return null;
   return <MetaText>{t('mcp.row.toolCount', { count })}</MetaText>;
 }
 

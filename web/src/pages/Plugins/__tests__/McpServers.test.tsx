@@ -55,6 +55,7 @@ vi.mock('@/hooks/useMcpServers', () => ({
   useDeleteMcpCatalogServer: () => ({ mutateAsync: mutateAsync.del, isPending: deletePending }),
   useToggleMcpCatalogServer: () => ({ mutateAsync: mutateAsync.toggle, isPending: false }),
   useImportMcpCatalogServers: () => ({ mutateAsync: mutateAsync.import, isPending: false }),
+  useProbeMcpServer: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useDisconnectMcpOauth: () => ({ mutateAsync: mutateAsync.disconnect, isPending: false }),
   useRefreshMcpOauthSchemas: () => ({ mutateAsync: mutateAsync.refresh, isPending: false }),
   // The nested BuiltinMcpSection renders nothing while its list is empty —
@@ -817,6 +818,7 @@ describe('McpServers — create and edit', () => {
     renderWithProviders(<McpServers />);
 
     fireEvent.click(screen.getByRole('button', { name: /add server/i }));
+    fireEvent.change(screen.getByTestId('mcp-entry'), { target: { value: 'npx -y @scope/thing' } });
     fireEvent.change(screen.getByPlaceholderText('my_server'), { target: { value: 'new_server' } });
     fireEvent.click(screen.getByRole('button', { name: /^add$/i }));
 
@@ -832,6 +834,7 @@ describe('McpServers — create and edit', () => {
     renderWithProviders(<McpServers />);
 
     fireEvent.click(screen.getByRole('button', { name: /add server/i }));
+    fireEvent.change(screen.getByTestId('mcp-entry'), { target: { value: 'npx -y @scope/thing' } });
     fireEvent.change(screen.getByPlaceholderText('my_server'), { target: { value: 'new_server' } });
     fireEvent.click(screen.getByRole('button', { name: /^add$/i }));
 
@@ -870,6 +873,7 @@ describe('McpServers — create and edit', () => {
     renderWithProviders(<McpServers />);
 
     fireEvent.click(screen.getByText('Edit'));
+    fireEvent.click(await screen.findByRole('button', { name: /advanced/i }));
     fireEvent.change(await screen.findByPlaceholderText('What this server does'), {
       target: { value: 'edited description' },
     });

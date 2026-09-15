@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { Pencil, Trash2 } from 'lucide-react';
+import { AlertTriangle, Pencil, Trash2 } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -28,6 +28,7 @@ import {
   VendorNotes,
 } from './OauthRowParts';
 import { PluginSuppressedBadge } from './PluginBadges';
+import { RowNote } from './RowNote';
 import { ScopeControl, scopeLocked, type ScopeWorkspace } from './ScopeControl';
 import { rowSelection, type BulkSelection } from './useBulkSelection';
 
@@ -97,7 +98,18 @@ export function McpCatalogRow({
   const flashWorkspace = useFlashWorkspace();
   const oauthEligible = server.transport === 'http';
   const status = server.oauth_status ?? null;
-  const unconnected = oauthEligible && needsOauthConnect(status);
+  const remote = server.transport !== 'stdio';
+  // What the host-side probe learned about the row. A row probed and found
+  // open or header-authenticated is not an OAuth row, so it gets no Connect
+  // button however http it is. Until the probe answers, http still reads as
+  // OAuth-eligible, the way it always did; the verdict takes the button away
+  // seconds later when the server turns out not to want one.
+  const probed = server.probe_status != null;
+  const auth = server.auth ?? null;
+  const oauthByProbe = auth === 'oauth';
+  const unconnected =
+    oauthEligible && needsOauthConnect(status) && (!!status || !probed || oauthByProbe);
+  const probeFailed = server.probe_status === 'error' && !oauthByProbe && !status;
   const rowKey = `catalog-${server.name}`;
 
   return (
@@ -126,10 +138,20 @@ export function McpCatalogRow({
                 : t('plugins.servers.disabledState')}
             </MetaText>
             <ToolCountText status={status} count={server.tool_count} />
+            {remote && !probed && !status && <MetaText>{t('mcp.probe.rowChecking')}</MetaText>}
+            {unconnected && !status && oauthByProbe && <MetaText>{t('mcp.probe.rowOauth')}</MetaText>}
             <MetaText>{server.transport}</MetaText>
             <PluginSuppressedBadge row={server} variant="prose" />
             <VendorNotes vendor={vendor} unconnected={unconnected} rowKey={rowKey} />
           </div>
+
+          {probeFailed && (
+            <RowNote icon={AlertTriangle} tone="warning">
+              {auth === 'credential' && !server.header_refs?.length
+                ? t('mcp.probe.rowCredential')
+                : server.probe_error || t('mcp.probe.rowUnreachable')}
+            </RowNote>
+          )}
 
           {server.description && (
             <p className="text-[0.6875rem] line-clamp-2" style={{ color: 'var(--color-text-tertiary)' }}>

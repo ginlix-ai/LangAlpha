@@ -7,6 +7,7 @@ import {
   useWorkspaceMcpServers,
   useAddWorkspaceMcpServer,
   useUpdateWorkspaceMcpServer,
+  useProbeMcpServer,
   useToggleWorkspaceMcpServer,
   useDeleteWorkspaceMcpServer,
   useDiscoverWorkspaceMcpServer,
@@ -84,6 +85,7 @@ export function McpTab({ workspaceId, onOpenVaultTab }: McpTabProps) {
   const deleteMutation = useDeleteWorkspaceMcpServer(workspaceId);
   const discoverMutation = useDiscoverWorkspaceMcpServer(workspaceId);
   const importMutation = useImportWorkspaceMcpServers(workspaceId);
+  const probeMutation = useProbeMcpServer();
   const promoteMutation = usePromoteMcpServerToTemplate();
 
   // Template names drive the promote flow: an existing name needs an overwrite
@@ -371,6 +373,7 @@ export function McpTab({ workspaceId, onOpenVaultTab }: McpTabProps) {
           onClose={closeModal}
           onSubmit={submit}
           onDiscover={editing ? handleDiscoverFromModal : undefined}
+          onProbe={(body) => probeMutation.mutateAsync({ ...body, workspace_id: workspaceId })}
           createSecret={createSecretMutation.mutateAsync}
           saving={addMutation.isPending || updateMutation.isPending}
           submitError={submitError}
