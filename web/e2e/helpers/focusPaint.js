@@ -82,3 +82,27 @@ export async function tabTo(page, sel, max = 40) {
   }
   throw new Error(`the tab order never reached ${sel} in ${max} presses`);
 }
+
+/**
+ * The focused edge a text field wears on any device: the border in the accent
+ * and a one-pixel halo of the soft accent (tokens.css, "Focused text fields").
+ * Read against the live tokens rather than a literal so a palette change does
+ * not fail here for the wrong reason. `halo` is the one-pixel spread; a ring
+ * utility is two, so a `ring-2` creeping back reads as no halo.
+ */
+export async function edgeOn(page, sel) {
+  return page.evaluate((s) => {
+    const el = document.querySelector(s);
+    if (!el) throw new Error(`${s} is not on the page`);
+    const cs = getComputedStyle(el);
+    const probe = document.createElement('div');
+    probe.style.borderColor = 'var(--color-accent-primary)';
+    probe.style.boxShadow = '0 0 0 1px var(--color-accent-soft)';
+    document.body.append(probe);
+    const want = getComputedStyle(probe);
+    const accent = cs.borderColor === want.borderColor;
+    const halo = cs.boxShadow === want.boxShadow;
+    probe.remove();
+    return { accent, halo, border: cs.borderColor, shadow: cs.boxShadow };
+  }, sel);
+}

@@ -358,7 +358,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
 
       <div className="flex items-center gap-2 mb-3 flex-wrap">
         <div
-          className="rings-within flex items-center gap-1.5 h-7 px-2 rounded-md border"
+          className="rings-within owns-its-edge flex items-center gap-1.5 h-7 px-2 rounded-md border"
           style={{
             backgroundColor: 'var(--color-bg-subtle)',
             borderColor: 'var(--color-border-muted)',

@@ -251,7 +251,7 @@ function LoginPage() {
   const inboxBackView: LoginView = FLOWS[sentKind].backView;
 
   return (
-    <div className="login-page login-page--split">
+    <div className="login-page login-page--split owns-its-edge">
       <div className="login-page__frame">
       {/* Not gated on visualHidden: the grain is a frame-level texture (visible
           on mobile too) and only animates on ember seeds, which never spawn

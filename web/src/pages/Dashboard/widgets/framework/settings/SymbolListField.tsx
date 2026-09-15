@@ -97,7 +97,7 @@ export function SymbolListField({
         {label}
       </span>
       <div
-        className="rings-within flex flex-wrap gap-1.5 p-1.5 rounded border"
+        className="rings-within owns-its-edge flex flex-wrap gap-1.5 p-1.5 rounded border"
         style={{
           backgroundColor: 'var(--color-bg-card)',
           borderColor: 'var(--color-border-default)',
