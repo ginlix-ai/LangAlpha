@@ -41,6 +41,13 @@ export const queryKeys = {
     flash:  () => [...queryKeys.workspaces.all, 'flash'],
     quota:  () => [...queryKeys.workspaces.all, 'quota'],
   },
+  // One projection of a machine: the list. A detail entry would be a second
+  // place for a status to disagree with itself, and every surface that shows a
+  // machine already reads the list.
+  computers: {
+    all:   ['computers'],
+    lists: () => [...queryKeys.computers.all, 'list'],
+  },
   threads: {
     all:         ['threads'],
     byWorkspace: (wsId: string) => [...queryKeys.threads.all, 'workspace', wsId],

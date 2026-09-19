@@ -12,17 +12,29 @@
 import { QueryClient } from '@tanstack/react-query';
 
 import { queryKeys } from '@/lib/queryKeys';
+import type { Workspace, WorkspacesResponse } from '@/types/api';
 
 import { getWorkspace, startWorkspace } from './api';
 
-interface WorkspaceLike {
-  workspace_id?: string;
-  id?: string;
-  status?: string;
-  [key: string]: unknown;
-}
-
 const inFlight = new Map<string, Promise<void>>();
+
+/**
+ * Every workspace the list caches currently hold, across pages and sort orders.
+ *
+ * The one place that knows the shape those entries have, so a reader asking
+ * "what does the app believe about the workspaces right now" does not sniff a
+ * cache value or cast it.
+ */
+export function cachedWorkspaceLists(queryClient: QueryClient): Workspace[] {
+  const rows: Workspace[] = [];
+  const entries = queryClient.getQueriesData<WorkspacesResponse>({
+    queryKey: queryKeys.workspaces.lists(),
+  });
+  for (const [, data] of entries) {
+    if (data?.workspaces) rows.push(...data.workspaces);
+  }
+  return rows;
+}
 
 /**
  * Write `status` into both the workspace detail cache and any active
@@ -36,26 +48,20 @@ export function patchWorkspaceStatusInCaches(
   workspaceId: string,
   status: string,
 ): void {
-  queryClient.setQueryData<WorkspaceLike | undefined>(
+  queryClient.setQueryData<Workspace | undefined>(
     queryKeys.workspaces.detail(workspaceId),
     (prev) => (prev ? { ...prev, status } : prev),
   );
-  const patchOne = (w: WorkspaceLike): WorkspaceLike =>
-    (w.workspace_id ?? w.id) === workspaceId ? { ...w, status } : w;
-  queryClient.setQueriesData<unknown>(
+  queryClient.setQueriesData<WorkspacesResponse | undefined>(
     { queryKey: queryKeys.workspaces.lists() },
-    (prev: unknown) => {
-      if (!prev) return prev;
-      if (Array.isArray(prev)) {
-        return (prev as WorkspaceLike[]).map(patchOne);
-      }
-      if (typeof prev === 'object' && prev !== null) {
-        const obj = prev as { workspaces?: WorkspaceLike[] };
-        if (Array.isArray(obj.workspaces)) {
-          return { ...obj, workspaces: obj.workspaces.map(patchOne) };
-        }
-      }
-      return prev;
+    (prev) => {
+      if (!prev?.workspaces) return prev;
+      return {
+        ...prev,
+        workspaces: prev.workspaces.map((w) =>
+          w.workspace_id === workspaceId ? { ...w, status } : w,
+        ),
+      };
     },
   );
 }
@@ -90,7 +96,7 @@ export function warmWorkspace(
   const existing = inFlight.get(workspaceId);
   if (existing) return existing;
 
-  const cached = queryClient.getQueryData<WorkspaceLike>(
+  const cached = queryClient.getQueryData<Workspace>(
     queryKeys.workspaces.detail(workspaceId),
   );
   if (cached && cached.status && cached.status !== 'stopped') {
@@ -113,7 +119,7 @@ export function warmWorkspace(
       // a fast 'running' (or 'error') before this slower patch lands; without
       // the guard, 'starting' would clobber it and wedge the UI on 'starting'
       // until the next refetch.
-      const current = queryClient.getQueryData<WorkspaceLike>(
+      const current = queryClient.getQueryData<Workspace>(
         queryKeys.workspaces.detail(workspaceId),
       );
       if (!current?.status || current.status === 'stopped') {

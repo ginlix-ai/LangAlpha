@@ -337,22 +337,32 @@ describe('ChatAgent API utilities', () => {
 
     const ctrl = () => new AbortController().signal;
 
-    it('parses a status event and passes status + sandbox_state', async () => {
+    it('parses a status event and passes status + sandbox_state + computer_id', async () => {
       mockSSEResponse([
-        'event: status\ndata: {"workspace_id":"ws-1","status":"starting","sandbox_state":"archived"}\n\n',
+        'event: status\ndata: {"workspace_id":"ws-1","computer_id":"comp-1","status":"starting","sandbox_state":"archived"}\n\n',
       ]);
       const onStatus = vi.fn();
       await streamWorkspaceEvents('ws-1', onStatus, ctrl());
-      expect(onStatus).toHaveBeenCalledWith('starting', 'archived');
+      expect(onStatus).toHaveBeenCalledWith('starting', 'archived', 'comp-1');
     });
 
     it('omits sandbox_state when the payload has none', async () => {
       mockSSEResponse([
-        'event: status\ndata: {"workspace_id":"ws-1","status":"running"}\n\n',
+        'event: status\ndata: {"workspace_id":"ws-1","computer_id":"comp-1","status":"running"}\n\n',
       ]);
       const onStatus = vi.fn();
       await streamWorkspaceEvents('ws-1', onStatus, ctrl());
-      expect(onStatus).toHaveBeenCalledWith('running', undefined);
+      expect(onStatus).toHaveBeenCalledWith('running', undefined, 'comp-1');
+    });
+
+    it('passes computer_id as undefined when the workspace has no machine', async () => {
+      // A flash workspace frames computer_id: null rather than dropping the key.
+      mockSSEResponse([
+        'event: status\ndata: {"workspace_id":"ws-1","computer_id":null,"status":"running"}\n\n',
+      ]);
+      const onStatus = vi.fn();
+      await streamWorkspaceEvents('ws-1', onStatus, ctrl());
+      expect(onStatus).toHaveBeenCalledWith('running', undefined, undefined);
     });
 
     it('handles an event split across read() chunks', async () => {
@@ -363,7 +373,7 @@ describe('ChatAgent API utilities', () => {
       ]);
       const onStatus = vi.fn();
       await streamWorkspaceEvents('ws-1', onStatus, ctrl());
-      expect(onStatus).toHaveBeenCalledWith('starting', undefined);
+      expect(onStatus).toHaveBeenCalledWith('starting', undefined, undefined);
     });
 
     it('stops on a timeout event without emitting further statuses', async () => {
@@ -375,7 +385,7 @@ describe('ChatAgent API utilities', () => {
       const onStatus = vi.fn();
       await streamWorkspaceEvents('ws-1', onStatus, ctrl());
       expect(onStatus).toHaveBeenCalledTimes(1);
-      expect(onStatus).toHaveBeenCalledWith('starting', undefined);
+      expect(onStatus).toHaveBeenCalledWith('starting', undefined, undefined);
     });
 
     it('skips a malformed payload but keeps consuming the stream', async () => {
@@ -386,7 +396,7 @@ describe('ChatAgent API utilities', () => {
       const onStatus = vi.fn();
       await streamWorkspaceEvents('ws-1', onStatus, ctrl());
       expect(onStatus).toHaveBeenCalledTimes(1);
-      expect(onStatus).toHaveBeenCalledWith('running', undefined);
+      expect(onStatus).toHaveBeenCalledWith('running', undefined, undefined);
     });
 
     it('returns without emitting when the response is not ok', async () => {
