@@ -10,7 +10,7 @@ import json
 
 # Import MCP client
 try:
-    from .mcp_client import _call_mcp_tool
+    from mcp_client import _call_mcp_tool
 except ImportError:
     # Fallback for when mcp_client is not available
     def _call_mcp_tool(server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
@@ -100,7 +100,7 @@ import json
 
 # Import MCP client
 try:
-    from .mcp_client import _call_mcp_tool
+    from mcp_client import _call_mcp_tool
 except ImportError:
     # Fallback for when mcp_client is not available
     def _call_mcp_tool(server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
@@ -315,7 +315,8 @@ print(result)  # noqa: T201
 
 
 # --- Per-workspace configuration (generated epilogue). ---
-_apply_config_dict(json.loads("{\"result_body_max_bytes\": 65536, \"result_body_trace_budget_bytes\": 4194304, \"servers\": {\"probe_builtin\": {\"args\": [\"run\", \"python\", \"/probe/mcp_servers/probe_server.py\"], \"command\": \"uv\", \"env_keys\": [\"PROBE_API_KEY\"], \"transport\": \"stdio\", \"untrusted\": false}, \"probe_oauth\": {\"relay_bound\": true, \"transport\": \"http\", \"untrusted\": true}, \"probe_workspace\": {\"discovery_uses_secrets\": true, \"headers\": {\"Authorization\": \"${vault:PROBE_TOKEN}\"}, \"transport\": \"http\", \"untrusted\": true, \"url\": \"https://probe.example/mcp\"}}, \"working_dir\": \"/probe\"}"))
+_apply_config_dict(json.loads("{\"fold_union\": true, \"layout\": {\"SandboxLayout\": {\"EGRESS_RELAY_FILE\": \"_internal/.egress_relay.json\", \"INTERNAL_DIR\": \"_internal\", \"INTERNAL_SRC_DIR\": \"_internal/src\", \"MCP_TOKENS_FILE\": \"_internal/.mcp_tokens.json\", \"UNION_LEDGER_FILE\": \"_internal/tools/.union.json\", \"VAULT_SECRETS_FILE\": \"_internal/.vault_secrets.json\"}, \"WorkspaceLayout\": {\"MCP_CLIENT_CONFIG_FILE\": \".agents/tools/mcp_client_config.json\", \"TOOLS_DIR\": \".agents/tools\"}}, \"result_body_max_bytes\": 65536, \"result_body_trace_budget_bytes\": 4194304, \"servers\": {\"probe_builtin\": {\"args\": [\"run\", \"python\", \"/probe/mcp_servers/probe_server.py\"], \"command\": \"uv\", \"env_keys\": [\"PROBE_API_KEY\"], \"transport\": \"stdio\", \"untrusted\": false}, \"probe_oauth\": {\"relay_bound\": true, \"transport\": \"http\", \"untrusted\": true}, \"probe_workspace\": {\"discovery_uses_secrets\": true, \"headers\": {\"Authorization\": \"${vault:PROBE_TOKEN}\"}, \"transport\": \"http\", \"untrusted\": true, \"url\": \"https://probe.example/mcp\"}}, \"working_dir\": \"/probe\"}"))
 
 if __name__ == "__main__":
     _cli_main()
+{"dir_name": "probe-dir", "schema_version": 1, "servers": {"probe_builtin": {"enabled": true}, "probe_oauth": {"enabled": true}}, "workspace_id": "probe-workspace"}
