@@ -1,8 +1,9 @@
-"""
-Database utility functions for workspace management.
+"""Workspace persistence with migration 046 write-through computer shadows.
 
-Provides functions for creating, retrieving, and managing workspaces in PostgreSQL.
-Each workspace has a 1:1 mapping with a Daytona sandbox.
+Rolling-deploy readers and platform capacity accounting still read sandbox_id,
+resource_tier, is_always_on, platform_secret_version, and artifacts here.
+Follow database/computer.py's atomic-write and lock-order rules; NULL computer_id
+rows (flash and shared-sandbox backfill losers) retain single-table behavior.
 """
 
 import logging
@@ -14,60 +15,94 @@ from typing import Any, Dict, List, Optional, Tuple
 from psycopg.rows import dict_row
 
 from ptc_agent.core.sandbox.runtime import SandboxTransientError
+from src.server.database.computer import (
+    COMPUTER_STATUSES,
+)
 from src.server.database.pool import get_db_connection
+from src.server.database.sql_fences import (
+    FENCE_LIVE_WORKSPACE,
+    FENCE_NOT_DELETED,
+    workspace_dir_name,
+    shadowed_write,
+)
 from src.server.services.workspace_status_pubsub import publish_status_change
 from src.server.utils.pg_sanitize import normalize_uuid
 
 logger = logging.getLogger(__name__)
 
-# Deterministic namespace for flash workspace UUIDs
 FLASH_WORKSPACE_NAMESPACE = uuid.UUID("f1a50000-0000-5000-e000-f1a500000000")
 
-# Canonical column list returned by EVERY workspace SELECT/RETURNING query, so
-# callers never have to ask which shape a given helper hands back. Hardcoded
-# literals only (no user data) — safe to interpolate via f-string. Rows are
-# consumed by name via dict_row.
-_WS_COLS = (
-    "workspace_id, user_id, name, description, sandbox_id, status, created_at, "
-    "updated_at, last_activity_at, stopped_at, config, artifacts, is_pinned, "
-    "sort_order, resource_tier, is_always_on, platform_secret_version, "
-    "mcp_config_version"
+# A shared literal column list keeps dict_row shapes consistent and interpolation safe.
+_WS_COLUMNS: tuple[str, ...] = (
+    "workspace_id",
+    "user_id",
+    "name",
+    "description",
+    "sandbox_id",
+    "computer_id",
+    "dir_name",
+    "layout_origin",
+    "status",
+    "created_at",
+    "updated_at",
+    "last_activity_at",
+    "stopped_at",
+    "config",
+    "artifacts",
+    "is_pinned",
+    "sort_order",
+    "resource_tier",
+    "is_always_on",
+    "platform_secret_version",
+    "mcp_config_version",
 )
 
-# Scalar workspace columns that may be set via `_set_workspace_scalar`. The
-# column name is interpolated as a SQL literal (never a bound param), so it must
-# be whitelisted to keep the surface injection-free.
+# The restore flag is read as a boolean, never as its column: the timestamp is
+# bookkeeping for the prune gate, and a reader only needs to know that files
+# are missing.
+_WS_RESTORE_FLAG = (
+    "({prefix}files_restore_incomplete_at IS NOT NULL) AS files_restore_incomplete"
+)
+
+
+def _ws_cols(alias: str = "") -> str:
+    """The workspace projection, qualified when the statement needs it.
+
+    Six of these names also belong to the machine CTE the bind joins against,
+    and an unqualified one in that RETURNING is ambiguous to Postgres rather
+    than defaulting to the target table.
+    """
+    prefix = f"{alias}." if alias else ""
+    return ", ".join(
+        [f"{prefix}{column}" for column in _WS_COLUMNS]
+        + [_WS_RESTORE_FLAG.format(prefix=prefix)]
+    )
+
+
+_WS_COLS = _ws_cols()
+
+# Whitelist column names because SQL identifiers cannot be bound parameters.
 _SETTABLE_SCALAR_COLUMNS = frozenset({"resource_tier", "is_always_on"})
+
+
+def _mirrors_to_computer(status: str) -> bool:
+    """Deleting a project must not delete a shared machine; ComputerManager owns machine teardown."""
+    return status in COMPUTER_STATUSES and status != "deleted"
 
 
 @asynccontextmanager
 async def _ws_cursor(conn=None):
-    """A ``dict_row`` cursor on *conn*, or on a freshly checked-out pooled one.
-
-    Every query here takes an optional connection so callers can compose several
-    writes into one transaction. ``get_db_connection`` owns that passthrough;
-    this only spares each query from writing out the cursor nesting and hoisting
-    its body into a closure to share it.
-    """
     async with get_db_connection(conn) as owned:
         async with owned.cursor(row_factory=dict_row) as cur:
             yield cur
 
 
 def get_flash_workspace_id(user_id: str) -> str:
-    """Deterministic UUID v5 — same user always gets the same flash workspace ID."""
     return str(uuid.uuid5(FLASH_WORKSPACE_NAMESPACE, user_id))
 
 
-async def get_or_create_flash_workspace(
-    user_id: str, conn=None
-) -> Dict[str, Any]:
-    """
-    Upsert the user's shared flash workspace. No lookup needed — ID is computed.
-
-    Uses deterministic UUID v5 so the same user always maps to the same workspace.
-    INSERT ... ON CONFLICT DO UPDATE makes this idempotent and race-condition-free.
-    """
+async def get_or_create_flash_workspace(user_id: str, conn=None) -> Dict[str, Any]:
+    """Deterministic identity and ON CONFLICT make concurrent creation idempotent."""
     from psycopg.types.json import Json
 
     workspace_id = get_flash_workspace_id(user_id)
@@ -82,7 +117,14 @@ async def get_or_create_flash_workspace(
                 ON CONFLICT (workspace_id) DO UPDATE SET updated_at = NOW(), is_pinned = TRUE
                 RETURNING {_WS_COLS}
                 """,
-                (workspace_id, user_id, "Flash", "Flash mode conversations", config_json, "flash"),
+                (
+                    workspace_id,
+                    user_id,
+                    "Flash",
+                    "Flash mode conversations",
+                    config_json,
+                    "flash",
+                ),
             )
             result = await cur.fetchone()
 
@@ -94,11 +136,6 @@ async def get_or_create_flash_workspace(
         raise
 
 
-# =============================================================================
-# Workspace CRUD Operations
-# =============================================================================
-
-
 async def create_workspace(
     user_id: str,
     name: str,
@@ -108,21 +145,6 @@ async def create_workspace(
     workspace_id: Optional[str] = None,
     status: str = "creating",
 ) -> Dict[str, Any]:
-    """
-    Create a new workspace entry.
-
-    Args:
-        user_id: User ID who owns the workspace
-        name: Workspace name
-        description: Optional workspace description
-        config: Optional configuration as JSON
-        conn: Optional database connection to reuse
-        workspace_id: Optional specific workspace ID (UUID). If None, auto-generated.
-        status: Initial status (default: "creating", use "flash" for flash workspaces)
-
-    Returns:
-        Created workspace record as dict
-    """
     from psycopg.types.json import Json
 
     try:
@@ -130,7 +152,7 @@ async def create_workspace(
 
         async with _ws_cursor(conn) as cur:
             if workspace_id:
-                # Use specific workspace_id (for flash mode: workspace_id = thread_id)
+                # Flash mode may supply thread_id as workspace_id.
                 await cur.execute(
                     f"""
                     INSERT INTO workspaces (workspace_id, user_id, name, description, config, status)
@@ -140,7 +162,6 @@ async def create_workspace(
                     (workspace_id, user_id, name, description, config_json, status),
                 )
             else:
-                # Auto-generate workspace_id
                 await cur.execute(
                     f"""
                     INSERT INTO workspaces (user_id, name, description, config, status)
@@ -163,20 +184,8 @@ async def get_workspace(
     workspace_id: str,
     conn=None,
 ) -> Optional[Dict[str, Any]]:
-    """
-    Get a workspace by ID.
-
-    Args:
-        workspace_id: Workspace UUID
-        conn: Optional database connection to reuse
-
-    Returns:
-        Workspace record as dict, or None if not found
-    """
-    # Normalize before querying: postgres' uuid type rejects some forms that
-    # uuid.UUID() accepts (e.g. urn:uuid:...), so binding the raw value risks
-    # InvalidTextRepresentation (22P02) → 500. A non-UUID id (e.g. a memory-file
-    # key from the SPA tree) can never match the pk, so treat it as not-found.
+    # Normalize urn:uuid forms PostgreSQL rejects with 22P02; non-UUID SPA keys
+    # cannot match the primary key and should return not-found, not 500.
     workspace_id = normalize_uuid(workspace_id)
     if workspace_id is None:
         return None
@@ -203,14 +212,12 @@ async def get_workspace(
 
 
 async def get_workspace_identity(workspace_id: str) -> Optional[Dict[str, Any]]:
-    """Read only ``status`` + ``sandbox_id`` — the durable identity of a workspace.
+    """Avoid large JSONB reads on every cached-session validation.
 
-    Deliberately narrow so the session-acquisition warm path can validate the
-    handle it is about to hand out on every request without pulling the JSONB
-    ``config``/``artifacts`` columns that make ``get_workspace`` expensive.
-    Unlike ``get_workspace`` this does NOT hide ``status='deleted'`` rows — a
-    caller validating a cached session needs to see the tombstone rather than an
-    ambiguous "not found".
+    Include tombstones so deleted differs from missing. Join computer identity to
+    detect split bindings where only the computer half committed and the losing
+    provisioner deleted the sandbox still named by the workspace, and the
+    machine's root owner, which the layout migration needs on this same path.
     """
     workspace_id = normalize_uuid(workspace_id)
     if workspace_id is None:
@@ -220,9 +227,12 @@ async def get_workspace_identity(workspace_id: str) -> Optional[Dict[str, Any]]:
         async with _ws_cursor() as cur:
             await cur.execute(
                 """
-                SELECT status, sandbox_id
-                FROM workspaces
-                WHERE workspace_id = %s
+                SELECT w.status, w.sandbox_id, w.computer_id,
+                       c.provider_ref, c.status AS computer_status,
+                       c.origin_workspace_id
+                FROM workspaces w
+                LEFT JOIN computers c ON c.computer_id = w.computer_id
+                WHERE w.workspace_id = %s
                 """,
                 (workspace_id,),
             )
@@ -234,13 +244,317 @@ async def get_workspace_identity(workspace_id: str) -> Optional[Dict[str, Any]]:
         raise
 
 
-async def get_workspace_name_and_description(workspace_id: str) -> Optional[Dict[str, Any]]:
-    """Read only ``name`` + ``description`` — what the agent's prompt calls it.
+# Match migration 046's constraint_name to distinguish folder collisions.
+_COMPUTER_DIR_INDEX = "idx_workspaces_computer_dir"
 
-    Narrow for the same reason as ``get_workspace_identity``: this runs once per
-    agent turn, and ``get_workspace`` would pull the JSONB ``config``/``artifacts``
-    columns to hand back two short strings.
+
+class WorkspaceDirNameTaken(Exception):
+    """Only the caller can choose a replacement dir_name because it knows why that name was picked."""
+
+    def __init__(self, workspace_id: str, computer_id: str, dir_name: str | None):
+        self.workspace_id = workspace_id
+        self.computer_id = computer_id
+        self.dir_name = dir_name
+        super().__init__(
+            f"Folder {dir_name!r} is already taken on computer {computer_id} "
+            f"(rebinding workspace {workspace_id})"
+        )
+
+
+async def bind_workspace_to_computer(
+    workspace_id: str,
+    computer_id: str,
+    *,
+    expected_computer_id: str | None,
+    dir_name: str | None = None,
+    conn=None,
+) -> Optional[Dict[str, Any]]:
+    """Move a project onto a machine and take that machine's lifecycle with it.
+
+    None is the expected_computer_id of a row migration 046 left unbound, which
+    is what the edge resolve passes; the CAS is what stops two concurrent binds
+    from each creating a machine for it. The shadow columns come from the
+    machine, as create_workspace_on_computer's insert does: a row left naming
+    the old machine's lifecycle is what wedges the idle reaper.
     """
+    from psycopg.errors import UniqueViolation
+
+    workspace_id = normalize_uuid(workspace_id)
+    computer_id = normalize_uuid(computer_id)
+    if workspace_id is None or computer_id is None:
+        return None
+    expected = None
+    if expected_computer_id is not None:
+        # Invalid expectations must not normalize to None and match never-bound rows.
+        expected = normalize_uuid(expected_computer_id)
+        if expected is None:
+            return None
+
+    try:
+        async with _ws_cursor(conn) as cur:
+            await cur.execute(
+                f"""
+                WITH comp AS (
+                    SELECT computer_id, status, resource_tier, is_always_on,
+                           provider_ref, platform_secret_version
+                    FROM computers
+                    WHERE computer_id = %(computer_id)s AND {FENCE_NOT_DELETED}
+                      AND user_id = (
+                          SELECT user_id FROM workspaces
+                          WHERE workspace_id = %(workspace_id)s
+                      )
+                    FOR SHARE
+                )
+                UPDATE workspaces w
+                SET computer_id = comp.computer_id,
+                    dir_name = COALESCE(%(dir_name)s, w.dir_name),
+                    status = comp.status,
+                    sandbox_id = comp.provider_ref,
+                    resource_tier = comp.resource_tier,
+                    is_always_on = comp.is_always_on,
+                    platform_secret_version = comp.platform_secret_version,
+                    updated_at = NOW()
+                FROM comp
+                WHERE w.workspace_id = %(workspace_id)s
+                  AND w.computer_id IS NOT DISTINCT FROM %(expected)s
+                  AND w.{FENCE_LIVE_WORKSPACE}
+                RETURNING {_ws_cols("w")}
+                """,
+                {
+                    "computer_id": computer_id,
+                    "dir_name": dir_name,
+                    "workspace_id": workspace_id,
+                    "expected": expected,
+                },
+            )
+            row = await cur.fetchone()
+    except UniqueViolation as e:
+        constraint = getattr(getattr(e, "diag", None), "constraint_name", None)
+        # An unnamed violation still qualifies: these columns have no other unique index.
+        if constraint in (_COMPUTER_DIR_INDEX, None):
+            raise WorkspaceDirNameTaken(workspace_id, computer_id, dir_name) from e
+        raise
+
+    if row is None:
+        logger.info(
+            f"Workspace {workspace_id} was not bindable to computer "
+            f"{computer_id} (expected {expected}, deleted, or the target is gone)"
+        )
+        return None
+    logger.info(
+        f"Bound workspace {workspace_id} to computer {computer_id} as "
+        f"{row.get('dir_name')} (status {row['status']}, was on {expected})"
+    )
+    return dict(row)
+
+
+async def get_live_workspace_ids_for_computer(
+    computer_id: str,
+    *,
+    conn=None,
+) -> List[str]:
+    computer_id = normalize_uuid(computer_id)
+    if computer_id is None:
+        return []
+
+    async with _ws_cursor(conn) as cur:
+        await cur.execute(
+            """
+            SELECT workspace_id
+            FROM workspaces
+            WHERE computer_id = %s AND status <> 'deleted'
+            ORDER BY created_at
+            """,
+            (computer_id,),
+        )
+        return [str(r["workspace_id"]) for r in await cur.fetchall()]
+
+
+async def count_live_workspaces_by_computer(
+    computer_ids: List[str],
+    *,
+    conn=None,
+) -> Dict[str, int]:
+    """How many live projects sit on each of these machines, in one query.
+
+    A machine with none is absent from the result, so callers default to zero.
+    """
+    ids = [i for i in (normalize_uuid(c) for c in computer_ids) if i is not None]
+    if not ids:
+        return {}
+
+    async with _ws_cursor(conn) as cur:
+        await cur.execute(
+            """
+            SELECT computer_id, count(*) AS live
+            FROM workspaces
+            WHERE computer_id = ANY(%s::uuid[]) AND status <> 'deleted'
+            GROUP BY computer_id
+            """,
+            (ids,),
+        )
+        return {str(r["computer_id"]): int(r["live"]) for r in await cur.fetchall()}
+
+
+async def get_workspace_dir_name(workspace_id: str, *, conn=None) -> Optional[str]:
+    """Avoid fetching large JSONB columns for a folder lookup on every acquisition."""
+    workspace_id = normalize_uuid(workspace_id)
+    if workspace_id is None:
+        return None
+
+    async with _ws_cursor(conn) as cur:
+        await cur.execute(
+            "SELECT dir_name FROM workspaces WHERE workspace_id = %s",
+            (workspace_id,),
+        )
+        row = await cur.fetchone()
+    return row["dir_name"] if row else None
+
+
+async def create_workspace_on_computer(
+    user_id: str,
+    name: str,
+    computer_id: str,
+    *,
+    description: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+    workspace_id: Optional[str] = None,
+    slug_attempts: int = 3,
+) -> Optional[Dict[str, Any]]:
+    """Create a complete shadow atomically so failed binding cannot leave an unbound project.
+
+    FOR SHARE holds status changes until the new row can receive their shadow UPDATE;
+    otherwise it may retain a stale status that later transitions skip. Include
+    sandbox_id or attachment sees a split binding and rebuilds every sibling's machine.
+    None means the computer is gone: resolve another instead of retrying this one.
+    """
+    from psycopg.errors import UniqueViolation
+    from psycopg.types.json import Json
+
+    computer_id = normalize_uuid(computer_id)
+    if computer_id is None:
+        return None
+    workspace_id = normalize_uuid(workspace_id) or str(uuid.uuid4())
+
+    dir_name = ""
+    for attempt in range(max(1, slug_attempts)):
+        # Widen the suffix: users may intentionally give projects the same name.
+        dir_name = workspace_dir_name(name, workspace_id, hex_chars=4 + 4 * attempt)
+        try:
+            async with _ws_cursor() as cur:
+                await cur.execute(
+                    f"""
+                    WITH comp AS (
+                        SELECT computer_id, status, resource_tier, is_always_on,
+                               provider_ref, platform_secret_version
+                        FROM computers
+                        WHERE computer_id = %(computer_id)s AND {FENCE_NOT_DELETED}
+                        FOR SHARE
+                    )
+                    INSERT INTO workspaces (
+                        workspace_id, user_id, name, description, config,
+                        computer_id, dir_name, status, resource_tier,
+                        is_always_on, sandbox_id, platform_secret_version
+                    )
+                    SELECT %(workspace_id)s::uuid, %(user_id)s, %(name)s,
+                           %(description)s, %(config)s,
+                           comp.computer_id, %(dir_name)s,
+                           comp.status, comp.resource_tier, comp.is_always_on,
+                           comp.provider_ref, comp.platform_secret_version
+                    FROM comp
+                    RETURNING {_WS_COLS}
+                    """,
+                    {
+                        "computer_id": computer_id,
+                        "workspace_id": workspace_id,
+                        "user_id": user_id,
+                        "name": name,
+                        "description": description,
+                        "config": Json(config or {}),
+                        "dir_name": dir_name,
+                    },
+                )
+                row = await cur.fetchone()
+            break
+        except UniqueViolation as e:
+            constraint = getattr(getattr(e, "diag", None), "constraint_name", None)
+            if constraint not in (_COMPUTER_DIR_INDEX, None):
+                raise
+            logger.info(
+                f"Folder {dir_name!r} taken on computer {computer_id}; re-slugging"
+            )
+    else:
+        raise WorkspaceDirNameTaken(workspace_id, computer_id, dir_name)
+
+    if row is None:
+        logger.warning(
+            f"Computer {computer_id} is gone or deleted; workspace {name!r} "
+            f"for user {user_id} was not created on it"
+        )
+        return None
+    logger.info(
+        f"Created workspace {row['workspace_id']} for user {user_id} on computer "
+        f"{computer_id} as {row['dir_name']} (status {row['status']})"
+    )
+    return dict(row)
+
+
+async def adopt_computer_sandbox_into_workspaces(
+    computer_id: str,
+) -> list[str]:
+    """Repair shadows that the bind's previous-ref fence cannot reach.
+
+    Two arms, both keyed on identity rather than on a guess: a NULL sandbox_id
+    has nothing to contradict, and a row already naming this machine's
+    provider_ref is the same machine, so its lifecycle columns may be realigned.
+    A different non-NULL sandbox_id is a split binding and is left alone.
+    """
+    computer_id = normalize_uuid(computer_id)
+    if computer_id is None:
+        return []
+    async with _ws_cursor() as cur:
+        await cur.execute(
+            """
+            WITH comp AS (
+                SELECT computer_id, provider_ref, status, platform_secret_version
+                FROM computers
+                WHERE computer_id = %(computer_id)s
+                  AND provider_ref IS NOT NULL
+                  AND status = 'running'
+                FOR SHARE
+            )
+            UPDATE workspaces w
+            SET sandbox_id = comp.provider_ref,
+                status = comp.status,
+                platform_secret_version = comp.platform_secret_version,
+                updated_at = NOW()
+            FROM comp
+            WHERE w.computer_id = comp.computer_id
+              AND w.status NOT IN ('deleted', 'flash')
+              AND (w.sandbox_id IS NULL OR w.sandbox_id = comp.provider_ref)
+              AND (
+                  w.sandbox_id IS DISTINCT FROM comp.provider_ref
+                  OR w.status <> comp.status
+                  OR w.platform_secret_version
+                      IS DISTINCT FROM comp.platform_secret_version
+              )
+            RETURNING w.workspace_id
+            """,
+            {"computer_id": computer_id},
+        )
+        repaired = [str(r["workspace_id"]) for r in await cur.fetchall()]
+    if repaired:
+        logger.info(
+            f"Realigned {len(repaired)} workspace shadow(s) with computer "
+            f"{computer_id}: {', '.join(repaired)}"
+        )
+    return repaired
+
+
+async def get_workspace_name_and_description(
+    workspace_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Avoid fetching config/artifacts JSONB for two prompt strings on every agent turn."""
     workspace_id = normalize_uuid(workspace_id)
     if workspace_id is None:
         return None
@@ -272,37 +586,18 @@ async def get_workspaces_for_user(
     include_flash: bool = False,
     conn=None,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """
-    Get all workspaces for a user with pagination.
-
-    Args:
-        user_id: User ID
-        limit: Maximum number of results
-        offset: Number of results to skip
-        include_deleted: Whether to include deleted workspaces
-        sort_by: Sort mode
-        include_flash: Whether to include flash workspaces in results
-        conn: Optional database connection to reuse
-
-    Returns:
-        Tuple of (list of workspace dicts, total count)
-    """
     try:
         status_filter = "" if include_deleted else "AND status != 'deleted'"
-        # Exclude flash workspaces from gallery listings unless explicitly requested
         flash_filter = "" if include_flash else "AND status != 'flash'"
 
-        # Build ORDER BY based on sort mode
         if sort_by == "activity":
             order_clause = "is_pinned DESC, COALESCE(last_activity_at, updated_at) DESC"
         elif sort_by == "name":
             order_clause = "is_pinned DESC, name ASC"
         else:
-            # 'custom' — manual sort order, then recency
             order_clause = "is_pinned DESC, sort_order ASC, updated_at DESC"
 
         async with _ws_cursor(conn) as cur:
-            # Get total count
             await cur.execute(
                 f"""
                 SELECT COUNT(*) as total
@@ -314,7 +609,6 @@ async def get_workspaces_for_user(
             count_result = await cur.fetchone()
             total = count_result["total"] if count_result else 0
 
-            # Get paginated results
             await cur.execute(
                 f"""
                 SELECT {_WS_COLS}
@@ -341,23 +635,9 @@ async def update_workspace(
     is_pinned: Optional[bool] = None,
     conn=None,
 ) -> Optional[Dict[str, Any]]:
-    """
-    Update workspace metadata.
-
-    Args:
-        workspace_id: Workspace UUID
-        name: Optional new name
-        description: Optional new description
-        config: Optional new config (replaces existing)
-        conn: Optional database connection to reuse
-
-    Returns:
-        Updated workspace record, or None if not found
-    """
     from psycopg.types.json import Json
 
     try:
-        # Build dynamic update query
         updates = []
         params = []
 
@@ -378,7 +658,6 @@ async def update_workspace(
             params.append(is_pinned)
 
         if not updates:
-            # Nothing to update, just return current state
             return await get_workspace(workspace_id, conn=conn)
 
         updates.append("updated_at = %s")
@@ -414,43 +693,35 @@ async def update_workspace_status(
     status: str,
     conn=None,
 ) -> Optional[Dict[str, Any]]:
-    """
-    Move a workspace's status.
+    """Only the provider-ref CAS may change the durable sandbox binding.
 
-    Never touches ``sandbox_id``: the durable workspace↔sandbox binding moves
-    only through ``try_bind_workspace_sandbox``'s compare-and-set, so a plain
-    status change can never silently rebind a workspace to a stale sandbox.
-
-    The ``status != 'deleted'`` guard is what stops a soft-deleted row from
-    being revived. Nothing in the codebase ever clears ``sandbox_id``, so a
-    deleted workspace still names a real sandbox; without the guard a racing
-    reaper flipping it back to 'running' would hand that sandbox out again.
-
-    Args:
-        workspace_id: Workspace UUID
-        status: New status (creating, running, stopping, stopped, error, deleted)
-        conn: Optional database connection to reuse
-
-    Returns:
-        Updated workspace record, or None if not found or already deleted
+    Deleted rows retain sandbox_id; the tombstone guard prevents a racing reaper
+    from reviving and handing out that sandbox.
     """
     try:
         now = datetime.now(timezone.utc)
 
-        # 'stopped' additionally stamps stopped_at; every other status is a
-        # plain status move.
-        stopped_at_clause = ", stopped_at = %s" if status == "stopped" else ""
-        query = f"""
-            UPDATE workspaces
-            SET status = %s, updated_at = %s{stopped_at_clause}
-            WHERE workspace_id = %s AND status != 'deleted'
-            RETURNING {_WS_COLS}
-        """
-        params = (
-            (status, now, now, workspace_id)
-            if status == "stopped"
-            else (status, now, workspace_id)
-        )
+        stopped_at_clause = ", stopped_at = %(now)s" if status == "stopped" else ""
+        if _mirrors_to_computer(status):
+            query = shadowed_write(
+                authority="workspace",
+                computer_set=f"status = %(status)s{stopped_at_clause}",
+                workspace_set=f"status = %(status)s{stopped_at_clause}",
+                workspace_fence=FENCE_NOT_DELETED,
+                computer_returning="c.computer_id AS mirrored_computer_id",
+                workspace_returning=_WS_COLS,
+                select="SELECT * FROM shadow WHERE workspace_id = %(workspace_id)s",
+                fan_out=True,
+                now="%(now)s",
+            )
+        else:
+            query = f"""
+                UPDATE workspaces
+                SET status = %(status)s, updated_at = %(now)s{stopped_at_clause}
+                WHERE workspace_id = %(workspace_id)s AND status != 'deleted'
+                RETURNING {_WS_COLS}
+            """
+        params = {"status": status, "now": now, "workspace_id": workspace_id}
 
         async with _ws_cursor(conn) as cur:
             await cur.execute(query, params)
@@ -458,11 +729,11 @@ async def update_workspace_status(
 
         if result:
             logger.debug(f"Updated workspace {workspace_id} status to: {status}")
-            # TODO(layering): services-tier pub/sub called from the database
-            # tier. Best-effort cross-worker notification — wakes any
-            # _wait_for_start_completion loop and any /events SSE
-            # subscribers in milliseconds. Swallows on failure.
-            await publish_status_change(workspace_id, status)
+            # TODO(layering): database calls service pub/sub to wake cross-worker start
+            # waiters and /events subscribers; failure falls back to polling.
+            await publish_status_change(
+                workspace_id, status, computer_id=result.get("computer_id")
+            )
             return dict(result)
         return None
 
@@ -472,15 +743,10 @@ async def update_workspace_status(
 
 
 class SandboxIdentityLostError(SandboxTransientError):
-    """Another provisioner won the race to bind this workspace's sandbox.
+    """The losing provisioner must delete its sandbox and attach to the winner, never retry the write.
 
-    The loser owns a real, running sandbox that nothing points at — it must
-    delete its own and attach to the winner's, never retry the write.
-
-    Transient by inheritance, and deliberately so: losing this race is a
-    recoverable condition the caller should retry into, but no caller catches it
-    by name. As a bare ``RuntimeError`` it reached the client as a 500 and the
-    chat funnel did not recognise it as a sandbox condition at all.
+    Inherit SandboxTransientError so the chat funnel treats the race as recoverable;
+    a bare RuntimeError becomes an unrecognized 500.
     """
 
     def __init__(self, workspace_id: str, sandbox_id: str):
@@ -492,156 +758,6 @@ class SandboxIdentityLostError(SandboxTransientError):
         )
 
 
-async def _try_claim_starting(
-    workspace_id: str,
-    *,
-    from_status: str,
-    expected_sandbox_id: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
-    """Cross-worker mutex for a ``<from_status>`` → ``starting`` transition.
-
-    Only the worker whose UPDATE returns a row owns the transition; losers wait
-    for it to reach 'running' (or 'error'). Owns its own connection so the
-    UPDATE commits before the publish — a caller-supplied transaction would let
-    ``publish_status_change`` wake SSE subscribers that then read the pre-claim
-    row.
-
-    ``expected_sandbox_id`` adds a compare-and-set so only the caller holding
-    the identity it intends to replace can claim it.
-    """
-    try:
-        now = datetime.now(timezone.utc)
-        sandbox_guard = " AND sandbox_id = %s" if expected_sandbox_id else ""
-        query = f"""
-            UPDATE workspaces
-            SET status = 'starting', updated_at = %s
-            WHERE workspace_id = %s AND status = %s{sandbox_guard}
-            RETURNING {_WS_COLS}
-        """
-        params: Tuple[Any, ...] = (now, workspace_id, from_status)
-        if expected_sandbox_id:
-            params += (expected_sandbox_id,)
-
-        async with _ws_cursor() as cur:
-            await cur.execute(query, params)
-            result = await cur.fetchone()
-
-        if result is None:
-            return None
-
-        logger.debug(
-            f"Claimed workspace {workspace_id} for start (was {from_status}"
-            + (f" on {expected_sandbox_id}" if expected_sandbox_id else "")
-            + ")"
-        )
-        # Cross-worker /events subscribers learn about the flip without
-        # polling. The WorkspaceManager wait loop doesn't need it (the loser
-        # path triggers only after the claim returns None), but the FE does.
-        await publish_status_change(workspace_id, "starting")
-        return dict(result)
-
-    except Exception as e:
-        logger.error(f"Error claiming workspace {workspace_id} for start: {e}")
-        raise
-
-
-async def try_claim_workspace_for_start(
-    workspace_id: str,
-) -> Optional[Dict[str, Any]]:
-    """Claim a stopped workspace for a start transition.
-
-    Returns the claimed row (status='starting'), or None when the workspace was
-    not 'stopped' — already starting, running, creating, error, deleted or
-    stopping.
-    """
-    return await _try_claim_starting(workspace_id, from_status="stopped")
-
-
-async def try_claim_workspace_for_replacement(
-    workspace_id: str,
-    expected_sandbox_id: str,
-) -> Optional[Dict[str, Any]]:
-    """Claim a running workspace whose sandbox is about to be replaced.
-
-    Replacement (a tier change, a working-dir migration) deletes the sandbox and
-    builds a new one. Without a durable claim the row keeps saying
-    ``running``/<old id> across that window, so DB and cache *agree* on an
-    identity that is being destroyed — the one state no identity check can catch.
-    Claiming ``starting`` closes it with machinery that already exists: acquirers
-    seeing ``starting`` wait for the owner instead of racing to provision a
-    duplicate, and the stuck-start reaper is the existing backstop.
-
-    Returns the claimed row, or None if another worker already moved the
-    workspace off ``running``/*expected_sandbox_id*.
-    """
-    return await _try_claim_starting(
-        workspace_id, from_status="running", expected_sandbox_id=expected_sandbox_id
-    )
-
-
-async def try_bind_workspace_sandbox(
-    workspace_id: str,
-    *,
-    sandbox_id: str,
-    expected_previous_sandbox_id: Optional[str],
-    platform_secret_version: int,
-) -> Optional[Dict[str, Any]]:
-    """Atomically bind a freshly provisioned sandbox to a workspace and mark it running.
-
-    The only writer of ``workspaces.sandbox_id``. The compare-and-set is what
-    makes concurrent provisioning safe: without it two workers both "succeed",
-    one sandbox is left running with nothing pointing at it, and workers briefly
-    disagree about which identity is current. Returns None when another writer
-    got there first — the loser owns a real sandbox it must now delete.
-
-    ``platform_secret_version`` is always written, never preserved: it records
-    what THIS sandbox was certified against, and 0 means "never certified — may
-    hold plaintext env" (migration 021). Carrying a previous sandbox's
-    generation forward would leave a plaintext sandbox looking certified, and
-    the sweeper only visits rows behind the fleet generation.
-
-    The predicate fences lifecycle as well as identity. Matching on the sandbox
-    id alone is not enough: a stop and a recovery can race on the SAME id, and
-    since this statement unconditionally writes ``running`` the bind would
-    resurrect a workspace another worker had just stopped — leaving the row
-    ``stopped`` while its sandbox runs on and bills, or the reverse. Stopping
-    and stopped are named rather than a whitelist of bindable states because a
-    losing bind destroys its own sandbox: a whitelist that omitted some future
-    transitional state would fail legitimate provisions and churn sandboxes,
-    where this only ever refuses the two states a bind must never overwrite.
-    """
-    query = f"""
-        UPDATE workspaces
-        SET status = 'running',
-            sandbox_id = %s,
-            platform_secret_version = %s,
-            updated_at = NOW()
-        WHERE workspace_id = %s
-          AND status NOT IN ('deleted', 'stopping', 'stopped')
-          AND sandbox_id IS NOT DISTINCT FROM %s
-        RETURNING {_WS_COLS}
-    """
-
-    async with _ws_cursor() as cur:
-        await cur.execute(
-            query,
-            (
-                sandbox_id,
-                platform_secret_version,
-                workspace_id,
-                expected_previous_sandbox_id,
-            ),
-        )
-        result = await cur.fetchone()
-
-    if result is None:
-        return None
-    # Same broadcast obligation as update_workspace_status: this is what wakes
-    # cross-worker start waiters and /events subscribers.
-    await publish_status_change(workspace_id, "running")
-    return dict(result)
-
-
 async def _set_workspace_scalar(
     workspace_id: str,
     column: str,
@@ -649,10 +765,10 @@ async def _set_workspace_scalar(
     *,
     conn=None,
 ) -> Optional[Dict[str, Any]]:
-    """Set one whitelisted scalar column; returns updated row, or None if not found.
+    """Whitelist interpolated columns with _SETTABLE_SCALAR_COLUMNS to prevent injection.
 
-    `column` is interpolated as a SQL literal, so it must be in
-    `_SETTABLE_SCALAR_COLUMNS`; `value` is always bound as a parameter.
+    Update both machine and shadow atomically because platform entitlements count
+    these columns on workspaces.
     """
     if column not in _SETTABLE_SCALAR_COLUMNS:
         raise ValueError(f"Column not settable via _set_workspace_scalar: {column!r}")
@@ -662,13 +778,20 @@ async def _set_workspace_scalar(
 
         async with _ws_cursor(conn) as cur:
             await cur.execute(
-                f"""
-                UPDATE workspaces
-                SET {column} = %s, updated_at = %s
-                WHERE workspace_id = %s AND status != 'deleted'
-                RETURNING {_WS_COLS}
-                """,
-                (value, now, workspace_id),
+                shadowed_write(
+                    authority="workspace",
+                    computer_set=f"{column} = %(value)s",
+                    workspace_set=f"{column} = %(value)s",
+                    workspace_fence=FENCE_NOT_DELETED,
+                    computer_returning="c.computer_id AS mirrored_computer_id",
+                    workspace_returning=_WS_COLS,
+                    select=(
+                        "SELECT * FROM shadow WHERE workspace_id = %(workspace_id)s"
+                    ),
+                    fan_out=True,
+                    now="%(now)s",
+                ),
+                {"value": value, "now": now, "workspace_id": workspace_id},
             )
             result = await cur.fetchone()
 
@@ -688,7 +811,6 @@ async def set_workspace_resource_tier(
     *,
     conn=None,
 ) -> Optional[Dict[str, Any]]:
-    """Set the workspace resource tier; returns updated row, or None if not found."""
     return await _set_workspace_scalar(workspace_id, "resource_tier", tier, conn=conn)
 
 
@@ -698,7 +820,6 @@ async def set_workspace_always_on(
     *,
     conn=None,
 ) -> Optional[Dict[str, Any]]:
-    """Set the workspace always-on flag; returns updated row, or None if not found."""
     return await _set_workspace_scalar(workspace_id, "is_always_on", enabled, conn=conn)
 
 
@@ -713,19 +834,12 @@ async def set_files_restore_incomplete(
     conn=None,
     sandbox_id: Any = ANY_SANDBOX,
 ) -> bool:
-    """Record whether the sandbox is missing files the manifest still lists.
+    """Fence restore bookkeeping by sandbox identity, including None, across provisional binds.
 
-    ``sandbox_id`` is the sandbox the row is expected to name, ``None``
-    included, and the write lands only while it does. A restore runs on a
-    provisional sandbox before the identity CAS picks a winner: a raise names
-    the sandbox that CAS expects to replace and a clear names the sandbox it
-    vouches for, so neither can land on a row another provisioner has since
-    bound. Returns whether the write landed.
-
-    Deliberately not routed through ``_set_workspace_scalar``: that helper's
-    allowlist is for workspace settings a user chooses, this is persistence
-    bookkeeping, and it bumps ``updated_at`` — which orders the workspace
-    gallery, so a failed restore would silently reshuffle the user's list.
+    A raise names the CAS replacement target; a clear names the certified sandbox,
+    so neither changes a row another provisioner bound. Avoid _set_workspace_scalar:
+    its user-settings allowlist and updated_at bump would reshuffle the gallery
+    after a failed restore.
     """
     guarded = sandbox_id is not ANY_SANDBOX
     guard = "AND sandbox_id IS NOT DISTINCT FROM %s" if guarded else ""
@@ -745,12 +859,7 @@ async def set_files_restore_incomplete(
 
 
 async def files_restore_incomplete(workspace_id: str, *, conn=None) -> bool:
-    """Whether a restore is known to have left files unrecovered.
-
-    Raises on a read failure rather than defaulting — the caller gates a
-    destructive operation on this answer, so it must not be able to mistake
-    "could not tell" for "everything is fine".
-    """
+    """Propagate read failures: defaulting to complete could authorize destructive work."""
     async with _ws_cursor(conn) as cur:
         await cur.execute(
             "SELECT files_restore_incomplete_at FROM workspaces "
@@ -762,12 +871,7 @@ async def files_restore_incomplete(workspace_id: str, *, conn=None) -> bool:
 
 
 async def workspace_owner(workspace_id: str, conn=None) -> str:
-    """The user whose object-storage namespace holds this workspace's bytes.
-
-    Raises when the workspace does not exist: every caller is about to build
-    a storage key from the answer, and a default would put bytes under a
-    namespace nobody owns.
-    """
+    """A missing owner must raise or storage keys could place bytes in an unowned namespace."""
     async with _ws_cursor(conn) as cur:
         await cur.execute(
             "SELECT user_id FROM workspaces WHERE workspace_id = %s",
@@ -783,35 +887,40 @@ async def update_workspace_activity(
     workspace_id: str,
     conn=None,
 ) -> bool:
-    """
-    Update workspace last_activity_at timestamp (conditional).
+    """Independent SQL cooldowns avoid per-message writes while remaining worker-safe.
 
-    Only writes if the last update was > 60 seconds ago, avoiding a full
-    UPDATE on every message.  Process-safe via SQL WHERE clause.
-
-    Args:
-        workspace_id: Workspace UUID
-        conn: Optional database connection to reuse
-
-    Returns:
-        True if the row was updated, False if skipped (within cooldown)
+    The computer needs its own 60-second predicate so another project can keep the
+    machine alive during this workspace's cooldown.
     """
     try:
         now = datetime.now(timezone.utc)
 
         async with _ws_cursor(conn) as cur:
             await cur.execute(
-                """
-                UPDATE workspaces
-                SET last_activity_at = %s, updated_at = %s
-                WHERE workspace_id = %s
-                  AND status != 'deleted'
-                  AND (last_activity_at IS NULL
-                       OR last_activity_at < %s - INTERVAL '60 seconds')
-                """,
-                (now, now, workspace_id, now),
+                shadowed_write(
+                    authority="workspace",
+                    computer_set="last_activity_at = %(now)s",
+                    workspace_set="last_activity_at = %(now)s",
+                    workspace_fence=FENCE_NOT_DELETED,
+                    computer_guard=(
+                        "\n                  AND (c.last_activity_at IS NULL"
+                        "\n                       OR c.last_activity_at"
+                        "\n                          < %(now)s - INTERVAL '60 seconds')"
+                    ),
+                    workspace_guard=(
+                        "\n                  AND (w.last_activity_at IS NULL"
+                        "\n                       OR w.last_activity_at"
+                        "\n                          < %(now)s - INTERVAL '60 seconds')"
+                    ),
+                    computer_returning="c.computer_id",
+                    workspace_returning="w.workspace_id",
+                    select="SELECT count(*) AS stamped FROM shadow",
+                    now="%(now)s",
+                ),
+                {"now": now, "workspace_id": workspace_id},
             )
-            return cur.rowcount > 0
+            row = await cur.fetchone()
+            return bool((row or {}).get("stamped"))
 
     except Exception as e:
         logger.error(f"Error updating workspace {workspace_id} activity: {e}")
@@ -820,52 +929,34 @@ async def update_workspace_activity(
 
 async def delete_workspace(
     workspace_id: str,
-    hard_delete: bool = False,
     conn=None,
 ) -> bool:
-    """
-    Delete a workspace (soft delete by default).
+    """Project deletion must leave the shared computer alone.
 
-    Args:
-        workspace_id: Workspace UUID
-        hard_delete: If True, permanently delete the record
-        conn: Optional database connection to reuse
-
-    Returns:
-        True if deleted, False if not found
+    Sandbox teardown owns update_computer_status(computer_id, 'deleted'); until
+    then the binding remains, and FENCE_NOT_DELETED prevents reuse after tombstoning.
+    The tombstone is the only deletion: a row removed outright takes the layout
+    owner's identity with it, and ON DELETE SET NULL leaves the folder unowned.
     """
     try:
         async with _ws_cursor(conn) as cur:
-            if hard_delete:
-                await cur.execute(
-                    """
-                    DELETE FROM workspaces
-                    WHERE workspace_id = %s
-                    RETURNING workspace_id
-                    """,
-                    (workspace_id,),
-                )
-            else:
-                await cur.execute(
-                    """
-                    UPDATE workspaces
-                    SET status = 'deleted', updated_at = %s
-                    WHERE workspace_id = %s AND status != 'deleted'
-                    RETURNING workspace_id
-                    """,
-                    (datetime.now(timezone.utc), workspace_id),
-                )
+            await cur.execute(
+                """
+                UPDATE workspaces
+                SET status = 'deleted', updated_at = %s
+                WHERE workspace_id = %s AND status <> 'deleted'
+                RETURNING workspace_id, computer_id
+                """,
+                (datetime.now(timezone.utc), workspace_id),
+            )
             result = await cur.fetchone()
 
         if result:
-            logger.info(
-                f"{'Hard' if hard_delete else 'Soft'} deleted workspace: {workspace_id}"
+            logger.info(f"Deleted workspace: {workspace_id}")
+            # Invalidate sibling workers' cached handles and notify /events of deletion.
+            await publish_status_change(
+                workspace_id, "deleted", computer_id=result.get("computer_id")
             )
-            # Same broadcast obligation as every other status writer. Load-bearing
-            # since sessions validate against the durable status: without it a
-            # sibling worker keeps its cached handle until its next request, and
-            # /events subscribers never learn the workspace is gone.
-            await publish_status_change(workspace_id, "deleted")
             return True
         return False
 
@@ -879,19 +970,10 @@ async def batch_update_sort_order(
     items: List[Tuple[str, int]],
     conn=None,
 ) -> None:
-    """
-    Batch-update sort_order for multiple workspaces in a single query.
-
-    Args:
-        user_id: User ID (for ownership check)
-        items: List of (workspace_id, sort_order) tuples
-        conn: Optional database connection to reuse
-    """
     if not items:
         return
 
     try:
-        # Build VALUES list for the update
         values_parts = []
         params: list = []
         for ws_id, order in items:
@@ -913,9 +995,13 @@ async def batch_update_sort_order(
             updated = cur.rowcount
 
         if updated == 0:
-            logger.warning(f"batch_update_sort_order: 0/{len(items)} rows updated for user {user_id}")
+            logger.warning(
+                f"batch_update_sort_order: 0/{len(items)} rows updated for user {user_id}"
+            )
         else:
-            logger.info(f"Batch-updated sort_order for {updated}/{len(items)} workspaces (user {user_id})")
+            logger.info(
+                f"Batch-updated sort_order for {updated}/{len(items)} workspaces (user {user_id})"
+            )
 
     except Exception as e:
         logger.error(f"Error batch-updating sort_order for user {user_id}: {e}")
@@ -923,8 +1009,6 @@ async def batch_update_sort_order(
 
 
 async def get_running_workspace_ids_for_user(user_id: str) -> List[str]:
-    """Ids of a user's running workspaces, for user-level best-effort fan-out
-    (e.g. pushing merged vault secrets to live sandboxes on mutation)."""
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -940,17 +1024,6 @@ async def get_workspaces_by_status(
     limit: int = 100,
     conn=None,
 ) -> List[Dict[str, Any]]:
-    """
-    Get workspaces by status (for cleanup tasks).
-
-    Args:
-        status: Status to filter by
-        limit: Maximum number of results
-        conn: Optional database connection to reuse
-
-    Returns:
-        List of workspace dicts
-    """
     try:
         async with _ws_cursor(conn) as cur:
             await cur.execute(
@@ -971,40 +1044,42 @@ async def get_workspaces_by_status(
         raise
 
 
-# ---------------------------------------------------------------------------
-# Preview server command persistence
-# ---------------------------------------------------------------------------
+_PREVIEW_JSONB = """artifacts = jsonb_set(
+                        COALESCE({alias}.artifacts, '{{}}'::jsonb),
+                        '{{preview_servers}}',
+                        COALESCE({alias}.artifacts->'preview_servers', '{{}}'::jsonb)
+                            || jsonb_build_object(%(port)s::text, %(cmd)s::text),
+                        true
+                    )"""
 
 
-async def save_preview_command(
-    workspace_id: str, port: int, command: str
-) -> None:
-    """Store a preview server command in ``artifacts.preview_servers``."""
+async def save_preview_command(workspace_id: str, port: int, command: str) -> None:
+    """Ports belong to the computer; retain workspace copies for old readers."""
     try:
         async with get_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    """
-                    UPDATE workspaces
-                    SET artifacts = jsonb_set(
-                        COALESCE(artifacts, '{}'::jsonb),
-                        '{preview_servers}',
-                        COALESCE(artifacts->'preview_servers', '{}'::jsonb)
-                            || jsonb_build_object(%s::text, %s::text),
-                        true
-                    )
-                    WHERE workspace_id = %s
-                    """,
-                    (str(port), command, workspace_id),
+                    shadowed_write(
+                        authority="workspace",
+                        computer_set=_PREVIEW_JSONB.format(alias="c"),
+                        workspace_set=_PREVIEW_JSONB.format(alias="w"),
+                        computer_fence="",
+                        workspace_fence="",
+                        computer_returning="c.computer_id",
+                        workspace_returning="w.workspace_id",
+                        select="SELECT count(*) AS stamped FROM shadow",
+                    ),
+                    {
+                        "port": str(port),
+                        "cmd": command,
+                        "workspace_id": workspace_id,
+                    },
                 )
     except Exception:
         logger.debug("Failed to persist preview command", exc_info=True)
 
 
-async def get_preview_command(
-    workspace_id: str, port: int
-) -> Optional[str]:
-    """Read a preview server command from ``artifacts.preview_servers``."""
+async def get_preview_command(workspace_id: str, port: int) -> Optional[str]:
     try:
         async with get_db_connection() as conn:
             async with conn.cursor() as cur:
