@@ -182,8 +182,7 @@ export default function MemoryPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entriesSig, notFoundKey]);
 
-  const rootLabel =
-    tier === 'user' ? '.agents/user/memory/' : '.agents/workspace/memory/';
+  const rootLabel = `${tier === 'user' ? MEMORY_USER_DIR : MEMORY_WORKSPACE_DIR}/`;
 
   // Viewer mode
   if (selectedKey) {

@@ -1,3 +1,5 @@
+import { workspaceRelativePath } from '../../../utils/agentPaths';
+
 /**
  * Build the served-file URL for a workspace file.
  *
@@ -11,8 +13,10 @@
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
 
 function encodePathSegments(filePath: string): string {
-  return filePath
-    .replace(/^\/+/, '')
+  // A served path is read the same way every other reference is: a sandbox
+  // root (`/home/workspace/x`, `file:///home/daytona/x`) names the workspace
+  // and comes off, rather than riding into the URL as two literal segments.
+  return workspaceRelativePath(filePath)
     .split('/')
     .map(encodeURIComponent)
     .join('/');

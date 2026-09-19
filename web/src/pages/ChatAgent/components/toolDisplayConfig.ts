@@ -597,7 +597,8 @@ export function parseTruncatedResult(content: string | null | undefined): ParseT
   if (!content.startsWith('Tool result too large')) return { isTruncated: false };
 
   // Extract the filesystem path
-  const pathMatch = content.match(new RegExp(`saved in the filesystem at this path:\\s*(${LARGE_TOOL_RESULTS_PREFIX}\\S+)`));
+  const prefix = LARGE_TOOL_RESULTS_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pathMatch = content.match(new RegExp(`saved in the filesystem at this path:\\s*(${prefix}\\S+)`));
   const filePath = pathMatch?.[1] || null;
 
   // Extract the preview (everything after the "head and tail" intro line)

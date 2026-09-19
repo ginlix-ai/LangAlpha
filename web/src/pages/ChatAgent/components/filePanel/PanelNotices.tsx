@@ -10,6 +10,8 @@ interface PanelNoticesProps {
   onDismissError: () => void;
   /** The listing failed and the tree that would say so is not on screen. */
   filesError?: string | null;
+  /** The restore is short and the tree that would say so is not on screen. */
+  filesRestoreIncomplete?: boolean;
   onRefreshFiles?: () => void;
   /** A delete or a backup is running; neither reports a percentage. */
   busy: boolean;
@@ -28,7 +30,7 @@ interface PanelNoticesProps {
  * report that action ever makes.
  */
 export function PanelNotices({
-  uploadProgress, error, onDismissError, filesError = null, onRefreshFiles, busy, backupResult, onDismissBackupResult, editing,
+  uploadProgress, error, onDismissError, filesError = null, filesRestoreIncomplete = false, onRefreshFiles, busy, backupResult, onDismissBackupResult, editing,
 }: PanelNoticesProps): React.ReactElement {
   const { t } = useTranslation();
   return (
@@ -37,6 +39,11 @@ export function PanelNotices({
         <div className="file-panel-upload-progress">
           <div className="file-panel-upload-progress-bar" style={{ width: `${uploadProgress}%` }} />
         </div>
+      )}
+      {!filesError && filesRestoreIncomplete && (
+        <p className="px-3 pt-2 pb-1.5 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+          {t('filePanel.restoreIncomplete')}
+        </p>
       )}
       {filesError && (
         <div className="file-panel-upload-error" role="alert">

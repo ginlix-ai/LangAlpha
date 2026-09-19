@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 
 import WorkspaceImage from '../WorkspaceImage';
@@ -68,5 +68,35 @@ describe('WorkspaceImage — __wsref__ downloader selection', () => {
 
     await waitFor(() => expect(sharedDownloader).toHaveBeenCalledWith('results/charts/plain.png'));
     expect(downloadWorkspaceFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('WorkspaceImage reads a destination the way a link does', () => {
+  beforeEach(() => {
+    downloadWorkspaceFile.mockClear();
+  });
+
+  // Regression: the raw src went to the downloader, so an absolute destination
+  // asked for `/home/workspace/charts/x.png`, which no workspace path matches.
+  // The image then failed with nothing on screen saying so. A link to the same
+  // file has always gone through the normalizer; the image now does too.
+  it.each([
+    ['a sandbox-rooted path', '/home/workspace/charts/rooted.png', 'charts/rooted.png'],
+    ['a file:// destination', 'file:///home/workspace/charts/proto.png', 'charts/proto.png'],
+    ['the older sandbox root', '/home/daytona/charts/daytona.png', 'charts/daytona.png'],
+    ['a percent-encoded name', 'charts/%E5%9B%BE%E8%A1%A8.png', 'charts/图表.png'],
+  ])('fetches the workspace-relative path for %s', async (_label, src, expected) => {
+    renderInWorkspace(src, { workspaceId: 'ws-1', downloadFile: null });
+    await waitFor(() => expect(downloadWorkspaceFile).toHaveBeenCalledWith('ws-1', expected));
+  });
+
+  // An image that did not load is a state, not a blank: the name plus why.
+  it('names the file when it could not be loaded', async () => {
+    const failing = vi.fn(() => Promise.reject(new Error('gone')));
+    renderInWorkspace('results/charts/broken.png', { workspaceId: null, downloadFile: failing });
+
+    await waitFor(() =>
+      expect(screen.getByText('broken.png could not be loaded')).toBeInTheDocument(),
+    );
   });
 });

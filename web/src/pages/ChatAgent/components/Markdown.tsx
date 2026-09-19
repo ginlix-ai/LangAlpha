@@ -737,11 +737,11 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
         );
       }
       if (isFilePath(href)) {
-        // Image file linked as [name](path.png) -- render as embedded image
-        // For ws:// paths, pass the full href so WorkspaceImage can extract the workspace
+        // Image file linked as [name](path.png) -- render as embedded image.
+        // The destination goes over raw: WorkspaceImage reads it the same way
+        // this link does, and normalizing here would decode it twice.
         if (isImagePath(href)) {
-          const wsRef = parseWsPath(href);
-          return <WorkspaceImage src={wsRef ? href : normalizeFilePath(href)} alt={typeof children === 'string' ? children : ''} />;
+          return <WorkspaceImage src={href} alt={typeof children === 'string' ? children : ''} />;
         }
         if (onOpenFile) {
           const wsRef = parseWsPath(href);
