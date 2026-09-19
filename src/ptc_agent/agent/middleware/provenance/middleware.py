@@ -31,6 +31,7 @@ from ptc_agent.agent.middleware.provenance.body_store import (
     store_bodies,
 )
 from ptc_agent.agent.middleware.direct_mcp import direct_tool_meta
+from ptc_agent.core.project_context import current_project
 from ptc_agent.agent.provenance import (
     SNIPPET_MAX_CHARS,
     ProvenanceSource,
@@ -43,29 +44,44 @@ from ptc_agent.agent.provenance import (
 from ptc_agent.agent.provenance.types import (
     RESULT_BODY_MAX_BYTES,
 )
-from ptc_agent.core.paths import MEMO_USER_DIR, MEMORY_USER_DIR, MEMORY_WORKSPACE_DIR
+from ptc_agent.core.paths import (
+    LEGACY_ROOT_TOOLS_DIR,
+    MEMO_USER_DIR,
+    MEMORY_USER_DIR,
+    SandboxLayout,
+    WorkspaceLayout,
+)
 
 logger = logging.getLogger(__name__)
 
 # Filesystem path prefixes used to classify reads — the same constants the
 # CompositeFilesystemBackend routes in agent.py are wired from.
 _MEMO_PREFIX = f"{MEMO_USER_DIR}/"
-_MEMORY_PREFIXES = (f"{MEMORY_USER_DIR}/", f"{MEMORY_WORKSPACE_DIR}/")
+_MEMORY_PREFIXES = (
+    f"{MEMORY_USER_DIR}/",
+    f"{WorkspaceLayout.MEMORY_DIR}/",
+)
 
 # Agent-infrastructure path roots whose reads are scaffolding the agent operates
 # with — skill docs, generated tool/MCP wrapper modules, system trace files,
 # spilled prior tool results — NOT external data its analysis is based on, so
 # they emit no provenance. Roots mirror AGENT_SYSTEM_DIRS in paths.py; note
-# .agents is split: its user/* + workspace/memory data subtrees stay tracked
+# .agents is split: the memo and memory subtrees named above stay tracked
 # (memo_read / memory_read / file_read), only these infra subdirs are skipped.
+# The wrappers are named three ways because a read can arrive from any of the
+# three: the computer-tier directory, the per-workspace one the agent addresses
+# relatively, and the root-level ``tools`` a sandbox built before the split
+# still carries.
 _INFRA_PREFIXES = (
-    ".system",
-    "tools",
-    "mcp_servers",
+    SandboxLayout.SYSTEM_DIR,
+    SandboxLayout.TOOLS_DIR,
+    WorkspaceLayout.TOOLS_DIR,
+    LEGACY_ROOT_TOOLS_DIR,
+    SandboxLayout.MCP_SERVERS_DIR,
     ".self-improve",
-    ".agents/skills",
-    ".agents/threads",
-    ".agents/large_tool_results",
+    SandboxLayout.SKILLS_DIR,
+    WorkspaceLayout.THREADS_DIR,
+    WorkspaceLayout.LARGE_TOOL_RESULTS_DIR,
 )
 
 # Agent-scaffolding FILES (not dirs) at the workspace root: injected context, not
@@ -151,13 +167,23 @@ def _new_id() -> str:
 
 
 def _normalize_sandbox_path(path: str) -> str:
-    """Strip the sandbox root + leading ``./`` and ``/`` so the infra/memo/memory
-    prefix checks work whether the agent emitted an absolute
-    (``/home/workspace/.agents/...``) or relative (``.agents/...``) path."""
+    """Fold a path to its workspace-relative form for the prefix checks.
+
+    Strips the sandbox root, then the turn's own workspace folder: the agent's
+    cwd is that folder, so a relative path it emits is already in this form and
+    only an absolute one carries the folder. Without the second strip a doc
+    read as ``/home/workspace/<ws>/.agents/tools/docs/...`` misses every infra
+    prefix and is recorded as a data source.
+    """
     p = (path or "").lstrip("/").removeprefix("./")
     for prefix in _SANDBOX_ROOT_PREFIXES:
         if p.startswith(prefix):
-            return p[len(prefix):]
+            p = p[len(prefix):]
+            break
+    project = current_project()
+    folder = (project.dir_name if project else None) or ""
+    if folder and (p == folder or p.startswith(folder + "/")):
+        p = p[len(folder) :].lstrip("/")
     return p
 
 

@@ -64,10 +64,10 @@ class CompositeFilesystemBackend:
 
         Asked of every route rather than a fixed tier list, so a new mount is
         covered the moment it is registered. Both directions have to be
-        checked, because the sandbox normalizer preserves `..`: the head
-        before each `..` catches a path leaving a mount, and the collapsed
-        target catches one walking back in, which would otherwise route to
-        the sandbox FS and shadow the store's copy for good.
+        checked: the head before each `..` catches a path leaving a mount,
+        which the collapse the sandbox normalizer now does would otherwise
+        hide, and the collapsed target catches one walking back in, which
+        would route to the sandbox FS and shadow the store's copy for good.
         """
         segments = path.split("/")
         if ".." not in segments:

@@ -11,6 +11,8 @@ from typing import Any
 import structlog
 
 from ptc_agent.agent.middleware.background_subagent.dispatch import SubagentDispatcher
+from ptc_agent.core.paths import WorkspaceLayout
+from ptc_agent.core.project_context import ProjectContext, set_project
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTask,
     BackgroundTaskRegistry,
@@ -59,7 +61,7 @@ _CANCEL_SETTLE_TIMEOUT = 5.0
 def run_dir(short_thread_id: str, run_task_id: str) -> str:
     """A run's artifact directory — the launch-time snapshot and the driver's
     own writes have to land in the same place."""
-    return f".agents/threads/{short_thread_id}/workflows/{run_task_id}"
+    return WorkspaceLayout.thread_subdir(short_thread_id, "workflows", run_task_id)
 
 
 @dataclass(kw_only=True)
@@ -85,6 +87,10 @@ class WorkflowRunSpec:
     caps: WorkflowOrchestrationConfig = field(
         default_factory=WorkflowOrchestrationConfig
     )
+    # The launching turn's project, captured here rather than read in ``run``:
+    # the driver's task may be created before the project is bound, and a task
+    # only inherits the context that existed when it was created.
+    project: ProjectContext | None = None
 
 
 class WorkflowRunError(RuntimeError):
@@ -225,6 +231,8 @@ class WorkflowDriver:
         turns that into the task's error result and ledger status).
         """
         caps = self.spec.caps
+        if self.spec.project is not None:
+            set_project(self.spec.project)
         self._emitter.bind_loop(asyncio.get_running_loop())
         self._sem = asyncio.Semaphore(caps.max_concurrent_children)
         self._started_at = time.time()

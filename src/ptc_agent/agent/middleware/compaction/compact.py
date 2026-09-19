@@ -12,6 +12,7 @@ from langchain.chat_models import BaseChatModel
 from src.config.settings import get_compaction_timeout
 from src.llms.content_utils import format_llm_content
 from ptc_agent.config.agent import CompactionConfig
+from ptc_agent.core.paths import WorkspaceLayout
 from src.llms import get_llm_by_type
 
 from ptc_agent.agent.state import ensure_message_ids
@@ -114,7 +115,7 @@ async def compact_messages(
         cutoff = max(0, len(effective) - truncate_keep)
         thread_dir = None
         if backend is not None:
-            thread_dir = f".agents/threads/{get_thread_id()}"
+            thread_dir = WorkspaceLayout.thread_subdir(get_thread_id())
 
         effective, truncated, originals = truncate_message_args(
             effective,
@@ -301,7 +302,7 @@ async def offload_tool_args(
 
     thread_dir = None
     if backend is not None:
-        thread_dir = f".agents/threads/{get_thread_id()}"
+        thread_dir = WorkspaceLayout.thread_subdir(get_thread_id())
 
     messages, truncated, originals = truncate_message_args(
         messages,

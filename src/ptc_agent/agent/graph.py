@@ -7,6 +7,7 @@ from typing import Any, Protocol, runtime_checkable
 from ptc_agent.agent.agent import PTCAgent
 from ptc_agent.agent.middleware.runtime_context import TurnContext
 from ptc_agent.config import AgentConfig
+from ptc_agent.core.project_context import ProjectContext
 from ptc_agent.core.session import Session
 
 logger = logging.getLogger(__name__)
@@ -142,6 +143,8 @@ async def _read_workspace_naming(workspace_id: str) -> tuple[str | None, str | N
     that fails answers None, not an empty name: the baseline must not file a
     row saying the workspace lost its name.
     """
+    if not workspace_id:
+        return None, None
     try:
         from src.server.database.workspace import get_workspace_name_and_description
 
@@ -229,17 +232,36 @@ async def build_ptc_graph_with_session(
     direct_mcp: Any | None = None,
     order_ledger: Any | None = None,
     turn_context: TurnContext | None = None,
+    project: ProjectContext | None = None,
+    tool_view: Any | None = None,
 ) -> Any:
     """Build a BackgroundSubagentOrchestrator from a pre-acquired session (WorkspaceManager path).
 
     ``turn_context`` is what this turn knows about itself, for the turn anchor
     row. It is optional because this builder also serves context-free callers
     (thread maintenance) that have no turn.
+
+    ``project`` is the workspace folder the turn runs in. The build happens
+    before the run's task binds it, so it travels as an argument.
+
+    ``tool_view`` is the project's frozen registry and summary. The session's
+    own fields belong to whichever project on the machine resolved last.
     """
-    workspace_id = session.conversation_id
+    mcp_registry = (
+        tool_view.mcp_registry if tool_view is not None else session.mcp_registry
+    )
+    tool_summary = (
+        tool_view.mcp_tool_summary
+        if tool_view is not None
+        else getattr(session, "mcp_tool_summary", None)
+    )
+    # From the project, never from the session: the session is cached per
+    # computer and several workspaces share it, so its own label names
+    # whichever workspace happened to acquire it first.
+    workspace_id = project.workspace_id if project else ""
     logger.debug(f"Building PTC graph with session for workspace: {workspace_id}")
 
-    if not session.sandbox or not session.mcp_registry:
+    if not session.sandbox or not mcp_registry:
         raise RuntimeError(
             f"Session for workspace {workspace_id} is not properly initialized"
         )
@@ -270,7 +292,7 @@ async def build_ptc_graph_with_session(
 
     inner_agent = ptc_agent.create_agent(
         sandbox=session.sandbox,
-        mcp_registry=session.mcp_registry,
+        mcp_registry=mcp_registry,
         subagent_names=subagent_names or config.subagents.enabled,
         disable_subagents=disable_subagents,
         operation_callback=operation_callback,
@@ -292,10 +314,11 @@ async def build_ptc_graph_with_session(
         # Session-cached tool summary (precomputed once per session) so the per
         # turn create_agent never recomputes it — keeps the prompt-cache prefix
         # byte-stable. None → create_agent computes from the registry.
-        tool_summary=getattr(session, "mcp_tool_summary", None),
+        tool_summary=tool_summary,
         direct_mcp=direct_mcp,
         order_ledger=order_ledger,
         turn_context=turn_context,
+        project=project,
     )
 
     logger.debug(

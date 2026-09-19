@@ -18,7 +18,11 @@ from ptc_agent.agent.middleware.background_subagent.workflow.tool import (
     _script_path_is_unreadable,
     create_run_workflow_tool,
 )
-from ptc_agent.core.paths import MEMO_USER_DIR, MEMORY_USER_DIR
+from ptc_agent.core.paths import (
+    MEMO_USER_DIR,
+    MEMORY_USER_DIR,
+    WorkspaceLayout,
+)
 from src.config.models import WorkflowOrchestrationConfig
 
 from .conftest import FakeBackend, workflow_script
@@ -292,9 +296,9 @@ async def test_script_path_guards_path_but_not_javascript_content() -> None:
 @pytest.mark.parametrize(
     "blocked_path",
     [
-        ".agents/user/memory/demo.js",
-        ".agents/workspace/memory/demo.js",
-        ".agents/user/memo/demo.js",
+        f"{MEMORY_USER_DIR}/demo.js",
+        f"{WorkspaceLayout.MEMORY_DIR}/demo.js",
+        f"{MEMO_USER_DIR}/demo.js",
         "work/_internal/demo.js",
     ],
 )

@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage, AnyMessage
 from langchain_core.messages.human import HumanMessage
 from langgraph.config import get_config
 
+from ptc_agent.core.paths import WorkspaceLayout
 from src.llms.attachment_payload import FILE_BLOCK_TYPES
 from ptc_agent.agent.middleware.compaction.utils import (
     _extract_text_from_content,
@@ -77,7 +78,7 @@ async def aoffload_to_backend(backend: Any, messages: list[AnyMessage]) -> str |
         return None
 
     thread_id = get_thread_id()
-    thread_dir = f".agents/threads/{thread_id}"
+    thread_dir = WorkspaceLayout.thread_subdir(thread_id)
     written = 0
 
     for msg in filtered_messages:
@@ -149,7 +150,9 @@ async def aoffload_truncated_args(
     thread_id = get_thread_id()
 
     for tool_call_id, original in originals.items():
-        path = f".agents/threads/{thread_id}/truncated_args_{tool_call_id}.md"
+        path = WorkspaceLayout.thread_subdir(
+            thread_id, f"truncated_args_{tool_call_id}.md"
+        )
         tool_name = original["name"]
         args = original["args"]
 
@@ -273,7 +276,7 @@ async def aoffload_base64_content(
         return strip_base64_from_messages(messages)
 
     thread_id = get_thread_id()
-    thread_dir = f".agents/threads/{thread_id}"
+    thread_dir = WorkspaceLayout.thread_subdir(thread_id)
 
     result: list[AnyMessage] = []
     changed = False

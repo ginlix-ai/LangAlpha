@@ -5,6 +5,8 @@ import logging
 import re
 from typing import Any
 
+from ptc_agent.core.paths import SANDBOX_ROOTS
+
 logger = logging.getLogger(__name__)
 
 MAX_OUTPUT_CHARS = 8000
@@ -109,7 +111,12 @@ _SEP_RE = re.compile(r"/|%2[fF]")
 # :line, :start-end, :line:col. The `#fragment` and `?query` forms are read by
 # `_split_location`.
 _LINE_LOCATION_RE = re.compile(r":\d+(?:-\d+|:\d+)?$")
-_SANDBOX_ROOT_RE = re.compile(r"^(?:file://)?/home/(?:workspace|daytona)/", re.IGNORECASE)
+# The computer root in every spelling, current and legacy, with or without a
+# `file://` scheme.
+_SANDBOX_ROOT_RE = re.compile(
+    "^(?:file://)?(?:" + "|".join(re.escape(r) for r in SANDBOX_ROOTS) + ")/",
+    re.IGNORECASE,
+)
 _BARE_DOMAIN_RE = re.compile(r"^www\.", re.IGNORECASE)
 _FILE_NAME_RE = re.compile(r"\.(?:" + _FILE_EXTS + r")$", re.IGNORECASE)
 # A colon introduces a scheme only before the first slash, which is the rule
@@ -152,9 +159,9 @@ def _qualify_file_paths(text: str, workspace_id: str) -> str:
     """Rewrite workspace file links to __wsref__/{workspace_id}/path.
 
     Transforms:
-        [report.md](work/t/report.md) → [report.md](__wsref__/{wid}/work/t/report.md)
+        [report.md](t/report.md) → [report.md](__wsref__/{wid}/t/report.md)
         [model](./model.py:42)        → [model](__wsref__/{wid}/model.py:42)
-        [deck](<results/Q3 deck.pptx>) → [deck](<__wsref__/{wid}/results/Q3 deck.pptx>)
+        [deck](<t/Q3 deck.pptx>) → [deck](<__wsref__/{wid}/t/Q3 deck.pptx>)
 
     The relayed text renders in the Flash thread, whose own workspace holds none
     of these files, so every relative file link has to carry where it lives,

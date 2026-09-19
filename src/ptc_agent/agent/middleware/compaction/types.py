@@ -9,6 +9,8 @@ from typing_extensions import TypedDict
 
 from langchain.agents.middleware.types import AgentState, PrivateStateAttr
 
+from ptc_agent.core.paths import SandboxLayout, WorkspaceLayout
+
 
 # Constant for context summary prefix - used in both standalone function and middleware
 CONTEXT_SUMMARY_PREFIX = (
@@ -86,8 +88,9 @@ TRUNCATABLE_TOOLS = frozenset({"Write", "Edit", "ExecuteCode"})
 # Path prefixes for Read results considered non-critical — these files contain
 # previously offloaded content that the agent has already processed.
 NON_CRITICAL_READ_PREFIXES: tuple[str, ...] = (
-    ".agents/threads/",  # Previously offloaded content (truncated args, evicted messages)
-    ".agents/tmp/",  # Temporary agent scratch files
+    # Previously offloaded content (truncated args, evicted messages)
+    f"{WorkspaceLayout.THREADS_DIR}/",
+    f"{SandboxLayout.TMP_DIR}/",  # Temporary agent scratch files
 )
 
 TokenCounter = Callable[[Iterable[MessageLikeRepresentation]], int]

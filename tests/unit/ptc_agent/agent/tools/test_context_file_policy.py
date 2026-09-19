@@ -26,15 +26,29 @@ WORK_DIR = "/home/workspace"
 MEMORY = f"{WORK_DIR}/.agents/user/memory/memory.md"
 
 
-def _make_backend(*, write_ok: bool = True, edit_result: dict[str, Any] | None = None) -> Any:
-    """A backend stub covering only what Write and Edit touch."""
+def _make_backend(
+    *,
+    write_ok: bool = True,
+    edit_result: dict[str, Any] | None = None,
+    dir_name: str = "",
+) -> Any:
+    """A backend stub covering only what Write and Edit touch.
+
+    ``dir_name`` splits the computer, which moves the workspace root off the
+    machine root and is the only shape that tells the two cap tiers apart.
+    """
+    workspace = f"{WORK_DIR}/{dir_name}" if dir_name else WORK_DIR
     backend = SimpleNamespace()
-    backend.normalize_path = lambda p: p if p.startswith("/") else f"{WORK_DIR}/{p}"
+    backend.normalize_path = lambda p: p if p.startswith("/") else f"{workspace}/{p}"
     backend.virtualize_path = lambda p: p[len(WORK_DIR):] if p.startswith(WORK_DIR) else p
     backend.validate_path = lambda p: True
     backend.filesystem_config = SimpleNamespace(
         enable_path_validation=False, working_directory=WORK_DIR
     )
+    # The two bases the cap lookup measures against. They are the same string
+    # until the computer is split, which is what ``dir_name`` is for.
+    backend.workspace_dir = workspace
+    backend.computer_root = WORK_DIR
     backend.awrite_text = AsyncMock(return_value=write_ok)
     backend.aread_text = AsyncMock(return_value=None)
     backend.aedit_text = AsyncMock(
@@ -161,3 +175,23 @@ async def test_the_default_warns_and_lets_the_write_through():
 
     backend.awrite_text.assert_awaited_once()
     assert "Note: memory.md is at" in result
+
+
+@pytest.mark.asyncio
+async def test_a_split_computer_still_caps_both_tiers():
+    """The user memory index keeps its cap once the computer has folders.
+
+    It is the one capped file the whole computer shares, so it is spelled from
+    the machine root while agent.md is spelled from inside the folder. A single
+    base finds one of them and silently drops the other.
+    """
+    write, _edit = _tools(_make_backend(dir_name="acme-a1b2"))
+    size = MAX_MEMORY_BLOCK_SIZE + 100
+
+    shared = await write.ainvoke({"file_path": MEMORY, "content": "x" * size})
+    own = await write.ainvoke({"file_path": "agent.md", "content": "x" * size})
+    plain = await write.ainvoke({"file_path": "work/notes.md", "content": "x" * size})
+
+    assert f"Note: memory.md is at {size:,}" in shared
+    assert f"Note: agent.md is at {size:,}" in own
+    assert "Note:" not in plain

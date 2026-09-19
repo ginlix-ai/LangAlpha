@@ -38,6 +38,7 @@ from src.config.settings import get_compaction_timeout
 from src.llms.content_utils import format_llm_content
 from src.llms.token_counter import extract_token_usage
 from ptc_agent.config.agent import CompactionConfig
+from ptc_agent.core.paths import WorkspaceLayout
 from src.llms import get_llm_by_type, maybe_disable_streaming
 
 from ptc_agent.agent.state import ensure_message_ids
@@ -842,7 +843,7 @@ class CompactionMiddleware(AgentMiddleware):
         # Compute thread_dir so truncation markers can reference the offload path
         thread_dir = None
         if self._backend is not None:
-            thread_dir = f".agents/threads/{get_thread_id()}"
+            thread_dir = WorkspaceLayout.thread_subdir(get_thread_id())
 
         return truncate_message_args(
             messages,
