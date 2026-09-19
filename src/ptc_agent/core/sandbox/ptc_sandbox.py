@@ -3,6 +3,7 @@
 import asyncio
 import json
 import secrets
+import posixpath
 import shlex
 import time
 from collections.abc import Callable, Iterable
@@ -35,6 +36,8 @@ from ..mcp_registry import MCPRegistry
 from ..mcp_sanitize import (
     is_untrusted_server,
 )
+from ..paths import SandboxLayout, WorkspaceLayout
+from ..project_context import ProjectContext, current_project
 from ..tool_generator import ToolFunctionGenerator
 
 from ptc_agent.core.sandbox._shared import (
@@ -45,7 +48,9 @@ from ptc_agent.core.sandbox._shared import (
 from ptc_agent.core.sandbox import assets as _assets
 from ptc_agent.core.sandbox import execution as _execution
 from ptc_agent.core.sandbox import files as _files
+from ptc_agent.core.sandbox import path_resolution as _paths
 from ptc_agent.core.sandbox import mcp_setup as _mcp_setup
+from ptc_agent.core.sandbox import tool_overlay as _tool_overlay
 from ptc_agent.core.sandbox import sessions as _sessions
 
 logger = structlog.get_logger(__name__)
@@ -110,8 +115,10 @@ class PTCSandbox:
         # Cached skills manifest (populated after sync_sandbox_assets)
         self._skills_manifest: dict[str, Any] | None = None
 
-        # Track whether disabled tool modules have been pruned (only needed once)
-        self._disabled_modules_pruned = False
+        # Which workspaces have had their disabled tool modules pruned. One
+        # sandbox serves every workspace on the computer, so this is a set of
+        # claims and not a flag.
+        self._disabled_modules_pruned: set[str] = set()
 
         # Cached standard preview link info per port (avoids repeated Daytona API calls)
         self._preview_link_cache: dict[int, PreviewInfo] = {}
@@ -124,16 +131,40 @@ class PTCSandbox:
         return self._work_dir
 
     @property
+    def layout(self) -> SandboxLayout:
+        """Where everything lives under the current working dir.
+
+        Rebuilt per access on purpose: ``_work_dir`` is only final after
+        ``fetch_working_dir``, so a cached layout would pin the config default.
+        """
+        return SandboxLayout(self._work_dir)
+
+    def workspace(self, project: "ProjectContext | None" = None) -> WorkspaceLayout:
+        """This computer's layout for one workspace folder.
+
+        The only place a workspace root is built. Both halves are read live:
+        the computer root off ``_work_dir``, which is final only after
+        ``fetch_working_dir``, and the folder off the turn's project. A layout
+        handed around instead goes stale on a reconnect that moves the root,
+        and a caller that resolves the folder itself is one more place a
+        missing project silently means the whole computer.
+        """
+        ctx = project if project is not None else current_project()
+        return SandboxLayout(self._work_dir).for_workspace(
+            ctx.dir_name if ctx is not None else None
+        )
+
+    @property
     def _unified_manifest_path(self) -> str:
-        return f"{self._work_dir}/_internal/.sandbox_manifest.json"
+        return self.layout.manifest
 
     @property
     def _token_file_path(self) -> str:
-        return f"{self._work_dir}/_internal/.mcp_tokens.json"
+        return self.layout.mcp_tokens
 
     @property
     def _egress_relay_file_path(self) -> str:
-        return f"{self._work_dir}/_internal/.egress_relay.json"
+        return self.layout.egress_relay
 
     # ── Effective vs built-in server views ───────────────────────────────
     #
@@ -359,6 +390,7 @@ class PTCSandbox:
         *,
         tier: str | None = None,
         auto_stop_minutes: int | None = None,
+        dir_name: str | None = None,
     ) -> str | None:
         """Create sandbox and setup workspace directories.
 
@@ -369,6 +401,7 @@ class PTCSandbox:
             tier: Resource tier to size the new sandbox at (provider-resolved).
             auto_stop_minutes: Auto-stop interval override in minutes (0 for
                 always-on); ``None`` uses the provider default.
+            dir_name: Folder the asking workspace owns on this computer.
 
         Returns:
             snapshot_name if used, None otherwise
@@ -398,7 +431,7 @@ class PTCSandbox:
         logger.info("Sandbox created", sandbox_id=self.sandbox_id)
 
         # Set up workspace structure
-        await self._setup_workspace()
+        await self._setup_workspace(dir_name)
 
         # Surface snapshot name from provider metadata for MCP server init
         snapshot_name = getattr(self.runtime, "snapshot_name", None)
@@ -443,17 +476,18 @@ class PTCSandbox:
             )  # → _internal/.mcp_tokens.json
         await asyncio.gather(*parallel)
 
-        # Generate and install tool modules after mcp_servers (intent: derived from MCP definitions)
-        await self._install_tool_modules()
-
-        # Start internal MCP servers (when using snapshot with Node.js)
-        if snapshot_name:
-            # Node.js and MCP packages are available in snapshot
-            await self._start_internal_mcp_servers()
-        else:
+        # No tool install and no supervisor start here. Which workspace folder
+        # the overlay belongs to is not knowable on this path (a cold create
+        # runs before any turn), and installing it anyway plants a claim for
+        # the computer root that no workspace ever releases. The supervisor
+        # imports the client that install writes, so starting it now can only
+        # die on the import. ``sync_sandbox_assets`` always follows this, is
+        # the caller that knows the folder, and starts the supervisor after
+        # the install.
+        if not snapshot_name:
             logger.warning(
-                "Skipping internal MCP servers - not using snapshot. "
-                "MCP tools will not work without snapshot."
+                "Not using a snapshot: the MCP runtime packages may be missing "
+                "and MCP tools may not work."
             )
 
         # Write initial unified manifest so subsequent syncs can diff against it
@@ -505,19 +539,23 @@ class PTCSandbox:
         except Exception as e:
             logger.warning("Failed to upload sandbox token file", error=str(e))
 
-    async def upload_vault_secrets(self, secrets: dict[str, str]) -> None:
-        """Write (or remove) vault secrets JSON in the sandbox.
+    async def upload_vault_secrets(
+        self, secrets: dict[str, str], *, path: str | None = None
+    ) -> None:
+        """Write (or remove) one vault file in the sandbox.
 
-        Called by the vault API on every CRUD mutation.  Also caches the
-        secrets dict on ``self`` so the server can pass them to
-        ``LeakDetectionMiddleware`` without an extra DB call.
+        The root file (the default) is the user tier every shared server reads;
+        ``path`` names a workspace's own file, which the vault helper and that
+        workspace's servers read instead. Called by the vault API on every CRUD
+        mutation. Also caches the secrets dict on ``self`` so the server can
+        pass them to ``LeakDetectionMiddleware`` without an extra DB call.
         """
         self.vault_secrets: dict[str, str] = secrets
 
         if not self.runtime:
             return
 
-        vault_path = f"{self._work_dir}/_internal/.vault_secrets.json"
+        vault_path = path or self.layout.vault_secrets
 
         if not secrets:
             # Remove the file so vault.list_names() returns []
@@ -532,6 +570,12 @@ class PTCSandbox:
             return
 
         try:
+            if path is not None:
+                await self._runtime_call(
+                    self.runtime.exec,
+                    f"mkdir -p {shlex.quote(posixpath.dirname(vault_path))}",
+                    retry_policy=RetryPolicy.SAFE,
+                )
             await self._runtime_call(
                 self.runtime.upload_file,
                 json.dumps(secrets).encode("utf-8"),
@@ -933,7 +977,7 @@ class PTCSandbox:
                 error=str(e),
             )
 
-    async def _setup_workspace(self) -> None:
+    async def _setup_workspace(self, dir_name: str | None = None) -> None:
         """Create workspace directory structure."""
         logger.info("Setting up workspace structure")
 
@@ -945,21 +989,8 @@ class PTCSandbox:
         # Store work_dir for use by other methods
         self._work_dir = work_dir
 
-        # Use absolute paths to ensure directories are created correctly
-        directories = [
-            f"{work_dir}/tools",
-            f"{work_dir}/tools/docs",
-            f"{work_dir}/results",
-            f"{work_dir}/data",
-            f"{work_dir}/.system/code",
-            f"{work_dir}/.system/trace",
-            f"{work_dir}/work",
-            f"{work_dir}/.agents/threads",
-            f"{work_dir}/.agents/skills",
-            f"{work_dir}/_internal/src",
-        ]
-
-        # Create all directories in parallel for faster setup
+        # Both tiers: the computer's own runtime directories, in parallel,
+        # then the folder of whichever workspace is asking.
         async def create_directory(directory: str) -> None:
             try:
                 assert self.runtime is not None
@@ -972,7 +1003,8 @@ class PTCSandbox:
             except Exception as e:
                 logger.warning(f"Error creating directory {directory}: {e}")
 
-        await asyncio.gather(*[create_directory(d) for d in directories])
+        await asyncio.gather(*[create_directory(d) for d in self.layout.setup_dirs])
+        await self._ensure_workspace_dirs(dir_name)
 
         # Sweep orphaned MCP trace files from a prior/reused session
         # (best-effort). Normal cleanup is per-execution in _collect_mcp_trace;
@@ -981,11 +1013,35 @@ class PTCSandbox:
             assert self.runtime is not None
             await self._runtime_call(
                 self.runtime.exec,
-                f"rm -f {shlex.quote(f'{work_dir}/.system/trace')}/*.jsonl",
+                f"rm -f {shlex.quote(self.layout.system_trace)}/*.jsonl",
                 retry_policy=RetryPolicy.SAFE,
             )
         except Exception as e:
             logger.debug(f"MCP trace dir sweep skipped: {e}")
+
+    async def _ensure_workspace_dirs(self, dir_name: str | None = None) -> None:
+        """Create the asking workspace's own directories, in one shell.
+
+        A computer gains folders long after its sandbox was built, and the
+        reconnect path skips setup because the computer's directories are
+        already there, so this is the only place workspace N's folder comes
+        from. Out of a turn and with no folder named, the tier folds onto the
+        root, which is what a computer holding one workspace looks like.
+        """
+        if dir_name is None:
+            project = current_project()
+            dir_name = project.dir_name if project else None
+        workspace = self.layout.for_workspace(dir_name)
+        quoted = " ".join(shlex.quote(d) for d in workspace.setup_dirs)
+        try:
+            assert self.runtime is not None
+            await self._runtime_call(
+                self.runtime.exec,
+                f"mkdir -p {quoted}",
+                retry_policy=RetryPolicy.SAFE,
+            )
+        except Exception as e:
+            logger.warning(f"Error creating workspace directories: {e}")
 
     async def _upload_internal_packages(self) -> None:
         """Mirror the ``_SANDBOX_INTERNAL_PACKAGES`` set into ``_internal/src/``.
@@ -993,8 +1049,7 @@ class PTCSandbox:
         All-or-nothing: the whole set ships together, gated by the single
         ``internal_packages`` manifest module.
         """
-        work_dir = self._work_dir
-        internal_root = Path(f"{work_dir}/_internal/src")
+        internal_root = Path(self.layout.internal_src)
 
         # Resolve local paths relative to config file directory if available.
         config_dir = getattr(self.config, "config_file_dir", None)
@@ -1328,13 +1383,32 @@ class PTCSandbox:
         force_refresh: bool = False,
         tokens: dict | None = None,
         user_id: str | None = None,
-        workspace_id: str | None = None,
+        project: "ProjectContext | None" = None,
+        root_owner_dir_name: str | None = None,
         on_progress: Callable[[str], None] | None = None,
     ) -> SyncResult:
-        return await _assets.sync_sandbox_assets(self, skill_dirs=skill_dirs, user_skill_dir=user_skill_dir, disabled_skills=disabled_skills, reusing_sandbox=reusing_sandbox, force_refresh=force_refresh, tokens=tokens, user_id=user_id, workspace_id=workspace_id, on_progress=on_progress)
+        result = await _assets.sync_sandbox_assets(
+            self,
+            skill_dirs=skill_dirs,
+            user_skill_dir=user_skill_dir,
+            disabled_skills=disabled_skills,
+            reusing_sandbox=reusing_sandbox,
+            force_refresh=force_refresh,
+            tokens=tokens,
+            user_id=user_id,
+            project=project,
+            root_owner_dir_name=root_owner_dir_name,
+            on_progress=on_progress,
+        )
+        # After the migration, never before: a fresh folder lets v3 to v4 move
+        # a directory rather than merge into one this just created.
+        await self._ensure_workspace_dirs(project.dir_name if project else None)
+        return result
 
-    async def _prune_disabled_tool_modules(self) -> None:
-        return await _assets._prune_disabled_tool_modules(self)
+    async def _prune_disabled_tool_modules(
+        self, *, project: "ProjectContext | None" = None
+    ) -> None:
+        return await _assets._prune_disabled_tool_modules(self, project=project)
 
     async def _download_skills_lock(
         self, sandbox_skills_base: str
@@ -1379,8 +1453,19 @@ class PTCSandbox:
     ) -> str:
         return await _mcp_setup._upload_discovery_client(self, extra_servers)
 
-    async def _install_tool_modules(self) -> None:
-        return await _mcp_setup._install_tool_modules(self)
+    async def _install_tool_modules(
+        self, *, project: ProjectContext, tool_version: str | None = None
+    ) -> None:
+        return await _tool_overlay.install_tool_modules(
+            self, project=project, tool_version=tool_version
+        )
+
+    async def workspace_overlay_missing(
+        self, *, workspace_id: str, dir_name: str | None
+    ) -> bool:
+        return await _tool_overlay.overlay_claim_missing(
+            self, ProjectContext(workspace_id or "", dir_name or "")
+        )
 
     async def discover_user_mcp_schemas(
         self, servers: list[Any]
@@ -1476,7 +1561,7 @@ class PTCSandbox:
     # -- files --
 
     def _normalize_search_path(self, path: str) -> str:
-        return _files._normalize_search_path(self, path)
+        return _paths._normalize_search_path(self, path)
 
     async def adownload_file_bytes(self, filepath: str) -> bytes | None:
         return await _files.adownload_file_bytes(self, filepath)
@@ -1484,11 +1569,16 @@ class PTCSandbox:
     async def aread_file_text(self, filepath: str) -> str | None:
         return await _files.aread_file_text(self, filepath)
 
-    async def aupload_file_bytes(self, filepath: str, content: bytes) -> bool:
-        return await _files.aupload_file_bytes(self, filepath, content)
+    async def aupload_file_bytes(
+        self, filepath: str, content: bytes, *, verify: bool = False
+    ) -> bool:
+        return await _files.aupload_file_bytes(self, filepath, content, verify=verify)
 
     async def awrite_file_text(self, filepath: str, content: str) -> bool:
         return await _files.awrite_file_text(self, filepath, content)
+
+    def path_write_lock(self, normalized_path: str):
+        return _files.path_write_lock(self, normalized_path)
 
     async def aread_file_range(
         self, file_path: str, offset: int = 0, limit: int = 2000
@@ -1500,20 +1590,30 @@ class PTCSandbox:
     ) -> str | None:
         return await _files._aread_file_range_fallback(self, file_path, offset, limit)
 
-    def normalize_path(self, path: str) -> str:
-        return _files.normalize_path(self, path)
+    def normalize_path(
+        self, path: str, project: "ProjectContext | None" = None
+    ) -> str:
+        return _paths.normalize_path(self, path, project)
 
-    def virtualize_path(self, path: str) -> str:
-        return _files.virtualize_path(self, path)
+    def virtualize_path(
+        self, path: str, project: "ProjectContext | None" = None
+    ) -> str:
+        return _paths.virtualize_path(self, path, project)
 
-    def validate_path(self, filepath: str) -> bool:
-        return _files.validate_path(self, filepath)
+    def validate_path(
+        self, filepath: str, project: "ProjectContext | None" = None
+    ) -> bool:
+        return _paths.validate_path(self, filepath, project)
 
-    def validate_and_normalize_path(self, path: str) -> tuple[str, str | None]:
-        return _files.validate_and_normalize_path(self, path)
+    def validate_and_normalize_path(
+        self, path: str, project: "ProjectContext | None" = None
+    ) -> tuple[str, str | None]:
+        return _paths.validate_and_normalize_path(self, path, project)
 
-    async def als_directory(self, directory: str = ".") -> list[dict[str, Any]]:
-        return await _files.als_directory(self, directory)
+    async def als_directory(
+        self, directory: str = ".", *, allow_denied: bool = False
+    ) -> list[dict[str, Any]]:
+        return await _files.als_directory(self, directory, allow_denied=allow_denied)
 
     async def acreate_directory(self, dirpath: str) -> bool:
         return await _files.acreate_directory(self, dirpath)
@@ -1532,7 +1632,7 @@ class PTCSandbox:
         return await _files.aedit_file_text(self, filepath, old_string, new_string, replace_all=replace_all)
 
     def _validate_path_allow_denied(self, path: str) -> bool:
-        return _files._validate_path_allow_denied(self, path)
+        return _paths._validate_path_allow_denied(self, path)
 
     async def aglob_files(
         self, pattern: str, path: str = ".", *, allow_denied: bool = False

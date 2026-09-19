@@ -37,6 +37,8 @@ _CHUNK = 1024 * 1024
 # measured knees, so a runtime driven by hand behaves like the server's.
 _PUSH_CONCURRENCY = 16
 _PULL_CONCURRENCY = 32
+# SandboxLayout.PACKS_DIR, spelled out because this runtime ships into the
+# sandbox stdlib-only; a unit test holds the two equal.
 _PACK_DIR = "_internal/packs"
 _PACK_STALE_S = 3600.0
 # Every transient file this runtime or the server writes into the workspace
@@ -110,6 +112,38 @@ def _resolve_under_root(root: str, rel: str) -> str | None:
     if ".." in parts:
         return None
     return os.path.join(root, norm)
+
+
+def _pack_base(spec: dict[str, Any], root: str) -> str:
+    """Directory the pack chunks live in, which need not be the walk root.
+
+    One sandbox holds several workspace folders and one shared ``_internal``,
+    so the walk root moves per workspace while the chunk staging area does
+    not. ``pack_root`` names that machine root; a spec written before the
+    split omits it and the walk root is still both.
+    """
+    pack_root = spec.get("pack_root")
+    base = os.path.abspath(pack_root) if pack_root else root
+    return os.path.join(base, _PACK_DIR)
+
+
+def _resolve_item(root: str, pack_base: str, rel: str) -> str | None:
+    """Absolute path for an item, taking an absolute one only inside ``pack_base``.
+
+    A pack chunk stages outside the walk root once several workspace folders
+    share one computer, so its path arrives absolute and is checked against
+    the pack directory instead. Everything else is a workspace-relative path
+    and keeps the lexical root check.
+    """
+    if not rel:
+        return None
+    if os.path.isabs(rel):
+        norm = os.path.normpath(rel)
+        base = os.path.normpath(pack_base)
+        if norm == base or norm.startswith(base.rstrip(os.sep) + os.sep):
+            return norm
+        return None
+    return _resolve_under_root(root, rel)
 
 
 def _result(status: str, http_status: int | None = None, error: str | None = None) -> dict[str, Any]:
@@ -244,7 +278,15 @@ def scan(spec: dict[str, Any]) -> dict[str, Any]:
                 continue
             try:
                 if child.is_symlink():
-                    if excluded_name(child.name) or rel in exclude_rel_files:
+                    # A symlink standing where an excluded directory would be
+                    # is that directory as far as a restore is concerned, so
+                    # it answers to the path-anchored rules too.
+                    if (
+                        excluded_name(child.name)
+                        or rel in exclude_rel_files
+                        or rel in exclude_rel_dirs
+                        or rel.startswith(exclude_rel_dir_prefixes)
+                    ):
                         continue
                     symlink_entry(child.path, rel)
                 elif child.is_dir(follow_symlinks=False):
@@ -508,8 +550,10 @@ def _size_of(path: str) -> int:
         return -1
 
 
-def _push_one(root: str, item: dict[str, Any], timeout_s: float) -> dict[str, Any]:
-    final = _resolve_under_root(root, item.get("path", ""))
+def _push_one(
+    root: str, pack_base: str, item: dict[str, Any], timeout_s: float
+) -> dict[str, Any]:
+    final = _resolve_item(root, pack_base, item.get("path", ""))
     if final is None:
         return _result("failed", error="path escapes root")
     expected_size = int(item["size"])
@@ -560,12 +604,16 @@ def _push_one(root: str, item: dict[str, Any], timeout_s: float) -> dict[str, An
 
 def push(spec: dict[str, Any]) -> dict[str, Any]:
     root = os.path.abspath(spec["root"])
+    pack_base = _pack_base(spec, root)
     timeout_s = float(spec.get("timeout_s") or 300)
     items = spec.get("items") or []
     concurrency = max(1, int(spec.get("concurrency") or _PUSH_CONCURRENCY))
     results: dict[str, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        for item, res in zip(items, pool.map(lambda i: _timed(_push_one, root, i, timeout_s), items)):
+        mapped = pool.map(
+            lambda i: _timed(_push_one, root, pack_base, i, timeout_s), items
+        )
+        for item, res in zip(items, mapped):
             results[item["sha256"]] = res
             # A pack chunk is a one-shot artifact, but only the store having it
             # makes the local copy expendable: an unreachable store sends the
@@ -574,7 +622,7 @@ def push(spec: dict[str, Any]) -> dict[str, Any]:
             # pack op's stale sweep removes it from a directory the scan
             # excludes, so it never becomes a user's file.
             if item.get("unlink") and res.get("status") == "ok":
-                final = _resolve_under_root(root, item.get("path", ""))
+                final = _resolve_item(root, pack_base, item.get("path", ""))
                 if final:
                     _unlink_quiet(final)
     return {"results": results, "handshakes": dict(_HANDSHAKES)}
@@ -821,7 +869,9 @@ def _extract_member(root: str, chunk: Any, member: dict[str, Any], http_status: 
     return _result("ok", http_status)
 
 
-def _pull_pack(root: str, item: dict[str, Any], timeout_s: float) -> dict[str, dict[str, Any]]:
+def _pull_pack(
+    root: str, pack_base: str, item: dict[str, Any], timeout_s: float
+) -> dict[str, dict[str, Any]]:
     """Download one pack chunk, then slice every member out of it.
 
     Members fail together when the chunk cannot be fetched and one at a time
@@ -839,7 +889,7 @@ def _pull_pack(root: str, item: dict[str, Any], timeout_s: float) -> dict[str, d
 
     local = item.get("file")
     if local:
-        tmp = _resolve_under_root(root, local)
+        tmp = _resolve_item(root, pack_base, local)
         if tmp is None:
             return fail_all(_result("failed", error="file escapes root"))
         try:
@@ -855,7 +905,7 @@ def _pull_pack(root: str, item: dict[str, Any], timeout_s: float) -> dict[str, d
     # The chunk lands under the pack directory, which the scan excludes, so a
     # restore that dies mid-download can never leave a partial chunk where
     # the next backup would record it as a user's file.
-    scratch = os.path.join(root, _PACK_DIR)
+    scratch = pack_base
     try:
         os.makedirs(scratch, exist_ok=True)
     except OSError as exc:
@@ -901,9 +951,11 @@ def _extract_all(
     return out
 
 
-def _timed_pack(root: str, item: dict[str, Any], timeout_s: float) -> dict[str, dict[str, Any]]:
+def _timed_pack(
+    root: str, pack_base: str, item: dict[str, Any], timeout_s: float
+) -> dict[str, dict[str, Any]]:
     t0 = time.monotonic()
-    out = _pull_pack(root, item, timeout_s)
+    out = _pull_pack(root, pack_base, item, timeout_s)
     ms = int((time.monotonic() - t0) * 1000)
     for res in out.values():
         res["ms"] = ms
@@ -918,6 +970,7 @@ def pull(spec: dict[str, Any]) -> dict[str, Any]:
     file; a read-only directory closed early would reject its own children.
     """
     root = os.path.abspath(spec["root"])
+    pack_base = _pack_base(spec, root)
     timeout_s = float(spec.get("timeout_s") or 300)
     items = spec.get("items") or []
     concurrency = max(1, int(spec.get("concurrency") or _PULL_CONCURRENCY))
@@ -962,7 +1015,9 @@ def pull(spec: dict[str, Any]) -> dict[str, Any]:
     # is one download that fans out into many members, so it is the tail.
     if files or packs:
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            pack_futures = [pool.submit(_timed_pack, root, p, timeout_s) for p in packs]
+            pack_futures = [
+                pool.submit(_timed_pack, root, pack_base, p, timeout_s) for p in packs
+            ]
             for item, res in zip(files, pool.map(lambda i: _timed(_pull_file, root, i, timeout_s), files)):
                 results[item["path"]] = res
             for fut in pack_futures:
@@ -1008,9 +1063,12 @@ def pack(spec: dict[str, Any]) -> dict[str, Any]:
     files are wiped first so a stale one can never be pushed.
     """
     root = os.path.abspath(spec["root"])
-    base = _resolve_under_root(root, spec.get("out_dir") or _PACK_DIR)
-    if base is None:
-        raise ValueError("out_dir escapes root")
+    if spec.get("pack_root"):
+        base = _pack_base(spec, root)
+    else:
+        base = _resolve_under_root(root, spec.get("out_dir") or _PACK_DIR)
+        if base is None:
+            raise ValueError("out_dir escapes root")
     max_bytes = int(spec.get("max_bytes") or 32 * 1024 * 1024)
     members = sorted(spec.get("members") or [], key=lambda m: m["path"])
 
@@ -1025,6 +1083,10 @@ def pack(spec: dict[str, Any]) -> dict[str, Any]:
     chunks: list[dict[str, Any]] = []
     changed: list[str] = []
     current: dict[str, Any] | None = None
+
+    def _chunk_path(walk_root: str, final: str) -> str:
+        prefix = walk_root.rstrip(os.sep) + os.sep
+        return os.path.relpath(final, walk_root) if final.startswith(prefix) else final
 
     def open_chunk() -> dict[str, Any]:
         tmp = tempfile.NamedTemporaryFile(dir=out_dir, prefix="chunk-tmp-", delete=False)
@@ -1042,7 +1104,10 @@ def pack(spec: dict[str, Any]) -> dict[str, Any]:
         os.replace(current["file"].name, final)
         chunks.append(
             {
-                "path": os.path.relpath(final, root),
+                # A chunk staged outside the walk root has no relative name
+                # there, so it travels absolute; the push and unlink ops
+                # accept an absolute path only under the pack directory.
+                "path": _chunk_path(root, final),
                 "sha256": digest,
                 "size": current["size"],
                 "members": current["members"],
@@ -1113,9 +1178,10 @@ def _rmtree_quiet(path: str) -> None:
 def unlink(spec: dict[str, Any]) -> dict[str, Any]:
     """Remove files under root; used to drop chunks the server relayed itself."""
     root = os.path.abspath(spec["root"])
+    pack_base = _pack_base(spec, root)
     removed = 0
     for rel in spec.get("paths") or []:
-        path = _resolve_under_root(root, rel)
+        path = _resolve_item(root, pack_base, rel)
         if path is None or not os.path.isfile(path):
             continue
         _unlink_quiet(path)

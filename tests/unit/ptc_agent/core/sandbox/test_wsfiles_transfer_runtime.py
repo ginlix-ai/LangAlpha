@@ -1185,3 +1185,109 @@ def test_main_accepts_both_spec_forms(tmp_path, monkeypatch):
     assert rt._main(["p", "scan", str(path)]) == 0
     # The file form consumes its spec, so a retry cannot read a stale one.
     assert not path.exists()
+
+
+# ---------------------------------------------------------------------------
+# one computer, several workspace folders
+# ---------------------------------------------------------------------------
+
+
+def test_pack_writes_chunks_at_the_computer_root_when_pack_root_is_given(tmp_path):
+    """The walk root is one workspace's folder; the chunks are the machine's
+    scratch and stay under the computer's ``_internal``, which is the one
+    directory no workspace's scan walks."""
+    computer = tmp_path
+    work = tmp_path / "alpha-1111"
+    work.mkdir()
+    members = _members(work, {"a.txt": b"aaa"})
+    out = rt.pack(
+        {
+            "root": str(work),
+            "pack_root": str(computer),
+            "out_dir": "_internal/packs",
+            "max_bytes": 1024,
+            "members": members,
+        }
+    )
+    chunk = out["chunks"][0]
+    # Outside the walk root, so it cannot be named relative to it.
+    assert os.path.isabs(chunk["path"])
+    assert chunk["path"].startswith(str(computer / "_internal" / "packs") + os.sep)
+    assert not (work / "_internal").exists()
+    assert open(chunk["path"], "rb").read() == b"aaa"
+
+
+def test_pack_without_pack_root_still_names_chunks_relative_to_the_walk_root(tmp_path):
+    """A spec written before the split reads exactly as it did."""
+    members = _members(tmp_path, {"a.txt": b"aaa"})
+    chunk = _pack(tmp_path, members)["chunks"][0]
+    assert not os.path.isabs(chunk["path"])
+    assert chunk["path"].startswith("_internal/packs/op-")
+
+
+@pytest.mark.enable_socket
+def test_push_accepts_an_absolute_chunk_path_only_under_the_pack_directory(
+    tmp_path, bucket
+):
+    computer = tmp_path
+    work = tmp_path / "alpha-1111"
+    work.mkdir()
+    chunk = _write(computer, "_internal/packs/op-1/chunk-x", b"chunk")
+    outside = _write(computer, "beta-2222/secret.txt", b"nope")
+    items = [
+        {**_push_item(bucket, chunk, b"chunk", key="chunk"), "unlink": True},
+        _push_item(bucket, outside, b"nope", key="nope"),
+    ]
+    out = rt.push(
+        {"root": str(work), "pack_root": str(computer), "items": items, "timeout_s": 5}
+    )
+    results = _sans_ms(out["results"])
+    assert results[_sha(b"chunk")]["status"] == "ok"
+    # A path outside the pack directory is a workspace-relative name or nothing.
+    assert results[_sha(b"nope")] == {
+        "status": "failed",
+        "http": None,
+        "error": "path escapes root",
+    }
+    assert not os.path.exists(chunk)
+    assert os.path.exists(outside)
+
+
+def test_unlink_removes_a_chunk_outside_the_walk_root_and_nothing_else(tmp_path):
+    computer = tmp_path
+    work = tmp_path / "alpha-1111"
+    work.mkdir()
+    chunk = _write(computer, "_internal/packs/op-1/chunk-x", b"c")
+    sibling = _write(computer, "beta-2222/secret.txt", b"s")
+    out = rt.unlink(
+        {
+            "root": str(work),
+            "pack_root": str(computer),
+            "paths": [chunk, sibling, f"{computer}/../escape"],
+        }
+    )
+    assert out == {"removed": 1}
+    assert not os.path.exists(chunk) and os.path.exists(sibling)
+
+
+def test_a_scan_of_one_folder_never_sees_its_siblings(tmp_path):
+    computer = tmp_path
+    work = computer / "alpha-1111"
+    _write(work, "report.html", b"mine")
+    _write(computer, "beta-2222/secret.txt", b"theirs")
+    _write(computer, "_internal/packs/op-1/chunk-x", b"scratch")
+    out = _scan(work)
+    assert [e["path"] for e in out["entries"] if e["kind"] == "file"] == ["report.html"]
+
+
+def test_a_symlink_standing_where_an_excluded_directory_would_be_is_skipped(tmp_path):
+    """A restore places directories by path, so a symlink at an excluded path
+    is that directory as far as the manifest is concerned."""
+    (tmp_path / ".agents" / "skills").mkdir(parents=True)
+    (tmp_path / ".agents" / "skills" / ".staging").symlink_to(tmp_path)
+    (tmp_path / ".agents" / "skills" / ".trash-1").symlink_to(tmp_path)
+    (tmp_path / ".agents" / "skills" / "mine").symlink_to(tmp_path)
+    out = _scan(tmp_path)
+    assert [e["path"] for e in out["entries"] if e["kind"] == "symlink"] == [
+        ".agents/skills/mine"
+    ]
