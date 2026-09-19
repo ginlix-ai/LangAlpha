@@ -1,4 +1,6 @@
-"""MCP server installation, schema discovery, and dependency setup.
+"""MCP dependency install, schema discovery, and builtin server startup.
+
+The wrapper union and the per-workspace overlay live in ``tool_overlay.py``.
 
 Functions take the owning ``PTCSandbox`` as their explicit first argument;
 ``PTCSandbox`` exposes same-name delegators, so call sites and patch
@@ -7,42 +9,25 @@ semantics are unchanged.
 
 import asyncio
 import json
+import posixpath
 import shlex
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
-
 from ptc_agent.core.sandbox._defaults import DEFAULT_DEPENDENCIES
 from ptc_agent.core.sandbox.retry import RetryPolicy
+from ptc_agent.core.sandbox.vault_helper import workspace_vault_path
 
-from ..mcp_sanitize import (
-    is_untrusted_server,
-    sanitize_tool_name,
-)
-from typing import TYPE_CHECKING
+from ..paths import SandboxLayout
+from ..project_context import current_project
+from .supervisor_runtime import protocol as supervisor_protocol
 
 if TYPE_CHECKING:
     from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
 logger = structlog.get_logger(__name__)
-
-
-def _doc_name(tool_name: str, untrusted: bool) -> str:
-    """The filename a tool's documentation is written under.
-
-    Shared by the writer and by the sweep that removes what the writer no longer
-    produces. Two derivations of one name is exactly how a doc for a tool the
-    agent may not call survives a pass meant to delete it.
-
-    Untrusted names could carry ``..`` or ``/`` and traverse out of the docs
-    directory, so there the sanitized identifier is the filename; a builtin's
-    name is already a valid identifier.
-    """
-    if untrusted:
-        return sanitize_tool_name(tool_name) or "_invalid_tool"
-    return tool_name
 
 
 async def _install_dependencies(sandbox: "PTCSandbox") -> None:
@@ -132,15 +117,23 @@ async def _upload_discovery_client(
     # Pass the sandbox's real work dir (Lane A handoff): the client embeds
     # the vault path + mcp_servers path from it. Defaulting would point the
     # vault/server paths at the wrong directory after a working-dir change.
-    mcp_client_code = sandbox.tool_generator.generate_mcp_client_code(
-        enabled_servers, working_dir=work_dir
+    # The union is not folded in: it holds the pre-edit config of the very
+    # server this probe is meant to see edited. A workspace-local server
+    # resolves its secrets from its owner's vault when a turn names one.
+    project = current_project()
+    vault_file = (
+        workspace_vault_path(work_dir, project.claim) if project is not None else None
     )
+    mcp_client_code = sandbox.tool_generator.generate_mcp_client_code(
+        enabled_servers, working_dir=work_dir, fold_union=False, vault_file=vault_file
+    )
+    layout = SandboxLayout(work_dir)
     client_path = (
-        f"{work_dir}/_internal/.mcp_discover_client_{uuid.uuid4().hex}.py"
+        f"{layout.internal}/.mcp_discover_client_{uuid.uuid4().hex}.py"
     )
     await sandbox._runtime_call(
         sandbox.runtime.exec,
-        f"mkdir -p {shlex.quote(f'{work_dir}/_internal')}",
+        f"mkdir -p {shlex.quote(layout.internal)}",
         retry_policy=RetryPolicy.SAFE,
     )
     await sandbox._runtime_call(
@@ -153,208 +146,7 @@ async def _upload_discovery_client(
     return client_path
 
 
-async def _install_tool_modules(sandbox: "PTCSandbox") -> None:
-    """Generate and install tool modules + the MCP client from MCP servers."""
-    logger.debug("Installing tool modules")
 
-    # Get work directory (set by _setup_workspace)
-    work_dir = sandbox._work_dir
-
-    # Collect all files to upload (content generation is CPU-bound, fast)
-    uploads: list[tuple[bytes, str, tuple[str, dict[str, str]] | None]] = []
-
-    # 1. MCP client module — config-only, regenerated with the real work dir
-    #    so user-server vault/path references resolve correctly.
-    enabled_servers = [
-        server for server in sandbox.config.mcp.servers if server.enabled
-    ]
-    mcp_client_code = sandbox.tool_generator.generate_mcp_client_code(
-        enabled_servers, working_dir=work_dir
-    )
-    mcp_client_path = f"{work_dir}/tools/mcp_client.py"
-    uploads.append(
-        (
-            mcp_client_code.encode("utf-8"),
-            mcp_client_path,
-            ("MCP client module installed", {"path": mcp_client_path}),
-        )
-    )
-
-    # Trust is computed ONCE here, per server, and passed across the codegen
-    # boundary as a bool — codegen never re-derives it from the raw source
-    # string (that duplication is how user-level servers once slipped through
-    # the workspace-only gates).
-    untrusted_by_name = {
-        s.name: is_untrusted_server(s) for s in sandbox.config.mcp.servers
-    }
-
-    # 2. Tool modules and documentation
-    assert sandbox.mcp_registry is not None
-    tools_by_server = sandbox.mcp_registry.get_all_tools()
-
-    assert sandbox.runtime is not None
-
-    # Prune stale doc dirs AND stale wrapper modules for servers no longer in
-    # the effective set (a disabled built-in, a deleted/edited user server).
-    # The diff-prune runs every sync, so the one-shot _disabled_modules_pruned
-    # guard is moot here; this removes ``tools/{name}.py`` + ``tools/docs/{name}``.
-    docs_root = f"{work_dir}/tools/docs"
-    tools_root = f"{work_dir}/tools"
-    stale_paths: list[str] = []
-    # Not wrapped: ``als_directory`` returns [] for a directory that is empty or
-    # absent, and raises only when the sandbox itself failed. Swallowing that
-    # raise reads a broken sandbox as "nothing stale here", and the sync then
-    # stamps the manifest current -- so the doc for a tool the user declined
-    # survives every later sync too, which is the failure this sweep exists to
-    # prevent. A fresh sandbox costs nothing here; a broken one should fail.
-    existing_docs = await sandbox.als_directory(docs_root)
-    stale_paths.extend(
-        entry["path"]
-        for entry in existing_docs
-        if entry.get("is_dir") and entry.get("name") not in tools_by_server
-    )
-
-    # The sweep inside the servers that DID survive. Removing a whole directory
-    # when its server leaves the set was enough while a server's tool list only
-    # changed when the vendor changed it. Capability consent changes it on a user
-    # toggle, so a declined tool now routinely leaves its doc behind: the wrapper
-    # module is one file rewritten whole and correctly loses the function, while
-    # ``tools/docs/<server>/`` goes on describing it.
-    #
-    # That is not clutter. The tool guide sends the agent to this directory to
-    # find out what a server can do, and it is the surface the agent trusts, so a
-    # doc left behind is the agent reading that it can place live orders and
-    # telling the user so -- on a connection whose owner declined exactly that.
-    # The call is refused at the relay either way; what leaks here is the claim,
-    # which on this feature is the part that matters.
-    #
-    # Only directories the listing above already found are opened, so a fresh
-    # sandbox costs nothing and a warm one costs one listing per server present.
-    for entry in existing_docs:
-        server_name = entry.get("name")
-        if not entry.get("is_dir") or server_name not in tools_by_server:
-            continue
-        expected = {
-            f"{_doc_name(tool.name, untrusted_by_name.get(server_name, True))}.md"
-            for tool in tools_by_server[server_name]
-        }
-        existing_tool_docs = await sandbox.als_directory(entry["path"])
-        stale_paths.extend(
-            doc["path"]
-            for doc in existing_tool_docs
-            if not doc.get("is_dir")
-            and doc.get("name", "").endswith(".md")
-            and doc.get("name") not in expected
-        )
-    existing_tools = await sandbox.als_directory(tools_root)
-    if existing_tools:
-        expected_wrappers = {f"{name}.py" for name in tools_by_server}
-        stale_paths.extend(
-            entry["path"]
-            for entry in existing_tools
-            if not entry.get("is_dir")
-            and entry.get("name", "").endswith(".py")
-            and entry.get("name") not in expected_wrappers
-            and entry.get("name") not in ("mcp_client.py", "__init__.py")
-        )
-    if stale_paths:
-        rm_cmd = "rm -rf " + " ".join(shlex.quote(p) for p in stale_paths)
-        result = await sandbox._runtime_call(
-            sandbox.runtime.exec,
-            rm_cmd,
-            retry_policy=RetryPolicy.SAFE,
-        )
-        # A delete that silently failed is the same outcome as never sweeping:
-        # the manifest is stamped current and the stale doc is never revisited.
-        exit_code = getattr(result, "exit_code", 0)
-        if exit_code:
-            raise RuntimeError(
-                f"failed to remove stale tool files (exit {exit_code}): "
-                f"{getattr(result, 'stderr', '')}"
-            )
-
-    for server_name, tools in tools_by_server.items():
-        # Fail closed: a server present in the registry but missing from the
-        # trust map (config drift mid-sync) is treated as untrusted — a wrong
-        # guess here costs sanitization, not a docstring breakout.
-        untrusted = untrusted_by_name.get(server_name, True)
-        # Generate Python module
-        module_code = sandbox.tool_generator.generate_tool_module(
-            server_name, tools, untrusted=untrusted
-        )
-        module_path = f"{work_dir}/tools/{server_name}.py"
-        uploads.append(
-            (
-                module_code.encode("utf-8"),
-                module_path,
-                (
-                    "Tool module installed",
-                    {
-                        "server": server_name,
-                        "path": module_path,
-                        "tool_count": str(len(tools)),
-                    },
-                ),
-            )
-        )
-
-        # Generate documentation for each tool
-        for tool in tools:
-            doc = sandbox.tool_generator.generate_tool_documentation(
-                tool, untrusted=untrusted
-            )
-            doc_name = _doc_name(tool.name, untrusted)
-            doc_path = f"{work_dir}/tools/docs/{server_name}/{doc_name}.md"
-            upload_item: tuple[bytes, str, tuple[str, dict[str, str]] | None] = (
-                doc.encode("utf-8"),
-                doc_path,
-                None,
-            )
-            uploads.append(upload_item)
-
-    # 3. __init__.py for tools package
-    init_content = '"""Auto-generated tool modules from MCP servers."""\n'
-    init_path = f"{work_dir}/tools/__init__.py"
-    init_item: tuple[bytes, str, tuple[str, dict[str, str]] | None] = (
-        init_content.encode("utf-8"),
-        init_path,
-        None,
-    )
-    uploads.append(init_item)
-
-    # Batch mkdir — all dirs in one command
-    all_dirs = [f"{work_dir}/tools"] + [
-        f"{work_dir}/tools/docs/{name}" for name in tools_by_server
-    ]
-    mkdir_cmd = "mkdir -p " + " ".join(shlex.quote(d) for d in all_dirs)
-    await sandbox._runtime_call(
-        sandbox.runtime.exec,
-        mkdir_cmd,
-        retry_policy=RetryPolicy.SAFE,
-    )
-
-    # Batch upload — single HTTP request for all generated content
-    batch = [
-        (content, path) for content, path, _ in uploads
-    ]
-    await sandbox._runtime_call(
-        sandbox.runtime.upload_files,
-        batch,
-        retry_policy=RetryPolicy.SAFE,
-    )
-    # Log after batch
-    for _, _, log_info in uploads:
-        if log_info:
-            msg, kwargs = log_info
-            logger.debug(msg, **kwargs)
-
-    server_count = len(tools_by_server)
-    tool_count = sum(len(t) for t in tools_by_server.values())
-    logger.info(
-        "Tool modules installed",
-        servers=server_count,
-        tools=tool_count,
-    )
 
 
 async def discover_user_mcp_schemas(
@@ -372,6 +164,7 @@ async def discover_user_mcp_schemas(
     await sandbox._wait_ready()
     assert sandbox.runtime is not None
     work_dir = sandbox._work_dir
+    layout = SandboxLayout(work_dir)
 
     # Upload a config-current discovery client FIRST (it depends only on
     # config, not on schemas) so discovery runs against the latest server
@@ -387,7 +180,7 @@ async def discover_user_mcp_schemas(
         name = server.name
         # Unique per invocation: concurrent discoveries of the same server
         # (background kick + on-demand /discover) must not share a file.
-        out_path = f"{work_dir}/_internal/.mcp_discover_{uuid.uuid4().hex}.json"
+        out_path = f"{layout.internal}/.mcp_discover_{uuid.uuid4().hex}.json"
         async with sem:
             try:
                 # python3, not python: the no-snapshot fallback image never
@@ -454,78 +247,59 @@ async def discover_user_mcp_schemas(
 
 
 async def _start_internal_mcp_servers(sandbox: "PTCSandbox") -> None:
-    """Start MCP servers as background processes inside sandbox."""
-    logger.debug("Starting internal MCP servers")
+    """Start the computer's MCP supervisor, if it is not already listening.
 
-    # Track server sessions for lifecycle management
-    sandbox.mcp_server_sessions = {}
+    One daemon per computer owns every sandbox-side MCP server process, so a
+    server is handshaken once per idle window instead of once per
+    ``execute_code``. Starting it is idempotent: the daemon takes an exclusive
+    lock before binding, so a second start exits without touching the socket.
 
-    # Built-ins only: user stdio servers are spawned at call time by the
-    # in-sandbox mcp_client (npx/uvx fetch then), never pre-started here.
-    for server in sandbox._builtin_servers():
-        if not server.enabled:
-            continue
-        if server.transport != "stdio":
-            logger.warning(
-                f"Skipping non-stdio server {server.name}",
-                transport=server.transport,
-            )
-            continue
-
-        try:
-            # Build the command to start the MCP server
-            if server.command == "npx":
-                # npx -y package-name [args...]
-                cmd_parts = [server.command, *server.args]
-                cmd = " ".join(cmd_parts)
-            else:
-                # Custom command
-                cmd = f"{server.command} {' '.join(server.args)}"
-
-            # Add environment variables if specified
-            env_vars = []
-            if hasattr(server, "env") and server.env:
-                for key, value in server.env.items():
-                    # Environment variables might have ${VAR} syntax, resolve them
-                    # For now, we'll pass them as-is and they'll need to be set in sandbox
-                    env_vars.append(f"{key}={value}")
-
-            # Create PTY session for the MCP server
-            session_name = f"mcp-{server.name}"
-
-            logger.debug(
-                "Creating MCP server session",
-                server=server.name,
-                session=session_name,
-                command=cmd,
-            )
-
-            # Create session (but don't start the server yet, we'll do that when needed)
-            # For now, just track that this server should be available
-            sandbox.mcp_server_sessions[server.name] = {
-                "session_name": session_name,
-                "command": cmd,
-                "env": env_vars,
-                "started": False,
-            }
-
-            logger.debug(
-                "MCP server session configured",
-                server=server.name,
-                session=session_name,
-            )
-
-        except OSError as e:
-            logger.error(
-                "Failed to configure MCP server session",
-                server=server.name,
-                error=str(e),
-            )
-
-    logger.debug(
-        "Internal MCP server configuration complete",
-        servers=list(sandbox.mcp_server_sessions.keys()),
+    A failure here is logged, never raised. The generated client falls back to
+    spawning servers in the execution's own interpreter, which is what every
+    call did before this daemon existed, so a computer whose supervisor cannot
+    start is slower rather than broken.
+    """
+    assert sandbox.runtime is not None
+    work_dir = sandbox._work_dir
+    layout = SandboxLayout(work_dir)
+    socket_path = f"{work_dir}/{supervisor_protocol.SOCKET_REL_PATH}"
+    log_path = f"{work_dir}/{supervisor_protocol.LOG_REL_PATH}"
+    src_root = layout.internal_src
+    quoted_socket = shlex.quote(socket_path)
+    command = (
+        f"mkdir -p {shlex.quote(posixpath.dirname(socket_path))} && "
+        f"cd {shlex.quote(src_root)} && "
+        f"{{ PYTHONPATH={shlex.quote(src_root)} "
+        f"nohup python3 -m {supervisor_protocol.PACKAGE_NAME} "
+        f"{shlex.quote(work_dir)} >> {shlex.quote(log_path)} 2>&1 < /dev/null & }} ; "
+        # Poll rather than sleep a fixed amount: a warm start binds in
+        # milliseconds and only a genuinely failing one pays the full wait.
+        f"for _ in $(seq 30); do [ -S {quoted_socket} ] && break; sleep 0.1; done; "
+        f"[ -S {quoted_socket} ]"
     )
+    sandbox.mcp_server_sessions = {
+        "supervisor": {"socket": socket_path, "log": log_path, "started": False}
+    }
+    try:
+        result = await sandbox._runtime_call(
+            sandbox.runtime.exec,
+            command,
+            retry_policy=RetryPolicy.SAFE,
+        )
+    except Exception as e:  # noqa: BLE001 - the client's fallback covers this
+        logger.warning("MCP supervisor start failed", error=str(e))
+        return
+    exit_code = getattr(result, "exit_code", 0)
+    if exit_code:
+        logger.warning(
+            "MCP supervisor did not come up; calls fall back to in-process spawn",
+            exit_code=exit_code,
+            log=log_path,
+        )
+        return
+    sandbox.mcp_server_sessions["supervisor"]["started"] = True
+    logger.info("MCP supervisor listening", socket=socket_path)
+
 
 
 def _detect_missing_imports(sandbox: "PTCSandbox", stderr: str) -> list[str]:
