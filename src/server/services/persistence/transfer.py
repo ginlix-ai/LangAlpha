@@ -27,6 +27,8 @@ from ptc_agent.core.paths import (
     BACKUP_EXCLUDE_AGENT_SUBDIRS,
     BACKUP_EXCLUDE_DIRS,
     HIDDEN_DIR_NAMES,
+    SandboxLayout,
+    WorkspaceLayout,
 )
 from ptc_agent.core.sandbox._shared import (
     _TRANSFER_RUNTIME_SOURCE,
@@ -37,16 +39,28 @@ from ptc_agent.core.sandbox.retry import RetryPolicy
 
 logger = logging.getLogger(__name__)
 
-# Directory names pruned at any depth. ``__pycache__`` was only ever filtered
-# by its contents' names before.
-EXCLUDE_DIR_NAMES: frozenset[str] = (
-    BACKUP_EXCLUDE_DIRS | HIDDEN_DIR_NAMES | ALWAYS_HIDDEN_DIR_NAMES | {"__pycache__"}
+# Directory names pruned at any depth, because that is what these names mean
+# wherever they appear: a dependency tree, a build output or an interpreter
+# cache, each re-derivable by re-running the install that made it. ``.git``
+# stays on this list deliberately rather than by inheritance: a repository's
+# object store is routinely larger than the working tree it belongs to, the
+# per-workspace mirror is capped at 1 GiB with a 100 MiB ceiling per file that
+# a single packfile clears on its own, and restoring half a repository is worse
+# than restoring none. The cost is stated in the release note: a cloned repo
+# comes back as a plain working tree, and ``git clone`` puts the history back.
+EXCLUDE_DIR_NAMES: frozenset[str] = ALWAYS_HIDDEN_DIR_NAMES | {"__pycache__"}
+# Ours, and reserved only where we put them. These are ordinary words, and
+# matching them at any depth silently dropped a user's own ``work/model/tools/``
+# or ``work/mcp_servers/`` from every scan and then pruned their rows.
+EXCLUDE_ROOT_DIRS: tuple[str, ...] = tuple(
+    sorted(BACKUP_EXCLUDE_DIRS | HIDDEN_DIR_NAMES)
 )
 # The skill reconciler's scratch space, which must never be restored on top
 # of a live reconcile. Matched by workspace-relative path: the same names
 # anywhere else (``work/model/.staging``) are the user's own directories.
-SKILLS_DIR = ".agents/skills"
+SKILLS_DIR = SandboxLayout.SKILLS_DIR
 EXCLUDE_REL_DIRS: tuple[str, ...] = (
+    *EXCLUDE_ROOT_DIRS,
     *BACKUP_EXCLUDE_AGENT_SUBDIRS,
     f"{SKILLS_DIR}/.staging",
 )
@@ -55,7 +69,10 @@ EXCLUDE_REL_DIR_PREFIXES: tuple[str, ...] = (f"{SKILLS_DIR}/.trash-",)
 # ``results/.skills-sync.flock`` is a file like any other.
 EXCLUDE_REL_FILES: tuple[str, ...] = (f"{SKILLS_DIR}/.skills-sync.flock",)
 EXCLUDE_SUFFIXES: frozenset[str] = frozenset({".pyc", ".pyo", ".so", ".dylib", ".o"})
-EXCLUDE_BASENAMES: frozenset[str] = frozenset({".DS_Store", "Thumbs.db", "__init__.py"})
+# ``__init__.py`` is NOT here: it is the file that makes a directory a Python
+# package, and dropping it by basename cost the user their own packages on
+# every sandbox rebuild.
+EXCLUDE_BASENAMES: frozenset[str] = frozenset({".DS_Store", "Thumbs.db"})
 
 SYNC_MARKER_NAME = ".file_sync_marker"
 
@@ -81,7 +98,7 @@ PULL_CONCURRENCY = 32
 # scan already excludes, and are removed once pushed.
 PACK_CUTOFF = 256 * 1024
 PACK_MAX_BYTES = 32 * 1024 * 1024
-PACK_DIR = "_internal/packs"
+PACK_DIR = SandboxLayout.PACKS_DIR
 
 
 class TransferRuntimeError(Exception):
@@ -109,6 +126,15 @@ class ScanResult:
     reused: int
 
 
+def _transfer_roots(layout: WorkspaceLayout) -> dict[str, str]:
+    """The walk root and the machine scratch root every transfer op needs.
+
+    Packs are the machine's scratch and live under the computer's ``_internal``,
+    which is why the second root is the computer and not the project folder.
+    """
+    return {"root": layout.workspace, "pack_root": layout.root}
+
+
 def transfer_timeout_s(total_bytes: int) -> int:
     scaled = TRANSFER_MIN_TIMEOUT_S + total_bytes // TRANSFER_FLOOR_BYTES_PER_S
     return int(min(max(scaled, TRANSFER_MIN_TIMEOUT_S), TRANSFER_MAX_TIMEOUT_S))
@@ -134,7 +160,8 @@ def exclusion_spec(max_file_bytes: int) -> dict[str, Any]:
 
 
 def _script_path(sandbox: Any) -> str:
-    return f"{sandbox.working_dir}/_internal/src/{TRANSFER_RUNTIME_SANDBOX_NAME}"
+    layout = SandboxLayout(sandbox.working_dir)
+    return f"{layout.internal_src}/{TRANSFER_RUNTIME_SANDBOX_NAME}"
 
 
 async def _upload_runtime(sandbox: Any) -> None:
@@ -196,7 +223,8 @@ async def run_transfer_op(
     # One path for every attempt: the runtime removes the spec file once it
     # has read it, and a rerun after a runtime upload reuses the name so a
     # copy a stale runtime never read is taken by the one that replaces it.
-    in_path = f"{sandbox.working_dir}/_internal/.wsfiles/{op}-{uuid.uuid4().hex}.json"
+    layout = SandboxLayout(sandbox.working_dir)
+    in_path = f"{layout.wsfiles}/{op}-{uuid.uuid4().hex}.json"
 
     async def _run() -> Any:
         if len(encoded) <= INLINE_SPEC_LIMIT:
@@ -245,10 +273,17 @@ async def scan_workspace(
     prior: dict[str, tuple[int, int, str]],
     *,
     max_file_bytes: int,
+    layout: WorkspaceLayout,
 ) -> ScanResult:
-    """Walk and hash the workspace. ``prior`` lets unchanged files skip hashing."""
+    """Walk and hash one project folder. ``prior`` lets unchanged files skip hashing.
+
+    The walk root is the project's folder rather than the machine: several
+    projects share the root, each syncs under its own advisory lock, and a walk
+    from the root would have each of them claim the others' files and prune its
+    own manifest.
+    """
     spec = exclusion_spec(max_file_bytes)
-    spec["root"] = sandbox.working_dir
+    spec["root"] = layout.workspace
     spec["prior"] = {p: list(v) for p, v in prior.items()}
     out = await run_transfer_op(sandbox, "scan", spec, timeout_s=SCAN_TIMEOUT_S)
     # A runtime that predates the exact-name key reports the marker as a
@@ -278,7 +313,7 @@ async def scan_workspace(
 
 
 async def push_direct(
-    sandbox: Any, items: list[dict[str, Any]]
+    sandbox: Any, items: list[dict[str, Any]], *, layout: WorkspaceLayout
 ) -> dict[str, dict[str, Any]]:
     """Upload ``items`` (path, sha256, size, url, headers) from the sandbox.
 
@@ -288,7 +323,7 @@ async def push_direct(
         return {}
     total = sum(int(i["size"]) for i in items)
     spec = {
-        "root": sandbox.working_dir,
+        **_transfer_roots(layout),
         "concurrency": PUSH_CONCURRENCY,
         "timeout_s": TRANSFER_MIN_TIMEOUT_S,
         "items": items,
@@ -300,7 +335,11 @@ async def push_direct(
 
 
 async def pull_direct(
-    sandbox: Any, items: list[dict[str, Any]], *, defer_dir_modes: bool = False
+    sandbox: Any,
+    items: list[dict[str, Any]],
+    *,
+    layout: WorkspaceLayout,
+    defer_dir_modes: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Materialize ``items`` in the sandbox. Returns per-path results.
 
@@ -312,7 +351,7 @@ async def pull_direct(
         return {}
     total = sum(int(i.get("size") or 0) for i in items)
     spec = {
-        "root": sandbox.working_dir,
+        **_transfer_roots(layout),
         "concurrency": PULL_CONCURRENCY,
         "timeout_s": TRANSFER_MIN_TIMEOUT_S,
         "items": items,
@@ -326,7 +365,7 @@ async def pull_direct(
 
 
 async def pack_direct(
-    sandbox: Any, members: list[dict[str, Any]]
+    sandbox: Any, members: list[dict[str, Any]], *, layout: WorkspaceLayout
 ) -> dict[str, Any]:
     """Concatenate ``members`` (path, sha256, size) into chunk files in the sandbox.
 
@@ -338,7 +377,8 @@ async def pack_direct(
         return {"chunks": [], "changed": []}
     total = sum(int(m.get("size") or 0) for m in members)
     spec = {
-        "root": sandbox.working_dir,
+        **_transfer_roots(layout),
+        # ``out_dir`` rides along for a runtime that predates ``pack_root``.
         "out_dir": PACK_DIR,
         "max_bytes": PACK_MAX_BYTES,
         "members": members,
@@ -349,12 +389,17 @@ async def pack_direct(
     return {"chunks": out.get("chunks") or [], "changed": out.get("changed") or []}
 
 
-async def unlink_direct(sandbox: Any, paths: list[str]) -> int:
-    """Remove files under the working dir; returns how many were removed."""
+async def unlink_direct(
+    sandbox: Any, paths: list[str], *, layout: WorkspaceLayout
+) -> int:
+    """Remove files under the project folder; returns how many were removed."""
     if not paths:
         return 0
     out = await run_transfer_op(
-        sandbox, "unlink", {"root": sandbox.working_dir, "paths": paths}, timeout_s=60
+        sandbox,
+        "unlink",
+        {**_transfer_roots(layout), "paths": paths},
+        timeout_s=60,
     )
     return int(out.get("removed") or 0)
 

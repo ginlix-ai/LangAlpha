@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ptc_agent.core.paths import SandboxLayout
 from src.server.database.workspace_file import datetime_to_micros, micros_to_datetime
 from src.server.services.persistence import backup, blobs, resolve, restore
 from src.server.services.persistence._rows import (
@@ -60,6 +61,12 @@ NS = 1_700_000_000_123_456_789
 A = "a" * 64
 B = "b" * 64
 
+ROOT = "/workspace"
+DIR_NAME = "direct-ab12"
+# Every entry point names the folder it mirrors; a bare root would be a claim
+# over the siblings sharing this computer.
+LAYOUT = SandboxLayout.for_root(ROOT).for_workspace(DIR_NAME)
+
 
 def _entry(path, sha=A, size=3, mode=0o644, kind="file", target=None, is_binary=False, mtime_ns=NS):
     return ScanEntry(path, kind, size, mtime_ns, mode, sha if kind == "file" else None, target, is_binary)
@@ -71,7 +78,7 @@ def _scan(*entries):
 
 def _sandbox(provider="daytona"):
     sb = MagicMock()
-    sb.working_dir = "/workspace"
+    sb.working_dir = ROOT
     sb.config.sandbox.provider = provider
     sb.adownload_file_bytes = AsyncMock(return_value=b"abc")
     return sb
@@ -132,7 +139,7 @@ async def test_new_files_go_direct_and_register_only_what_the_store_took(db):
     db["scan"].return_value = _scan(_entry("a.txt", A), _entry("b.bin", B, size=5, is_binary=True), _entry("dup.txt", A))
     db["push"].return_value = {A: {"status": "ok", "http": 200}, B: {"status": "ok", "http": 200}}
 
-    result = await backup.sync_to_db(WS, _sandbox())
+    result = await backup.sync_to_db(WS, _sandbox(), layout=LAYOUT)
 
     # One presign and one push item per distinct digest, never per path.
     assert db["presign"].call_count == 2
@@ -147,7 +154,10 @@ async def test_new_files_go_direct_and_register_only_what_the_store_took(db):
     assert rows["b.bin"]["is_binary"] is True and rows["a.txt"]["is_binary"] is False
     assert rows["a.txt"]["permissions"] == "0644"
     assert rows["a.txt"]["sandbox_modified_at"] == micros_to_datetime(NS // 1000)
-    assert result == {"synced": 3, "skipped": 0, "deleted": 0, "errors": 0, "oversized": 0, "total_size": 0}
+    assert result == {
+        "synced": 3, "skipped": 0, "deleted": 0, "errors": 0,
+        "oversized": 0, "total_size": 0, "root_missing": False,
+    }
 
 
 @pytest.mark.asyncio
@@ -156,7 +166,7 @@ async def test_registered_digest_skips_upload_entirely(db):
     db["scan"].return_value = _scan(_entry("a.txt", A))
     db["registered"].return_value = {A}
 
-    await backup.sync_to_db(WS, _sandbox())
+    await backup.sync_to_db(WS, _sandbox(), layout=LAYOUT)
 
     db["presign"].assert_not_called()
     db["push"].assert_not_awaited()
@@ -170,7 +180,7 @@ async def test_store_rejection_withholds_the_row_and_counts_an_error(db):
     db["scan"].return_value = _scan(_entry("a.txt", A), _entry("b.txt", B))
     db["push"].return_value = {A: {"status": "failed", "http": 403}, B: {"status": "changed", "http": 400}}
 
-    result = await backup.sync_to_db(WS, _sandbox())
+    result = await backup.sync_to_db(WS, _sandbox(), layout=LAYOUT)
 
     db["store"].assert_not_awaited()  # no relay after a rejection
     db["upsert"].assert_not_awaited()
@@ -188,9 +198,9 @@ async def test_unreachable_store_falls_back_to_relay_in_the_same_pass(db):
 
     with patch.object(blobs.hashlib, "sha256") as sha:
         sha.return_value.hexdigest.return_value = A
-        result = await backup.sync_to_db(WS, sb)
+        result = await backup.sync_to_db(WS, sb, layout=LAYOUT)
 
-    sb.adownload_file_bytes.assert_awaited_once_with("/workspace/a.txt")
+    sb.adownload_file_bytes.assert_awaited_once_with(f"{LAYOUT.workspace}/a.txt")
     db["store"].assert_awaited_once_with(USER, A, b"\x00" * 3)
     assert _rows(db)["a.txt"]["blob_sha256"] == A
     assert result["errors"] == 0
@@ -206,7 +216,7 @@ async def test_relay_mode_and_unpresignable_store_never_push(db):
         sb = _sandbox(setup.get("provider", "daytona"))
         with patch.object(blobs.hashlib, "sha256") as sha:
             sha.return_value.hexdigest.return_value = A
-            await backup.sync_to_db(WS, sb)
+            await backup.sync_to_db(WS, sb, layout=LAYOUT)
         db["push"].assert_not_awaited()
         db["store"].assert_awaited_once()
 
@@ -222,7 +232,7 @@ async def test_unchanged_pointer_row_with_new_mode_is_refreshed_without_bytes(db
                   "blob_sha256": A, "is_binary": False, "mime_type": "text/plain"},
     }
 
-    result = await backup.sync_to_db(WS, _sandbox())
+    result = await backup.sync_to_db(WS, _sandbox(), layout=LAYOUT)
 
     db["registered"].assert_not_awaited()
     db["push"].assert_not_awaited()
@@ -240,7 +250,7 @@ async def test_unchanged_inline_row_only_gets_its_mtime_refreshed(db):
                   "blob_sha256": None},
     }
 
-    await backup.sync_to_db(WS, _sandbox())
+    await backup.sync_to_db(WS, _sandbox(), layout=LAYOUT)
 
     db["upsert"].assert_not_awaited()
     db["mtimes"].assert_awaited_once()
@@ -260,7 +270,7 @@ async def test_unchanged_inline_row_persists_a_mode_only_change(db):
                   "blob_sha256": None},
     }
 
-    await backup.sync_to_db(WS, _sandbox())
+    await backup.sync_to_db(WS, _sandbox(), layout=LAYOUT)
 
     db["upsert"].assert_not_awaited()
     (path, when, perms), = db["mtimes"].await_args.args[1]
@@ -303,7 +313,7 @@ async def test_same_microsecond_stamp_is_a_pure_skip(db):
         "a.txt": {"kind": "file", "file_size": 3, "content_hash": A, "mtime_ns": NS, "permissions": "0644",
                   "blob_sha256": A},
     }
-    result = await backup.sync_to_db(WS, _sandbox())
+    result = await backup.sync_to_db(WS, _sandbox(), layout=LAYOUT)
     db["upsert"].assert_not_awaited()
     db["mtimes"].assert_not_awaited()
     assert result["skipped"] == 1
@@ -315,7 +325,7 @@ async def test_directories_and_symlinks_become_rows_without_content(db):
         _entry("empty", kind="dir", mode=0o755),
         _entry("link", kind="symlink", mode=0, target="../t.txt"),
     )
-    await backup.sync_to_db(WS, _sandbox())
+    await backup.sync_to_db(WS, _sandbox(), layout=LAYOUT)
     db["registered"].assert_not_awaited()
     rows = _rows(db)
     assert rows["empty"]["kind"] == "dir" and rows["empty"]["permissions"] == "0755"
@@ -328,8 +338,23 @@ async def test_directories_and_symlinks_become_rows_without_content(db):
 async def test_scan_read_errors_count_against_a_strict_backup(db):
     db["scan"].return_value = ScanResult([_entry("ok.txt", A)], [], [{"path": "bad", "error": "EACCES"}], 1, 0)
     db["push"].return_value = {A: {"status": "ok"}}
-    result = await backup.sync_to_db(WS, _sandbox())
+    result = await backup.sync_to_db(WS, _sandbox(), layout=LAYOUT)
     assert result["errors"] == 1 and result["synced"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_folder_this_sandbox_never_had_is_not_an_unsaved_file(db):
+    """A sibling that has not rejoined a recreated machine has no folder there.
+    Nothing on the sandbox can be lost, so a strict backup must not abort on
+    it, and nothing was seen, so no mirror row may be pruned on its account."""
+    import errno
+
+    db["scan"].return_value = ScanResult(
+        [], [], [{"path": ".", "errno": errno.ENOENT, "error": "ENOENT"}], 0, 0
+    )
+    result = await backup.sync_to_db(WS, _sandbox(), layout=LAYOUT)
+    assert result["root_missing"] is True and result["errors"] == 0
+    db["deleter"].assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -338,7 +363,7 @@ async def test_storage_off_keeps_bytes_inline(db):
     sb = _sandbox()
     sb.adownload_file_bytes = AsyncMock(side_effect=[b"text", b"\x00\x01"])
     with patch.object(backup, "is_storage_enabled", return_value=False):
-        await backup.sync_to_db(WS, sb)
+        await backup.sync_to_db(WS, sb, layout=LAYOUT)
     db["registered"].assert_not_awaited()
     rows = _rows(db)
     assert rows["a.txt"]["content_text"] == "text" and rows["a.txt"]["blob_sha256"] is None
@@ -359,7 +384,7 @@ async def test_a_late_nul_is_stored_whole_with_no_store_to_fall_back_on(db):
     sb = _sandbox()
     sb.adownload_file_bytes = AsyncMock(return_value=content)
     with patch.object(backup, "is_storage_enabled", return_value=False):
-        await backup.sync_to_db(WS, sb)
+        await backup.sync_to_db(WS, sb, layout=LAYOUT)
     row = _rows(db)["log.txt"]
     assert row["is_binary"] is True
     assert row["content_text"] is None and row["content_binary"] == content
@@ -406,7 +431,7 @@ async def test_restore_pulls_pointer_rows_and_structure_in_one_runtime_call(rest
     sb.acreate_directories = AsyncMock(return_value=True)
     sb.aupload_file_bytes = AsyncMock(return_value=True)
 
-    result = await restore.restore_to_sandbox(WS, sb)
+    result = await restore.restore_to_sandbox(WS, sb, layout=LAYOUT)
 
     first = restore_db["pull"].await_args_list[0]
     by_path = {i["path"]: i for i in first.args[1]}
@@ -415,19 +440,21 @@ async def test_restore_pulls_pointer_rows_and_structure_in_one_runtime_call(rest
     assert by_path["a.txt"]["mtime_ns"] == (NS // 1000) * 1000
     assert by_path["d"]["url"] is None and by_path["l"]["symlink_target"] == "a.txt"
     # A relay pass follows, so the first op leaves the directories open.
-    assert first.kwargs == {"defer_dir_modes": True}
+    assert first.kwargs == {"defer_dir_modes": True, "layout": LAYOUT}
     # The legacy inline row went through the server to a staging name; the
     # placement op verifies and moves it, and closes the directory after it.
     uploads = [c.args[0] for c in sb.aupload_file_bytes.await_args_list]
-    assert "/workspace/old.txt" not in uploads
-    (staged,) = [p for p in uploads if p.startswith("/workspace/.wsfiles-relay-")]
+    assert f"{LAYOUT.workspace}/old.txt" not in uploads
+    (staged,) = [
+        p for p in uploads if p.startswith(f"{LAYOUT.workspace}/.wsfiles-relay-")
+    ]
     placement = restore_db["pull"].await_args_list[1].args[1]
     old = restore._pull_item(_row("old.txt", text="inline"), url=None)
     # Size and digest describe the bytes relayed, not the row: this fixture's
     # own file_size is stale, the shape a row written before file_size came
     # from the content itself is in.
     old.update({
-        "file": staged.removeprefix("/workspace/"),
+        "file": staged.removeprefix(f"{LAYOUT.workspace}/"),
         "sha256": hashlib.sha256(b"inline").hexdigest(),
         "size": len(b"inline"),
     })
@@ -448,12 +475,12 @@ async def test_restore_unreachable_store_relays_and_a_mismatch_is_an_error(resto
     sb.acreate_directories = AsyncMock(return_value=True)
     sb.aupload_file_bytes = AsyncMock(return_value=True)
     with patch.object(resolve, "fetch_blob", new=AsyncMock(return_value=b"abc")) as fetch:
-        result = await restore.restore_to_sandbox(WS, sb)
+        result = await restore.restore_to_sandbox(WS, sb, layout=LAYOUT)
     assert fetch.await_count == 2
     assert result == {"restored": 2, "errors": 0}
 
     restore_db["pull"].side_effect = [{"a.txt": {"status": "mismatch"}, "b.txt": {"status": "ok"}}]
-    result = await restore.restore_to_sandbox(WS, sb)
+    result = await restore.restore_to_sandbox(WS, sb, layout=LAYOUT)
     assert result == {"restored": 1, "errors": 1}
     assert restore_db["flag"].await_args.args == (WS, True)
 
@@ -466,7 +493,7 @@ async def test_restore_relay_mode_never_presigns(restore_db):
     sb.acreate_directories = AsyncMock(return_value=True)
     sb.aupload_file_bytes = AsyncMock(return_value=True)
     with patch.object(resolve, "fetch_blob", new=AsyncMock(return_value=b"abc")):
-        result = await restore.restore_to_sandbox(WS, sb)
+        result = await restore.restore_to_sandbox(WS, sb, layout=LAYOUT)
     restore_db["sign"].assert_not_called()
     assert result == {"restored": 1, "errors": 0}
 

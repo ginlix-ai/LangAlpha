@@ -12,6 +12,7 @@ import mimetypes
 from dataclasses import dataclass
 from typing import Any
 
+from ptc_agent.core.paths import WorkspaceLayout
 from src.server.database.blob_keys import BLOB_CONTENT_TYPE, blob_key
 from src.server.database.workspace_file_blobs import (
     BlobUploadError,
@@ -43,6 +44,23 @@ from src.utils.storage import get_signed_upload_url
 # tighter bound; this one keeps the gather from fanning out unboundedly.
 RELAY_CONCURRENCY = 8
 
+
+def _entry_abs_path(entry: ScanEntry, layout: WorkspaceLayout) -> str:
+    """Where a scanned entry lives in the sandbox.
+
+    A user's file is relative to the project folder it was scanned under.
+    A pack chunk is the machine's own scratch, staged beside the computer
+    root rather than inside any one folder, so it arrives already absolute.
+    """
+    if entry.path.startswith("/"):
+        return entry.path
+    return f"{layout.workspace}/{entry.path}"
+
+
+def _machine_layout(layout: WorkspaceLayout) -> WorkspaceLayout:
+    """The computer's own root, which is where pack chunks are staged."""
+    return WorkspaceLayout(layout.root)
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,6 +80,7 @@ async def _persist_blobs(
     entries: list[ScanEntry],
     *,
     unlink_after: bool = False,
+    layout: WorkspaceLayout,
 ) -> tuple[list[dict[str, Any]], int]:
     """Make sure every entry's digest has an object, then build its row.
 
@@ -79,14 +98,23 @@ async def _persist_blobs(
         # A chunk the registry already holds is never pushed, so nothing
         # downstream would remove it; it would sit until the age sweep.
         await _unlink_chunks(
-            sandbox, [e.path for e in entries if e.sha256 in have], workspace_id
+            sandbox,
+            [e.path for e in entries if e.sha256 in have],
+            workspace_id,
+            layout,
         )
 
     # The store answering at all makes a rejection final this pass, so only
     # the digests it never reached fall through to the relay.
     outcome = (
         await _push_direct(
-            user_id, workspace_id, sandbox, entries, need, unlink_after=unlink_after
+            user_id,
+            workspace_id,
+            sandbox,
+            entries,
+            need,
+            unlink_after=unlink_after,
+            layout=layout,
         )
         if need and mode == "direct"
         else None
@@ -103,6 +131,7 @@ async def _persist_blobs(
             entries,
             relay_need,
             unlink_after=unlink_after,
+            layout=layout,
         )
         registered |= relayed
         changed |= relay_changed
@@ -137,6 +166,7 @@ async def _push_direct(
     need: set[str],
     *,
     unlink_after: bool = False,
+    layout: WorkspaceLayout,
 ) -> DirectPush | None:
     """Presign one PUT per missing digest and let the sandbox upload.
 
@@ -188,7 +218,7 @@ async def _push_direct(
         )
 
     items.sort(key=lambda i: int(i.get("size") or 0), reverse=True)
-    results = await push_direct(sandbox, items)
+    results = await push_direct(sandbox, items, layout=layout)
     if all_unreachable(results):
         logger.warning(
             f"Sandbox for workspace {workspace_id} could not reach object "
@@ -238,6 +268,7 @@ async def _relay_blobs(
     need: set[str],
     *,
     unlink_after: bool = False,
+    layout: WorkspaceLayout,
 ) -> tuple[set[str], set[str]]:
     """Copy missing digests through this process: download, hash, PUT."""
     representative: dict[str, ScanEntry] = {}
@@ -253,7 +284,7 @@ async def _relay_blobs(
         async with sem:
             try:
                 content = await sandbox.adownload_file_bytes(
-                    f"{sandbox.working_dir}/{entry.path}"
+                    _entry_abs_path(entry, layout)
                 )
                 if content is None:
                     changed.add(sha)
@@ -278,13 +309,17 @@ async def _relay_blobs(
 
     await asyncio.gather(*(_one(s, e) for s, e in representative.items()))
     if unlink_after:
-        await _unlink_chunks(sandbox, [e.path for e in entries], workspace_id)
+        await _unlink_chunks(
+            sandbox, [e.path for e in entries], workspace_id, layout
+        )
     return registered, changed
 
 
-async def _unlink_chunks(sandbox: Any, paths: list[str], workspace_id: str) -> None:
+async def _unlink_chunks(
+    sandbox: Any, paths: list[str], workspace_id: str, layout: WorkspaceLayout
+) -> None:
     try:
-        await unlink_direct(sandbox, paths)
+        await unlink_direct(sandbox, paths, layout=layout)
     except Exception as e:
         # Cosmetic: the next pack op sweeps what is left by age.
         logger.info(f"Could not remove pack chunks for {workspace_id}: {e}")
@@ -298,6 +333,7 @@ async def _persist_packed(
     existing: dict[str, dict[str, Any]],
     *,
     may_prune: bool = True,
+    layout: WorkspaceLayout,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """Rows for every small file, via the pack set. Returns (rows, errors, skipped).
 
@@ -341,6 +377,7 @@ async def _persist_packed(
     out = await pack_direct(
         sandbox,
         [{"path": e.path, "sha256": e.sha256, "size": e.size} for e in members],
+        layout=layout,
     )
     chunks = out["chunks"]
     changed = set(out["changed"])
@@ -360,8 +397,16 @@ async def _persist_packed(
         )
         for c in chunks
     ]
+    # The chunks themselves belong to the machine, not to the project folder
+    # the members came from, so they push and unlink at the computer root;
+    # ``_entry_abs_path`` reads their absolute paths as such.
     chunk_rows, _ = await _persist_blobs(
-        user_id, workspace_id, sandbox, chunk_entries, unlink_after=True
+        user_id,
+        workspace_id,
+        sandbox,
+        chunk_entries,
+        unlink_after=True,
+        layout=_machine_layout(layout),
     )
     available = {r["blob_sha256"] for r in chunk_rows}
 
@@ -393,7 +438,11 @@ async def _persist_packed(
 
 
 async def _persist_inline(
-    workspace_id: str, sandbox: Any, entries: list[ScanEntry]
+    workspace_id: str,
+    sandbox: Any,
+    entries: list[ScanEntry],
+    *,
+    layout: WorkspaceLayout,
 ) -> tuple[list[dict[str, Any]], int]:
     """No object store: bytes go into the manifest row itself."""
     rows: list[dict[str, Any]] = []
@@ -404,7 +453,7 @@ async def _persist_inline(
         async with sem:
             try:
                 content = await sandbox.adownload_file_bytes(
-                    f"{sandbox.working_dir}/{entry.path}"
+                    _entry_abs_path(entry, layout)
                 )
                 if content is None:
                     return None

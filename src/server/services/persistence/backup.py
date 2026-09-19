@@ -12,6 +12,7 @@ import os
 from datetime import datetime
 from typing import Any
 
+from ptc_agent.core.paths import WorkspaceLayout
 from src.server.database.workspace_file import (
     bulk_update_file_stamps,
     bulk_upsert_files,
@@ -53,7 +54,10 @@ logger = logging.getLogger(__name__)
 
 
 async def list_sandbox_files(
-    sandbox: Any, *, prior: dict[str, tuple[int, int, str]] | None = None
+    sandbox: Any,
+    *,
+    prior: dict[str, tuple[int, int, str]] | None = None,
+    layout: WorkspaceLayout,
 ) -> dict[str, dict[str, Any]]:
     """Listing of regular files for the backup-status route.
 
@@ -61,9 +65,9 @@ async def list_sandbox_files(
     hashes for unchanged files instead of re-reading the whole tree.
     """
     scan = await scan_workspace(
-        sandbox, prior or {}, max_file_bytes=MAX_FILE_SIZE
+        sandbox, prior or {}, max_file_bytes=MAX_FILE_SIZE, layout=layout
     )
-    work_dir = sandbox.working_dir
+    work_dir = layout.workspace
     return {
         e.path: {
             "abs_path": f"{work_dir}/{e.path}",
@@ -98,9 +102,16 @@ def _has_ancestor_in(path: str, names: set[str]) -> bool:
     return False
 
 
-async def sync_to_db(workspace_id: str, sandbox: Any) -> dict[str, Any]:
+async def sync_to_db(
+    workspace_id: str, sandbox: Any, *, layout: WorkspaceLayout
+) -> dict[str, Any]:
     """
     Snapshot workspace files from the sandbox into the manifest.
+
+    ``layout`` names the project folder to mirror. It is required, and its
+    folder name is fenced against the row inside the prune statement: a scan
+    of the wrong directory would otherwise read every sibling's file as this
+    project's and delete the manifest it was meant to update.
 
     The sandbox walks and hashes its own tree; this side diffs the result
     against the manifest and moves only the bytes whose digest is not yet
@@ -117,14 +128,14 @@ async def sync_to_db(workspace_id: str, sandbox: Any) -> dict[str, Any]:
     """
     try:
         async with workspace_sync_lock(workspace_id) as conn:
-            return await _sync_locked(workspace_id, sandbox, conn)
+            return await _sync_locked(workspace_id, sandbox, conn, layout)
     except Exception as e:
         logger.error(f"File sync failed for workspace {workspace_id}: {e}")
         raise
 
 
 async def _sync_locked(
-    workspace_id: str, sandbox: Any, conn: Any
+    workspace_id: str, sandbox: Any, conn: Any, layout: WorkspaceLayout
 ) -> dict[str, Any]:
     """One sync pass, holding this workspace's lock on ``conn``.
 
@@ -134,7 +145,7 @@ async def _sync_locked(
     """
     result = {
         "synced": 0, "skipped": 0, "deleted": 0, "errors": 0,
-        "oversized": 0, "total_size": 0,
+        "oversized": 0, "total_size": 0, "root_missing": False,
     }
 
     # Taken before the scan, on the database's clock: rows written by
@@ -145,6 +156,7 @@ async def _sync_locked(
         sandbox,
         prior_from_meta(existing),
         max_file_bytes=MAX_FILE_SIZE,
+        layout=layout,
     )
     result["oversized"] = len(scan.oversized)
     for item in scan.oversized:
@@ -155,12 +167,24 @@ async def _sync_locked(
         )
     read_errors = 0
     for item in scan.errors:
+        # ENOENT on the root is a folder this sandbox generation never
+        # had: a sibling that has not rejoined since the machine was
+        # recreated. Nothing on the sandbox can be lost, so it is not an
+        # unsaved file, but the scan saw nothing either, so no row may be
+        # pruned on its account.
+        if item.get("errno") == errno.ENOENT and item.get("path") == ".":
+            logger.info(
+                f"Workspace {workspace_id} has no folder on this sandbox; "
+                f"nothing to mirror this pass"
+            )
+            result["root_missing"] = True
+            continue
         # ENOENT below the root is a file removed between the listing
         # and the read: absent for the right reason, so it is neither
         # data at risk nor a reason to withhold pruning. Anything else
-        # (EACCES, EIO, the root itself) is data at risk, and a strict
-        # backup must refuse to tear the sandbox down over it.
-        if item.get("errno") == errno.ENOENT and item.get("path") != ".":
+        # (EACCES, EIO) is data at risk, and a strict backup must refuse
+        # to tear the sandbox down over it.
+        if item.get("errno") == errno.ENOENT:
             logger.info(
                 f"{item.get('path')} in workspace {workspace_id} vanished "
                 f"during the scan; treating it as deleted"
@@ -189,6 +213,9 @@ async def _sync_locked(
         )
         may_prune = False
 
+    if result["root_missing"]:
+        return result
+
     if read_errors and may_prune:
         # A path the scan could not read is absent from the listing
         # for the wrong reason. The root itself failing looks like
@@ -212,7 +239,11 @@ async def _sync_locked(
             )
             return result
         deleted = await delete_removed_files(
-            workspace_id, set(), untouched_since=started_at, conn=conn
+            workspace_id,
+            set(),
+            walked_dir_name=layout.dir_name,
+            untouched_since=started_at,
+            conn=conn,
         )
         result["deleted"] = deleted
         return result
@@ -304,18 +335,24 @@ async def _sync_locked(
     if needs_bytes:
         if blobs_on:
             persisted, errors = await _persist_blobs(
-                user_id, workspace_id, sandbox, needs_bytes
+                user_id, workspace_id, sandbox, needs_bytes, layout=layout
             )
         else:
             persisted, errors = await _persist_inline(
-                workspace_id, sandbox, needs_bytes
+                workspace_id, sandbox, needs_bytes, layout=layout
             )
         rows.extend(persisted)
         result["errors"] += errors
 
     if pack_members:
         packed, errors, skipped = await _persist_packed(
-            user_id, workspace_id, sandbox, pack_members, existing, may_prune=may_prune
+            user_id,
+            workspace_id,
+            sandbox,
+            pack_members,
+            existing,
+            may_prune=may_prune,
+            layout=layout,
         )
         rows.extend(packed)
         result["errors"] += errors
@@ -350,7 +387,11 @@ async def _sync_locked(
 
     if may_prune:
         deleted = await delete_removed_files(
-            workspace_id, active_paths, untouched_since=started_at, conn=conn
+            workspace_id,
+            active_paths,
+            walked_dir_name=layout.dir_name,
+            untouched_since=started_at,
+            conn=conn,
         )
         result["deleted"] += deleted
     else:

@@ -471,6 +471,7 @@ async def delete_removed_files(
     workspace_id: str,
     active_paths: set,
     *,
+    walked_dir_name: str,
     untouched_since: datetime,
     conn=None,
 ) -> int:
@@ -478,6 +479,13 @@ async def delete_removed_files(
     Delete files that are no longer present in the sandbox.
 
     Removes all workspace_files rows whose file_path is NOT in active_paths.
+
+    ``walked_dir_name`` is the folder the scan that produced ``active_paths``
+    actually walked, and the statement fires only when the row says the same,
+    so a scan of the computer root (or of a sibling's folder) prunes nothing.
+    Rows are keyed relative to one directory, which makes a path from the
+    wrong directory indistinguishable from a real subdirectory of this one,
+    and the only place the two can still be told apart is against the row.
 
     ``untouched_since`` fences the prune to rows nobody has written since the
     caller's scan began: two syncs may overlap (a post-turn backup and a stop,
@@ -488,6 +496,7 @@ async def delete_removed_files(
     Args:
         workspace_id: Workspace UUID
         active_paths: Set of file paths that still exist in the sandbox
+        walked_dir_name: The folder the scan walked ("" for the computer root)
         untouched_since: Only delete rows with ``updated_at`` before this
         conn: Optional database connection to reuse
 
@@ -500,12 +509,23 @@ async def delete_removed_files(
         async def _execute(cur):
             await cur.execute(
                 """
-                DELETE FROM workspace_files
-                WHERE workspace_id = %s
-                  AND NOT (file_path = ANY(%s::text[]))
-                  AND (%s::timestamptz IS NULL OR updated_at < %s::timestamptz)
+                DELETE FROM workspace_files f
+                USING workspaces w
+                WHERE w.workspace_id = %(workspace_id)s
+                  AND f.workspace_id = %(workspace_id)s
+                  AND COALESCE(w.dir_name, '') = %(walked_dir_name)s
+                  AND NOT (f.file_path = ANY(%(active_paths)s::text[]))
+                  AND (
+                        %(untouched_since)s::timestamptz IS NULL
+                        OR f.updated_at < %(untouched_since)s::timestamptz
+                      )
                 """,
-                (workspace_id, paths_list, untouched_since, untouched_since),
+                {
+                    "workspace_id": workspace_id,
+                    "walked_dir_name": walked_dir_name or "",
+                    "active_paths": paths_list,
+                    "untouched_since": untouched_since,
+                },
             )
             return cur.rowcount
 
