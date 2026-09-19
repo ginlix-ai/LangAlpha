@@ -24,9 +24,16 @@ from typing import Any
 import structlog
 
 from ptc_agent.config.core import DockerConfig
+from ptc_agent.core.sandbox._defaults import sandbox_thread_env
 from ptc_agent.core.sandbox.providers._chart_capture import (
     build_code_wrapper,
     extract_artifacts,
+)
+from ptc_agent.core.sandbox.providers._tiers import (
+    TierSizing,
+    applied_cpus,
+    container_sizing,
+    resolve_tier,
 )
 from ptc_agent.core.sandbox.runtime import (
     CodeRunResult,
@@ -61,7 +68,6 @@ _DOCKER_STATE_MAP: dict[str, RuntimeState] = {
 
 _SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -76,18 +82,6 @@ def _parse_proxy_port_range(range_str: str) -> list[int]:
     if start > end:
         raise ValueError(f"Invalid proxy port range: start ({start}) > end ({end})")
     return list(range(start, end + 1))
-
-
-def _parse_memory(limit_str: str) -> int:
-    """Convert a human-friendly memory string (e.g. ``"4g"``) to bytes."""
-    limit_str = limit_str.strip().lower()
-    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([kmgt])?b?", limit_str)
-    if not match:
-        raise ValueError(f"Cannot parse memory limit: {limit_str!r}")
-    value = float(match.group(1))
-    suffix = match.group(2) or ""
-    multipliers = {"": 1, "k": 1024, "m": 1024**2, "g": 1024**3, "t": 1024**4}
-    return int(value * multipliers[suffix])
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +225,11 @@ class DockerRuntime(SandboxRuntime):
         stderr_path = f"{self._working_dir}/_stderr_{uuid.uuid4().hex[:8]}.txt"
         run_cmd = f"{env_prefix}python3 {script_path} 2>{stderr_path}"
 
-        # Run the code — we parse combined stdout for artifacts
+        # Run the code. We parse combined stdout for artifacts. The turn's
+        # own directory is reached by the shipped ``sitecustomize.py``, which
+        # reads ``PTC_TURN_CWD`` out of ``env`` above; the script and its
+        # stderr file are runtime scratch and stay where the container puts
+        # them.
         exec_result = await self.exec(run_cmd, timeout=timeout)
 
         # Extract chart artifacts from stdout markers
@@ -695,6 +693,7 @@ class DockerProvider(SandboxProvider):
         # fall back to DockerConfig.working_dir only if not provided.
         self._working_dir = working_dir or config.working_dir
         self._client: Any | None = None  # aiodocker.Docker (lazy)
+        self._storage_quota_notice_shown = False
 
     async def _get_client(self) -> Any:
         """Return the aiodocker client, creating it lazily."""
@@ -706,13 +705,91 @@ class DockerProvider(SandboxProvider):
 
     # -- SandboxProvider interface --
 
+    def _resolve_tier(self, tier: str | None) -> TierSizing:
+        """Resolve a tier name to this daemon's container limits."""
+        return container_sizing(
+            resolve_tier(
+                tier,
+                default_tier=self._config.default_tier,
+                resource_tiers=self._config.resource_tiers,
+            ),
+            floor_cpus=self._config.cpu_count,
+            floor_memory_limit=self._config.memory_limit,
+        )
+
+    def _apply_disk_quota(
+        self, host_config: dict[str, Any], sizing: TierSizing
+    ) -> None:
+        """Size the container's writable layer when the storage driver allows it."""
+        if sizing.disk_gib is None:
+            return
+        if self._config.storage_quota_enabled:
+            host_config["StorageOpt"] = {"size": f"{sizing.disk_gib}G"}
+            return
+        # Per provider instance, not per process: a module flag is shared by
+        # every runtime in the worker, so the second daemon's operator never
+        # sees the notice.
+        if not self._storage_quota_notice_shown:
+            self._storage_quota_notice_shown = True
+            logger.info(
+                "Tier disk size not applied; enable docker.storage_quota_enabled "
+                "on a daemon whose storage driver supports per-container quotas",
+                tier=sizing.tier,
+                disk_gib=sizing.disk_gib,
+            )
+
+    async def _verify_tier_applied(
+        self, container_obj: Any, info: dict[str, Any], sizing: TierSizing
+    ) -> None:
+        """Fail an elevated tier whose limits the daemon dropped.
+
+        Docker answers a limit its kernel cannot enforce with a warning on the
+        create response rather than an error, so an unverified container can run
+        at host size while the workspace is billed for a tier. Mirrors the Daytona
+        provider's refusal to hand back a base-sized sandbox for an elevated tier.
+        """
+        host_config = info.get("HostConfig") or {}
+        applied = applied_cpus(host_config)
+        applied_memory = int(host_config.get("Memory") or 0)
+        want_cpus = int(sizing.cpus * 1e9) / 1e9
+
+        if (
+            applied is not None
+            and abs(applied - want_cpus) < 0.01
+            and applied_memory == sizing.memory_bytes
+        ):
+            return
+
+        try:
+            await container_obj.delete(force=True)
+        except Exception as e:
+            logger.warning(
+                "Failed to remove the under-provisioned container",
+                error=str(e),
+            )
+        raise RuntimeError(
+            f"Docker did not apply the {sizing.tier!r} tier limits "
+            f"(asked {want_cpus} vCPU / {sizing.memory_bytes} bytes, "
+            f"got {applied} vCPU / {applied_memory} bytes); "
+            "refusing to run an elevated tier at host size"
+        )
+
     async def create(
         self,
         *,
         env_vars: dict[str, str] | None = None,
         mcp_packages: list[str] | None = None,
+        tier: str | None = None,
         **kwargs: Any,
     ) -> DockerRuntime:
+        """Create a sandbox container sized for ``tier``.
+
+        Args:
+            env_vars: Environment injected at creation time; wins over the thread
+                pool defaults this method sets.
+            mcp_packages: npm packages installed into the container after start.
+            tier: Resource tier name. ``None`` resolves to the configured default.
+        """
         client = await self._get_client()
         await self._ensure_image(client)
 
@@ -722,14 +799,17 @@ class DockerProvider(SandboxProvider):
         # Parse proxy port pool for preview URL support
         proxy_ports = _parse_proxy_port_range(self._config.preview_proxy_ports)
 
+        sizing = self._resolve_tier(tier)
+
         # Build container config
         host_config: dict[str, Any] = {
-            "Memory": _parse_memory(self._config.memory_limit),
-            "NanoCpus": int(self._config.cpu_count * 1e9),
+            "Memory": sizing.memory_bytes,
+            "NanoCpus": int(sizing.cpus * 1e9),
             "NetworkMode": self._config.network_mode,
             "AutoRemove": False,  # We manage removal ourselves
             "Init": True,  # tini as PID 1 for zombie reaping
         }
+        self._apply_disk_quota(host_config, sizing)
 
         # host.docker.internal resolves natively on Docker Desktop but not on
         # Linux bridge networks; pin it so the egress relay's default base URL
@@ -767,19 +847,37 @@ class DockerProvider(SandboxProvider):
         if proxy_ports:
             container_config["ExposedPorts"] = {f"{p}/tcp": {} for p in proxy_ports}
 
-        if env_vars:
-            container_config["Env"] = [f"{k}={v}" for k, v in env_vars.items()]
+        env = {
+            **sandbox_thread_env(int(sizing.cpus)),
+            **(env_vars or {}),
+        }
+        container_config["Env"] = [f"{k}={v}" for k, v in env.items()]
 
-        container_obj = await client.containers.create(
-            config=container_config,
-            name=container_name,
-        )
+        try:
+            container_obj = await client.containers.create(
+                config=container_config,
+                name=container_name,
+            )
+        except Exception as e:
+            if sizing.elevated:
+                disk_note = (
+                    f", {sizing.disk_gib}G disk" if "StorageOpt" in host_config else ""
+                )
+                raise RuntimeError(
+                    f"Docker rejected the {sizing.tier!r} tier limits "
+                    f"({sizing.cpus} vCPU, {sizing.memory_bytes} bytes{disk_note}): "
+                    f"{e}; refusing to create a base-sized container for an elevated tier"
+                ) from e
+            raise
         await container_obj.start()
+
+        info = await container_obj.show()
+        if sizing.elevated:
+            await self._verify_tier_applied(container_obj, info, sizing)
 
         # Read actual host port mappings (dynamic ports picked by Docker)
         host_port_map: dict[int, int] = {}
         if proxy_ports:
-            info = await container_obj.show()
             port_bindings = (
                 info.get("NetworkSettings", {})
                 .get("Ports", {})
@@ -794,6 +892,9 @@ class DockerProvider(SandboxProvider):
             container_name=container_name,
             runtime_id=runtime_id,
             image=self._config.image,
+            tier=sizing.tier,
+            cpus=sizing.cpus,
+            memory_bytes=sizing.memory_bytes,
             host_port_map=host_port_map or None,
         )
 
@@ -810,7 +911,7 @@ class DockerProvider(SandboxProvider):
 
         # Install MCP npm packages if needed (mirrors Daytona snapshot behavior)
         if mcp_packages:
-            pkgs = " ".join(mcp_packages)
+            pkgs = " ".join(shlex.quote(pkg) for pkg in mcp_packages)
             logger.info("Installing MCP packages in Docker container", packages=pkgs)
             result = await runtime.exec(f"npm install -g {pkgs}", timeout=120)
             if result.exit_code != 0:

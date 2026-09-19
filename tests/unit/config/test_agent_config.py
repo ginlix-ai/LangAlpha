@@ -217,21 +217,41 @@ class TestAgentConfigToCoreConfig:
     def test_preserves_all_sections(self):
         config = _minimal_config()
         core = config.to_core_config()
-        assert core.security is config.security
-        assert core.logging is config.logging
-        assert core.filesystem is config.filesystem
+        assert core.sandbox == config.sandbox
+        assert core.security == config.security
+        assert core.logging == config.logging
+        assert core.filesystem == config.filesystem
 
-    def test_mcp_is_a_deep_copy_not_shared(self):
-        """Each CoreConfig owns its MCPConfig so per-workspace edits can't bleed."""
+    def test_every_section_is_a_deep_copy_not_shared(self):
+        """Each CoreConfig owns its sections so per-workspace edits can't bleed."""
         config = _minimal_config()
         core = config.to_core_config()
+        assert core.sandbox is not config.sandbox
+        assert core.sandbox.daytona is not config.sandbox.daytona
         assert core.mcp is not config.mcp
-        assert core.mcp == config.mcp
+        assert core.security is not config.security
+        assert core.logging is not config.logging
+        assert core.filesystem is not config.filesystem
         # Mutating the per-workspace copy leaves the source AgentConfig untouched.
         core.mcp.servers.append(
             MCPServerConfig(name="injected", source="workspace")
         )
         assert config.mcp.servers == []
+
+    def test_sandbox_edits_do_not_leak_between_workspaces(self):
+        """The shared-reference bug: two workspaces, one SandboxConfig object."""
+        config = _minimal_config()
+        first = config.to_core_config()
+        second = config.to_core_config()
+
+        first.sandbox.daytona.default_tier = "max"
+        first.sandbox.daytona.auto_stop_interval = 0
+        first.filesystem.working_directory = "/home/workspace/projects/one"
+
+        assert second.sandbox.daytona.default_tier == "standard"
+        assert second.sandbox.daytona.auto_stop_interval == 3600
+        assert second.filesystem.working_directory == "/home/workspace"
+        assert config.sandbox.daytona.default_tier == "standard"
 
 
 # ---------------------------------------------------------------------------

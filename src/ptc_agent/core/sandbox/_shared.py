@@ -42,6 +42,21 @@ _SANDBOX_INTERNAL_PACKAGES: tuple[str, ...] = ("data_client", "market_protocol")
 TRANSFER_RUNTIME_SANDBOX_NAME = "wsfiles_transfer.py"
 _TRANSFER_RUNTIME_SOURCE = Path(__file__).with_name("wsfiles_transfer_runtime.py")
 
+#: The MCP supervisor, shipped as an importable package so the sandbox can run
+#: it as ``python3 -m supervisor``. Rides ``internal_packages`` like the
+#: transfer runtime, so a source edit is hashed and re-shipped rather than
+#: silently staying at whatever version the sandbox booted with.
+SUPERVISOR_SANDBOX_PACKAGE = "supervisor"
+_SUPERVISOR_SOURCE_DIR = Path(__file__).with_name("supervisor_runtime")
+
+#: ``site`` imports this by name at interpreter startup, which is how a turn's
+#: Python lands in its own workspace folder without a prelude prepended to the
+#: submitted source.
+TURN_CWD_SANDBOX_NAME = "sitecustomize.py"
+_TURN_CWD_SOURCE = Path(__file__).with_name("turn_cwd_sitecustomize.py")
+#: Names the directory that ``sitecustomize.py`` chdirs into.
+TURN_CWD_ENV = "PTC_TURN_CWD"
+
 
 @dataclass
 class ChartData:
@@ -69,10 +84,16 @@ class ExecutionResult:
 
 @dataclass
 class SyncResult:
-    """Result of a unified sandbox asset sync operation."""
+    """Result of a unified sandbox asset sync operation.
+
+    ``layout_version`` is what the sandbox's filesystem is at once the sync
+    finished, which is how the host stamps its own record of it without
+    booting the machine to ask.
+    """
 
     refreshed_modules: list[str]
     forced: bool
+    layout_version: int | None = None
 
 
 def _sha256_file(path: Path) -> str:
@@ -101,6 +122,12 @@ def _internal_package_files(src_dir: Path) -> list[tuple[Path, Path]]:
     # hashed into the manifest and re-shipped whenever it changes; the vault
     # helper's unhashed upload is the precedent this deliberately avoids.
     files.append((_TRANSFER_RUNTIME_SOURCE, Path(TRANSFER_RUNTIME_SANDBOX_NAME)))
+    files.append((_TURN_CWD_SOURCE, Path(TURN_CWD_SANDBOX_NAME)))
+    for supervisor_file in sorted(_SUPERVISOR_SOURCE_DIR.glob("*.py")):
+        files.append((
+            supervisor_file,
+            Path(SUPERVISOR_SANDBOX_PACKAGE) / supervisor_file.name,
+        ))
     for pkg in _SANDBOX_INTERNAL_PACKAGES:
         pkg_dir = (src_dir / pkg).resolve()
         if not pkg_dir.exists():

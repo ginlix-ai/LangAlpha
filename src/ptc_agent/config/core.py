@@ -48,27 +48,13 @@ def _default_resource_tiers() -> dict[str, ResourceTier]:
     }
 
 
-class DaytonaConfig(BaseModel):
-    """Daytona sandbox configuration.
+class ResourceTieredConfig(BaseModel):
+    """Named cpu/memory/disk presets, shared by every provider that sizes sandboxes.
 
-    All fields have sensible defaults. Only api_key needs to be set
-    (via DAYTONA_API_KEY environment variable).
+    A tier name is persisted on the workspace row and outlives the provider that
+    created it, so both providers have to resolve the same name to the same size.
     """
 
-    api_key: str = ""  # Set via DAYTONA_API_KEY env var, validated later
-    base_url: str = "https://app.daytona.io/api"
-    secret_namespace: str = ""  # Set via DAYTONA_SECRET_NAMESPACE
-    auto_stop_interval: int = 3600  # 1 hour
-    auto_archive_interval: int = 604800  # 7 days — keep stopped (fast restart) before cold storage
-    auto_delete_interval: int = 7776000  # 90 days — total dormant lifetime
-    python_version: str = "3.12"
-
-    # Snapshot configuration for faster sandbox initialization
-    snapshot_enabled: bool = True
-    snapshot_name: str | None = None
-    snapshot_auto_create: bool = True
-
-    # Resource tier presets (operator-tunable in agent_config.yaml).
     default_tier: str = "standard"
     resource_tiers: dict[str, ResourceTier] = Field(
         default_factory=_default_resource_tiers, validate_default=True
@@ -92,7 +78,7 @@ class DaytonaConfig(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _default_tier_must_exist(self) -> "DaytonaConfig":
+    def _default_tier_must_exist(self) -> "ResourceTieredConfig":
         """The default tier must resolve to a real preset — the create path
         relies on it to size base sandboxes, so a missing default is a config bug."""
         if self.default_tier not in self.resource_tiers:
@@ -102,6 +88,26 @@ class DaytonaConfig(BaseModel):
             )
         return self
 
+
+class DaytonaConfig(ResourceTieredConfig):
+    """Daytona sandbox configuration.
+
+    All fields have sensible defaults. Only api_key needs to be set
+    (via DAYTONA_API_KEY environment variable).
+    """
+
+    api_key: str = ""  # Set via DAYTONA_API_KEY env var, validated later
+    base_url: str = "https://app.daytona.io/api"
+    secret_namespace: str = ""  # Set via DAYTONA_SECRET_NAMESPACE
+    auto_stop_interval: int = 3600  # 1 hour
+    auto_archive_interval: int = 604800  # 7 days, keep stopped (fast restart) before cold storage
+    auto_delete_interval: int = 7776000  # 90 days, total dormant lifetime
+    python_version: str = "3.12"
+
+    # Snapshot configuration for faster sandbox initialization
+    snapshot_enabled: bool = True
+    snapshot_name: str | None = None
+    snapshot_auto_create: bool = True
 
 class SecurityConfig(BaseModel):
     """Security configuration for code execution.
@@ -226,6 +232,9 @@ class FilesystemConfig(BaseModel):
     Note: this validation is enforced for first-class filesystem tools only.
     """
 
+    # SandboxLayout.default().root. Spelled out because ptc_agent.core imports
+    # this module, so importing the layout at module scope would cycle; the
+    # layout test pins this literal to it.
     working_directory: str = "/home/workspace"
     allowed_directories: list[str] | None = None
     denied_directories: list[str] | None = None
@@ -233,10 +242,26 @@ class FilesystemConfig(BaseModel):
 
     def model_post_init(self, __context: Any) -> None:
         """Derive allowed/denied directories from working_directory when not set."""
+        # Imported here, not at module scope: ptc_agent.core.__init__ imports
+        # this module, so the layout can only be reached once both exist.
+        from ptc_agent.core.paths import SandboxLayout
+
+        layout = SandboxLayout(self.working_directory)
         if self.allowed_directories is None:
-            self.allowed_directories = [self.working_directory, "/tmp"]
+            self.allowed_directories = layout.allowed_directories
         if self.denied_directories is None:
-            self.denied_directories = [f"{self.working_directory}/_internal"]
+            self.denied_directories = layout.denied_directories
+
+
+def default_sandbox_skills_base(working_directory: str) -> str:
+    """Where skills land in a sandbox rooted at ``working_directory``.
+
+    Lives here rather than in the skills config so the two call sites that
+    derive it (the YAML loader and ``AgentConfig.create``) share one answer.
+    """
+    from ptc_agent.core.paths import SandboxLayout
+
+    return SandboxLayout(working_directory).skills
 
 
 def validate_daytona_api_key(daytona: DaytonaConfig) -> None:
@@ -253,7 +278,7 @@ def validate_daytona_api_key(daytona: DaytonaConfig) -> None:
         )
 
 
-class DockerConfig(BaseModel):
+class DockerConfig(ResourceTieredConfig):
     """Docker sandbox provider configuration.
 
     Mount options (combined freely):
@@ -287,8 +312,14 @@ class DockerConfig(BaseModel):
 
     image: str = "langalpha-sandbox:latest"
     working_dir: str = "/home/workspace"  # fallback; filesystem.working_directory is authoritative
+    # Floor for every tier: a single-host deployment sized its containers here
+    # before tiers existed, and a named tier may only raise that, never lower it.
     memory_limit: str = "4g"
     cpu_count: float = 2.0
+    # A tier's disk only reaches the container on a storage driver that supports
+    # per-container quotas (overlay2 on xfs with pquota, btrfs, zfs, devicemapper);
+    # every other driver rejects the option outright, so it is opt-in.
+    storage_quota_enabled: bool = False
     dev_mode: bool = False
     host_work_dir: str | None = None
     volumes: list[str] = Field(default_factory=list)

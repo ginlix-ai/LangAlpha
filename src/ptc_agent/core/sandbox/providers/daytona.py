@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import shlex
 from collections.abc import Sequence
 from typing import Any
 
@@ -20,11 +21,15 @@ from daytona import (
 )
 
 from ptc_agent.config.core import DaytonaConfig
+from ptc_agent.core.paths import DEFAULT_SANDBOX_ROOT
 from ptc_agent.core.sandbox._defaults import (
     DEFAULT_DEPENDENCIES,
+    SANDBOX_FALLBACK_CPU,
     SANDBOX_IMAGE_ENV,
     SANDBOX_NODE_VERSION,
+    SANDBOX_PLAYWRIGHT_VERSION,
     SNAPSHOT_PYTHON_VERSION,
+    sandbox_thread_env,
 )
 from ptc_agent.core.sandbox.runtime import (
     Artifact,
@@ -41,6 +46,7 @@ from ptc_agent.core.sandbox.platform_secrets import (
     ReconciledPlatformSecret,
     ResolvedPlatformSecret,
 )
+from ptc_agent.core.sandbox.providers._tiers import resolve_tier
 from ptc_agent.core.sandbox.providers.daytona_secrets import (
     DaytonaSecretReconciler,
     daytona_error_code as _daytona_error_code,
@@ -74,7 +80,7 @@ class DaytonaRuntime(SandboxRuntime):
         sdk_sandbox: Any,
         *,
         snapshot_name: str | None = None,
-        default_working_dir: str = "/home/workspace",
+        default_working_dir: str = DEFAULT_SANDBOX_ROOT,
     ) -> None:
         self._sandbox = sdk_sandbox
         self._working_dir: str | None = None
@@ -373,7 +379,7 @@ class DaytonaProvider(SandboxProvider):
 
     def __init__(self, config: DaytonaConfig, working_dir: str | None = None) -> None:
         self._config = config
-        self._working_dir = working_dir or "/home/workspace"
+        self._working_dir = working_dir or DEFAULT_SANDBOX_ROOT
         sdk_config = SDKDaytonaConfig(api_key=config.api_key, api_url=config.base_url)
         self._client = AsyncDaytona(sdk_config)
 
@@ -409,30 +415,27 @@ class DaytonaProvider(SandboxProvider):
         Returns:
             A DaytonaRuntime wrapping the new sandbox.
         """
-        # Resolve resources for every tier uniformly (including the default) so
-        # the configured default-tier cpu/mem/disk actually take effect instead
-        # of falling through to the Daytona platform default. The default tier is
-        # guaranteed present by DaytonaConfig's model validator.
-        effective_tier = tier or self._config.default_tier
-        is_default_tier = effective_tier == self._config.default_tier
-
-        resources: Resources | None = None
-        rt = self._config.resource_tiers.get(effective_tier)
-        if rt is not None:
-            resources = Resources(cpu=rt.cpu, memory=rt.memory, disk=rt.disk)
-        elif not is_default_tier:
-            # A persisted tier (e.g. from _recover_sandbox/duplicate) that was
-            # later removed from config. Raising here would make that workspace
-            # unrecoverable, so warn and fall back to the base snapshot instead of
-            # locking the user out.
-            logger.warning(
-                "Unknown resource tier %r; creating base-sized sandbox",
-                effective_tier,
+        # Resolved for every tier uniformly (including the default) so the
+        # configured default-tier cpu/mem/disk actually take effect instead of
+        # falling through to the Daytona platform default.
+        choice = resolve_tier(
+            tier,
+            default_tier=self._config.default_tier,
+            resource_tiers=self._config.resource_tiers,
+        )
+        resources = (
+            Resources(
+                cpu=choice.preset.cpu,
+                memory=choice.preset.memory,
+                disk=choice.preset.disk,
             )
+            if choice.preset is not None
+            else None
+        )
 
         snapshot_name = await self._ensure_snapshot(
             mcp_packages=mcp_packages or [],
-            tier=effective_tier,
+            tier=choice.name,
             resources=resources,
         )
 
@@ -445,14 +448,9 @@ class DaytonaProvider(SandboxProvider):
         # than raising (it never expected a sized snapshot in the first place).
         # The default tier is exempt: base-sized ~= default, so a missing default
         # snapshot degrades gracefully instead of hard-failing sandbox creation.
-        if (
-            resources is not None
-            and not is_default_tier
-            and snapshot_name is None
-            and self._config.snapshot_enabled
-        ):
+        if choice.elevated and snapshot_name is None and self._config.snapshot_enabled:
             raise RuntimeError(
-                f"Could not provision the {effective_tier!r} tier snapshot; "
+                f"Could not provision the {choice.name!r} tier snapshot; "
                 "refusing to create a base-sized sandbox for an elevated tier"
             )
 
@@ -575,7 +573,21 @@ class DaytonaProvider(SandboxProvider):
             "image_env": SANDBOX_IMAGE_ENV,
             "node_version": SANDBOX_NODE_VERSION,
             "mcp_packages": sorted(mcp_packages or []),
+            # Bump when the image changes in a way no other key here records
+            # (a reordered layer, a folded-in cache clean, a build-time guard).
+            "image_revision": 2,
+            # Per-tier BLAS/OpenMP caps. Derived from `resources` above, so this
+            # is redundant for a sized tier, but it is the only input that moves
+            # when the unsized fallback changes.
+            "thread_env": sandbox_thread_env(
+                resources.cpu if resources is not None else SANDBOX_FALLBACK_CPU
+            ),
+            # Both language ports of Playwright ride this one pin; drifting it
+            # changes the baked browser revision.
+            "playwright_version": SANDBOX_PLAYWRIGHT_VERSION,
+            "no_recommends": True,
             "apt_packages": [
+                "ca-certificates",
                 "curl",
                 "nodejs",
                 "ripgrep",
@@ -584,12 +596,17 @@ class DaytonaProvider(SandboxProvider):
                 "jq",
                 "git",
                 "unzip",
-                "libreoffice",
+                "libreoffice-writer",
+                "libreoffice-calc",
+                "libreoffice-impress",
+                "libreoffice-draw",
                 "gcc",
                 "poppler-utils",
                 "pandoc",
                 "qpdf",
                 "fonts-noto-cjk",
+                "fonts-dejavu-core",
+                "fonts-opensymbol",
                 "gh",
                 "polymarket",
                 "playwright",
@@ -601,17 +618,34 @@ class DaytonaProvider(SandboxProvider):
         config_str = json.dumps(config_data, sort_keys=True)
         return hashlib.sha256(config_str.encode()).hexdigest()[:8]
 
-    def _create_snapshot_image(self, mcp_packages: list[str] | None = None) -> Image:
-        """Build the declarative Image definition for a snapshot."""
+    def _create_snapshot_image(
+        self,
+        mcp_packages: list[str] | None = None,
+        *,
+        resources: Resources | None = None,
+    ) -> Image:
+        """Build the declarative Image definition for a snapshot.
+
+        ``resources`` sizes the baked-in BLAS/OpenMP thread caps. A snapshot is
+        already per tier, so the tier's cpu count is fixed for every sandbox born
+        from this image and the image is the right place to carry it.
+
+        Every cache is emptied in the same command that filled it: the SDK emits
+        one ``RUN`` per string, so a trailing cleanup command only adds a whiteout
+        and leaves the bytes in the earlier layer.
+        """
         dependencies = self.DEFAULT_DEPENDENCIES
         pkgs = mcp_packages or []
+        cpu = resources.cpu if resources is not None else SANDBOX_FALLBACK_CPU
+        browsers_path = SANDBOX_IMAGE_ENV["PLAYWRIGHT_BROWSERS_PATH"]
 
         base_image = Image.base("ubuntu:24.04").run_commands(
             "echo 'debconf debconf/frontend select Noninteractive'"
             " | debconf-set-selections",
             "apt-get update && apt-get install -y"
             " python3 python3-pip python3-venv"
-            " gcc gfortran build-essential",
+            " gcc gfortran build-essential"
+            " && apt-get clean && rm -rf /var/lib/apt/lists/*",
             "ln -sf /usr/bin/python3 /usr/bin/python",
             "ln -sf /usr/bin/pip3 /usr/bin/pip",
             "rm -f /usr/lib/python*/EXTERNALLY-MANAGED",
@@ -619,10 +653,18 @@ class DaytonaProvider(SandboxProvider):
 
         image = (
             base_image.run_commands(
-                "apt-get update",
-                "apt-get install -y curl ripgrep jq git unzip"
-                " libreoffice gcc poppler-utils pandoc qpdf"
-                " fonts-noto-cjk",
+                # --no-install-recommends, then name what conversion actually
+                # needs. The `libreoffice` metapackage's recommends were most of
+                # the office stack's footprint: a JRE the headless converter never
+                # calls, Mesa/LLVM Vulkan drivers, and the full Noto font set.
+                "apt-get update"
+                " && apt-get install -y --no-install-recommends"
+                " ca-certificates curl ripgrep jq git unzip gcc"
+                " poppler-utils pandoc qpdf"
+                " libreoffice-writer libreoffice-calc libreoffice-impress"
+                " libreoffice-draw"
+                " fonts-noto-cjk fonts-dejavu-core fonts-opensymbol"
+                " && apt-get clean && rm -rf /var/lib/apt/lists/*",
                 "curl -LsSf https://astral.sh/uv/install.sh | sh",
                 # Relocate BOTH uv and uvx — the MCP command allowlist permits
                 # `uvx`, so it must be on PATH too (mirrors Dockerfile.sandbox).
@@ -636,9 +678,13 @@ class DaytonaProvider(SandboxProvider):
                 " -o /tmp/node.tar.xz"
                 " && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1"
                 " && rm /tmp/node.tar.xz",
-                *[f"npm install -g {pkg}" for pkg in pkgs],
-                # Same pin as Dockerfile.sandbox: the pptx skill and its checks target 4.0.1.
-                "npm install -g docx pptxgenjs@4.0.1",
+                *[f"npm install -g {shlex.quote(pkg)}" for pkg in pkgs],
+                # Same pins as Dockerfile.sandbox: the pptx skill and its checks
+                # target 4.0.1, and playwright rides the shared version so the npm
+                # side resolves the same browser revision as the Python side.
+                "npm install -g docx pptxgenjs@4.0.1"
+                f" playwright@{SANDBOX_PLAYWRIGHT_VERSION}"
+                " && npm cache clean --force",
                 "GH_ARCH=$(dpkg --print-architecture)"
                 " && curl -fsSL https://github.com/cli/cli/releases/download/"
                 "v2.87.3/gh_2.87.3_linux_${GH_ARCH}.tar.gz -o /tmp/gh.tar.gz"
@@ -653,10 +699,12 @@ class DaytonaProvider(SandboxProvider):
                 " && tar -xzf /tmp/polymarket.tar.gz -C /tmp"
                 " && mv /tmp/polymarket /usr/local/bin/polymarket"
                 " && rm -rf /tmp/polymarket.tar.gz",
-                "npm install -g playwright"
-                " && PLAYWRIGHT_BROWSERS_PATH="
-                f"{SANDBOX_IMAGE_ENV['PLAYWRIGHT_BROWSERS_PATH']}"
-                " npx playwright install --with-deps chromium",
+                # --with-deps runs its own apt-get update, so the emptied lists
+                # above are not a problem; clean again on the way out.
+                f"PLAYWRIGHT_BROWSERS_PATH={browsers_path}"
+                " npx playwright install --with-deps chromium"
+                " && apt-get clean && rm -rf /var/lib/apt/lists/*"
+                " && npm cache clean --force && rm -rf /root/.npm/_npx",
                 # -- Docker Engine (for interactive-dashboard complex tier) --
                 "install -m 0755 -d /etc/apt/keyrings"
                 " && curl -fsSL https://download.docker.com/linux/ubuntu/gpg"
@@ -667,25 +715,34 @@ class DaytonaProvider(SandboxProvider):
                 " https://download.docker.com/linux/ubuntu"
                 ' $(. /etc/os-release && echo $VERSION_CODENAME) stable"'
                 " > /etc/apt/sources.list.d/docker.list",
+                # docker-ce keeps its recommends: the compose plugin is one of
+                # them and the interactive-dashboard tier uses it.
                 "apt-get update"
-                " && apt-get install -y docker-ce docker-ce-cli containerd.io",
-                "apt-get clean",
-                "rm -rf /var/lib/apt/lists/*",
+                " && apt-get install -y docker-ce docker-ce-cli containerd.io"
+                " && apt-get clean && rm -rf /var/lib/apt/lists/*",
             )
             # Same values Dockerfile.sandbox sets with ENV, and the same ones
             # PTCSandbox injects per sandbox at create time. Both layers are
             # load-bearing; see SANDBOX_IMAGE_ENV.
             .env(SANDBOX_IMAGE_ENV)
+            .env(sandbox_thread_env(cpu))
             .run_commands(
                 # yfinance pins curl_cffi<0.14 but scrapling[all] requires >=0.14.
                 # Override resolves the conflict (tested, yfinance works with 0.14+).
                 "echo 'curl_cffi>=0.14' > /tmp/overrides.txt",
                 "uv pip install --system --override /tmp/overrides.txt "
-                + " ".join(dependencies),
-                "rm /tmp/overrides.txt",
-                # Scrapling browser setup (Camoufox for StealthyFetcher).
-                # Chromium lands in the shared PLAYWRIGHT_BROWSERS_PATH set above.
+                + " ".join(dependencies)
+                + " && rm /tmp/overrides.txt"
+                + " && uv cache clean && rm -rf /root/.cache/pip",
+                # Scrapling browser setup (Camoufox for StealthyFetcher). Its
+                # Chromium is the one npx already placed in the shared
+                # PLAYWRIGHT_BROWSERS_PATH, because both pins are the same version.
                 "scrapling install || true",
+                # A version drift between the two Playwright pins is invisible at
+                # build time and doubles the browser payload, so fail here instead.
+                'n=$(ls -d "'
+                + browsers_path
+                + '"/chromium-*/ 2>/dev/null | wc -l); [ "$n" -eq 1 ]',
             )
             .run_commands(
                 'python -c "'
@@ -706,6 +763,7 @@ class DaytonaProvider(SandboxProvider):
             python_version=self.SNAPSHOT_PYTHON_VERSION,
             dependencies=dependencies,
             mcp_packages=pkgs,
+            thread_cpu=cpu,
         )
         return image
 
@@ -834,7 +892,7 @@ class DaytonaProvider(SandboxProvider):
         # Create snapshot if it doesn't exist
         if not snapshot_exists and self._config.snapshot_auto_create:
             logger.info("Creating snapshot", snapshot_name=snapshot_name)
-            image = self._create_snapshot_image(mcp_packages)
+            image = self._create_snapshot_image(mcp_packages, resources=resources)
 
             try:
                 await self._client.snapshot.create(

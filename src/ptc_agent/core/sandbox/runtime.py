@@ -180,8 +180,13 @@ class SandboxRuntime(ABC):
     # -- Execution --
 
     @abstractmethod
-    async def exec(self, command: str, timeout: int = 60) -> ExecResult:
-        """Run a shell command and return the result."""
+    async def exec(
+        self, command: str, timeout: int = 60
+    ) -> ExecResult:
+        """Run a shell command and return the result, from the sandbox's own
+        working directory. A caller that needs another one says so in the
+        command, because one computer holds several workspace folders and the
+        turn, not the machine, decides which of them is its."""
         ...
 
     @abstractmethod
@@ -191,7 +196,15 @@ class SandboxRuntime(ABC):
         env: dict[str, str] | None = None,
         timeout: int = 300,
     ) -> CodeRunResult:
-        """Execute code (Python) and return the result with artifacts."""
+        """Execute code (Python) and return the result with artifacts.
+
+        No working directory: a turn's Python lands in its own workspace via
+        the ``PTC_TURN_CWD`` entry in *env*, which the shipped
+        ``sitecustomize.py`` reads at interpreter startup. One provider's
+        ``code_run`` accepts no directory at all, and prepending a ``chdir``
+        to the submitted source costs a ``from __future__`` import and every
+        traceback line number.
+        """
         ...
 
     # -- File I/O --

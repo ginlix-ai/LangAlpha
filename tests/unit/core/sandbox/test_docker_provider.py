@@ -13,7 +13,7 @@ Covers:
 - DockerProvider get: mock container lookup
 - DockerProvider close: verify client is closed
 - DockerProvider is_transient_error: test classification
-- _parse_memory helper: test conversions
+- parse_memory helper: test conversions
 """
 
 from __future__ import annotations
@@ -24,12 +24,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ptc_agent.config.core import DockerConfig
+from ptc_agent.config.core import (
+    RESOURCE_TIER_CEILING,
+    DockerConfig,
+    ResourceTier,
+)
+from ptc_agent.core.sandbox.providers import docker as docker_provider
+from ptc_agent.core.sandbox.providers._tiers import parse_memory
 from ptc_agent.core.sandbox.providers.docker import (
     DockerProvider,
     DockerRuntime,
     _DOCKER_STATE_MAP,
-    _parse_memory,
     _parse_proxy_port_range,
 )
 from ptc_agent.core.sandbox.runtime import (
@@ -90,47 +95,47 @@ def _make_exec_mock(output: str = "", exit_code: int = 0) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# _parse_memory helper
+# parse_memory helper
 # ---------------------------------------------------------------------------
 
 
 class TestParseMemory:
     def test_bytes_plain(self):
-        assert _parse_memory("1024") == 1024
+        assert parse_memory("1024") == 1024
 
     def test_kilobytes(self):
-        assert _parse_memory("1k") == 1024
+        assert parse_memory("1k") == 1024
 
     def test_kilobytes_with_b(self):
-        assert _parse_memory("1kb") == 1024
+        assert parse_memory("1kb") == 1024
 
     def test_megabytes(self):
-        assert _parse_memory("512m") == 512 * 1024**2
+        assert parse_memory("512m") == 512 * 1024**2
 
     def test_megabytes_with_b(self):
-        assert _parse_memory("512mb") == 512 * 1024**2
+        assert parse_memory("512mb") == 512 * 1024**2
 
     def test_gigabytes(self):
-        assert _parse_memory("4g") == 4 * 1024**3
+        assert parse_memory("4g") == 4 * 1024**3
 
     def test_gigabytes_with_b(self):
-        assert _parse_memory("4gb") == 4 * 1024**3
+        assert parse_memory("4gb") == 4 * 1024**3
 
     def test_terabytes(self):
-        assert _parse_memory("1t") == 1024**4
+        assert parse_memory("1t") == 1024**4
 
     def test_fractional(self):
-        assert _parse_memory("1.5g") == int(1.5 * 1024**3)
+        assert parse_memory("1.5g") == int(1.5 * 1024**3)
 
     def test_with_whitespace(self):
-        assert _parse_memory("  4g  ") == 4 * 1024**3
+        assert parse_memory("  4g  ") == 4 * 1024**3
 
     def test_uppercase_is_lowered(self):
-        assert _parse_memory("4G") == 4 * 1024**3
+        assert parse_memory("4G") == 4 * 1024**3
 
     def test_invalid_raises(self):
         with pytest.raises(ValueError, match="Cannot parse memory limit"):
-            _parse_memory("not_a_number")
+            parse_memory("not_a_number")
 
 
 # ---------------------------------------------------------------------------
@@ -578,9 +583,11 @@ class TestDockerProvider:
 
     @pytest.fixture
     def provider(self, mock_client):
-        p = DockerProvider.__new__(DockerProvider)
-        p._config = DockerConfig(image="test-sandbox:latest")
-        p._working_dir = "/home/workspace"
+        # Built through __init__ rather than __new__ so the instance carries
+        # whatever per-provider state the real constructor sets up.
+        p = DockerProvider(
+            DockerConfig(image="test-sandbox:latest"), working_dir="/home/workspace"
+        )
         p._client = mock_client
         return p
 
@@ -643,23 +650,34 @@ class TestDockerProvider:
         assert "OTHER=value2" in env
 
     @pytest.mark.asyncio
-    async def test_create_no_env_vars_omits_env(self, provider, mock_client):
+    async def test_create_no_env_vars_still_sets_thread_pools(
+        self, provider, mock_client
+    ):
+        """Without caller env the container still gets the BLAS thread caps."""
         await provider.create()
         call_kwargs = mock_client.containers.create.call_args
         config = call_kwargs.kwargs.get("config") or call_kwargs[1].get("config")
-        assert "Env" not in config
+        # One helper for both providers; the image bakes NUMEXPR at 1, so the
+        # container has to override it too.
+        assert set(config["Env"]) == {
+            "OMP_NUM_THREADS=2",
+            "OPENBLAS_NUM_THREADS=2",
+            "MKL_NUM_THREADS=2",
+            "NUMEXPR_NUM_THREADS=2",
+        }
 
     @pytest.mark.asyncio
     async def test_create_with_bind_mount(self, mock_client, tmp_path):
         """When dev_mode=True and host_work_dir is set, Binds should appear in host config."""
         host_dir = str(tmp_path / "host_sandbox")
-        p = DockerProvider.__new__(DockerProvider)
-        p._config = DockerConfig(
-            image="test-sandbox:latest",
-            dev_mode=True,
-            host_work_dir=host_dir,
+        p = DockerProvider(
+            DockerConfig(
+                image="test-sandbox:latest",
+                dev_mode=True,
+                host_work_dir=host_dir,
+            ),
+            working_dir="/home/workspace",
         )
-        p._working_dir = "/home/workspace"
         p._client = mock_client
 
         await p.create()
@@ -1387,3 +1405,371 @@ class TestDockerProviderPreviewConfig:
 
         runtime = await provider.get("docker-abc123")
         assert runtime._host_port_map == {13000: 49200, 13001: 49201}
+
+
+# ---------------------------------------------------------------------------
+# DockerProvider, resource tiers
+# ---------------------------------------------------------------------------
+
+_GIB = 1024**3
+
+
+def _make_tier_client(
+    *,
+    applied_host_config: dict | None = None,
+    create_error: Exception | None = None,
+) -> tuple[MagicMock, MagicMock]:
+    """A client whose inspect echoes the HostConfig it was asked to create with.
+
+    That echo is what the elevated-tier check reads, so overriding it is how a
+    daemon that drops a limit is simulated.
+    """
+    container = _make_mock_container()
+    client = MagicMock()
+    client.images = MagicMock()
+    client.images.inspect = AsyncMock()
+    client.containers = MagicMock()
+
+    async def _create(*, config, name):
+        if create_error is not None:
+            raise create_error
+        applied = (
+            applied_host_config
+            if applied_host_config is not None
+            else config["HostConfig"]
+        )
+        container.show = AsyncMock(
+            return_value={
+                "State": {"Status": "running"},
+                "HostConfig": dict(applied),
+                "NetworkSettings": {"Ports": {}},
+            }
+        )
+        return container
+
+    client.containers.create = AsyncMock(side_effect=_create)
+    return client, container
+
+
+def _created_host_config(client: MagicMock) -> dict:
+    return client.containers.create.call_args.kwargs["config"]["HostConfig"]
+
+
+def _created_env(client: MagicMock) -> dict[str, str]:
+    env = client.containers.create.call_args.kwargs["config"].get("Env", [])
+    return dict(entry.split("=", 1) for entry in env)
+
+
+class TestDockerProviderResourceTiers:
+    @pytest.mark.asyncio
+    async def test_default_tier_keeps_the_configured_size(self):
+        """tier=None sizes at the operator's own memory_limit/cpu_count."""
+        provider = DockerProvider(
+            DockerConfig(memory_limit="4g", cpu_count=2.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create()
+
+        host_config = _created_host_config(client)
+        assert host_config["Memory"] == 4 * _GIB
+        assert host_config["NanoCpus"] == 2_000_000_000
+
+    @pytest.mark.asyncio
+    async def test_elevated_tier_raises_cpu_and_memory(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="max")
+
+        host_config = _created_host_config(client)
+        assert host_config["Memory"] == 8 * _GIB
+        assert host_config["NanoCpus"] == 4_000_000_000
+
+    @pytest.mark.asyncio
+    async def test_performance_tier_sizes_from_the_preset(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="performance")
+
+        host_config = _created_host_config(client)
+        assert host_config["Memory"] == 4 * _GIB
+        assert host_config["NanoCpus"] == 2_000_000_000
+
+    @pytest.mark.asyncio
+    async def test_tier_never_shrinks_below_the_configured_size(self):
+        """A bigger box stays bigger: the config is a floor, not a default."""
+        provider = DockerProvider(
+            DockerConfig(memory_limit="16g", cpu_count=8.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="performance")
+
+        host_config = _created_host_config(client)
+        assert host_config["Memory"] == 16 * _GIB
+        assert host_config["NanoCpus"] == 8_000_000_000
+
+    @pytest.mark.asyncio
+    async def test_unknown_tier_falls_back_to_the_configured_size(self):
+        """A tier dropped from config must not lock its workspace out."""
+        provider = DockerProvider(
+            DockerConfig(memory_limit="4g", cpu_count=2.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="retired-tier")
+
+        host_config = _created_host_config(client)
+        assert host_config["Memory"] == 4 * _GIB
+        assert host_config["NanoCpus"] == 2_000_000_000
+
+    @pytest.mark.asyncio
+    async def test_custom_tier_preset_is_honoured(self):
+        provider = DockerProvider(
+            DockerConfig(
+                memory_limit="1g",
+                cpu_count=1.0,
+                resource_tiers={
+                    "standard": ResourceTier(cpu=1, memory=1, disk=3),
+                    "wide": ResourceTier(cpu=3, memory=6, disk=8),
+                },
+            ),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="wide")
+
+        host_config = _created_host_config(client)
+        assert host_config["Memory"] == 6 * _GIB
+        assert host_config["NanoCpus"] == 3_000_000_000
+
+    @pytest.mark.asyncio
+    async def test_tier_above_the_ceiling_is_clamped(self):
+        provider = DockerProvider(
+            DockerConfig(
+                memory_limit="1g",
+                cpu_count=1.0,
+                resource_tiers={
+                    "standard": ResourceTier(cpu=1, memory=1, disk=3),
+                    "huge": ResourceTier(cpu=64, memory=256, disk=999),
+                },
+            ),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="huge")
+
+        host_config = _created_host_config(client)
+        assert host_config["NanoCpus"] == RESOURCE_TIER_CEILING["cpu"] * 1_000_000_000
+        assert host_config["Memory"] == RESOURCE_TIER_CEILING["memory"] * _GIB
+
+
+class TestDockerProviderTierDisk:
+    @pytest.mark.asyncio
+    async def test_disk_is_applied_when_the_driver_supports_quotas(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0, storage_quota_enabled=True),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="max")
+
+        assert _created_host_config(client)["StorageOpt"] == {"size": "10G"}
+
+    @pytest.mark.asyncio
+    async def test_disk_is_skipped_when_not_configured(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="max")
+
+        assert "StorageOpt" not in _created_host_config(client)
+
+    @pytest.mark.asyncio
+    async def test_disk_notice_is_logged_once_per_provider(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        with patch.object(docker_provider.logger, "info") as mock_info:
+            await provider.create(tier="max")
+            await provider.create(tier="max")
+
+        notices = [
+            call
+            for call in mock_info.call_args_list
+            if "storage_quota_enabled" in call.args[0]
+        ]
+        assert len(notices) == 1
+
+
+class TestDockerProviderTierFailsLoudly:
+    @pytest.mark.asyncio
+    async def test_daemon_rejecting_the_limits_raises(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client(
+            create_error=Exception("invalid argument: NanoCpus not supported")
+        )
+        provider._client = client
+
+        with pytest.raises(RuntimeError, match="refusing to create a base-sized"):
+            await provider.create(tier="max")
+
+    @pytest.mark.asyncio
+    async def test_default_tier_create_failure_is_not_relabelled(self):
+        """Only an elevated tier turns a create failure into a sizing error."""
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        boom = ValueError("name already in use")
+        client, _ = _make_tier_client(create_error=boom)
+        provider._client = client
+
+        with pytest.raises(ValueError, match="name already in use"):
+            await provider.create()
+
+    @pytest.mark.asyncio
+    async def test_silently_dropped_limits_raise_and_remove_the_container(self):
+        """A daemon that warns instead of failing must not leave a host-sized box."""
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, container = _make_tier_client(
+            applied_host_config={"Memory": 0, "NanoCpus": 0}
+        )
+        provider._client = client
+
+        with pytest.raises(RuntimeError, match="refusing to run an elevated tier"):
+            await provider.create(tier="max")
+
+        container.delete.assert_awaited_once_with(force=True)
+
+    @pytest.mark.asyncio
+    async def test_cpu_quota_readback_counts_as_applied(self):
+        """NanoCpus and CpuQuota/CpuPeriod are the same limit written two ways."""
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, container = _make_tier_client(
+            applied_host_config={
+                "Memory": 8 * _GIB,
+                "CpuQuota": 400_000,
+                "CpuPeriod": 100_000,
+            }
+        )
+        provider._client = client
+
+        runtime = await provider.create(tier="max")
+
+        assert runtime.id.startswith("docker-")
+        container.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_default_tier_is_not_verified(self):
+        """The default tier keeps today's best-effort sizing, not a hard gate."""
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, container = _make_tier_client(applied_host_config={})
+        provider._client = client
+
+        await provider.create()
+
+        container.delete.assert_not_called()
+
+
+class TestDockerProviderThreadPools:
+    @pytest.mark.asyncio
+    async def test_thread_pools_match_the_tier_vcpus(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="max")
+
+        env = _created_env(client)
+        assert env["OMP_NUM_THREADS"] == "4"
+        assert env["OPENBLAS_NUM_THREADS"] == "4"
+        assert env["MKL_NUM_THREADS"] == "4"
+
+    @pytest.mark.asyncio
+    async def test_thread_pools_follow_the_applied_size_not_the_preset(self):
+        """The floor won, so the pools track the floor rather than the tier."""
+        provider = DockerProvider(
+            DockerConfig(memory_limit="16g", cpu_count=8.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="performance")
+
+        assert _created_env(client)["OMP_NUM_THREADS"] == "8"
+
+    @pytest.mark.asyncio
+    async def test_fractional_cpu_still_gets_one_thread(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=0.5),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create()
+
+        assert _created_env(client)["OMP_NUM_THREADS"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_caller_env_wins_over_the_thread_defaults(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=4.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(env_vars={"OMP_NUM_THREADS": "1", "MY_VAR": "v"})
+
+        env = _created_env(client)
+        assert env["OMP_NUM_THREADS"] == "1"
+        assert env["MKL_NUM_THREADS"] == "4"
+        assert env["MY_VAR"] == "v"

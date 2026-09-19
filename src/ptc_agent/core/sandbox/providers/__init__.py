@@ -1,37 +1,55 @@
 """Sandbox provider factory."""
 
+from ptc_agent.config.core import CoreConfig, DaytonaConfig, DockerConfig
 from ptc_agent.core.sandbox.runtime import SandboxProvider
 
+ProviderConfig = DaytonaConfig | DockerConfig
 
-def create_provider(config) -> SandboxProvider:
-    """Create a sandbox provider based on configuration.
 
-    Args:
-        config: CoreConfig (or compatible) with a ``sandbox.provider`` field.
+def build_provider(
+    kind: str,
+    provider_config: ProviderConfig,
+    *,
+    working_dir: str | None = None,
+) -> SandboxProvider:
+    """Build a provider from one backend's own kind and settings.
 
-    Returns:
-        A concrete SandboxProvider instance.
+    The whole identity of the returned provider arrives through these
+    arguments, so two backends can be addressed from one process.
 
     Raises:
-        ValueError: If the provider name is not recognized.
+        ValueError: If ``kind`` names no known provider.
     """
-    provider_name = getattr(
-        getattr(config, "sandbox", None), "provider", "daytona"
-    )
-
-    # Both providers use filesystem.working_directory as single source of truth
-    working_dir = getattr(
-        getattr(config, "filesystem", None), "working_directory", None
-    )
-
-    if provider_name == "daytona":
+    if kind == "daytona":
         from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
 
-        return DaytonaProvider(config.sandbox.daytona, working_dir=working_dir)
+        return DaytonaProvider(provider_config, working_dir=working_dir)
 
-    if provider_name == "docker":
+    if kind == "docker":
         from ptc_agent.core.sandbox.providers.docker import DockerProvider
 
-        return DockerProvider(config.sandbox.docker, working_dir=working_dir)
+        return DockerProvider(provider_config, working_dir=working_dir)
 
-    raise ValueError(f"Unknown sandbox provider: {provider_name!r}")
+    raise ValueError(f"Unknown sandbox provider: {kind!r}")
+
+
+def create_provider(config: CoreConfig) -> SandboxProvider:
+    """Build the provider one CoreConfig selects.
+
+    ``SandboxConfig`` holds each kind's settings under a field of that same
+    name, which is what lets the selection stay a single lookup.
+
+    Raises:
+        ValueError: If ``sandbox.provider`` names no known provider.
+    """
+    kind = config.sandbox.provider
+    provider_config = getattr(config.sandbox, kind, None)
+    if provider_config is None:
+        raise ValueError(f"Unknown sandbox provider: {kind!r}")
+    return build_provider(
+        kind,
+        provider_config,
+        # filesystem.working_directory is the single source of truth for both
+        # providers; the per-provider working_dir field is only a fallback.
+        working_dir=config.filesystem.working_directory,
+    )
