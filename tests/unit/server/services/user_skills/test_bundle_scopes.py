@@ -6,9 +6,11 @@ skill dirs and the generic managed upload would fight it; and the two views
 must live in separate scope namespaces, because each scope's resolve deletes
 its own siblings.
 
-The scope *choice* is the third rule: a workspace whose effective user tier is
-the plain user tier reuses the plain user view rather than forking a private
-copy of identical bytes, so most workspaces cause no extra materialization.
+The scope *choice* is the third rule: the delivery view is the whole enabled
+user tier and resolves in the plain user scope for every workspace, because it
+materialises the one shared skill directory a computer has. A workspace's
+shadows and disables shape its effective set and its link view, never that
+directory.
 """
 
 import pytest
@@ -63,6 +65,9 @@ def db(monkeypatch):
         "rows": [],
         "ws_rows": None,
         "ws_disabled": set(),
+        # Account-tier disables, the per-skill kind. The bundle kind below
+        # reaches the same tier through the boot snapshot instead.
+        "disabled_builtins": set(),
         # Bundle name -> the platform skills it ships, plus the ones this user
         # switched off. Both empty is the ordinary account.
         "bundle_owns": {},
@@ -80,8 +85,8 @@ def db(monkeypatch):
     async def _ws_disabled(workspace_id):
         return state["ws_disabled"]
 
-    async def _empty_set(user_id):
-        return set()
+    async def _disabled_builtins(user_id):
+        return frozenset(state["disabled_builtins"])
 
     async def _empty_dict(user_id):
         return {}
@@ -104,7 +109,9 @@ def db(monkeypatch):
     monkeypatch.setattr(materialize, "list_enabled_user_skills", _rows)
     monkeypatch.setattr(materialize, "list_user_skills", _all_ws_rows)
     monkeypatch.setattr(materialize, "list_workspace_skill_disables", _ws_disabled)
-    monkeypatch.setattr(materialize, "get_disabled_builtin_skills", _empty_set)
+    monkeypatch.setattr(
+        materialize, "get_disabled_builtin_skills", _disabled_builtins
+    )
     monkeypatch.setattr(materialize, "get_skill_command_overrides", _empty_dict)
     monkeypatch.setattr(materialize, "list_account_disables", _disabled_bundles)
     monkeypatch.setattr(bundled, "component_owners", _owners)
@@ -140,8 +147,8 @@ async def test_workspace_rows_stay_out_of_the_delivery_view(db, resolved):
 
 @pytest.mark.asyncio
 async def test_untouched_user_tier_reuses_the_shared_user_view(db, resolved):
-    """No shadowing and no disables: the workspace's physical view is byte for
-    byte the plain user view, so it must not fork a private scope."""
+    """A workspace resolves the delivery view in the plain user scope, never a
+    private copy of identical bytes."""
     db["rows"] = [_row("alpha"), _row("beta"), _row("ws-only", workspace_id="ws-1")]
 
     await materialize.load_user_skill_bundle("u-1", "ws-1")
@@ -151,16 +158,18 @@ async def test_untouched_user_tier_reuses_the_shared_user_view(db, resolved):
 
 
 @pytest.mark.asyncio
-async def test_a_shadowed_user_skill_forks_a_workspace_scope(db, resolved):
-    """The workspace row hides the same-named user row, so this workspace's
-    delivery view is genuinely different from every other workspace's."""
+async def test_a_shadowed_user_skill_stays_in_the_delivery_view(db, resolved):
+    """The workspace row hides the same-named user row from this workspace's
+    effective set only. The shared directory keeps serving the user-tier body,
+    which is the one every sibling workspace reads, and the two tiers land in
+    different sandbox directories so neither overwrites the other."""
     db["rows"] = [_row("alpha"), _row("alpha", workspace_id="ws-1", content="d")]
 
     bundle = await materialize.load_user_skill_bundle("u-1", "ws-1")
 
-    ws_scope = materialize._scope_key("ws-1")
-    assert resolved[ws_scope] == [], "the shadowed user row leaves the view"
-    assert "user" not in resolved
+    assert resolved["user"] == ["alpha"], "the shadowed user row stays delivered"
+    assert materialize._scope_key("ws-1") not in resolved
+    assert bundle.dir == "/cache/user"
     assert resolved[materialize._own_scope_key("ws-1")] == ["alpha"]
     # One effective entry, and it is the workspace copy.
     assert [(s.name, s.workspace_scoped) for s in bundle.skills] == [("alpha", True)]
@@ -170,33 +179,56 @@ async def test_a_shadowed_user_skill_forks_a_workspace_scope(db, resolved):
 async def test_a_disabled_workspace_row_still_shadows_its_user_twin(db, resolved):
     """Shadowing is by name, not by enabled state.
 
-    If disabling the workspace copy promoted the user-tier row into the
-    delivery view, the asset sync would write those bytes over a dir the
-    reconciler owns, and the next pass would put the workspace row's content
-    back. Turning a workspace skill off turns that name off in the workspace.
+    Turning the workspace copy off turns that name off in the workspace rather
+    than falling it back to the inherited body, which is what the management
+    list already shows. The delivery view is unmoved either way: it feeds the
+    shared directory the sibling workspaces read.
     """
     db["rows"] = [_row("alpha"), _row("beta")]
     db["ws_rows"] = [_row("alpha", workspace_id="ws-1", content="d", enabled=False)]
 
     bundle = await materialize.load_user_skill_bundle("u-1", "ws-1")
 
-    ws_scope = materialize._scope_key("ws-1")
-    assert resolved[ws_scope] == ["beta"], "the user-tier alpha stays shadowed"
-    assert "user" not in resolved, "the plain user view would deliver alpha"
+    assert resolved["user"] == ["alpha", "beta"]
+    assert materialize._scope_key("ws-1") not in resolved
     assert [s.name for s in bundle.skills] == ["beta"]
 
 
 @pytest.mark.asyncio
-async def test_a_workspace_disable_forks_a_workspace_scope(db, resolved):
+async def test_a_workspace_disable_leaves_the_delivery_view_alone(db, resolved):
+    """The defect this locks: subtracting the disable from the delivery view
+    had the asset sync prune the name from the shared directory, taking the
+    skill from every sibling workspace on the computer (and flip-flopping the
+    directory turn by turn). The disable reaches the agent as an absent link in
+    this workspace's own view and as a name in ``disabled_builtins``.
+    """
     db["rows"] = [_row("alpha"), _row("beta")]
     db["ws_disabled"] = {"alpha"}
 
     bundle = await materialize.load_user_skill_bundle("u-1", "ws-1")
 
-    assert resolved[materialize._scope_key("ws-1")] == ["beta"]
-    assert "user" not in resolved
+    assert resolved["user"] == ["alpha", "beta"]
+    assert materialize._scope_key("ws-1") not in resolved
+    assert bundle.dir == "/cache/user"
     assert [s.name for s in bundle.skills] == ["beta"]
     assert "alpha" in bundle.disabled_builtins
+    assert bundle.workspace_disabled_builtins == frozenset({"alpha"})
+
+
+@pytest.mark.asyncio
+async def test_sibling_workspaces_share_one_delivery_view(db, resolved):
+    """One computer, one shared skill directory: the workspace that disables a
+    skill and the sibling that does not must deliver the same view, or the two
+    turns prune and re-upload it against each other."""
+    db["rows"] = [_row("alpha"), _row("beta")]
+
+    db["ws_disabled"] = {"alpha"}
+    disabling = await materialize.load_user_skill_bundle("u-1", "ws-1")
+    db["ws_disabled"] = set()
+    sibling = await materialize.load_user_skill_bundle("u-1", "ws-2")
+
+    assert disabling.dir == sibling.dir
+    assert resolved["user"] == ["alpha", "beta"]
 
 
 @pytest.mark.asyncio
@@ -365,3 +397,75 @@ async def test_a_bundle_disable_subtracts_against_the_boot_snapshot(
     bundle = await materialize.load_user_skill_bundle("u-1")
 
     assert bundle.disabled_builtins == frozenset({"morning-note"})
+
+
+class TestWorkspaceDisablesStayOffTheSharedTier:
+    """A workspace disable hides a skill from one workspace, not from the disk.
+
+    The shared skill directory at the computer root serves every workspace on
+    it, so deleting a skill there for one workspace's sake takes it from the
+    siblings. The bundle keeps the two disable tiers apart for that reason: the
+    registry reads their union, the upload reads the account tier alone.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_bundle_carries_the_workspace_disable_separately(self, db):
+        db["bundle_owns"] = {"market": ["morning-note"]}
+        db["ws_disabled"] = {"morning-note"}
+
+        bundle = await materialize.load_user_skill_bundle("u-1", "ws-1")
+
+        assert bundle.disabled_builtins == frozenset({"morning-note"})
+        assert bundle.workspace_disabled_builtins == frozenset({"morning-note"})
+        assert bundle.account_disabled_builtins == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_the_user_tier_bundle_has_no_workspace_disables(self, db):
+        db["ws_disabled"] = {"morning-note"}
+
+        bundle = await materialize.load_user_skill_bundle("u-1")
+
+        assert bundle.workspace_disabled_builtins == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_a_workspace_disable_does_not_prune_the_shared_upload(self, db):
+        db["bundle_owns"] = {"market": ["morning-note"]}
+        db["ws_disabled"] = {"morning-note"}
+
+        params = await materialize.sandbox_skill_sync_params(
+            "u-1", "/home/workspace/.agents/skills", "ws-1"
+        )
+
+        assert "disabled_skills" not in params
+
+    @pytest.mark.asyncio
+    async def test_an_account_disable_still_prunes_the_shared_upload(self, db):
+        db["bundle_owns"] = {"market": ["morning-note"]}
+        db["disabled_bundles"] = {"market"}
+
+        params = await materialize.sandbox_skill_sync_params(
+            "u-1", "/home/workspace/.agents/skills", "ws-1"
+        )
+
+        assert params["disabled_skills"] == frozenset({"morning-note"})
+
+    @pytest.mark.asyncio
+    async def test_both_tiers_naming_one_skill_still_prunes_the_upload(self, db):
+        """The two tiers are stored apart, so an overlap cannot cancel itself.
+
+        While the account tier was reconstructed by subtracting the workspace
+        tier out of the union, a name switched off at both levels came back
+        empty and the shared directory kept shipping it.
+        """
+        db["disabled_builtins"] = {"morning-note"}
+        db["ws_disabled"] = {"morning-note"}
+
+        bundle = await materialize.load_user_skill_bundle("u-1", "ws-1")
+        params = await materialize.sandbox_skill_sync_params(
+            "u-1", "/home/workspace/.agents/skills", "ws-1"
+        )
+
+        assert bundle.account_disabled_builtins == frozenset({"morning-note"})
+        assert bundle.workspace_disabled_builtins == frozenset({"morning-note"})
+        assert bundle.disabled_builtins == frozenset({"morning-note"})
+        assert params["disabled_skills"] == frozenset({"morning-note"})

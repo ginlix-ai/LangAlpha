@@ -36,15 +36,22 @@ from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
 from ptc_agent.agent.middleware.skills.lock import MANAGED_SOURCE_TYPE
+from ptc_agent.core.paths import WorkspaceLayout
+from ptc_agent.core.project_context import ProjectContext, current_project
 from ptc_agent.core.sandbox import skill_sync
 from ptc_agent.core.sandbox.skill_sync import SkillSyncError
 
+from src.server.services.workspace_layout import (
+    WorkspaceLayoutUnavailable,
+    resolve_workspace_layout,
+)
 from src.server.database.user_skills import (
     SkillSyncLockBusy,
     create_user_skill,
     delete_user_skill_cas,
     get_user_skill_by_id,
     list_user_skills,
+    list_workspace_skill_disables,
     update_user_skill_content_cas,
     workspace_skill_sync_lock,
 )
@@ -103,6 +110,9 @@ class ReconcileStats:
     skipped: int = 0
     failures: int = 0
     drifts: int = 0
+    #: Links into the computer's shared tier created/repointed and removed.
+    linked: int = 0
+    unlinked: int = 0
 
     @property
     def changed(self) -> bool:
@@ -115,6 +125,8 @@ class ReconcileStats:
             or self.conflicts
             or self.row_deletes
             or self.dir_deletes
+            or self.linked
+            or self.unlinked
         )
 
 
@@ -137,8 +149,33 @@ class _Pass:
     report: dict[str, Any]
     ws_rows: dict[str, dict[str, Any]]
     user_rows: dict[str, dict[str, Any]]
+    #: This workspace's own skill directory, the only tier the pass writes.
+    base: str
     stats: ReconcileStats = field(default_factory=ReconcileStats)
     actions: list[dict[str, Any]] = field(default_factory=list)
+
+
+async def _resolve_layout(
+    sandbox: "PTCSandbox",
+    workspace_id: str,
+    project: ProjectContext | None,
+) -> WorkspaceLayout:
+    """Which folder on the computer this pass materialises.
+
+    The caller's project first, then the turn's bound project when it is this
+    workspace, then the workspace row. Bringup paths run outside any turn, so
+    the row is not a fallback but the normal answer there.
+
+    Raises ``WorkspaceLayoutUnavailable`` when none of the three can name a
+    folder. The pass writes skill directories and prunes the ones it does not
+    recognise, so a guess at the computer root would prune every sibling's.
+    """
+    if project is not None:
+        return sandbox.workspace(project)
+    bound = current_project()
+    if bound is not None and bound.workspace_id == workspace_id:
+        return sandbox.workspace(bound)
+    return await resolve_workspace_layout(workspace_id, root=sandbox.working_dir)
 
 
 async def reconcile_workspace_skills(
@@ -147,13 +184,20 @@ async def reconcile_workspace_skills(
     user_id: str,
     workspace_id: str,
     source: str = "",
+    project: ProjectContext | None = None,
 ) -> ReconcileStats | None:
     """Run one reconcile pass; never raises — callers are turn/bringup paths
     that must not fail on sync trouble. Returns None when the sandbox isn't
-    usable or the pass aborted before producing a report."""
+    usable or the pass aborted before producing a report.
+
+    ``project`` names the workspace folder to materialise; omitted, it is
+    resolved per :func:`_resolve_layout`. Never off the sandbox, which serves
+    every workspace on the computer at once.
+    """
     if sandbox is None or getattr(sandbox, "runtime", None) is None:
         return None
     try:
+        resolved = await _resolve_layout(sandbox, workspace_id, project)
         async with workspace_skill_sync_lock(workspace_id):
             # Inside the lock on purpose. wait_for cancels only the inner
             # coroutine, so the lock's finally still runs its unlock on a live,
@@ -162,7 +206,7 @@ async def reconcile_workspace_skills(
             # lock held until the pooled connection dies, which is how one hung
             # sandbox makes a workspace permanently un-reconcilable.
             return await asyncio.wait_for(
-                _run_pass(sandbox, user_id, workspace_id, source),
+                _run_pass(sandbox, user_id, workspace_id, source, resolved),
                 timeout=RECONCILE_TIMEOUT_SECONDS,
             )
     except TimeoutError:
@@ -171,6 +215,17 @@ async def reconcile_workspace_skills(
             RECONCILE_TIMEOUT_SECONDS,
             workspace_id,
             source,
+        )
+        return None
+    except WorkspaceLayoutUnavailable as e:
+        # Nothing at all rather than a pass over the wrong directory: this one
+        # deletes the skill dirs it does not recognise, and every sibling's
+        # looks unrecognised from the computer root.
+        logger.warning(
+            "[skill_sync] pass skipped, no workspace folder (ws=%s source=%s): %s",
+            workspace_id,
+            source,
+            e,
         )
         return None
     except SkillSyncLockBusy:
@@ -191,9 +246,14 @@ async def reconcile_workspace_skills(
 
 
 async def _run_pass(
-    sandbox: "PTCSandbox", user_id: str, workspace_id: str, source: str
+    sandbox: "PTCSandbox",
+    user_id: str,
+    workspace_id: str,
+    source: str,
+    layout: WorkspaceLayout,
 ) -> ReconcileStats:
-    report = await skill_sync.report(sandbox)
+    base = layout.skills
+    report = await skill_sync.report(sandbox, base=base)
     ws_rows = {
         r["name"]: r
         for r in await list_user_skills(user_id, workspace_id=workspace_id)
@@ -201,6 +261,7 @@ async def _run_pass(
     user_rows = {r["name"]: r for r in await list_user_skills(user_id)}
     ctx = _Pass(
         sandbox=sandbox,
+        base=base,
         user_id=user_id,
         workspace_id=workspace_id,
         report=report,
@@ -229,7 +290,7 @@ async def _run_pass(
             )
 
     if ctx.actions:
-        results = await skill_sync.apply_actions(sandbox, ctx.actions)
+        results = await skill_sync.apply_actions(sandbox, ctx.actions, base=base)
         for res in results:
             if res.get("ok"):
                 continue
@@ -253,12 +314,17 @@ async def _run_pass(
                     res.get("error"),
                 )
 
+    # Last, so the links land over the tier's settled contents: a name this
+    # pass just pushed down is a real dir and must not also be linked.
+    await _link_shared(ctx)
+
     stats = ctx.stats
     if stats.changed or stats.failures or stats.drifts:
         logger.info(
             "[skill_sync] reconcile ws=%s source=%s pulled=%d pushed=%d "
             "imported=%d adopted=%d healed=%d conflicts=%d row_deletes=%d "
-            "dir_deletes=%d skipped=%d failures=%d drifts=%d",
+            "dir_deletes=%d skipped=%d failures=%d drifts=%d linked=%d "
+            "unlinked=%d",
             workspace_id,
             source,
             stats.pulled,
@@ -272,8 +338,41 @@ async def _run_pass(
             stats.skipped,
             stats.failures,
             stats.drifts,
+            stats.linked,
+            stats.unlinked,
         )
     return stats
+
+
+async def _link_shared(ctx: _Pass) -> None:
+    """Point the workspace tier at the shared skills it may use.
+
+    The workspace's disables are applied here rather than on the shared
+    directory: that directory serves every workspace on the computer, so
+    pruning it for one would take the skill from its siblings.
+    """
+    user_base = skill_sync.skills_base(ctx.sandbox)
+    if ctx.base.rstrip("/") == user_base.rstrip("/"):
+        return
+    try:
+        disabled = await list_workspace_skill_disables(ctx.workspace_id)
+        result = await skill_sync.link_shared_skills(
+            ctx.sandbox, base=ctx.base, user_base=user_base, disabled=disabled
+        )
+    except Exception:
+        ctx.stats.failures += 1
+        logger.exception(
+            "[skill_sync] shared link pass failed (ws=%s)", ctx.workspace_id
+        )
+        return
+    ctx.stats.linked = len(result["linked"]) + len(result["relinked"])
+    ctx.stats.unlinked = len(result["pruned"])
+    if result["blocked"]:
+        logger.warning(
+            "[skill_sync] shared skills blocked by a non-directory (ws=%s): %s",
+            ctx.workspace_id,
+            ", ".join(result["blocked"]),
+        )
 
 
 # --- Decision matrix ---
@@ -611,7 +710,7 @@ async def _push_down(
         pairs = await asyncio.to_thread(archive_file_pairs, raw)
     except SkillValidationError as e:
         raise _SyncFailure("unpack", str(e), suppress=True) from e
-    staged = await skill_sync.stage_skill_files(ctx.sandbox, pairs)
+    staged = await skill_sync.stage_skill_files(ctx.sandbox, pairs, base=ctx.base)
     entry = _entry_from_row(row, pairs)
     entry["sync"] = {
         "linkedSkillId": row["user_skill_id"],
@@ -731,6 +830,7 @@ async def _download_validated(
             max_files=MAX_SKILL_FILES,
             max_file_bytes=MAX_SKILL_SINGLE_FILE_BYTES,
             max_total_bytes=MAX_SKILL_UNCOMPRESSED_BYTES,
+            base=ctx.base,
         )
     except SkillSyncError as e:
         deterministic = e.code in _DETERMINISTIC_DOWNLOAD

@@ -86,6 +86,7 @@ def ctx(monkeypatch):
         report={},
         ws_rows={},
         user_rows={},
+        base="/home/workspace/acme-ab12/.agents/skills",
     )
     pass_ctx.calls = calls  # type: ignore[attr-defined]
     return pass_ctx
@@ -404,6 +405,7 @@ class TestFailuresThatDependOnOtherRows:
             report={},
             ws_rows={},
             user_rows={},
+            base="/home/workspace/acme-ab12/.agents/skills",
         )
 
     @staticmethod
