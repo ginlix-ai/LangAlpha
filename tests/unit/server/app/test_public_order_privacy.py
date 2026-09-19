@@ -25,7 +25,7 @@ pytestmark = pytest.mark.asyncio
 _SHARE_TOKEN = "share_abc123"
 _THREAD_ID = "44444444-4444-4444-8444-444444444444"
 
-_THREAD_BY_TOKEN = "src.server.app.public.get_thread_by_share_token"
+_THREAD_BY_TOKEN = "src.server.app.share_access.get_thread_by_share_token"
 _QUERIES = "src.server.app.public.get_queries_for_thread"
 _RESPONSES = "src.server.app.public.get_responses_for_thread"
 _TASK_DETAILS = "src.server.services.history.task_status.resolve_task_details"

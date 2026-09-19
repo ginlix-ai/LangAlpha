@@ -63,7 +63,10 @@ async def update_thread_share(
         existing_perms = json.loads(existing_perms)
 
     if request.permissions is not None:
-        merged = {**existing_perms, **request.permissions.model_dump()}
+        # ``exclude_unset``: a request that speaks only about the flags must not
+        # silently widen a token scoped to one report back to the whole
+        # workspace, which a defaulted ``root_path`` of "" would do.
+        merged = {**existing_perms, **request.permissions.model_dump(exclude_unset=True)}
         # Enforce: download requires files
         if merged.get("allow_download") and not merged.get("allow_files"):
             merged["allow_files"] = True
