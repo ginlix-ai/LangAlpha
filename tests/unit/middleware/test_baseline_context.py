@@ -55,7 +55,7 @@ from ptc_agent.agent.middleware.runtime_context.epoch import Workspace
 from ptc_agent.core.paths import (
     MEMORY_INDEX_FILENAME,
     MEMORY_USER_DIR,
-    MEMORY_WORKSPACE_DIR,
+    WorkspaceLayout,
 )
 
 STATE_BASELINE = "runtime_baseline"
@@ -105,7 +105,7 @@ def _middleware(session=None, **kwargs) -> BaselineContextMiddleware:
 
 _MEMORY_DISPLAY = {
     "user": f"{MEMORY_USER_DIR}/{MEMORY_INDEX_FILENAME}",
-    "workspace": f"{MEMORY_WORKSPACE_DIR}/{MEMORY_INDEX_FILENAME}",
+    "workspace": f"{WorkspaceLayout.MEMORY_DIR}/{MEMORY_INDEX_FILENAME}",
 }
 
 

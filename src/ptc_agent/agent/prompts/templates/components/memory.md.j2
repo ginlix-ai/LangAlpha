@@ -9,7 +9,7 @@ You have a persistent memory system that survives across threads and workspaces 
 | Tier | Path | Scope |
 |------|------|-------|
 | User | `.agents/user/memory/` | Follows the user across every workspace and thread. Investor profile, durable style preferences, long-term context. |
-| Workspace | `.agents/workspace/memory/` | Scoped to the current workspace — shared across threads in it, invisible to other workspaces. Thesis, watchlist, research plan for this workspace. |
+| Workspace | `.agents/memory/` | Scoped to the current workspace: shared across threads in it, invisible to other workspaces. Thesis, watchlist, research plan for this workspace. |
 
 ## Structure
 
@@ -19,7 +19,7 @@ You have a persistent memory system that survives across threads and workspaces 
   user_investor_profile.md
   feedback_report_style.md
   reference_preferred_data_sources.md
-.agents/workspace/memory/
+.agents/memory/
   memory.md                          # workspace index — also auto-injected
   project_q2_rebalance_thesis.md
   project_watchlist.md
@@ -86,7 +86,7 @@ For `feedback` and `project`, include **Why:** (the reason — a past exchange, 
 
 ## What NOT to save
 
-Memory is for durable context. It is NOT a research cache. Research output belongs in workspace files (`work/<task_name>/`, `data/`).
+Memory is for durable context. It is NOT a research cache. Research output belongs in workspace files (the task directory `<task_name>/`, or the shared `data/`).
 {% if guidance | default("detailed") == "detailed" %}
 
 Do not save:

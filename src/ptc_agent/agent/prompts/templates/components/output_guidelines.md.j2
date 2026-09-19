@@ -5,14 +5,14 @@
 
 Match output to the task:
 - **Simple queries**: Answer directly in chat — no files needed
-- **Data/chart tasks**: Save charts to `work/<task>/charts/`, embed in response or report
-- **Complex analysis**: Write a report to the task directory, `work/<task>/<name>.md`, with embedded chart references
-- **Styled HTML report**: For rich, polished deliverables, write a self-contained HTML document to `work/<task>/<name>.html`. HTML files render fully in the user's file panel (live JS, charts, theming) and can cite sources as clickable `<a href>` links. See `.agents/skills/html-report/SKILL.md` for authoring conventions.
+- **Data/chart tasks**: Save charts to `<task>/charts/`, embed in response or report
+- **Complex analysis**: Write a report to the task directory, `<task>/<name>.md`, with embedded chart references
+- **Styled HTML report**: For rich, polished deliverables, write a self-contained HTML document to `<task>/<name>.html`. HTML files render fully in the user's file panel (live JS, charts, theming) and can cite sources as clickable `<a href>` links. See `.agents/skills/html-report/SKILL.md` for authoring conventions.
 - **Unclear scope**: Ask the user what format they prefer
 
 When creating reports:
-- Single cohesive document with embedded visuals: `![Title](work/<task>/charts/chart.png)`
-- Descriptive filenames: [amd_dcf_analysis.md](work/amd_analysis/amd_dcf_analysis.md), not [output.md](work/amd_analysis/output.md)
+- Single cohesive document with embedded visuals: `![Title](<task>/charts/chart.png)`
+- Descriptive filenames: [amd_dcf_analysis.md](amd_analysis/amd_dcf_analysis.md), not [output.md](amd_analysis/output.md)
 {% endif %}
 
 ## Citing Created Files
@@ -20,7 +20,7 @@ When creating reports:
 - **Documents/data** — clickable link: `[file name](file path)`
 - **Images/charts** — inline embed: `![title](file path)`
 
-Write the file path from the working directory, as you wrote the file (`work/amd_analysis/report.md`), never as an absolute or `file://` path.
+Write the file path from the working directory, as you wrote the file (`amd_analysis/report.md`), never as an absolute or `file://` path.
 To point at a place inside a file, append it to the path: `#L42` or `#L40-L55` for lines, the heading's slug (`#wacc-inputs`) for a markdown section, `#page=3` for a PDF page.
 
 Never use `[name](path)` for images — they must be embedded with `!` prefix so they render visually.
@@ -28,18 +28,18 @@ Never use backticks to cite deliverables. Backticks are for directories or techn
 {% if guidance | default("detailed") == "detailed" %}
 
 Good:
-> Full analysis: [amd_dcf_analysis.md](work/amd_analysis/amd_dcf_analysis.md)
+> Full analysis: [amd_dcf_analysis.md](amd_analysis/amd_dcf_analysis.md)
 >
-> Discount rate: [WACC inputs](work/amd_analysis/amd_dcf_analysis.md#wacc-inputs), computed in [dcf.py](work/amd_analysis/dcf.py#L40-L55)
+> Discount rate: [WACC inputs](amd_analysis/amd_dcf_analysis.md#wacc-inputs), computed in [dcf.py](amd_analysis/dcf.py#L40-L55)
 >
-> ![Revenue Trend](work/amd_analysis/charts/revenue_trend.png)
+> ![Revenue Trend](amd_analysis/charts/revenue_trend.png)
 >
-> ![DCF Sensitivity](work/amd_analysis/charts/dcf_sensitivity.png)
+> ![DCF Sensitivity](amd_analysis/charts/dcf_sensitivity.png)
 
 Bad:
-> - [revenue_trend.png](work/amd_analysis/charts/revenue_trend.png)
-> - The full analysis is in `work/amd_analysis/amd_dcf_analysis.md`.
-> - [amd_dcf_analysis.md](/home/workspace/work/amd_analysis/amd_dcf_analysis.md)
+> - [revenue_trend.png](amd_analysis/charts/revenue_trend.png)
+> - The full analysis is in `amd_analysis/amd_dcf_analysis.md`.
+> - [amd_dcf_analysis.md]({{ working_directory }}/amd_analysis/amd_dcf_analysis.md)
 
 ## Report Structure
 

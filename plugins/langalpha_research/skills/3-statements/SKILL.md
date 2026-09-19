@@ -20,7 +20,7 @@ Evidence labels, source tiers, staleness, the readiness posture and the intake l
 
 **Formulas, not hardcoded values.** Every projection cell, roll-forward, linkage and subtotal is a live Excel formula, never a value computed in Python and written in. With openpyxl, `ws["D15"] = "=D14*(1+Assumptions!$B$5)"` is correct and `ws["D15"] = 12500.0` is not. The only cells holding typed numbers are historical actuals and the driver assumptions on the control panel. A hardcode does not just freeze one number: it breaks every downstream integrity check silently, because the check still evaluates and still reads OK.
 
-**Build with openpyxl, recalc, audit.** Build as a saved Python script (for example `work/<task>/build_model.py`), following `.agents/skills/xlsx/SKILL.md`: blue font for inputs, black for formulas, green for cross-sheet links, a provenance comment on every input, an explicit number format on every computed cell. Then `python .agents/skills/xlsx/scripts/recalc.py <file> 30` until the status is "success", and `python .agents/skills/xlsx/scripts/audit.py <file> --strict` with every `fail` fixed. A saved script is what lets you edit one section and rerun cheaply.
+**Build with openpyxl, recalc, audit.** Build as a saved Python script (for example `<task>/build_model.py`), following `.agents/skills/xlsx/SKILL.md`: blue font for inputs, black for formulas, green for cross-sheet links, a provenance comment on every input, an explicit number format on every computed cell. Then `python .agents/skills/xlsx/scripts/recalc.py <file> 30` until the status is "success", and `python .agents/skills/xlsx/scripts/audit.py <file> --strict` with every `fail` fixed. A saved script is what lets you edit one section and rerun cheaply.
 
 **Present each stage as you finish it.** A PTC turn is not chat-interactive at every step, so this is not a blocking question: present the block, say what you are building next, and carry on unless the user objects. A mis-mapped tab or a wrong historical surfaces while it is still cheap to fix.
 
@@ -198,7 +198,7 @@ Where a template already ships its own checks dashboard, add these rows to it an
 - Confirm no input cell still holds a placeholder
 - Confirm the `Cover` is the first sheet and every tile on it is a formula pointing at the output it reports
 - State the readiness posture from `.agents/skills/research-conventions/SKILL.md`, forced down by any unanchored driver, any unexplained `WARN`, or any figure past its freshness threshold, and name the driver responsible
-- Save everything under `$WORK_DIR/work/{task}/`, and keep the build script beside the workbook so the model can be rebuilt
+- Save everything under `{task}/`, and keep the build script beside the workbook so the model can be rebuilt
 
 **Done when** `recalc.py` reports success, `audit.py --strict` reports no `fail`, the roll-up reads OK in every scenario, and the posture is stated with its reason.
 

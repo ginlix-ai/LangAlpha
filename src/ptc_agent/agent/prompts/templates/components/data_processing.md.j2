@@ -32,14 +32,14 @@ import json
 result = some_mcp_tool(query="...")
 
 # 2. Dump full result to task directory
-with open('work/<task_name>/tool_result.json', 'w') as f:
+with open('<task_name>/tool_result.json', 'w') as f:
     json.dump(result, f, indent=2)
 
 # 3. Return ONLY summary
 items = result.get('items', [])
 print(f"""
 ## Result Summary
-- Saved to: work/<task_name>/tool_result.json
+- Saved to: <task_name>/tool_result.json
 - Records: {len(items)}
 - Fields: {list(items[0].keys()) if items else 'N/A'}
 - Sample: {items[0] if items else 'empty'}

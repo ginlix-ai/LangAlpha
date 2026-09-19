@@ -39,7 +39,7 @@ Every edit lands on a copy. The file the user gave you is the thing they can rec
 
 ```bash
 shasum -a 256 "$SRC"                                   # before anything
-cp "$SRC" "$WORK_DIR/work/{task}/<name>_v2_$(date +%F).xlsx"
+cp "$SRC" "{task}/<name>_v2_$(date +%F).xlsx"
 ```
 
 Increment the version rather than overwriting a previous update, so a reader can diff two vintages of the same model.
@@ -137,7 +137,7 @@ Then reopen with `data_only=True` and read the `Checks` roll-up, if the workbook
 
 ## Step 8: Deliver
 
-Everything under `$WORK_DIR/work/{task}/`:
+Everything under `{task}/`:
 
 - the updated workbook, carrying the `Change Log` sheet,
 - the estimate-change summary: what changed, why, whether it is thesis-changing or noise,

@@ -5,7 +5,7 @@ description: "PowerPoint decks built with pptxgenjs and native charts, existing 
 
 # PPTX
 
-Build or edit a PowerPoint deck and write it into the task directory (e.g. `work/acme_q4/acme_q4_review.pptx`). Someone will stand in front of it, or forward it to a colleague who will. That is what the format is for: **a deck is a sequence of single claims, each sized to be read from the back of a room.** A slide that needs a paragraph is not a slide, it is a page, and it belongs in a report.
+Build or edit a PowerPoint deck and write it into the task directory (e.g. `acme_q4/acme_q4_review.pptx`). Someone will stand in front of it, or forward it to a colleague who will. That is what the format is for: **a deck is a sequence of single claims, each sized to be read from the back of a room.** A slide that needs a paragraph is not a slide, it is a page, and it belongs in a report.
 
 This is the right output when the deck itself is the deliverable: an investment committee pack, a diligence readout, a board update, an earnings walkthrough. It is the wrong output for anything the reader will study alone at their own pace (that is `html-report`) and for anything they will change numbers in (that is `xlsx`).
 
@@ -24,9 +24,9 @@ This is the right output when the deck itself is the deliverable: an investment 
 ## Workflow
 
 1. **Outline first, one message per slide.** Write the outline before any code, as `## Slide N` headings each carrying one declarative sentence: the claim the slide makes, not its topic. "Revenue grew 21 percent on flat headcount" is a slide. "Revenue" is a filing cabinet. If you cannot write the sentence, you do not have the slide yet.
-2. **Write a build script**, `work/<task>/build_<name>.js`, and run it with `NODE_PATH=$(npm root -g) node work/<task>/build_<name>.js`. Never assemble a deck through ad-hoc calls. The script is the source of truth; when the user asks for a change, edit the script and rerun.
-3. **Audit the file, not the script.** `python .agents/skills/pptx/scripts/check.py work/<task>/<name>.pptx --strict` reads what the file contains, including the position a placeholder inherits from its layout, and reports shapes off the slide, boxes covering each other, overflowing text, fonts and placeholders. It compares the slide's own shapes, so branding that lives on the layout or the master is something only the render in step 4 will show you covered. Fix every `fail`; for every `warn`, either fix it or write the one line in the delivery that says why it stands.
-4. **Render and look**: `python .agents/skills/pptx/scripts/render.py work/<task>/<name>.pptx --montage`, then view `montage.png`. This is not optional. Clipped text, a legend over a bar, a title that jumps, one slide twice as dense as its neighbours: all of it is visible here and nowhere else.
+2. **Write a build script**, `<task>/build_<name>.js`, and run it with `NODE_PATH=$(npm root -g) node <task>/build_<name>.js`. Never assemble a deck through ad-hoc calls. The script is the source of truth; when the user asks for a change, edit the script and rerun.
+3. **Audit the file, not the script.** `python .agents/skills/pptx/scripts/check.py <task>/<name>.pptx --strict` reads what the file contains, including the position a placeholder inherits from its layout, and reports shapes off the slide, boxes covering each other, overflowing text, fonts and placeholders. It compares the slide's own shapes, so branding that lives on the layout or the master is something only the render in step 4 will show you covered. Fix every `fail`; for every `warn`, either fix it or write the one line in the delivery that says why it stands.
+4. **Render and look**: `python .agents/skills/pptx/scripts/render.py <task>/<name>.pptx --montage`, then view `montage.png`. This is not optional. Clipped text, a legend over a bar, a title that jumps, one slide twice as dense as its neighbours: all of it is visible here and nowhere else.
 5. **Fix in the build script, never in the .pptx**, then rerun steps 2 to 4 until `check.py` passes and the render looks right.
 6. **Deliver the `.pptx` and the `.js` beside it**, and say in the reply what each slide claims.
 
@@ -119,7 +119,7 @@ s.addText(
 );
 s.addNotes("Do not read the bullets out; the room has already read them. Lead with the margin point.");
 
-pptx.writeFile({ fileName: "work/acme_q4/acme_q4_review.pptx" })
+pptx.writeFile({ fileName: "acme_q4/acme_q4_review.pptx" })
   .then(() => console.log("written"));         // the check runs on the file: see step 3
 ```
 
@@ -186,7 +186,7 @@ Six rows and four columns is a slide. Twelve rows is a handout, so cut it to the
 from pptx import Presentation
 from pptx.util import Inches, Pt
 
-prs = Presentation("work/acme_q4/client_deck.pptx")
+prs = Presentation("acme_q4/client_deck.pptx")
 
 def set_text(shape, new_text):
     """Replace a shape's words and keep its formatting.
@@ -214,7 +214,7 @@ new = prs.slides.add_slide(layout)
 new.shapes.title.text = "FY2026 bridge"
 new.placeholders[1].text_frame.text = "Volume carries 14 of the 21 points."
 
-prs.save("work/acme_q4/client_deck_v2.pptx")
+prs.save("acme_q4/client_deck_v2.pptx")
 ```
 
 Read the deck first: `python .agents/skills/pptx/scripts/extract.py deck.pptx` gives every slide's text, notes, tables, charts, and the shape names and coordinates you will write into. `markitdown deck.pptx` is faster for prose alone but drops every position, so it answers "what does this say" and never "which box do I write into". A legacy `.ppt` opens with `python -c "import anydoc,sys; print(anydoc.to_markdown(sys.argv[1]))" old.ppt` for the same read-only view (never pass `ocr="hosted"`, which uploads the file to an external service); to edit one, convert it with `soffice --headless --convert-to pptx old.ppt` and start from the `.pptx`.

@@ -64,9 +64,9 @@ Write the four quadrants out as plain text with the real numbers already in plac
 
 Follow the `pptx` loop exactly:
 
-1. Write `work/<task>/build_<name>.js` and run it with `NODE_PATH=$(npm root -g) node work/<task>/build_<name>.js`.
-2. `python .agents/skills/pptx/scripts/check.py work/<task>/<name>.pptx --strict`, which reads the written file and reports anything off the slide, overlapping or overflowing.
-3. `python .agents/skills/pptx/scripts/render.py work/<task>/<name>.pptx --montage`, then open the PNG and read it. Look for a bullet wrapping into the quadrant below it, a table row crossing the footer, an axis label clipped at the bottom, and a title sitting on top of the first quadrant header.
+1. Write `<task>/build_<name>.js` and run it with `NODE_PATH=$(npm root -g) node <task>/build_<name>.js`.
+2. `python .agents/skills/pptx/scripts/check.py <task>/<name>.pptx --strict`, which reads the written file and reports anything off the slide, overlapping or overflowing.
+3. `python .agents/skills/pptx/scripts/render.py <task>/<name>.pptx --montage`, then open the PNG and read it. Look for a bullet wrapping into the quadrant below it, a table row crossing the footer, an axis label clipped at the bottom, and a title sitting on top of the first quadrant header.
 4. When anything overflows, fix it in this order: drop the body font by 1 to 2pt (12 to 11, then 11 to 10, which is the floor), then shorten the bullet, then move the boundary between the two rows. Re-render and look again.
 
 Steps 3 and 4 are not optional and neither is the looking. `check.py` estimates overflow from font size and character count, so a pass is a reason to look, not a substitute for looking. A profile slide is the densest thing this repo produces, and density is exactly where the estimate and the renderer disagree.
@@ -144,7 +144,7 @@ If a quadrant still runs short, the facts usually missing are segment percentage
 
 ## Build script
 
-**The chart series comes from Python, not from the direct tool.** `get_daily_prices` answers in Markdown, and past fourteen trading days that answer is a summary rather than the rows, so a year of closes never reaches the build script through it. Pull the series with `get_stock_data` on the price-data MCP server instead: it returns `{symbol, interval, currency, timezone, count, data, source}`, where `data` is a list of `{date, open, high, low, close, volume}` bars, oldest first. The research step keeps the two fields the chart reads and writes them to `work/<ticker>/prices.json`; the axis range then comes from the data, never from a typed bound.
+**The chart series comes from Python, not from the direct tool.** `get_daily_prices` answers in Markdown, and past fourteen trading days that answer is a summary rather than the rows, so a year of closes never reaches the build script through it. Pull the series with `get_stock_data` on the price-data MCP server instead: it returns `{symbol, interval, currency, timezone, count, data, source}`, where `data` is a list of `{date, open, high, low, close, volume}` bars, oldest first. The research step keeps the two fields the chart reads and writes them to `<ticker>/prices.json`; the axis range then comes from the data, never from a typed bound.
 
 ```python
 import json
@@ -152,7 +152,7 @@ from tools.price_data import get_stock_data
 
 bars = get_stock_data("ACME", interval="1day",
                       start_date="2025-09-05", end_date="2026-09-05")["data"]
-with open("work/acme/prices.json", "w") as f:
+with open("acme/prices.json", "w") as f:
     json.dump([{"date": b["date"], "close": b["close"]} for b in bars], f)
 ```
 
@@ -160,7 +160,7 @@ with open("work/acme/prices.json", "w") as f:
 const PptxGenJS = require("pptxgenjs");
 const fs = require("fs");
 
-const prices = JSON.parse(fs.readFileSync("work/acme/prices.json", "utf8"));
+const prices = JSON.parse(fs.readFileSync("acme/prices.json", "utf8"));
 const months = prices.map((p) => p.date);
 const closes = prices.map((p) => p.close);
 const lo = Math.floor(Math.min(...closes) * 0.9), hi = Math.ceil(Math.max(...closes) * 1.1);
@@ -230,7 +230,7 @@ slide.addChart(pptx.ChartType.line, [{ name: "ACME", labels: months, values: clo
 slide.addText("Source: company filings, fundamentals MCP server, get_stock_data. Prices as of 2026-09-05.",
   { x: M, y: 6.95, w: CONTENT_W, h: 0.3, fontFace: FONT, fontSize: 10, color: MUTED });
 
-pptx.writeFile({ fileName: "work/acme/acme_profile.pptx" })
+pptx.writeFile({ fileName: "acme/acme_profile.pptx" })
   .then(() => console.log("written"));
 ```
 

@@ -5,7 +5,7 @@ description: "Self-contained styled HTML reports written to the task directory: 
 
 # HTML Report
 
-Author a styled, self-contained HTML **document** and write it into the task directory (e.g. `work/amd_analysis/report.html`). The file panel renders it with full browser semantics — JavaScript runs, CDN libraries load, relative assets resolve, and the user can view it fullscreen, open it in a new tab, download it, or export it to PDF.
+Author a styled, self-contained HTML **document** and write it into the task directory (e.g. `amd_analysis/report.html`). The file panel renders it with full browser semantics — JavaScript runs, CDN libraries load, relative assets resolve, and the user can view it fullscreen, open it in a new tab, download it, or export it to PDF.
 
 This is the right output when the user wants a **deliverable they can keep, share, or print** — an equity research note, an earnings recap, a screen writeup — not a throwaway answer.
 
@@ -19,7 +19,7 @@ A report from this skill **can be interactive** (sortable tables, tab/filter con
 
 | Want | Use | Why |
 |---|---|---|
-| A document the user keeps, shares, or exports to PDF — even one that's interactive within itself | **html-report** (this skill) — `.html` in `work/<task_name>/` | One file on disk, served with real semantics, PDF-exportable. Interactivity runs client-side over an embedded data snapshot. |
+| A document the user keeps, shares, or exports to PDF — even one that's interactive within itself | **html-report** (this skill) — `.html` in `<task_name>/` | One file on disk, served with real semantics, PDF-exportable. Interactivity runs client-side over an embedded data snapshot. |
 | A quick visualization *inside the chat* (one chart, a metric row, a table) | **inline-widget** (`ShowWidget`) | Appears inline between text; no file, no panel |
 | A **live served app** — refreshing data, server-side compute, multi-page routing, or a dataset too large to embed | **interactive-dashboard** (`GetPreviewUrl`) | A running app with a backend, not a static file. Needed when the data must be fetched live, not embedded. |
 | A simple, short answer | **plain markdown** | A styled HTML document is overkill for a one-paragraph reply |
@@ -48,7 +48,7 @@ html = f"""<!DOCTYPE html>
 </body>
 </html>"""
 
-with open("work/<task_name>/report.html", "w", encoding="utf-8") as f:
+with open("<task_name>/report.html", "w", encoding="utf-8") as f:
     f.write(html)
 ```
 
@@ -63,14 +63,14 @@ Rules:
 The viewer serves files with **real relative-path semantics**, so a report can reference sibling assets and they resolve correctly:
 
 ```
-work/amd_analysis/
+amd_analysis/
   report.html              # references charts/revenue.png as a relative path
   charts/
     revenue.png
     margins.png
 ```
 
-The charts are already there: `work/<task_name>/charts/` is where you saved them
+The charts are already there: `<task_name>/charts/` is where you saved them
 during the analysis, and the report sits beside that directory. Nothing is copied.
 
 ```html
@@ -269,7 +269,7 @@ Aim for 10–11pt body text — the register of a printed research note. Keep ta
 1. **Fetch and validate data** first (check for empty/None); sample or aggregate to a sensible size.
 2. **Read `.agents/skills/ui-design/SKILL.md`** and commit to a typographic pairing + color direction.
 3. **Build** the full document — inline CSS/JS, embed `DATA`, draw charts from it; add the `@media print` block.
-4. **Write to `work/<task_name>/report.html`** (UTF-8). Image-heavy → reference the charts already in `work/<task_name>/charts/*.png` relatively as `charts/*.png`.
+4. **Write to `<task_name>/report.html`** (UTF-8). Image-heavy → reference the charts already in `<task_name>/charts/*.png` relatively as `charts/*.png`.
 5. **Open it and print-preview**, then cite the report to the user as a clickable link.
 
 Use the Quality Checklist below to verify before delivering.
@@ -285,4 +285,4 @@ Use the Quality Checklist below to verify before delivering.
 - [ ] Interactivity (if any): events via `addEventListener` (no inline `on*=`), runs on embedded `DATA` (no live `fetch`), default state is meaningful, controls `.no-print` and collapsed content expands when printing
 - [ ] User's stated preferences (this chat / long-term memory / saved prefs) honored wherever they differ from this skill's defaults
 - [ ] Design follows `.agents/skills/ui-design/SKILL.md` (typography, single accent, profit/loss color discipline, no AI slop)
-- [ ] Written to `work/<task_name>/`; numbers correctly formatted; opened and print-previewed; cited to the user as a link
+- [ ] Written to `<task_name>/`; numbers correctly formatted; opened and print-previewed; cited to the user as a link

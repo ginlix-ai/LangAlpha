@@ -152,7 +152,7 @@ Done when the change log lists every row added, changed and flagged, and no prio
 
 ## Step 7: Output
 
-Save to `$WORK_DIR/work/{task}/`.
+Save to `{task}/`.
 
 - Excel workbook with the canonical fields, sortable and filterable by priority, class and date. Formatting and conventions per `.agents/skills/xlsx/SKILL.md`, then `python .agents/skills/xlsx/scripts/recalc.py calendar.xlsx 60`.
 - Weekly preview note in markdown.

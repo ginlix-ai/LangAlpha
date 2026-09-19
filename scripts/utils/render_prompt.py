@@ -57,12 +57,12 @@ STUB_TOOL_SUMMARY = """\
 ### financial_data (3 tools)
 Financial market data server — historical prices, fundamentals, screening.
 - Module: `tools.financial_data`
-- Docs: `tools/docs/financial_data/`
+- Docs: `.agents/tools/docs/financial_data/`
 
 ### yfinance (5 tools)
 Yahoo Finance data — quotes, options, earnings, holders.
 - Module: `tools.yfinance`
-- Docs: `tools/docs/yfinance/`"""
+- Docs: `.agents/tools/docs/yfinance/`"""
 
 STUB_SUBAGENTS = [
     {"name": defn.name, "description": defn.description, "tools": defn.tools}

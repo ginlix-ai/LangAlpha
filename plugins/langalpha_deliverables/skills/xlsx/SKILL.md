@@ -5,7 +5,7 @@ description: "Excel workbooks with live formulas: build or edit .xlsx models wit
 
 # XLSX
 
-Build or edit an Excel workbook and write it into the task directory (e.g. `work/dcf_acme/acme_dcf.xlsx`). The user opens it in Excel, changes an input, and every dependent number moves. That is the whole point of the format: **a workbook the agent delivers is a model, not a table of results.** A cell that could be computed from other cells is a formula. A number typed into a formula's place is a defect, even when the value is right today.
+Build or edit an Excel workbook and write it into the task directory (e.g. `dcf_acme/acme_dcf.xlsx`). The user opens it in Excel, changes an input, and every dependent number moves. That is the whole point of the format: **a workbook the agent delivers is a model, not a table of results.** A cell that could be computed from other cells is a formula. A number typed into a formula's place is a defect, even when the value is right today.
 
 This is the right output when the user wants something they will **keep working in**: a DCF, a comps sheet, a three-statement model, a screen they will re-sort, a schedule they will extend. It is the wrong output for a one-off table (put it in the chat or an HTML report) and for a document that will not be edited (see `.agents/skills/html-report/SKILL.md`).
 
@@ -23,10 +23,10 @@ This is the right output when the user wants something they will **keep working 
 ## Workflow
 
 1. **Plan the sheets** before writing code: which sheet holds inputs, which holds calculations, which holds outputs. Sketch the row labels and the period columns. A model that is laid out first is a model whose formulas can be copied across.
-2. **Write a build script**, `work/<task>/build_<name>.py`, and run it. Never build a workbook cell by cell in ad-hoc calls. The script is the source of truth; when the user asks for a change, edit the script and rerun.
-3. **Recalculate**: `python .agents/skills/xlsx/scripts/recalc.py work/<task>/<name>.xlsx 60`. Fix every listed error and rerun until `"status": "success"`.
-4. **Audit**: `python .agents/skills/xlsx/scripts/audit.py work/<task>/<name>.xlsx --strict`. Fix every `fail`; for every `warn`, either fix it or write the one line in the delivery that says why it stands. `--strict` is the prescribed form: it exits non-zero on a `fail` and promotes `formula_number_format` from a warning.
-5. **Render and look**: `python .agents/skills/xlsx/scripts/render.py work/<task>/<name>.xlsx`, then view the PNGs. Overflowing `###` columns, unformatted rates, and headers that do not line up are visible here and nowhere else.
+2. **Write a build script**, `<task>/build_<name>.py`, and run it. Never build a workbook cell by cell in ad-hoc calls. The script is the source of truth; when the user asks for a change, edit the script and rerun.
+3. **Recalculate**: `python .agents/skills/xlsx/scripts/recalc.py <task>/<name>.xlsx 60`. Fix every listed error and rerun until `"status": "success"`.
+4. **Audit**: `python .agents/skills/xlsx/scripts/audit.py <task>/<name>.xlsx --strict`. Fix every `fail`; for every `warn`, either fix it or write the one line in the delivery that says why it stands. `--strict` is the prescribed form: it exits non-zero on a `fail` and promotes `formula_number_format` from a warning.
+5. **Render and look**: `python .agents/skills/xlsx/scripts/render.py <task>/<name>.xlsx`, then view the PNGs. Overflowing `###` columns, unformatted rates, and headers that do not line up are visible here and nowhere else.
 6. **Spot-check three numbers by hand** against your own calculation before delivering. A clean recalc proves the formulas evaluate, not that they are the right formulas.
 7. **Assert the sensitivity centre in the build script.** Where the model has a sensitivity grid, the script reopens the workbook after `recalc.py` with `data_only=True`, reads the centre cell of every grid and the headline output it varies, and asserts they are equal. A grid that has come unwired then fails the build instead of shipping. Name the same pair in a `Checks` row (below): that row is what lets `audit.py` re-check the equality on a workbook nobody rebuilt, and without it the audit reports `sensitivity_unverified` rather than deciding for itself which output the grid varies.
 
@@ -61,7 +61,7 @@ model["B2"].font = Font(color="008000")                # green = cross-sheet lin
 for col in "CDEF":
     prev = chr(ord(col) - 1)
     model[f"{col}2"] = f"={prev}2*(1+Inputs!$B$1)"     # later periods chain off the previous one
-wb.save("work/<task>/model.xlsx")
+wb.save("<task>/model.xlsx")
 ```
 
 Rules that follow from this:
@@ -190,7 +190,7 @@ Charts are for the reader; the numbers behind them stay as cells so the chart up
 A sheet somebody else produced is data, not a model. Profile it before touching it:
 
 ```bash
-python .agents/skills/xlsx/scripts/profile.py work/<task>/upload.xlsx
+python .agents/skills/xlsx/scripts/profile.py <task>/upload.xlsx
 ```
 
 - **Put the proposal to the user before changing anything.** One table in the reply: column, issue, count, proposed fix. They approve it, then you edit. A sheet quietly tidied is a sheet they can no longer reconcile against the system it came out of.
@@ -276,4 +276,4 @@ Only `error` (bad arguments, missing file, unknown sheet, a failed self-check) e
 - Rendered pages show no `###`, no raw fractions, no misaligned headers.
 - Three numbers spot-checked by hand, and every sensitivity centre equal to the output it varies, asserted in the build script, named in a `Checks` row, and re-checked by `audit.py`.
 - The build script is saved next to the workbook and rerunnable.
-- The file is at `work/<task>/<descriptive_name>.xlsx` and the reply names it, lists the sheets, and states the key outputs.
+- The file is at `<task>/<descriptive_name>.xlsx` and the reply names it, lists the sheets, and states the key outputs.

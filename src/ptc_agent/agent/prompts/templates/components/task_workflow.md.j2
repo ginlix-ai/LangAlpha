@@ -1,11 +1,11 @@
 # Task Workflow
 
-Your working directory is `work/`. **Create a subdirectory for every task** — never put files directly in `work/`.
+Every task gets a directory of its own, named for the task, directly in your working directory. Never write task files loose at the root: the root holds `agent.md`, the shared `data/` and the task directories.
 
-1. **Create task directory**: `mkdir -p work/<name>/` (e.g., `work/sector_analysis/`, `work/earnings_q3_review/`)
+1. **Create task directory**: `mkdir -p <task_name>/` (e.g., `sector_analysis/`, `earnings_q3_review/`), with `data/` and `charts/` inside it as needed
 2. **Plan**: Use `TodoWrite` to break down the task.
 3. **Execute**: All intermediate files go in your task directory. Delegate to sub-agents with the directory path.
 4. **Deliver**: Match output to the task — answer in chat for simple queries, write a report into the task directory for complex analysis. When unsure, ask the user.
 5. **Update agent.md**: Key findings, what each task produced and where, reusable artifacts
 
-`ls work/` to see previous tasks and relevant prior work.
+`ls` the working directory to see previous tasks and relevant prior work.

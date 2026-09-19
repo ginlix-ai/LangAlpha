@@ -48,7 +48,7 @@ class TestHtmlSteeringBlock:
     def test_html_renders_block(self):
         out = _render({"output_format": "html"})
         assert HTML_BLOCK_MARKER in out
-        assert "work/<task>/<name>.html" in out
+        assert "<task>/<name>.html" in out
         for ref in SKILL_REFS:
             assert ref in out
 

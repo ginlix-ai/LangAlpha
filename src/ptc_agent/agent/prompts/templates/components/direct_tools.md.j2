@@ -2,7 +2,7 @@
 
 ## {{ direct_tools_heading }}
 
-These are called as tools, one call each, with the arguments their schema names. {% if direct_tools_sandbox %}Unless its line below says otherwise, a tool here is not importable from `tools.<server_name>` and has no doc under `tools/docs/`: read the tool's own schema. {% endif %}A tool marked as asking the user to confirm stops for that confirmation on every call; never work around it, and never call it before the user has asked for that action.
+These are called as tools, one call each, with the arguments their schema names. {% if direct_tools_sandbox %}Unless its line below says otherwise, a tool here is not importable from `tools.<server_name>` and has no doc under `.agents/tools/docs/`: read the tool's own schema. {% endif %}A tool marked as asking the user to confirm stops for that confirmation on every call; never work around it, and never call it before the user has asked for that action.
 
 {{ direct_tool_summary }}
 {% endif %}

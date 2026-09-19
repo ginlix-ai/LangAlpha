@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo
 import yaml
 from jinja2 import Environment, FileSystemLoader
 
+from ptc_agent.agent.prompts.formatter import workspace_path_vars
+from ptc_agent.core.paths import DEFAULT_SANDBOX_ROOT
 from src.utils.timezone_utils import get_timezone_label
 
 
@@ -83,6 +85,10 @@ class PromptLoader:
         context = {
             "date": self.session_date,
             "datetime": self.session_datetime,
+            # The stock layout, so a caller with no workspace bound (a preview,
+            # a component rendered on its own) still gets a coherent path table
+            # instead of a template error.
+            **workspace_path_vars(None, root=DEFAULT_SANDBOX_ROOT),
             **self._config.get("defaults", {}),
             **kwargs,  # User can override date if needed
         }

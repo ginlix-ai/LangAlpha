@@ -13,7 +13,7 @@ Two ways to scrape in the sandbox:
 1. **MCP tools** (`scrape_page`, `scrape_pages`) — recommended for straight "give me this page's content". Synchronous, return dicts.
 2. **Direct Scrapling Python API** — for CSS/XPath selectors, sessions, logins, and multi-page spiders. Async, returns Page objects with `.css()` / `.xpath()`.
 
-Quick fetches can run inline via `ExecuteCode`. For spiders, multi-URL crawls, or anything you'll iterate on, write the scraper to `work/<task_name>/scraper.py` and run it via `Bash` — edit-and-rerun beats resubmitting code.
+Quick fetches can run inline via `ExecuteCode`. For spiders, multi-URL crawls, or anything you'll iterate on, write the scraper to `<task_name>/scraper.py` and run it via `Bash` — edit-and-rerun beats resubmitting code.
 
 ## MCP Tools
 
@@ -224,7 +224,7 @@ class PriceScraper(Spider):
 
 spider = PriceScraper()
 result = spider.start()
-result.items.to_json("work/<task_name>/data/prices.json")
+result.items.to_json("<task_name>/data/prices.json")
 ```
 
 ## Converting HTML to Markdown

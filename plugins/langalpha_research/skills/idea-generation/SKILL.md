@@ -149,7 +149,7 @@ Done when every card carries all nine narrative fields, every metric row is one 
 
 ## Step 7: Output, log and routing
 
-Save to `$WORK_DIR/work/{task}/`.
+Save to `{task}/`.
 
 - **A sharp list.** Five well-argued names beat twenty ranked ones, and the cut is part of the product. Say how many were screened, how many survived and why the list ends where it does.
 - **Rejected names.** Each one: the name, why it screened well, and the specific reason it was killed. Anything killed for a fixable reason gets a trigger that would revive it.

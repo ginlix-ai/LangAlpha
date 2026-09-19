@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from ptc_agent.core.paths import DEFAULT_SANDBOX_ROOT
 from ptc_cli.core import console
 from ptc_cli.display import show_help
 from ptc_cli.streaming.executor import execute_task, reconnect_to_workflow, replay_conversation
@@ -91,8 +92,9 @@ def _normalize_path(path: str) -> str:
     if not path:
         return path
 
-    if path.startswith("/home/workspace/"):
-        return path[len("/home/workspace/"):]
+    root_prefix = f"{DEFAULT_SANDBOX_ROOT}/"
+    if path.startswith(root_prefix):
+        return path[len(root_prefix):]
 
     if path.startswith("/") and not path.startswith("/tmp/"):
         return path.lstrip("/")

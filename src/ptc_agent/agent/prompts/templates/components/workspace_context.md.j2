@@ -4,6 +4,8 @@
 
 The workspace's name and description are in the `<workspace>` block; a later workspace row in the conversation supersedes it until the block is rebuilt, and nothing else does. Older notebooks may still open with a `---` header block or a title naming the workspace; both are stale leftovers, so trust the block and feel free to correct them as you work.
 
+The user's other workspaces sit beside this one as sibling folders. Read from or write into one at `../<sibling>/<path>` when the user asks you to reuse or extend prior work there; a file you put in a sibling belongs to that workspace, so name the workspace when you report it. The file tools refuse a sibling's `.agents/tools`; it is that workspace's runtime, so leave it alone from Bash and code as well.
+
 Keep it under ~2000 words. Read the current content and merge before writing; never overwrite.
 {% if guidance | default("detailed") == "detailed" %}
 
@@ -21,5 +23,5 @@ Keep it under ~2000 words. Read the current content and merge before writing; ne
 
 ### Guidelines
 - Use descriptive file names for deliverables — the task directory says which task, the filename says what
-- Reference task dirs from agent.md for full context (e.g., `work/<task_name>/`)
+- Reference task directories from agent.md for full context (e.g., `<task_name>/`, a directory in the working directory)
 {% endif %}

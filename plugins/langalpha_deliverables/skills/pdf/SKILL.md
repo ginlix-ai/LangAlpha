@@ -29,7 +29,7 @@ Two ways to end up with a bad PDF: drawing a twelve-page report coordinate by co
 ## Reading a PDF
 
 ```bash
-python .agents/skills/pdf/scripts/info.py work/<task>/statement.pdf
+python .agents/skills/pdf/scripts/info.py <task>/statement.pdf
 ```
 
 Read that JSON before anything else. It answers, in one call, the four questions that change the plan: is it encrypted (nothing works until it is decrypted), does it carry an AcroForm (a fill job, not a rewrite), are any pages image-only (they cannot be read at all), and are the fonts embedded (whether the render you are about to look at is what the user sees).
@@ -37,9 +37,9 @@ Read that JSON before anything else. It answers, in one call, the four questions
 Then take the text:
 
 ```bash
-python .agents/skills/pdf/scripts/extract.py work/<task>/statement.pdf --tables
-python .agents/skills/pdf/scripts/extract.py work/<task>/statement.pdf --layout --pages 3-5
-python .agents/skills/pdf/scripts/render.py  work/<task>/statement.pdf --pages 3 --dpi 150
+python .agents/skills/pdf/scripts/extract.py <task>/statement.pdf --tables
+python .agents/skills/pdf/scripts/extract.py <task>/statement.pdf --layout --pages 3-5
+python .agents/skills/pdf/scripts/render.py  <task>/statement.pdf --pages 3 --dpi 150
 ```
 
 - **Default (pdfplumber)** reads the text layer in reading order. Good for prose.
@@ -109,7 +109,7 @@ table.setStyle(TableStyle([
     ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
 ]))
 
-doc = SimpleDocTemplate("work/<task>/review.pdf", pagesize=LETTER, title="Northwind quarterly review",
+doc = SimpleDocTemplate("<task>/review.pdf", pagesize=LETTER, title="Northwind quarterly review",
                         leftMargin=inch, rightMargin=inch, topMargin=inch, bottomMargin=inch)
 doc.build([Paragraph("Northwind quarterly review", h1), Paragraph("...", body), Spacer(1, 14), table],
           onFirstPage=furniture, onLaterPages=furniture)
@@ -122,7 +122,7 @@ Rules that follow:
 - **Set `title=`** on the document. It is what the reader's window and the file panel show.
 - **Give the table explicit `colWidths`.** Without them a long label pushes the numeric columns off the page.
 - **Page numbers and running headers go in the `onPage` callback**, never in the flow.
-- **Write to `work/<task>/<descriptive_name>.pdf`** and keep the build script next to it, rerunnable, the way an xlsx build script is kept.
+- **Write to `<task>/<descriptive_name>.pdf`** and keep the build script next to it, rerunnable, the way an xlsx build script is kept.
 - **Then render and look.** Every time.
 
 ### Or build a fillable form
@@ -134,7 +134,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import LETTER
 from reportlab.pdfgen import canvas
 
-c = canvas.Canvas("work/<task>/authorization.pdf", pagesize=LETTER)
+c = canvas.Canvas("<task>/authorization.pdf", pagesize=LETTER)
 c.setTitle("Diligence authorization")
 c.setFont("Helvetica", 9)
 box = dict(x=72, width=430, height=26, borderWidth=1, forceBorder=True, fillColor=colors.white,
@@ -167,7 +167,7 @@ When the deliverable is prose with headings, when the user may want to edit it, 
 ```bash
 PROFILE=$(mktemp -d)                                   # a private profile per run avoids a lock fight
 soffice -env:UserInstallation=file://$PROFILE --headless --norestore --nologo \
-        --convert-to pdf --outdir work/<task> work/<task>/memo.docx
+        --convert-to pdf --outdir <task> <task>/memo.docx
 rm -rf "$PROFILE"
 ```
 
@@ -178,9 +178,9 @@ Deliver both files and say which is the source. The docx is the thing the user e
 A filing or a web page that exists only as HTML (SEC EDGAR primary documents are `.htm`; a filing package almost never carries a PDF, so check its `index.json` before looking for one) renders through the same LibreOffice call with the Writer/Web filter named explicitly. There is no browser engine here, so this is the only HTML to PDF route:
 
 ```bash
-curl -sS -A "LangAlpha research@example.com" -o work/<task>/filing.htm "$URL"   # EDGAR rejects requests without a User-Agent
+curl -sS -A "LangAlpha research@example.com" -o <task>/filing.htm "$URL"   # EDGAR rejects requests without a User-Agent
 soffice -env:UserInstallation=file://$PROFILE --headless --norestore --nologo \
-        --convert-to 'pdf:writer_web_pdf_Export' --outdir work/<task> work/<task>/filing.htm
+        --convert-to 'pdf:writer_web_pdf_Export' --outdir <task> <task>/filing.htm
 ```
 
 The page comes out A4 whatever the source expects, a wide table wraps or splits across pages, and a statement that spans a page break is two tables to `extract.py`. Treat the result as a reading copy, not a facsimile: for numbers, prefer the filing's own structured data (the XBRL `Financial_Report.xlsx` or the R pages) and use the rendered PDF to confirm what the page says.
@@ -188,14 +188,14 @@ The page comes out A4 whatever the source expects, a wide table wraps or splits 
 ## Filling a Form
 
 ```bash
-python .agents/skills/pdf/scripts/forms.py inspect work/<task>/application.pdf
+python .agents/skills/pdf/scripts/forms.py inspect <task>/application.pdf
 # write values.json against the names, types and options that reports
-python .agents/skills/pdf/scripts/forms.py fill work/<task>/application.pdf \
-       --values work/<task>/values.json --out work/<task>/application_filled.pdf
-python .agents/skills/pdf/scripts/render.py work/<task>/application_filled.pdf --dpi 150
+python .agents/skills/pdf/scripts/forms.py fill <task>/application.pdf \
+       --values <task>/values.json --out <task>/application_filled.pdf
+python .agents/skills/pdf/scripts/render.py <task>/application_filled.pdf --dpi 150
 # look at every page, then, only if the user asked for it:
-python .agents/skills/pdf/scripts/forms.py flatten work/<task>/application_filled.pdf \
-       --out work/<task>/application_final.pdf
+python .agents/skills/pdf/scripts/forms.py flatten <task>/application_filled.pdf \
+       --out <task>/application_final.pdf
 ```
 
 `values.json` is a flat object keyed by the field names `inspect` reported:
@@ -292,4 +292,4 @@ All five live under `.agents/skills/pdf/scripts/` and print one JSON object to s
 - Flattened output (when asked): `acroform_after: false`, `widget_annotations_after: 0`, values still in the text layer, and the render checked for ticks.
 - Created PDFs: every font embedded or one of the standard 14, `pdftotext` recovers the body text, and the render shows no clipped text, no tofu, no black rectangles, no table running past the margin.
 - Page operations: page counts add up, every output path distinct from every input, no input modified.
-- The file is at `work/<task>/<descriptive_name>.pdf` and the reply names it, says what it contains, and names the build script or the source document beside it.
+- The file is at `<task>/<descriptive_name>.pdf` and the reply names it, says what it contains, and names the build script or the source document beside it.
