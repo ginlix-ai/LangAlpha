@@ -292,9 +292,9 @@ class TestColdWarmSessionPath:
         await workspace_manager.get_session_for_workspace(ws_id, user_id=user_id)
 
         # Call 3 (warm) — cooldown active
-        from src.server.services import workspace_manager as workspace_manager_module
+        from src.server.database.workspace import get_workspace_identity
 
-        real_identity = workspace_manager_module.db_get_workspace_identity
+        real_identity = get_workspace_identity
         with (
             patch(
                 "src.server.services.workspace_manager.db_get_workspace",

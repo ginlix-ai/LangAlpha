@@ -14,8 +14,8 @@ from ptc_agent.core.sandbox.runtime import ExecResult
 
 
 # The shared psycopg pool owns background connection workers on the session
-# event loop. Run this module on that same loop so held ``db_conn`` fixtures can
-# acquire a second service connection without starving a dormant pool worker.
+# event loop. Run this module on that same loop so a test holding one pool
+# connection can acquire a second without starving a dormant pool worker.
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
@@ -79,6 +79,22 @@ def _extra_identity() -> ReconciledPlatformSecret:
     )
 
 
+async def _seed_computer(seed_workspace) -> str:
+    """A machine for the seeded project, unprovisioned: the lifecycle lives there."""
+    from src.server.database.computer import create_computer
+    from src.server.database.workspace import bind_workspace_to_computer
+
+    computer = await create_computer(seed_workspace["user_id"])
+    computer_id = str(computer["computer_id"])
+    assert await bind_workspace_to_computer(
+        str(seed_workspace["workspace_id"]),
+        computer_id,
+        expected_computer_id=None,
+        dir_name="test-ws",
+    )
+    return computer_id
+
+
 async def _register(*identities: ReconciledPlatformSecret, provider: str = "daytona"):
     from src.server.services.platform_secret_rollout import (
         register_platform_secret_rollouts,
@@ -123,18 +139,20 @@ async def test_user_config_cannot_modify_trusted_rollout_columns(
 
 
 async def test_identity_change_bumps_generation_and_keeps_certified_version(
-    seed_workspace, patched_get_db_connection, db_conn
+    seed_workspace, patched_get_db_connection
 ):
+    from src.server.database.computer import get_computer
+    from src.server.database.workspace import get_workspace
     from src.server.services.platform_secret_rollout import (
-        stamp_workspace_platform_secret_version,
+        stamp_platform_secret_version,
     )
 
     first = await _register(
         _identity(secret_id="secret-1", placeholder="dtn_secret_one")
     )
-    workspace_id = str(seed_workspace["workspace_id"])
-    await stamp_workspace_platform_secret_version(
-        workspace_id,
+    computer_id = await _seed_computer(seed_workspace)
+    await stamp_platform_secret_version(
+        computer_id=computer_id,
         expected_sandbox_id=None,
         rollout_set=first,
     )
@@ -142,17 +160,16 @@ async def test_identity_change_bumps_generation_and_keeps_certified_version(
     second = await _register(
         _identity(secret_id="secret-2", placeholder="dtn_secret_two")
     )
-    row = await db_conn.execute(
-        "SELECT platform_secret_version FROM workspaces WHERE workspace_id = %s",
-        (workspace_id,),
-    )
-    workspace = await row.fetchone()
+    computer = await get_computer(computer_id)
+    workspace = await get_workspace(str(seed_workspace["workspace_id"]))
 
     assert second.generation == first.generation + 1
-    # The row keeps the generation it was certified at — behind the new
-    # generation (so it re-pends), but never zeroed: version 0 stays reserved
+    # The row keeps the generation it was certified at: behind the new
+    # generation (so it re-pends), but never zeroed. Version 0 stays reserved
     # for "never certified", preserving the plaintext/placeholder
-    # discriminator that routes hot-swap vs scrub-restart.
+    # discriminator that routes hot-swap vs scrub-restart. The stamp is one
+    # statement, so the project shadow carries the same generation.
+    assert computer["platform_secret_version"] == first.generation
     assert workspace["platform_secret_version"] == first.generation
 
 
@@ -211,16 +228,17 @@ async def test_provider_change_is_an_identity_change(
 
 
 async def test_certification_attaches_a_verified_replacement(
-    seed_workspace, patched_get_db_connection, db_conn
+    seed_workspace, patched_get_db_connection
 ):
-    """Verify, then bind — the order that keeps an uncertified sandbox unbound."""
-    from src.server.database.workspace import try_bind_workspace_sandbox
+    """Verify, then bind: the order that keeps an uncertified sandbox unbound."""
+    from src.server.database.computer import try_bind_computer_provider_ref
+    from src.server.database.workspace import get_workspace_identity
     from src.server.services.platform_secret_rollout import certify_platform_secrets
 
     rollout_set = await _register(
         _identity(secret_id="secret-1", placeholder="dtn_secret_one")
     )
-    workspace_id = str(seed_workspace["workspace_id"])
+    computer_id = await _seed_computer(seed_workspace)
 
     config = _capable_config()
     with pytest.MonkeyPatch.context() as monkeypatch:
@@ -230,15 +248,19 @@ async def test_certification_attaches_a_verified_replacement(
         )
 
     assert version == rollout_set.generation
-    workspace = await try_bind_workspace_sandbox(
-        workspace_id,
-        sandbox_id="replacement-sandbox",
-        expected_previous_sandbox_id=None,
+    computer = await try_bind_computer_provider_ref(
+        computer_id,
+        provider_ref="replacement-sandbox",
+        expected_previous_provider_ref=None,
         platform_secret_version=version,
     )
 
-    assert workspace["platform_secret_version"] == rollout_set.generation
-    assert workspace["sandbox_id"] == "replacement-sandbox"
+    assert computer["platform_secret_version"] == rollout_set.generation
+    assert computer["provider_ref"] == "replacement-sandbox"
+    # The bind is one statement over machine and shadow.
+    identity = await get_workspace_identity(str(seed_workspace["workspace_id"]))
+    assert identity["sandbox_id"] == "replacement-sandbox"
+    assert identity["provider_ref"] == "replacement-sandbox"
 
 
 async def test_certification_without_a_catalog_stamps_the_zero_sentinel(
@@ -259,99 +281,129 @@ async def test_certification_without_a_catalog_stamps_the_zero_sentinel(
     assert await certify_platform_secrets(config, runtime=None) == 0
 
 
-async def test_stamp_cas_rejects_a_moved_workspace(
+async def test_stamp_cas_is_fenced_on_the_sandbox_id(
     seed_workspace, patched_get_db_connection
 ):
+    """The stamp names the sandbox it just scrubbed; a machine that has moved
+    on to another sandbox must refuse it, and the same call lands when the
+    identity matches."""
+    from src.server.database.computer import (
+        get_computer,
+        try_bind_computer_provider_ref,
+    )
     from src.server.services.platform_secret_rollout import (
-        stamp_workspace_platform_secret_version,
+        stamp_platform_secret_version,
     )
 
     rollout_set = await _register(
         _identity(secret_id="secret-1", placeholder="dtn_secret_one")
     )
-    workspace_id = str(seed_workspace["workspace_id"])
+    computer_id = await _seed_computer(seed_workspace)
+    await try_bind_computer_provider_ref(
+        computer_id,
+        provider_ref="attached-sandbox",
+        expected_previous_provider_ref=None,
+        platform_secret_version=0,
+    )
 
-    with pytest.raises(RuntimeError, match="before platform Secret stamp"):
-        await stamp_workspace_platform_secret_version(
-            workspace_id,
+    with pytest.raises(RuntimeError, match="before its platform secret generation"):
+        await stamp_platform_secret_version(
+            computer_id=computer_id,
             expected_sandbox_id="not-the-attached-sandbox",
             rollout_set=rollout_set,
         )
+    assert (await get_computer(computer_id))["platform_secret_version"] == 0
+
+    await stamp_platform_secret_version(
+        computer_id=computer_id,
+        expected_sandbox_id="attached-sandbox",
+        rollout_set=rollout_set,
+    )
+    computer = await get_computer(computer_id)
+    assert computer["platform_secret_version"] == rollout_set.generation
 
 
 async def test_bind_cas_rejects_a_concurrent_attachment(
     seed_workspace, patched_get_db_connection
 ):
-    """A losing provisioner gets None, not the row — never a silent overwrite.
+    """A losing provisioner gets None, not the row, never a silent overwrite.
 
     None is the signal to delete the sandbox it just built and re-attach to the
     winner's; a last-writer-wins UPDATE here is how two workers both believe
     they own the workspace and one sandbox is billed with nothing pointing at
     it.
     """
-    from src.server.database.workspace import (
-        get_workspace_identity,
-        try_bind_workspace_sandbox,
+    from src.server.database.computer import (
+        get_computer,
+        try_bind_computer_provider_ref,
     )
+    from src.server.database.workspace import get_workspace_identity
 
-    workspace_id = str(seed_workspace["workspace_id"])
-    await try_bind_workspace_sandbox(
-        workspace_id,
-        sandbox_id="winner-sandbox",
-        expected_previous_sandbox_id=None,
+    computer_id = await _seed_computer(seed_workspace)
+    await try_bind_computer_provider_ref(
+        computer_id,
+        provider_ref="winner-sandbox",
+        expected_previous_provider_ref=None,
         platform_secret_version=7,
     )
 
-    lost = await try_bind_workspace_sandbox(
-        workspace_id,
-        sandbox_id="replacement-sandbox",
-        expected_previous_sandbox_id="stale-previous-sandbox",
+    lost = await try_bind_computer_provider_ref(
+        computer_id,
+        provider_ref="replacement-sandbox",
+        expected_previous_provider_ref="stale-previous-sandbox",
         platform_secret_version=9,
     )
 
     assert lost is None
-    identity = await get_workspace_identity(workspace_id)
+    computer = await get_computer(computer_id)
+    assert computer["provider_ref"] == "winner-sandbox"
+    assert computer["platform_secret_version"] == 7
+    identity = await get_workspace_identity(str(seed_workspace["workspace_id"]))
     assert identity["sandbox_id"] == "winner-sandbox"
 
 
 @pytest.mark.parametrize("stopped_status", ["stopping", "stopped"])
-async def test_bind_cas_refuses_to_resurrect_a_stopped_workspace(
+async def test_bind_cas_refuses_to_resurrect_a_stopped_computer(
     seed_workspace, patched_get_db_connection, stopped_status
 ):
     """Identity matching alone would let a recovery undo a concurrent stop.
 
     The dangerous race shares the sandbox id rather than changing it, so the
-    id-only predicate matched: worker B stops the workspace while worker A
+    id-only predicate matched: worker B stops the machine while worker A
     recovers the SAME sandbox, and since this statement writes ``running``
     unconditionally the bind resurrected the row. The outcome is a ``stopped``
-    row whose sandbox is still up and billing, or a workspace that restarts
+    row whose sandbox is still up and billing, or a machine that restarts
     itself after a user stopped it.
     """
-    from src.server.database.workspace import (
-        get_workspace_identity,
-        try_bind_workspace_sandbox,
-        update_workspace_status,
+    from src.server.database.computer import (
+        get_computer,
+        try_bind_computer_provider_ref,
+        update_computer_status,
     )
+    from src.server.database.workspace import get_workspace_identity
 
-    workspace_id = str(seed_workspace["workspace_id"])
-    await try_bind_workspace_sandbox(
-        workspace_id,
-        sandbox_id="sb-old",
-        expected_previous_sandbox_id=None,
+    computer_id = await _seed_computer(seed_workspace)
+    await try_bind_computer_provider_ref(
+        computer_id,
+        provider_ref="sb-old",
+        expected_previous_provider_ref=None,
         platform_secret_version=1,
     )
-    await update_workspace_status(workspace_id=workspace_id, status=stopped_status)
+    await update_computer_status(computer_id, stopped_status)
 
     # Same expected id: this is a recovery of the very sandbox being stopped.
-    lost = await try_bind_workspace_sandbox(
-        workspace_id,
-        sandbox_id="sb-new",
-        expected_previous_sandbox_id="sb-old",
+    lost = await try_bind_computer_provider_ref(
+        computer_id,
+        provider_ref="sb-new",
+        expected_previous_provider_ref="sb-old",
         platform_secret_version=2,
     )
 
     assert lost is None
-    identity = await get_workspace_identity(workspace_id)
+    computer = await get_computer(computer_id)
+    assert computer["status"] == stopped_status
+    assert computer["provider_ref"] == "sb-old"
+    identity = await get_workspace_identity(str(seed_workspace["workspace_id"]))
     assert identity["status"] == stopped_status
     assert identity["sandbox_id"] == "sb-old"
 

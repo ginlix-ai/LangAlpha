@@ -30,7 +30,7 @@ from src.server.services.platform_secret_rollout import (
     PlatformSecretRollout,
     PlatformSecretRolloutSet,
     reconcile_platform_secrets_at_boot,
-    resync_workspace_platform_secret,
+    resync_computer_platform_secret,
 )
 
 
@@ -95,10 +95,10 @@ async def _resync(
     db_version: int = 0,
     applied_generation: int | None = None,
 ):
-    return await resync_workspace_platform_secret(
+    return await resync_computer_platform_secret(
         config,
         runtime if runtime is not None else _Runtime(),
-        workspace_id="ws",
+        computer_id="cmp",
         sandbox_id=sandbox_id,
         db_version=db_version,
         applied_generation=applied_generation,
@@ -171,7 +171,7 @@ async def test_resync_hot_swaps_verifies_and_stamps_a_certified_behind_row(
     stamp = AsyncMock()
     monkeypatch.setattr(f"{_MODULE}.remount_platform_secret_bindings", remount)
     monkeypatch.setattr(f"{_MODULE}.verify_runtime_platform_secrets", verify)
-    monkeypatch.setattr(f"{_MODULE}.stamp_workspace_platform_secret_version", stamp)
+    monkeypatch.setattr(f"{_MODULE}.stamp_platform_secret_version", stamp)
     runtime = _Runtime()
 
     result = await _resync(_config(), runtime, db_version=1)
@@ -184,7 +184,7 @@ async def test_resync_hot_swaps_verifies_and_stamps_a_certified_behind_row(
     )
     verify.assert_awaited_once_with(runtime, expected=rollout_set.placeholders)
     stamp.assert_awaited_once_with(
-        "ws", expected_sandbox_id="sb", rollout_set=rollout_set
+        computer_id="cmp", expected_sandbox_id="sb", rollout_set=rollout_set
     )
 
 
@@ -204,7 +204,7 @@ async def test_resync_remounts_a_legacy_row_without_certifying_it(monkeypatch):
     stamp = AsyncMock()
     monkeypatch.setattr(f"{_MODULE}.remount_platform_secret_bindings", remount)
     monkeypatch.setattr(f"{_MODULE}.verify_runtime_platform_secrets", verify)
-    monkeypatch.setattr(f"{_MODULE}.stamp_workspace_platform_secret_version", stamp)
+    monkeypatch.setattr(f"{_MODULE}.stamp_platform_secret_version", stamp)
 
     result = await _resync(_config(), db_version=0)
 
@@ -225,9 +225,9 @@ async def test_resync_raises_on_remount_failure_without_stamping(monkeypatch):
     remount = AsyncMock(side_effect=RuntimeError("daemon unreachable"))
     stamp = AsyncMock()
     monkeypatch.setattr(f"{_MODULE}.remount_platform_secret_bindings", remount)
-    monkeypatch.setattr(f"{_MODULE}.stamp_workspace_platform_secret_version", stamp)
+    monkeypatch.setattr(f"{_MODULE}.stamp_platform_secret_version", stamp)
 
-    with pytest.raises(PlatformSecretReadinessError, match="ws"):
+    with pytest.raises(PlatformSecretReadinessError, match="cmp"):
         await _resync(_config(), db_version=1)
 
     # The row stays behind; the next slow-path acquisition retries.
@@ -235,7 +235,7 @@ async def test_resync_raises_on_remount_failure_without_stamping(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resync_skips_sandboxless_workspace(monkeypatch):
+async def test_resync_skips_a_machine_with_no_sandbox(monkeypatch):
     monkeypatch.setattr("src.config.env.HOST_MODE", "platform")
     monkeypatch.setenv("FMP_API_KEY", "real-fmp-value")
     monkeypatch.setattr(

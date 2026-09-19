@@ -16,6 +16,7 @@ from src.server.services.platform_secret_sweep import PlatformSecretSweeper
 
 
 PLACEHOLDER = "dtn_secret_opaque"
+COMPUTER_ID = "11111111-1111-4111-8111-111111111111"
 
 _SWEEP = "src.server.services.platform_secret_sweep"
 _ROLLOUT = "src.server.services.platform_secret_rollout"
@@ -35,9 +36,14 @@ def _rollout_set(generation: int = 1) -> PlatformSecretRolloutSet:
     return PlatformSecretRolloutSet(rollouts=(rollout,), generation=generation)
 
 
-def _row(*, version: int = 0, always_on: bool = False) -> dict:
+def _row(
+    *, version: int = 0, always_on: bool = False, workspace_id: str | None = "ws"
+) -> dict:
+    # One row per computer, as list_workspaces_behind_platform_secret selects;
+    # the project is the machine's oldest live one, or None when it has none.
     return {
-        "workspace_id": "ws",
+        "computer_id": COMPUTER_ID,
+        "workspace_id": workspace_id,
         "sandbox_id": "sb",
         "platform_secret_version": version,
         "is_always_on": always_on,
@@ -53,7 +59,7 @@ def _runtime(*, autostop: bool = True) -> MagicMock:
 
 def _executor(*, busy: bool) -> MagicMock:
     executor = MagicMock()
-    executor.has_active_tasks_for_workspace = AsyncMock(return_value=busy)
+    executor.has_active_tasks_for_computer = AsyncMock(return_value=busy)
     return executor
 
 
@@ -86,7 +92,7 @@ async def test_legacy_row_gets_scrub_restart_and_always_on_reassert():
 
     with (
         patch(f"{_MECHANICS}.converge_sandbox_platform_secrets", converge),
-        patch(f"{_ROLLOUT}.stamp_workspace_platform_secret_version", stamp),
+        patch(f"{_ROLLOUT}.stamp_platform_secret_version", stamp),
         patch(
             "src.server.services.runs.executor.LocalRunExecutor.get_instance",
             return_value=_executor(busy=False),
@@ -94,7 +100,7 @@ async def test_legacy_row_gets_scrub_restart_and_always_on_reassert():
         patch.object(sweeper, "_drop_local_session", drop),
     ):
         converged = await sweeper._converge_locked(
-            "ws", "sb", _row(always_on=True), rollout_set, provider
+            COMPUTER_ID, "sb", _row(always_on=True), rollout_set, provider
         )
 
     assert converged is True
@@ -105,10 +111,10 @@ async def test_legacy_row_gets_scrub_restart_and_always_on_reassert():
     )
     runtime.set_autostop_interval.assert_awaited_once_with(0)
     stamp.assert_awaited_once_with(
-        "ws", expected_sandbox_id="sb", rollout_set=rollout_set
+        computer_id=COMPUTER_ID, expected_sandbox_id="sb", rollout_set=rollout_set
     )
     # The restart killed the cached session's exec processes.
-    drop.assert_awaited_once_with("ws")
+    drop.assert_awaited_once_with(COMPUTER_ID)
 
 
 @pytest.mark.asyncio
@@ -126,13 +132,13 @@ async def test_active_turn_defers_the_scrub_to_the_next_cycle():
         ),
     ):
         converged = await sweeper._converge_locked(
-            "ws", "sb", _row(), _rollout_set(), provider
+            COMPUTER_ID, "sb", _row(), _rollout_set(), provider
         )
 
     assert converged is False
     provider.get.assert_not_awaited()
     converge.assert_not_awaited()
-    assert sweeper._busy_skips["ws"] == 1
+    assert sweeper._busy_skips[COMPUTER_ID] == 1
 
 
 @pytest.mark.asyncio
@@ -154,11 +160,11 @@ async def test_certified_behind_row_hot_swaps_without_restart():
         patch(f"{_MECHANICS}.converge_sandbox_platform_secrets", converge),
         patch(f"{_MECHANICS}.remount_platform_secret_bindings", remount),
         patch(f"{_MECHANICS}.verify_runtime_platform_secrets", verify),
-        patch(f"{_ROLLOUT}.stamp_workspace_platform_secret_version", stamp),
+        patch(f"{_ROLLOUT}.stamp_platform_secret_version", stamp),
         patch.object(sweeper, "_drop_local_session", drop),
     ):
         converged = await sweeper._converge_locked(
-            "ws", "sb", _row(version=1), rollout_set, provider
+            COMPUTER_ID, "sb", _row(version=1), rollout_set, provider
         )
 
     assert converged is True
@@ -181,14 +187,14 @@ async def test_convergence_failure_is_contained_and_retried_next_pass():
     stamp = AsyncMock()
 
     with (
-        patch(f"{_ROLLOUT}.stamp_workspace_platform_secret_version", stamp),
+        patch(f"{_ROLLOUT}.stamp_platform_secret_version", stamp),
         patch(
             "src.server.services.runs.executor.LocalRunExecutor.get_instance",
             return_value=_executor(busy=False),
         ),
     ):
         converged = await sweeper._converge_locked(
-            "ws", "sb", _row(), _rollout_set(), provider
+            COMPUTER_ID, "sb", _row(), _rollout_set(), provider
         )
 
     assert converged is False
@@ -196,7 +202,7 @@ async def test_convergence_failure_is_contained_and_retried_next_pass():
 
 
 @pytest.mark.asyncio
-async def test_lock_loser_skips_without_touching_the_workspace():
+async def test_lock_loser_skips_without_touching_the_machine():
     sweeper = PlatformSecretSweeper()
     provider = MagicMock()
     provider.get = AsyncMock()
@@ -286,3 +292,106 @@ async def test_start_and_stop_lifecycle():
         assert sweeper._loop_task is not None
         await sweeper.stop()
     assert sweeper._loop_task is None
+
+
+# ---------------------------------------------------------------------------
+# The sweep converges a sandbox, and the sandbox belongs to a computer
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_lock_is_the_machines():
+    """Two projects on one computer each holding their own key would scrub the
+    same sandbox at the same time."""
+    from src.server.database.computer import computer_advisory_key
+
+    sweeper = PlatformSecretSweeper()
+    keys: list[int] = []
+
+    @asynccontextmanager
+    async def _conn_cm():
+        cur = MagicMock()
+        cur.fetchone = AsyncMock(return_value=(True,))
+
+        async def _execute(sql, params=None):
+            if params:
+                keys.append(params[0])
+            return cur
+
+        conn = MagicMock()
+        conn.execute = AsyncMock(side_effect=_execute)
+        yield conn
+
+    locked = AsyncMock(return_value=True)
+    with (
+        patch("src.server.database.pool.get_db_connection", _conn_cm),
+        patch.object(sweeper, "_converge_locked", locked),
+    ):
+        await sweeper._sweep_one(_row(), _rollout_set(), MagicMock())
+
+    assert set(keys) == {computer_advisory_key(COMPUTER_ID)}
+    assert locked.await_args.args[0] == COMPUTER_ID
+
+
+@pytest.mark.asyncio
+async def test_a_busy_sibling_defers_the_scrub():
+    """The scrub force-stops the sandbox, which every project on the machine is
+    using, so one idle project does not settle it."""
+    sweeper = PlatformSecretSweeper()
+    provider = MagicMock()
+    executor = MagicMock()
+    executor.has_active_tasks_for_computer = AsyncMock(return_value=True)
+    stamp = AsyncMock()
+
+    with (
+        patch(
+            "src.server.services.runs.executor.LocalRunExecutor.get_instance",
+            MagicMock(return_value=executor),
+        ),
+        patch(f"{_ROLLOUT}.stamp_platform_secret_version", stamp),
+    ):
+        converged = await sweeper._converge_locked(
+            COMPUTER_ID, "sb", _row(), _rollout_set(), provider
+        )
+
+    assert converged is False
+    executor.has_active_tasks_for_computer.assert_awaited_once_with(
+        COMPUTER_ID, workspace_id="ws"
+    )
+    stamp.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_machine_with_no_project_left_still_converges():
+    """The source query LEFT JOINs projects: a running sandbox with every
+    project deleted is behind the fleet all the same, and the stamp and the
+    session retirement are the machine's, so no representative is needed."""
+    sweeper = PlatformSecretSweeper()
+    rollout_set = _rollout_set()
+    provider = MagicMock()
+    provider.get = AsyncMock(return_value=_runtime())
+    executor = _executor(busy=False)
+    stamp = AsyncMock()
+    drop = AsyncMock()
+
+    with (
+        patch(f"{_MECHANICS}.converge_sandbox_platform_secrets", AsyncMock()),
+        patch(f"{_ROLLOUT}.stamp_platform_secret_version", stamp),
+        patch(
+            "src.server.services.runs.executor.LocalRunExecutor.get_instance",
+            MagicMock(return_value=executor),
+        ),
+        patch.object(sweeper, "_drop_local_session", drop),
+    ):
+        converged = await sweeper._converge_locked(
+            COMPUTER_ID, "sb", _row(workspace_id=None), rollout_set, provider
+        )
+
+    assert converged is True
+    executor.has_active_tasks_for_computer.assert_awaited_once_with(
+        COMPUTER_ID, workspace_id=None
+    )
+    stamp.assert_awaited_once_with(
+        computer_id=COMPUTER_ID, expected_sandbox_id="sb", rollout_set=rollout_set
+    )
+    drop.assert_awaited_once_with(COMPUTER_ID)

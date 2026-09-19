@@ -3,14 +3,14 @@
 The request path only ever hot-remounts placeholder bindings (never
 destructive), so the scrub-restart that purges legacy plaintext from live
 processes needs an owner that is NOT a turn. This sweeper enumerates running
-workspaces behind the fleet generation — always-on sandboxes never re-init,
-so no bringup would ever converge them — takes a per-workspace advisory lock
-(one worker migrates each), skips any workspace with an active turn (the
-sweep owns no turn, so the predicate never self-counts), and converges in
-the idle gap: a scrub-restart for never-certified sandboxes, a hot remount
-for certified-but-behind ones. Always-on workspaces are guaranteed to
-converge because the sweep retries every cycle until it catches an
-inter-turn gap. A turn beginning between the idle check and the force-stop
+computers behind the fleet generation (always-on sandboxes never re-init, so
+no bringup would ever converge them), takes the machine's advisory lock (one
+worker migrates each), skips any machine with an active turn on any of
+its projects (the sweep owns no turn, so the predicate never self-counts),
+and converges in the idle gap: a scrub-restart for never-certified sandboxes,
+a hot remount for certified-but-behind ones. Always-on machines are
+guaranteed to converge because the sweep retries every cycle until it
+catches an inter-turn gap. A turn beginning between the idle check and the force-stop
 remains possible (the check is an observation, not admission-coupled); that
 window is a few provider calls wide and a hit degrades to the existing
 sandbox-transient retry paths.
@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 SWEEP_INTERVAL_S = 60.0
 SWEEP_BATCH_LIMIT = 25
 
-# A busy workspace defers its scrub to the next cycle; warn periodically so a
-# never-idle always-on workspace surfaces in logs instead of silently lagging.
+# A busy machine defers its scrub to the next cycle; warn periodically so a
+# never-idle always-on machine surfaces in logs instead of silently lagging.
 BUSY_WARN_EVERY = 30
 
 # Grace for a scrub in flight at shutdown before it is cancelled.
@@ -121,7 +121,7 @@ class PlatformSecretSweeper:
     # ---------------------------------------------------------------- sweep
 
     async def sweep_once(self) -> int:
-        """One bounded pass; returns how many workspaces converged."""
+        """One bounded pass; returns how many computers converged."""
         from ptc_agent.core.sandbox.providers import create_provider
         from src.server.services.platform_secret_rollout import (
             get_platform_secret_rollouts,
@@ -157,21 +157,24 @@ class PlatformSecretSweeper:
         if len(rows) == SWEEP_BATCH_LIMIT:
             logger.info(
                 "[PlatformSecretSweeper] batch limit reached; more behind "
-                "workspaces pending next pass"
+                "computers pending next pass"
             )
         return converged
 
     async def _sweep_one(
         self, row: dict[str, Any], rollout_set: Any, provider: Any
     ) -> bool:
+        from src.server.database.computer import computer_advisory_key
         from src.server.database.pool import get_db_connection
-        from src.server.services.writer_guard import advisory_key
 
-        workspace_id = str(row["workspace_id"])
+        computer_id = str(row["computer_id"])
         sandbox_id = str(row["sandbox_id"])
-        lock_key = advisory_key("PS", workspace_id)
+        # The lock is the machine's, because what converges is the sandbox: two
+        # projects on one computer holding a key each would scrub the same
+        # sandbox concurrently.
+        lock_key = computer_advisory_key(computer_id)
 
-        # A session-level advisory lock held for this workspace's convergence
+        # A session-level advisory lock held for this machine's convergence
         # only — one pool connection, sequential, released in finally (and by
         # the server on connection loss), so a crash cannot wedge the fleet.
         async with get_db_connection() as conn:
@@ -180,10 +183,10 @@ class PlatformSecretSweeper:
             )
             acquired = (await cur.fetchone())[0]
             if not acquired:
-                return False  # a sibling worker owns this workspace's migration
+                return False  # a sibling worker owns this machine's migration
             try:
                 return await self._converge_locked(
-                    workspace_id, sandbox_id, row, rollout_set, provider
+                    computer_id, sandbox_id, row, rollout_set, provider
                 )
             finally:
                 try:
@@ -195,7 +198,7 @@ class PlatformSecretSweeper:
 
     async def _converge_locked(
         self,
-        workspace_id: str,
+        computer_id: str,
         sandbox_id: str,
         row: dict[str, Any],
         rollout_set: Any,
@@ -207,21 +210,31 @@ class PlatformSecretSweeper:
             verify_runtime_platform_secrets,
         )
         from src.server.services.platform_secret_rollout import (
-            stamp_workspace_platform_secret_version,
+            stamp_platform_secret_version,
         )
         from src.server.services.runs.executor import LocalRunExecutor
 
+        # The row's project is a representative (the machine's oldest live
+        # one, or none at all): it feeds the in-process busy pre-check and the
+        # logs, never the stamp or the lock.
+        workspace_id = (
+            str(row["workspace_id"]) if row.get("workspace_id") else None
+        )
         version = int(row.get("platform_secret_version") or 0)
         needs_scrub = version == 0
 
         if needs_scrub:
             # The scrub force-stops the sandbox; never under an active turn.
-            # The sweep is not a turn, so this predicate cannot self-count.
+            # The sandbox is the machine's, so one idle project does not
+            # settle it. The sweep is not a turn, so this cannot self-count.
             executor = LocalRunExecutor.get_instance()
-            if await executor.has_active_tasks_for_workspace(workspace_id):
-                self._note_busy_skip(workspace_id)
+            busy = await executor.has_active_tasks_for_computer(
+                computer_id, workspace_id=workspace_id
+            )
+            if busy:
+                self._note_busy_skip(computer_id)
                 return False
-        self._busy_skips.pop(workspace_id, None)
+        self._busy_skips.pop(computer_id, None)
 
         try:
             runtime = await provider.get(sandbox_id)
@@ -239,7 +252,7 @@ class PlatformSecretSweeper:
                     except Exception:
                         logger.warning(
                             "[PlatformSecretSweeper] always-on re-assert "
-                            f"failed for workspace {workspace_id}"
+                            f"failed for computer {computer_id}"
                         )
             else:
                 # Certified placeholders, behind an identity bump: hot swap.
@@ -251,27 +264,29 @@ class PlatformSecretSweeper:
                 await verify_runtime_platform_secrets(
                     runtime, expected=rollout_set.placeholders
                 )
-            await stamp_workspace_platform_secret_version(
-                workspace_id,
+            await stamp_platform_secret_version(
+                computer_id=computer_id,
                 expected_sandbox_id=sandbox_id,
                 rollout_set=rollout_set,
             )
         except Exception as exc:
             logger.warning(
-                "[PlatformSecretSweeper] convergence failed for workspace "
-                f"{workspace_id} (error_type={type(exc).__name__}); will retry"
+                "[PlatformSecretSweeper] convergence failed for computer "
+                f"{computer_id} (error_type={type(exc).__name__}); will retry"
             )
             return False
 
         if needs_scrub:
-            await self._drop_local_session(workspace_id)
+            await self._drop_local_session(computer_id)
+        represented = f", represented by workspace {workspace_id}" if workspace_id else ""
         logger.info(
-            f"[PlatformSecretSweeper] converged workspace {workspace_id} "
-            f"(generation={rollout_set.generation}, scrubbed={needs_scrub})"
+            f"[PlatformSecretSweeper] converged computer {computer_id} "
+            f"(generation={rollout_set.generation}, scrubbed={needs_scrub}"
+            f"{represented})"
         )
         return True
 
-    async def _drop_local_session(self, workspace_id: str) -> None:
+    async def _drop_local_session(self, computer_id: str) -> None:
         """Best-effort retirement of this worker's cached session after a scrub.
 
         The restart killed the session's exec processes; retiring makes the
@@ -280,35 +295,35 @@ class PlatformSecretSweeper:
         the same as any out-of-band sandbox restart.
 
         Retirement, not destruction: the sandbox was just scrubbed and remains
-        the workspace's durable identity, so destroying it here would leave
+        the machine's durable identity, so destroying it here would leave
         Postgres pointing at a sandbox that no longer exists.
         """
         try:
-            from src.server.services.workspace_manager import WorkspaceManager
+            from src.server.services.computer_manager import ComputerManager
 
-            manager = WorkspaceManager._instance
+            manager = ComputerManager.current()
             if manager is not None:
-                await manager.retire_session_if_present(
-                    workspace_id, reason="platform-secret scrub restart"
+                await manager.retire_computer_session_if_present(
+                    computer_id, reason="platform-secret scrub restart"
                 )
         except Exception:
             logger.warning(
                 "[PlatformSecretSweeper] local session retirement failed for "
-                f"workspace {workspace_id}",
+                f"computer {computer_id}",
                 exc_info=True,
             )
 
-    def _note_busy_skip(self, workspace_id: str) -> None:
-        count = self._busy_skips.get(workspace_id, 0) + 1
-        self._busy_skips[workspace_id] = count
+    def _note_busy_skip(self, computer_id: str) -> None:
+        count = self._busy_skips.get(computer_id, 0) + 1
+        self._busy_skips[computer_id] = count
         if count % BUSY_WARN_EVERY == 0:
             logger.warning(
-                f"[PlatformSecretSweeper] workspace {workspace_id} has "
+                f"[PlatformSecretSweeper] computer {computer_id} has "
                 f"deferred its plaintext scrub {count} cycles (always busy); "
                 "it converges at the next inter-turn gap"
             )
         else:
             logger.debug(
-                f"[PlatformSecretSweeper] workspace {workspace_id} busy; "
+                f"[PlatformSecretSweeper] computer {computer_id} busy; "
                 "deferring scrub to next cycle"
             )

@@ -142,20 +142,31 @@ class TestUpdateWorkspace:
     ):
         """A status move must never rebind the workspace to a sandbox.
 
-        ``try_bind_workspace_sandbox``'s compare-and-set is the sole writer of
-        ``sandbox_id``; if a plain status change could also write it, a worker
-        holding a superseded id could resurrect it.
+        ``computers.provider_ref`` is the binding and ``workspaces.sandbox_id``
+        its shadow; ``try_bind_computer_provider_ref``'s compare-and-set is the
+        sole writer of both. If a plain status change could also write them, a
+        worker holding a superseded id could resurrect it.
         """
+        from src.server.database.computer import (
+            create_computer,
+            get_computer,
+            try_bind_computer_provider_ref,
+        )
         from src.server.database.workspace import (
-            try_bind_workspace_sandbox,
+            bind_workspace_to_computer,
             update_workspace_status,
         )
 
         ws_id = str(seed_workspace["workspace_id"])
-        await try_bind_workspace_sandbox(
-            ws_id,
-            sandbox_id="sandbox-abc-123",
-            expected_previous_sandbox_id=None,
+        computer = await create_computer(seed_workspace["user_id"])
+        computer_id = str(computer["computer_id"])
+        assert await bind_workspace_to_computer(
+            ws_id, computer_id, expected_computer_id=None, dir_name="test-ws"
+        )
+        await try_bind_computer_provider_ref(
+            computer_id,
+            provider_ref="sandbox-abc-123",
+            expected_previous_provider_ref=None,
             platform_secret_version=0,
         )
 
@@ -164,6 +175,8 @@ class TestUpdateWorkspace:
         assert updated is not None
         assert updated["status"] == "running"
         assert updated["sandbox_id"] == "sandbox-abc-123"
+        machine = await get_computer(computer_id)
+        assert machine["provider_ref"] == "sandbox-abc-123"
 
     async def test_update_workspace_status_cannot_revive_a_deleted_row(
         self, seed_workspace, patched_get_db_connection
@@ -207,15 +220,6 @@ class TestDeleteWorkspace:
         # Should not be found via normal get (filters out deleted)
         result = await get_workspace(ws_id)
         assert result is None
-
-    async def test_hard_delete(
-        self, seed_workspace, patched_get_db_connection
-    ):
-        from src.server.database.workspace import delete_workspace
-
-        ws_id = str(seed_workspace["workspace_id"])
-        deleted = await delete_workspace(ws_id, hard_delete=True)
-        assert deleted is True
 
     async def test_delete_nonexistent(
         self, seed_user, patched_get_db_connection
