@@ -40,8 +40,8 @@ from src.server.database.mcp_oauth import (
     mark_status_if_generation,
 )
 from src.server.database.egress_grants import revoke_grants_for_connection
+from src.server.database.sql_fences import advisory_key
 from src.server.services.mcp_config import same_consented_url
-from src.server.services.writer_guard import advisory_key
 from src.server.services.mcp_oauth.tokens import (
     TokenExchangeError,
     TokenFailure,

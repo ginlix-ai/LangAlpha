@@ -1,4 +1,4 @@
-"""Ownership and atomicity of a workspace's egress grant set.
+"""Ownership and atomicity of a machine's egress grant set.
 
 A grant is what lets a sandbox spend someone's OAuth credential, so three
 contracts matter at this layer. ``connection_id`` is *selected* under the owner
@@ -7,9 +7,13 @@ produce no grant at all, indistinguishably from one that does not exist. The
 upserts and the retirement of everything else commit together — a grant set
 that committed without its retirement half is an authorization overhang the
 sandbox can still spend. And because the write is a whole-set *replacement*, it
-is fenced by a workspace advisory lock plus a ``mcp_config_version`` CAS: two
+is fenced by the owner's advisory lock plus an ``mcp_config_version`` CAS: two
 workers cannot be merged by row locks (their sets need not overlap), so a
-resolver carrying a superseded version must replace nothing at all.
+resolver carrying a superseded version must replace nothing at all. That one
+lock is the whole fence, because a machine has exactly one owner and every
+project on it is that owner's. The scope of the upsert and of the retirement is
+the computer once the workspace has one, since that is where the set's
+uniqueness lives; a workspace with no computer keeps its own.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from __future__ import annotations
 import json
 import re
 from contextlib import asynccontextmanager
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -25,6 +30,7 @@ from src.server.database.egress_grants import (
     GRANT_KIND_HEADER_MCP,
     GRANT_KIND_OAUTH_MCP,
     GrantRef,
+    active_relay_grants_for_computer,
     apply_binding_to_active_header_grants,
     apply_consent_to_active_grants,
     sync_egress_grants,
@@ -38,17 +44,62 @@ OTHER_CONNECTION_ID = "44444444-4444-4444-8444-444444444444"
 UNKNOWN_CONNECTION_ID = "33333333-3333-4333-8333-333333333333"
 WORKSPACE_ID = "22222222-2222-4222-8222-222222222222"
 OTHER_WORKSPACE_ID = "55555555-5555-4555-8555-555555555555"
+COMPUTER_ID = "66666666-6666-4666-8666-666666666666"
+OTHER_COMPUTER_ID = "77777777-7777-4777-8777-777777777777"
 VERSION = 7
+
+#: The statement kinds that write a grant row.
+_GRANT_WRITE_KINDS = frozenset({"adopt", "insert", "retire"})
+
+
+def _statement_kind(sql: str) -> str:
+    """Which statement of the sync this is, read off the SQL itself.
+
+    The fake dispatches on this and the ordering tests assert on it, so the two
+    cannot drift, and a statement no arm recognizes fails loudly instead of
+    falling through to whichever branch happens to be last.
+    """
+    flat = re.sub(r"\s+", " ", sql).strip()
+    if "pg_advisory_xact_lock" in flat:
+        return "lock"
+    if "live_version" in flat:
+        return "version"
+    if "granted_capabilities" in flat:
+        return "policy"
+    if flat.startswith("SELECT s.name, s.url"):
+        return "header_policy"
+    if flat.startswith("SELECT COALESCE(g.server_name"):
+        return "relay_map"
+    if flat.startswith("DELETE FROM sandbox_egress_grant_claims"):
+        return "unclaim"
+    if flat.startswith("INSERT INTO sandbox_egress_grant_claims"):
+        return "claim"
+    if flat.startswith("INSERT"):
+        return "insert"
+    if flat.startswith("UPDATE sandbox_egress_grants g SET computer_id"):
+        return "adopt"
+    if "SET status = 'revoked'" in flat:
+        return "retire"
+    raise AssertionError(f"unclassified statement: {flat[:90]}")
+
+
+def _statement(db, kind: str) -> tuple[str, Any, int]:
+    """The single statement of a kind, so no test indexes one by position."""
+    matches = [s for s in db.statements if _statement_kind(s[0]) == kind]
+    assert len(matches) == 1, f"expected one {kind} statement, got {len(matches)}"
+    return matches[0]
 
 
 class _Cursor:
-    """Models the five things this SQL's correctness rests on: the INSERT rows
+    """Models the six things this SQL's correctness rests on: the INSERT rows
     come from a SELECT over the connections table (not from the parameters),
     that SELECT filters on connection status as well as owner, each grant's
     tool policy is joined on from the connection's own stored consent, the
-    retirement sweeps every active grant outside the keep list, and the live
-    ``mcp_config_version`` is re-read (under the lock) rather than trusted from
-    the caller."""
+    grant store is keyed on the scope the upsert's conflict target names, the
+    retirement sweeps every active grant in that scope outside the keep list
+    that no live project of the machine still holds, and the live config
+    version is re-read (under the lock) rather than trusted from the
+    caller."""
 
     def __init__(self, connections: dict[str, str]) -> None:
         self._connections = connections  # connection_id -> owning user_id
@@ -70,25 +121,64 @@ class _Cursor:
         # listed here exist; ``enabled``/``transport``/``url`` default to what
         # a live remote row says so a test only states what it changes.
         self.servers: dict[str, dict] = {}
-        self.grants: dict[tuple, dict] = {}  # (workspace, kind, conn) -> row
+        # (scope, kind, subject) -> row, where the scope is whatever the upsert
+        # arbitrates on: the machine when the workspace has one, the workspace
+        # itself when it does not; the subject is a connection id for
+        # ``oauth_mcp`` and the catalog row's name for ``header_mcp``.
+        self.grants: dict[tuple, dict] = {}
         self._rows: list[dict] = []
         self._row: dict | None = None
         self.rowcount = 0
         self.depth = 0  # transaction nesting at the time of the last execute
-        self.statements: list[tuple[str, tuple, int]] = []
+        # (sql, params, depth); params is a tuple or a dict, as bound.
+        self.statements: list[tuple[str, Any, int]] = []
         self.lock_keys: list[int] = []
-        # The workspace's live config version; None models a deleted workspace.
+        self.inserted_computer_ids: list[str | None] = []
+        # The workspace's own live config version; None models a deleted
+        # workspace.
         self.version: int | None = VERSION
+        # ``computers.mcp_config_version``. Kept on the fake with no effect on
+        # the CAS, so a test can prove the gate does not consult it.
+        self.computer_version: int = 0
+        # The machine the workspaces run on; None models ones with no computer.
+        self.computer_id: str | None = COMPUTER_ID
+        # workspace_id -> the machine that one project runs on, where it is not
+        # the machine above. A rebind is the only thing that moves a project, so
+        # a test that models none states nothing here.
+        self.workspace_computers: dict[str, str | None] = {}
+        # Projects whose row is tombstoned: their claims stop sparing anything.
+        self.deleted_workspaces: set[str] = set()
+        # (grant_id, workspace_id): 048's membership table, which the sweep
+        # spares on and the credential map offers on.
+        self.claims: set[tuple[str, str]] = set()
 
-    async def execute(self, sql: str, params: tuple) -> None:
+    def _machine_of(self, workspace_id: str) -> str | None:
+        return self.workspace_computers.get(workspace_id, self.computer_id)
+
+    def _live_version(self) -> int | None:
+        """``w.mcp_config_version``, whatever the machine's column says."""
+        return self.version
+
+    async def execute(self, sql: str, params: tuple | dict) -> None:
         self.statements.append((sql, params, self.depth))
-        if "pg_advisory_xact_lock" in sql:
+        statement = _statement_kind(sql)
+        flat = re.sub(r"\s+", " ", sql)
+        if statement == "lock":
             self.lock_keys.append(params[0])
-        elif "mcp_config_version" in sql:
+        elif statement == "version":
+            # The one read of the machine, under the lock and in the same row as
+            # the version, so the grant's label and its fence are decided
+            # together.
+            (queried,) = params
             self._row = (
-                None if self.version is None else {"mcp_config_version": self.version}
+                None
+                if self.version is None
+                else {
+                    "live_version": self._live_version(),
+                    "computer_id": self._machine_of(queried),
+                }
             )
-        elif "granted_capabilities" in sql:
+        elif statement == "policy":
             # The policy read, keyed on connection_id under the same owner
             # predicate the INSERT uses.
             wanted, owner = params
@@ -104,7 +194,7 @@ class _Cursor:
                 for connection_id in wanted
                 if self._connections.get(connection_id) == owner
             ]
-        elif sql.lstrip().startswith("SELECT") and "user_mcp_servers s" in sql:
+        elif statement == "header_policy":
             # The header policy read, under the same owner predicate its
             # INSERT uses.
             owner, wanted = params
@@ -114,17 +204,35 @@ class _Cursor:
                 if self.servers.get(name, {}).get("user_id", OWNER) == owner
                 and name in self.servers
             ]
-        elif sql.lstrip().startswith("INSERT") and "kind, server_name" in sql:
+        elif statement == "insert" and "RETURNING server_name" in flat:
             (
-                _user_id, workspace_id, kind,
-                policy_names, denylists, allowlists, policy_required, direct_only,
-                owner, server_names, revoked,
+                _user_id,
+                workspace_id,
+                computer_id,
+                kind,
+                policy_names,
+                denylists,
+                allowlists,
+                policy_required,
+                direct_only,
+                owner,
+                server_names,
+                revoked,
             ) = params
+            self.inserted_computer_ids.append(computer_id)
+            scope = (
+                computer_id
+                if "ON CONFLICT (computer_id, kind, connection_id, server_name)" in flat
+                else workspace_id
+            )
             policy = dict(
                 zip(
                     policy_names,
                     zip(
-                        denylists, allowlists, policy_required, direct_only,
+                        denylists,
+                        allowlists,
+                        policy_required,
+                        direct_only,
                         strict=True,
                     ),
                 )
@@ -151,10 +259,16 @@ class _Cursor:
                 ):
                     continue
                 grant = self.grants.setdefault(
-                    (workspace_id, kind, name),
-                    {"grant_id": f"grant-for-{name}", "status": "revoked"},
+                    (scope, kind, name),
+                    {
+                        "grant_id": f"grant-for-{name}",
+                        "status": "revoked",
+                        "workspace_id": workspace_id,
+                        "computer_id": computer_id,
+                    },
                 )
                 grant["status"] = "active"
+                grant["computer_id"] = computer_id
                 grant["destination_url"] = row["url"]
                 (
                     grant["tool_denylist"],
@@ -162,25 +276,44 @@ class _Cursor:
                     grant["policy_required"],
                     grant["tool_direct_only"],
                 ) = policy.get(name, (None, None, False, None))
-                self._rows.append(
-                    {"server_name": name, "grant_id": grant["grant_id"]}
-                )
-        elif sql.lstrip().startswith("INSERT"):
+                self._rows.append({"server_name": name, "grant_id": grant["grant_id"]})
+        elif statement == "insert":
             # The servable list is unpacked as optional on purpose: the fake
             # filters on status only while the statement actually binds one, so
             # dropping the predicate shows up as a wrong grant set rather than
             # as an unpacking error here.
             (
-                _user_id, workspace_id, kind,
-                policy_ids, denylists, allowlists, policy_required, direct_only,
-                connection_ids, owner, *rest,
+                _user_id,
+                workspace_id,
+                computer_id,
+                kind,
+                policy_ids,
+                denylists,
+                allowlists,
+                policy_required,
+                direct_only,
+                connection_ids,
+                owner,
+                *rest,
             ) = params
             servable = rest[0] if rest else None
+            self.inserted_computer_ids.append(computer_id)
+            # Keyed on what the conflict target names rather than on a
+            # parameter: the machine's triple once there is a machine, 025's
+            # workspace triple when there is not.
+            scope = (
+                computer_id
+                if "ON CONFLICT (computer_id, kind, connection_id, server_name)" in flat
+                else workspace_id
+            )
             policy = dict(
                 zip(
                     policy_ids,
                     zip(
-                        denylists, allowlists, policy_required, direct_only,
+                        denylists,
+                        allowlists,
+                        policy_required,
+                        direct_only,
                         strict=True,
                     ),
                 )
@@ -197,10 +330,19 @@ class _Cursor:
                 ):
                     continue
                 row = self.grants.setdefault(
-                    (workspace_id, kind, connection_id),
-                    {"grant_id": f"grant-for-{connection_id}", "status": "revoked"},
+                    (scope, kind, connection_id),
+                    {
+                        "grant_id": f"grant-for-{connection_id}",
+                        "status": "revoked",
+                        "workspace_id": workspace_id,
+                        "computer_id": computer_id,
+                    },
                 )
                 row["status"] = "active"
+                # ``DO UPDATE SET computer_id = EXCLUDED.computer_id`` relabels
+                # the row and leaves ``workspace_id`` alone, so a row adopted
+                # from another project keeps naming that project.
+                row["computer_id"] = computer_id
                 # LEFT JOIN: a connection the policy read did not answer for
                 # lands the column defaults, not a skipped row.
                 (
@@ -212,22 +354,117 @@ class _Cursor:
                 self._rows.append(
                     {"connection_id": connection_id, "grant_id": row["grant_id"]}
                 )
+        elif statement == "unclaim":
+            self.claims = {
+                (gid, ws)
+                for gid, ws in self.claims
+                if ws != params["workspace_id"] or gid in params["granted"]
+            }
+        elif statement == "claim":
+            self.claims |= {(gid, params["workspace_id"]) for gid in params["granted"]}
+        elif statement == "relay_map":
+            # The machine's credential file, built from the same claims the
+            # sweep spares on: an oauth row is named by its connection, a
+            # header row by itself.
+            self._rows = [
+                {
+                    "server_name": (
+                        subject
+                        if kind == GRANT_KIND_HEADER_MCP
+                        else self.connection_names.get(subject)
+                    ),
+                    "grant_id": row["grant_id"],
+                }
+                for (_scope, kind, subject), row in self.grants.items()
+                if row["status"] == "active"
+                and str(row["computer_id"] or "") == str(params["computer_id"])
+                and self._live_claimants_here(row)
+            ]
+        elif statement == "adopt":
+            # Rekeying is the adoption: the store's key is the scope the upsert
+            # arbitrates on, so relabelling a row onto the machine moves it to
+            # the machine's key. The statement's NOT EXISTS arm is that key
+            # being taken already, and the machine's row stays the survivor.
+            target_id = params["computer_id"]
+            moved = 0
+            for key in list(self.grants):
+                _scope, kind, subject = key
+                row = self.grants[key]
+                if kind != params["kind"]:
+                    continue
+                if row["workspace_id"] != params["workspace_id"]:
+                    continue
+                if str(row["computer_id"] or "") == str(target_id):
+                    continue
+                target = (target_id, kind, subject)
+                if target in self.grants:
+                    continue
+                row["computer_id"] = target_id
+                del self.grants[key]
+                self.grants[target] = row
+                moved += 1
+            self.rowcount = moved
         else:
-            workspace_id, keep = params
+            keep = params["granted"]
             self._rows = []
-            # Every kind, not this call's: the set being replaced belongs to
-            # the workspace, so a grant of another kind the refs no longer name
-            # is the same overhang.
             stale = [
                 row
-                for (ws, _k, _subject), row in self.grants.items()
-                if ws == workspace_id
+                for row in self.grants.values()
+                if self._in_sweep_scope(row, params)
                 and row["status"] == "active"
                 and row["grant_id"] not in keep
+                and not self._spared_by_a_sibling(row, params["workspace_id"])
             ]
             for row in stale:
                 row["status"] = "revoked"
             self.rowcount = len(stale)
+
+    def _in_sweep_scope(self, grant: dict, params: dict) -> bool:
+        """``g.computer_id = %(computer_id)s OR g.workspace_id = %(...)s``.
+
+        Every kind, not the call's: the set being replaced belongs to the
+        workspace, so a grant of another kind the refs no longer name is the
+        same overhang. A project with no machine binds the first arm to NULL,
+        which is what reduces the one statement's scope to its own rows.
+        """
+        if grant["workspace_id"] == params["workspace_id"]:
+            return True
+        return (
+            params["computer_id"] is not None
+            and grant["computer_id"] == params["computer_id"]
+        )
+
+    def _live_claimants_here(self, grant: dict, *, but: str | None = None) -> set[str]:
+        """The claims join to ``workspaces``, the machine included.
+
+        A claimant is live when its row is not tombstoned and it still runs on
+        the grant's machine: a rebound project leaves a claim behind on a row
+        labelled with the machine it left. The map's join is ``=`` (NULL on
+        either side matches nothing); the sweep's is ``IS NOT DISTINCT FROM``
+        so a project with no machine spares its own rows for itself.
+        """
+        holders = set()
+        for gid, ws in self.claims:
+            if gid != grant["grant_id"] or ws == but:
+                continue
+            if ws in self.deleted_workspaces:
+                continue
+            machine = self._machine_of(ws)
+            if but is None and (machine is None or grant["computer_id"] is None):
+                continue
+            if str(machine) == str(grant["computer_id"]):
+                holders.add(ws)
+        return holders
+
+    def _spared_by_a_sibling(self, grant: dict, workspace_id: str) -> bool:
+        """The sweep's NOT EXISTS, self-exclusion included.
+
+        The syncing workspace's stale claims are gone before the sweep runs,
+        so its rows are never spared: that is both the retirement the sweep is
+        for and what reaches a loser the adoption left behind on another
+        machine.
+        """
+        return bool(self._live_claimants_here(grant, but=workspace_id))
 
     def _joined(self, connection_id: str) -> dict:
         """The ``user_mcp_servers`` half of the policy read's LEFT JOIN.
@@ -263,14 +500,26 @@ class _Cursor:
     def active_grant_ids(self) -> set[str]:
         return {r["grant_id"] for r in self.grants.values() if r["status"] == "active"}
 
-    def grant_writes(self) -> list[tuple[str, tuple, int]]:
-        """Only the statements that touch grant rows — the prep reads excluded.
+    def grant_row(self, subject: str, kind: str = GRANT_KIND_OAUTH_MCP) -> dict:
+        """The subject's one grant row, whichever scope arbitrated it."""
+        rows = [
+            row
+            for (_scope, k, c), row in self.grants.items()
+            if k == kind and c == subject
+        ]
+        assert len(rows) == 1, f"expected one grant row, got {len(rows)}"
+        return rows[0]
 
-        The policy reads are those: they read the connection or the catalog row
-        to decide what each grant may permit, and write no grant row
-        themselves.
+    def grant_writes(self) -> list[tuple[str, Any, int]]:
+        """Only the statements that touch grant rows, the prep reads excluded.
+
+        The lock, the read of the version and the machine, and the policy read
+        all decide what the writes may do without writing a grant row
+        themselves. The adoption UPDATE does write one, so it counts.
         """
-        return [s for s in self.statements if "sandbox_egress_grants" in s[0]]
+        return [
+            s for s in self.statements if _statement_kind(s[0]) in _GRANT_WRITE_KINDS
+        ]
 
 
 @pytest.fixture
@@ -302,21 +551,33 @@ def db():
         yield cursor
 
 
-async def _sync(user_id: str, *connection_ids: str, config_version: int = VERSION):
+async def _sync(
+    user_id: str,
+    *connection_ids: str,
+    workspace_id: str = WORKSPACE_ID,
+    config_version: int = VERSION,
+):
     return await _sync_refs(
         user_id,
         [
             GrantRef(GRANT_KIND_OAUTH_MCP, f"server-{c}", connection_id=c)
             for c in connection_ids
         ],
+        workspace_id=workspace_id,
         config_version=config_version,
     )
 
 
-async def _sync_refs(user_id: str, refs, *, config_version: int = VERSION):
+async def _sync_refs(
+    user_id: str,
+    refs,
+    *,
+    workspace_id: str = WORKSPACE_ID,
+    config_version: int = VERSION,
+):
     return await sync_egress_grants(
         user_id=user_id,
-        workspace_id=WORKSPACE_ID,
+        workspace_id=workspace_id,
         refs=list(refs),
         config_version=config_version,
     )
@@ -357,7 +618,7 @@ class TestOwnership:
         would still pass against a differently-shaped fake.
         """
         await _sync(OWNER, CONNECTION_ID)
-        sql, params, _depth = db.grant_writes()[0]
+        sql, params, _depth = _statement(db, "insert")
         flat = re.sub(r"\s+", " ", sql)
         assert "FROM user_mcp_oauth_connections c" in flat
         assert "WHERE c.connection_id = ANY(%s::uuid[]) AND c.user_id = %s" in flat
@@ -365,11 +626,21 @@ class TestOwnership:
         # connection row (c.connection_id, c.server_url), never a parameter —
         # a caller can never steer the grant at a host the token wasn't issued
         # for. No destination_url parameter exists to pass.
-        assert "SELECT %s, %s::uuid, %s, c.connection_id, c.server_url" in flat
+        assert (
+            "SELECT %s, %s::uuid, %s::uuid, %s, c.connection_id, c.server_url" in flat
+        )
         # Read from the tail: the predicate's parameters are the statement's
         # last three whatever the policy join binds ahead of them.
         assert params[-3:-1] == ([CONNECTION_ID], OWNER)
-        assert params[2] == GRANT_KIND_OAUTH_MCP
+        assert params[3] == GRANT_KIND_OAUTH_MCP
+        # The machine the grant is scoped to is read from the workspace row
+        # under the same lock as the version, never taken from the caller. NULL
+        # is right for a workspace with no computer.
+        assert db.inserted_computer_ids == [COMPUTER_ID]
+        db.computer_id = None
+        db.inserted_computer_ids.clear()
+        await _sync(OWNER, CONNECTION_ID)
+        assert db.inserted_computer_ids == [None]
 
 
 class TestConnectionStatusFilter:
@@ -426,7 +697,7 @@ class TestConnectionStatusFilter:
         SELECT, and the servable vocabulary rides in as a parameter."""
         await _sync(OWNER, CONNECTION_ID)
 
-        sql, params, _depth = db.grant_writes()[0]
+        sql, params, _depth = _statement(db, "insert")
         assert "AND c.status = ANY(%s)" in re.sub(r"\s+", " ", sql)
         assert params[-1] == ["connected", "refresh_ambiguous"]
 
@@ -456,13 +727,15 @@ class TestRetirement:
     @pytest.mark.asyncio
     async def test_an_empty_set_retires_everything_active(self, db):
         await _sync(OWNER, CONNECTION_ID, OTHER_CONNECTION_ID)
+        db.statements.clear()
         synced = await _sync(OWNER)
 
         assert synced.grants == {}
         assert synced.retired == 2
         assert db.active_grant_ids() == set()
-        # Nothing to upsert ⇒ only the retirement statement is issued.
-        assert len(db.grant_writes()) == 3
+        # Nothing to upsert ⇒ neither the adoption nor the INSERT is issued,
+        # only the sweep.
+        assert [_statement_kind(s[0]) for s in db.grant_writes()] == ["retire"]
 
     @pytest.mark.asyncio
     async def test_a_connection_that_vanished_loses_its_grant_too(self, db):
@@ -476,9 +749,16 @@ class TestRetirement:
         assert synced.retired == 1
 
     @pytest.mark.asyncio
-    async def test_upsert_and_retirement_commit_together(self, db):
+    async def test_adoption_upsert_and_retirement_commit_together(self, db):
+        """All three, because a machine-scoped upsert that commits without the
+        adoption that fed it, or without its sweep, leaves overhang."""
         await _sync(OWNER, CONNECTION_ID)
-        assert [depth for _sql, _params, depth in db.grant_writes()] == [1, 1]
+        assert [_statement_kind(s[0]) for s in db.grant_writes()] == [
+            "adopt",
+            "insert",
+            "retire",
+        ]
+        assert [depth for _sql, _params, depth in db.grant_writes()] == [1, 1, 1]
 
     @pytest.mark.asyncio
     async def test_the_fence_shares_that_transaction(self, db):
@@ -486,7 +766,7 @@ class TestRetirement:
         once, and a version read outside it could be overtaken before the
         writes land — both must sit in the same txn as the grant writes."""
         await _sync(OWNER, CONNECTION_ID)
-        assert [depth for _sql, _params, depth in db.statements] == [1] * 6
+        assert [depth for _sql, _params, depth in db.statements] == [1] * 8
 
 
 class TestConfigVersionCAS:
@@ -529,42 +809,328 @@ class TestConfigVersionCAS:
         assert db.grant_writes() == []
 
     @pytest.mark.asyncio
+    async def test_the_machines_own_version_never_gates(self, db):
+        """``w.mcp_config_version`` alone, because it is what the writers move.
+
+        ``computers.mcp_config_version`` is stamped by an asset sync, so it lags
+        every config write, and a refusal here withholds the sync that would
+        advance it. Gating on it wedged a sole-workspace machine for good: each
+        resolve read the same lagging number, refused, and blocked its own
+        repair.
+        """
+        db.computer_version = VERSION + 1
+
+        synced = await _sync(OWNER, CONNECTION_ID, config_version=VERSION)
+        assert synced.grants == {
+            (GRANT_KIND_OAUTH_MCP, CONNECTION_ID): f"grant-for-{CONNECTION_ID}"
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_version_read_asks_only_the_workspace(self, db):
+        """No join to ``computers``: the lagging column must not be readable here.
+
+        A join is all it takes for the next reader to fold it back into the
+        comparison, which is the shape of the livelock.
+        """
+        await _sync(OWNER, CONNECTION_ID)
+
+        version_sql = re.sub(r"\s+", " ", _statement(db, "version")[0]).strip()
+        assert version_sql == (
+            "SELECT w.mcp_config_version AS live_version, w.computer_id "
+            "FROM workspaces w WHERE w.workspace_id = %s"
+        )
+
+    @pytest.mark.asyncio
     async def test_the_version_is_re_read_under_the_lock(self, db):
         """Order is the whole fix: locking after the read would let a newer
         sync commit in between, and never re-reading would trust the caller's
         stale copy."""
         await _sync(OWNER, CONNECTION_ID)
-        kinds = [
-            "lock"
-            if "pg_advisory_xact_lock" in sql
-            else "version"
-            if "mcp_config_version" in sql
-            else "policy"
-            if "granted_capabilities" in sql
-            else "write"
-            for sql, _params, _depth in db.statements
+        kinds = [_statement_kind(sql) for sql, _params, _depth in db.statements]
+        # The lock is the first statement, so nothing this replacement decides
+        # on is read outside the fence: the version, the machine and the
+        # consent are all read under it. The policy read in particular, since
+        # reading consent before the lock would let a newer sync's consent land
+        # under this one's writes.
+        assert kinds == [
+            "lock",
+            "version",
+            "policy",
+            "adopt",
+            "insert",
+            "unclaim",
+            "claim",
+            "retire",
         ]
-        # The policy read sits inside the fence too: reading consent before the
-        # lock would let a newer sync's consent land under this one's writes.
-        assert kinds == ["lock", "lock", "version", "policy", "write", "write"]
 
     @pytest.mark.asyncio
-    async def test_the_lock_is_workspace_scoped_and_domain_separated(self, db):
+    async def test_the_owners_lock_is_the_only_one_and_domain_separated(self, db):
         await _sync(OWNER, CONNECTION_ID)
-        # The owner's lock first, then the workspace's. A narrowing consent
-        # holds the first one over every workspace of the user at once,
-        # including the ones being created while it runs; the second is what
-        # orders two workers replacing the same workspace's set.
-        assert db.lock_keys == [
-            advisory_key("EGU", OWNER),
-            advisory_key("EG", WORKSPACE_ID),
+        # One lock, the owner's, taken before anything is read. A narrowing
+        # consent holds it over every workspace of the user at once, including
+        # the ones being created while it runs, and it is also what orders two
+        # workers replacing the same set: a machine has exactly one owner and
+        # every project on it is that owner's, so two replacements that could
+        # collide on a machine are two of this user's.
+        assert db.lock_keys == [advisory_key("EGU", OWNER)]
+
+        # The key is the owner's whatever the placement, so a project with no
+        # machine queues with its siblings instead of taking one of its own.
+        db.computer_id = None
+        db.lock_keys.clear()
+        await _sync(OWNER, CONNECTION_ID)
+        assert db.lock_keys == [advisory_key("EGU", OWNER)]
+
+        # Two owners converge concurrently rather than queueing.
+        assert advisory_key("EGU", OWNER) != advisory_key("EGU", INTRUDER)
+        # And the tag keeps this key off the per-set and per-machine domains,
+        # and off the writer guard's thread and namespace keys.
+        for domain in ("EG", "C", "T", "N"):
+            assert advisory_key("EGU", OWNER) != advisory_key(domain, OWNER)
+
+
+class TestMachineScope:
+    """Whose set this is. The upsert arbitrates on the machine's triple once the
+    workspace has one, and the sweep spans the same scope, so two projects on
+    one computer share a credential's grant instead of each holding a row the
+    other's replacement revokes. A grant made before the machine existed is
+    moved onto it rather than duplicated."""
+
+    @pytest.mark.asyncio
+    async def test_two_workspaces_on_one_computer_share_one_grant(self, db):
+        first = await _sync(OWNER, CONNECTION_ID)
+        second = await _sync(OWNER, CONNECTION_ID, workspace_id=OTHER_WORKSPACE_ID)
+
+        assert second.grants == first.grants
+        # One row for the one credential, and the second sync leaves the first
+        # project's grant alone. Were the upsert keyed per project while the
+        # sweep spans the machine, each sync would revoke its sibling's row.
+        assert len(db.grants) == 1
+        assert second.retired == 0
+        assert db.active_grant_ids() == {f"grant-for-{CONNECTION_ID}"}
+
+    @pytest.mark.asyncio
+    async def test_a_grant_made_before_the_machine_is_adopted_not_duplicated(self, db):
+        db.computer_id = None
+        await _sync(OWNER, CONNECTION_ID)
+
+        db.computer_id = COMPUTER_ID
+        synced = await _sync(OWNER, CONNECTION_ID)
+
+        # The existing row is relabelled onto the machine, so the machine-keyed
+        # upsert finds it. Without that move the upsert sees no conflict and
+        # tries to add a second row for the same credential, which is the
+        # collision 025's workspace triple still refuses.
+        assert len(db.grants) == 1
+        row = db.grant_row(CONNECTION_ID)
+        assert row["computer_id"] == COMPUTER_ID
+        assert row["status"] == "active"
+        assert synced.grants == {
+            (GRANT_KIND_OAUTH_MCP, CONNECTION_ID): f"grant-for-{CONNECTION_ID}"
+        }
+        assert synced.retired == 0
+        # Scoped by the project it is moving off and the machine it moves onto,
+        # both read under the lock rather than passed in.
+        assert _statement(db, "adopt")[1] == {
+            "computer_id": COMPUTER_ID,
+            "workspace_id": WORKSPACE_ID,
+            "kind": GRANT_KIND_OAUTH_MCP,
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_upsert_and_the_sweep_arbitrate_on_the_same_scope(self, db):
+        """Structural, because the two halves are one replacement: a
+        machine-scoped upsert with a project-scoped sweep leaves overhang, and a
+        project-scoped upsert under the machine's lock revokes a sibling's
+        grants."""
+        await _sync(OWNER, CONNECTION_ID)
+        insert = re.sub(r"\s+", " ", _statement(db, "insert")[0])
+        assert (
+            "ON CONFLICT (computer_id, kind, connection_id, server_name) "
+            "WHERE computer_id IS NOT NULL" in insert
+        )
+        retire = re.sub(r"\s+", " ", _statement(db, "retire")[0])
+        assert (
+            "WHERE (g.computer_id = %(computer_id)s "
+            "OR g.workspace_id = %(workspace_id)s::uuid)" in retire
+        )
+
+        # A workspace with no computer keeps 045's workspace key, and has
+        # nothing to adopt onto. The sweep is the very same statement: its
+        # machine arm binds to NULL, so the scope reduces to this project's own
+        # rows with no second spelling of the predicate to keep in step.
+        db.statements.clear()
+        db.computer_id = None
+        await _sync(OWNER, CONNECTION_ID)
+        insert = re.sub(r"\s+", " ", _statement(db, "insert")[0])
+        assert "ON CONFLICT (workspace_id, kind, connection_id, server_name)" in insert
+        sql, params, _depth = _statement(db, "retire")
+        assert re.sub(r"\s+", " ", sql) == retire
+        assert params["computer_id"] is None
+        assert [_statement_kind(s[0]) for s in db.grant_writes()] == [
+            "insert",
+            "retire",
         ]
-        # A different workspace converges concurrently rather than queueing.
-        assert advisory_key("EG", WORKSPACE_ID) != advisory_key("EG", CONNECTION_ID)
-        # And the tag keeps it off the writer guard's thread/namespace keys,
-        # and the two grant domains off each other.
-        assert advisory_key("EG", WORKSPACE_ID) != advisory_key("T", WORKSPACE_ID)
-        assert advisory_key("EGU", OWNER) != advisory_key("EG", OWNER)
+
+
+class TestTheUnionOfTheMachinesProjects:
+    """A machine's desired grant set is the union of what its live projects
+    resolve, so one project's replacement never speaks for another's.
+
+    Without this, a project that resolves nothing -- a fresh one, or one whose
+    servers are all local -- would sweep a sibling's grant away mid-turn, and
+    the sibling would only find out when its next vendor call 404s. The union
+    is read from the grant table rather than recomputed: a row is there because
+    some project resolved that connection, and it stays while that project is
+    alive and still on this machine.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_project_resolving_nothing_spares_its_siblings_grant(self, db):
+        await _sync(OWNER, CONNECTION_ID, workspace_id=WORKSPACE_ID)
+        held = db.grant_row(CONNECTION_ID)["grant_id"]
+
+        synced = await _sync(OWNER, workspace_id=OTHER_WORKSPACE_ID)
+
+        assert synced.grants == {}
+        assert synced.retired == 0
+        assert db.active_grant_ids() == {held}
+
+    @pytest.mark.asyncio
+    async def test_the_sweep_still_drops_what_this_project_stopped_resolving(self, db):
+        """Sparing every row on the machine would make retirement impossible;
+        only a SIBLING's claim spares one, and this project has none."""
+        await _sync(OWNER, CONNECTION_ID, OTHER_CONNECTION_ID)
+
+        synced = await _sync(OWNER, CONNECTION_ID)
+
+        assert synced.retired == 1
+        assert db.grant_row(OTHER_CONNECTION_ID)["status"] == "revoked"
+
+    @pytest.mark.asyncio
+    async def test_a_tombstoned_projects_grant_is_not_spared(self, db):
+        """Its authorization has to end with it, or a deleted project would
+        pin a credential open on the machine for good."""
+        await _sync(OWNER, CONNECTION_ID, workspace_id=WORKSPACE_ID)
+        db.deleted_workspaces.add(WORKSPACE_ID)
+
+        synced = await _sync(OWNER, workspace_id=OTHER_WORKSPACE_ID)
+
+        assert synced.retired == 1
+        assert db.active_grant_ids() == set()
+
+    @pytest.mark.asyncio
+    async def test_the_union_is_the_sweeps_own_subquery(self, db):
+        """Read ahead of the sweep instead, a sibling's sync could commit
+        between the two and have its brand-new grant revoked by this one; in
+        the statement there is no window to commit into."""
+        await _sync(OWNER, CONNECTION_ID)
+
+        sql, params, depth = _statement(db, "retire")
+        assert depth == 1
+        assert params["computer_id"] == COMPUTER_ID
+        assert params["workspace_id"] == WORKSPACE_ID
+        flat = re.sub(r"\s+", " ", sql)
+        assert "NOT EXISTS ( SELECT 1 FROM sandbox_egress_grant_claims cl" in flat
+        assert "JOIN workspaces w ON w.workspace_id = cl.workspace_id" in flat
+        assert "cl.grant_id = g.grant_id" in flat
+        assert "w.computer_id IS NOT DISTINCT FROM g.computer_id" in flat
+        assert "w.status <> 'deleted'" in flat
+        assert "w.workspace_id IS DISTINCT FROM %(workspace_id)s::uuid" in flat
+
+    @pytest.mark.asyncio
+    async def test_a_rebound_siblings_leftover_grant_is_not_spared(self, db):
+        """A holder has to be alive AND still on this machine.
+
+        047 moved the row's scope to ``computer_id`` and left ``workspace_id``
+        as the provenance of whoever first resolved it, so a project that
+        rebinds leaves rows behind whose named workspace is alive on another
+        machine. They are unreachable from either sandbox, and sparing them
+        keeps a credential open on a machine no live project of which asked
+        for it.
+        """
+        await _sync(OWNER, CONNECTION_ID, workspace_id=OTHER_WORKSPACE_ID)
+        assert db.grant_row(CONNECTION_ID)["computer_id"] == COMPUTER_ID
+
+        db.workspace_computers[OTHER_WORKSPACE_ID] = OTHER_COMPUTER_ID
+        synced = await _sync(OWNER, workspace_id=WORKSPACE_ID)
+
+        assert synced.retired == 1
+        assert db.active_grant_ids() == set()
+
+    @pytest.mark.asyncio
+    async def test_the_credential_map_reads_liveness_the_same_way(self, db):
+        """One file per sandbox, so the map and the sweep have to agree on what
+        a live grant is: a row the sweep will revoke must not be offered to a
+        sandbox in between, and a row still bound in the file must not be one
+        the sweep spares nowhere."""
+        db.connection_names[CONNECTION_ID] = "vendor"
+        await _sync(OWNER, CONNECTION_ID, workspace_id=OTHER_WORKSPACE_ID)
+
+        assert await active_relay_grants_for_computer(COMPUTER_ID, user_id=OWNER) == {
+            "vendor": f"grant-for-{CONNECTION_ID}"
+        }
+
+        db.workspace_computers[OTHER_WORKSPACE_ID] = OTHER_COMPUTER_ID
+        assert await active_relay_grants_for_computer(COMPUTER_ID, user_id=OWNER) == {}
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_creator_leaves_the_siblings_claim_alive(self, db):
+        """047 named the first resolver only; the sibling that reuses the row
+        is a claimant in its own right, so the creator's tombstone neither
+        drops the row from the map nor lets a sweep revoke it."""
+        db.connection_names[CONNECTION_ID] = "vendor"
+        await _sync(OWNER, CONNECTION_ID, workspace_id=WORKSPACE_ID)
+        held = db.grant_row(CONNECTION_ID)["grant_id"]
+        await _sync(OWNER, CONNECTION_ID, workspace_id=OTHER_WORKSPACE_ID)
+        assert db.claims == {(held, WORKSPACE_ID), (held, OTHER_WORKSPACE_ID)}
+
+        db.deleted_workspaces.add(WORKSPACE_ID)
+
+        assert await active_relay_grants_for_computer(COMPUTER_ID, user_id=OWNER) == {
+            "vendor": held
+        }
+        synced = await _sync(OWNER, CONNECTION_ID, workspace_id=OTHER_WORKSPACE_ID)
+        assert synced.retired == 0
+        assert db.active_grant_ids() == {held}
+
+        # The last claim leaving is what retires it.
+        synced = await _sync(OWNER, workspace_id=OTHER_WORKSPACE_ID)
+        assert synced.retired == 1
+        assert (held, OTHER_WORKSPACE_ID) not in db.claims
+
+    @pytest.mark.asyncio
+    async def test_the_claims_move_in_the_grant_transaction(self, db):
+        """A claim committed apart from its grant is a sweep that reads the
+        wrong membership in between."""
+        await _sync(OWNER, CONNECTION_ID)
+
+        _sql, params, depth = _statement(db, "claim")
+        assert depth == 1
+        assert params["workspace_id"] == WORKSPACE_ID
+        _sql, _params, depth = _statement(db, "unclaim")
+        assert depth == 1
+        await active_relay_grants_for_computer(COMPUTER_ID, user_id=OWNER)
+        sql, params, _depth = _statement(db, "relay_map")
+        flat = re.sub(r"\s+", " ", sql)
+        assert "EXISTS ( SELECT 1 FROM sandbox_egress_grant_claims cl" in flat
+        assert "w.user_id = %(user_id)s" in flat
+
+    @pytest.mark.asyncio
+    async def test_a_project_with_no_machine_sweeps_only_its_own(self, db):
+        """It is its own machine, so it has nobody to share a set with: the
+        machine arm of the scope is NULL rather than a match against every
+        unbound grant of every user, which is what ``IS NOT DISTINCT FROM``
+        would have made it."""
+        db.computer_id = None
+        await _sync(OWNER, CONNECTION_ID, workspace_id=OTHER_WORKSPACE_ID)
+        await _sync(OWNER, OTHER_CONNECTION_ID, workspace_id=WORKSPACE_ID)
+        sibling = db.grant_row(CONNECTION_ID)["grant_id"]
+
+        synced = await _sync(OWNER, workspace_id=WORKSPACE_ID)
+
+        assert synced.retired == 1
+        assert db.active_grant_ids() == {sibling}
 
 
 class TestToolPolicy:
@@ -577,7 +1143,7 @@ class TestToolPolicy:
     """
 
     def _policy(self, db, connection_id: str = CONNECTION_ID):
-        row = db.grants[(WORKSPACE_ID, GRANT_KIND_OAUTH_MCP, connection_id)]
+        row = db.grant_row(connection_id)
         denylist = row["tool_denylist"]
         return (
             None if denylist is None else set(json.loads(denylist)),
@@ -633,7 +1199,7 @@ class TestToolPolicy:
         db.server_urls[CONNECTION_ID] = "https://mcp.moomoo.com/mcp"
         db.capabilities[CONNECTION_ID] = ["market_data"]
         await _sync(OWNER, CONNECTION_ID)
-        row = db.grants[(WORKSPACE_ID, GRANT_KIND_OAUTH_MCP, CONNECTION_ID)]
+        row = db.grant_row(CONNECTION_ID)
         permitted = set(json.loads(row["tool_allowlist"]))
         assert "quote_stock_quote" in permitted
         assert "trading_order_place" not in permitted
@@ -648,8 +1214,7 @@ class TestToolPolicy:
         db.server_urls[CONNECTION_ID] = "https://mcp.moomoo.com/mcp"
         db.capabilities[CONNECTION_ID] = ["market_data", "paper_trading"]
         await _sync(OWNER, CONNECTION_ID)
-        row = db.grants[(WORKSPACE_ID, GRANT_KIND_OAUTH_MCP, CONNECTION_ID)]
-        direct = set(json.loads(row["tool_direct_only"]))
+        direct = set(json.loads(db.grant_row(CONNECTION_ID)["tool_direct_only"]))
         assert "sim_trade_input_order" in direct
         assert "quote_stock_quote" not in direct
 
@@ -661,8 +1226,7 @@ class TestToolPolicy:
         db.server_urls[CONNECTION_ID] = "https://mcp.moomoo.com/mcp"
         db.capabilities[CONNECTION_ID] = ["market_data", "account", "trading"]
         await _sync(OWNER, CONNECTION_ID)
-        row = db.grants[(WORKSPACE_ID, GRANT_KIND_OAUTH_MCP, CONNECTION_ID)]
-        direct = set(json.loads(row["tool_direct_only"]))
+        direct = set(json.loads(db.grant_row(CONNECTION_ID)["tool_direct_only"]))
         assert {
             "trading_order_place",
             "trading_order_cancel",
@@ -676,8 +1240,7 @@ class TestToolPolicy:
         db.server_urls[CONNECTION_ID] = "https://mcp.moomoo.com/mcp"
         db.capabilities[CONNECTION_ID] = ["market_data"]
         await _sync(OWNER, CONNECTION_ID)
-        row = db.grants[(WORKSPACE_ID, GRANT_KIND_OAUTH_MCP, CONNECTION_ID)]
-        assert row["tool_direct_only"] is None
+        assert db.grant_row(CONNECTION_ID)["tool_direct_only"] is None
 
     @pytest.mark.asyncio
     async def test_a_brokerage_with_no_recorded_consent_denies_its_curation(self, db):
@@ -712,7 +1275,7 @@ class TestHeaderGrants:
         assert synced.grants == {
             (GRANT_KIND_HEADER_MCP, "fuyao_meta"): "grant-for-fuyao_meta"
         }
-        row = db.grants[(WORKSPACE_ID, GRANT_KIND_HEADER_MCP, "fuyao_meta")]
+        row = db.grant_row("fuyao_meta", kind=GRANT_KIND_HEADER_MCP)
         # The address comes from the row inside the INSERT, never from the
         # caller: there is no destination parameter to pass.
         assert row["destination_url"] == "https://fuyao.example.test/mcp"
@@ -743,7 +1306,9 @@ class TestHeaderGrants:
         assert (await _sync_refs(OWNER, [self._ref()])).grants == {}
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("status", ["connected", "refresh_ambiguous", "needs_reauth"])
+    @pytest.mark.parametrize(
+        "status", ["connected", "refresh_ambiguous", "needs_reauth"]
+    )
     async def test_a_row_with_a_connection_gets_nothing(self, db, status):
         """One row, one credential: while a connection claims the row, it is
         the grant, servable or not.
@@ -779,7 +1344,7 @@ class TestHeaderGrants:
 
         await _sync_refs(OWNER, [self._ref()])
 
-        row = db.grants[(WORKSPACE_ID, GRANT_KIND_HEADER_MCP, "fuyao_meta")]
+        row = db.grant_row("fuyao_meta", kind=GRANT_KIND_HEADER_MCP)
         assert set(json.loads(row["tool_direct_only"])) == {"list_markets"}
         # Nothing curates this address, so there is no denial to carry.
         assert row["tool_denylist"] is None
@@ -830,7 +1395,8 @@ class TestHeaderGrants:
             ],
         )
         assert db.active_grant_ids() == {
-            "grant-for-fuyao_meta", f"grant-for-{CONNECTION_ID}"
+            "grant-for-fuyao_meta",
+            f"grant-for-{CONNECTION_ID}",
         }
 
         synced = await _sync_refs(OWNER, [self._ref()])
@@ -914,7 +1480,7 @@ class TestApplyConsentToActiveGrants:
         assert (direct_only is None) or set(json.loads(direct_only)) <= (
             set(json.loads(allowlist)) if allowlist else set()
         )
-        assert "status = \'active\'" in update[0]
+        assert "status = 'active'" in update[0]
         # Both columns, for the reason the sync writes both: the other blue/green
         # colour authorizes off the allowlist, and a narrowing that never
         # reached it is a narrowing that half the fleet ignores.
@@ -992,7 +1558,9 @@ class TestApplyConsentToActiveGrants:
     @pytest.mark.asyncio
     async def test_a_server_we_curate_nothing_for_is_left_with_no_policy(self):
         assert await self._apply("https://mcp.example.com/own", None) == (
-            None, False, None,
+            None,
+            False,
+            None,
         )
 
     @pytest.mark.asyncio
@@ -1116,4 +1684,3 @@ class TestApplyBindingToActiveHeaderGrants:
         count, statements = await self._run(None)
         assert count == 0
         assert not any(s[0].lstrip().startswith("UPDATE") for s in statements)
-

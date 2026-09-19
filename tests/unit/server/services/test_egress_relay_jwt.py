@@ -25,6 +25,7 @@ from src.server.services.egress.relay_jwt import (
     LEEWAY_SECONDS,
     REMINT_THRESHOLD_SECONDS,
     RelayJwtError,
+    identity_claim,
     mint_relay_jwt,
     needs_remint,
     validate_relay_jwt,
@@ -38,6 +39,7 @@ OTHER_SECRET = "unit-test-relay-secret-rotated-111111111111111111111111111111111
 USER_ID = "u-relay-unit"
 WORKSPACE_ID = "ws-relay-unit"
 SANDBOX_ID = "sbx-relay-unit"
+COMPUTER_ID = "cmp-relay-unit"
 
 
 def _payload(**overrides) -> dict:
@@ -232,6 +234,129 @@ class TestSignatureAndAlgorithm:
 
 
 # ---------------------------------------------------------------------------
+# Machine identity: sandbox_id, computer_id, or neither
+# ---------------------------------------------------------------------------
+
+
+class TestMachineIdentity:
+    """Both identity claims are optional and neither is authorized against.
+
+    The arm that matters is the empty string. Two sandbox-less callers used to
+    mint ``sandbox_id=""`` and the validator refused it, so they issued a
+    credential they could not use; absent is now the encoding for "no machine"
+    and the empty string is unreachable from the mint.
+    """
+
+    def test_a_computer_only_token_validates(self):
+        token = mint_relay_jwt(
+            SECRET,
+            user_id=USER_ID,
+            workspace_id=WORKSPACE_ID,
+            computer_id=COMPUTER_ID,
+        ).token
+        claims = validate_relay_jwt(SECRET, token)
+
+        assert claims.computer_id == COMPUTER_ID
+        assert claims.sandbox_id is None
+        assert claims.identity == COMPUTER_ID
+
+    def test_a_sandbox_only_token_validates(self):
+        token = mint_relay_jwt(
+            SECRET,
+            user_id=USER_ID,
+            workspace_id=WORKSPACE_ID,
+            sandbox_id=SANDBOX_ID,
+        ).token
+        claims = validate_relay_jwt(SECRET, token)
+
+        assert claims.sandbox_id == SANDBOX_ID
+        assert claims.computer_id is None
+        assert claims.identity == SANDBOX_ID
+
+    def test_both_claims_round_trip_and_the_computer_is_the_identity(self):
+        token = mint_relay_jwt(
+            SECRET,
+            user_id=USER_ID,
+            workspace_id=WORKSPACE_ID,
+            sandbox_id=SANDBOX_ID,
+            computer_id=COMPUTER_ID,
+        ).token
+        claims = validate_relay_jwt(SECRET, token)
+
+        assert claims.sandbox_id == SANDBOX_ID
+        assert claims.computer_id == COMPUTER_ID
+        assert claims.identity == COMPUTER_ID
+
+    def test_a_token_naming_no_machine_validates(self):
+        """The sandbox-less host callers: a Flash turn, or an unprovisioned
+        session. Authorization is the grant lookup keyed by workspace, so a
+        token with no machine claim is a valid credential."""
+        token = mint_relay_jwt(
+            SECRET, user_id=USER_ID, workspace_id=WORKSPACE_ID
+        ).token
+        claims = validate_relay_jwt(SECRET, token)
+
+        assert claims.sandbox_id is None
+        assert claims.computer_id is None
+        assert claims.identity is None
+        assert claims.workspace_id == WORKSPACE_ID
+
+    @pytest.mark.parametrize("empty", ["", None])
+    def test_an_empty_identity_is_never_minted(self, empty):
+        """The live bug: session_binding and direct_tools passed "" for a
+        sandbox-less session, and validate refused the token they had just
+        minted. Neither claim is emitted at all now."""
+        token = mint_relay_jwt(
+            SECRET,
+            user_id=USER_ID,
+            workspace_id=WORKSPACE_ID,
+            sandbox_id=empty,
+            computer_id=empty,
+        ).token
+        payload = jwt.decode(
+            token, SECRET, algorithms=[ALGORITHM], audience=AUDIENCE
+        )
+
+        assert "sandbox_id" not in payload
+        assert "computer_id" not in payload
+        assert validate_relay_jwt(SECRET, token).identity is None
+
+    @pytest.mark.parametrize("synthetic", ["flash", "reconcile"])
+    def test_the_synthetic_sandbox_ids_still_work(self, synthetic):
+        """flash_binding and orders/reconcile name a caller, not a machine."""
+        token = mint_relay_jwt(
+            SECRET,
+            user_id=USER_ID,
+            workspace_id=WORKSPACE_ID,
+            sandbox_id=synthetic,
+            caller="host",
+        ).token
+        claims = validate_relay_jwt(SECRET, token)
+
+        assert claims.sandbox_id == synthetic
+        assert claims.identity == synthetic
+        assert claims.caller == "host"
+
+    def test_a_non_string_identity_is_minted_as_absent(self):
+        """The call sites read the value off whatever object they hold, so a
+        placeholder must degrade to "no machine" rather than to a claim."""
+        token = mint_relay_jwt(
+            SECRET,
+            user_id=USER_ID,
+            workspace_id=WORKSPACE_ID,
+            sandbox_id=object(),  # type: ignore[arg-type]
+        ).token
+        assert validate_relay_jwt(SECRET, token).sandbox_id is None
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [("sbx-1", "sbx-1"), ("", None), (None, None), (0, None), (object(), None)],
+    )
+    def test_identity_claim_normalizes(self, value, expected):
+        assert identity_claim(value) == expected
+
+
+# ---------------------------------------------------------------------------
 # Audience / issuer / required claims
 # ---------------------------------------------------------------------------
 
@@ -249,7 +374,7 @@ class TestClaimGating:
 
     @pytest.mark.parametrize(
         "claim",
-        ["iss", "aud", "sub", "workspace_id", "sandbox_id", "iat", "nbf", "exp", "jti"],
+        ["iss", "aud", "sub", "workspace_id", "iat", "nbf", "exp", "jti"],
     )
     def test_every_required_claim_is_required(self, claim):
         payload = _payload()
@@ -263,9 +388,11 @@ class TestClaimGating:
             {"sub": ""},
             {"workspace_id": ""},
             {"sandbox_id": ""},
+            {"computer_id": ""},
             {"jti": ""},
             {"workspace_id": 42},
-            {"sandbox_id": None},
+            {"sandbox_id": 42},
+            {"computer_id": 42},
         ],
     )
     def test_identity_claims_must_be_non_empty_strings(self, overrides):

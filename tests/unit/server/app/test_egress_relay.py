@@ -61,6 +61,10 @@ USER_ID = "usr-egress-unit-0001"
 OTHER_USER_ID = "usr-egress-unit-0002"
 WORKSPACE_ID = "11111111-2222-3333-4444-555555555555"
 OTHER_WORKSPACE_ID = "66666666-7777-8888-9999-000000000000"
+# A second project of the same user, on the same machine as WORKSPACE_ID.
+SIBLING_WORKSPACE_ID = "aaaa1111-2222-3333-4444-555555555555"
+COMPUTER_ID = "cccccccc-1111-4111-8111-111111111111"
+OTHER_COMPUTER_ID = "cccccccc-2222-4222-8222-222222222222"
 SANDBOX_ID = "sbx-egress-unit-0001"
 GRANT_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 CONNECTION_ID = "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb"
@@ -98,6 +102,9 @@ def _grant(**overrides) -> dict:
         "tool_direct_only": None,
         "grant_status": "active",
         "connection_status": "connected",
+        # NULL until the grant's workspace is bound to a machine; the relay
+        # falls back to the project comparison while it is.
+        "computer_id": None,
     }
     row.update(overrides)
     return row
@@ -122,6 +129,7 @@ def _jwt(
     user_id: str = USER_ID,
     workspace_id: str = WORKSPACE_ID,
     sandbox_id: str = SANDBOX_ID,
+    computer_id: str | None = None,
     ttl_seconds: int = 3600,
     caller: str = "sandbox",
 ) -> str:
@@ -130,6 +138,7 @@ def _jwt(
         user_id=user_id,
         workspace_id=workspace_id,
         sandbox_id=sandbox_id,
+        computer_id=computer_id,
         ttl_seconds=ttl_seconds,
         caller=caller,
     ).token
@@ -871,6 +880,103 @@ class TestGrantAuthorization:
         assert _error(resp) == "needs_reauth"
         assert env.vendor.sends == 0
 
+
+# ===========================================================================
+# 2b. Machine authority
+# ===========================================================================
+
+
+class TestMachineAuthority:
+    """One grant row serves every project on a computer, so the machine is the
+    comparison as soon as the row and the token both name one.
+
+    That is not a widening. Projects on one computer share the sandbox the
+    credential file lives in, so a sibling can already read the grant id and
+    the JWT off disk; refusing it here would only break the connection a user
+    made once and expects on every project of that machine.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_sibling_project_on_the_machine_reaches_the_grant(
+        self, env, client
+    ):
+        env.grant = _grant(workspace_id=WORKSPACE_ID, computer_id=COMPUTER_ID)
+
+        resp = await _post(
+            client,
+            token=_jwt(workspace_id=SIBLING_WORKSPACE_ID, computer_id=COMPUTER_ID),
+        )
+
+        assert resp.status_code == 200
+        assert env.vendor.sends == 1
+
+    @pytest.mark.asyncio
+    async def test_another_machine_is_a_uniform_404(self, env, client):
+        """Even with the project ids agreeing: once both name a machine, the
+        machine is the answer, or the comparison would be two rules at once."""
+        env.grant = _grant(workspace_id=WORKSPACE_ID, computer_id=COMPUTER_ID)
+
+        resp = await _post(
+            client,
+            token=_jwt(workspace_id=WORKSPACE_ID, computer_id=OTHER_COMPUTER_ID),
+        )
+
+        assert resp.status_code == 404
+        assert _error(resp) == "not_found"
+        assert env.vendor.sends == 0
+
+    @pytest.mark.asyncio
+    async def test_the_account_still_fixes_the_boundary(self, env, client):
+        """The machine widens reach within one user and never across two."""
+        env.grant = _grant(
+            user_id=OTHER_USER_ID, workspace_id=WORKSPACE_ID, computer_id=COMPUTER_ID
+        )
+
+        resp = await _post(client, token=_jwt(computer_id=COMPUTER_ID))
+
+        assert resp.status_code == 404
+        assert _error(resp) == "not_found"
+        assert env.vendor.sends == 0
+
+    @pytest.mark.asyncio
+    async def test_a_grant_with_no_machine_is_still_judged_by_project(
+        self, env, client
+    ):
+        """The backfill leaves unbound grant rows behind; a token that knows its
+        machine must not turn one of those into a free pass."""
+        env.grant = _grant(workspace_id=OTHER_WORKSPACE_ID, computer_id=None)
+
+        resp = await _post(
+            client, token=_jwt(workspace_id=WORKSPACE_ID, computer_id=COMPUTER_ID)
+        )
+
+        assert resp.status_code == 404
+        assert _error(resp) == "not_found"
+
+    @pytest.mark.asyncio
+    async def test_a_token_that_predates_the_machine_falls_back_to_its_project(
+        self, env, client
+    ):
+        """Minted while the session had not resolved a computer yet. Its own
+        project still reaches the grant, so a warm sandbox keeps working."""
+        env.grant = _grant(workspace_id=WORKSPACE_ID, computer_id=COMPUTER_ID)
+
+        resp = await _post(client, token=_jwt(workspace_id=WORKSPACE_ID))
+
+        assert resp.status_code == 200
+        assert env.vendor.sends == 1
+
+    @pytest.mark.asyncio
+    async def test_such_a_token_buys_nothing_for_a_sibling(self, env, client):
+        """Without the machine claim there is nothing to place it on one, so the
+        fallback stays exactly as narrow as it was before the split."""
+        env.grant = _grant(workspace_id=WORKSPACE_ID, computer_id=COMPUTER_ID)
+
+        resp = await _post(client, token=_jwt(workspace_id=SIBLING_WORKSPACE_ID))
+
+        assert resp.status_code == 404
+        assert _error(resp) == "not_found"
+        assert env.vendor.sends == 0
 
 # ===========================================================================
 # 3. Body handling — strict JSON-RPC canonicalization
