@@ -36,6 +36,7 @@ from ptc_agent.config.core import (
     SecurityConfig,
 )
 from ptc_agent.core.session import SessionManager
+from tests.computer_manager_patch import cm_patch
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -159,14 +160,14 @@ async def workspace_manager(
     yield manager
 
     # Teardown: clean up sessions and reset singleton
-    for ws_id in list(manager._sessions.keys()):
-        session = manager._sessions.get(ws_id)
+    for machine in list(manager._machines.values()):
+        session = machine.session
         if session and session.sandbox:
             try:
                 await session.sandbox.cleanup()
             except Exception:
                 pass
-    manager._sessions.clear()
+    manager._machines.clear()
     SessionManager._sessions.clear()
     WorkspaceManager.reset_instance()
 
@@ -296,12 +297,12 @@ class TestColdWarmSessionPath:
 
         real_identity = get_workspace_identity
         with (
-            patch(
-                "src.server.services.workspace_manager.db_get_workspace",
+            cm_patch(
+                "db_get_workspace",
                 new_callable=AsyncMock,
             ) as mock_full_row,
-            patch(
-                "src.server.services.workspace_manager.db_get_workspace_identity",
+            cm_patch(
+                "db_get_workspace_identity",
                 side_effect=real_identity,
             ) as spy_identity,
         ):
@@ -355,8 +356,8 @@ class TestColdWarmSessionPath:
         # Cold
         await workspace_manager.get_session_for_workspace(ws_id, user_id=user_id)
 
-        # Expire cooldown by backdating _last_sync_at
-        workspace_manager._last_sync_at[ws_id] = time.monotonic() - 60
+        # Expire the cooldown by backdating the record's last_sync_at
+        workspace_manager._machine(ws_id).last_sync_at = time.monotonic() - 60
 
         # This should trigger a re-sync (Phase 2) but still return the same session
         with patch.object(
@@ -430,7 +431,7 @@ class TestHasReadySession:
         mock_session._initialized = False
         mock_session.sandbox = None
 
-        workspace_manager._sessions["ws-test"] = mock_session
+        workspace_manager._machine("ws-test").session = mock_session
         assert workspace_manager.has_ready_session("ws-test") is False
 
     async def test_sandbox_none(self, workspace_manager):
@@ -439,7 +440,7 @@ class TestHasReadySession:
         mock_session._initialized = True
         mock_session.sandbox = None
 
-        workspace_manager._sessions["ws-test"] = mock_session
+        workspace_manager._machine("ws-test").session = mock_session
         assert workspace_manager.has_ready_session("ws-test") is False
 
     async def test_sandbox_not_ready(self, workspace_manager):
@@ -449,7 +450,7 @@ class TestHasReadySession:
         mock_session.sandbox = MagicMock()
         mock_session.sandbox.is_ready.return_value = False
 
-        workspace_manager._sessions["ws-test"] = mock_session
+        workspace_manager._machine("ws-test").session = mock_session
         assert workspace_manager.has_ready_session("ws-test") is False
 
     async def test_full_ready_state(self, workspace_manager, running_workspace):

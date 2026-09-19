@@ -1,7 +1,9 @@
-"""Unit tests for the workspace status pub/sub primitive.
+"""Unit tests for the status pub/sub primitive.
 
 Focus on the contract callers depend on:
-- publish_status_change writes a JSON payload to the per-workspace channel
+- publish_status_change writes a JSON payload to the machine's channel, and to
+  the workspace's own channel when it has no machine
+- publisher and subscriber pick the SAME channel from the same id
 - subscribe_to_channel/subscribe_to_status yield a tri-state wait()
 - Redis-disabled paths are no-ops / return None so callers fall back cleanly
 """
@@ -13,11 +15,14 @@ import pytest
 from src.config.settings import get_redis_socket_connect_timeout
 from src.server.services import workspace_status_pubsub
 from src.server.services.workspace_status_pubsub import (
+    publish_computer_status_change,
     publish_status_change,
     status_channel,
     subscribe_to_channel,
+    subscribe_to_computer_status,
     subscribe_to_status,
     wait_for_status_change,
+    workspace_status_channel,
 )
 
 
@@ -87,7 +92,10 @@ async def test_publish_is_noop_when_redis_disabled(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_publish_writes_payload_to_channel(monkeypatch):
+async def test_publish_without_a_computer_uses_the_workspace_channel(monkeypatch):
+    """A flash workspace and a backfill loser have no machine, and must not lose
+    the publish: they keep the workspace-keyed channel, and the payload keeps
+    exactly the pre-split shape."""
     client = _FakeRedisClient()
     _install_cache(monkeypatch, _FakeCache(enabled=True, client=client))
 
@@ -95,8 +103,88 @@ async def test_publish_writes_payload_to_channel(monkeypatch):
 
     assert len(client.published) == 1
     channel, payload = client.published[0]
-    assert channel == status_channel("ws-abc")
+    assert channel == workspace_status_channel("ws-abc")
     assert json.loads(payload) == {"workspace_id": "ws-abc", "status": "starting"}
+
+
+@pytest.mark.asyncio
+async def test_publish_with_a_computer_uses_the_computer_channel(monkeypatch):
+    client = _FakeRedisClient()
+    _install_cache(monkeypatch, _FakeCache(enabled=True, client=client))
+
+    await publish_status_change("ws-abc", "starting", computer_id="comp-1")
+
+    channel, payload = client.published[0]
+    assert channel == status_channel("comp-1")
+    assert json.loads(payload) == {
+        "workspace_id": "ws-abc",
+        "computer_id": "comp-1",
+        "status": "starting",
+    }
+
+
+@pytest.mark.asyncio
+async def test_publish_stringifies_a_uuid_computer_id(monkeypatch):
+    """Rows come back from psycopg with a real UUID in computer_id; interpolating
+    it unconverted would name a channel no subscriber ever picks."""
+    import uuid as _uuid
+
+    client = _FakeRedisClient()
+    _install_cache(monkeypatch, _FakeCache(enabled=True, client=client))
+    computer_id = _uuid.uuid4()
+
+    await publish_status_change("ws-abc", "running", computer_id=computer_id)
+
+    channel, payload = client.published[0]
+    assert channel == status_channel(str(computer_id))
+    assert json.loads(payload)["computer_id"] == str(computer_id)
+
+
+@pytest.mark.asyncio
+async def test_computer_publish_names_only_the_machine(monkeypatch):
+    client = _FakeRedisClient()
+    _install_cache(monkeypatch, _FakeCache(enabled=True, client=client))
+
+    await publish_computer_status_change("comp-1", "stopped")
+
+    channel, payload = client.published[0]
+    assert channel == status_channel("comp-1")
+    assert json.loads(payload) == {"computer_id": "comp-1", "status": "stopped"}
+
+
+@pytest.mark.asyncio
+async def test_publisher_and_subscriber_agree_on_the_channel(monkeypatch):
+    """The one invariant the split turns on: both sides derive the channel from
+    the same pair of ids, so a rename can never desynchronise them."""
+    pubsub = _FakePubsub()
+    client = _FakeRedisClient(pubsub_obj=pubsub)
+    _install_cache(monkeypatch, _FakeCache(enabled=True, client=client))
+
+    await publish_status_change("ws-1", "running", computer_id="comp-1")
+    async with subscribe_to_status("ws-1", computer_id="comp-1") as wait:
+        assert wait is not None
+    assert pubsub.subscribed == [client.published[0][0]]
+
+    client.published.clear()
+    pubsub.subscribed.clear()
+    await publish_status_change("ws-1", "running")
+    async with subscribe_to_status("ws-1") as wait:
+        assert wait is not None
+    assert pubsub.subscribed == [client.published[0][0]]
+
+
+@pytest.mark.asyncio
+async def test_subscribe_to_computer_status_uses_the_computer_channel(monkeypatch):
+    pubsub = _FakePubsub()
+    _install_cache(
+        monkeypatch,
+        _FakeCache(enabled=True, client=_FakeRedisClient(pubsub_obj=pubsub)),
+    )
+
+    async with subscribe_to_computer_status("comp-1") as wait:
+        assert wait is not None
+
+    assert pubsub.subscribed == [status_channel("comp-1")]
 
 
 @pytest.mark.asyncio
@@ -222,8 +310,8 @@ async def test_subscribe_yields_wait_and_decodes_payload(monkeypatch):
         )
 
     # Cleanup happens in the contextmanager __aexit__.
-    assert pubsub.subscribed == [status_channel("ws-1")]
-    assert pubsub.unsubscribed == [status_channel("ws-1")]
+    assert pubsub.subscribed == [workspace_status_channel("ws-1")]
+    assert pubsub.unsubscribed == [workspace_status_channel("ws-1")]
     assert pubsub.closed is True
 
 

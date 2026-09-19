@@ -2,8 +2,9 @@
 
 Replaces the loser-side DB poll loop with a push notification so a
 stopped→running transition wakes waiting workers in milliseconds rather
-than 0.5–2 s polling cycles. Also feeds the ``/workspaces/{id}/events``
-SSE channel so the frontend can drop interval-polling.
+than 0.5–2 s polling cycles. Also feeds the ``/computers/{id}/events`` and
+``/workspaces/{id}/events`` SSE channels so the frontend can drop
+interval-polling.
 
 ``subscribe_to_channel`` owns the one long-lived subscription contract (the
 dedicated pool, the tri-state wait, cancellation-safe teardown); the per-domain
@@ -133,8 +134,33 @@ async def close_status_pubsub_pool() -> None:
 
 
 # Single source of truth for the channel name format.
-def status_channel(workspace_id: str) -> str:
+def status_channel(computer_id: str) -> str:
+    """The channel a machine's status transitions are published on.
+
+    Keyed by computer, not workspace: the sandbox belongs to the machine, so
+    several projects can be waiting on the same transition and one publish has
+    to reach all of them. Every subscriber resolves workspace to computer first.
+    """
+    return f"computer:status:{computer_id}"
+
+
+def workspace_status_channel(workspace_id: str) -> str:
+    """The fallback channel for a workspace that has no machine of its own.
+
+    A flash workspace never gets a computer, and a workspace the 046 backfill
+    skipped has not been given one yet; both still have an /events subscriber
+    and a start waiter, so they keep a channel rather than losing the publish.
+    """
     return f"ws:status:{workspace_id}"
+
+
+def _channel_for(workspace_id: str, computer_id: Optional[str]) -> str:
+    """Computer-keyed when the workspace has a machine, workspace-keyed otherwise."""
+    return (
+        status_channel(computer_id)
+        if computer_id
+        else workspace_status_channel(workspace_id)
+    )
 
 
 # ('message', payload) | ('timeout', None) | ('error', None)
@@ -146,10 +172,24 @@ ChannelWaitFn = Callable[
 WaitFn = ChannelWaitFn
 
 
+async def _publish(channel: str, payload: dict, extra: Optional[dict]) -> None:
+    """Best-effort publish. Never raises. See ``publish_status_change``."""
+    cache = get_cache_client()
+    if not cache.enabled or not cache.client:
+        return
+    if extra:
+        payload.update(extra)
+    try:
+        await cache.client.publish(channel, json.dumps(payload))
+    except Exception as exc:
+        logger.debug("Failed to publish status change on %s: %s", channel, exc)
+
+
 async def publish_status_change(
     workspace_id: str,
     status: str,
     *,
+    computer_id: Optional[str] = None,
     extra: Optional[dict] = None,
 ) -> None:
     """Best-effort cross-worker notification of a status transition.
@@ -157,19 +197,38 @@ async def publish_status_change(
     Never raises — failures are debug-logged and swallowed so callers
     can wire this into critical paths (DB writes) without risking the
     main mutation.
+
+    Pass ``computer_id`` whenever the writer's row carries one: it selects the
+    machine's channel, and the payload names both ids so a consumer can tell
+    which project moved and which machine it moved on.
     """
-    cache = get_cache_client()
-    if not cache.enabled or not cache.client:
-        return
-    payload: dict = {"workspace_id": workspace_id, "status": status}
-    if extra:
-        payload.update(extra)
-    try:
-        await cache.client.publish(status_channel(workspace_id), json.dumps(payload))
-    except Exception as exc:
-        logger.debug(
-            "Failed to publish status change for %s: %s", workspace_id, exc
-        )
+    computer_id = str(computer_id) if computer_id else None
+    payload: dict = {
+        "workspace_id": workspace_id,
+        "computer_id": computer_id,
+        "status": status,
+    }
+    if computer_id is None:
+        del payload["computer_id"]
+    await _publish(_channel_for(workspace_id, computer_id), payload, extra)
+
+
+async def publish_computer_status_change(
+    computer_id: str,
+    status: str,
+    *,
+    extra: Optional[dict] = None,
+) -> None:
+    """Wake every subscriber of one machine, with no project in the payload.
+
+    The computer-entry counterpart of ``publish_status_change``: the writer
+    moved the machine, so naming one of its projects would be arbitrary.
+    """
+    await _publish(
+        status_channel(str(computer_id)),
+        {"computer_id": str(computer_id), "status": status},
+        extra,
+    )
 
 
 @asynccontextmanager
@@ -264,9 +323,26 @@ async def subscribe_to_channel(
 @asynccontextmanager
 async def subscribe_to_status(
     workspace_id: str,
+    *,
+    computer_id: Optional[str] = None,
 ) -> AsyncIterator[Optional[ChannelWaitFn]]:
-    """Subscribe to a workspace's status channel (see subscribe_to_channel)."""
-    async with subscribe_to_channel(status_channel(workspace_id)) as wait:
+    """Subscribe to the channel a workspace's transitions land on.
+
+    ``computer_id`` must be resolved from the workspace row before subscribing,
+    the same way every publisher reads it, or the two pick different channels.
+    """
+    async with subscribe_to_channel(
+        _channel_for(workspace_id, str(computer_id) if computer_id else None)
+    ) as wait:
+        yield wait
+
+
+@asynccontextmanager
+async def subscribe_to_computer_status(
+    computer_id: str,
+) -> AsyncIterator[Optional[ChannelWaitFn]]:
+    """Subscribe to a machine's status channel (see subscribe_to_channel)."""
+    async with subscribe_to_channel(status_channel(str(computer_id))) as wait:
         yield wait
 
 
@@ -274,6 +350,7 @@ async def wait_for_status_change(
     workspace_id: str,
     *,
     timeout: float,
+    computer_id: Optional[str] = None,
 ) -> Optional[dict]:
     """Subscribe once and wait for a single status-change payload.
 
@@ -281,7 +358,7 @@ async def wait_for_status_change(
     breaks, or the timeout elapses without a message. Convenience wrapper
     used by callers that don't need a long-lived subscription.
     """
-    async with subscribe_to_status(workspace_id) as wait:
+    async with subscribe_to_status(workspace_id, computer_id=computer_id) as wait:
         if wait is None:
             return None
         _kind, payload = await wait(timeout)

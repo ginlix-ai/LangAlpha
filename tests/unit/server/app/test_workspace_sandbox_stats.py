@@ -58,18 +58,23 @@ def _sandbox_with_metadata(meta, *, side_effect=None):
     return session, sandbox
 
 
-def _config_with_provider(name):
+def _config_with_provider(name, provider=None):
     """A WorkspaceManager stand-in whose config resolves a real provider string.
 
     A bare MagicMock would hand ``_configured_provider`` a mock attribute, which
-    then fails response validation instead of behaving like a config. ``config``
-    stays a MagicMock so ``to_core_config()`` still answers for the offline path's
-    ``create_provider`` call; only ``sandbox`` needs to be real.
+    then fails response validation instead of behaving like a config; only
+    ``sandbox`` needs to be real. ``provider_kind_for_workspace`` answers None
+    because these workspaces have no computer row, which is what sends the
+    reported kind back to the deployment config.
     """
+    from src.server.services.workspace_manager import WorkspaceManager
+
     config = MagicMock()
     config.sandbox = SimpleNamespace(provider=name)
-    manager = MagicMock()
+    manager = MagicMock(spec=WorkspaceManager)
     manager.config = config
+    manager.provider_kind_for_workspace = AsyncMock(return_value=None)
+    manager.provider_for_workspace = AsyncMock(return_value=provider)
     return MagicMock(get_instance=MagicMock(return_value=manager))
 
 
@@ -257,12 +262,8 @@ async def _get_offline_stats(
             AsyncMock(return_value=workspace),
         ),
         patch(
-            "ptc_agent.core.sandbox.providers.create_provider",
-            MagicMock(return_value=provider),
-        ),
-        patch(
             "src.server.app.workspace_sandbox.WorkspaceManager",
-            _config_with_provider(provider_name),
+            _config_with_provider(provider_name, provider),
         ),
     ):
         return await client.get(

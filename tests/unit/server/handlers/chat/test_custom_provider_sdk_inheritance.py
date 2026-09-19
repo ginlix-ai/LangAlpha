@@ -21,6 +21,20 @@ CLIENTS = "src.server.services.llm.clients"
 DBK = "src.server.database.api_keys"
 
 
+@pytest.fixture(autouse=True)
+def _real_manifest():
+    """``LLM._model_config`` is a class-level cache, so a mock another module
+    installed outlives its own ``patch`` block and answers every SDK lookup
+    here. Drop it on both sides so these tests always read the real manifest."""
+    from src.llms.llm import LLM
+
+    LLM._model_config = None
+    try:
+        yield
+    finally:
+        LLM._model_config = None
+
+
 def _mock_mc(parent_sdk, *, parent_extra=None):
     """ModelConfig whose only manifest provider is the parent."""
     parents = {"vendor-parent": {"sdk": parent_sdk, **(parent_extra or {})}}

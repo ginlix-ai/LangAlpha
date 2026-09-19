@@ -17,12 +17,15 @@ from httpx import ASGITransport, AsyncClient
 from tests.conftest import create_test_app
 from tests.integration.sandbox.conftest import _make_core_config
 from tests.integration.sandbox.memory_provider import MemoryProvider
+from ptc_agent.core.project_context import ProjectContext
 from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 TEST_USER_ID = "test-user-123"
 TEST_WS_ID = "ws-test-001"
+TEST_COMPUTER_ID = "cmp-test-001"
+TEST_PROJECT = ProjectContext(TEST_WS_ID, "api-test-ab12")
 
 
 def _make_workspace(status="running", **overrides):
@@ -30,6 +33,8 @@ def _make_workspace(status="running", **overrides):
         "id": TEST_WS_ID,
         "user_id": TEST_USER_ID,
         "workspace_id": TEST_WS_ID,
+        "computer_id": TEST_COMPUTER_ID,
+        "dir_name": TEST_PROJECT.dir_name,
         "status": status,
         "sandbox_id": "sb-123",
         "created_at": "2026-01-01T00:00:00Z",
@@ -39,14 +44,14 @@ def _make_workspace(status="running", **overrides):
 
 
 @pytest.fixture(autouse=True)
-def _no_connector_literal_lookup(monkeypatch):
-    """The redaction path reads connector configs from the DB, and unlike the
-    vault lookup it has no cannot-exist short-circuit — with no pool open here
-    it would fail closed. The collector's behavior is owned by the unit tier
-    (test_secret_redactor.py); this suite exercises the sandbox-to-HTTP path.
-    """
+def _no_secret_db_lookup(monkeypatch):
+    """Keep DB reads mocked while exercising redaction on real sandbox files."""
     monkeypatch.setattr(
         "src.server.utils.secret_redactor._connector_secret_literals",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        "src.server.database.vault_secrets.get_effective_secrets",
         AsyncMock(return_value={}),
     )
 
@@ -68,7 +73,7 @@ async def sandbox(sandbox_base_dir):
         return_value=provider,
     ):
         sb = PTCSandbox(config)
-        await sb.setup_sandbox_workspace()
+        await sb.setup_sandbox_workspace(dir_name=TEST_PROJECT.dir_name)
         actual_work_dir = await sb.runtime.fetch_working_dir()
         sb.config.filesystem.working_directory = actual_work_dir
         sb.config.filesystem.allowed_directories = [actual_work_dir, "/tmp"]
@@ -125,6 +130,66 @@ async def files_client(mock_session, sandbox):
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
             yield client, sandbox
+
+
+def _make_computer(status="running", **overrides):
+    comp = {
+        "computer_id": TEST_COMPUTER_ID,
+        "user_id": TEST_USER_ID,
+        "kind": "daytona",
+        "provider_ref": "sb-123",
+        "name": "My computer",
+        "is_primary": True,
+        "status": status,
+        "resource_tier": "standard",
+        "is_always_on": False,
+        "root_dir": "/home/workspace",
+        "last_activity_at": None,
+        "stopped_at": None,
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "config": {},
+    }
+    comp.update(overrides)
+    return comp
+
+
+@pytest_asyncio.fixture
+async def computers_client():
+    """Exercise mounted lifecycle routes with a mocked computer manager."""
+    from src.server.app.computers import router
+
+    app = create_test_app(router)
+
+    session = MagicMock()
+    session.sandbox = MagicMock()
+    session.sandbox.sandbox_id = "sb-123"
+
+    manager = MagicMock()
+    manager.get_session_for_computer = AsyncMock(return_value=session)
+    manager.start_computer = AsyncMock(return_value=_make_computer())
+    manager.stop_computer = AsyncMock(return_value=_make_computer("stopped"))
+    manager.archive_computer = AsyncMock(return_value=_make_computer("stopped"))
+    manager.set_computer_spec = AsyncMock(return_value=_make_computer())
+    manager.set_computer_always_on = AsyncMock(return_value=_make_computer())
+
+    with (
+        patch(
+            "src.server.app.computers.get_computer",
+            AsyncMock(return_value=_make_computer()),
+        ),
+        patch(
+            "src.server.app.computers.get_computers_for_user",
+            AsyncMock(return_value=[_make_computer()]),
+        ),
+        patch(
+            "src.server.app.computers._computer_manager", return_value=manager
+        ),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            yield client, manager
 
 
 @pytest_asyncio.fixture

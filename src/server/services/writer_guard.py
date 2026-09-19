@@ -16,7 +16,6 @@ global pooled saver, lifecycle SQL on the app pool, single worker only.
 
 import asyncio
 import contextlib
-import hashlib
 import logging
 from typing import Any, Callable, Optional
 
@@ -25,6 +24,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool, PoolTimeout
 
 from src.config.settings import get_writer_pool_max
+from src.server.database.sql_fences import advisory_key
 
 logger = logging.getLogger(__name__)
 
@@ -72,14 +72,10 @@ class GuardSessionLost(Exception):
 
 
 # --------------------------------------------------------------------------
-# Advisory key scheme — 64-bit, domain-separated (not 32-bit hashtext).
+# Advisory key scheme: 64-bit, domain-separated (not 32-bit hashtext). The
+# function itself lives in sql_fences so operator scripts share it without
+# importing the app; it is re-exported here for the lock-key helpers below.
 # --------------------------------------------------------------------------
-
-
-def advisory_key(domain: str, *parts: str) -> int:
-    """sha256("domain|part|part")[:8] as a signed bigint for pg advisory locks."""
-    digest = hashlib.sha256("|".join((domain, *parts)).encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big", signed=True)
 
 
 def thread_key(thread_id: str) -> int:

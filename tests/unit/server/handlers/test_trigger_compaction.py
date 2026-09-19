@@ -787,7 +787,9 @@ class TestSessionAcquireIdentity:
         a recovery taken from that path would carry the gap into provisioning."""
         from src.server.handlers.thread_maintenance import _resolve_graph_and_state
 
-        manager = MagicMock()
+        from src.server.services.workspace_manager import WorkspaceManager
+
+        manager = MagicMock(spec=WorkspaceManager)
         manager.get_session_for_workspace = AsyncMock(
             return_value=MagicMock(sandbox=None)
         )

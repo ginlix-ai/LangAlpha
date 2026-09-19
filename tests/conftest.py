@@ -90,12 +90,12 @@ def create_test_app(*routers) -> FastAPI:
 
     - No real DB/Redis/Daytona init (avoids setup.py lifespan)
     - Auth bypassed: get_current_user_id returns "test-user-123"
-    - Rate limits bypassed: WorkspaceLimitCheck/ChatRateLimited passthrough
+    - Rate limits bypassed: ComputerLimitCheck/ChatRateLimited passthrough
     """
     from src.server.dependencies.usage_limits import (
         ChatAuthResult,
         enforce_chat_limit,
-        enforce_workspace_limit,
+        enforce_computer_limit,
     )
     from src.server.utils.api import get_current_user_id
 
@@ -107,7 +107,7 @@ def create_test_app(*routers) -> FastAPI:
     app.dependency_overrides[get_current_user_id] = lambda: "test-user-123"
 
     # Override rate limits
-    app.dependency_overrides[enforce_workspace_limit] = lambda: "test-user-123"
+    app.dependency_overrides[enforce_computer_limit] = lambda: "test-user-123"
     app.dependency_overrides[enforce_chat_limit] = lambda: ChatAuthResult(
         user_id="test-user-123"
     )
@@ -152,13 +152,20 @@ def mock_workspace_manager():
 
 
 @pytest.fixture
-def mock_session_service():
-    """AsyncMock of SessionService with common methods."""
-    service = AsyncMock()
-    service.get_session = AsyncMock()
-    service.cleanup = AsyncMock()
-    service.shutdown = AsyncMock()
-    return service
+def mock_computer_manager():
+    """AsyncMock of ComputerManager, with the surface the computer routes call.
+
+    The router imports the manager inside each handler, so a test patches
+    ``src.server.app.computers._computer_manager`` to return this.
+    """
+    manager = AsyncMock()
+    manager.get_session_for_computer = AsyncMock()
+    manager.start_computer = AsyncMock()
+    manager.stop_computer = AsyncMock()
+    manager.archive_computer = AsyncMock()
+    manager.set_computer_spec = AsyncMock()
+    manager.set_computer_always_on = AsyncMock()
+    return manager
 
 
 @pytest.fixture
@@ -205,6 +212,52 @@ def sample_workspace_dict():
             "sort_order": sort_order,
             "created_at": now,
             "updated_at": now,
+        }
+        data.update(overrides)
+        return data
+
+    return _make
+
+
+@pytest.fixture
+def sample_computer_dict():
+    """Factory for computer DB row dicts (the shape ``_COMPUTER_COLS`` returns)."""
+
+    def _make(
+        computer_id=None,
+        user_id="test-user-123",
+        kind="daytona",
+        name="My computer",
+        status="running",
+        provider_ref="sandbox-abc",
+        is_primary=True,
+        resource_tier="standard",
+        is_always_on=False,
+        root_dir="/home/workspace",
+        **overrides,
+    ):
+        now = datetime.now(timezone.utc)
+        data = {
+            "computer_id": computer_id or str(uuid.uuid4()),
+            "user_id": user_id,
+            "kind": kind,
+            "provider_ref": provider_ref,
+            "name": name,
+            "is_primary": is_primary,
+            "status": status,
+            "resource_tier": resource_tier,
+            "is_always_on": is_always_on,
+            "platform_secret_version": 0,
+            "mcp_config_version": 0,
+            "root_dir": root_dir,
+            "layout_version": 3,
+            "provider_config": {},
+            "artifacts": {},
+            "last_activity_at": None,
+            "stopped_at": None,
+            "created_at": now,
+            "updated_at": now,
+            "config": {},
         }
         data.update(overrides)
         return data

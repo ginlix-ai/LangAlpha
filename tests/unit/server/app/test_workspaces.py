@@ -3,12 +3,17 @@ Tests for the Workspaces API router (src/server/app/workspaces.py).
 
 Covers CRUD operations, start/stop/archive/delete lifecycle actions,
 flash workspace, reorder, and ownership guards.
+
+The lifecycle routes are aliases over the project-addressed manager: each
+resolves the workspace to its machine inside ``WorkspaceManager`` and runs one
+transition there, so these tests lock that the route hands the manager the
+workspace id, never the computer id, and answers from what it returns.
 """
 
 import asyncio
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -21,6 +26,7 @@ from tests.conftest import create_test_app
 # ---------------------------------------------------------------------------
 
 NOW = datetime.now(timezone.utc)
+COMPUTER_ID = "11111111-1111-4111-8111-111111111111"
 
 
 def _ws(
@@ -37,6 +43,9 @@ def _ws(
         "name": name,
         "description": None,
         "sandbox_id": "sandbox-abc",
+        # A project always runs on a machine; a route that addressed the
+        # machine instead of the project would reach for this.
+        "computer_id": COMPUTER_ID,
         "status": status,
         "mode": "ptc",
         "sort_order": 0,
@@ -67,6 +76,15 @@ async def client():
 # ---------------------------------------------------------------------------
 
 
+def _route_dependency_names(app, path, method):
+    for route in app.routes:
+        if getattr(route, "path", None) == path and method in getattr(
+            route, "methods", ()
+        ):
+            return {d.call.__name__ for d in route.dependant.dependencies}
+    raise AssertionError(f"no {method} {path} route")
+
+
 @pytest.mark.asyncio
 async def test_create_workspace_success(client):
     ws = _ws()
@@ -86,6 +104,74 @@ async def test_create_workspace_success(client):
     body = resp.json()
     assert body["name"] == "Test Workspace"
     assert body["workspace_id"] == ws["workspace_id"]
+
+
+@pytest.mark.asyncio
+async def test_create_answers_with_the_machine_and_the_folder(client):
+    """Both are what the caller needs next: the machine to watch for readiness,
+    the folder to address files on it. Re-reading the row to learn them is the
+    round trip this route exists to avoid."""
+    computer_id = str(uuid.uuid4())
+    ws = _ws(
+        status="stopped",
+        sandbox_id=None,
+        computer_id=computer_id,
+        dir_name="test-workspace-ab12",
+    )
+    with patch("src.server.app.workspaces.WorkspaceManager") as MockWM:
+        mock_manager = AsyncMock()
+        mock_manager.create_workspace = AsyncMock(return_value=ws)
+        MockWM.get_instance.return_value = mock_manager
+
+        resp = await client.post(
+            "/api/v1/workspaces", json={"name": "Test Workspace"}
+        )
+
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["computer_id"] == computer_id
+    assert body["dir_name"] == "test-workspace-ab12"
+    # Nothing was provisioned, so the row is still the machine's stopped shadow.
+    assert body["status"] == "stopped"
+    assert body["sandbox_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_waits_on_no_sandbox(client):
+    """The one property that makes creation instant: the route returns on the
+    insert, and every sandbox call sits behind the first turn instead."""
+    with patch("src.server.app.workspaces.WorkspaceManager") as MockWM:
+        mock_manager = AsyncMock()
+        mock_manager.create_workspace = AsyncMock(
+            return_value=_ws(status="stopped", sandbox_id=None)
+        )
+        MockWM.get_instance.return_value = mock_manager
+
+        resp = await client.post("/api/v1/workspaces", json={"name": "W"})
+
+    assert resp.status_code == 201
+    mock_manager.create_workspace.assert_awaited_once()
+    for blocked in (
+        "get_session_for_workspace",
+        "start_workspace",
+        "_recover_sandbox",
+    ):
+        assert not getattr(mock_manager, blocked).await_count
+
+
+@pytest.mark.asyncio
+async def test_creating_a_project_is_not_capacity_checked():
+    """The plan meters computers; this route allocates none, so gating it here
+    would cap projects on a machine the user has already paid for."""
+    from src.server.app.workspaces import router
+
+    app = create_test_app(router)
+    for path in ("/api/v1/workspaces", "/api/v1/workspaces/{workspace_id}/duplicate"):
+        names = _route_dependency_names(app, path, "POST")
+        assert not {n for n in names if n.startswith("enforce_")} & {
+            "enforce_computer_limit",
+            "enforce_workspace_limit",
+        }
 
 
 @pytest.mark.asyncio
@@ -307,6 +393,38 @@ async def test_get_workspace_success(client):
 
 
 @pytest.mark.asyncio
+async def test_an_incomplete_restore_is_reported_on_the_detail_and_the_list(client):
+    """The reader has to be able to tell a file the restore never recovered
+    from a file that was never there. The web seeds the detail query from the
+    cached list, so both answers carry it or the notice flickers."""
+    incomplete = _ws(name="Missing files", files_restore_incomplete=True)
+    intact = _ws(name="Whole")
+
+    with patch(
+        "src.server.app.workspaces.db_get_workspace",
+        new_callable=AsyncMock,
+        return_value=incomplete,
+    ):
+        detail = await client.get(f"/api/v1/workspaces/{incomplete['workspace_id']}")
+
+    assert detail.status_code == 200
+    assert detail.json()["files_restore_incomplete"] is True
+
+    with patch(
+        "src.server.app.workspaces.get_workspaces_for_user",
+        new_callable=AsyncMock,
+        return_value=([incomplete, intact], 2),
+    ):
+        listed = await client.get("/api/v1/workspaces")
+
+    assert listed.status_code == 200
+    assert [w["files_restore_incomplete"] for w in listed.json()["workspaces"]] == [
+        True,
+        False,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_get_workspace_not_found(client):
     with patch(
         "src.server.app.workspaces.db_get_workspace",
@@ -452,7 +570,7 @@ async def test_start_workspace_from_stopped(client):
             "src.server.app.workspaces.db_get_workspace",
             new_callable=AsyncMock,
             return_value=ws,
-        ),
+        ) as read,
         patch("src.server.app.workspaces.WorkspaceManager") as MockWM,
     ):
         mock_manager = AsyncMock()
@@ -465,6 +583,11 @@ async def test_start_workspace_from_stopped(client):
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "running"
+    # Keyed by the project, so this workspace's folder is what gets attached.
+    mock_manager.get_session_for_workspace.assert_awaited_once_with(
+        ws["workspace_id"], user_id="test-user-123"
+    )
+    assert read.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -593,8 +716,14 @@ async def test_start_workspace_lazy_returns_202_and_schedules(client):
 
 
 @pytest.mark.asyncio
-async def test_start_workspace_lazy_already_running_short_circuits(client):
-    """lazy=true on a running workspace returns 200 without scheduling."""
+async def test_start_workspace_running_attaches_before_it_answers(client):
+    """A running row is a fact about the machine, not about this project.
+
+    A project created or duplicated while its machine was up is born running
+    with no folder, no files and no tool overlay of its own, all of which the
+    first attach materialises. Answering from the row alone sent the caller
+    straight to paths nothing had created.
+    """
     ws = _ws(status="running")
     with (
         patch(
@@ -608,13 +737,37 @@ async def test_start_workspace_lazy_already_running_short_circuits(client):
         mock_manager.get_session_for_workspace = AsyncMock()
         MockWM.get_instance.return_value = mock_manager
 
+        resp = await client.post(f"/api/v1/workspaces/{ws['workspace_id']}/start")
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "running"
+    mock_manager.get_session_for_workspace.assert_awaited_once_with(
+        ws["workspace_id"], user_id=ANY
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_workspace_lazy_running_answers_starting(client):
+    """The lazy caller is told the attach is in flight rather than done."""
+    ws = _ws(status="running")
+    with (
+        patch(
+            "src.server.app.workspaces.db_get_workspace",
+            new_callable=AsyncMock,
+            return_value=ws,
+        ),
+        patch("src.server.app.workspaces.WorkspaceManager") as MockWM,
+        patch("src.server.app.workspaces._schedule_warm_restart") as mock_schedule,
+    ):
+        MockWM.get_instance.return_value = AsyncMock()
+
         resp = await client.post(
             f"/api/v1/workspaces/{ws['workspace_id']}/start?lazy=true"
         )
 
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "running"
-    mock_manager.get_session_for_workspace.assert_not_awaited()
+    assert resp.status_code == 202
+    assert resp.json()["status"] == "starting"
+    assert mock_schedule.call_args.args[1] == ws["workspace_id"]
 
 
 @pytest.mark.asyncio
@@ -664,26 +817,28 @@ async def test_start_workspace_lazy_invalid_state_rejects(client):
 
 
 @pytest.mark.asyncio
-async def test_drain_warm_tasks_cancels_in_flight():
-    """drain_warm_tasks cancels and awaits every tracked warm task so a task
-    cancelled mid-Phase-2 can revert its row instead of being torn down."""
-    from src.server.app import workspaces as ws_mod
+async def test_drain_start_tasks_cancels_in_flight_warms():
+    """A warm scheduled through the workspace route is cancelled and awaited by
+    the shared drain, so a task cancelled mid-Phase-2 can revert its row
+    instead of being torn down with the loop."""
+    from src.server.app import background_starts, workspaces as ws_mod
 
     started = asyncio.Event()
 
-    async def never_finishes():
+    async def never_finishes(*args, **kwargs):
         started.set()
         await asyncio.Event().wait()  # blocks forever until cancelled
 
-    task = asyncio.create_task(never_finishes())
-    ws_mod._warm_tasks.add(task)
-    task.add_done_callback(ws_mod._warm_tasks.discard)
+    manager = AsyncMock()
+    manager.get_session_for_workspace = AsyncMock(side_effect=never_finishes)
+    ws_mod._schedule_warm_restart(manager, "ws-drain", "user-1")
+    task = background_starts._start_tasks["workspace:ws-drain"]
     await started.wait()
 
-    await ws_mod.drain_warm_tasks()
+    await background_starts.drain_start_tasks()
 
     assert task.cancelled()
-    assert not ws_mod._warm_tasks
+    assert "workspace:ws-drain" not in background_starts._start_tasks
 
 
 # ---------------------------------------------------------------------------
@@ -731,6 +886,9 @@ async def test_always_on_enable_on_stopped_starts_immediately(client):
         assert body["is_always_on"] is True
         # Response optimistically reflects the start kicked off this request.
         assert body["status"] == "starting"
+        mock_manager.set_workspace_always_on.assert_awaited_once_with(
+            ws["workspace_id"], True
+        )
 
         # The warm start was scheduled in the background, not awaited inline.
         await asyncio.wait_for(started_event.wait(), timeout=0.5)
@@ -801,6 +959,9 @@ async def test_always_on_disable_does_not_start(client):
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "stopped"
+    mock_manager.set_workspace_always_on.assert_awaited_once_with(
+        ws["workspace_id"], False
+    )
     mock_manager.get_session_for_workspace.assert_not_awaited()
     mock_gate.assert_not_awaited()  # disable is ungated
 
@@ -924,7 +1085,7 @@ async def test_workspace_events_emits_initial_status_then_pubsub_transition(clie
             return ws_running
 
     @asynccontextmanager
-    async def fake_subscribe(workspace_id):
+    async def fake_subscribe(workspace_id, *, computer_id=None):
         sent = False
 
         async def wait(timeout):
@@ -980,7 +1141,7 @@ async def test_workspace_events_forwards_archived_sandbox_state(client):
             return ws_running
 
     @asynccontextmanager
-    async def fake_subscribe(workspace_id):
+    async def fake_subscribe(workspace_id, *, computer_id=None):
         msgs = iter(
             [
                 {"workspace_id": workspace_id, "status": "starting",
@@ -1029,7 +1190,7 @@ async def test_workspace_events_terminates_on_initial_running(client):
     ws = _ws(status="running")
 
     @asynccontextmanager
-    async def fake_subscribe(workspace_id):
+    async def fake_subscribe(workspace_id, *, computer_id=None):
         async def wait(timeout):
             return ("timeout", None)
 
@@ -1071,26 +1232,131 @@ async def test_workspace_events_forbidden(client):
     assert resp.status_code == 403
 
 
+@pytest.mark.asyncio
+async def test_workspace_events_subscribes_by_computer_and_frames_both_ids(client):
+    """The route subscribes on the machine's channel -- where every writer
+    publishes -- and names both ids in each frame, so a client holding only a
+    workspace id learns its computer from the stream."""
+    from contextlib import asynccontextmanager
+
+    ws = _ws(status="starting", computer_id="comp-9")
+    ws_running = {**ws, "status": "running"}
+    db_seq = iter([ws, ws, ws_running])
+    subscribed: list[tuple[str, str | None]] = []
+
+    async def fake_db(workspace_id, conn=None):
+        try:
+            return next(db_seq)
+        except StopIteration:
+            return ws_running
+
+    @asynccontextmanager
+    async def fake_subscribe(workspace_id, *, computer_id=None):
+        subscribed.append((workspace_id, computer_id))
+        sent = False
+
+        async def wait(timeout):
+            nonlocal sent
+            if not sent:
+                sent = True
+                return ("message", {"computer_id": computer_id, "status": "running"})
+            return ("timeout", None)
+
+        yield wait
+
+    with (
+        patch(
+            "src.server.app.workspaces.db_get_workspace",
+            new=AsyncMock(side_effect=fake_db),
+        ),
+        patch("src.server.app.workspaces.subscribe_to_status", new=fake_subscribe),
+    ):
+        events = await _collect_sse_events(
+            client,
+            f"/api/v1/workspaces/{ws['workspace_id']}/events",
+            want_events=2,
+            timeout=2.0,
+        )
+
+    assert subscribed == [(ws["workspace_id"], "comp-9")]
+    status_events = [e[1] for e in events if e[0] == "status"]
+    assert all(e["computer_id"] == "comp-9" for e in status_events)
+    assert all(e["workspace_id"] == ws["workspace_id"] for e in status_events)
+    assert [e["status"] for e in status_events] == ["starting", "running"]
+
+
+@pytest.mark.asyncio
+async def test_workspace_events_falls_back_to_the_workspace_channel(client):
+    """A workspace with no machine keeps its own channel, and frames a null
+    computer_id rather than dropping the key."""
+    from contextlib import asynccontextmanager
+
+    ws = _ws(status="stopped", computer_id=None)
+    ws_running = {**ws, "status": "running"}
+    db_seq = iter([ws, ws, ws_running])
+    subscribed: list[tuple[str, str | None]] = []
+
+    async def fake_db(workspace_id, conn=None):
+        try:
+            return next(db_seq)
+        except StopIteration:
+            return ws_running
+
+    @asynccontextmanager
+    async def fake_subscribe(workspace_id, *, computer_id=None):
+        subscribed.append((workspace_id, computer_id))
+        sent = False
+
+        async def wait(timeout):
+            nonlocal sent
+            if not sent:
+                sent = True
+                return ("message", {"workspace_id": workspace_id, "status": "running"})
+            return ("timeout", None)
+
+        yield wait
+
+    with (
+        patch(
+            "src.server.app.workspaces.db_get_workspace",
+            new=AsyncMock(side_effect=fake_db),
+        ),
+        patch("src.server.app.workspaces.subscribe_to_status", new=fake_subscribe),
+    ):
+        events = await _collect_sse_events(
+            client,
+            f"/api/v1/workspaces/{ws['workspace_id']}/events",
+            want_events=2,
+            timeout=2.0,
+        )
+
+    assert subscribed == [(ws["workspace_id"], None)]
+    status_events = [e[1] for e in events if e[0] == "status"]
+    assert all(e["computer_id"] is None for e in status_events)
+    assert [e["status"] for e in status_events] == ["stopped", "running"]
+
+
 # ---------------------------------------------------------------------------
 # POST /api/v1/workspaces/{workspace_id}/stop
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_stop_workspace_success(client):
+async def test_stop_addresses_this_project_and_runs_one_transition(client):
+    """The alias hands the manager the workspace id: resolving the machine is
+    the manager's job, and a route that stopped the computer itself would be a
+    second implementation of the same transition."""
     ws = _ws(status="running")
     with (
         patch(
             "src.server.app.workspaces.db_get_workspace",
             new_callable=AsyncMock,
             return_value=ws,
-        ),
+        ) as read,
         patch("src.server.app.workspaces.WorkspaceManager") as MockWM,
     ):
         mock_manager = AsyncMock()
-        mock_manager.stop_workspace = AsyncMock(
-            return_value={**ws, "status": "stopped"}
-        )
+        mock_manager.stop_workspace.return_value = {**ws, "status": "stopped"}
         MockWM.get_instance.return_value = mock_manager
 
         resp = await client.post(
@@ -1099,6 +1365,10 @@ async def test_stop_workspace_success(client):
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "stopped"
+    mock_manager.stop_workspace.assert_awaited_once_with(ws["workspace_id"])
+    mock_manager.stop_computer.assert_not_awaited()
+    # One read for ownership; the transition is the manager's alone.
+    assert read.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -1134,18 +1404,18 @@ async def test_stop_workspace_forbidden(client):
 
 
 @pytest.mark.asyncio
-async def test_archive_workspace_success(client):
+async def test_archive_addresses_this_project_and_runs_one_transition(client):
     ws = _ws(status="stopped")
     with (
         patch(
             "src.server.app.workspaces.db_get_workspace",
             new_callable=AsyncMock,
             return_value=ws,
-        ),
+        ) as read,
         patch("src.server.app.workspaces.WorkspaceManager") as MockWM,
     ):
         mock_manager = AsyncMock()
-        mock_manager.archive_workspace = AsyncMock()
+        mock_manager.archive_workspace.return_value = ws
         MockWM.get_instance.return_value = mock_manager
 
         resp = await client.post(
@@ -1154,6 +1424,9 @@ async def test_archive_workspace_success(client):
 
     assert resp.status_code == 200
     assert resp.json()["message"] == "Workspace archived successfully"
+    mock_manager.archive_workspace.assert_awaited_once_with(ws["workspace_id"])
+    mock_manager.archive_computer.assert_not_awaited()
+    assert read.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -1213,6 +1486,7 @@ async def test_delete_workspace_success(client):
         )
 
     assert resp.status_code == 204
+    mock_manager.delete_workspace.assert_awaited_once_with(ws["workspace_id"])
 
 
 @pytest.mark.asyncio

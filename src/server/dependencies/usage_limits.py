@@ -407,10 +407,16 @@ async def _call_validate_for_user(
     return None
 
 
-async def enforce_workspace_limit(
+async def enforce_computer_limit(
     user_id: str = Depends(get_current_user_id),
 ) -> str:
-    """FastAPI dependency: enforce active workspace limit via the auth/quota service. No-op in OSS mode."""
+    """FastAPI dependency: enforce the active computer limit. No-op in OSS mode.
+
+    The plan meters computers, so this is what a route allocating one asks.
+    ``check_quota``, the response fields and the 429 body still say workspace:
+    the platform already counts computers behind those names, and the strings
+    rename on their own release once both sides speak the new one.
+    """
     if not platform_gating_active():
         return user_id
 
@@ -571,22 +577,43 @@ async def require_workspace_scope(user_id: str, scope: str) -> None:
         raise HTTPException(403, detail=f"Requires scope: {scope}")
 
 
+def _first(quota: dict, *names: str) -> int | None:
+    """Read the first of ``names`` the quota object carries, by presence.
+
+    Presence decides, not the value: a name the platform sends as null stops
+    the search and yields None rather than falling through to the next one.
+    """
+    for name in names:
+        if name in quota:
+            return quota[name]
+    return None
+
+
 def _extract_capacity(quota: dict) -> tuple[int | None, int | None]:
     """Extract ``(used, limit)`` counts from a platform quota object.
 
-    Prefers the ``capacity_used``/``capacity_limit`` names, falling back to the
-    legacy ``active``/``limit`` and ``active_workspaces``/``workspace_limit``
-    aliases.
+    Prefers the ``capacity_used``/``capacity_limit`` names, then ``active``/
+    ``limit``, then the per-subject aliases.
+
+    The ``active_computers``/``computer_limit`` pair reads the names the platform
+    moves to when the capacity subject becomes the machine. It is accepted here
+    first so the two sides can be deployed in either order: this build keeps
+    reading the workspace names until the platform emits the computer ones, and
+    keeps working after it does.
     """
-    used = quota.get("capacity_used", quota.get("active", quota.get("active_workspaces")))
-    limit = quota.get("capacity_limit", quota.get("limit", quota.get("workspace_limit")))
+    used = _first(
+        quota, "capacity_used", "active", "active_computers", "active_workspaces"
+    )
+    limit = _first(
+        quota, "capacity_limit", "limit", "computer_limit", "workspace_limit"
+    )
     return used, limit
 
 
 async def enforce_capacity(user_id: str, check_quota: str) -> None:
     """Raise 429 when the platform reports the named count quota is exhausted.
 
-    Generalizes ``enforce_workspace_limit`` over ``check_quota`` (``always_on``,
+    Generalizes ``enforce_computer_limit`` over ``check_quota`` (``always_on``,
     ``spec_performance``, ``spec_max``). No-op in OSS mode and fail-open when the
     platform is unreachable or omits the quota object.
     """
@@ -769,4 +796,4 @@ async def spec_entitlement_lost(user_id: str, tier: str) -> bool:
 
 # Annotated types for cleaner endpoint signatures
 ChatRateLimited = Annotated[ChatAuthResult, Depends(enforce_chat_limit)]
-WorkspaceLimitCheck = Annotated[str, Depends(enforce_workspace_limit)]
+ComputerLimitCheck = Annotated[str, Depends(enforce_computer_limit)]
