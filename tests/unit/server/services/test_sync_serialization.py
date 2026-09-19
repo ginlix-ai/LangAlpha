@@ -18,9 +18,14 @@ import pytest
 
 from psycopg.errors import LockNotAvailable
 
+from ptc_agent.core.paths import SandboxLayout
 from src.server.database import workspace_file as wf
 from src.server.services.persistence import backup, restore
 from src.server.services.persistence.transfer import ScanResult
+
+ROOT = "/workspace"
+# Both entry points name the folder they mirror; the fence is the same either way.
+LAYOUT = SandboxLayout.for_root(ROOT).for_workspace("fenced-ab12")
 
 
 class _Cursor:
@@ -204,7 +209,7 @@ async def test_sync_holds_the_lock_across_the_scan_and_the_writes():
         return 0
 
     sandbox = MagicMock()
-    sandbox.working_dir = "/workspace"
+    sandbox.working_dir = ROOT
 
     with (
         patch.object(backup, "workspace_sync_lock", _lock),
@@ -214,7 +219,7 @@ async def test_sync_holds_the_lock_across_the_scan_and_the_writes():
         patch.object(backup, "scan_workspace", new=_scan),
         patch.object(backup, "delete_removed_files", new=_delete),
     ):
-        await backup.sync_to_db("ws-1", sandbox)
+        await backup.sync_to_db("ws-1", sandbox, layout=LAYOUT)
 
     assert order == ["lock", "scan", "delete", "unlock"]
 
@@ -258,7 +263,7 @@ async def test_restore_holds_the_same_lock_across_the_flag_and_the_transfer():
         return {"d": {"status": "ok"}}
 
     sandbox = MagicMock()
-    sandbox.working_dir = "/workspace"
+    sandbox.working_dir = ROOT
     sandbox.aupload_file_bytes = AsyncMock(return_value=True)
 
     with (
@@ -268,7 +273,7 @@ async def test_restore_holds_the_same_lock_across_the_flag_and_the_transfer():
         patch.object(restore, "workspace_owner", _owner),
         patch.object(restore, "pull_direct", _pull),
     ):
-        result = await restore.restore_to_sandbox("ws-1", sandbox)
+        result = await restore.restore_to_sandbox("ws-1", sandbox, layout=LAYOUT)
 
     assert result == {"restored": 1, "errors": 0}
     assert order == ["flag=True", "lock", "read", "owner", "pull", "flag=False", "unlock"]

@@ -293,9 +293,29 @@ def log_order_frame(prepared: PreparedRelay, status: int) -> None:
     if order is None:
         return
     logger.info(
-        "[egress_relay] order attempt=%s vendor=%s tool=%s user=%s status=%s",
-        order.attempt_id, order.vendor, order.tool, order.user_id, status,
+        "[egress_relay] order attempt=%s vendor=%s tool=%s user=%s machine=%s status=%s",
+        order.attempt_id, order.vendor, order.tool, order.user_id,
+        prepared.claims.identity or "-", status,
     )
+
+
+def _grant_is_reachable(grant: Mapping[str, object], claims: RelayClaims) -> bool:
+    """Whether the token's holder is on the machine the grant belongs to.
+
+    One grant row serves every project on a computer, so the machine decides
+    whenever both sides name one, and then it decides alone: falling back to
+    the project after two machines disagree would be two rules at once. That
+    is not a widening, since projects on one computer share the sandbox the
+    credential file lives in and can already read each other's grant ids off
+    disk. A side that names no machine (a row the backfill left unbound, a
+    token minted before its session resolved one) is judged by exact project
+    equality instead, which reaches nothing the old rule did not. The user is
+    compared alongside this either way, so no shape here crosses an account.
+    """
+    grant_machine = grant.get("computer_id")
+    if grant_machine and claims.computer_id:
+        return grant_machine == claims.computer_id
+    return grant["workspace_id"] == claims.workspace_id
 
 
 async def prepare_relay(
@@ -313,13 +333,17 @@ async def prepare_relay(
 
     grant = await fetch_grant_for_relay(grant_id)
     # Absent, revoked, and wrong-scope all answer the same 404 — the relay is
-    # never an oracle for other users' grant ids. claims.sandbox_id is carried
-    # for audit only, not authorized against: workspace↔sandbox is 1:1, so a
-    # stale sandbox's JWT reaches exactly the same grants its workspace owns.
+    # never an oracle for other users' grant ids.
+    #
+    # A grant is reachable from the machine it was written for (see
+    # ``_grant_is_reachable``) and only by its owner. The user claim is what
+    # fixes the account; the sandbox_id claim is still audit-only, since a
+    # sandbox is one machine's current identity rather than an authority of its
+    # own.
     if (
         grant is None
         or grant["grant_status"] != "active"
-        or grant["workspace_id"] != claims.workspace_id
+        or not _grant_is_reachable(grant, claims)
         or grant["user_id"] != claims.user_id
     ):
         raise RelayRejection(404, RelayError.NOT_FOUND)

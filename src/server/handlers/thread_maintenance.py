@@ -39,9 +39,11 @@ async def _resolve_graph_and_state(
         (graph, lg_config, state, messages, backend)
     """
     from src.server.database import conversation as qr_db
+    from src.server.database.workspace import get_workspace
     from src.server.services.workspace_manager import WorkspaceManager
     from ptc_agent.agent.graph import build_ptc_graph_with_session
     from ptc_agent.agent.backends.sandbox import SandboxBackend
+    from ptc_agent.core.paths import SandboxLayout
 
     # Validate thread + workspace
     thread_info = await qr_db.get_thread_with_summary(thread_id)
@@ -75,7 +77,10 @@ async def _resolve_graph_and_state(
     from src.server.app.workspace_sandbox import _set_cached_signed_url
 
     graph = await build_ptc_graph_with_session(
-        session=session, config=effective_config, checkpointer=checkpointer,
+        session=session,
+        tool_view=workspace_manager.tool_view(session, workspace_id),
+        config=effective_config,
+        checkpointer=checkpointer,
         on_signed_url=_set_cached_signed_url,
     )
 
@@ -97,10 +102,17 @@ async def _resolve_graph_and_state(
     if not messages:
         raise HTTPException(status_code=400, detail=f"No messages to {verb}")
 
-    # Backend
+    # Backend. Pinned to the thread's workspace folder because these routes
+    # run outside a turn, where nothing has bound a project: an unpinned
+    # backend would file this thread's offloads on the machine root, which a
+    # later delete of the workspace would leave behind.
     backend = None
     if hasattr(session, "sandbox") and session.sandbox is not None:
-        backend = SandboxBackend(session.sandbox)
+        row = await get_workspace(workspace_id) or {}
+        layout = SandboxLayout(session.sandbox.working_dir).for_workspace(
+            row.get("dir_name")
+        )
+        backend = SandboxBackend(session.sandbox, layout.workspace)
 
     return graph, lg_config, state, messages, backend
 

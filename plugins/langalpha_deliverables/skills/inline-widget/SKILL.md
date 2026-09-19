@@ -222,13 +222,13 @@ Use `data_files` to load data from sandbox files instead of inlining everything 
 # Step 1: Generate data
 import json
 data = {"labels": ["Q1", "Q2", "Q3"], "values": [100, 150, 200]}
-with open("work/<task_name>/chart_data.json", "w") as f:
+with open("<task_name>/chart_data.json", "w") as f:
     json.dump(data, f)
 
 # Step 2: Agent calls ShowWidget with data_files
 ShowWidget(
     html='<div id="chart">...</div><script>var d = JSON.parse(__WIDGET_DATA__["chart_data.json"]); ...</script>',
-    data_files=["work/<task_name>/chart_data.json"]
+    data_files=["<task_name>/chart_data.json"]
 )
 ```
 

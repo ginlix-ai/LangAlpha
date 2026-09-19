@@ -822,6 +822,19 @@ async def upload_workspace_skill(
     return info
 
 
+def _schedule_disable_reconcile(workspace_id: str, user_id: str) -> None:
+    """Converge the workspace's link view after a disable of an inherited skill.
+
+    The shared skill directory keeps the skill for the siblings, so the only
+    place this workspace's disable takes effect on disk is the link pass. The
+    delivery view no longer moves for it either, so nothing else on the next
+    turn would prune the link before the post-turn pass.
+    """
+    WorkspaceManager.schedule_skill_reconcile(
+        workspace_id, user_id, source="ws_disable"
+    )
+
+
 @workspace_router.patch("/{workspace_id}/skills/{name}", response_model=SkillInfo)
 @handle_api_exceptions("update workspace skill", logger)
 async def patch_workspace_skill(
@@ -868,6 +881,7 @@ async def patch_workspace_skill(
         if not user_row["enabled"] and body.enabled:
             raise HTTPException(status_code=409, detail=_USER_LEVEL_DISABLED)
         await set_workspace_skill_disable(workspace_id, name, not body.enabled)
+        _schedule_disable_reconcile(workspace_id, user_id)
         info = _user_row_to_info(user_row, editable=False, deletable=False)
         if not user_row["enabled"]:
             info.disabled_scope = "user"
@@ -892,6 +906,7 @@ async def patch_workspace_skill(
         if bundle_on is False:
             raise HTTPException(status_code=409, detail=_BUNDLE_DISABLED)
     await set_workspace_skill_disable(workspace_id, name, not body.enabled)
+    _schedule_disable_reconcile(workspace_id, user_id)
     overrides = await get_skill_command_overrides(user_id)
     return _builtin_info(
         skill,

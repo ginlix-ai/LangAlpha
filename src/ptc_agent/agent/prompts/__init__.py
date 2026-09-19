@@ -28,6 +28,7 @@ from .formatter import (
     build_tool_summary_from_registry,
     format_subagent_summary,
     format_tool_summary,
+    workspace_path_vars,
 )
 from .guidance import (
     DEFAULT_GUIDANCE,
@@ -56,4 +57,5 @@ __all__ = [
     "init_loader",
     "reset_loader",
     "resolve_prompt_guidance",
+    "workspace_path_vars",
 ]

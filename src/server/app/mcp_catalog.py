@@ -752,8 +752,29 @@ async def _relay_execution_warning(user_id: str, name: str) -> str | None:
             "this server's tools cannot run in sandboxes. Set a strong "
             "EGRESS_RELAY_SECRET in the backend environment and restart."
         )
-    provider = setup.agent_config.sandbox.provider
+    provider = await _relay_provider_kind(user_id)
     return relay_reachability_warning(provider, effective_relay_base_url(provider))
+
+
+async def _relay_provider_kind(user_id: str) -> str | None:
+    """Which provider's relay reachability this user's warning is about.
+
+    A user's own machine decides where their sandboxes run, so its kind beats
+    the deployment default; a user with no computer yet gets the default.
+    """
+    from src.server.app import setup
+
+    try:
+        from src.server.database.computer import get_primary_computer
+
+        computer = await get_primary_computer(user_id)
+        if computer and computer.get("kind"):
+            return str(computer["kind"])
+    except Exception as e:
+        logger.debug(f"Could not resolve the user's computer kind: {e}")
+    if setup.agent_config is None:
+        return None
+    return setup.agent_config.sandbox.provider
 
 
 async def apply_catalog_enabled(

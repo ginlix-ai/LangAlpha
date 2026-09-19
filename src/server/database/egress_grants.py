@@ -23,6 +23,7 @@ from psycopg.rows import dict_row
 
 from src.server.database.mcp_oauth import SERVABLE_PARAM, ConnectionStatus
 from src.server.database.pool import get_db_connection
+from src.server.database.sql_fences import advisory_key
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,11 @@ class GrantRef:
     @property
     def subject(self) -> str:
         """The column this kind is keyed by."""
-        return self.connection_id if self.kind == GRANT_KIND_OAUTH_MCP else self.server_name
+        return (
+            self.connection_id
+            if self.kind == GRANT_KIND_OAUTH_MCP
+            else self.server_name
+        )
 
     @property
     def key(self) -> tuple[str, str]:
@@ -62,7 +67,7 @@ class GrantRef:
 
 @dataclass(frozen=True)
 class GrantSync:
-    """The workspace's grant set after one convergence.
+    """The machine's grant set after one convergence.
 
     ``grants`` maps :attr:`GrantRef.key` → grant_id for every ref that got one;
     ``retired`` counts the overhang that was revoked, which is what tells a
@@ -218,23 +223,110 @@ async def lock_user_egress_state(conn, user_id: str) -> None:
     lock is re-entrant within a transaction: a caller that already holds it can
     call into another holder without waiting on itself.
     """
-    # Deferred, as sync_egress_grants' import is: writer_guard reaches back
-    # into src.server.database.pool, and a module-scope import would close a
-    # database -> services -> database loop.
-    from src.server.services.writer_guard import advisory_key
-
     await conn.execute(
         "SELECT pg_advisory_xact_lock(%s)", (advisory_key("EGU", user_id),)
     )
 
 
+async def _adopt_grants_onto_computer(
+    cur: Any, *, workspace_id: str, computer_id: Any, kind: str
+) -> None:
+    """Move this workspace's grants onto the machine it now runs on.
+
+    The upsert arbitrates on ``(computer_id, kind, connection_id,
+    server_name)``, so a row this workspace already owns under a different
+    machine (or none) is invisible to it and the insert would collide with the
+    workspace-keyed constraint 045 still enforces instead. A subject (a
+    connection, or a header-authenticated row's name) the machine already
+    holds keeps that row as the survivor; the retirement sweep revokes the
+    loser rather than deleting it, since a sandbox may still hold a relay JWT
+    naming it.
+    """
+    await cur.execute(
+        """
+        UPDATE sandbox_egress_grants g
+        SET computer_id = %(computer_id)s, updated_at = NOW()
+        WHERE g.workspace_id = %(workspace_id)s::uuid
+          AND g.kind = %(kind)s
+          AND g.computer_id IS DISTINCT FROM %(computer_id)s
+          AND NOT EXISTS (
+              SELECT 1 FROM sandbox_egress_grants o
+              WHERE o.computer_id = %(computer_id)s
+                AND o.kind = g.kind
+                AND o.connection_id IS NOT DISTINCT FROM g.connection_id
+                AND o.server_name IS NOT DISTINCT FROM g.server_name
+          )
+        """,
+        {
+            "computer_id": computer_id,
+            "workspace_id": workspace_id,
+            "kind": kind,
+        },
+    )
+    if cur.rowcount:
+        logger.info(
+            f"[egress_grants_db] adopted {cur.rowcount} grant(s) of workspace "
+            f"{workspace_id} onto computer {computer_id}"
+        )
+
+
+async def _replace_claims(
+    cur: Any, *, workspace_id: str, grant_ids: Sequence[str]
+) -> None:
+    """Make ``grant_ids`` exactly this project's claims.
+
+    A claim on a revoked grant is harmless (the sweep and the map both read
+    the grant's status too), so a stale one is dropped by id rather than by
+    scope: whatever machine the row sits on, this project no longer needs it.
+    """
+    await cur.execute(
+        """
+        DELETE FROM sandbox_egress_grant_claims
+        WHERE workspace_id = %(workspace_id)s::uuid
+          AND grant_id != ALL(%(granted)s::uuid[])
+        """,
+        {"workspace_id": workspace_id, "granted": list(grant_ids)},
+    )
+    if grant_ids:
+        await cur.execute(
+            """
+            INSERT INTO sandbox_egress_grant_claims (grant_id, workspace_id)
+            SELECT unnest(%(granted)s::uuid[]), %(workspace_id)s::uuid
+            ON CONFLICT DO NOTHING
+            """,
+            {"workspace_id": workspace_id, "granted": list(grant_ids)},
+        )
+
+
+def _conflict_target(computer_id: Any | None) -> str:
+    """The key an upsert arbitrates on: the machine's once there is one.
+
+    047's partial index is the machine's grant set, so the upsert arbitrates
+    there and the retirement sweep spans the same scope; the two are one
+    transaction because a machine-scoped upsert with a project-scoped sweep
+    leaves overhang. A workspace with no machine keeps 045's workspace key: its
+    rows carry ``computer_id NULL`` and never enter the partial index.
+    """
+    if computer_id is not None:
+        return (
+            "(computer_id, kind, connection_id, server_name) "
+            "WHERE computer_id IS NOT NULL"
+        )
+    return "(workspace_id, kind, connection_id, server_name)"
+
+
 async def _upsert_oauth_grants(
-    cur: Any, *, user_id: str, workspace_id: str, connection_ids: Sequence[str]
+    cur: Any,
+    *,
+    user_id: str,
+    workspace_id: str,
+    computer_id: Any | None,
+    connection_ids: Sequence[str],
 ) -> dict[str, str]:
     """Upsert one grant per connection; returns connection_id → grant_id.
 
     The relay dials ``destination_url``, and it is taken from the connection's
-    consented ``server_url`` inside the INSERT — never from a caller argument.
+    consented ``server_url`` inside the INSERT, never from a caller argument.
     That is the whole security posture: a mutable catalog-row URL can never
     steer a grant at a host the token wasn't issued for. Connections are
     likewise *selected* under the owner predicate rather than trusted, so an id
@@ -244,17 +336,22 @@ async def _upsert_oauth_grants(
     ``status = 'active'`` would otherwise reactivate a grant on a connection
     that has since been revoked or needs re-auth.
     """
-    policies = await _tool_policies(
-        cur, user_id=user_id, connection_ids=connection_ids
-    )
+    policies = await _tool_policies(cur, user_id=user_id, connection_ids=connection_ids)
+    if computer_id is not None:
+        await _adopt_grants_onto_computer(
+            cur,
+            workspace_id=workspace_id,
+            computer_id=computer_id,
+            kind=GRANT_KIND_OAUTH_MCP,
+        )
     await cur.execute(
-        """
+        f"""
         INSERT INTO sandbox_egress_grants
-            (user_id, workspace_id, kind, connection_id,
+            (user_id, workspace_id, computer_id, kind, connection_id,
              destination_url, tool_denylist, tool_allowlist,
              policy_required, tool_direct_only,
              status, created_at, updated_at)
-        SELECT %s, %s::uuid, %s, c.connection_id, c.server_url,
+        SELECT %s, %s::uuid, %s::uuid, %s, c.connection_id, c.server_url,
                p.denylist, p.allowlist, COALESCE(p.required, false),
                p.direct_only,
                'active', NOW(), NOW()
@@ -269,8 +366,9 @@ async def _upsert_oauth_grants(
         ) p ON p.connection_id = c.connection_id
         WHERE c.connection_id = ANY(%s::uuid[]) AND c.user_id = %s
           AND c.status = ANY(%s)
-        ON CONFLICT (workspace_id, kind, connection_id, server_name)
+        ON CONFLICT {_conflict_target(computer_id)}
         DO UPDATE SET
+            computer_id = EXCLUDED.computer_id,
             destination_url = EXCLUDED.destination_url,
             tool_denylist = EXCLUDED.tool_denylist,
             tool_allowlist = EXCLUDED.tool_allowlist,
@@ -281,20 +379,32 @@ async def _upsert_oauth_grants(
         RETURNING connection_id, grant_id
         """,
         (
-            user_id, workspace_id, GRANT_KIND_OAUTH_MCP,
-            policies.keys, policies.denylists, policies.allowlists,
-            policies.required, policies.direct_only,
-            list(connection_ids), user_id, SERVABLE_PARAM,
+            user_id,
+            workspace_id,
+            computer_id,
+            GRANT_KIND_OAUTH_MCP,
+            policies.keys,
+            policies.denylists,
+            policies.allowlists,
+            policies.required,
+            policies.direct_only,
+            list(connection_ids),
+            user_id,
+            SERVABLE_PARAM,
         ),
     )
     return {
-        str(row["connection_id"]): str(row["grant_id"])
-        for row in await cur.fetchall()
+        str(row["connection_id"]): str(row["grant_id"]) for row in await cur.fetchall()
     }
 
 
 async def _upsert_header_grants(
-    cur: Any, *, user_id: str, workspace_id: str, server_names: Sequence[str]
+    cur: Any,
+    *,
+    user_id: str,
+    workspace_id: str,
+    computer_id: Any | None,
+    server_names: Sequence[str],
 ) -> dict[str, str]:
     """Upsert one grant per header-authenticated row; returns name → grant_id.
 
@@ -311,17 +421,22 @@ async def _upsert_header_grants(
     a servable connection is that connection's grant, and a row must never earn
     both.
     """
-    policies = await _header_policies(
-        cur, user_id=user_id, server_names=server_names
-    )
+    policies = await _header_policies(cur, user_id=user_id, server_names=server_names)
+    if computer_id is not None:
+        await _adopt_grants_onto_computer(
+            cur,
+            workspace_id=workspace_id,
+            computer_id=computer_id,
+            kind=GRANT_KIND_HEADER_MCP,
+        )
     await cur.execute(
-        """
+        f"""
         INSERT INTO sandbox_egress_grants
-            (user_id, workspace_id, kind, server_name,
+            (user_id, workspace_id, computer_id, kind, server_name,
              destination_url, tool_denylist, tool_allowlist,
              policy_required, tool_direct_only,
              status, created_at, updated_at)
-        SELECT %s, %s::uuid, %s, s.name, s.url,
+        SELECT %s, %s::uuid, %s::uuid, %s, s.name, s.url,
                p.denylist, p.allowlist, COALESCE(p.required, false),
                p.direct_only,
                'active', NOW(), NOW()
@@ -342,8 +457,9 @@ async def _upsert_header_grants(
               WHERE c.user_id = s.user_id AND c.server_name = s.name
                 AND c.status <> %s
           )
-        ON CONFLICT (workspace_id, kind, connection_id, server_name)
+        ON CONFLICT {_conflict_target(computer_id)}
         DO UPDATE SET
+            computer_id = EXCLUDED.computer_id,
             destination_url = EXCLUDED.destination_url,
             tool_denylist = EXCLUDED.tool_denylist,
             tool_allowlist = EXCLUDED.tool_allowlist,
@@ -354,16 +470,22 @@ async def _upsert_header_grants(
         RETURNING server_name, grant_id
         """,
         (
-            user_id, workspace_id, GRANT_KIND_HEADER_MCP,
-            policies.keys, policies.denylists, policies.allowlists,
-            policies.required, policies.direct_only,
-            user_id, list(server_names),
+            user_id,
+            workspace_id,
+            computer_id,
+            GRANT_KIND_HEADER_MCP,
+            policies.keys,
+            policies.denylists,
+            policies.allowlists,
+            policies.required,
+            policies.direct_only,
+            user_id,
+            list(server_names),
             ConnectionStatus.REVOKED.value,
         ),
     )
     return {
-        str(row["server_name"]): str(row["grant_id"])
-        for row in await cur.fetchall()
+        str(row["server_name"]): str(row["grant_id"]) for row in await cur.fetchall()
     }
 
 
@@ -377,7 +499,10 @@ async def sync_egress_grants(
     """Make ``refs`` exactly this workspace's active grants, whatever their kind.
 
     One transaction: upsert a grant per ref, then revoke every other active
-    grant of the workspace. Retirement is not optional cleanup: an active
+    grant in the same scope that no live project on the machine is using; the
+    scope is the computer once the workspace has one, because that is where
+    the set's uniqueness lives, and a workspace with no computer keeps its
+    own. Retirement is not optional cleanup: an active
     grant the resolved set no longer contains is an authorization overhang,
     since the sandbox may still hold that grant_id and a live relay JWT, so it
     must not be able to commit separately from the upserts. It sweeps every
@@ -388,49 +513,67 @@ async def sync_egress_grants(
     row, never taken from the caller.
 
     Returns None, having touched no grant row, when ``config_version`` no
-    longer matches ``workspaces.mcp_config_version`` — the caller resolved
+    longer matches ``workspaces.mcp_config_version``: the caller resolved
     against a superseded config and a newer sync owns the set. This is a
     whole-set replacement, so two workers cannot be merged by row locks: the
     stale one would reactivate what the fresh one just revoked.
     """
-    # Deferred like platform_secret_sweep's: writer_guard reaches back into
-    # src.server.database.pool, so importing it at module scope from the
-    # database layer would close a database → services → database loop.
-    from src.server.services.writer_guard import advisory_key
-
     async with get_db_connection() as conn, conn.transaction():
         async with conn.cursor(row_factory=dict_row) as cur:
-            # The owner's lock first, then this workspace's. The outer one is
-            # what a narrowing consent holds while it rewrites the policy on
-            # grants that already exist: taken here, before the connection rows
-            # are read, a sync creating this connection's first grant in a brand
-            # new workspace cannot read the old consent and commit it after the
-            # narrowing. Always in this order, so two holders never wait on each
-            # other.
+            # The owner's lock, first and only. It is what a narrowing consent
+            # holds while it rewrites the policy on grants that already exist:
+            # taken here, before the connection rows are read, a sync creating
+            # this connection's first grant in a brand new workspace cannot
+            # read the old consent and commit it after the narrowing.
             await lock_user_egress_state(cur, user_id)
-            # Serialize this workspace's replacements across workers, THEN
-            # re-read the version under that lock. The lock alone would only
-            # order a stale writer last; the CAS alone could pass and then be
-            # overtaken. Together they make "CAS passed" mean no newer set can
-            # commit ahead of this one. Transaction-scoped, so a worker that
-            # dies mid-replacement releases it.
+            # Read the machine and the version together, under that lock. A
+            # machine has one owner and every project on it is that owner's, so
+            # two replacements that could collide on a machine are two of this
+            # user's and the lock above already ordered them: a second,
+            # machine-keyed lock would only re-serialize what is serialized,
+            # and picking its key needs an unlocked read the lock cannot cover.
+            # The lock plus the version CAS below make "CAS passed" mean no
+            # newer set can commit ahead of this one.
             await cur.execute(
-                "SELECT pg_advisory_xact_lock(%s)",
-                (advisory_key("EG", workspace_id),),
-            )
-            await cur.execute(
-                "SELECT mcp_config_version FROM workspaces WHERE workspace_id = %s",
+                """
+                SELECT w.mcp_config_version AS live_version,
+                       w.computer_id
+                FROM workspaces w
+                WHERE w.workspace_id = %s
+                """,
                 (workspace_id,),
             )
             ws_row = await cur.fetchone()
             # A workspace that no longer exists matches no version, so it also
-            # replaces nothing.
-            live_version = ws_row["mcp_config_version"] if ws_row else None
+            # replaces nothing. The gating version is the workspace's, because
+            # a CAS can only arbitrate against the column its counterpart was
+            # read from: ``config_version`` comes from a per-workspace resolve,
+            # and ``workspaces.mcp_config_version`` is the column every config
+            # write advances in the same transaction as the row it changes.
+            # ``computers.mcp_config_version`` is an observation of the
+            # machine's generated wrapper union, stamped after an asset sync
+            # rebuilds it, so it lags the writers by design and a refusal here
+            # withholds the very stamp that would let it catch up -- gating on
+            # it makes a sole-workspace machine refuse itself forever. It
+            # becomes the gate in the same change that makes the resolve
+            # machine-scoped, so that both sides move together.
+            live_version = ws_row["live_version"] if ws_row else None
+            # Read here rather than joined into the INSERT so the grant's
+            # machine is decided under the same lock and the same read as its
+            # version. The relay authorizes on it whenever the token names a
+            # machine too, so a row written with the wrong one would be
+            # reachable from the wrong sandbox; NULL stays correct for a
+            # workspace with no computer, and sends the relay back to the
+            # project comparison. A rebind committing after this read labels
+            # the new rows with the machine the project has left, which is
+            # unreachable from either sandbox and is re-labelled by the
+            # adoption pass on the next sync.
+            computer_id = ws_row["computer_id"] if ws_row else None
             if live_version != config_version:
                 logger.info(
                     f"[egress_grants_db] stale grant replacement for workspace "
                     f"{workspace_id} (resolved v{config_version}, live "
-                    f"v{live_version}) — left to the newer sync"
+                    f"v{live_version}), left to the newer sync"
                 )
                 return None
 
@@ -452,6 +595,7 @@ async def sync_egress_grants(
                             cur,
                             user_id=user_id,
                             workspace_id=workspace_id,
+                            computer_id=computer_id,
                             connection_ids=connection_ids,
                         )
                     ).items()
@@ -467,26 +611,109 @@ async def sync_egress_grants(
                             cur,
                             user_id=user_id,
                             workspace_id=workspace_id,
+                            computer_id=computer_id,
                             server_names=server_names,
                         )
                     ).items()
                 }
 
+            # This project's claims become exactly the granted set. A row is
+            # shared by every project on the machine that resolved its
+            # subject, and 047's workspace_id names only the first of them,
+            # so membership lives in the claims table: the sweep below and the
+            # credential map both read liveness from it.
+            await _replace_claims(
+                cur, workspace_id=workspace_id, grant_ids=list(granted.values())
+            )
+
+            # The machine's desired set is the union of what its live projects
+            # resolve, and the claims record each one's. The NOT EXISTS is
+            # what stops a project resolving nothing -- a fresh one, or one
+            # whose servers are all local -- from revoking a sibling's live
+            # grant out from under a turn. A claimant has to be alive AND
+            # still on this machine: a rebound project leaves claims behind
+            # on rows labelled with the machine it left, and sparing those is
+            # an authorization overhang no live project of this one wants.
+            # This project's own stale claims are already gone, so its rows
+            # are never spared, which is both the retirement this sweep is
+            # for and what reaches a loser the adoption left behind on
+            # another machine; with no machine at all the first arm is NULL
+            # and the scope reduces to those rows alone.
             await cur.execute(
                 """
-                UPDATE sandbox_egress_grants
+                UPDATE sandbox_egress_grants g
                 SET status = 'revoked', updated_at = NOW()
-                WHERE workspace_id = %s AND status = 'active'
-                  AND grant_id != ALL(%s::uuid[])
+                WHERE (g.computer_id = %(computer_id)s
+                       OR g.workspace_id = %(workspace_id)s::uuid)
+                  AND g.status = 'active'
+                  AND g.grant_id != ALL(%(granted)s::uuid[])
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM sandbox_egress_grant_claims cl
+                      JOIN workspaces w ON w.workspace_id = cl.workspace_id
+                      WHERE cl.grant_id = g.grant_id
+                        AND w.computer_id IS NOT DISTINCT FROM g.computer_id
+                        AND w.status <> 'deleted'
+                        AND w.workspace_id
+                            IS DISTINCT FROM %(workspace_id)s::uuid
+                  )
                 """,
-                (workspace_id, list(granted.values())),
+                {
+                    "workspace_id": workspace_id,
+                    "computer_id": computer_id,
+                    "granted": list(granted.values()),
+                },
             )
             if cur.rowcount:
                 logger.info(
                     f"[egress_grants_db] retired {cur.rowcount} stale grant(s) "
-                    f"for workspace {workspace_id}"
+                    f"for workspace {workspace_id} (machine {computer_id})"
                 )
             return GrantSync(grants=granted, retired=cur.rowcount)
+
+
+async def active_relay_grants_for_computer(
+    computer_id: str, *, user_id: str, conn=None
+) -> dict[str, str]:
+    """The machine's whole active grant map, as the credential file needs it.
+
+    One file per sandbox serves every project on the machine, so a map built
+    from one project's resolve unbinds a sibling's servers the moment that
+    project syncs. A grant is offered while any live project on this machine
+    claims it, the same liveness the sweep spares on. The oauth kind keeps a
+    NULL ``server_name`` and names its connection instead, which is where
+    that half of the map comes from.
+    """
+    async with get_db_connection(conn) as owned:
+        async with owned.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT COALESCE(g.server_name, c.server_name) AS server_name,
+                       g.grant_id
+                FROM sandbox_egress_grants g
+                LEFT JOIN user_mcp_oauth_connections c
+                  ON c.connection_id = g.connection_id
+                WHERE g.computer_id = %(computer_id)s
+                  AND g.user_id = %(user_id)s
+                  AND g.status = 'active'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM sandbox_egress_grant_claims cl
+                      JOIN workspaces w ON w.workspace_id = cl.workspace_id
+                      WHERE cl.grant_id = g.grant_id
+                        AND w.computer_id = g.computer_id
+                        AND w.user_id = %(user_id)s
+                        AND w.status <> 'deleted'
+                  )
+                ORDER BY g.updated_at ASC
+                """,
+                {"computer_id": computer_id, "user_id": user_id},
+            )
+            return {
+                str(row["server_name"]): str(row["grant_id"])
+                for row in await cur.fetchall()
+                if row["server_name"]
+            }
 
 
 async def fetch_grant_for_relay(grant_id: str) -> dict[str, Any] | None:
@@ -498,13 +725,17 @@ async def fetch_grant_for_relay(grant_id: str) -> dict[str, Any] | None:
     for absent and wrong-scope alike), and likewise for an ``oauth_mcp`` grant
     whose connection row is gone: the credential's identity has vanished, which
     is the same answer as never having had one.
+
+    ``computer_id`` comes back because one row now serves every project on a
+    machine, so the machine is what the relay compares when both sides name
+    one; ``workspace_id`` is still the answer for a row that has no machine.
     """
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                SELECT g.user_id, g.workspace_id, g.kind, g.connection_id,
-                       g.server_name,
+                SELECT g.user_id, g.workspace_id, g.computer_id, g.kind,
+                       g.connection_id, g.server_name,
                        g.destination_url, g.allowed_methods, g.tool_denylist,
                        g.tool_direct_only,
                        g.status AS grant_status,
@@ -525,6 +756,9 @@ async def fetch_grant_for_relay(grant_id: str) -> dict[str, Any] | None:
             return {
                 "user_id": row["user_id"],
                 "workspace_id": str(row["workspace_id"]),
+                "computer_id": (
+                    str(row["computer_id"]) if row["computer_id"] else None
+                ),
                 "kind": row["kind"],
                 "connection_id": str(connection_id) if connection_id else None,
                 "server_name": row["server_name"],
@@ -690,8 +924,13 @@ async def apply_binding_to_active_header_grants(
                   AND status = 'active'
                 """,
                 (
-                    denylist, allowlist, required, direct_only,
-                    user_id, GRANT_KIND_HEADER_MCP, server_name,
+                    denylist,
+                    allowlist,
+                    required,
+                    direct_only,
+                    user_id,
+                    GRANT_KIND_HEADER_MCP,
+                    server_name,
                 ),
             )
             if cur.rowcount:

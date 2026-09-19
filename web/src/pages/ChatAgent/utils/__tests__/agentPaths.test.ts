@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  MEMORY_WORKSPACE_DIR,
   classifyAgentPath,
   computeAgentArtifactRouting,
   isUserProfileReadmePath,
@@ -173,9 +174,26 @@ describe('classifyAgentPath', () => {
   });
 
   it('classifies a workspace memory entry', () => {
-    const r = classifyAgentPath('.agents/workspace/memory/foo.md');
+    // Built from the generated dir: the spelling belongs to paths.py, and the
+    // contract under test is that a path under it classifies as memory.
+    const r = classifyAgentPath(`${MEMORY_WORKSPACE_DIR}/foo.md`);
     expect(r.kind).toBe('memory');
     if (r.kind === 'memory') expect(r.tier).toBe('workspace');
+  });
+
+  // The pre-folder spelling, written out on purpose: the generated constant no
+  // longer carries it, and stored transcripts still do.
+  it('classifies a legacy workspace memory entry, bare and root-prefixed', () => {
+    for (const p of [
+      '.agents/workspace/memory/foo.md',
+      '/home/workspace/.agents/workspace/memory/foo.md',
+      'file:///home/daytona/.agents/workspace/memory/foo.md',
+    ]) {
+      expect(classifyAgentPath(p)).toMatchObject({ kind: 'memory', tier: 'workspace', key: 'foo.md' });
+    }
+    expect(classifyAgentPath('.agents/workspace/memory/memory.md')).toMatchObject({
+      kind: 'memory', tier: 'workspace', isIndex: true,
+    });
   });
 
   it('classifies a memo entry, slug opaque', () => {
@@ -241,6 +259,16 @@ describe('classifyAgentPath', () => {
   });
 
   it('unwraps __wsref__ for workspace memory and propagates the wsid', () => {
+    const r = classifyAgentPath(`__wsref__/ws-X/${MEMORY_WORKSPACE_DIR}/notes.md`);
+    expect(r.kind).toBe('memory');
+    if (r.kind === 'memory') {
+      expect(r.tier).toBe('workspace');
+      expect(r.key).toBe('notes.md');
+      expect(r.crossWorkspaceId).toBe('ws-X');
+    }
+  });
+
+  it('unwraps __wsref__ for legacy workspace memory and propagates the wsid', () => {
     const r = classifyAgentPath('__wsref__/ws-X/.agents/workspace/memory/notes.md');
     expect(r.kind).toBe('memory');
     if (r.kind === 'memory') {
@@ -283,6 +311,7 @@ describe('classifyAgentPath', () => {
     // `.agents/user/memory/` has empty key — would trigger MemoryPanel's
     // not-found banner. Treat as a Files-tab dir reference instead.
     expect(classifyAgentPath('.agents/user/memory/').kind).toBe('file');
+    expect(classifyAgentPath(`${MEMORY_WORKSPACE_DIR}/`).kind).toBe('file');
     expect(classifyAgentPath('.agents/workspace/memory/').kind).toBe('file');
   });
 

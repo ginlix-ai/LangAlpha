@@ -13,7 +13,8 @@ from typing import NamedTuple
 from ptc_agent.core.paths import (
     MEMORY_INDEX_FILENAME,
     MEMORY_USER_DIR,
-    MEMORY_WORKSPACE_DIR,
+    WorkspaceLayout,
+    workspace_relative_path,
 )
 
 # Read-time ceilings. The block is cached per epoch, so a generous cap costs
@@ -24,11 +25,15 @@ MAX_AGENT_MD_SIZE = 32768
 MAX_MEMORY_BLOCK_SIZE = 32768
 MEMORY_FILL_WARN_RATIO = 0.85
 
-# Workspace-relative path to the cap the baseline reads that file under.
-CAPPED_FILES: dict[str, int] = {
+# Two tables because the caps sit on two tiers, and a path names its file
+# only relative to the tier that owns it.
+WORKSPACE_CAPPED_FILES: dict[str, int] = {
     "agent.md": MAX_AGENT_MD_SIZE,
+    f"{WorkspaceLayout.MEMORY_DIR}/{MEMORY_INDEX_FILENAME}": MAX_MEMORY_BLOCK_SIZE,
+}
+
+COMPUTER_CAPPED_FILES: dict[str, int] = {
     f"{MEMORY_USER_DIR}/{MEMORY_INDEX_FILENAME}": MAX_MEMORY_BLOCK_SIZE,
-    f"{MEMORY_WORKSPACE_DIR}/{MEMORY_INDEX_FILENAME}": MAX_MEMORY_BLOCK_SIZE,
 }
 
 
@@ -39,12 +44,26 @@ class CappedFile(NamedTuple):
     cap: int
 
 
-def capped_file(workspace_path: str) -> CappedFile | None:
-    """The cap on a workspace-relative path, or None when the file is uncapped."""
-    cap = CAPPED_FILES.get(workspace_path)
-    if cap is None:
-        return None
-    return CappedFile(workspace_path.rsplit("/", 1)[-1], cap)
+def capped_file(
+    path: str, *, workspace_dir: str, computer_root: str
+) -> CappedFile | None:
+    """The cap on an absolute sandbox path, or None when the file is uncapped.
+
+    Both bases are tried because the user memory index is shared by every
+    workspace on the computer while agent.md and the workspace index sit inside
+    one folder: strip the other tier's base and the leftover prefix matches no
+    key. An unsplit computer passes the same base twice, which is why the caps
+    worked before a computer could be split at all.
+    """
+    for base, table in (
+        (workspace_dir, WORKSPACE_CAPPED_FILES),
+        (computer_root, COMPUTER_CAPPED_FILES),
+    ):
+        key = workspace_relative_path(path, base)
+        cap = table.get(key)
+        if cap is not None:
+            return CappedFile(key.rsplit("/", 1)[-1], cap)
+    return None
 
 
 def fill_note(name: str, size: int, cap: int) -> str | None:

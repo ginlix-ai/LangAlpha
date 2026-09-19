@@ -35,7 +35,7 @@ def create_glob_tool(backend: FilesystemBackend) -> BaseTool:
 
         Args:
             pattern: Glob pattern (e.g., "**/*.py", "work/*/*.{csv,json}")
-            path: Search directory (default: current directory)
+            path: Search directory (default: your workspace folder)
 
         Returns:
             File paths only, not contents; newest first.
@@ -48,7 +48,7 @@ def create_glob_tool(backend: FilesystemBackend) -> BaseTool:
             logger.info("Globbing files", pattern=pattern, path=search_path, normalized_path=normalized_path)
 
             # Validate normalized path
-            if backend.filesystem_config.enable_path_validation and not backend.validate_path(normalized_path):
+            if backend.filesystem_config.enable_path_validation and not backend.validate_path(search_path):
                 error_msg = f"Access denied: {search_path} is not in allowed directories"
                 logger.error(error_msg, path=search_path)
                 return f"ERROR: {error_msg}"

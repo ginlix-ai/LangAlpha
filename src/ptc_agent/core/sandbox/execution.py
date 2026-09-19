@@ -24,7 +24,10 @@ from src.observability.tracing import tracer as _otel_tracer
 
 from ptc_agent.core.sandbox.retry import RetryPolicy
 
+from ..paths import SandboxLayout, WorkspaceLayout
+
 from ptc_agent.core.sandbox._shared import (
+    TURN_CWD_ENV,
     ChartData,
     ExecutionResult,
 )
@@ -34,6 +37,25 @@ if TYPE_CHECKING:
     from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
 logger = structlog.get_logger(__name__)
+
+# Relative names, each joined against the tier that owns it below.
+_THREADS = WorkspaceLayout.THREADS_DIR
+_SYSTEM_CODE = SandboxLayout.SYSTEM_CODE_DIR
+
+
+def _computer_path(sandbox: "PTCSandbox", relative: str) -> str:
+    """Absolute path for a runtime directory the machine owns.
+
+    ``.system`` belongs to the computer, not to the turn's folder, and
+    ``normalize_path`` folds a relative name into the workspace, so it is
+    joined against the root instead.
+    """
+    return sandbox.layout.join(relative)
+
+
+def _workspace_path(sandbox: "PTCSandbox", relative: str) -> str:
+    """Absolute path for a runtime directory the turn's workspace owns."""
+    return sandbox.workspace().join(relative)
 
 
 async def _collect_mcp_trace(sandbox: "PTCSandbox", trace_path: str) -> list[dict]:
@@ -166,22 +188,24 @@ async def execute(
     try:
         # Write code to thread dir or fallback to code/
         if thread_id:
-            code_path = f".agents/threads/{thread_id}/code/{execution_id}.py"
+            code_path = f"{_THREADS}/{thread_id}/code/{execution_id}.py"
+            code_abs = _workspace_path(sandbox, code_path)
             # Ensure per-thread code dir exists (lazy, once per thread)
             if thread_id not in sandbox._thread_dirs_created:
                 await sandbox._runtime_call(
                     sandbox.runtime.exec,
-                    f"mkdir -p {sandbox.normalize_path(f'.agents/threads/{thread_id}/code')}",
+                    f"mkdir -p {_workspace_path(sandbox, f'{_THREADS}/{thread_id}/code')}",
                     retry_policy=RetryPolicy.SAFE,
                 )
                 sandbox._thread_dirs_created.add(thread_id)
         else:
-            code_path = f".system/code/{execution_id}.py"
+            code_path = f"{_SYSTEM_CODE}/{execution_id}.py"
+            code_abs = _computer_path(sandbox, code_path)
         try:
             await sandbox._runtime_call(
                 sandbox.runtime.upload_file,
                 code.encode("utf-8"),
-                sandbox.normalize_path(code_path),
+                code_abs,
                 retry_policy=RetryPolicy.SAFE,
             )
         except Exception as upload_err:
@@ -192,18 +216,25 @@ async def execute(
             )
 
         # Execute code
-        # Set PYTHONPATH so code can import from tools/ and _internal/
-        # MCP + GitHub env vars are injected at sandbox creation time
-        work_dir = await sandbox.runtime.fetch_working_dir()
-
-        internal_dir = f"{work_dir}/_internal"
-        exec_env = {"PYTHONPATH": f"{work_dir}:{internal_dir}/src:{internal_dir}"}
+        # Set PYTHONPATH so code can import the tool wrappers and the runtime.
+        # MCP + GitHub env vars are injected at sandbox creation time.
+        # The cached root, like the bash path below: it is set on create and
+        # reconnect, and re-asking the provider costs a round trip per run.
+        layout = sandbox.layout
+        workspace = sandbox.workspace()
+        exec_env = {
+            "PYTHONPATH": ":".join(workspace.pythonpath(layout)),
+            # Read by the shipped sitecustomize.py at interpreter startup.
+            TURN_CWD_ENV: workspace.workspace,
+        }
 
         # Per-execution MCP provenance trace file. A unique id (uuid suffix)
         # keeps the file unique across concurrent executions on a shared
         # sandbox (parallel subagents). The generated mcp_client creates the
         # parent dir lazily; we read + delete it after the run.
-        trace_path = f"{work_dir}/.system/trace/{execution_id}_{uuid.uuid4().hex}.jsonl"
+        trace_path = (
+            f"{layout.system_trace}/{execution_id}_{uuid.uuid4().hex}.jsonl"
+        )
         exec_env["MCP_TRACE_FILE"] = trace_path
 
         # Use code_run() for native artifact support (captures matplotlib charts)
@@ -385,7 +416,8 @@ async def execute_bash_command(
 
         Args:
             command: Bash command to execute
-            working_dir: Working directory for command execution (default: sandbox working dir)
+            working_dir: Working directory for command execution (default: the
+                turn's workspace folder, or the computer root without one)
             timeout: Maximum execution time in seconds (default: 60)
             background: Run command in background
             thread_id: Optional thread ID (first 8 chars) for thread-scoped script storage
@@ -393,8 +425,10 @@ async def execute_bash_command(
         Returns:
             Dictionary with success, stdout, stderr, exit_code, bash_id, command_hash
         """
-    if working_dir is None:
-        working_dir = sandbox._work_dir
+    # The runtime's own cwd is the computer root, so a relative or virtual
+    # working_dir has to be folded into the workspace here or it lands beside
+    # the sibling folders.
+    working_dir = sandbox.normalize_path(working_dir or ".")
     await sandbox._wait_ready()
     start_time = time.time()
 
@@ -423,7 +457,7 @@ async def execute_bash_command(
 
         # Build the full bash command with working directory
         # Use cd to change directory, then execute command
-        full_command = f"cd {working_dir} && {command}"
+        full_command = f"cd {shlex.quote(working_dir)} && {command}"
 
         # Audit: save .sh script for traceability (non-fatal)
         script_content = textwrap.dedent(f"""\
@@ -439,23 +473,25 @@ async def execute_bash_command(
             """)
 
         if thread_id:
-            script_relative_path = f".agents/threads/{thread_id}/code/{bash_id}.sh"
+            script_relative_path = f"{_THREADS}/{thread_id}/code/{bash_id}.sh"
+            script_abs = _workspace_path(sandbox, script_relative_path)
             if thread_id not in sandbox._thread_dirs_created:
                 await sandbox._runtime_call(
                     sandbox.runtime.exec,
-                    f"mkdir -p {sandbox.normalize_path(f'.agents/threads/{thread_id}/code')}",
+                    f"mkdir -p {_workspace_path(sandbox, f'{_THREADS}/{thread_id}/code')}",
                     retry_policy=RetryPolicy.SAFE,
                 )
                 sandbox._thread_dirs_created.add(thread_id)
         else:
-            script_relative_path = f".system/code/{bash_id}.sh"
+            script_relative_path = f"{_SYSTEM_CODE}/{bash_id}.sh"
+            script_abs = _computer_path(sandbox, script_relative_path)
 
         try:
             assert sandbox.runtime is not None
             await sandbox._runtime_call(
                 sandbox.runtime.upload_file,
                 script_content.encode("utf-8"),
-                sandbox.normalize_path(script_relative_path),
+                script_abs,
                 retry_policy=RetryPolicy.SAFE,
             )
         except Exception as upload_err:
@@ -654,10 +690,9 @@ def _build_trace_env_command(
     # Use the cached working dir (set on create/reconnect via
     # fetch_working_dir, and used by normalize_path on this same bash path) so
     # wrapping a command doesn't add a Daytona round-trip per bash invocation.
-    sandbox_root = sandbox._work_dir
-    internal_dir = f"{sandbox_root}/_internal"
-    pythonpath = f"{sandbox_root}:{internal_dir}/src:{internal_dir}"
-    trace_path = f"{sandbox_root}/.system/trace/{bash_id}_{uuid.uuid4().hex}.jsonl"
+    layout = sandbox.layout
+    pythonpath = ":".join(sandbox.workspace().pythonpath(layout))
+    trace_path = f"{layout.system_trace}/{bash_id}_{uuid.uuid4().hex}.jsonl"
     command = (
         f"export MCP_TRACE_FILE={shlex.quote(trace_path)} && "
             f"export PYTHONPATH={shlex.quote(pythonpath)}"

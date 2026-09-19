@@ -1,6 +1,7 @@
 import { File, FileImage, FileText } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { fileExtension, fileKind, fileKindIcon } from '../../utils/filePaths';
+import { AGENT_SYSTEM_DIRS, LARGE_TOOL_RESULTS_DIR, LEGACY_ROOT_DIRS } from '@/pages/ChatAgent/utils/agentPaths.generated';
 import type { SortOption } from './types';
 import type { FocusViewer } from './useFileFocus';
 
@@ -10,8 +11,10 @@ export { fileExtension as getFileExtension };
 // --- Constants ---
 
 /** Where the sandbox parks a tool result too large to inline; such a file is
- *  line-numbered text, read-only, and rendered as markdown whatever its name. */
-export const LARGE_TOOL_RESULTS_PREFIX = '/large_tool_results/';
+ *  line-numbered text, read-only, and rendered as markdown whatever its name.
+ *  Spelled the way the eviction middleware spells it to the model: folder
+ *  relative, no leading slash. */
+export const LARGE_TOOL_RESULTS_PREFIX = `${LARGE_TOOL_RESULTS_DIR}/`;
 
 export const EXT_TO_LANG: Record<string, string> = {
   py: 'python', js: 'javascript', jsx: 'jsx', ts: 'typescript', tsx: 'tsx',
@@ -117,9 +120,10 @@ export function sortFiles(filePaths: string[], sortBy: string): string[] {
 /** Directory display priority: root first, then results/, data/, rest alphabetical */
 const DIR_PRIORITY: Record<string, number> = { '/': 0, 'results': 1, 'data': 2 };
 
-/** System directory prefixes -- collapsed by default when visible.
- *  Source of truth: src/ptc_agent/core/paths.py -> AGENT_SYSTEM_DIRS */
-export const SYSTEM_DIR_PREFIXES = ['.system', 'code', 'tools', 'mcp_servers', '.agents', '.self-improve'];
+/** System directory prefixes -- collapsed by default when visible. The legacy
+ *  root dirs join them: a sandbox reused across a layout migration still has
+ *  them at the root, and only their names identify them there. */
+export const SYSTEM_DIR_PREFIXES: string[] = [...AGENT_SYSTEM_DIRS, ...LEGACY_ROOT_DIRS];
 
 export function dirSortKey(dir: string): number {
   if (DIR_PRIORITY[dir] != null) return DIR_PRIORITY[dir];

@@ -87,7 +87,7 @@ def create_grep_tool(backend: FilesystemBackend) -> BaseTool:
             )
 
             # Validate normalized path
-            if backend.filesystem_config.enable_path_validation and not backend.validate_path(normalized_path):
+            if backend.filesystem_config.enable_path_validation and not backend.validate_path(search_path):
                 error_msg = f"Access denied: {search_path} is not in allowed directories"
                 logger.error(error_msg, path=search_path)
                 return f"ERROR: {error_msg}"

@@ -6,25 +6,35 @@ Moved from /api/v1/chat/sessions to /api/v1/sessions.
 
 from fastapi import APIRouter
 
-from src.server.services.session_manager import SessionService
+from src.server.database.computer import get_computers_for_user
+from src.server.services.computer_manager import ComputerManager
+from src.server.utils.api import CurrentUserId
 
 router = APIRouter(prefix="/api/v1/sessions", tags=["Sessions"])
 
 
 @router.get("")
-async def get_sessions():
+async def get_sessions(x_user_id: CurrentUserId):
     """
-    Get information about active PTC sessions.
+    Get information about the caller's active PTC sessions on this worker.
 
-    Returns:
-        Dict with session statistics and details
+    A workspace id is the credential for the public file route, so the
+    listing is scoped to machines the caller owns.
     """
-    try:
-        session_service = SessionService.get_instance()
-        return session_service.get_stats()
-    except ValueError:
-        # Service not initialized
+    manager = ComputerManager.current()
+    if manager is None:
+        # Answers before the manager is constructed, and after a reset.
         return {
             "active_sessions": 0,
-            "message": "PTC Session Service not initialized",
+            "message": "Computer Manager not initialized",
         }
+    owned = {str(c["computer_id"]) for c in await get_computers_for_user(x_user_id)}
+    sessions = [
+        s for s in manager.live_session_stats() if str(s.get("computer_id")) in owned
+    ]
+    return {
+        "active_sessions": len(sessions),
+        "idle_timeout": manager.idle_timeout,
+        "cleanup_interval": manager.cleanup_interval,
+        "workspaces": sessions,
+    }

@@ -17,7 +17,6 @@ holds the row shape they share. This module is the facade over them.
 from typing import Any
 
 from src.server.database.blob_keys import MAX_BLOB_BYTES
-from src.server.database.workspace import ANY_SANDBOX
 from src.server.database.workspace_file import (
     get_file as db_get_file,
     get_files_for_workspace,
@@ -67,46 +66,21 @@ async def get_file_content(
 
 
 class FilePersistenceService:
-    """Sync workspace files between Daytona sandbox and PostgreSQL."""
+    """One name for the modules above, bound rather than re-typed.
+
+    Every entry point that touches the sandbox takes a ``WorkspaceLayout``
+    naming the project folder to mirror; see ``services.workspace_layout`` for
+    how a caller resolves one.
+    """
 
     # Same number as the per-blob storage cap, and derived from it rather than
     # restated: a file this path accepts must be storable.
     MAX_FILE_SIZE = MAX_BLOB_BYTES
 
-    @staticmethod
-    async def sync_to_db(workspace_id: str, sandbox: Any) -> dict[str, Any]:
-        return await backup.sync_to_db(workspace_id, sandbox)
-
-    @staticmethod
-    async def list_sandbox_files(
-        sandbox: Any, *, prior: dict[str, tuple[int, int, str]] | None = None
-    ) -> dict[str, dict[str, Any]]:
-        return await backup.list_sandbox_files(sandbox, prior=prior)
-
-    @staticmethod
-    def prior_from_meta(
-        existing: dict[str, dict[str, Any]],
-    ) -> dict[str, tuple[int, int, str]]:
-        return backup.prior_from_meta(existing)
-
-    @staticmethod
-    async def restore_to_sandbox(
-        workspace_id: str, sandbox: Any, *, expected_sandbox_id: Any = ANY_SANDBOX
-    ) -> dict[str, Any]:
-        return await restore.restore_to_sandbox(
-            workspace_id, sandbox, expected_sandbox_id=expected_sandbox_id
-        )
-
-    @staticmethod
-    async def maybe_restore(workspace_id: str, sandbox: Any) -> None:
-        await restore.maybe_restore(workspace_id, sandbox)
-
-    @staticmethod
-    async def get_file_tree(workspace_id: str) -> list[dict[str, Any]]:
-        return await get_file_tree(workspace_id)
-
-    @staticmethod
-    async def get_file_content(
-        workspace_id: str, file_path: str
-    ) -> dict[str, Any] | None:
-        return await get_file_content(workspace_id, file_path)
+    sync_to_db = staticmethod(backup.sync_to_db)
+    list_sandbox_files = staticmethod(backup.list_sandbox_files)
+    prior_from_meta = staticmethod(backup.prior_from_meta)
+    restore_to_sandbox = staticmethod(restore.restore_to_sandbox)
+    maybe_restore = staticmethod(restore.maybe_restore)
+    get_file_tree = staticmethod(get_file_tree)
+    get_file_content = staticmethod(get_file_content)

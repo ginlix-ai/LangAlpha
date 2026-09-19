@@ -46,8 +46,9 @@ from ptc_agent.core.paths import (
     HIDDEN_DIR_NAMES,
     MEMO_USER_DIR,
     MEMORY_USER_DIR,
-    MEMORY_WORKSPACE_DIR,
+    WorkspaceLayout,
 )
+from ptc_agent.core.project_context import current_project
 
 logger = structlog.get_logger(__name__)
 
@@ -56,7 +57,7 @@ logger = structlog.get_logger(__name__)
 # on the workspace filesystem the backend reads from.
 _UNREADABLE_SCRIPT_PREFIXES: tuple[str, ...] = (
     f"{MEMORY_USER_DIR}/",
-    f"{MEMORY_WORKSPACE_DIR}/",
+    f"{WorkspaceLayout.MEMORY_DIR}/",
     f"{MEMO_USER_DIR}/",
 )
 
@@ -525,6 +526,7 @@ def create_run_workflow_tool(
             source=script_source,
             base_configurable=configurable,
             caps=caps,
+            project=current_project(),
         )
         driver = WorkflowDriver(spec)
         try:

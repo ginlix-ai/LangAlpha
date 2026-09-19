@@ -231,7 +231,7 @@ class TestBaselineDeterminism:
         and what the tool guide points the model at."""
         servers = _render("envelope/baseline_mcp_servers.md.j2", "detailed")
         assert "<mcp-servers>" in servers and "</mcp-servers>" in servers
-        assert "tools/docs/<server_name>/" in servers, "the import lead is gone"
+        assert ".agents/tools/docs/<server_name>/" in servers, "the import lead is gone"
         assert "get_quote" in servers
         skills = _render("envelope/baseline_skills.md.j2", "detailed")
         assert "<skills>" in skills and "</skills>" in skills

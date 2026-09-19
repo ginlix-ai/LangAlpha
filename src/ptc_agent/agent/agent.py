@@ -15,6 +15,8 @@ import structlog
 from langchain.agents import create_agent
 
 from ptc_agent.agent.backends import SandboxBackend
+from ptc_agent.core.paths import WorkspaceLayout
+from ptc_agent.core.project_context import ProjectContext
 from ptc_agent.agent.middleware import SubAgentMiddleware
 from ptc_agent.agent.state import DeltaAgentState
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -83,6 +85,7 @@ from ptc_agent.agent.prompts import (
     format_subagent_summary,
     get_loader,
     guidance_template_vars,
+    workspace_path_vars,
 )
 from ptc_agent.agent.subagents import (
     SubagentCompiler,
@@ -159,16 +162,24 @@ class PTCAgent:
         memo_enabled: bool = True,
         crawl_enabled: bool = False,
         direct_tool_summary: str = "",
+        workspace: WorkspaceLayout | None = None,
+        legacy_layout: bool = False,
     ) -> str:
         """Build the static system prompt (excludes time/profile for cacheability).
 
         ``guidance`` shapes the cached prefix, so the prefix varies by (model,
         guidance) rather than (model), which only splits when a user pins the
-        level themselves.
+        level themselves. The workspace folder varies it too, but a thread
+        lives in one workspace, so a thread still reuses its own prefix.
         """
         loader = get_loader()
         return loader.get_system_prompt(
             **guidance_template_vars(guidance),
+            **workspace_path_vars(
+                workspace,
+                root=self.config.filesystem.working_directory,
+                legacy_layout=legacy_layout,
+            ),
             subagent_summary=subagent_summary,
             max_concurrent_task_units=DEFAULT_MAX_CONCURRENT_TASK_UNITS,
             ask_user_enabled=True,
@@ -176,7 +187,6 @@ class PTCAgent:
             include_examples=True,
             include_anti_patterns=True,
             thread_id=thread_id or "",
-            working_directory=self.config.filesystem.working_directory,
             memory_enabled=memory_enabled,
             memo_enabled=memo_enabled,
             market_watch_enabled=self.config.feature_enabled("market_watch"),
@@ -218,6 +228,7 @@ class PTCAgent:
         direct_mcp: DirectToolSet | None = None,
         order_ledger: OrderLedger | None = None,
         turn_context: TurnContext | None = None,
+        project: ProjectContext | None = None,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
 
@@ -240,6 +251,9 @@ class PTCAgent:
                 one ran, the surface it arrived on and that surface's delivery
                 rules), for the turn anchor row. None for a context-free build
                 such as thread maintenance.
+            project: The workspace folder this turn runs in. Passed rather
+                than read from the ambient context because the build happens
+                before the run's own task binds it.
 
         Returns:
             Configured BackgroundSubagentOrchestrator wrapping the deepagent.
@@ -255,13 +269,16 @@ class PTCAgent:
         short_thread_id = thread_id[:8] if thread_id else ""
 
         backend = SandboxBackend(sandbox, operation_callback=operation_callback)
+        # The one workspace root this build uses, read off the live computer
+        # root plus the turn's folder rather than the config default.
+        workspace_layout = sandbox.workspace(project)
 
         # Memory is opt-in: disabled entirely when identity is missing rather
         # than falling back to a shared namespace that would cross-pollinate
-        # unauthenticated sessions.
-        workspace_id_for_memory = (
-            getattr(session, "conversation_id", None) if session else None
-        )
+        # unauthenticated sessions. The workspace comes from the project: the
+        # session is per computer and several workspaces share it, so its own
+        # id names whichever one acquired it first.
+        workspace_id_for_memory = project.workspace_id if project else None
         gates = resolve_identity_gates(
             store=store,
             user_id=user_id,
@@ -281,11 +298,12 @@ class PTCAgent:
             store=store,
             user_id=user_id,
             workspace_id=workspace_id_for_memory,
+            layout=workspace_layout,
         )
 
         # Create the execute_code tool for MCP invocation
         execute_code_tool = create_execute_code_tool(
-            backend, mcp_registry, thread_id=short_thread_id
+            backend, mcp_registry, thread_id=short_thread_id, session=session
         )
 
         # Create the Bash tool for shell command execution
@@ -293,7 +311,7 @@ class PTCAgent:
         bash_output_tool = create_bash_output_tool(backend)
 
         # Create the preview URL tool for sandbox service previews
-        workspace_id = getattr(session, "conversation_id", "") if session else ""
+        workspace_id = project.workspace_id if project else ""
         preview_url_tool = create_preview_url_tool(backend, workspace_id=workspace_id, on_signed_url=on_signed_url)
 
         # Create the show widget tool for inline HTML visualizations
@@ -380,7 +398,10 @@ class PTCAgent:
         shared_middleware.append(
             FileOperationMiddleware(
                 on_agent_md_write=on_agent_md_write,
-                work_dir=self.config.filesystem.working_directory,
+                # The workspace root: the hook fires on ``agent.md``, which
+                # lives in the folder, and a path measured from the computer
+                # root keeps the folder name in front of it.
+                work_dir=workspace_layout.workspace,
                 thread_id=thread_id,
             )
         )
@@ -524,6 +545,7 @@ class PTCAgent:
             skill_dirs=[
                 d for d, _ in self.config.skills.local_skill_dirs_with_sandbox()
             ],
+            project=project,
         )
         if disable_subagents:
             # Recursion gate: no subagents compiled, none advertised in the
@@ -552,9 +574,9 @@ class PTCAgent:
         subagent_summary = format_subagent_summary(subagents)
 
         eviction_dir = (
-            f".agents/threads/{short_thread_id}/large_tool_results"
+            WorkspaceLayout.thread_subdir(short_thread_id, "large_tool_results")
             if short_thread_id
-            else ".agents/large_tool_results"
+            else WorkspaceLayout.LARGE_TOOL_RESULTS_DIR
         )
 
         system_prompt = self._build_system_prompt(
@@ -566,6 +588,8 @@ class PTCAgent:
             memo_enabled=gates.memo,
             crawl_enabled=bool(crawl_tools),
             direct_tool_summary=direct_tool_summary(direct_tools),
+            workspace=workspace_layout,
+            legacy_layout=bool(project is not None and project.layout_origin == 3),
         )
 
         logger.debug(

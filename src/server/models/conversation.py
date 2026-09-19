@@ -324,6 +324,15 @@ class SharePermissions(BaseModel):
     """Configurable permissions for a shared thread."""
     allow_files: bool = Field(False, description="Allow browsing and reading workspace files")
     allow_download: bool = Field(False, description="Allow downloading raw workspace files")
+    # Absent means the whole workspace, which is what every token minted so far
+    # carries, so adding the field changes nothing about the tokens in the wild.
+    root_path: str = Field(
+        "",
+        description=(
+            "Workspace-relative subtree this token opens. Empty opens the whole "
+            "workspace."
+        ),
+    )
 
     @model_validator(mode="after")
     def download_requires_files(self):

@@ -12,6 +12,7 @@ import json
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 import structlog
@@ -27,6 +28,7 @@ from .mcp_sanitize import (
     sanitize_tool_set,
     sanitize_tool_text,
 )
+from .paths import DEFAULT_SANDBOX_ROOT, SandboxLayout
 
 logger = structlog.get_logger(__name__)
 
@@ -64,6 +66,29 @@ _WRAPPER_CODEGEN_MAJOR = "5"
 # this counter. The hard host-side bound on what _collect_mcp_trace reads lives
 # in ptc_sandbox (it sizes the file and skips one far past any legit trace).
 RESULT_BODY_TRACE_BUDGET_BYTES = 4 * 1024 * 1024
+
+
+def is_workspace_local(server: MCPServerConfig) -> bool:
+    """A server one workspace holds under its own name.
+
+    Builtins and user-level servers are one config per computer; a workspace
+    row can carry a different config under a name a sibling also uses.
+    """
+    return getattr(server, "source", "builtin") == "workspace"
+
+
+def union_key(server: MCPServerConfig, claim: str) -> str:
+    """The name a server holds in the computer-wide union.
+
+    Two workspaces on one computer can each install a ``crm`` of their own,
+    and the union keeps one entry per key, so a workspace-local server is
+    keyed by its owner's claim; everything else keeps its bare name. The
+    workspace's overlay links the display name to the keyed file, so the
+    import path the model sees never changes.
+    """
+    if is_workspace_local(server):
+        return f"{server.name}@{claim}"
+    return server.name
 
 
 def _safe_func_name(name: str) -> str:
@@ -113,7 +138,12 @@ class ToolFunctionGenerator:
     """Generates Python function code from MCP tool schemas."""
 
     def generate_tool_module(
-        self, server_name: str, tools: list[MCPToolInfo], *, untrusted: bool = False
+        self,
+        server_name: str,
+        tools: list[MCPToolInfo],
+        *,
+        untrusted: bool = False,
+        union_key: str | None = None,
     ) -> str:
         """Generate a complete Python module for a server's tools.
 
@@ -145,7 +175,7 @@ import json
 
 # Import MCP client
 try:
-    from .mcp_client import _call_mcp_tool
+    from mcp_client import _call_mcp_tool
 except ImportError:
     # Fallback for when mcp_client is not available
     def _call_mcp_tool(server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
@@ -172,7 +202,9 @@ except ImportError:
 
         # Generate functions for each tool
         for tool in tools:
-            function_code = self._generate_function(tool, server_name, untrusted)
+            function_code = self._generate_function(
+                tool, server_name, untrusted, call_target=union_key or server_name
+            )
             if not function_code:
                 continue  # unshippable schema — see _bind_params
             code += function_code
@@ -181,7 +213,12 @@ except ImportError:
         return code
 
     def _generate_function(
-        self, tool: MCPToolInfo, server_name: str, untrusted: bool = False
+        self,
+        tool: MCPToolInfo,
+        server_name: str,
+        untrusted: bool = False,
+        *,
+        call_target: str | None = None,
     ) -> str:
         """Generate Python function for a single tool.
 
@@ -226,13 +263,16 @@ except ImportError:
         # Untrusted tool names are hostile-capable text — emit server/tool via
         # repr so a hostile name can't escape the string literal and inject
         # code. Builtins keep the historical double-quoted literal.
+        # The union key, not the display name: a workspace-local server shares
+        # its name with nothing in the client's map, only its key.
+        target = call_target or server_name
         if untrusted:
             call_line = (
-                f"    return _call_mcp_tool({server_name!r}, {tool.name!r}, arguments)"
+                f"    return _call_mcp_tool({target!r}, {tool.name!r}, arguments)"
             )
         else:
             call_line = (
-                f'    return _call_mcp_tool("{server_name}", "{tool.name}", arguments)'
+                f'    return _call_mcp_tool("{target}", "{tool.name}", arguments)'
             )
 
         if required:
@@ -626,7 +666,11 @@ except ImportError:
     def generate_client_config(
         self,
         server_configs: list[MCPServerConfig],
-        working_dir: str = "/home/workspace",
+        working_dir: str = DEFAULT_SANDBOX_ROOT,
+        *,
+        claim: str | None = None,
+        vault_file: str | None = None,
+        fold_union: bool = True,
     ) -> dict[str, Any]:
         """Build the per-workspace config dict the client runtime consumes.
 
@@ -641,73 +685,141 @@ except ImportError:
 
         Trust ships as the ``untrusted`` bool computed here — never as a raw
         ``source`` tag the runtime would have to re-interpret.
+
+        With ``claim`` the map is keyed by :func:`union_key`, so a
+        workspace-local server lands under a key no sibling's same-named server
+        can take; ``vault_file`` is the workspace vault such a server resolves
+        ``${vault:NAME}`` against. ``fold_union`` off composes a client that
+        sees exactly these entries, which is what a discovery probe of an
+        edited server needs.
         """
+        layout = SandboxLayout(working_dir)
         servers: dict[str, dict[str, Any]] = {}
         for server in server_configs:
             untrusted = is_untrusted_server(server)
+            key = union_key(server, claim) if claim else server.name
+            entry: dict[str, Any]
             if server.oauth_connection_id is not None:
-                servers[server.name] = {
+                entry = {
                     "transport": "http",
                     "untrusted": untrusted,
                     "relay_bound": True,
                 }
-                continue
-            if server.transport in ("sse", "http"):
-                entry: dict[str, Any] = {
-                    "transport": server.transport,
-                    "untrusted": untrusted,
-                    "url": server.url or "",
-                }
-                if untrusted:
-                    entry["headers"] = dict(server.headers or {})
-                    entry["discovery_uses_secrets"] = discovery_should_use_secrets(
-                        server
-                    )
-                servers[server.name] = entry
-                continue
-
-            # Stdio transport. `uv run python mcp_servers/<file>.py` paths are
-            # rewritten to the sandbox's copy of the server file.
-            command = server.command
-            args = [str(a) for a in server.args]
-            if (
-                command == "uv"
-                and len(args) >= 3
-                and args[0] == "run"
-                and args[1] == "python"
-            ):
-                filename = Path(args[2]).name
-                args = ["run", "python", f"{working_dir}/mcp_servers/{filename}"]
-                logger.debug(
-                    "Transformed MCP server command for sandbox",
-                    server=server.name,
-                    original_args=server.args,
-                    sandbox_args=args,
-                )
-            entry = {
-                "transport": "stdio",
-                "untrusted": untrusted,
-                "command": command,
-                "args": args,
-            }
-            if untrusted:
-                entry["env"] = dict(server.env or {})
-                entry["discovery_uses_secrets"] = discovery_should_use_secrets(server)
             else:
-                entry["env_keys"] = list(server.env.keys()) if server.env else []
-            servers[server.name] = entry
+                entry = self._client_entry(server, untrusted, layout)
+            if key != server.name:
+                entry["name"] = server.name
+            if vault_file and is_workspace_local(server):
+                entry["vault_file"] = vault_file
+            servers[key] = entry
 
         return {
             "working_dir": working_dir,
+            # The runtime runs inside the sandbox and cannot import the host's
+            # SandboxLayout, so it travels here as data instead of being
+            # transcribed by hand on the far side.
+            "layout": layout.as_constants(),
+            # This workspace's own servers. The client folds in the rest of
+            # the computer's union from the ledger at import, because that
+            # merge runs under a lock in the sandbox, after this is composed.
             "servers": servers,
+            "fold_union": bool(fold_union),
             "result_body_max_bytes": RESULT_BODY_MAX_BYTES,
             "result_body_trace_budget_bytes": RESULT_BODY_TRACE_BUDGET_BYTES,
         }
 
+    def _client_entry(
+        self, server: MCPServerConfig, untrusted: bool, layout: SandboxLayout
+    ) -> dict[str, Any]:
+        """One non-relay server's entry, by transport."""
+        if server.transport in ("sse", "http"):
+            entry: dict[str, Any] = {
+                "transport": server.transport,
+                "untrusted": untrusted,
+                "url": server.url or "",
+            }
+            if untrusted:
+                entry["headers"] = dict(server.headers or {})
+                entry["discovery_uses_secrets"] = discovery_should_use_secrets(server)
+            return entry
+
+        # Stdio transport. `uv run python mcp_servers/<file>.py` paths are
+        # rewritten to the sandbox's copy of the server file.
+        command = server.command
+        args = [str(a) for a in server.args]
+        if (
+            command == "uv"
+            and len(args) >= 3
+            and args[0] == "run"
+            and args[1] == "python"
+        ):
+            filename = Path(args[2]).name
+            args = ["run", "python", f"{layout.mcp_servers}/{filename}"]
+            logger.debug(
+                "Transformed MCP server command for sandbox",
+                server=server.name,
+                original_args=server.args,
+                sandbox_args=args,
+            )
+        entry = {
+            "transport": "stdio",
+            "untrusted": untrusted,
+            "command": command,
+            "args": args,
+        }
+        if untrusted:
+            entry["env"] = dict(server.env or {})
+            entry["discovery_uses_secrets"] = discovery_should_use_secrets(server)
+        else:
+            entry["env_keys"] = list(server.env.keys()) if server.env else []
+        return entry
+
+    def generate_workspace_tool_config(
+        self,
+        workspace_id: str,
+        dir_name: str,
+        server_names: list[str],
+        *,
+        labels: Mapping[str, str] | None = None,
+        vault_file: str | None = None,
+    ) -> dict[str, Any]:
+        """The ``mcp_client_config.json`` for one workspace's tool overlay.
+
+        The workspace's *selection*, not its credentials: the union client
+        already carries every server's config, and this says which of them this
+        folder's wrappers were built for. A server absent here has no symlink
+        and no docs either, so the three views never disagree.
+
+        ``computer_config_version`` is added by the in-sandbox reconcile, which
+        is where the union's version is decided; it is the value a caller
+        carries to tell a superseded supervisor to stand down.
+
+        ``server_names`` are union keys; ``labels`` maps a key to the display
+        name its wrapper is linked under when the two differ. ``vault_file`` is
+        where this workspace's own secrets live, for the ``vault`` helper.
+        """
+        servers: dict[str, dict[str, Any]] = {}
+        for key in sorted(server_names):
+            entry: dict[str, Any] = {"enabled": True}
+            label = (labels or {}).get(key)
+            if label and label != key:
+                entry["name"] = label
+            servers[key] = entry
+        view: dict[str, Any] = {
+            "schema_version": 1,
+            "workspace_id": workspace_id,
+            "dir_name": dir_name,
+            "servers": servers,
+        }
+        if vault_file:
+            view["vault_file"] = vault_file
+        return view
+
     def generate_mcp_client_code(
         self,
         server_configs: list[MCPServerConfig],
-        working_dir: str = "/home/workspace",
+        working_dir: str = DEFAULT_SANDBOX_ROOT,
+        **config_options: Any,
     ) -> str:
         """Compose the uploadable mcp_client.py: static runtime + config epilogue.
 
@@ -719,7 +831,19 @@ except ImportError:
         config apply — the runtime source must never self-dispatch, or CLI-mode
         discovery would run against the placeholder config.
         """
-        config = self.generate_client_config(server_configs, working_dir=working_dir)
+        return self.compose_mcp_client_code(
+            self.generate_client_config(
+                server_configs, working_dir=working_dir, **config_options
+            )
+        )
+
+    def compose_mcp_client_code(self, config: dict[str, Any]) -> str:
+        """Compose the uploadable client from an already-built config dict.
+
+        The computer's union is assembled from several workspaces' configs, so
+        the merge happens before this point and the composer takes the result
+        rather than a server list.
+        """
         config_json = json.dumps(config, sort_keys=True)
         return (
             client_runtime_source()
@@ -835,9 +959,18 @@ def _emission_probe_text() -> str:
             for tool in probes
             for untrusted in (False, True)
         )
-        + gen.generate_mcp_client_code(_EMISSION_PROBE_SERVERS, working_dir="/probe")[
-            len(client_runtime_source()) :
-        ]
+        + gen.generate_mcp_client_code(
+            _EMISSION_PROBE_SERVERS, working_dir="/probe"
+        )[len(client_runtime_source()) :]
+        + json.dumps(
+            gen.generate_workspace_tool_config(
+                "probe-workspace",
+                "probe-dir",
+                ["probe_builtin", "probe_oauth"],
+            ),
+            sort_keys=True,
+        )
+        + "\n"
     )
 
 

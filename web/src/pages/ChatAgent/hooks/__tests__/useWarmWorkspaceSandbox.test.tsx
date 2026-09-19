@@ -215,9 +215,10 @@ describe('useWarmWorkspaceSandbox', () => {
       workspace_id: 'ws-1',
       status: 'stopped',
     });
-    qc.setQueryData(queryKeys.workspaces.lists(), [
-      { workspace_id: 'ws-1', status: 'stopped', name: 'A' },
-    ]);
+    qc.setQueryData(queryKeys.workspaces.list({ limit: 20 }), {
+      workspaces: [{ workspace_id: 'ws-1', status: 'stopped', name: 'A' }],
+      total: 1,
+    });
     const { fetchMock, next } = makeMockSSEStream();
     global.fetch = fetchMock as unknown as typeof fetch;
 
@@ -244,10 +245,10 @@ describe('useWarmWorkspaceSandbox', () => {
       );
       expect(detail?.status).toBe('starting');
     });
-    const list = qc.getQueryData<Array<{ workspace_id: string; status: string }>>(
-      queryKeys.workspaces.lists(),
+    const list = qc.getQueryData<{ workspaces: Array<{ workspace_id: string; status: string }> }>(
+      queryKeys.workspaces.list({ limit: 20 }),
     );
-    expect(list?.find((w) => w.workspace_id === 'ws-1')?.status).toBe('starting');
+    expect(list?.workspaces.find((w) => w.workspace_id === 'ws-1')?.status).toBe('starting');
   });
 
   it('returns "archived" when the stream emits a sandbox_state refinement', async () => {

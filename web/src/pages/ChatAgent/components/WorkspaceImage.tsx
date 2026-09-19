@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useWorkspaceId, useWorkspaceDownloadFile } from '../contexts/WorkspaceContext';
 import { downloadWorkspaceFile } from '../utils/api';
-import { parseWsPath } from '../utils/filePaths';
+import { normalizeFilePath, parseWsPath } from '../utils/filePaths';
 import ImageLightbox from './ImageLightbox';
 
 // Module-level cache: key:path → blobUrl
@@ -19,6 +20,7 @@ interface WorkspaceImageProps extends React.ImgHTMLAttributes<HTMLImageElement> 
 }
 
 function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
+  const { t } = useTranslation();
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const contextWorkspaceId = useWorkspaceId();
   const downloadFileFn = useWorkspaceDownloadFile();
@@ -36,11 +38,12 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
   const effectiveDownloadFn = wsRef && contextWorkspaceId ? null : downloadFileFn;
 
   const canFetch = !!(src && !isExternalUrl(src) && (workspaceId || effectiveDownloadFn));
-  const rawPath = canFetch ? (wsRef ? wsRef.path : src!) : '';
-  // Decode LLM-emitted percent-encoded paths (e.g. ![](.../%E5%9B%BE%E8%A1%A8.png))
-  // so Axios doesn't re-encode the leading `%` to `%25`. Idempotent on raw paths.
-  let normalizedPath = rawPath;
-  try { normalizedPath = decodeURIComponent(rawPath); } catch { /* malformed %XX — pass through */ }
+  // The one reading of the destination, the same one a file link gets, so
+  // `/home/workspace/charts/x.png` fetches `charts/x.png` rather than a path no
+  // workspace holds. The decode is part of it and happens exactly once, so a
+  // name an LLM emitted encoded (`.../%E5%9B%BE%E8%A1%A8.png`) reaches the API
+  // as raw Unicode; callers hand over the raw destination for that reason.
+  const normalizedPath = canFetch ? normalizeFilePath(src!) : '';
   const cacheKey = canFetch ? `${workspaceId || 'shared'}:${normalizedPath}` : '';
 
   const [state, setState] = useState<LoadState>(() =>
@@ -117,10 +120,9 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
   }
 
   if (state === 'error') {
-    const filename = normalizedPath.split('/').pop();
     return (
       <span className="text-xs my-2 inline-block" style={{ color: 'var(--color-text-tertiary)' }}>
-        [image: {filename}]
+        {t('chat.imageLoadFailed', { name: normalizedPath.split('/').pop() })}
       </span>
     );
   }

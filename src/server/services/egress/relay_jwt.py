@@ -19,6 +19,7 @@ __all__ = [
     "MintedJwt",
     "RelayClaims",
     "RelayJwtError",
+    "identity_claim",
     "mint_relay_jwt",
     "validate_relay_jwt",
 ]
@@ -37,7 +38,19 @@ DEFAULT_TTL_SECONDS = 8 * 60 * 60
 LEEWAY_SECONDS = 30
 REMINT_THRESHOLD_SECONDS = 21600 + 30 * 60  # turn cap + bringup/skew margin
 
-_REQUIRED_CLAIMS = ["iss", "aud", "sub", "workspace_id", "sandbox_id", "iat", "nbf", "exp", "jti"]
+_REQUIRED_CLAIMS = ["iss", "aud", "sub", "workspace_id", "iat", "nbf", "exp", "jti"]
+
+# The two machine-identity claims. Either, both, or neither may be present: a
+# token carries `computer_id` once its session knows the computer, `sandbox_id`
+# for the pre-computer shape, and neither for a host caller with no machine at
+# all (Flash order reads, a session whose sandbox is not yet provisioned).
+#
+# Neither is authorized against -- authorization is the per-request grant lookup
+# keyed by `workspace_id` -- so a token that names no machine is not a weaker
+# credential, only a less informative audit record. What IS refused is an empty
+# string: the sandbox-less callers used to mint `sandbox_id=""` and the
+# validator rejected it, so they issued a credential they could not use.
+_IDENTITY_CLAIMS = ("sandbox_id", "computer_id")
 
 
 class RelayJwtError(Exception):
@@ -59,10 +72,20 @@ _CALLERS = frozenset({CALLER_SANDBOX, CALLER_HOST})
 class RelayClaims:
     user_id: str
     workspace_id: str
-    sandbox_id: str
+    sandbox_id: str | None
     jti: str
     expires_at: int
     caller: str = CALLER_SANDBOX
+    computer_id: str | None = None
+
+    @property
+    def identity(self) -> str | None:
+        """Which machine presented the token, preferring the computer id.
+
+        For audit only. A host caller with no machine has neither claim, which
+        is why this can be None.
+        """
+        return self.computer_id or self.sandbox_id
 
 
 @dataclass(frozen=True)
@@ -74,12 +97,24 @@ class MintedJwt:
     expires_at: int
 
 
+def identity_claim(value: object) -> str | None:
+    """Normalize a machine identity into a claim: a non-empty string, or absent.
+
+    Lenient on purpose, because the value comes from whatever the call site has
+    in hand -- a sandbox that may not be provisioned yet, a session that may not
+    name a computer. "No identity" is a valid claim shape; the empty string is
+    the one the validator refuses, so it can no longer be minted.
+    """
+    return value if isinstance(value, str) and value else None
+
+
 def mint_relay_jwt(
     secret: str,
     *,
     user_id: str,
     workspace_id: str,
-    sandbox_id: str,
+    sandbox_id: str | None = None,
+    computer_id: str | None = None,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     caller: str = CALLER_SANDBOX,
 ) -> MintedJwt:
@@ -87,22 +122,22 @@ def mint_relay_jwt(
         raise ValueError(f"unknown relay caller {caller!r}")
     now = int(time.time())
     expires_at = now + ttl_seconds
-    token = jwt.encode(
-        {
-            "iss": ISSUER,
-            "aud": AUDIENCE,
-            "sub": user_id,
-            "workspace_id": workspace_id,
-            "sandbox_id": sandbox_id,
-            "caller": caller,
-            "iat": now,
-            "nbf": now,
-            "exp": expires_at,
-            "jti": uuid.uuid4().hex,
-        },
-        secret,
-        algorithm=ALGORITHM,
-    )
+    payload = {
+        "iss": ISSUER,
+        "aud": AUDIENCE,
+        "sub": user_id,
+        "workspace_id": workspace_id,
+        "caller": caller,
+        "iat": now,
+        "nbf": now,
+        "exp": expires_at,
+        "jti": uuid.uuid4().hex,
+    }
+    for name, value in (("sandbox_id", sandbox_id), ("computer_id", computer_id)):
+        claim = identity_claim(value)
+        if claim is not None:
+            payload[name] = claim
+    token = jwt.encode(payload, secret, algorithm=ALGORITHM)
     return MintedJwt(token=token, expires_at=expires_at)
 
 
@@ -119,8 +154,17 @@ def validate_relay_jwt(secret: str, token: str) -> RelayClaims:
         )
     except jwt.PyJWTError as exc:
         raise RelayJwtError("invalid relay token") from exc
-    for claim in ("sub", "workspace_id", "sandbox_id", "jti"):
+    for claim in ("sub", "workspace_id", "jti"):
         if not isinstance(payload.get(claim), str) or not payload[claim]:
+            raise RelayJwtError("invalid relay token")
+    identities: dict[str, str | None] = {}
+    for claim in _IDENTITY_CLAIMS:
+        value = payload.get(claim)
+        if value is None:
+            identities[claim] = None
+        elif isinstance(value, str) and value:
+            identities[claim] = value
+        else:
             raise RelayJwtError("invalid relay token")
     caller = payload.get("caller", CALLER_SANDBOX)
     if caller not in _CALLERS:
@@ -128,10 +172,11 @@ def validate_relay_jwt(secret: str, token: str) -> RelayClaims:
     return RelayClaims(
         user_id=payload["sub"],
         workspace_id=payload["workspace_id"],
-        sandbox_id=payload["sandbox_id"],
+        sandbox_id=identities["sandbox_id"],
         jti=payload["jti"],
         expires_at=int(payload["exp"]),
         caller=caller,
+        computer_id=identities["computer_id"],
     )
 
 

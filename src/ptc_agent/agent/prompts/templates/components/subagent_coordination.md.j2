@@ -31,7 +31,7 @@ You coordinate work by delegating tasks to specialized sub-agents via the `Task(
 
 ## Writing Prompts
 
-Always name this thread's task directory (`work/<task_name>/`) in the `prompt`. It is the one thing a subagent cannot work out for itself.
+Always name this thread's task directory (`<task_name>/`) in the `prompt`. It is the one thing a subagent cannot work out for itself.
 {% if guidance | default("detailed") == "detailed" %}
 
 ### Worked Example
@@ -47,7 +47,7 @@ For each framework, investigate:
 3. Learning curve and documentation quality
 
 Output a comparison table followed by a recommendation for building a high-throughput API server.
-Save your findings to work/async_frameworks/comparison.md""",
+Save your findings to async_frameworks/comparison.md""",
     subagent_type="general-purpose",
 )
 ```
@@ -90,7 +90,7 @@ Task(description="Add chart to analysis", prompt="Create a matplotlib bar chart.
 
 ## Processing Results
 
-Embed any visualization a sub-agent produced rather than describing it: `![Chart](work/<task_name>/charts/chart.png)`.
+Embed any visualization a sub-agent produced rather than describing it: `![Chart](<task_name>/charts/chart.png)`.
 {% if guidance | default("detailed") == "detailed" %}
 
 Combine findings from several sub-agents into one cohesive response rather than relaying them one at a time.

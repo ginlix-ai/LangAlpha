@@ -4,6 +4,11 @@ Memory, memo, workflows and the user's own data all reach the agent as files
 under the sandbox root, each served by a store route rather than the sandbox.
 Which of them exist is a single question about identity, so the gates that
 answer it live here with the mounting they gate.
+
+The user tier hangs off the computer root; workspace memory hangs off the
+turn's own folder, so two workspaces sharing a computer do not share a
+memory file. Nothing here touches disk: moving a mount moves a prefix, and
+the namespace behind it -- which is what holds the bytes -- never changes.
 """
 
 from __future__ import annotations
@@ -34,9 +39,10 @@ from ptc_agent.core.paths import (
     MEMO_USER_DIR,
     MEMORY_INDEX_FILENAME,
     MEMORY_USER_DIR,
-    MEMORY_WORKSPACE_DIR,
     USER_PROFILE_DATA_DIR,
     WORKFLOW_DIR,
+    SandboxLayout,
+    WorkspaceLayout,
 )
 
 
@@ -98,6 +104,7 @@ def build_filesystem_backend(
     store: Any | None,
     user_id: str | None,
     workspace_id: str | None,
+    layout: WorkspaceLayout | None = None,
 ) -> tuple[Any, BaselineSources | None]:
     """Mount the store-backed routes over the sandbox filesystem.
 
@@ -105,6 +112,9 @@ def build_filesystem_backend(
     sources the runtime-context baseline reads at the turn boundary (the
     memory namespaces and the memo catalog), one value because they are all
     derived from the same gate resolution and namespace closures.
+
+    ``layout`` is the turn's workspace folder, which the workspace memory
+    mount hangs off. Omitted, the workspace owns the computer root.
     """
     if not (gates.memory or gates.memo or gates.user_data or gates.workflow):
         return backend, None
@@ -119,7 +129,9 @@ def build_filesystem_backend(
         if (gates.memory or gates.memo or gates.workflow_fs)
         else None
     )
-    sandbox_root = backend.root_dir.rstrip("/")
+    sandbox_root = backend.computer_root.rstrip("/")
+    layout = layout or SandboxLayout(sandbox_root).for_workspace(None)
+    workspace_memory_dir = WorkspaceLayout.MEMORY_DIR
 
     # INVARIANT: these closures capture identity at agent-creation time
     # (``user_id`` is bound once per call). Safe only because one PTCAgent
@@ -158,7 +170,7 @@ def build_filesystem_backend(
             StoreBackend(
                 store=store,
                 namespace_factory=_workspace_namespace,
-                root_prefix=f"{sandbox_root}/{MEMORY_WORKSPACE_DIR}/",
+                root_prefix=f"{layout.memory}/",
                 sandbox_backend=backend,
                 cache=store_cache,
             )
@@ -237,7 +249,7 @@ def build_filesystem_backend(
             ),
             "workspace": (
                 workspace_namespace_factory,
-                f"{MEMORY_WORKSPACE_DIR}/{MEMORY_INDEX_FILENAME}",
+                f"{workspace_memory_dir}/{MEMORY_INDEX_FILENAME}",
             ),
         }
         if gates.memory

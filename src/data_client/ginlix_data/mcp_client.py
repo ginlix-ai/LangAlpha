@@ -98,6 +98,9 @@ def filter_bars_by_time(
 # reader never has to guess. $HOME is NOT reliable here: Daytona sandboxes run as
 # root ($HOME=/root) while the working dir is /home/workspace, so keying off $HOME
 # read from the wrong place and the client always reported "not configured".
+# The fallback mirrors SandboxLayout.default().mcp_tokens. It is spelled out
+# because this module ships into the sandbox, where the host package is not
+# importable; a unit test holds it equal to the layout object.
 TOKEN_FILE = Path(
     os.environ.get("GINLIX_TOKEN_FILE", "/home/workspace/_internal/.mcp_tokens.json")
 )

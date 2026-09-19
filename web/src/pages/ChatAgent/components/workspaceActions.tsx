@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { Pin, Pencil, Cpu, Copy, Trash2, Infinity as InfinityIcon } from 'lucide-react';
 import { DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 import { toast } from '@/components/ui/use-toast';
@@ -13,19 +13,20 @@ import {
   setWorkspaceSpec,
   setWorkspaceAlwaysOn,
   duplicateWorkspace,
-  getWorkspaceQuota,
   formatApiErrorDetail,
   apiErrorDetailMessage,
   apiErrorStatus,
 } from '../utils/api';
 import { useWorkspaceMutation } from '../hooks/useWorkspaceMutation';
+import { useTierQuota } from '../hooks/useTierQuota';
 import { forgetStableNavOrder } from '../hooks/useNavigationData';
 import { forgetSharedWorkspaceThreads } from '@/lib/navThreadsStore';
 import { removeStoredThreadId } from '../hooks/useChatMessages';
 import { clearAllMarketThreadsForWorkspace } from '../../MarketView/utils/threadPersistence';
 import { forgetNavPanelExpansion } from './navExpansionStore';
 import { scrollMemory } from '@/lib/scrollMemory';
-import ChangeSpecDialog, { tierLabel } from './ChangeSpecDialog';
+import ChangeSpecDialog from './ChangeSpecDialog';
+import { tierLabel } from './tierUi';
 import DeleteConfirmModal from './DeleteConfirmModal';
 import DuplicateWorkspaceDialog from './DuplicateWorkspaceDialog';
 import AlwaysOnConfirmDialog from './AlwaysOnConfirmDialog';
@@ -197,14 +198,8 @@ export function useWorkspaceActions({
     mapError: (err) => entitlementErrorMessage(err, t),
   });
 
-  // Per-tier count quotas for the change-spec dialog's "N left" hint.
-  // Platform mode only, fetched lazily when the dialog opens; null in OSS mode.
-  const { data: workspaceQuota } = useQuery({
-    queryKey: queryKeys.workspaces.quota(),
-    queryFn: getWorkspaceQuota,
-    enabled: isPlatformMode && !!upgradeTarget,
-    staleTime: 60_000,
-  });
+  // The "N left" hint beside each tier in the change-spec dialog.
+  const { data: workspaceQuota } = useTierQuota({ enabled: !!upgradeTarget });
 
   const handleUpgradeSubmit = async (tier: ResourceTier) => {
     if (!upgradeTarget) return;

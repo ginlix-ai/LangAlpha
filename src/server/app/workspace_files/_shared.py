@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import unquote
 
 from charset_normalizer import from_bytes
 from fastapi import HTTPException
@@ -12,17 +13,24 @@ from fastapi import HTTPException
 
 from ptc_agent.core.paths import (
     AGENT_SYSTEM_DIRS,
+    SANDBOX_ROOTS,
     ALWAYS_HIDDEN_BASENAMES as _SHARED_BASENAMES,
     ALWAYS_HIDDEN_DIR_NAMES,
     ALWAYS_HIDDEN_PATH_SEGMENTS,
     ALWAYS_HIDDEN_SUFFIXES,
     HIDDEN_DIR_NAMES,
     USER_PROFILE_DATA_DIR,
+    SandboxLayout,
+    WorkspaceLayout,
     USER_PROFILE_PORTFOLIO_FILE,
     USER_PROFILE_PREFERENCE_FILE,
     USER_PROFILE_WATCHLIST_FILE,
 )
 from src.server.services.workspace_manager import WorkspaceManager
+from src.server.services.workspace_layout import (
+    WorkspaceLayoutUnavailable,
+    layout_from_binding,
+)
 from src.server.services.persistence.resolve import (
     FileBytesUnavailable,
     resolve_file_bytes,
@@ -252,12 +260,19 @@ async def _acquire_sandbox(workspace_id: str, user_id: str) -> Any:
     return sandbox
 
 
-def _to_client_path(sandbox: Any, absolute_path: str) -> str:
+def _to_client_path(
+    sandbox: Any, absolute_path: str, work_dir: str | None = None
+) -> str:
     """Convert an absolute sandbox path into a virtual client path.
 
     The CLI and web UX prefer paths like "work/task/foo.txt" (no leading slash),
-    while still preserving true absolute /tmp paths.
+    while still preserving true absolute /tmp paths. *work_dir* is the workspace
+    folder the route serves: a client path is relative to that folder, not to
+    the computer root the sandbox handle folds against.
     """
+
+    if work_dir and absolute_path.startswith(f"{work_dir.rstrip('/')}/"):
+        return absolute_path[len(work_dir.rstrip("/")) + 1:]
 
     virtual_path = sandbox.virtualize_path(absolute_path)
 
@@ -281,7 +296,7 @@ def _is_system_path(client_path: str) -> bool:
 
 
 def _is_hidden_path(client_path: str) -> bool:
-    if client_path == "_internal":
+    if client_path == SandboxLayout.INTERNAL_DIR:
         return True
     return any(client_path.startswith(prefix) for prefix in _HIDDEN_DIR_PREFIXES)
 
@@ -320,28 +335,124 @@ def _is_serve_blocked_path(client_path: str) -> bool:
     )
 
 
-def _get_work_dir() -> str:
-    """Return the configured working directory from WorkspaceManager config."""
-    manager = WorkspaceManager.get_instance()
-    return manager.config.to_core_config().filesystem.working_directory
+def layout_for(workspace: dict[str, Any], *, manager: Any = None) -> WorkspaceLayout:
+    """The folder this project owns on its computer: every route's serve root.
+
+    Several projects share one computer root, so the root on its own is no
+    longer a serve root for any of them. Takes the row the caller already read
+    and raises ``WorkspaceLayoutUnavailable`` when it cannot name a folder,
+    because widening to the computer would serve a sibling's files.
+    """
+    manager = manager or WorkspaceManager.get_instance()
+    root = manager.config.to_core_config().filesystem.working_directory
+    workspace_id = str((workspace or {}).get("workspace_id") or "")
+    return layout_from_binding(workspace_id, workspace, root=root)
+
+
+def work_dir_for(workspace: dict[str, Any], *, manager: Any = None) -> str:
+    """The serve root as a path, for the routes that only need the string."""
+    return layout_for(workspace, manager=manager).workspace
+
+
+def owner_layout(workspace: dict[str, Any], *, manager: Any = None) -> WorkspaceLayout:
+    """``layout_for`` as an HTTP answer, for a route that authenticated its owner.
+
+    503 rather than 404: the placement is a fact the row is expected to carry,
+    so its absence is a workspace that is not ready rather than a workspace
+    that has no files. The owner gets the failure instead of a listing, since
+    the only wider answer available is their neighbours' files.
+    """
+    try:
+        return layout_for(workspace, manager=manager)
+    except WorkspaceLayoutUnavailable as e:
+        logger.warning(
+            f"Refusing file access to workspace "
+            f"{(workspace or {}).get('workspace_id')}: {single_line(str(e))}"
+        )
+        raise HTTPException(
+            status_code=503, detail="Workspace files are not available yet"
+        ) from None
+
+
+def owner_work_dir(workspace: dict[str, Any], *, manager: Any = None) -> str:
+    return owner_layout(workspace, manager=manager).workspace
+
+
+_FILE_URL_SCHEME = "file://"
+
+
+def _file_url_path(raw: str) -> str:
+    """The local path a ``file:`` URL names, percent-decoded.
+
+    Transcript links carry this spelling. The scheme says the rest is an
+    absolute path however many slashes followed it, so an authority-shaped
+    remainder (``file://home/...``) folds to the same path as
+    ``file:///home/...``. Decoding happens before the escape checks, so an
+    encoded ``..`` is refused rather than smuggled through as a literal segment.
+    """
+    if raw[: len(_FILE_URL_SCHEME)].lower() != _FILE_URL_SCHEME:
+        return raw
+    rest = unquote(raw[len(_FILE_URL_SCHEME) :])
+    if rest.lower().startswith("localhost/"):
+        rest = rest[len("localhost") :]
+    return rest if rest.startswith("/") else f"/{rest}"
+
+
+def _fold_relative(path: str) -> str:
+    """Drop the ``./`` and trailing-slash noise a relative spelling carries."""
+    out = path
+    while out.startswith("./"):
+        out = out[2:]
+    out = out.rstrip("/")
+    return "" if out == "." else out
+
+
+def _known_roots(work_dir: str) -> tuple[str, ...]:
+    """Absolute prefixes a requested path may carry, most specific first.
+
+    The workspace folder sorts ahead of the computer root it sits on because it
+    is the longer string, and that ordering is what decides the one ambiguous
+    spelling: ``<work_dir>/<dir_name>/x`` reads as this folder's own
+    subdirectory rather than as a root-level folder named after the workspace.
+    """
+    roots = {work_dir.rstrip("/"), *(root.rstrip("/") for root in SANDBOX_ROOTS)}
+    return tuple(sorted((r for r in roots if r), key=lambda r: (-len(r), r)))
+
+
+def workspace_relative_path(path: str, work_dir: str) -> str:
+    """Every spelling of a requested path folded to one ``work_dir``-relative form.
+
+    A path arrives relative to the workspace, under the workspace folder, under
+    a computer root that folder sits on (the layout before the split spelled
+    every path that way, and transcripts still hold those), or as a ``file:``
+    URL of any of the three. The sweep that split the root physically moved
+    those entries into the folder, so the root spelling names the same file the
+    folder spelling does.
+
+    A leading slash survives a path no root claimed: whether that names a
+    workspace file or nothing at all is the caller's policy, not this fold's.
+    """
+    raw = _file_url_path((path or "").strip()).replace("\\", "/")
+    for root in _known_roots(work_dir):
+        if raw == root:
+            return ""
+        if raw.startswith(f"{root}/"):
+            return _fold_relative(raw[len(root) + 1 :])
+    return raw if raw.startswith("/") else _fold_relative(raw)
 
 
 def _normalize_requested_path(path: str, work_dir: str) -> str:
-    """Normalize a requested path for comparison."""
-    raw = (path or "").strip()
-    if raw in {"", ".", "./"}:
-        return ""
+    """The folded path, reading a slash no root claimed as the workspace root.
 
-    normalized = raw
-    work_dir_prefix = work_dir.rstrip("/") + "/"
-    if normalized.startswith(work_dir_prefix):
-        normalized = normalized[len(work_dir_prefix):]
-    if normalized.startswith("/"):
-        normalized = normalized[1:]
-    if normalized.startswith("./"):
-        normalized = normalized[2:]
-
-    return normalized
+    That is the client's virtual-absolute spelling, so one leading slash comes
+    off and only one: ``//etc/passwd`` stays absolute and the containment check
+    that follows refuses it. ``clean_path`` refuses the same spelling outright,
+    because its callers glob what it returns.
+    """
+    relative = workspace_relative_path(path, work_dir)
+    if relative.startswith("/"):
+        return _fold_relative(relative[1:])
+    return relative
 
 
 def _requested_hidden_ok(path: str, work_dir: str) -> bool:
@@ -349,7 +460,8 @@ def _requested_hidden_ok(path: str, work_dir: str) -> bool:
     normalized = _normalize_requested_path(path, work_dir)
     if not normalized:
         return False
-    return normalized == "_internal" or normalized.startswith("_internal/")
+    internal = SandboxLayout.INTERNAL_DIR
+    return normalized == internal or normalized.startswith(f"{internal}/")
 
 
 def _requested_system_ok(path: str, work_dir: str) -> bool:

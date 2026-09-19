@@ -9,6 +9,7 @@
 export { apiErrorDetailMessage, formatApiErrorDetail, apiErrorStatus } from './api/errors';
 export { parseRunIdFromContentLocation, parseThreadIdFromContentLocation } from './api/transport';
 export * from './api/workspaces';
+export * from './api/computers';
 export * from './api/threads';
 export * from './api/messages';
 export * from './api/files';

@@ -26,7 +26,11 @@ async def sync_grants_until_current(
     workspace_id: str,
     refs: Callable[[Any], Awaitable[Sequence[GrantRef]]],
 ) -> bool:
-    """Retire this workspace's out-of-scope grants, re-resolving if superseded.
+    """Retire this project's out-of-scope grants, re-resolving if superseded.
+
+    Out of scope means no live project on the machine resolves it any more:
+    the grant set belongs to the computer, and the DB layer spares what a
+    sibling still holds.
 
     ``sync_egress_grants`` touches no row and returns None when the config
     version moved under it, on the reading that a newer sync owns the set. That

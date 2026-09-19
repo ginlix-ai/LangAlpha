@@ -31,7 +31,7 @@ from langchain.agents.middleware import AgentMiddleware, AgentState
 from typing_extensions import NotRequired
 from langgraph.config import get_stream_writer
 
-from ptc_agent.core.paths import workspace_relative_path
+from ptc_agent.core.paths import DEFAULT_SANDBOX_ROOT, workspace_relative_path
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class FileOperationMiddleware(AgentMiddleware):
     def __init__(
         self,
         on_agent_md_write: Callable[[dict[str, Any] | None], None] | None = None,
-        work_dir: str = "/home/workspace",
+        work_dir: str = DEFAULT_SANDBOX_ROOT,
         thread_id: str | None = None,
     ) -> None:
         super().__init__()
@@ -107,8 +107,13 @@ class FileOperationMiddleware(AgentMiddleware):
         Intercept tool calls and emit file operation events after execution.
 
         Emits a single event per operation with full content for frontend display.
-        Event field order: agent, operation, file_path, tool_call_id, timestamp,
-        status, line_count, content/old_string/new_string.
+        Event field order: agent, operation, file_path, sandbox_path, tool_call_id,
+        timestamp, status, line_count, content/old_string/new_string.
+
+        ``file_path`` is the workspace-relative spelling and ``sandbox_path`` the
+        one the tool was called with: the browser routes on the relative form
+        (a folder's absolute path matches none of its memory or memo prefixes)
+        and keeps the absolute one for opening the file where it sits.
 
         Args:
             request: Tool call request with tool_call dict containing name, args, id
@@ -164,7 +169,8 @@ class FileOperationMiddleware(AgentMiddleware):
             # Build payload with operation-specific content
             payload: dict[str, Any] = {
                 "operation": tool_name,
-                "file_path": file_path,
+                "file_path": normalized,
+                "sandbox_path": file_path,
             }
 
             if tool_name == "Write":
@@ -213,7 +219,8 @@ class FileOperationMiddleware(AgentMiddleware):
                 "status": "failed",
                 "payload": {
                     "operation": tool_name,
-                    "file_path": file_path,
+                    "file_path": normalized,
+                    "sandbox_path": file_path,
                     "error": str(e),
                 },
             }

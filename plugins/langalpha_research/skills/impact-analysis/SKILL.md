@@ -121,7 +121,7 @@ Five mechanisms defeat impact claims often enough to test by name:
 
 Sections in order: the answer in the first two sentences; the event, its effective date and the freeze-time as-of; posture and depth in one sentence; the transmission map; orders of effect; the exposure table; priced-in against needs-proof; the counterargument; monitoring; missing evidence.
 
-**Format.** A short ask is answered inline at `first pass` depth. A document is built through `.agents/skills/docx/SKILL.md` when the user wants one or when the work runs to `working analysis` or deeper. Save to `$WORK_DIR/work/{task}/`.
+**Format.** A short ask is answered inline at `first pass` depth. A document is built through `.agents/skills/docx/SKILL.md` when the user wants one or when the work runs to `working analysis` or deeper. Save to `{task}/`.
 
 **Posture.** One readiness posture, near the top, from the table in `.agents/skills/research-conventions/SKILL.md`. Below `decision-grade` it names the input responsible, which for this skill is usually the disclosure that would size a magnitude or the effective date the rule text has not fixed yet.
 

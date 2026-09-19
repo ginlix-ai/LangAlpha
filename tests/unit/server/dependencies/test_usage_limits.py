@@ -574,14 +574,14 @@ class TestCreditGateFailsClosed:
         assert mock_client.post.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_workspace_gate_still_fails_open(self):
+    async def test_computer_gate_still_fails_open(self):
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
 
         with _unreachable_service(mock_client):
-            from src.server.dependencies.usage_limits import enforce_workspace_limit
+            from src.server.dependencies.usage_limits import enforce_computer_limit
 
-            assert await enforce_workspace_limit("user-1") == "user-1"
+            assert await enforce_computer_limit("user-1") == "user-1"
 
         assert mock_client.post.await_count == 1
 
@@ -842,6 +842,61 @@ class TestGetCapacityStatus:
             from src.server.dependencies.usage_limits import get_capacity_status
 
             assert await get_capacity_status("user-1", "always_on") is None
+
+
+# ===================================================================
+# _extract_capacity: the alias set the platform rename is gated on
+# ===================================================================
+
+
+class TestExtractCapacityAliases:
+    """The alias set is what lets langalpha and the platform deploy in either
+    order while the capacity subject moves from the workspace to the machine.
+
+    This build must read the workspace names it gets today AND the computer
+    names the platform will send after its rename, or one side of that pair of
+    deploys reads nothing and every capacity gate silently goes dormant.
+    """
+
+    def _extract(self):
+        from src.server.dependencies.usage_limits import _extract_capacity
+
+        return _extract_capacity
+
+    def test_computer_names_are_read(self):
+        assert self._extract()(
+            {"active_computers": 2, "computer_limit": 5}
+        ) == (2, 5)
+
+    def test_workspace_names_are_still_read(self):
+        assert self._extract()(
+            {"active_workspaces": 1, "workspace_limit": 3}
+        ) == (1, 3)
+
+    def test_computer_names_win_when_both_are_sent(self):
+        """During the platform's own transition it may answer with both. They
+        carry the same values, so this only pins which one is authoritative."""
+        assert self._extract()(
+            {
+                "active_computers": 2,
+                "computer_limit": 5,
+                "active_workspaces": 2,
+                "workspace_limit": 5,
+            }
+        ) == (2, 5)
+
+    def test_capacity_names_still_outrank_every_alias(self):
+        assert self._extract()(
+            {
+                "capacity_used": 7,
+                "capacity_limit": 9,
+                "active_computers": 2,
+                "computer_limit": 5,
+            }
+        ) == (7, 9)
+
+    def test_absent_counts_stay_none(self):
+        assert self._extract()({"allowed": True}) == (None, None)
 
 
 # ===================================================================

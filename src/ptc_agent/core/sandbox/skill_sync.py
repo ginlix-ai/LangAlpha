@@ -5,7 +5,13 @@ drives these; every ledger mutation happens here, flock-serialized inside the
 sandbox, so concurrent script runs (two workers, or a reconcile racing a
 manual refresh) can never interleave a read-modify-write of the lock file.
 
-Three operations:
+Every operation is aimed at one tier by its ``base``: the computer's shared
+directory (:func:`skills_base`, platform and user-tier skills) or a
+workspace's own (``WorkspaceLayout.skills``). Each tier keeps its own ledger
+and its own flock, so two workspaces reconciling at once never share a lock
+file.
+
+Four operations:
 
 - :func:`report` — one exec: scan every skill dir and ledger entry, compute
   content tree hashes (with a git-index-style stat cache so unchanged trees
@@ -18,6 +24,8 @@ Three operations:
   lands as an atomic rename swap of a pre-staged dir.
 - :func:`download_tree` — bounded, no-follow, regular-files-only zip of one
   skill dir for pull-up validation on the server.
+- :func:`link_shared_skills` (one exec): point a workspace tier at the shared
+  skills it should see, and prune the links it should not.
 
 The tree hash is defined over exactly the validator/upload projection
 (``__pycache__`` dirs and ``LICENSE.txt`` excluded) so ignored files can
@@ -28,15 +36,18 @@ from __future__ import annotations
 
 import base64
 import json
+import posixpath
 import secrets
 import shlex
 import textwrap
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from ptc_agent.agent.middleware.skills.lock import LOCK_FILE_VERSION
 
+from ..paths import SandboxLayout
 from .retry import RetryPolicy
 
 if TYPE_CHECKING:
@@ -64,7 +75,17 @@ class SkillSyncError(Exception):
 
 
 def skills_base(sandbox: "PTCSandbox") -> str:
-    return f"{sandbox._work_dir}/.agents/skills"
+    """The computer's shared skill directory: platform and user-tier skills."""
+    return SandboxLayout(sandbox._work_dir).skills
+
+
+def shared_link_target(base: str, user_base: str) -> str:
+    """The relative target a workspace-tier link uses for a shared skill dir.
+
+    Relative rather than absolute so the link survives a computer whose root
+    moves, and so the tree it points into reads the same from either tier.
+    """
+    return posixpath.relpath(user_base.rstrip("/"), base.rstrip("/"))
 
 
 # The script source is a plain string (no f-string) — arguments travel as a
@@ -476,6 +497,69 @@ def run_download():
     print(json.dumps({"status": "ok", "path": out, "bytes": os.path.getsize(out), "treeHash": tree_hash}))
 
 
+def linkable_dirs(path):
+    """Top-level real skill dirs holding a SKILL.md, links excluded."""
+    out = set()
+    for name in (os.listdir(path) if os.path.isdir(path) else []):
+        if name.startswith("."):
+            continue
+        p = os.path.join(path, name)
+        if os.path.isdir(p) and not os.path.islink(p) and os.path.isfile(os.path.join(p, "SKILL.md")):
+            out.add(name)
+    return out
+
+
+def run_link():
+    """Reconcile this tier's links into the computer's shared skill dir.
+
+    The shared dir is read without its own flock: ordering two locks to keep
+    a link from outliving a skill by one pass is not worth the deadlock, and
+    the next pass prunes it.
+    """
+    user_base = ARGS["userBase"]
+    prefix = ARGS["targetPrefix"]
+    disabled = set(ARGS.get("disabled") or [])
+    fh = acquire_flock()
+    # A real dir here is the workspace's own skill, which outranks anything
+    # it shares a name with in the shared tier.
+    owned = set()
+    for name in (os.listdir(BASE) if os.path.isdir(BASE) else []):
+        if name.startswith("."):
+            continue
+        p = os.path.join(BASE, name)
+        if os.path.isdir(p) and not os.path.islink(p):
+            owned.add(name)
+    want = linkable_dirs(user_base) - owned - disabled
+    linked, relinked, pruned, blocked = [], [], [], []
+    for name in sorted(want):
+        link = os.path.join(BASE, name)
+        target = prefix + "/" + name
+        if os.path.islink(link):
+            if os.readlink(link) == target:
+                continue
+            os.unlink(link)
+            relinked.append(name)
+        elif os.path.lexists(link):
+            blocked.append(name)
+            continue
+        else:
+            linked.append(name)
+        os.symlink(target, link)
+    for name in (os.listdir(BASE) if os.path.isdir(BASE) else []):
+        link = os.path.join(BASE, name)
+        if os.path.islink(link) and name not in want:
+            os.unlink(link)
+            pruned.append(name)
+    fcntl.flock(fh, fcntl.LOCK_UN)
+    print(json.dumps({
+        "status": "ok",
+        "linked": linked,
+        "relinked": relinked,
+        "pruned": sorted(pruned),
+        "blocked": blocked,
+    }))
+
+
 def run_merge_authoritative():
     """merge_lock_files, but against a fresh read under the flock.
 
@@ -516,6 +600,8 @@ elif MODE == "download":
     run_download()
 elif MODE == "merge_authoritative":
     run_merge_authoritative()
+elif MODE == "link":
+    run_link()
 else:
     fail("unknown mode")
 ''')
@@ -555,33 +641,46 @@ async def _run(
     return payload
 
 
-async def report(sandbox: "PTCSandbox") -> dict[str, Any]:
-    """Scan the sandbox: ``{name: {present, wellFormed, syncable, treeHash,
-    frontmatter, entry, ...}}`` for the union of skill dirs and ledger names."""
+async def report(
+    sandbox: "PTCSandbox", *, base: str | None = None
+) -> dict[str, Any]:
+    """Scan one tier: ``{name: {present, wellFormed, syncable, treeHash,
+    frontmatter, entry, ...}}`` for the union of skill dirs and ledger names.
+
+    Links are not skill dirs here, so a workspace tier reports only the skills
+    it owns and never the shared ones it points at.
+    """
     payload = await _run(
         sandbox,
-        {"mode": "report", "base": skills_base(sandbox)},
+        {"mode": "report", "base": base or skills_base(sandbox)},
         retry_policy=RetryPolicy.SAFE,
     )
     return payload["skills"]
 
 
 async def apply_actions(
-    sandbox: "PTCSandbox", actions: list[dict[str, Any]]
+    sandbox: "PTCSandbox",
+    actions: list[dict[str, Any]],
+    *,
+    base: str | None = None,
 ) -> list[dict[str, Any]]:
     """Execute the write phase; returns per-action results (``ok``/``drift``)."""
     if not actions:
         return []
     payload = await _run(
         sandbox,
-        {"mode": "apply", "base": skills_base(sandbox), "actions": actions},
+        {
+            "mode": "apply",
+            "base": base or skills_base(sandbox),
+            "actions": actions,
+        },
         retry_policy=RetryPolicy.UNSAFE,
     )
     return payload["results"]
 
 
 async def merge_authoritative_entries(
-    sandbox: "PTCSandbox", entries: dict[str, Any]
+    sandbox: "PTCSandbox", entries: dict[str, Any], *, base: str | None = None
 ) -> tuple[dict[str, Any], list[str]]:
     """Fold the asset-sync path's authoritative entries into the live lock,
     flock-serialized against the reconciler. Returns ``(merged_lock_file,
@@ -592,11 +691,56 @@ async def merge_authoritative_entries(
     """
     payload = await _run(
         sandbox,
-        {"mode": "merge_authoritative", "base": skills_base(sandbox), "entries": entries},
+        {
+            "mode": "merge_authoritative",
+            "base": base or skills_base(sandbox),
+            "entries": entries,
+        },
         retry_policy=RetryPolicy.SAFE,
     )
     merged = {"version": LOCK_FILE_VERSION, "skills": payload["skills"]}
     return merged, payload.get("skipped", [])
+
+
+async def link_shared_skills(
+    sandbox: "PTCSandbox",
+    *,
+    base: str,
+    user_base: str,
+    disabled: Iterable[str] = (),
+) -> dict[str, list[str]]:
+    """Make ``base`` a complete view of the skills this workspace may use.
+
+    Every shared skill the workspace has not disabled or shadowed gets a
+    relative symlink rather than a copy, so the skill corpus's relative
+    ``.agents/skills/<name>/...`` cross-references resolve from a workspace
+    cwd exactly as they do from the computer root. Returns the names
+    ``linked``, ``relinked``, ``pruned``, and ``blocked`` (a non-directory
+    already holds the name).
+
+    A no-op when the two tiers are the same directory, which is what a
+    computer holding a single workspace at its root looks like.
+    """
+    empty: dict[str, list[str]] = {
+        "linked": [],
+        "relinked": [],
+        "pruned": [],
+        "blocked": [],
+    }
+    if base.rstrip("/") == user_base.rstrip("/"):
+        return empty
+    payload = await _run(
+        sandbox,
+        {
+            "mode": "link",
+            "base": base,
+            "userBase": user_base,
+            "targetPrefix": shared_link_target(base, user_base),
+            "disabled": sorted(disabled),
+        },
+        retry_policy=RetryPolicy.SAFE,
+    )
+    return {key: payload.get(key) or [] for key in empty}
 
 
 async def download_tree(
@@ -606,13 +750,14 @@ async def download_tree(
     max_files: int,
     max_file_bytes: int,
     max_total_bytes: int,
+    base: str | None = None,
 ) -> tuple[bytes, str]:
     """Bounded zip of one skill dir → ``(zip_bytes, tree_hash)``.
 
     The hash is computed from the exact bytes zipped, so the caller can stamp
     the ledger against what it validated, not what a racing agent wrote since.
     """
-    base = skills_base(sandbox)
+    base = base or skills_base(sandbox)
     token = secrets.token_hex(8)
     out = f"{base}/.staging/download-{token}.zip"
     payload = await _run(
@@ -644,7 +789,10 @@ async def download_tree(
 
 
 async def stage_skill_files(
-    sandbox: "PTCSandbox", files: list[tuple[str, bytes]]
+    sandbox: "PTCSandbox",
+    files: list[tuple[str, bytes]],
+    *,
+    base: str | None = None,
 ) -> str:
     """Upload a skill's files into a fresh staging dir; returns its path.
 
@@ -653,7 +801,7 @@ async def stage_skill_files(
     atomically — the live dir is never rm -rf'd first.
     """
     assert sandbox.runtime is not None
-    base = skills_base(sandbox)
+    base = base or skills_base(sandbox)
     token = secrets.token_hex(8)
     staged = f"{base}/.staging/push-{token}"
     subdirs = {

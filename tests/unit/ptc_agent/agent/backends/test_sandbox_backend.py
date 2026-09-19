@@ -23,6 +23,7 @@ from deepagents.backends.protocol import (
 )
 
 from ptc_agent.agent.backends.sandbox import SandboxBackend
+from ptc_agent.core.paths import WorkspaceLayout
 from ptc_agent.core.sandbox.runtime import SandboxTransientError
 
 
@@ -36,6 +37,11 @@ def _make_sandbox(working_dir: str = "/home/workspace") -> MagicMock:
     sandbox = MagicMock()
     sandbox.config.filesystem.working_directory = working_dir
     sandbox.config.filesystem.enable_path_validation = True
+    # A pinned backend folds a path itself, against the real allow list and the
+    # live computer root; a MagicMock's stand-ins for those iterate empty and
+    # read as a path object, so an absolute spelling would fold twice.
+    sandbox.config.filesystem.allowed_directories = [working_dir, "/tmp"]
+    sandbox._work_dir = working_dir
     sandbox.sandbox_id = "sbx-abc123"
     sandbox.skills_manifest = {"skills": {}}
     # normalize_path: default pass-through for test simplicity
@@ -474,6 +480,42 @@ class TestPathHelpers:
 
     def test_skills_manifest_returns_raw(self, sandbox, backend):
         assert backend.skills_manifest == {"skills": {}}
+
+    def test_a_write_resolves_against_the_turns_workspace(self, sandbox, backend):
+        """One backend serves a session, so the tier decision cannot be frozen
+        at construction: thread scratch belongs to the project that produced it.
+        """
+        sandbox.normalize_path.side_effect = (
+            lambda p: f"/home/workspace/proj-a/{p}"
+        )
+        assert backend._normalize_path(
+            f"{WorkspaceLayout.THREADS_DIR}/abcd1234/evicted.md"
+        ) == f"/home/workspace/proj-a/{WorkspaceLayout.THREADS_DIR}/abcd1234/evicted.md"
+
+    def test_a_pinned_root_keeps_its_own_base(self, sandbox):
+        pinned = SandboxBackend(sandbox, "/home/workspace/proj-b")
+        sandbox.normalize_path.side_effect = AssertionError
+        assert pinned._normalize_path("out.md") == "/home/workspace/proj-b/out.md"
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "../proj-a/.agents/tools/yf_price.py",
+            "/home/workspace/proj-b/../proj-a/.agents/tools/yf_price.py",
+            "/tmp/../home/workspace/proj-a/.agents/tools/yf_price.py",
+        ],
+    )
+    def test_a_pinned_root_collapses_traversal_like_the_sandbox_does(
+        self, sandbox, spelling
+    ):
+        """The pin is a base, not a fence: only the collapse lets the
+        validator recognise the directory a `..` names."""
+        pinned = SandboxBackend(sandbox, "/home/workspace/proj-b")
+        sandbox.normalize_path.side_effect = AssertionError
+        assert (
+            pinned._normalize_path(spelling)
+            == "/home/workspace/proj-a/.agents/tools/yf_price.py"
+        )
 
 
 class TestRichFileOps:

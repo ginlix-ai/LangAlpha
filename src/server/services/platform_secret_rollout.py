@@ -229,23 +229,34 @@ async def list_workspaces_behind_platform_secret(
     *,
     limit: int = 25,
 ) -> list[dict[str, Any]]:
-    """Running workspaces whose sandbox is behind the fleet generation.
+    """Running machines behind the fleet generation, one row per machine.
 
     Only 'running' rows: a stopped sandbox has no live processes to scrub and
     converges through normal bringup plus a later sweep pass once running.
+
+    One row per computer, because what converges is the one sandbox the machine
+    owns: a per-workspace row shape makes the sweep scrub a five-project machine
+    five times and lets that one machine consume the whole batch. The
+    representative ``workspace_id`` is the oldest live project on it, carried for
+    the busy gate and the logs. A LEFT JOIN so a machine with no project left is
+    still converged, since its sandbox is running either way.
     """
 
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                SELECT workspace_id, sandbox_id, platform_secret_version,
-                       is_always_on
-                FROM workspaces
-                WHERE status = 'running'
-                  AND sandbox_id IS NOT NULL
-                  AND COALESCE(platform_secret_version, 0) != %s
-                ORDER BY updated_at ASC
+                SELECT DISTINCT ON (c.computer_id)
+                       c.computer_id, w.workspace_id,
+                       c.provider_ref AS sandbox_id,
+                       c.platform_secret_version, c.is_always_on
+                FROM computers c
+                LEFT JOIN workspaces w
+                  ON w.computer_id = c.computer_id AND w.status <> 'deleted'
+                WHERE c.status = 'running'
+                  AND c.provider_ref IS NOT NULL
+                  AND COALESCE(c.platform_secret_version, 0) != %s
+                ORDER BY c.computer_id, w.created_at ASC
                 LIMIT %s
                 """,
                 (rollout_set.generation, limit),
@@ -268,40 +279,40 @@ async def certify_platform_secrets(config: Any, *, runtime: Any) -> int:
     return rollout_set.generation
 
 
-async def stamp_workspace_platform_secret_version(
-    workspace_id: str,
+async def stamp_platform_secret_version(
     *,
+    computer_id: str,
     expected_sandbox_id: str | None,
     rollout_set: PlatformSecretRolloutSet,
 ) -> None:
-    """CAS the exact sandbox (or lack of one) to the current fleet generation."""
+    """CAS the exact sandbox (or lack of one) to the current fleet generation.
 
-    async with get_db_connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                UPDATE workspaces
-                SET platform_secret_version = %s,
-                    updated_at = NOW()
-                WHERE workspace_id = %s
-                  AND status != 'deleted'
-                  AND sandbox_id IS NOT DISTINCT FROM %s
-                """,
-                (
-                    rollout_set.generation,
-                    workspace_id,
-                    expected_sandbox_id,
-                ),
-            )
-            if cur.rowcount != 1:
-                raise RuntimeError("Workspace changed before platform Secret stamp")
+    One statement stamps the computer and its workspace shadows together, so no
+    reader can see a machine certified on one row and behind on the other. The
+    raise stays: the caller has just scrubbed a live sandbox, and a stamp that
+    did not land means the row moved under it, which makes the convergence it
+    just performed unattributable.
+    """
+    from src.server.database.computer import (
+        stamp_computer_platform_secret_version,
+    )
+
+    stamped = await stamp_computer_platform_secret_version(
+        rollout_set.generation,
+        computer_id=computer_id,
+        expected_provider_ref=expected_sandbox_id,
+    )
+    if stamped != 1:
+        raise RuntimeError(
+            "Computer changed before its platform secret generation was stamped"
+        )
 
 
-async def resync_workspace_platform_secret(
+async def resync_computer_platform_secret(
     config: Any,
     runtime: Any,
     *,
-    workspace_id: str,
+    computer_id: str,
     sandbox_id: str | None,
     db_version: int,
     applied_generation: int | None,
@@ -311,10 +322,10 @@ async def resync_workspace_platform_secret(
     The request-path half of convergence, run on every session (re)init and
     warm slow-path acquisition. ``applied_generation`` is the session's stamp
     of the generation already applied (short-circuits the common case with
-    zero provider calls); ``db_version`` is the workspace row's certified
-    generation, piggybacked off an existing read. Returns the generation now
-    applied — for the caller to stamp on the session — or None when managed
-    secrets are inactive or the workspace has no sandbox.
+    zero provider calls); ``db_version`` is the machine's certified generation,
+    piggybacked off an existing read. Returns the generation now applied, for
+    the caller to stamp on the session, or None when managed secrets are
+    inactive or the machine has no sandbox.
 
     Only a certified-but-behind sandbox (``0 < db_version < generation``,
     placeholders throughout) is verified and stamped here. A never-certified
@@ -352,27 +363,27 @@ async def resync_workspace_platform_secret(
         logger.warning(
             "Platform-secret hot resync failed",
             extra={
-                "workspace_id": workspace_id,
+                "computer_id": computer_id,
                 "sandbox_id": sandbox_id,
                 "error_type": type(exc).__name__,
             },
         )
         raise PlatformSecretReadinessError(
-            f"Platform-secret resync failed for workspace {workspace_id}"
+            f"Platform-secret resync failed for computer {computer_id}"
         ) from exc
 
     if db_version > 0:
-        # A stamp CAS conflict means the workspace row moved under us — the
-        # failure propagates and the next acquisition retries.
-        await stamp_workspace_platform_secret_version(
-            workspace_id,
+        # A stamp CAS conflict means the machine moved under us; the failure
+        # propagates and the next acquisition retries.
+        await stamp_platform_secret_version(
+            computer_id=computer_id,
             expected_sandbox_id=sandbox_id,
             rollout_set=rollout_set,
         )
     logger.info(
         "Platform secret hot-resynced",
         extra={
-            "workspace_id": workspace_id,
+            "computer_id": computer_id,
             "sandbox_id": sandbox_id,
             "generation": generation,
             "certified": db_version > 0,

@@ -103,10 +103,6 @@
   transition: border-color 0.15s;
 }
 
-.cwm-textarea:focus {
-  border-color: var(--color-accent-primary);
-}
-
 /* ---- Description mode toggle ---- */
 .cwm-toggle-group {
   display: flex;
@@ -301,6 +297,9 @@
 }
 
 .cwm-btn-create {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 8px 16px;
   border-radius: 6px;
   font-size: 0.875rem;

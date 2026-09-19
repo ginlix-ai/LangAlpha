@@ -20,11 +20,13 @@ from ptc_agent.agent.prompts import (
     get_loader,
     guidance_template_vars,
     resolve_prompt_guidance,
+    workspace_path_vars,
 )
 from ptc_agent.agent.subagents.definition import SubagentDefinition
 
 if TYPE_CHECKING:
     from ptc_agent.config.agent import AgentConfig
+    from ptc_agent.core.project_context import ProjectContext
 
 logger = structlog.get_logger(__name__)
 
@@ -79,8 +81,12 @@ class SubagentCompiler:
         skill_registry: dict[str, SkillDefinition] | None = None,
         skill_dirs: list[str] | None = None,
         default_model: Any | None = None,
+        project: ProjectContext | None = None,
     ) -> None:
         self._sandbox = sandbox
+        # A subagent runs in the parent turn's workspace folder, so its copy of
+        # the path table has to name the same one.
+        self._project = project
         # The model a definition with no model of its own runs on (the
         # parent's client, which SubAgentMiddleware supplies at run time).
         # Read here only for the shape its turn stamp takes.
@@ -154,10 +160,13 @@ class SubagentCompiler:
             **self._tool_gates(defn),
             **guidance_template_vars(self._guidance(defn)),
         }
-        # Pass working_directory so workspace_paths template can use it
+        # Resolve the turn's own folder so workspace_paths renders it
         if self._sandbox is not None and hasattr(self._sandbox, "config"):
-            template_kwargs["working_directory"] = (
-                self._sandbox.config.filesystem.working_directory
+            template_kwargs.update(
+                workspace_path_vars(
+                    self._sandbox.workspace(self._project),
+                    root=self._sandbox.config.filesystem.working_directory,
+                )
             )
 
         # 2. Standalone custom template — render it directly

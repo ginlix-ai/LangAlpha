@@ -54,6 +54,9 @@ def mock_runtime():
     runtime = AsyncMock(spec=SandboxRuntime)
     runtime.id = "mock-runtime-1"
     runtime.working_dir = "/home/workspace"
+    # A real path, not the spec'd AsyncMock's return: reconnect stores this as
+    # the computer root and everything downstream joins paths onto it.
+    runtime.fetch_working_dir = AsyncMock(return_value="/home/workspace")
     runtime.exec = AsyncMock(return_value=ExecResult("output", "", 0))
     runtime.upload_file = AsyncMock()
     runtime.upload_files = AsyncMock()
@@ -171,10 +174,24 @@ class TestHasActiveTasksForWorkspace:
 
 
 class TestCleanupIdleWorkspacesGuard:
-    """cleanup_idle_workspaces skips workspaces with active workflows."""
+    """cleanup_idle_workspaces skips machines with active workflows.
+
+    The reaper walks computers, so the gate it consults is the machine-wide
+    one: the sandbox belongs to the computer, and one idle project on it is
+    not a reason to take it from a sibling that is mid-turn.
+    """
+
+    @staticmethod
+    def _idle_machine(computer_id: str) -> dict:
+        return {
+            "computer_id": computer_id,
+            "user_id": "user-1",
+            "is_always_on": False,
+            "last_activity_at": datetime.now(timezone.utc) - timedelta(seconds=3600),
+        }
 
     @pytest.mark.asyncio
-    async def test_skips_workspace_with_active_task(self):
+    async def test_skips_machine_with_active_task(self):
         from ptc_agent.config import AgentConfig
 
         config = MagicMock(spec=AgentConfig)
@@ -182,26 +199,19 @@ class TestCleanupIdleWorkspacesGuard:
 
         mgr = WorkspaceManager(config=config, idle_timeout=1800)
 
-        stale_time = datetime.now(timezone.utc) - timedelta(seconds=3600)
-        workspace = {
-            "workspace_id": "ws-active",
-            "last_activity_at": stale_time,
-        }
-
-        # Patch DB query to return one "idle" workspace
         with (
             patch(
-                "src.server.services.workspace_manager.get_workspaces_by_status",
+                "src.server.services.workspace_manager.get_computers_by_status",
                 new_callable=AsyncMock,
-                return_value=[workspace],
+                return_value=[self._idle_machine("comp-active")],
             ),
-            patch.object(mgr, "stop_workspace", new_callable=AsyncMock) as mock_stop,
+            patch.object(mgr, "_stop_machine", new_callable=AsyncMock) as mock_stop,
             patch(
                 "src.server.services.runs.executor.LocalRunExecutor.get_instance"
             ) as mock_get_instance,
         ):
             mock_instance = MagicMock()
-            mock_instance.has_active_tasks_for_workspace = AsyncMock(return_value=True)
+            mock_instance.has_active_tasks_for_computer = AsyncMock(return_value=True)
             mock_get_instance.return_value = mock_instance
 
             stopped = await mgr.cleanup_idle_workspaces()
@@ -210,7 +220,7 @@ class TestCleanupIdleWorkspacesGuard:
         mock_stop.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_stops_workspace_without_active_task(self):
+    async def test_stops_machine_without_active_task(self):
         from ptc_agent.config import AgentConfig
 
         config = MagicMock(spec=AgentConfig)
@@ -218,31 +228,25 @@ class TestCleanupIdleWorkspacesGuard:
 
         mgr = WorkspaceManager(config=config, idle_timeout=1800)
 
-        stale_time = datetime.now(timezone.utc) - timedelta(seconds=3600)
-        workspace = {
-            "workspace_id": "ws-idle",
-            "last_activity_at": stale_time,
-        }
-
         with (
             patch(
-                "src.server.services.workspace_manager.get_workspaces_by_status",
+                "src.server.services.workspace_manager.get_computers_by_status",
                 new_callable=AsyncMock,
-                return_value=[workspace],
+                return_value=[self._idle_machine("comp-idle")],
             ),
-            patch.object(mgr, "stop_workspace", new_callable=AsyncMock) as mock_stop,
+            patch.object(mgr, "_stop_machine", new_callable=AsyncMock) as mock_stop,
             patch(
                 "src.server.services.runs.executor.LocalRunExecutor.get_instance"
             ) as mock_get_instance,
         ):
             mock_instance = MagicMock()
-            mock_instance.has_active_tasks_for_workspace = AsyncMock(return_value=False)
+            mock_instance.has_active_tasks_for_computer = AsyncMock(return_value=False)
             mock_get_instance.return_value = mock_instance
 
             stopped = await mgr.cleanup_idle_workspaces()
 
         assert stopped == 1
-        mock_stop.assert_called_once_with("ws-idle")
+        mock_stop.assert_called_once_with("comp-idle")
 
 
 class TestSessionClosedIsTransient:

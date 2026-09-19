@@ -41,7 +41,7 @@ A required input that cannot be sourced is written into the cell as required-and
 
 ## Build Workflow
 
-**Execution pattern**: build the DCF as a saved Python script (for example `work/<task_name>/build_dcf.py`) rather than inline `ExecuteCode`. Model building is iterative: you will debug formulas, tweak assumptions and rerun, and a saved script lets you `Edit` one section and rerun cheaply. Read `references/workbook-patterns.md` before writing the build script; it carries the row layouts and formula patterns. For all formatting, number formats and colour standards, follow `.agents/skills/xlsx/SKILL.md`.
+**Execution pattern**: build the DCF as a saved Python script (for example `<task_name>/build_dcf.py`) rather than inline `ExecuteCode`. Model building is iterative: you will debug formulas, tweak assumptions and rerun, and a saved script lets you `Edit` one section and rerun cheaply. Read `references/workbook-patterns.md` before writing the build script; it carries the row layouts and formula patterns. For all formatting, number formats and colour standards, follow `.agents/skills/xlsx/SKILL.md`.
 
 **Formulas, not hardcoded values.** Every projection, margin, discount factor, present value and sensitivity cell is a live Excel formula. A number computed in Python and written into the cell is a defect even when the value is right today. With openpyxl, `ws["F29"] = "=E29*(1+B$10)"` is correct and `ws["F29"] = 12500.0` is not. The only typed numbers a DCF should hold are historical actuals, the assumption drivers in the scenario blocks, current market data (share price, diluted shares, debt, cash), and a solved value under the one exception `.agents/skills/xlsx/SKILL.md` allows (the reverse DCF driver, Step 10). If you catch yourself computing a value in Python and writing the result, stop and write the formula instead. The model has to move when the user changes an assumption, and a hardcode breaks every downstream tie-out silently, because the check still evaluates and still reads OK.
 
@@ -306,7 +306,7 @@ The build script writes this sheet **last**, once every other sheet exists and i
 
 ## Verify Before Delivering
 
-File: `[Ticker]_DCF_Model_[Date].xlsx` under `$WORK_DIR/work/{task}/`.
+File: `[Ticker]_DCF_Model_[Date].xlsx` under `{task}/`.
 
 1. **Structure**: the four sheets of `references/workbook-patterns.md`; scenario blocks with the year header row; the case selector driving a selected-case block; grids at the bottom of the DCF sheet with odd dimensions; the `Checks` sheet; blue inputs, black formulas, green links; a comment on every hardcoded input; borders around major sections
 2. **`python .agents/skills/xlsx/scripts/recalc.py model.xlsx 30`** until status is "success"; on errors read `.agents/skills/dcf-model/TROUBLESHOOTING.md`

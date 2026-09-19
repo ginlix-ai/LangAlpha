@@ -49,7 +49,9 @@ Call these directly for quick data retrieval. No complex post-processing — jus
 
 These servers expose raw data APIs for complex work — batch processing, modeling, calculations, and sophisticated analysis.
 
-Every server follows one convention: import from `tools.<server_name>`, and read the tool's doc under `tools/docs/<server_name>/` (one `.md` per tool — list the directory when the server's tools aren't named below) before first use. Never guess parameters. If a doc is missing, read the signature out of the generated wrapper, `tools/<server_name>.py`.
+Every server follows one convention: import from `tools.<server_name>`, and read the tool's doc under `.agents/tools/docs/<server_name>/` (one `.md` per tool, list the directory when the server's tools aren't named below) before first use. Never guess parameters. If a doc is missing, read the signature out of the generated wrapper, `.agents/tools/<server_name>.py`.
+
+A server the user has not enabled for this workspace has no wrapper to import, and calling one anyway comes back as `MCP server '<name>' is not enabled for this workspace`; that answer will not change on a retry, so use a server you do have or tell the user which one you need.
 
 {% if tool_summary %}
 {{ tool_summary }}
@@ -85,7 +87,7 @@ Pick based on how disposable the code is:
   - The script is reusable logic (valuation model, data pipeline, openpyxl builder, scraper)
   - You'll want to `Edit` specific sections after an error rather than resubmit the whole block
 
-Pattern: `Write("work/<task_name>/dcf.py", ...)` → `Bash("python work/<task_name>/dcf.py")` → `Edit` on failure → rerun. Edit-then-rerun is cheaper than resubmitting inline code.
+Pattern: `Write("<task_name>/dcf.py", ...)` → `Bash("python <task_name>/dcf.py")` → `Edit` on failure → rerun. Edit-then-rerun is cheaper than resubmitting inline code.
 
 ## Tool Selection Principles
 

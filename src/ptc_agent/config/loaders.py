@@ -34,7 +34,11 @@ from ptc_agent.config.agent import (
     SubagentConfig,
     SubagentsConfig,
 )
-from ptc_agent.config.core import CoreConfig, create_default_security_config
+from ptc_agent.config.core import (
+    CoreConfig,
+    create_default_security_config,
+    default_sandbox_skills_base,
+)
 from ptc_agent.config.utils import (
     configure_structlog,
     create_filesystem_config,
@@ -322,7 +326,8 @@ def load_from_dict(
         enabled=skills_data.get("enabled", True),
         user_skills_dir=skills_data.get("user_skills_dir", "~/.ptc-agent/skills"),
         sandbox_skills_base=skills_data.get(
-            "sandbox_skills_base", f"{filesystem_config.working_directory}/.agents/skills"
+            "sandbox_skills_base",
+            default_sandbox_skills_base(filesystem_config.working_directory),
         ),
     )
 

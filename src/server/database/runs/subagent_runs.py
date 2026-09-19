@@ -615,6 +615,30 @@ async def count_open_runs_for_workspace(workspace_id: str) -> int:
             return (await cur.fetchone())[0]
 
 
+async def count_open_runs_for_computer(computer_id: str) -> int:
+    """Live task runs across every workspace bound to the computer.
+
+    The machine-scoped twin of ``count_open_runs_for_workspace``. A join, never
+    a denormalised counter: this gates tearing a computer down, so the count has
+    to be derived from the run rows a crashed worker cannot have skewed. At one
+    workspace per computer the two functions return the same thing.
+    """
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM subagent_runs r
+                JOIN conversation_threads t
+                  ON t.conversation_thread_id = r.thread_id
+                JOIN workspaces w ON w.workspace_id = t.workspace_id
+                WHERE w.computer_id = %s AND r.status = 'in_progress'
+                """,
+                (computer_id,),
+            )
+            return (await cur.fetchone())[0]
+
+
 async def list_open_task_runs() -> List[Dict[str, Any]]:
     """All in_progress task runs, oldest first (orphan-recovery scan input)."""
     async with pool.get_db_connection() as conn:

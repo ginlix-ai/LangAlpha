@@ -614,6 +614,33 @@ async def workspace_has_active_run(workspace_id: str) -> bool:
             return bool((await cur.fetchone())[0])
 
 
+async def computer_has_active_run(computer_id: str) -> bool:
+    """Any live root run on any workspace bound to the computer.
+
+    The machine-scoped twin of ``workspace_has_active_run``, and a join rather
+    than a counter column because a torn-down computer takes every project on it
+    with it: the answer has to come from the runs themselves, not from a number
+    a crashed worker could have left behind. At one workspace per computer the
+    two functions return the same thing.
+    """
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM conversation_responses r
+                    JOIN conversation_threads t
+                      ON t.conversation_thread_id = r.conversation_thread_id
+                    JOIN workspaces w ON w.workspace_id = t.workspace_id
+                    WHERE w.computer_id = %s AND r.status = 'in_progress'
+                )
+                """,
+                (computer_id,),
+            )
+            return bool((await cur.fetchone())[0])
+
+
 async def get_latest_attempt(
     thread_id: str, *, before_turn: Optional[int] = None
 ) -> Optional[Dict[str, Any]]:

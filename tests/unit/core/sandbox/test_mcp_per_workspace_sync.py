@@ -7,6 +7,11 @@ audited read site correctly, and discover_user_mcp_schemas isolates per-server
 errors + parses file-IPC output.
 """
 
+import ast
+import json
+import os
+import shutil
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,7 +27,16 @@ from ptc_agent.config.core import (
     SandboxConfig,
     SecurityConfig,
 )
+from ptc_agent.core.paths import SandboxLayout
+from ptc_agent.core.project_context import ProjectContext
 from ptc_agent.core.sandbox.runtime import ExecResult, SandboxProvider, SandboxRuntime
+from ptc_agent.core.sandbox.tool_overlay import (
+    _SCRIPT,
+    ToolOverlayError,
+    doc_name,
+    install_tool_modules,
+    overlay_claim_missing,
+)
 
 
 def _make_config(servers=None) -> CoreConfig:
@@ -522,6 +536,234 @@ class TestWarmSandboxOAuthBinding:
 
 
 # ---------------------------------------------------------------------------
+# A workspace joining a computer whose union is already current
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceOverlayGate:
+    """The overlay needs a gate of its own, and a folder it can be told.
+
+    The shared manifest cannot prove that a particular workspace installed its
+    current tool schemas. The union ledger records that version per claim.
+    The folder has to
+    be passed in too: a sync runs at session acquisition, outside the turn that
+    binds the project, so reading the ambient one would build every overlay for
+    the computer root.
+    """
+
+    TOOLS = {
+        "yfinance": [SimpleNamespace(name="quote", input_schema={"type": "object"})]
+    }
+    DIR = "alpha-ab12"
+    WORKSPACE = "ws-alpha"
+
+    def _sandbox(self):
+        sandbox = _make_sandbox(_make_config(servers=[_builtin("yfinance")]))
+        sandbox.mcp_registry = MagicMock()
+        sandbox.mcp_registry.get_all_tools = MagicMock(return_value=self.TOOLS)
+        return sandbox
+
+    def _ledger(self, *claims):
+        return {
+            "schema_version": 1,
+            "union_version": 3,
+            "claims": {"yfinance": sorted(claims)},
+            "servers": {"yfinance": {"enabled": True}},
+        }
+
+    async def _settled_sync(self, sandbox, ledger, *, remote_manifest=None, **kwargs):
+        """A sync whose every module hash already matches the sandbox."""
+        settled = remote_manifest or await self._sandbox()._compute_sandbox_manifest()
+        sandbox._wait_ready = AsyncMock()
+        sandbox.ensure_sandbox_ready = AsyncMock()
+        sandbox._prune_disabled_tool_modules = AsyncMock()
+        sandbox._read_unified_manifest = AsyncMock(return_value=settled)
+        sandbox._install_tool_modules = AsyncMock()
+        sandbox._start_internal_mcp_servers = AsyncMock()
+        sandbox._write_unified_manifest = AsyncMock()
+        sandbox._cleanup_legacy_manifests = AsyncMock()
+        sandbox._upload_mcp_server_files_impl = AsyncMock()
+        sandbox._upload_internal_packages = AsyncMock()
+        sandbox.adownload_file_bytes = AsyncMock(
+            return_value=json.dumps(ledger).encode("utf-8")
+        )
+        with patch("ptc_agent.core.sandbox.assets.run_layout_migrations", AsyncMock()):
+            return await sandbox.sync_sandbox_assets(
+                reusing_sandbox=True,
+                project=ProjectContext(self.WORKSPACE, self.DIR),
+                **kwargs,
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_workspace_with_no_claim_gets_its_overlay(self):
+        sandbox = self._sandbox()
+        result = await self._settled_sync(sandbox, self._ledger("ws-sibling"))
+
+        assert "tool_modules" in result.refreshed_modules
+        sandbox._install_tool_modules.assert_awaited_once()
+        project = sandbox._install_tool_modules.await_args.kwargs["project"]
+        assert (project.workspace_id, project.dir_name) == (self.WORKSPACE, self.DIR)
+
+    @pytest.mark.asyncio
+    async def test_a_workspace_that_already_claims_the_union_is_left_alone(self):
+        """Negative control: without it the assertion above would pass on an
+        unconditional re-install of every warm sync."""
+        sandbox = self._sandbox()
+        manifest = await sandbox._compute_sandbox_manifest()
+        ledger = self._ledger("ws-sibling", self.WORKSPACE)
+        ledger["tool_versions"] = {
+            self.WORKSPACE: manifest["modules"]["tool_modules"]["version"]
+        }
+        result = await self._settled_sync(sandbox, ledger)
+
+        assert result.refreshed_modules == []
+        sandbox._install_tool_modules.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sibling_discovery_does_not_satisfy_this_workspaces_install(self):
+        sandbox = self._sandbox()
+        manifest = await sandbox._compute_sandbox_manifest()
+        version = manifest["modules"]["tool_modules"]["version"]
+        ledger = self._ledger("ws-sibling", self.WORKSPACE)
+        ledger["tool_versions"] = {
+            "ws-sibling": version,
+            self.WORKSPACE: "before-discovery",
+        }
+
+        result = await self._settled_sync(sandbox, ledger)
+
+        assert "tool_modules" in result.refreshed_modules
+        sandbox._install_tool_modules.assert_awaited_once_with(
+            project=ProjectContext(self.WORKSPACE, self.DIR),
+            tool_version=version,
+        )
+
+    @pytest.mark.asyncio
+    async def test_siblings_last_manifest_does_not_reinstall_current_overlay(self):
+        sandbox = self._sandbox()
+        manifest = await sandbox._compute_sandbox_manifest()
+        version = manifest["modules"]["tool_modules"]["version"]
+        ledger = self._ledger("ws-sibling", self.WORKSPACE)
+        ledger["tool_versions"] = {self.WORKSPACE: version}
+        manifest["modules"]["tool_modules"]["version"] = "siblings-different-tools"
+
+        result = await self._settled_sync(sandbox, ledger, remote_manifest=manifest)
+
+        assert result.refreshed_modules == []
+        sandbox._install_tool_modules.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_legacy_claim_without_install_version_is_rebuilt(self):
+        sandbox = self._sandbox()
+
+        result = await self._settled_sync(
+            sandbox, self._ledger("ws-sibling", self.WORKSPACE)
+        )
+
+        assert "tool_modules" in result.refreshed_modules
+        sandbox._install_tool_modules.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_prune_is_told_the_same_folder(self):
+        """A disable withdraws a wrapper from the folder that disabled it, so
+        the prune cannot be left reading the ambient project either."""
+        sandbox = self._sandbox()
+        await self._settled_sync(sandbox, self._ledger(self.WORKSPACE))
+
+        project = sandbox._prune_disabled_tool_modules.await_args.kwargs["project"]
+        assert (project.workspace_id, project.dir_name) == (self.WORKSPACE, self.DIR)
+
+
+# ---------------------------------------------------------------------------
+# The claim probe the sync and the session manager share
+# ---------------------------------------------------------------------------
+
+
+class TestTheClaimProbe:
+    """One definition of "this workspace still owes itself an overlay".
+
+    The sync reads it to decide whether to install, and a session manager
+    reads it to decide whether to run a sync at all for a project joining a
+    machine another one provisioned. Two copies of the answer would let those
+    two disagree, which reads as a workspace with no wrappers and no gate.
+    """
+
+    DIR = "alpha-ab12"
+    WORKSPACE = "ws-alpha"
+
+    def _sandbox(self, ledger=None, *, registry=True, unreadable=False):
+        sandbox = _make_sandbox(_make_config(servers=[_builtin("yfinance")]))
+        sandbox.mcp_registry = MagicMock() if registry else None
+        sandbox.adownload_file_bytes = AsyncMock(
+            side_effect=FileNotFoundError("no ledger") if unreadable else None,
+        )
+        if not unreadable:
+            sandbox.adownload_file_bytes.return_value = json.dumps(ledger or {}).encode(
+                "utf-8"
+            )
+        return sandbox
+
+    def _project(self, dir_name=None):
+        return ProjectContext(
+            workspace_id=self.WORKSPACE,
+            dir_name=self.DIR if dir_name is None else dir_name,
+        )
+
+    def _ledger(self, *claims):
+        return {"schema_version": 1, "claims": {"yfinance": sorted(claims)}}
+
+    @pytest.mark.asyncio
+    async def test_a_workspace_the_ledger_omits_owes_itself_one(self):
+        sandbox = self._sandbox(self._ledger("ws-sibling", "_root"))
+
+        assert await overlay_claim_missing(sandbox, self._project()) is True
+
+    @pytest.mark.asyncio
+    async def test_a_workspace_the_ledger_names_owes_nothing(self):
+        sandbox = self._sandbox(self._ledger("ws-sibling", self.WORKSPACE))
+
+        assert await overlay_claim_missing(sandbox, self._project()) is False
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_ledger_reads_as_owing(self):
+        """A sandbox whose union predates the ledger has no claims to hold, and
+        one sync is the cheap way to be wrong about it."""
+        sandbox = self._sandbox(unreadable=True)
+
+        assert await overlay_claim_missing(sandbox, self._project()) is True
+
+    @pytest.mark.asyncio
+    async def test_the_machine_root_is_asked_nothing(self):
+        """A project that owns the root imports the union directly, so there is
+        no folder an overlay could go in."""
+        sandbox = self._sandbox(self._ledger("ws-sibling"))
+
+        assert await overlay_claim_missing(sandbox, self._project(dir_name="")) is False
+        sandbox.adownload_file_bytes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_sandbox_with_no_registry_is_asked_nothing(self):
+        sandbox = self._sandbox(self._ledger("ws-sibling"), registry=False)
+
+        assert await overlay_claim_missing(sandbox, self._project()) is False
+        sandbox.adownload_file_bytes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_sandbox_answers_for_a_caller_outside_this_package(self):
+        """The seam the session manager codes against: it holds a workspace id
+        and a folder, and must not have to build a view or reach into the
+        sandbox to ask."""
+        sandbox = self._sandbox(self._ledger("ws-sibling"))
+
+        assert (
+            await sandbox.workspace_overlay_missing(
+                workspace_id=self.WORKSPACE, dir_name=self.DIR
+            )
+            is True
+        )
+
+
+# ---------------------------------------------------------------------------
 # Regression #3 — doc filename can't traverse out of the docs dir
 # ---------------------------------------------------------------------------
 
@@ -533,15 +775,14 @@ class TestDocPathTraversal:
         # The shipped helper, not a copy of it: this test used to re-derive the
         # filename, which is the same duplication that let a doc survive the
         # sweep meant to delete it.
-        from ptc_agent.core.sandbox.mcp_setup import _doc_name
-
-        doc_name = _doc_name(tool_name, source == "workspace")
-        return f"{work_dir}/tools/docs/{server_name}/{doc_name}.md"
+        name = doc_name(tool_name, source == "workspace")
+        docs = SandboxLayout(work_dir).tools_docs
+        return f"{docs}/{server_name}/{name}.md"
 
     def test_traversal_name_is_contained(self):
         work_dir = "/home/workspace"
         server = "user_srv"
-        base = f"{work_dir}/tools/docs/{server}/"
+        base = f"{SandboxLayout(work_dir).tools_docs}/{server}/"
         for hostile in ("../mcp_client", "../../_internal/.vault_secrets", "a/b", ".."):
             path = self._doc_path(work_dir, server, hostile, "workspace")
             assert path.startswith(base)
@@ -553,12 +794,43 @@ class TestDocPathTraversal:
         # Builtin names are already valid identifiers ⇒ byte-identical path.
         work_dir = "/home/workspace"
         path = self._doc_path(work_dir, "market", "get_price", "builtin")
-        assert path == "/home/workspace/tools/docs/market/get_price.md"
+        assert path == "/home/workspace/.agents/tools/docs/market/get_price.md"
 
 
 # ---------------------------------------------------------------------------
 # Stale per-tool docs are swept, not just stale server dirs
 # ---------------------------------------------------------------------------
+
+
+def _script_prune(*, union_tools, union_docs, expected, legacy_client, printed):
+    """``prune_union`` compiled out of the reconcile script.
+
+    The prune runs in the sandbox under the union's flock, so the only faithful
+    way to exercise it is over a real tree with the host's own arguments.
+    ``fail`` ends the pass with an error payload, which reaches the host as a
+    raise rather than as a clean sweep.
+    """
+    module = ast.parse(_SCRIPT)
+    wanted = {"fail", "remove", "listdir", "prune_union"}
+    fns = [
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name in wanted
+    ]
+    assert {fn.name for fn in fns} == wanted
+    ns: dict = {
+        "os": os,
+        "shutil": shutil,
+        "sys": sys,
+        "json": json,
+        "print": printed.append,
+        "UNION_TOOLS": union_tools,
+        "UNION_DOCS": union_docs,
+        "EXPECTED_DOCS": expected,
+        "LEGACY_CLIENT": legacy_client,
+    }
+    exec(compile(ast.Module(body=fns, type_ignores=[]), "<tool_overlay>", "exec"), ns)
+    return ns["prune_union"]
 
 
 class TestStaleDocSweep:
@@ -570,11 +842,31 @@ class TestStaleDocSweep:
     as the answer to "what can this server do". Capability consent withdraws
     tools on a user toggle, so without this the agent goes on reading that it
     may place live orders for someone who declined exactly that.
+
+    The sweep runs inside the sandbox now, so it has two halves: the host
+    publishes which docs each server still has (``expectedDocs`` in the
+    uploaded args), and the reconcile deletes every other ``.md`` beside them.
+    These drive the real host and the real prune, joined by the host's own
+    argument, because a faithful list and a pass that ignores it read the same
+    from either side alone.
     """
 
     WORK_DIR = "/home/workspace"
+    DIR = "broker-ab12"
 
-    def _sandbox(self, tools, docs_listing, tools_listing=()):
+    _OK = json.dumps(
+        {
+            "status": "ok",
+            "unionVersion": 1,
+            "unionServers": ["broker"],
+            "orphaned": [],
+            "pruned": [],
+            "swept": [],
+            "linked": 1,
+        }
+    )
+
+    def _sandbox(self, tools, *, stdout=None):
         config = _make_config(
             servers=[_connector("broker", transport="http", url="https://example.test/mcp")]
         )
@@ -583,120 +875,135 @@ class TestStaleDocSweep:
         sandbox.mcp_registry = MagicMock()
         sandbox.mcp_registry.get_all_tools = MagicMock(return_value=tools)
         sandbox.runtime = MagicMock()
+        # The two config builders return real dicts: both are JSON written into
+        # the upload batch, so a MagicMock there fails at serialization rather
+        # than at the assertion.
         sandbox.tool_generator = MagicMock()
-        sandbox.tool_generator.generate_mcp_client_code = MagicMock(return_value="")
+        sandbox.tool_generator.compose_mcp_client_code = MagicMock(return_value="")
+        sandbox.tool_generator.generate_client_config = MagicMock(
+            return_value={"servers": {name: {"transport": "http"} for name in tools}}
+        )
+        sandbox.tool_generator.generate_workspace_tool_config = MagicMock(
+            return_value={"servers": {name: {"enabled": True} for name in tools}}
+        )
         sandbox.tool_generator.generate_tool_module = MagicMock(return_value="")
         sandbox.tool_generator.generate_tool_documentation = MagicMock(return_value="")
-
-        listings = {
-            f"{self.WORK_DIR}/tools/docs": docs_listing,
-            f"{self.WORK_DIR}/tools": list(tools_listing),
-        }
-
-        async def als_directory(path):
-            if path in listings:
-                return listings[path]
-            return [
-                {
-                    "name": name,
-                    "path": f"{path}/{name}",
-                    "is_dir": False,
-                }
-                for name in listings.get(("dir", path), [])
-            ]
-
-        sandbox.als_directory = AsyncMock(side_effect=als_directory)
-        sandbox._upload_files_batch = AsyncMock()
-        # A real ExecResult, not a bare mock: the sweep now reads exit_code, and
-        # a MagicMock attribute is truthy, which would read as a failed delete.
         sandbox._runtime_call = AsyncMock(
-            return_value=ExecResult(stdout="", stderr="", exit_code=0)
+            return_value=ExecResult(
+                stdout=self._OK if stdout is None else stdout, stderr="", exit_code=0
+            )
         )
-        return sandbox, listings
+        return sandbox
 
-    def _dir_entry(self, name):
-        return {"name": name, "path": f"{self.WORK_DIR}/tools/docs/{name}", "is_dir": True}
-
-    async def _run(self, tools, server_docs):
-        from ptc_agent.core.sandbox.mcp_setup import _install_tool_modules
-
-        sandbox, listings = self._sandbox(tools, [self._dir_entry("broker")])
-        listings[("dir", f"{self.WORK_DIR}/tools/docs/broker")] = server_docs
-        await _install_tool_modules(sandbox)
-        # The sweep is one `rm -rf`; the same seam also carries the mkdir.
-        return next(
-            (
-                call.args[1]
-                for call in sandbox._runtime_call.await_args_list
-                if str(call.args[1]).startswith("rm -rf ")
-            ),
-            "",
+    async def _reconcile_args(self, tools):
+        """The args file the host uploads for the in-sandbox pass."""
+        sandbox = self._sandbox(tools)
+        await install_tool_modules(
+            sandbox, project=ProjectContext("ws-broker", self.DIR)
         )
+        uploads = sandbox._runtime_call.await_args_list[0].args[1]
+        blob = next(body for body, path in uploads if ".union_args." in path)
+        return json.loads(blob)
+
+    async def _sweep(self, tmp_path, tools, on_disk):
+        """One server's docs after the real pass over a real directory."""
+        args = await self._reconcile_args(tools)
+        docs = tmp_path / "docs"
+        (docs / "broker").mkdir(parents=True)
+        for name in on_disk:
+            (docs / "broker" / name).touch()
+        printed: list[str] = []
+        prune = _script_prune(
+            union_tools=str(tmp_path / "tools"),
+            union_docs=str(docs),
+            expected=args["expectedDocs"],
+            legacy_client=str(tmp_path / "tools" / "mcp_client.py"),
+            printed=printed,
+        )
+        gone = prune([])
+        return sorted(p.name for p in (docs / "broker").iterdir()), gone
 
     @pytest.mark.asyncio
-    async def test_a_withdrawn_tools_doc_is_removed(self):
+    async def test_a_withdrawn_tools_doc_is_removed(self, tmp_path):
         tools = {"broker": [SimpleNamespace(name="get_quote", input_schema={})]}
-        rm_cmd = await self._run(tools, ["get_quote.md", "place_order.md"])
-        assert f"{self.WORK_DIR}/tools/docs/broker/place_order.md" in rm_cmd
-        assert "get_quote.md" not in rm_cmd
+        left, gone = await self._sweep(
+            tmp_path, tools, ["get_quote.md", "place_order.md"]
+        )
+        assert left == ["get_quote.md"]
+        assert [os.path.basename(p) for p in gone] == ["place_order.md"]
 
     @pytest.mark.asyncio
-    async def test_a_surviving_tools_doc_is_left_alone(self):
+    async def test_a_surviving_tools_doc_is_left_alone(self, tmp_path):
         tools = {
             "broker": [
                 SimpleNamespace(name="get_quote", input_schema={}),
                 SimpleNamespace(name="place_order", input_schema={}),
             ]
         }
-        rm_cmd = await self._run(tools, ["get_quote.md", "place_order.md"])
-        assert rm_cmd == ""
+        left, gone = await self._sweep(
+            tmp_path, tools, ["get_quote.md", "place_order.md"]
+        )
+        assert left == ["get_quote.md", "place_order.md"]
+        assert gone == []
 
     @pytest.mark.asyncio
-    async def test_a_failed_delete_is_not_reported_as_a_clean_sweep(self):
-        """A silent delete failure is indistinguishable from never sweeping.
+    async def test_a_failed_sweep_is_not_reported_as_a_clean_one(self):
+        """A silent failure is indistinguishable from never sweeping.
 
         The sync would go on to stamp the manifest current, so the doc for a
-        declined tool would survive every later sync too.
+        declined tool would survive every later sync too. The pass reports its
+        own failure now, and the host has to turn that into a raise.
         """
-        from ptc_agent.core.sandbox.mcp_setup import _install_tool_modules
-
         tools = {"broker": [SimpleNamespace(name="get_quote", input_schema={})]}
-        sandbox, listings = self._sandbox(tools, [self._dir_entry("broker")])
-        listings[("dir", f"{self.WORK_DIR}/tools/docs/broker")] = [
-            "get_quote.md",
-            "place_order.md",
-        ]
-        sandbox._runtime_call = AsyncMock(
-            return_value=ExecResult(stdout="", stderr="denied", exit_code=1)
+        sandbox = self._sandbox(
+            tools,
+            stdout=json.dumps(
+                {"status": "error", "error": "cannot remove place_order.md: denied"}
+            ),
         )
-        with pytest.raises(RuntimeError, match="stale tool files"):
-            await _install_tool_modules(sandbox)
+        with pytest.raises(ToolOverlayError, match="cannot remove"):
+            await install_tool_modules(
+                sandbox, project=ProjectContext("ws-broker", self.DIR)
+            )
 
     @pytest.mark.asyncio
-    async def test_a_broken_sandbox_is_not_read_as_nothing_to_sweep(self):
-        """als_directory returns [] for an absent directory and raises only on a
-        real failure, so the raise has to travel rather than read as clean."""
-        from ptc_agent.core.sandbox.mcp_setup import _install_tool_modules
+    async def test_an_unlistable_docs_dir_is_not_read_as_nothing_to_sweep(
+        self, tmp_path
+    ):
+        """An absent directory is genuinely empty; anything else is a failure.
 
-        tools = {"broker": [SimpleNamespace(name="get_quote", input_schema={})]}
-        sandbox, _ = self._sandbox(tools, [self._dir_entry("broker")])
-        sandbox.als_directory = AsyncMock(side_effect=RuntimeError("sandbox down"))
-        with pytest.raises(RuntimeError, match="sandbox down"):
-            await _install_tool_modules(sandbox)
+        ``listdir`` swallows FileNotFoundError only, so a docs path that cannot
+        be listed ends the pass instead of reading as "no stale docs here".
+        """
+        expected = {"broker": ["get_quote.md"]}
+        printed: list[str] = []
+        prune = _script_prune(
+            union_tools=str(tmp_path / "tools"),
+            union_docs=str(tmp_path / "docs"),
+            expected=expected,
+            legacy_client=str(tmp_path / "tools" / "mcp_client.py"),
+            printed=printed,
+        )
+        assert prune([]) == []
+
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "broker").touch()
+        with pytest.raises(SystemExit):
+            prune([])
+        assert json.loads(printed[-1])["status"] == "error"
 
     @pytest.mark.asyncio
-    async def test_a_sanitized_name_matches_the_doc_the_writer_produced(self):
+    async def test_a_sanitized_name_matches_the_doc_the_writer_produced(self, tmp_path):
         """The sweep and the writer derive the filename the same way.
 
         A user-tier name is sanitized before it becomes a filename, so a sweep
         comparing against the raw name would delete the doc it just wrote.
         """
         tools = {"broker": [SimpleNamespace(name="get quote", input_schema={})]}
-        from ptc_agent.core.sandbox.mcp_setup import _doc_name
-
-        written = f"{_doc_name('get quote', True)}.md"
-        rm_cmd = await self._run(tools, [written])
-        assert rm_cmd == ""
+        written = f"{doc_name('get quote', True)}.md"
+        left, gone = await self._sweep(tmp_path, tools, [written])
+        assert left == [written]
+        assert gone == []
 
 
 # ---------------------------------------------------------------------------
@@ -880,8 +1187,9 @@ class TestDiscoverUserMcpSchemas:
         sandbox = discovery_sandbox
         captured: dict[str, list[str]] = {}
 
-        def capture(servers, working_dir="/home/workspace"):
+        def capture(servers, working_dir="/home/workspace", **options):
             captured["names"] = [s.name for s in servers]
+            captured["fold_union"] = options.get("fold_union")
             return "# client"
 
         sandbox.tool_generator.generate_mcp_client_code = MagicMock(side_effect=capture)
@@ -895,6 +1203,9 @@ class TestDiscoverUserMcpSchemas:
         assert {"alpha", "beta"}.issubset(
             set(captured["names"])
         )  # session servers not dropped
+        # The probe must see the edited config it embeds, not the union's
+        # pre-edit copy of the same server.
+        assert captured["fold_union"] is False
 
     @pytest.mark.asyncio
     async def test_discovery_client_path_unique_per_call(self, discovery_sandbox):
@@ -950,7 +1261,7 @@ class TestDiscoverUserMcpSchemas:
         uploads: dict[str, str] = {}
         both_uploaded = asyncio.Event()
 
-        def gen(servers, working_dir="/home/workspace"):
+        def gen(servers, working_dir="/home/workspace", **options):
             return "# client " + ",".join(s.name for s in servers)
 
         sandbox.tool_generator.generate_mcp_client_code = MagicMock(side_effect=gen)
@@ -1010,3 +1321,47 @@ class TestDiscoverUserMcpSchemas:
             [_user("alpha", transport="http", url="https://a.test")]
         )
         assert call_order.index("upload_client") < call_order.index("discover")
+
+
+# ---------------------------------------------------------------------------
+# The prune is best effort per path, and claimed only when it finished
+# ---------------------------------------------------------------------------
+
+
+class TestPruneIsBestEffort:
+    def _sandbox(self, calls):
+        config = _make_config(
+            servers=[
+                _user("gone", transport="http", url="https://x", enabled=False),
+                _user("also", transport="http", url="https://y", enabled=False),
+            ]
+        )
+        sandbox = _make_sandbox(config)
+        sandbox.runtime = MagicMock()
+
+        async def runtime_call(fn, cmd, **kw):
+            calls.append(cmd)
+            if "gone.py" in cmd:
+                raise RuntimeError("exec failed")
+            return ExecResult(exit_code=0, stdout="", stderr="")
+
+        sandbox._runtime_call = AsyncMock(side_effect=runtime_call)
+        return sandbox
+
+    @pytest.mark.asyncio
+    async def test_one_failed_removal_keeps_the_rest_and_leaves_the_claim_open(self):
+        calls: list[str] = []
+        sandbox = self._sandbox(calls)
+        project = ProjectContext(workspace_id="ws-a", dir_name="ws-a")
+
+        await sandbox._prune_disabled_tool_modules(project=project)
+
+        # Every path was attempted despite the failure, and nothing is claimed,
+        # so the next sync tries the leftover again.
+        assert any("also.py" in c for c in calls)
+        assert any("gone.py" in c for c in calls)
+        assert sandbox._disabled_modules_pruned == set()
+
+        calls.clear()
+        await sandbox._prune_disabled_tool_modules(project=project)
+        assert calls, "a failed prune is retried on the next sync"

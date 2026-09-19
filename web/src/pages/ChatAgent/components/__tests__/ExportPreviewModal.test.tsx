@@ -248,12 +248,12 @@ describe('ExportPreviewModal', () => {
     expect(defaultProps.readFileFullFn).toHaveBeenCalledWith('ws-123', 'report.md');
   });
 
-  it('applies stripLineNumbers for /large_tool_results/ paths', async () => {
+  it('applies stripLineNumbers for large tool result paths', async () => {
     const numberedContent = '1 First line\n2 Second line\n3 Third line';
     const readFn = vi.fn().mockResolvedValue({ content: numberedContent });
 
     renderModal({
-      fileName: '/large_tool_results/output.txt',
+      fileName: '.agents/large_tool_results/output.txt',
       readFileFullFn: readFn,
     });
 

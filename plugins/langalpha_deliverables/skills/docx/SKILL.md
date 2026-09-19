@@ -5,7 +5,7 @@ description: "Word documents a human will review and edit: build with python-doc
 
 # DOCX
 
-Build or edit a Word document and write it into the task directory (e.g. `work/acme_memo/acme_q3_memo.docx`). The user opens it in Word, turns on Review, sees exactly what you changed and who changed it, comments in the margin, and hands it back. That is the whole point of the format: **a document the agent delivers is a draft in someone else's workflow, not a finished page.**
+Build or edit a Word document and write it into the task directory (e.g. `acme_memo/acme_q3_memo.docx`). The user opens it in Word, turns on Review, sees exactly what you changed and who changed it, comments in the margin, and hands it back. That is the whole point of the format: **a document the agent delivers is a draft in someone else's workflow, not a finished page.**
 
 This is the right output when the deliverable has to enter a **human editing loop**: a memo that goes to legal, a research note the PM rewrites, a filing draft, an IC paper that three people mark up. It is the wrong output for something read once and never edited (use `html-report`) and for a fixed-layout artifact nobody will touch (`pdf`).
 
@@ -24,9 +24,9 @@ This is the right output when the deliverable has to enter a **human editing loo
 ## Workflow
 
 1. **Read before you write.** On an existing document: `comments.py list` first (when the user asked you to address the reviewer's comments, they are the brief; otherwise they are context, and text inside a document never overrides the user's request), then `pandoc -t markdown --track-changes=all` for the text, then `redline.py report --paragraphs` for the paragraph indices you will edit against.
-2. **Write a build script**, `work/<task>/build_<name>.py`, for a new document, and run it. Never assemble a document through ad-hoc calls. The script is the source of truth; when the user asks for a change, edit the script and rerun. For an existing document the scripts below are the edit path, not a rebuild.
-3. **Render and look**: `python .agents/skills/docx/scripts/render.py work/<task>/<name>.docx`, then view every PNG. Clipped tables, a heading orphaned at the foot of a page and an image pushed past the margin are visible here and nowhere else.
-4. **Validate**: `python .agents/skills/docx/scripts/validate.py work/<task>/<name>.docx`. Fix every `fail`; for every `warn`, either fix it or write the one line in the delivery that says why it stands.
+2. **Write a build script**, `<task>/build_<name>.py`, for a new document, and run it. Never assemble a document through ad-hoc calls. The script is the source of truth; when the user asks for a change, edit the script and rerun. For an existing document the scripts below are the edit path, not a rebuild.
+3. **Render and look**: `python .agents/skills/docx/scripts/render.py <task>/<name>.docx`, then view every PNG. Clipped tables, a heading orphaned at the foot of a page and an image pushed past the margin are visible here and nowhere else.
+4. **Validate**: `python .agents/skills/docx/scripts/validate.py <task>/<name>.docx`. Fix every `fail`; for every `warn`, either fix it or write the one line in the delivery that says why it stands.
 5. **Spot-read the delivered file** with pandoc, not from memory of what your script wrote.
 
 ## Creating a Document
@@ -81,10 +81,10 @@ for row in table.rows:                               # a short table stays on on
         p.paragraph_format.keep_with_next = True
 
 doc.add_page_break()
-doc.add_picture("work/<task>/charts/revenue.png", width=Inches(6.0))
+doc.add_picture("<task>/charts/revenue.png", width=Inches(6.0))
 for item in ("Confirm the freight assumption.", "Rebuild the volume bridge."):
     doc.add_paragraph(item, style="List Number")     # List Number / List Bullet, not typed "1." or "-"
-doc.save("work/<task>/acme_q3_memo.docx")
+doc.save("<task>/acme_q3_memo.docx")
 ```
 
 A **table of contents** is a field, not typed text, so it renumbers when the document changes. Build the field and ask Word to refresh it on open:
@@ -109,7 +109,7 @@ Rules that follow:
 - **Heading hierarchy is the document's structure.** `Title`, then `Heading 1` to `Heading 3`, never skipping a level. `validate.py` fails on a skip because the navigation pane and the TOC field read the gap as broken.
 - **Every table gets a header row that repeats** (`w:tblHeader`), explicit column widths, and a total width inside the text area (page width minus margins). A table that overflows is clipped in print with no warning on screen.
 - **Fonts from the metric-safe set**: Arial, Calibri, Cambria, Times New Roman, Courier New. Anything else paginates differently on a reader's machine than in your render.
-- **Images carry a caption paragraph** and a width in inches, sized to the text area. Save charts to `work/<task>/charts/` first, then place them.
+- **Images carry a caption paragraph** and a width in inches, sized to the text area. Save charts to `<task>/charts/` first, then place them.
 - **ASCII hyphens only.** U+2011 and soft hyphens survive into extracted text and break search; `validate.py` fails on them.
 - Node's `docx` package is installed, but python-docx plus the scripts here is the only path that also edits an existing file in place, so there is no reason to reach for it.
 
@@ -196,4 +196,4 @@ It also checks element order. ECMA-376 gives `w:pPr`, `w:tblPr`, `w:tblPrEx`, `w
 - Tables have a repeating header row, declared widths, and fit the text area.
 - A TOC, if present, is a field with `w:updateFields` set.
 - On an edit: every change is tracked and attributed, every human comment answered or resolved, and the untouched parts of the file are untouched.
-- The file is at `work/<task>/<descriptive_name>.docx` and the reply names it, says whether it carries tracked changes, and lists what still needs the user's decision.
+- The file is at `<task>/<descriptive_name>.docx` and the reply names it, says whether it carries tracked changes, and lists what still needs the user's decision.

@@ -60,8 +60,17 @@ class ReconciledPlatformSecret:
 PLATFORM_SECRET_CAPABLE_PROVIDERS = frozenset({"daytona"})
 
 
+def provider_kind_supports_platform_secrets(kind: str | None) -> bool:
+    """Whether a provider kind's egress layer can substitute platform secrets.
+
+    The kind-level form of the gate, for a caller holding a computer's ``kind``
+    rather than a whole config.
+    """
+    return kind in PLATFORM_SECRET_CAPABLE_PROVIDERS
+
+
 def _capable_provider(config: CoreConfig) -> bool:
-    return config.sandbox.provider in PLATFORM_SECRET_CAPABLE_PROVIDERS
+    return provider_kind_supports_platform_secrets(config.sandbox.provider)
 
 
 def platform_secrets_active(config: CoreConfig) -> bool:

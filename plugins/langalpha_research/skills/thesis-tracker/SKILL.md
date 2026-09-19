@@ -172,7 +172,7 @@ The artifact opens with the operating model, so the reader knows who acts and wh
 | Escalation triggers | a break threshold crossed, the aggregate at `impaired` or worse, or the security call `inputs missing` for two consecutive cycles |
 | Next review gate | the date, and the decision that gate makes |
 
-Order of the deliverable: header (aggregate status, security call, readiness posture, as-of), operating model, pillar scorecard, KPI tracker, monitoring table, ledger rows added since the last version, drift and red team, next gate. Markdown for a morning meeting, or Word through `.agents/skills/docx/SKILL.md` for a review pack. Save to `$WORK_DIR/work/{task}/`.
+Order of the deliverable: header (aggregate status, security call, readiness posture, as-of), operating model, pillar scorecard, KPI tracker, monitoring table, ledger rows added since the last version, drift and red team, next gate. Markdown for a morning meeting, or Word through `.agents/skills/docx/SKILL.md` for a review pack. Save to `{task}/`.
 
 Route the work the tracker uncovers rather than doing it here: dated events to `.agents/skills/catalyst-calendar/SKILL.md`, a changed line item to `.agents/skills/model-update/SKILL.md`, a `re-underwrite` call to `.agents/skills/initiating-coverage/SKILL.md`, and a print that needs full decomposition to `.agents/skills/earnings-analysis/SKILL.md`.
 

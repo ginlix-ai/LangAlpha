@@ -106,16 +106,21 @@ describe('warmWorkspace', () => {
       status: 'stopped',
     });
     const listKey = queryKeys.workspaces.list({ limit: 20 });
-    qc.setQueryData(listKey, [
-      { workspace_id: 'ws-1', status: 'stopped' },
-      { workspace_id: 'ws-2', status: 'running' },
-    ]);
+    // The shape every list entry actually has: `getWorkspaces` returns a
+    // WorkspacesResponse, so that is the only shape the patcher handles.
+    qc.setQueryData(listKey, {
+      workspaces: [
+        { workspace_id: 'ws-1', status: 'stopped' },
+        { workspace_id: 'ws-2', status: 'running' },
+      ],
+      total: 2,
+    });
 
     await warmWorkspace('ws-1', qc);
 
-    const list = qc.getQueryData(listKey) as Array<{ workspace_id: string; status: string }>;
-    expect(list[0].status).toBe('starting');
-    expect(list[1].status).toBe('running');
+    const list = qc.getQueryData(listKey) as { workspaces: Array<{ status: string }> };
+    expect(list.workspaces[0].status).toBe('starting');
+    expect(list.workspaces[1].status).toBe('running');
   });
 
   it('dedupes concurrent calls via in-flight Map', async () => {

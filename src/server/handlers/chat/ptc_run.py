@@ -19,6 +19,7 @@ from datetime import datetime
 from fastapi import HTTPException
 from langgraph.types import Command
 
+from ptc_agent.core.project_context import ProjectContext, run_with_project
 from src.server.app import setup
 from src.server.database.workspace import update_workspace_activity
 from src.server.services.runs.sse_producer import RunSSEProducer
@@ -29,6 +30,7 @@ from src.server.models.chat import (
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.server.services.runs.executor import LocalRunExecutor
 from src.server.services.workspace_manager import WorkspaceManager
+from src.server.services.workspace_layout import resolve_project_placement
 from src.observability import (
     chat_turn_phase_duration_ms,
     safe_record,
@@ -94,6 +96,29 @@ from src.server.services.llm.config import resolve_llm_config
 from .steering import drain_steering_return_event
 from .run_stream_reader import stream_from_log
 from .detached import fire_and_forget as _fire_and_forget
+
+
+async def _resolve_project(session, workspace_id: str) -> ProjectContext | None:
+    """The workspace folder this turn runs in, for the sandbox path layer.
+
+    One read: the folder, and the folders parked beside it on the same machine
+    so the agent can name a sibling directory as someone else's work rather
+    than as material it is expected to read.
+
+    Propagates ``WorkspaceLayoutUnavailable``, which fails the turn. The turn
+    would otherwise run at the computer root, where it writes into a shared
+    directory and mirrors every sibling's files back as its own.
+    """
+    sandbox = getattr(session, "sandbox", None)
+    if sandbox is None:
+        return None
+    placement = await resolve_project_placement(workspace_id, root=sandbox.working_dir)
+    return ProjectContext(
+        workspace_id=workspace_id,
+        dir_name=placement.dir_name,
+        sibling_dir_names=placement.sibling_dir_names,
+        layout_origin=placement.layout_origin,
+    )
 
 
 async def _resolve_origin_meta(request, thread_id: str) -> dict:
@@ -243,7 +268,11 @@ async def astream_ptc_workflow(
         # =====================================================================
 
         prior_thread = await ensure_thread(
-            request, thread_id, workspace_id, user_id, msg_type="ptc",
+            request,
+            thread_id,
+            workspace_id,
+            user_id,
+            msg_type="ptc",
             initial_query=user_input,
         )
         turn_context = build_turn_context(request, prior_thread)
@@ -261,7 +290,11 @@ async def astream_ptc_workflow(
         # moves the standalone path onto the ordering production has.
         if config is None:
             config = await resolve_llm_config(
-                setup.agent_config, user_id, request.llm_model, is_byok, mode="ptc",
+                setup.agent_config,
+                user_id,
+                request.llm_model,
+                is_byok,
+                mode="ptc",
                 reasoning_effort=getattr(request, "reasoning_effort", None),
                 fast_mode=getattr(request, "fast_mode", None),
                 thread_id=thread_id,
@@ -300,12 +333,12 @@ async def astream_ptc_workflow(
                     multimodal_ctxs, thread_id
                 )
             if widget_ctxs:
-                query_metadata["widget_contexts"] = serialize_widget_contexts_for_metadata(
-                    widget_ctxs
+                query_metadata["widget_contexts"] = (
+                    serialize_widget_contexts_for_metadata(widget_ctxs)
                 )
             if chart_selections:
-                query_metadata["chart_selections"] = serialize_chart_selections_for_metadata(
-                    chart_selections
+                query_metadata["chart_selections"] = (
+                    serialize_chart_selections_for_metadata(chart_selections)
                 )
 
         # Persist lightweight additional_context + slash command fallback
@@ -313,7 +346,10 @@ async def astream_ptc_workflow(
         # on `not request.hitl_response`, so this is safe to call always.)
         if not request.hitl_response:
             serialize_context_metadata(
-                request, query_metadata, user_input, mode="ptc",
+                request,
+                query_metadata,
+                user_input,
+                mode="ptc",
                 extra_commands=user_skill_commands(config),
                 allowed_skills=turn_skill_names(config, "ptc"),
             )
@@ -380,7 +416,11 @@ async def astream_ptc_workflow(
         # run's spend meter, lease, and refresher. Admission above is its
         # seed verdict; the stream wrapper below owns its lifetime.
         credit_gate = build_run_credit_gate(
-            user_id, run_id, token_callback, tool_tracker, effective_model,
+            user_id,
+            run_id,
+            token_callback,
+            tool_tracker,
+            effective_model,
             is_byok=own_key,
         )
 
@@ -428,8 +468,8 @@ async def astream_ptc_workflow(
             # through session init → PTCSandbox.reconnect. The callback
             # fires once with the state string as soon as reconnect reads
             # it (before runtime.start() is invoked). We coordinate via
-            # asyncio.Event + wait_for — no FIRST_COMPLETED race loop,
-            # session_task is untouched by the wait_for timeout.
+            # asyncio.Event and the acquisition race each other so a warm sibling
+            # does not wait for a reconnect callback it can never emit.
             state_event = asyncio.Event()
             state_box: dict[str, str | None] = {"value": None}
 
@@ -447,13 +487,29 @@ async def astream_ptc_workflow(
             )
 
             try:
-                # Wait up to 5s for reconnect to observe the sandbox state.
-                # On the recovery path (new sandbox) the callback never fires;
-                # we time out, skip the refinement, and proceed.
+
+                async def _wait_for_session():
+                    return await asyncio.shield(session_task)
+
+                state_waiter = asyncio.create_task(state_event.wait())
+                session_waiter = asyncio.create_task(_wait_for_session())
                 try:
-                    await asyncio.wait_for(state_event.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    pass
+                    done, pending = await asyncio.wait(
+                        {state_waiter, session_waiter},
+                        timeout=5.0,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                except BaseException:
+                    state_waiter.cancel()
+                    session_waiter.cancel()
+                    await asyncio.gather(
+                        state_waiter, session_waiter, return_exceptions=True
+                    )
+                    raise
+                for waiter in pending:
+                    waiter.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
 
                 logger.info(
                     "[WS_STATUS] state observation",
@@ -466,7 +522,11 @@ async def astream_ptc_workflow(
                 if state_box["value"] == "archived":
                     yield f"id: 0\nevent: workspace_status\ndata: {json.dumps({'status': 'starting', 'workspace_id': workspace_id, 'sandbox_state': 'archived'})}\n\n"
 
-                session = await session_task
+                session = (
+                    await session_waiter
+                    if session_waiter in done
+                    else await session_task
+                )
                 yield f"id: 0\nevent: workspace_status\ndata: {json.dumps({'status': 'ready', 'workspace_id': workspace_id})}\n\n"
             except BaseException:
                 # Client disconnect / GeneratorExit / any error during the
@@ -514,9 +574,19 @@ async def astream_ptc_workflow(
             direct_tools_for_turn,
         )
 
+        # Resolved once and used three times: the agent build mounts the
+        # workspace's memory off it, the post-turn reconcile materialises that
+        # folder's skills, and the run's own task binds it for the path layer.
+        project = await _resolve_project(session, workspace_id)
+        # Frozen for this project at acquire; the session's own MCP fields are
+        # whichever sibling on the machine resolved last.
+        tool_view = workspace_manager.tool_view(session, workspace_id)
+
         # One relay session per directly bound server, held for the run.
         direct_mcp, order_ledger = await direct_tools_for_turn(
-            bind_direct_mcp_tools(session, user_id=user_id),
+            bind_direct_mcp_tools(
+                session, user_id=user_id, workspace_id=workspace_id, view=tool_view
+            ),
             user_id=user_id,
             workspace_id=workspace_id,
             thread_id=thread_id,
@@ -550,6 +620,8 @@ async def astream_ptc_workflow(
             direct_mcp=direct_mcp,
             order_ledger=order_ledger,
             turn_context=turn_context,
+            project=project,
+            tool_view=tool_view,
         )
 
         _mark_phase("graph_build")
@@ -574,14 +646,19 @@ async def astream_ptc_workflow(
         # user message, so the middleware must not inject (mirrors the prior guard).
         if not request.hitl_response and not is_checkpoint_replay:
             skill_contexts = prepare_skill_contexts(
-                messages, request, mode="ptc",
+                messages,
+                request,
+                mode="ptc",
                 extra_commands=user_skill_commands(config),
                 allowed_skills=turn_skill_names(config, "ptc"),
             )
         else:
             skill_contexts = None
         skill_dirs = (
-            [local_dir for local_dir, _ in config.skills.local_skill_dirs_with_sandbox()]
+            [
+                local_dir
+                for local_dir, _ in config.skills.local_skill_dirs_with_sandbox()
+            ]
             + ([config.user_skill_dir] if config.user_skill_dir else [])
             if skill_contexts
             else None
@@ -673,11 +750,15 @@ async def astream_ptc_workflow(
         # =====================================================================
         # Save user request to system thread directory (non-critical)
         # =====================================================================
-        if not request.hitl_response and session.sandbox:
+        if not request.hitl_response and session.sandbox and project:
             short_id = thread_id[:8]
             try:
-                request_path = session.sandbox.normalize_path(
-                    f".agents/threads/{short_id}/request.md"
+                # The project is passed explicitly: this runs on the request
+                # task, before ``run_with_project`` binds the turn's, so there
+                # is no bound project for the sandbox to resolve against.
+                request_path = (
+                    f"{session.sandbox.workspace(project).thread_dir(short_id)}"
+                    "/request.md"
                 )
                 _fire_and_forget(
                     session.sandbox.awrite_file_text(request_path, user_input),
@@ -741,7 +822,9 @@ async def astream_ptc_workflow(
                 )
 
                 await capture_and_rewrite_images(
-                    sse_events, session.sandbox, thread_id=thread_id,
+                    sse_events,
+                    session.sandbox,
+                    thread_id=thread_id,
                 )
 
         # Post-finalize side effects only (v4): the durable terminal write —
@@ -768,9 +851,10 @@ async def astream_ptc_workflow(
                     user_id=user_id,
                     workspace_id=workspace_id,
                     source="post_turn",
+                    project=project,
                 )
             try:
-                await ws_manager._backup_files_to_db(request.workspace_id)
+                await ws_manager.backup_project_files(request.workspace_id)
             except Exception as e:
                 logger.warning(
                     f"[PTC_COMPLETE] file backup failed for {thread_id}: {e}"
@@ -780,16 +864,22 @@ async def astream_ptc_workflow(
         await manager.start_run(
             thread_id=thread_id,
             run_id=run_id,
-            workflow_generator=run_with_credit_gate(
-                credit_gate,
-                # Relay sessions for direct tools open and close with the
-                # run, in the run's task, not with this request's generator.
-                direct_mcp.drive(
-                    handler.stream_workflow(
-                        graph=ptc_graph,
-                        input_state=input_state,
-                        config=graph_config,
-                    )
+            # The project is bound outermost, in the run's own task: a graph
+            # node runs in a task created from the caller's context, so a
+            # ContextVar set inside the graph would not reach the next node.
+            workflow_generator=run_with_project(
+                project,
+                run_with_credit_gate(
+                    credit_gate,
+                    # Relay sessions for direct tools open and close with the
+                    # run, in the run's task, not with this request's generator.
+                    direct_mcp.drive(
+                        handler.stream_workflow(
+                            graph=ptc_graph,
+                            input_state=input_state,
+                            config=graph_config,
+                        )
+                    ),
                 ),
             ),
             metadata={
@@ -823,8 +913,11 @@ async def astream_ptc_workflow(
         phases = " ".join(f"{k}={v:.0f}ms" for k, v in _phase_times.items())
         llm_def = config.llm_definition
         model_tag = (
-            f"{llm_def.provider}/{llm_def.model_id}" if llm_def
-            else config.llm.name if config.llm else "unknown"
+            f"{llm_def.provider}/{llm_def.model_id}"
+            if llm_def
+            else config.llm.name
+            if config.llm
+            else "unknown"
         )
         logger.info(
             f"[PTC_TIMING] thread_id={thread_id} model={model_tag} total={total_ms:.0f}ms ({phases})"

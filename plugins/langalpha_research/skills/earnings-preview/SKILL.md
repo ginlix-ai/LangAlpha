@@ -136,7 +136,7 @@ Any material news since the last report that creates a contradiction or an open 
 
 ## Step 9: Assemble and deliver
 
-Save deliverables to `$WORK_DIR/work/{task}/`. A formatted document, when the user wants one, is built through `.agents/skills/docx/SKILL.md`. Sections, in order:
+Save deliverables to `{task}/`. A formatted document, when the user wants one, is built through `.agents/skills/docx/SKILL.md`. Sections, in order:
 
 1. Company, quarter, earnings date, freeze-time as-of, readiness posture.
 2. The expectation bar table and the bar sentence.

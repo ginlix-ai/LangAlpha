@@ -161,6 +161,9 @@ function FilePanel({
 
   const { data: wsData } = useWorkspace(workspaceId);
   const isFlashWorkspace = wsData?.status === 'flash';
+  // A file the tree never got is not a file that is gone, so this flag also
+  // decides what a missed reference is told.
+  const filesRestoreIncomplete = wsData?.files_restore_incomplete === true;
 
   // A share has no workspace id of its own, so its bodies are scoped to this
   // mount: two shares open at once must not read each other's bytes.
@@ -658,6 +661,7 @@ function FilePanel({
         // The tree shows this itself; the body takes it over while the tree is
         // folded or absent, so a listing that failed is never a silent blank.
         filesError={treeOpen && !singleFileMode ? null : filesError}
+        filesRestoreIncomplete={treeOpen && !singleFileMode ? false : filesRestoreIncomplete}
         onRefreshFiles={onRefreshFiles}
         busy={selection.deleteLoading || backup.backingUp}
         backupResult={backup.backupResult}
@@ -755,6 +759,7 @@ function FilePanel({
               activePreviewPort={activeTab.kind === 'preview' ? activeTab.port : null}
               onOpenSettings={!readOnly && !isFlashWorkspace ? openSettings : null}
               workspaceName={wsData?.name}
+              filesRestoreIncomplete={filesRestoreIncomplete}
               overlay={narrow}
               onDismissOverlay={() => setTreeOpen(false)}
             />

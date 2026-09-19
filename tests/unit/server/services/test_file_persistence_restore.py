@@ -22,11 +22,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ptc_agent.core.paths import SandboxLayout
 from src.server.database.workspace_file import WorkspaceSyncBusy
 from src.server.services.persistence import restore
 from src.server.services.persistence.transfer import TransferRuntimeError
 
 import hashlib
+
+ROOT = "/workspace"
+DIR_NAME = "relay-ab12"
+# The folder this workspace owns on its computer. Staging names and the sync
+# marker are reserved at the root of the walk, which is this folder.
+LAYOUT = SandboxLayout.for_root(ROOT).for_workspace(DIR_NAME)
 
 
 @pytest.fixture(autouse=True)
@@ -105,7 +112,7 @@ def _file(path: str, text: str = "hello") -> dict:
 
 def _mock_sandbox() -> MagicMock:
     sandbox = MagicMock()
-    sandbox.working_dir = "/workspace"
+    sandbox.working_dir = ROOT
     sandbox.acreate_directories = AsyncMock(return_value=True)
     sandbox.acreate_directory = AsyncMock(return_value=True)
     sandbox.aupload_file_bytes = AsyncMock(return_value=True)
@@ -127,22 +134,27 @@ async def test_relayed_files_are_staged_then_placed_by_the_runtime(mock_get, no_
     ]
     sandbox = _mock_sandbox()
 
-    result = await restore.restore_to_sandbox("ws-1", sandbox)
+    result = await restore.restore_to_sandbox("ws-1", sandbox, layout=LAYOUT)
 
     uploads = {c.args[0]: c.args[1] for c in sandbox.aupload_file_bytes.await_args_list}
     staged = {p: b for p, b in uploads.items() if not p.endswith(".file_sync_marker")}
     assert set(staged.values()) == {b"one", b"two"}
-    assert all(p.startswith("/workspace/.wsfiles-relay-") for p in staged)
+    assert all(p.startswith(f"{LAYOUT.workspace}/.wsfiles-relay-") for p in staged)
     # No final path was ever written directly.
-    assert "/workspace/a/one.txt" not in uploads and "/workspace/two.txt" not in uploads
+    assert f"{LAYOUT.workspace}/a/one.txt" not in uploads
+    assert f"{LAYOUT.workspace}/two.txt" not in uploads
 
     structure, placement = [c.args[1] for c in no_runtime.await_args_list]
     assert [i["path"] for i in structure] == ["a"]
-    assert no_runtime.await_args_list[0].kwargs == {"defer_dir_modes": True}
+    assert no_runtime.await_args_list[0].kwargs == {
+        "defer_dir_modes": True,
+        "layout": LAYOUT,
+    }
     by_path = {i["path"]: i for i in placement}
     assert set(by_path) == {"a/one.txt", "two.txt", "a"}
     one = by_path["a/one.txt"]
-    assert f"/workspace/{one['file']}" in staged and staged[f"/workspace/{one['file']}"] == b"one"
+    staged_one = f"{LAYOUT.workspace}/{one['file']}"
+    assert staged_one in staged and staged[staged_one] == b"one"
     assert one["sha256"] == hashlib.sha256(b"one").hexdigest() and one["size"] == 3
     assert by_path["a"]["kind"] == "dir" and by_path["a"]["mode"] == 0o555
     assert result == {"restored": 3, "errors": 0}
@@ -162,7 +174,7 @@ async def test_a_row_whose_file_size_disagrees_with_its_bytes_is_still_placed(
     row["file_size"] = 999_999
     mock_get.return_value = [row]
 
-    result = await restore.restore_to_sandbox("ws-1", _mock_sandbox())
+    result = await restore.restore_to_sandbox("ws-1", _mock_sandbox(), layout=LAYOUT)
 
     item = no_runtime.await_args_list[0].args[1][0]
     assert item["size"] == 5
@@ -182,7 +194,7 @@ async def test_bytes_that_miss_their_own_hash_are_placed_but_named(
     mock_get.return_value = [row]
 
     with caplog.at_level(logging.WARNING):
-        result = await restore.restore_to_sandbox("ws-1", _mock_sandbox())
+        result = await restore.restore_to_sandbox("ws-1", _mock_sandbox(), layout=LAYOUT)
 
     item = no_runtime.await_args_list[0].args[1][0]
     assert item["sha256"] == hashlib.sha256(b"hello").hexdigest()
@@ -212,7 +224,7 @@ async def test_a_failed_directory_stamp_in_a_relay_restore_is_an_error(mock_get,
     no_runtime.side_effect = _place
     sandbox = _mock_sandbox()
 
-    result = await restore.restore_to_sandbox("ws-1", sandbox)
+    result = await restore.restore_to_sandbox("ws-1", sandbox, layout=LAYOUT)
 
     # The structure pass already counted the directory; the failed stamp
     # adds an error rather than taking that count back.
@@ -240,11 +252,14 @@ async def test_directory_modes_are_still_applied_when_every_file_fails_to_stage(
         side_effect=lambda path, _content: ".wsfiles-relay-" not in path
     )
 
-    result = await restore.restore_to_sandbox("ws-1", sandbox)
+    result = await restore.restore_to_sandbox("ws-1", sandbox, layout=LAYOUT)
 
     structure, placement = [c.args[1] for c in no_runtime.await_args_list]
     assert [i["path"] for i in structure] == ["a"]
-    assert no_runtime.await_args_list[0].kwargs == {"defer_dir_modes": True}
+    assert no_runtime.await_args_list[0].kwargs == {
+        "defer_dir_modes": True,
+        "layout": LAYOUT,
+    }
     # Nothing but the directory items, and the op ran all the same.
     assert [(i["path"], i["kind"], i["mode"]) for i in placement] == [("a", "dir", 0o555)]
     assert result == {"restored": 1, "errors": 2}
@@ -259,7 +274,7 @@ async def test_a_staged_file_the_runtime_rejects_is_an_error_and_keeps_the_flag(
         i["path"]: {"status": "mismatch" if i["path"] == "a.txt" else "ok", "error": "got bytes=1"} for i in items
     }
 
-    result = await restore.restore_to_sandbox("ws-1", _mock_sandbox())
+    result = await restore.restore_to_sandbox("ws-1", _mock_sandbox(), layout=LAYOUT)
 
     assert result == {"restored": 1, "errors": 1}
     assert [c.args for c in restore_flag.await_args_list] == [("ws-1", True)]
@@ -271,7 +286,7 @@ async def test_a_placement_op_that_raises_counts_every_staged_file(mock_get, no_
     mock_get.return_value = [_file("a.txt"), _file("b.txt")]
     no_runtime.side_effect = TransferRuntimeError("sandbox went away")
 
-    result = await restore.restore_to_sandbox("ws-1", _mock_sandbox())
+    result = await restore.restore_to_sandbox("ws-1", _mock_sandbox(), layout=LAYOUT)
 
     assert result == {"restored": 0, "errors": 2}
     assert [c.args for c in restore_flag.await_args_list] == [("ws-1", True)]
@@ -306,7 +321,7 @@ async def test_restore_isolates_per_file_failures(mock_get, restore_flag):
 
     sandbox.aupload_file_bytes = AsyncMock(side_effect=flaky_upload)
 
-    result = await restore.restore_to_sandbox("ws-1", sandbox)
+    result = await restore.restore_to_sandbox("ws-1", sandbox, layout=LAYOUT)
 
     assert result["restored"] == 3
     assert result["errors"] == 2
@@ -323,7 +338,7 @@ async def test_restore_isolates_per_file_failures(mock_get, restore_flag):
 async def test_a_clean_restore_raises_the_flag_then_clears_it(mock_get, restore_flag):
     """The flag is durable before the first byte moves, not after the last one."""
     mock_get.return_value = [_file("a.txt")]
-    result = await restore.restore_to_sandbox("ws-1", _mock_sandbox())
+    result = await restore.restore_to_sandbox("ws-1", _mock_sandbox(), layout=LAYOUT)
 
     assert result == {"restored": 1, "errors": 0}
     assert [c.args for c in restore_flag.await_args_list] == [("ws-1", True), ("ws-1", False)]
@@ -343,7 +358,7 @@ async def test_a_transfer_that_raises_leaves_the_workspace_flagged(
     mock_pull.side_effect = TransferRuntimeError("sandbox went away")
 
     with pytest.raises(TransferRuntimeError):
-        await restore.restore_to_sandbox("ws-1", _mock_sandbox())
+        await restore.restore_to_sandbox("ws-1", _mock_sandbox(), layout=LAYOUT)
 
     assert [c.args for c in restore_flag.await_args_list] == [("ws-1", True)]
 
@@ -361,7 +376,7 @@ async def test_a_lock_wait_that_times_out_still_flags_the_workspace(restore_flag
 
     with patch("src.server.services.persistence.restore.workspace_sync_lock", _busy):
         with pytest.raises(WorkspaceSyncBusy):
-            await restore.restore_to_sandbox("ws-1", _mock_sandbox())
+            await restore.restore_to_sandbox("ws-1", _mock_sandbox(), layout=LAYOUT)
 
     assert [c.args for c in restore_flag.await_args_list] == [("ws-1", True)]
 
@@ -379,10 +394,10 @@ async def test_maybe_restore_counts_structural_rows_as_files_to_restore(mock_get
     with patch.object(
         restore, "restore_to_sandbox", new_callable=AsyncMock
     ) as restore_fn:
-        await restore.maybe_restore("ws-1", sandbox)
+        await restore.maybe_restore("ws-1", sandbox, layout=LAYOUT)
 
     restore_fn.assert_awaited_once_with(
-        "ws-1", sandbox, expected_sandbox_id=sandbox.sandbox_id
+        "ws-1", sandbox, expected_sandbox_id=sandbox.sandbox_id, layout=LAYOUT
     )
     assert mock_get.await_args.kwargs["all_kinds"] is True
 
@@ -408,7 +423,7 @@ async def test_restore_caps_concurrency_at_semaphore_size(mock_get):
 
     sandbox.aupload_file_bytes = AsyncMock(side_effect=tracking_upload)
 
-    await restore.restore_to_sandbox("ws-1", sandbox)
+    await restore.restore_to_sandbox("ws-1", sandbox, layout=LAYOUT)
 
     assert peak <= 16, f"Concurrency cap breached: peak={peak}"
     # Sanity: parallelism actually happened (not forced to 1).
@@ -422,7 +437,7 @@ async def test_restore_empty_file_list_is_noop(mock_get, restore_flag):
     mock_get.return_value = []
     sandbox = _mock_sandbox()
 
-    result = await restore.restore_to_sandbox("ws-1", sandbox)
+    result = await restore.restore_to_sandbox("ws-1", sandbox, layout=LAYOUT)
 
     assert result == {"restored": 0, "errors": 0}
     sandbox.acreate_directories.assert_not_awaited()
@@ -440,7 +455,7 @@ async def test_a_manifest_read_that_raises_leaves_the_workspace_flagged(
     mock_get.side_effect = RuntimeError("db blip")
 
     with pytest.raises(RuntimeError):
-        await restore.restore_to_sandbox("ws-1", _mock_sandbox())
+        await restore.restore_to_sandbox("ws-1", _mock_sandbox(), layout=LAYOUT)
 
     assert [c.args for c in restore_flag.await_args_list] == [("ws-1", True)]
 
@@ -462,7 +477,7 @@ async def test_the_flag_is_raised_before_the_lock_is_requested(restore_flag):
 
     with patch("src.server.services.persistence.restore.workspace_sync_lock", _busy):
         with pytest.raises(WorkspaceSyncBusy):
-            await restore.restore_to_sandbox("ws-1", _mock_sandbox())
+            await restore.restore_to_sandbox("ws-1", _mock_sandbox(), layout=LAYOUT)
 
     assert order == ["flag=True", "lock"]
 
@@ -483,7 +498,7 @@ async def test_a_clean_restore_clears_the_flag_after_the_marker(mock_get, restor
 
     sandbox.aupload_file_bytes = AsyncMock(side_effect=upload)
 
-    await restore.restore_to_sandbox("ws-1", sandbox)
+    await restore.restore_to_sandbox("ws-1", sandbox, layout=LAYOUT)
 
     assert order == ["flag=True", "marker", "flag=False"]
 
@@ -499,7 +514,7 @@ async def test_a_flag_left_standing_beside_a_marker_is_cleared(restore_flag, fla
     sandbox.adownload_file_bytes = AsyncMock(return_value=b"2026")
 
     with patch.object(restore, "restore_to_sandbox", new_callable=AsyncMock) as restore_fn:
-        await restore.maybe_restore("ws-1", sandbox)
+        await restore.maybe_restore("ws-1", sandbox, layout=LAYOUT)
 
     restore_fn.assert_not_awaited()
     assert [c.args for c in restore_flag.await_args_list] == [("ws-1", False)]
@@ -511,7 +526,7 @@ async def test_a_marker_with_no_flag_writes_nothing(restore_flag):
     sandbox.adownload_file_bytes = AsyncMock(return_value=b"2026")
 
     with patch.object(restore, "restore_to_sandbox", new_callable=AsyncMock) as restore_fn:
-        await restore.maybe_restore("ws-1", sandbox)
+        await restore.maybe_restore("ws-1", sandbox, layout=LAYOUT)
 
     restore_fn.assert_not_awaited()
     restore_flag.assert_not_awaited()
@@ -532,7 +547,7 @@ async def test_a_flag_write_that_fails_aborts_before_the_lock(restore_flag):
 
     with patch("src.server.services.persistence.restore.workspace_sync_lock", _lock):
         with pytest.raises(restore.RestoreGuardUnavailable):
-            await restore.restore_to_sandbox("ws-1", _mock_sandbox())
+            await restore.restore_to_sandbox("ws-1", _mock_sandbox(), layout=LAYOUT)
 
     assert requested == []
 
@@ -548,7 +563,9 @@ async def test_the_raise_and_the_clear_each_name_their_sandbox(mock_get, restore
     sandbox = _mock_sandbox()
     sandbox.sandbox_id = "sb-provisional"
 
-    await restore.restore_to_sandbox("ws-1", sandbox, expected_sandbox_id="sb-previous")
+    await restore.restore_to_sandbox(
+        "ws-1", sandbox, expected_sandbox_id="sb-previous", layout=LAYOUT
+    )
 
     raised, cleared = restore_flag.await_args_list
     assert raised.args == ("ws-1", True)
@@ -573,7 +590,10 @@ async def test_a_raise_that_lands_nowhere_aborts_as_identity_lost(restore_flag):
     with patch("src.server.services.persistence.restore.workspace_sync_lock", _lock):
         with pytest.raises(restore.RestoreIdentityLost):
             await restore.restore_to_sandbox(
-                "ws-1", _mock_sandbox(), expected_sandbox_id="sb-previous"
+                "ws-1",
+                _mock_sandbox(),
+                expected_sandbox_id="sb-previous",
+                layout=LAYOUT,
             )
 
     assert requested == []
@@ -588,7 +608,7 @@ async def test_a_reconcile_on_a_bound_sandbox_expects_the_row_to_name_it(mock_ge
     sandbox.sandbox_id = "sb-bound"
     sandbox.adownload_file_bytes = AsyncMock(return_value=None)
 
-    await restore.maybe_restore("ws-1", sandbox)
+    await restore.maybe_restore("ws-1", sandbox, layout=LAYOUT)
 
     raised = restore_flag.await_args_list[0]
     assert raised.args == ("ws-1", True)
@@ -602,7 +622,7 @@ async def test_a_stale_flag_beside_a_marker_is_cleared_for_that_sandbox(restore_
     sandbox.sandbox_id = "sb-bound"
     sandbox.adownload_file_bytes = AsyncMock(return_value=b"2026")
 
-    await restore.maybe_restore("ws-1", sandbox)
+    await restore.maybe_restore("ws-1", sandbox, layout=LAYOUT)
 
     assert restore_flag.await_args.kwargs["sandbox_id"] == "sb-bound"
 
@@ -619,7 +639,7 @@ async def test_a_failed_clear_beside_the_marker_is_retried(restore_flag, flag_st
     sandbox.adownload_file_bytes = AsyncMock(return_value=b"2026")
 
     with patch("src.server.services.persistence.restore._FLAG_CLEAR_BACKOFF_S", 0):
-        await restore.maybe_restore("ws-1", sandbox)
+        await restore.maybe_restore("ws-1", sandbox, layout=LAYOUT)
 
     assert restore_flag.await_count == 2
     assert all(c.args == ("ws-1", False) for c in restore_flag.await_args_list)
@@ -633,7 +653,7 @@ async def test_a_clear_that_keeps_failing_is_logged_as_an_error(restore_flag, fl
     sandbox.adownload_file_bytes = AsyncMock(return_value=b"2026")
 
     with patch("src.server.services.persistence.restore._FLAG_CLEAR_BACKOFF_S", 0):
-        await restore.maybe_restore("ws-1", sandbox)
+        await restore.maybe_restore("ws-1", sandbox, layout=LAYOUT)
 
     assert restore_flag.await_count == restore._FLAG_CLEAR_ATTEMPTS
     assert any(
@@ -653,7 +673,7 @@ async def test_maybe_restore_lets_a_missing_guard_reach_the_caller(mock_get, res
     sandbox.adownload_file_bytes = AsyncMock(return_value=None)
 
     with pytest.raises(restore.RestoreGuardUnavailable):
-        await restore.maybe_restore("ws-1", sandbox)
+        await restore.maybe_restore("ws-1", sandbox, layout=LAYOUT)
 
 
 @pytest.mark.asyncio
@@ -666,5 +686,5 @@ async def test_maybe_restore_treats_an_unreadable_manifest_as_a_missing_guard(mo
     sandbox.adownload_file_bytes = AsyncMock(return_value=None)
 
     with pytest.raises(restore.RestoreGuardUnavailable):
-        await restore.maybe_restore("ws-1", sandbox)
+        await restore.maybe_restore("ws-1", sandbox, layout=LAYOUT)
     restore_flag.assert_not_awaited()

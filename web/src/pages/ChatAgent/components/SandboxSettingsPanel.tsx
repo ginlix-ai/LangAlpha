@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { useQueryClient } from '@tanstack/react-query';
 import { api } from '@/api/client';
 import { useBackdropDismiss, useDialogA11y } from '@/hooks/useDialogA11y';
+import { useWorkspace } from '@/hooks/useWorkspace';
+import { queryKeys } from '@/lib/queryKeys';
 import {
   formatApiErrorDetail, getSandboxStats, refreshWorkspace,
+  startComputer, stopComputer,
 } from '../utils/api';
+import { patchComputerStatusInCaches, useComputers } from '../hooks/useComputers';
+import { denialMessage } from '../utils/denialMessage';
 import { ListEmpty, ListSkeleton } from '@/components/mcp/McpPrimitives';
 import { McpTab } from './mcp/McpTab';
 import { SkillsTab } from './SkillsTab';
@@ -38,6 +45,18 @@ export function SandboxSettingsContent({ workspaceId }: { workspaceId: string })
 
   // Start/stop
   const [actionLoading, setActionLoading] = useState(false);
+
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  // The machine this workspace lives on. Start/stop act on it, and its name
+  // is what the panel has to say out loud before the user stops five projects.
+  const { data: workspace } = useWorkspace(workspaceId);
+  const computerId = workspace?.computer_id ?? null;
+  const { data: computerData } = useComputers({ enabled: !!computerId });
+  const computer = computerId
+    ? computerData?.computers.find((c) => c.computer_id === computerId) ?? null
+    : null;
 
   // Only the newest stats request may commit. Refresh is deliberately never
   // disabled, so a slow full-path read (~15s of probes) can still be in flight
@@ -76,14 +95,24 @@ export function SandboxSettingsContent({ workspaceId }: { workspaceId: string })
     }
   }
 
+  // Start and stop belong to the machine: its sandbox is what runs, and every
+  // workspace on it moves together. Archive still goes through the workspace
+  // alias, which resolves to the same machine server-side.
   async function handleStartStop(action: string) {
     setActionLoading(true);
     try {
-      await api.post(`/api/v1/workspaces/${workspaceId}/${action}`);
+      if (computerId && (action === 'start' || action === 'stop')) {
+        const res = action === 'start'
+          ? await startComputer(computerId, { lazy: true })
+          : await stopComputer(computerId);
+        patchComputerStatusInCaches(queryClient, computerId, res.status);
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.lists() });
+      } else {
+        await api.post(`/api/v1/workspaces/${workspaceId}/${action}`);
+      }
       await loadStats();
     } catch (err) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(detail || `Failed to ${action} workspace`);
+      setError(denialMessage(err, t));
     } finally {
       setActionLoading(false);
     }
@@ -162,6 +191,8 @@ export function SandboxSettingsContent({ workspaceId }: { workspaceId: string })
               refreshing={loading}
               onStartStop={handleStartStop}
               onRefresh={loadStats}
+              computerName={computer?.name ?? null}
+              dirName={workspace?.dir_name ?? null}
             />
           )}
           {activeTab === 'vault' && (

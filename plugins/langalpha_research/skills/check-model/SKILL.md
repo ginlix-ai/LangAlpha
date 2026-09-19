@@ -11,7 +11,7 @@ Evidence labels, source tiers, staleness, the readiness posture and the intake l
 
 ## Step 1: Ingest and scope the audit
 
-- Accept the user's model (`.xlsx` or `.xlsm`) from `$WORK_DIR/work/{task}/`
+- Accept the user's model (`.xlsx` or `.xlsm`) from `{task}/`
 - Identify the model type: DCF, LBO, merger, 3-statement, comps, returns, or custom
 - Map the structure: which tabs exist, how they link, where inputs live against outputs
 
@@ -171,7 +171,7 @@ Material inputs are the ones the output moves with: revenue and margin drivers, 
 
 ## Step 8: Write the report
 
-Save deliverables to `$WORK_DIR/work/{task}/`.
+Save deliverables to `{task}/`.
 
 ### Readiness posture, at the top
 

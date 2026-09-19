@@ -56,6 +56,8 @@ export interface TreeColumnProps {
   onUpload: () => void;
   onOpenSettings: (() => void) | null;
   workspaceName?: string;
+  /** The backup restore did not finish, so the listing may be short. */
+  filesRestoreIncomplete: boolean;
 
   /** Under a narrow panel the column floats over the viewer instead of beside it. */
   overlay: boolean;
@@ -266,10 +268,20 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
             <p className="mt-1.5 text-xs break-all" style={{ color: 'var(--color-text-secondary)' }}>
               {filter.extraMatches.length > 1
                 ? t('filePanel.refAmbiguous', { path: filter.missedRef })
-                : t('filePanel.refNotFound', { path: filter.missedRef })}
+                : props.filesRestoreIncomplete
+                  ? t('filePanel.restoreIncomplete')
+                  : t('filePanel.refNotFound', { path: filter.missedRef })}
             </p>
           )}
         </div>
+
+        {/* An unfinished restore, said once. The missed-reference line above
+            carries the same sentence when that is what landed here. */}
+        {!selection.selectMode && !filter.missedRef && props.filesRestoreIncomplete && (
+          <p className="px-2 pb-1.5 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+            {t('filePanel.restoreIncomplete')}
+          </p>
+        )}
 
         {props.scopeDir != null && (
           <div className="file-panel-tree-scope">

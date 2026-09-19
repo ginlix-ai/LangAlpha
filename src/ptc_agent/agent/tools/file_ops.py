@@ -16,7 +16,7 @@ from ptc_agent.agent.tools.context_file_policy import (
     fill_note,
     over_cap_refusal,
 )
-from ptc_agent.core.paths import MEMO_USER_DIR, workspace_relative_path
+from ptc_agent.core.paths import MEMO_USER_DIR
 from src.server.services.user_data_io import UserDataValidationError
 
 logger = structlog.get_logger(__name__)
@@ -91,9 +91,9 @@ def create_filesystem_tools(
 
     def _capped(normalized_path: str) -> CappedFile | None:
         return capped_file(
-            workspace_relative_path(
-                normalized_path, backend.filesystem_config.working_directory
-            )
+            normalized_path,
+            workspace_dir=backend.workspace_dir,
+            computer_root=backend.computer_root,
         )
 
     @tool("Read")
@@ -128,7 +128,7 @@ def create_filesystem_tools(
                 normalized_path = backend.normalize_path(file_path)
                 logger.info("Loading image file", file_path=file_path, normalized_path=normalized_path)
 
-                if backend.filesystem_config.enable_path_validation and not backend.validate_path(normalized_path):
+                if backend.filesystem_config.enable_path_validation and not backend.validate_path(file_path):
                     error_msg = f"Access denied: {file_path} is not in allowed directories"
                     logger.error(error_msg, file_path=file_path)
                     return f"ERROR: {error_msg}"
@@ -140,7 +140,7 @@ def create_filesystem_tools(
             normalized_path = backend.normalize_path(file_path)
             logger.info("Reading file", file_path=file_path, normalized_path=normalized_path, offset=offset, limit=limit)
 
-            if backend.filesystem_config.enable_path_validation and not backend.validate_path(normalized_path):
+            if backend.filesystem_config.enable_path_validation and not backend.validate_path(file_path):
                 error_msg = f"Access denied: {file_path} is not in allowed directories"
                 logger.error(error_msg, file_path=file_path)
                 return f"ERROR: {error_msg}"
@@ -249,7 +249,7 @@ def create_filesystem_tools(
             normalized_path = backend.normalize_path(file_path)
             logger.info("Writing file", file_path=file_path, normalized_path=normalized_path, size=len(content))
 
-            if backend.filesystem_config.enable_path_validation and not backend.validate_path(normalized_path):
+            if backend.filesystem_config.enable_path_validation and not backend.validate_path(file_path):
                 error_msg = f"Access denied: {file_path} is not in allowed directories"
                 logger.error(error_msg, file_path=file_path)
                 return f"ERROR: {error_msg}"
@@ -325,7 +325,7 @@ def create_filesystem_tools(
                 replace_all=replace_all,
             )
 
-            if backend.filesystem_config.enable_path_validation and not backend.validate_path(normalized_path):
+            if backend.filesystem_config.enable_path_validation and not backend.validate_path(file_path):
                 error_msg = f"Access denied: {file_path} is not in allowed directories"
                 logger.error(error_msg, file_path=file_path)
                 return f"ERROR: {error_msg}"

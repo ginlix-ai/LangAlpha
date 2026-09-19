@@ -1,20 +1,28 @@
+{#- The canonical path table. Its names come from `WorkspaceLayout` and
+    `SandboxLayout` via `workspace_path_vars`, so the one surface that must
+    never drift from `paths.py` transcribes it instead of restating it. Every
+    other template keeps its paths as prose. -#}
 # Workspace Structure
 
-Working directory: `{{ working_directory | default('/home/workspace') }}`
+Working directory: `{{ working_directory }}`
+
+Everything below is relative to it, and so is every path you write.
 
 ## Directory Layout
 
 | Path | Purpose |
 |------|---------|
-| `agent.md` | Workspace purpose, long-term goals, index of what each task produced |
-| `work/<task_name>/` | Everything for one task: scripts, drafts, and the finished deliverable |
-| `work/<task_name>/data/` | Data for this task |
-| `work/<task_name>/charts/` | Visualizations for this task |
-| `data/` | Shared reusable datasets across threads |
-| `tools/` | MCP tool modules (auto-generated, read only) |
-| `.agents/user/` | User profile — preferences, watchlist, portfolio (read only) |
+| `{{ workspace_paths.agent_md }}` | Workspace purpose, long-term goals, index of what each task produced |
+| `<task_name>/` | One directory per task, directly here: scripts, drafts, and the finished deliverable |
+| `<task_name>/data/` | Data for this task |
+| `<task_name>/charts/` | Visualizations for this task |
+| `{{ workspace_paths.data }}/` | Shared reusable datasets across tasks and threads |
+| `{{ workspace_paths.tools_docs }}/<server>/` | One `.md` per MCP tool (read only) |
+| `{{ workspace_paths.skills }}/<name>/` | Skills available here (read only unless you are installing one) |
+| `{{ workspace_paths.memory }}/` | This workspace's long-term memory |
+| `{{ workspace_paths.user }}/` | User profile, memory and memos; follows the user everywhere (read only) |
 
-Always organize data and charts into their subdirectories — never scatter loose files.
+Always organize data and charts into their subdirectories, never scatter loose files. The working directory itself holds only `{{ workspace_paths.agent_md }}`, `{{ workspace_paths.data }}/` and the task directories; a task file never sits loose here.
 
 ## Path Rules
 
@@ -23,19 +31,25 @@ Always use RELATIVE paths for ExecuteCode and File tools. Bash accepts both.
 
 ```python
 # Task work — data and charts in subdirs
-with open('work/amd_analysis/data/prices.json', 'w') as f: ...
-plt.savefig('work/amd_analysis/charts/revenue_trend.png')
+with open('amd_analysis/data/prices.json', 'w') as f: ...
+plt.savefig('amd_analysis/charts/revenue_trend.png')
 
 # The deliverable
-with open('work/amd_analysis/amd_dcf_analysis.md', 'w') as f: ...
+with open('amd_analysis/amd_dcf_analysis.md', 'w') as f: ...
 ```
 {% endif %}
 
 Two different rules for embedding a chart, depending on the document:
 
-- **Markdown** (report `.md`, or your chat reply): paths resolve from the workspace root, so write the full path — `![](work/amd_analysis/charts/revenue_trend.png)`.
+- **Markdown** (report `.md`, or your chat reply): paths resolve from the working directory, so write the full path: `![](amd_analysis/charts/revenue_trend.png)`.
 - **HTML** (`.html` served in the file panel): paths resolve from the document's own directory, so write the short path — `<img src="charts/revenue_trend.png">`.
 
 **NEVER use these path patterns**:
+- Absolute paths like `/<task_name>/` or `/{{ workspace_paths.data }}/`. The file tools quietly read a leading slash as relative to the working directory, but `open()` in ExecuteCode and a path in Bash do not: they go to the real filesystem root, where none of these exist
 - `/workspace/...` — wrong prefix
-- Absolute paths like `/work/` or `/data/` — these don't exist at root level
+{% if legacy_layout %}
+
+## Older Files Here
+
+This workspace predates the current layout. Its files used to live directly under `{{ legacy_root }}/` and are now under `{{ working_directory }}/`; tool docs moved from `{{ legacy_tools_docs }}/` to `{{ workspace_paths.tools_docs }}/`. Scripts, `{{ workspace_paths.agent_md }}`, memory entries and older thread results may still spell the old paths. The file tools read the old absolute spelling correctly; `open()` in code and a path in Bash do not, so rewrite a stale path when you touch the file.
+{% endif %}

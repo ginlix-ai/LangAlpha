@@ -1,8 +1,10 @@
 """
 Request and response models for Workspace management API.
 
-Workspaces provide isolated environments for PTC agents, with each workspace
-having a dedicated Daytona sandbox (1:1 mapping).
+A workspace is a project the agent works in; the isolated environment it runs
+in is a computer (``models/computer.py``), named here by ``computer_id``. The
+sandbox-lifecycle fields on ``WorkspaceResponse`` read the write-through shadow
+of that computer's row.
 """
 
 import uuid
@@ -24,6 +26,16 @@ class WorkspaceStatus(str, Enum):
     ERROR = "error"
     DELETED = "deleted"
     FLASH = "flash"
+
+
+#: While the sandbox is not serving, file routes answer from the mirror rows.
+MIRROR_SERVED_STATUSES = frozenset(
+    {WorkspaceStatus.STOPPED, WorkspaceStatus.STOPPING, WorkspaceStatus.STARTING}
+)
+
+
+def served_from_mirror(status: str | None) -> bool:
+    return status in MIRROR_SERVED_STATUSES
 
 
 class WorkspaceCreate(BaseModel):
@@ -114,6 +126,20 @@ class WorkspaceResponse(BaseModel):
         None,
         description="Daytona sandbox ID (null if not yet created)",
     )
+    computer_id: Optional[str] = Field(
+        None,
+        description=(
+            "The computer this workspace runs on (null for a flash workspace, "
+            "or one not bound to a computer)"
+        ),
+    )
+    dir_name: Optional[str] = Field(
+        None,
+        description=(
+            "The folder this workspace owns on its computer; null for a "
+            "workspace with no computer"
+        ),
+    )
     status: str = Field(
         description=(
             "Workspace status: creating, starting, running, stopping, stopped, "
@@ -143,6 +169,13 @@ class WorkspaceResponse(BaseModel):
     is_always_on: bool = Field(
         False,
         description="Whether auto-stop is disabled (always-on sandbox)",
+    )
+    files_restore_incomplete: bool = Field(
+        False,
+        description=(
+            "Whether a restore left files unrecovered, so a file the workspace "
+            "records may be absent from its folder"
+        ),
     )
 
     model_config = ConfigDict(from_attributes=True)

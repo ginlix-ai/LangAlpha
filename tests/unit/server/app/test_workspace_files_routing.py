@@ -36,7 +36,7 @@ def _workspace(ws_id: str, user_id: str, status: str) -> dict:
 
 
 @pytest.mark.asyncio
-@patch("src.server.app.workspace_files.crud._get_work_dir", return_value="/home/workspace")
+@patch("src.server.app.workspace_files.crud.owner_work_dir", return_value="/home/workspace")
 @patch("src.server.app.workspace_files.crud.FilePersistenceService")
 @patch("src.server.app.workspace_files.crud.db_get_workspace")
 async def test_starting_status_routes_to_db_fallback(
@@ -70,7 +70,7 @@ async def test_starting_status_routes_to_db_fallback(
 
 
 @pytest.mark.asyncio
-@patch("src.server.app.workspace_files.crud._get_work_dir", return_value="/home/workspace")
+@patch("src.server.app.workspace_files.crud.owner_work_dir", return_value="/home/workspace")
 @patch("src.server.app.workspace_files.crud.FilePersistenceService")
 @patch("src.server.app.workspace_files.crud.db_get_workspace")
 async def test_files_during_concurrent_failing_lazy_init(

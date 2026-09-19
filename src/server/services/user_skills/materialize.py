@@ -5,18 +5,20 @@ host filesystem (``<root>/<user-hash>/<scope>/<view-hash>/<name>/SKILL.md``)
 so the common case — nothing changed — is a single ``stat``. The view hash
 covers every effective row's ``content_hash``, so any upload/delete/toggle
 produces a new view dir and the stale one is GC'd. Views are namespaced per
-scope (``user`` or a workspace hash) because GC removes siblings: without the
-namespace, turns alternating between two workspaces would tear down each
-other's views every sync. Concurrent workers racing to build the same view
-converge via ``os.replace`` (the pattern assets.py/ptc_sandbox.py already
-use).
+scope (the shared user tier, or one workspace's own rows) because GC removes
+siblings: without the namespace, turns alternating between two workspaces
+would tear down each other's views every sync. Concurrent workers racing to
+build the same view converge via ``os.replace`` (the pattern
+assets.py/ptc_sandbox.py already use).
 
 ``load_user_skill_bundle`` is the single entry point every caller uses: one
 indexed query + one (Redis-cached) prefs read + the fast-path stat, plus two
 concurrent scope reads when a ``workspace_id`` is given. With a
-``workspace_id`` it resolves the workspace-effective view: workspace rows
+``workspace_id`` it resolves the workspace-effective set: workspace rows
 shadow same-named user rows by name whatever their enabled state, and the
-workspace's disables drop inherited skills. There is deliberately no extra
+workspace's disables drop inherited skills. Both shape the effective set
+only; the delivery directory stays the whole enabled user tier, one view
+shared by every workspace on the computer. There is deliberately no extra
 caching layer — a per-process TTL cache would be module-level state consulted
 by a request path, which AGENTS.md forbids.
 """
@@ -86,16 +88,26 @@ class UserSkillBundle:
 
     dir: str | None
     skills: tuple[UserSkillSpec, ...]
-    disabled_builtins: frozenset[str]
+    # The two disable tiers are stored apart because only this one prunes the
+    # shared skill directory the sandbox upload writes.
+    account_disabled_builtins: frozenset[str]
     command_overrides: Mapping[str, str] = field(default_factory=dict)
     # Workspace-tier bodies live in their own view: the host still needs them
     # to answer slash commands and Flash inline delivery, but they must never
     # enter ``dir``, which is what the sandbox delivery path uploads.
     workspace_dir: str | None = None
+    # Names only this workspace switched off. That shared directory serves
+    # sibling workspaces on the same computer, so these reach the agent as an
+    # absent link in the workspace's own view, never as a pruned upload.
+    workspace_disabled_builtins: frozenset[str] = frozenset()
+
+    @property
+    def disabled_builtins(self) -> frozenset[str]:
+        return self.account_disabled_builtins | self.workspace_disabled_builtins
 
 
 EMPTY_USER_SKILL_BUNDLE = UserSkillBundle(
-    dir=None, skills=(), disabled_builtins=frozenset()
+    dir=None, skills=(), account_disabled_builtins=frozenset()
 )
 
 
@@ -306,21 +318,25 @@ async def load_user_skill_bundle(
     With a workspace, the effective set is the two-tier union with workspace
     rows shadowing same-named user rows, minus the workspace's disables of
     inherited skills. Those disables, and the skills owned by a bundle the
-    user switched off, extend ``disabled_builtins``, so a
-    platform skill they name drops from the registry and the sandbox upload;
-    a user-tier name in the set is a no-op there (platform-only consumers)
-    and takes effect through the row filter here.
+    user switched off, both count in ``disabled_builtins``, so a platform
+    skill they name drops from the registry; a user-tier name in the set is a
+    no-op there (platform-only consumers) and takes effect through the row
+    filter here.
 
     Two views, because one directory can't serve both jobs. The delivery view
-    (``dir``) carries the USER tier only: workspace-tier rows are two-way
-    synced by the reconciler, which is the sole writer of their sandbox dirs,
-    so uploading them through the generic managed path would fight it.
-    ``workspace_dir`` carries the workspace tier for host-side reads (slash
-    commands, Flash inline delivery), which need every effective skill's body
-    regardless of who delivers it. ``skills`` spans the full effective union.
+    (``dir``) carries the user tier, all of it, whatever this workspace
+    shadows or disables: it materialises the computer's single shared skill
+    directory, from which the asset sync prunes every managed name the view
+    omits, so a narrowed view takes the skill from the sibling workspaces
+    too. Workspace-tier rows stay out of it because the reconciler is the
+    sole writer of their sandbox dirs. ``workspace_dir`` carries the
+    workspace tier for host-side reads (slash commands, Flash inline
+    delivery), which need every effective skill's body regardless of who
+    delivers it. ``skills`` spans the effective union, where shadowing and
+    the workspace's disables do apply.
     """
     rows = await list_enabled_user_skills(user_id, workspace_id=workspace_id)
-    disabled = await get_disabled_builtin_skills(user_id)
+    account_disabled = await get_disabled_builtin_skills(user_id)
     command_overrides = await get_skill_command_overrides(user_id)
 
     # A switched-off bundle subtracts the skills it ships, by name, into the
@@ -336,26 +352,21 @@ async def load_user_skill_bundle(
         from src.server.services.plugins.bundled import enforcement_owners
 
         _, owned = enforcement_owners().owned_by(bundle_names)
-        disabled = disabled | owned
+        account_disabled = account_disabled | owned
 
-    scope = "user"
     own: list[dict[str, Any]] = []
     if workspace_id is not None:
-        # Shadowing is by NAME, not by enabled state. A disabled workspace row
-        # still owns its name here: otherwise disabling it promotes the
-        # inherited user-tier row into the delivery view, the asset sync writes
-        # those bytes over the reconciler-owned dir (breaking the invariant
-        # merge_lock_files documents), and the next pass CASes them back over
-        # the workspace row's stored content. Disabling a workspace skill turns
-        # that name off in the workspace, which is what the management list
-        # already shows. Reading the unfiltered scope is a second query, so it
-        # rides alongside the disables read rather than after it.
+        # Shadowing is by NAME, not by enabled state: a disabled workspace row
+        # still owns its name, so turning it off turns the name off here
+        # instead of falling the workspace back to the inherited body, which
+        # is what the management list already shows. Reading the unfiltered
+        # scope is a second query, so it rides alongside the disables read
+        # rather than after it.
         ws_disabled, all_ws_rows = await asyncio.gather(
             list_workspace_skill_disables(workspace_id),
             list_user_skills(user_id, workspace_id=workspace_id),
         )
-        if ws_disabled:
-            disabled = disabled | ws_disabled
+        workspace_disabled = frozenset(ws_disabled)
         ws_names = {r["name"] for r in all_ws_rows}
         effective = [
             r
@@ -363,19 +374,21 @@ async def load_user_skill_bundle(
             if r["workspace_id"]
             or (r["name"] not in ws_names and r["name"] not in ws_disabled)
         ]
-        physical = [r for r in effective if not r["workspace_id"]]
         own = [r for r in effective if r["workspace_id"]]
-        # Reuse the plain user view (and its GC namespace) when the physical
-        # view is identical to it — workspace rows never enter the physical
-        # view, so only shadowing or a disable of a user-tier name forks it.
-        if len(physical) != sum(1 for r in rows if not r["workspace_id"]):
-            scope = _scope_key(workspace_id)
     else:
+        workspace_disabled = frozenset()
         effective = rows
-        physical = rows
+    # Deliberately ``rows`` and not ``effective``: the delivery view is the
+    # whole enabled user tier, one view for every workspace on the computer.
+    # It feeds one shared sandbox directory, and the asset sync prunes from
+    # that directory every managed name the view omits, so subtracting this
+    # workspace's disables or shadows here is what made a sibling's turn lose
+    # the skill (and made the directory flip-flop per turn). The workspace's
+    # narrower view is the reconciler's link pass, which prunes links.
+    physical = [r for r in rows if not r["workspace_id"]]
 
     (skill_dir, ok_rows), (ws_dir, ok_own) = await asyncio.gather(
-        resolve_user_skill_dir(user_id, physical, scope=scope),
+        resolve_user_skill_dir(user_id, physical),
         resolve_user_skill_dir(user_id, own, scope=_own_scope_key(workspace_id)),
     )
     # A row whose archive can't be fetched has no body to read, so it drops
@@ -386,6 +399,7 @@ async def load_user_skill_bundle(
     return UserSkillBundle(
         dir=skill_dir,
         workspace_dir=ws_dir,
+        workspace_disabled_builtins=workspace_disabled,
         skills=tuple(
             UserSkillSpec(
                 name=r["name"],
@@ -395,7 +409,7 @@ async def load_user_skill_bundle(
             )
             for r in spec_rows
         ),
-        disabled_builtins=disabled,
+        account_disabled_builtins=account_disabled,
         command_overrides=command_overrides,
     )
 
@@ -428,8 +442,11 @@ async def sandbox_skill_sync_params(
         return {}
     bundle = await load_user_skill_bundle(user_id, workspace_id)
     params: dict[str, Any] = {}
-    if bundle.disabled_builtins:
-        params["disabled_skills"] = bundle.disabled_builtins
+    # Account-level disables only. A workspace's own disables are applied to
+    # its link view by the reconciler; pruning them from the shared directory
+    # would take the skill from every sibling workspace on the computer.
+    if bundle.account_disabled_builtins:
+        params["disabled_skills"] = bundle.account_disabled_builtins
     if bundle.dir:
         params["user_skill_dir"] = (bundle.dir, sandbox_skills_base)
     return params

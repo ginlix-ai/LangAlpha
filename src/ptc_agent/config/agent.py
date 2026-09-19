@@ -24,6 +24,7 @@ from ptc_agent.config.core import (
     SandboxConfig,
     SecurityConfig,
     create_default_security_config,
+    default_sandbox_skills_base,
     validate_daytona_api_key,
 )
 
@@ -508,7 +509,7 @@ class AgentConfig(BaseModel):
             user_skills_dir=kwargs.pop("user_skills_dir", "~/.ptc-agent/skills"),
             sandbox_skills_base=kwargs.pop(
                 "sandbox_skills_base",
-                f"{filesystem_config.working_directory}/.agents/skills",
+                default_sandbox_skills_base(filesystem_config.working_directory),
             ),
         )
 
@@ -613,19 +614,19 @@ class AgentConfig(BaseModel):
     def to_core_config(self) -> CoreConfig:
         """Convert to CoreConfig for use with SessionManager.
 
-        Returns:
-            CoreConfig instance with sandbox/MCP settings
+        Every section is deep-copied, so a CoreConfig shares no mutable state
+        with the AgentConfig it came from or with any sibling CoreConfig. One
+        CoreConfig is one workspace's sandbox: sharing these by reference made
+        a per-workspace change to the effective MCP server set, the resource
+        tier, the working directory or the platform-secret version land on
+        every other workspace in the process at the same time.
         """
         core_config = CoreConfig(
-            sandbox=self.sandbox,
-            security=self.security,
-            # Deep-copy the MCP config so each CoreConfig (hence each workspace
-            # sandbox) owns its MCPConfig. Sharing it by reference made every
-            # workspace's effective server set the same object — Phase 2 swaps
-            # in per-workspace servers, which must not bleed across workspaces.
+            sandbox=self.sandbox.model_copy(deep=True),
+            security=self.security.model_copy(deep=True),
             mcp=self.mcp.model_copy(deep=True),
-            logging=self.logging,
-            filesystem=self.filesystem,
+            logging=self.logging.model_copy(deep=True),
+            filesystem=self.filesystem.model_copy(deep=True),
         )
         core_config.config_file_dir = self.config_file_dir
         return core_config

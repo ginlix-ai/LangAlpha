@@ -332,7 +332,7 @@ async def test_market_data_no_symbol_falls_back_to_tool_name(middleware):
     [
         (".agents/user/memo/notes.md", "memo_read"),
         (".agents/user/memory/memory.md", "memory_read"),
-        (".agents/workspace/memory/memory.md", "memory_read"),
+        (".agents/memory/memory.md", "memory_read"),
         ("work/analysis/output.csv", "file_read"),
         # Absolute sandbox paths classify the same as their relative forms (the
         # agent emits absolute paths; the sandbox root is stripped first).

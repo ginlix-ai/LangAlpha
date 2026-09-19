@@ -15,7 +15,12 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, Field, StringConstraints
 
-from ._shared import _is_always_hidden_path, _is_hidden_path, _is_system_path
+from ._shared import (
+    _is_always_hidden_path,
+    _is_hidden_path,
+    _is_system_path,
+    workspace_relative_path,
+)
 
 _GLOB_SPECIAL_RE = re.compile(r"([*?\[])")
 
@@ -44,18 +49,22 @@ class ResolveFileRefRequest(BaseModel):
 def clean_path(value: str, work_dir: str) -> str | None:
     """A workspace-relative path, or None for one that names no workspace file.
 
+    ``work_dir`` is the workspace's own folder, never the computer root it sits
+    on: several workspaces share that root, and a reference relative to it
+    would name a sibling's file. A reference that spells the root anyway is the
+    older spelling of a file that now lives in the folder, and
+    ``workspace_relative_path`` folds it there.
+
     Four call sites read the result as workspace-relative, so a path still
-    absolute after the working directory comes off is refused here rather than
-    handed on to a glob that would search for it under the workspace anyway.
+    absolute after the fold is refused here rather than handed on to a glob
+    that would search for it under the workspace anyway.
     """
-    path = (value or "").strip().replace("\\", "/")
-    prefix = work_dir.rstrip("/") + "/"
-    if path.startswith(prefix):
-        path = path[len(prefix):]
-    while path.startswith("./"):
-        path = path[2:]
-    path = path.rstrip("/")
+    path = workspace_relative_path(value, work_dir)
     if not path or path.startswith("/") or ".." in path.split("/"):
+        return None
+    # A ``file:`` URL can spell a NUL percent-encoded, and the result of this
+    # function becomes a glob the sandbox runs, so it is refused here too.
+    if "\x00" in path:
         return None
     return path
 

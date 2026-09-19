@@ -17,6 +17,7 @@ from deepagents.backends.utils import (
     format_content_with_line_numbers,
     sanitize_tool_call_id,
 )
+from ptc_agent.core.paths import WorkspaceLayout
 from src.llms.attachment_payload import has_attachment
 
 # Approximate number of characters per token for truncation calculations.
@@ -116,7 +117,7 @@ class LargeResultEvictionMiddleware(AgentMiddleware):
         *,
         backend: BackendProtocol,
         tool_token_limit_before_evict: int = 40000,
-        eviction_dir: str = ".agents/large_tool_results",
+        eviction_dir: str = WorkspaceLayout.LARGE_TOOL_RESULTS_DIR,
     ) -> None:
         """Initialize the large result eviction middleware.
 

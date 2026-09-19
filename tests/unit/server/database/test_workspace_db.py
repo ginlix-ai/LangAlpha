@@ -289,9 +289,10 @@ async def test_update_workspace_status_stopped(ws_mock_db, mock_cursor):
 async def test_update_workspace_status_running(ws_mock_db, mock_cursor):
     """A status move omits stopped_at, and never touches sandbox_id.
 
-    The binding is owned solely by ``try_bind_workspace_sandbox``'s
-    compare-and-set; a status writer that could also rebind is how a workspace
-    ends up pointing at a sandbox that was already replaced.
+    ``sandbox_id`` shadows ``computers.provider_ref``, and the binding is owned
+    solely by ``try_bind_computer_provider_ref``'s compare-and-set; a status
+    writer that could also rebind is how a workspace ends up pointing at a
+    sandbox that was already replaced.
     """
     from src.server.database.workspace import update_workspace_status
 
@@ -302,11 +303,15 @@ async def test_update_workspace_status_running(ws_mock_db, mock_cursor):
 
     assert result["status"] == "running"
     sql = mock_cursor.execute.call_args[0][0]
-    # stopped_at and sandbox_id should NOT be in the SET clause (both appear in
-    # RETURNING). Extract just the SET portion of the SQL.
-    set_clause = sql.split("SET")[1].split("WHERE")[0]
-    assert "stopped_at" not in set_clause
-    assert "sandbox_id" not in set_clause
+    # stopped_at, sandbox_id and provider_ref should NOT be in either SET clause
+    # (sandbox_id appears in RETURNING). The statement moves two rows now, so
+    # check every SET it carries, not just the first.
+    set_clauses = [part.split("WHERE")[0] for part in sql.split("SET")[1:]]
+    assert set_clauses
+    for set_clause in set_clauses:
+        assert "stopped_at" not in set_clause
+        assert "sandbox_id" not in set_clause
+        assert "provider_ref" not in set_clause
 
 
 @pytest.mark.asyncio
@@ -325,17 +330,17 @@ async def test_delete_workspace_soft(ws_mock_db, mock_cursor):
 
 
 @pytest.mark.asyncio
-async def test_delete_workspace_hard(ws_mock_db, mock_cursor):
-    """delete_workspace (hard) uses DELETE FROM."""
+async def test_delete_workspace_never_removes_the_row(ws_mock_db, mock_cursor):
+    """A removed row takes the layout owner's identity with it, and migration
+    046's ON DELETE SET NULL then leaves its folder owned by nobody."""
     from src.server.database.workspace import delete_workspace
 
     mock_cursor.fetchone.return_value = {"workspace_id": "ws-1"}
 
-    deleted = await delete_workspace("ws-1", hard_delete=True)
+    await delete_workspace("ws-1")
 
-    assert deleted is True
     sql = mock_cursor.execute.call_args[0][0]
-    assert "DELETE FROM workspaces" in sql
+    assert "DELETE FROM" not in sql
 
 
 @pytest.mark.asyncio
@@ -399,15 +404,20 @@ async def test_update_workspace_activity(ws_mock_db, mock_cursor):
     """update_workspace_activity uses conditional UPDATE (skip if <60s)."""
     from src.server.database.workspace import update_workspace_activity
 
-    mock_cursor.rowcount = 1
+    # The workspace half of the write-through reports whether it stamped, so a
+    # caller cannot read the computer's own cooldown as this workspace's.
+    mock_cursor.fetchone.return_value = {"stamped": 1}
 
     result = await update_workspace_activity("ws-1")
 
     assert result is True
     sql = mock_cursor.execute.call_args[0][0]
     assert "last_activity_at" in sql
-    assert "status != 'deleted'" in sql
+    assert "status <> 'deleted'" in sql
     assert "INTERVAL" in sql  # conditional: skip if <60s
+
+    mock_cursor.fetchone.return_value = {"stamped": 0}
+    assert await update_workspace_activity("ws-1") is False
 
 
 @pytest.mark.asyncio
@@ -419,3 +429,112 @@ async def test_update_workspace_activity_not_found(ws_mock_db, mock_cursor):
 
     result = await update_workspace_activity("nonexistent")
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# The computer write-through (migration 046)
+#
+# Every sandbox-lifecycle column left on this table is a shadow of the
+# ``computers`` row. What these lock is that each writer stays ONE statement
+# with ``comp`` ahead of ``shadow`` -- two statements can half-commit and leave
+# a reader seeing a machine that is running on one row and stopped on the other,
+# and the shared order is what keeps concurrent writers from deadlocking.
+# ---------------------------------------------------------------------------
+
+
+def _one_write_through_statement(mock_cursor):
+    assert mock_cursor.execute.await_count == 1, "two statements can half-commit"
+    sql = " ".join(mock_cursor.execute.call_args[0][0].split())
+    assert "UPDATE computers" in sql and "UPDATE workspaces" in sql
+    assert sql.index("WITH comp AS") < sql.index("shadow AS")
+    return sql
+
+
+@pytest.mark.asyncio
+async def test_a_status_move_carries_the_computer_with_it(ws_mock_db, mock_cursor):
+    from src.server.database.workspace import update_workspace_status
+
+    mock_cursor.fetchone.return_value = _workspace_row(status="stopping")
+
+    await update_workspace_status("ws-1", "stopping")
+
+    sql = _one_write_through_statement(mock_cursor)
+    # One spelling of the fence, from sql_fences, on both sides of the shadow.
+    assert "c.status <> 'deleted'" in sql
+    assert "w.status <> 'deleted'" in sql
+
+
+@pytest.mark.asyncio
+async def test_a_soft_delete_leaves_the_machine_alone(ws_mock_db, mock_cursor):
+    """Deleting a project is not deleting the machine: several projects will
+    share one, and the teardown belongs where the sandbox is destroyed."""
+    from src.server.database.workspace import delete_workspace, update_workspace_status
+
+    mock_cursor.fetchone.return_value = {"workspace_id": "ws-1"}
+    await delete_workspace("ws-1")
+    assert "computers" not in mock_cursor.execute.call_args[0][0]
+
+    mock_cursor.fetchone.return_value = _workspace_row(status="deleted")
+    await update_workspace_status("ws-1", "deleted")
+    assert "computers" not in mock_cursor.execute.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_a_flash_workspace_has_no_machine_to_move(ws_mock_db, mock_cursor):
+    """'flash' is not in 046's CHECK set, so mirroring it would fail the
+    statement after it had already moved the workspace row."""
+    from src.server.database.workspace import update_workspace_status
+
+    mock_cursor.fetchone.return_value = _workspace_row(status="flash")
+
+    await update_workspace_status("ws-1", "flash")
+
+    assert "computers" not in mock_cursor.execute.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_the_tier_and_always_on_setters_move_both_rows(ws_mock_db, mock_cursor):
+    """The platform counts these two per user out of ``workspaces`` to enforce
+    plan entitlements, so the shadow write is not optional."""
+    from src.server.database.workspace import (
+        set_workspace_always_on,
+        set_workspace_resource_tier,
+    )
+
+    mock_cursor.fetchone.return_value = _workspace_row(resource_tier="performance")
+    await set_workspace_resource_tier("ws-1", "performance")
+    assert "resource_tier = %(value)s" in _one_write_through_statement(mock_cursor)
+
+    mock_cursor.execute.reset_mock()
+    mock_cursor.fetchone.return_value = _workspace_row(is_always_on=True)
+    await set_workspace_always_on("ws-1", True)
+    assert "is_always_on = %(value)s" in _one_write_through_statement(mock_cursor)
+
+
+@pytest.mark.asyncio
+async def test_the_activity_stamp_moves_both_rows_on_their_own_cooldowns(
+    ws_mock_db, mock_cursor
+):
+    """A second project's turn has to refresh the machine even inside this
+    workspace's quiet minute, so each side carries the cooldown itself."""
+    from src.server.database.workspace import update_workspace_activity
+
+    mock_cursor.fetchone.return_value = {"stamped": 1}
+
+    await update_workspace_activity("ws-1")
+
+    sql = _one_write_through_statement(mock_cursor)
+    assert sql.count("INTERVAL '60 seconds'") == 2
+    assert "c.last_activity_at IS NULL" in sql
+
+
+@pytest.mark.asyncio
+async def test_the_preview_cache_is_written_to_the_machine_too(ws_mock_db, mock_cursor):
+    """A port is a namespace of the machine, not of one project."""
+    from src.server.database.workspace import save_preview_command
+
+    await save_preview_command("ws-1", 8080, "python -m http.server 8080")
+
+    sql = " ".join(mock_cursor.execute.call_args[0][0].split())
+    assert sql.index("UPDATE computers") < sql.index("UPDATE workspaces")
+    assert sql.count("'{preview_servers}'") == 2

@@ -10,10 +10,17 @@ import structlog
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
 
+from ptc_agent.core.paths import SandboxLayout
+
 logger = structlog.get_logger(__name__)
 
 # Patterns that indicate attempts to access protected internal files
-_INTERNAL_PATH_PATTERNS = ("_internal/", ".mcp_tokens", ".mcp_secrets", ".vault_secrets")
+_INTERNAL_PATH_PATTERNS = (
+    f"{SandboxLayout.INTERNAL_DIR}/",
+    ".mcp_tokens",
+    ".mcp_secrets",
+    ".vault_secrets",
+)
 
 
 class CodeValidationMiddleware(AgentMiddleware):

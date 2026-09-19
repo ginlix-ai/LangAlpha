@@ -42,7 +42,11 @@ from src.server.services.brokerage_capabilities import (
 )
 from src.server.services.egress import folded_contains
 from src.server.services.egress.execution_token import EXECUTION_HEADER
-from src.server.services.egress.relay_jwt import CALLER_HOST, mint_relay_jwt
+from src.server.services.egress.relay_jwt import (
+    CALLER_HOST,
+    identity_claim,
+    mint_relay_jwt,
+)
 from src.server.services.mcp_tool_split import DirectServerTools, DirectTool
 from src.server.services.tool_binding import (
     inputs_from_row,
@@ -53,6 +57,7 @@ from src.server.services.tool_binding import (
 
 if TYPE_CHECKING:
     from ptc_agent.core.session import Session
+    from src.server.services.computer_manager._types import WorkspaceToolView
     from src.server.services.egress.order_ledger import OrderAttemptLedger
 
 logger = logging.getLogger(__name__)
@@ -382,7 +387,8 @@ async def prepare_direct_mcp_tools(
     *,
     user_id: str | None,
     workspace_id: str,
-    sandbox_id: str,
+    sandbox_id: str | None = None,
+    computer_id: str | None = None,
     grants: Mapping[str, str],
     by_server: Mapping[str, DirectServerTools],
 ) -> DirectMCPBinding:
@@ -402,6 +408,7 @@ async def prepare_direct_mcp_tools(
         user_id=user_id,
         workspace_id=workspace_id,
         sandbox_id=sandbox_id,
+        computer_id=computer_id,
         caller=CALLER_HOST,
     )
 
@@ -536,17 +543,33 @@ async def direct_tools_for_turn(
 
 
 async def bind_direct_mcp_tools(
-    session: "Session", *, user_id: str | None
+    session: "Session",
+    *,
+    user_id: str | None,
+    workspace_id: str,
+    view: "WorkspaceToolView | None" = None,
 ) -> DirectMCPBinding:
-    """The PTC shape: the session carries the split and the grants."""
-    by_server = session.direct_mcp_tools
-    egress = session.egress_binding
+    """The PTC shape: the split and the grants come from the project's frozen
+    view when the caller holds one.
+
+    The project comes from the caller, never from the session: one session
+    serves every project on its machine, so its own labels name whichever
+    project built it and a turn on any sibling would mint a token claiming
+    that one. The same goes for the split: the session's copy is whichever
+    sibling resolved last, so a turn reads the view frozen for its project.
+    """
+    by_server = view.direct_mcp_tools if view is not None else session.direct_mcp_tools
+    egress = view.egress_binding if view is not None else session.egress_binding
     if not by_server or egress is None:
         return DirectMCPBinding(user_id=user_id)
     return await prepare_direct_mcp_tools(
         user_id=user_id,
-        workspace_id=session.conversation_id,
-        sandbox_id=getattr(session.sandbox, "sandbox_id", None) or "",
+        workspace_id=workspace_id,
+        # Absent, not "": the host path runs for a Flash turn and for a session
+        # whose sandbox is not provisioned, and the validator refuses an empty
+        # identity claim.
+        sandbox_id=identity_claim(getattr(session.sandbox, "sandbox_id", None)),
+        computer_id=identity_claim(getattr(session, "computer_id", None)),
         grants=egress.grants,
         by_server=by_server,
     )

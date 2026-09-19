@@ -3,7 +3,7 @@ FastAPI application setup, initialization, and middleware configuration.
 
 This module contains:
 - Application lifespan management (startup/shutdown)
-- Global state initialization (agent_config, session_service, checkpointer)
+- Global state initialization (agent_config, workspace_manager, checkpointer)
 - Middleware setup (CORS, request ID)
 - Router registration
 """
@@ -80,7 +80,6 @@ agent_config = None  # PTC Agent configuration (loaded from config files)
 # Plugins page keeps the live read, where showing an edited manifest at once
 # is the point. See services/plugins/bundled.enforcement_owners.
 bundle_owners = None
-session_service = None  # PTC Session service instance
 workspace_manager = None  # Workspace manager instance
 checkpointer = None  # PTC Agent LangGraph checkpointer for state persistence
 store = None  # LangGraph Store for cross-turn metadata persistence
@@ -170,7 +169,6 @@ async def lifespan(app: FastAPI):
     global \
         agent_config, \
         bundle_owners, \
-        session_service, \
         workspace_manager, \
         checkpointer, \
         store, \
@@ -264,6 +262,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Redis cache initialization failed: {e}")
         logger.warning("Server will continue without caching")
+
+    # Sandbox path writes take a Redis lease so the workers agree on one
+    # writer per file. Fails open when the cache is down (see the module).
+    from src.server.services.path_lock_coordination import install as install_path_lease
+
+    install_path_lease()
 
     # Pre-build market calendars so session lookups never build on a request path
     try:
@@ -371,23 +375,12 @@ async def lifespan(app: FastAPI):
         llm_service = LLMService(agent_config=agent_config, logger=logger)
         logger.info("LLMService initialized")
 
-        # Initialize session service
+        # Initialize workspace manager
         # Derive idle timeout from Daytona auto-stop so the server cleans up
         # *before* Daytona kills the sandbox (10-min buffer, 5-min floor).
         daytona_auto_stop = agent_config.daytona.auto_stop_interval  # seconds
         server_idle_timeout = max(daytona_auto_stop - 600, 300)
 
-        from src.server.services.session_manager import SessionService
-
-        session_service = SessionService.get_instance(
-            config=agent_config,
-            idle_timeout=server_idle_timeout,
-            cleanup_interval=300,  # 5 minutes
-        )
-        await session_service.start_cleanup_task()
-        logger.info("PTC Session Service initialized")
-
-        # Initialize workspace manager
         from src.server.services.workspace_manager import WorkspaceManager
 
         workspace_manager = WorkspaceManager.get_instance(
@@ -762,11 +755,11 @@ async def lifespan(app: FastAPI):
             # Drain in-flight warm tasks first so a task cancelled mid-Phase-2
             # reverts its 'starting' row to 'stopped' (CancelledError revert)
             # instead of being torn down abruptly and left wedged.
-            from src.server.app.workspaces import drain_warm_tasks
+            from src.server.app.background_starts import drain_start_tasks
 
-            await drain_warm_tasks()
+            await drain_start_tasks()
         except Exception as e:
-            logger.warning(f"Error draining warm tasks: {e}")
+            logger.warning(f"Error draining background starts: {e}")
         try:
             logger.info("Shutting down Workspace Manager...")
             await workspace_manager.shutdown()
@@ -774,14 +767,15 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Error during Workspace Manager shutdown: {e}")
 
-    # 4. Shutdown PTC Session Service (stop sandboxes)
-    if session_service is not None:
-        try:
-            logger.info("Shutting down PTC Session Service...")
-            await session_service.shutdown()
-            logger.info("PTC Session Service shutdown complete")
-        except Exception as e:
-            logger.warning(f"Error during PTC Session Service shutdown: {e}")
+    # 4. Stop every live PTC session, leaving the sandboxes up for reconnect
+    try:
+        from ptc_agent.core.session import SessionManager
+
+        logger.info("Stopping PTC sessions...")
+        await SessionManager.stop_all()
+        logger.info("PTC sessions stopped")
+    except Exception as e:
+        logger.warning(f"Error stopping PTC sessions: {e}")
 
     # 4.5. Drop the global MCP registry reference (frozen snapshot — no
     # subprocesses to terminate). Hygiene only.
@@ -1082,6 +1076,7 @@ from src.server.app.threads import router as threads_router
 from src.server.app.sessions import router as sessions_router
 from src.server.app.cache import router as cache_router
 from src.server.app.utilities import health_router
+from src.server.app.computers import router as computers_router
 from src.server.app.workspaces import router as workspaces_router
 from src.server.app.workspace_files import router as workspace_files_router
 from src.server.app.workspace_files import wsfiles_router
@@ -1144,6 +1139,9 @@ else:
 app.include_router(threads_router)  # /api/v1/threads/* - Thread CRUD, messages, control
 app.include_router(sessions_router)  # /api/v1/sessions - Active session stats
 app.include_router(workspaces_router)  # /api/v1/workspaces/* - Workspace CRUD
+app.include_router(
+    computers_router
+)  # /api/v1/computers/* - Computer lifecycle (the workspace routes alias these)
 app.include_router(
     workspace_files_router
 )  # /api/v1/workspaces/{id}/files/* - Live file access

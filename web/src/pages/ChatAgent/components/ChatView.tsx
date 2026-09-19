@@ -28,6 +28,8 @@ import { useCardState } from '../hooks/useCardState';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
 import { useWorkspace } from '@/hooks/useWorkspace';
 import { classifyAgentPath } from '../utils/agentPaths';
+import { fileArtifactPath } from '../utils/fileArtifact';
+import type { FileOperationArtifactPayload } from '@/types/api';
 import { taskIdFromAgentId } from '../utils/agentId';
 import {
   routeStopAction,
@@ -222,7 +224,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // truth — same logic the chat row click routing uses.
   const handleFileArtifact = useCallback((event: { payload?: Record<string, unknown> }) => {
     refreshFiles();
-    const filePath = (event?.payload?.file_path as string | undefined) ?? '';
+    const filePath = fileArtifactPath(event?.payload as FileOperationArtifactPayload | undefined);
     if (!filePath) return;
     const info = classifyAgentPath(filePath);
     if (info.kind === 'memory') {

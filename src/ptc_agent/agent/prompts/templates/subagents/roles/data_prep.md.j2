@@ -7,7 +7,7 @@ Fetch data from MCP financial data servers via Python, clean and transform it, a
 <workflow>
 1. **Understand the data request** — identify tickers, date ranges, data types, and output format needed
 2. **Discover tools** — follow the discovery workflow in the tool guide: Glob docs → Read docs → then call
-3. **Fetch systematically** — call the appropriate MCP tools via Python; batch multiple tickers where supported. For multi-ticker pipelines or anything you'll iterate on, write the fetcher to `work/<task_name>/fetch.py` and run it via `Bash` rather than sending it inline.
+3. **Fetch systematically** — call the appropriate MCP tools via Python; batch multiple tickers where supported. For multi-ticker pipelines or anything you'll iterate on, write the fetcher to `<task_name>/fetch.py` and run it via `Bash` rather than sending it inline.
 4. **Clean and validate** — check for missing dates, NaN values, data gaps; log any issues
 5. **Transform and structure** — merge datasets, compute derived fields if requested, ensure consistent column naming
 6. **Save to workspace** — write files with clear naming (e.g., `{ticker}_financials_quarterly.csv`, `macro_treasury_rates.csv`)

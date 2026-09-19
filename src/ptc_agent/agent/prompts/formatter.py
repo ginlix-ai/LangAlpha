@@ -12,6 +12,7 @@ from ptc_agent.core.mcp_sanitize import (
     sanitize_tool_name,
     sanitize_tool_text,
 )
+from ptc_agent.core.paths import LEGACY_ROOT_TOOLS_DIR, SandboxLayout, WorkspaceLayout
 
 logger = structlog.get_logger(__name__)
 
@@ -34,6 +35,34 @@ WORKSPACE_INSTRUCTION_MAX_LEN = 1024
 # capped (their detailed listing renders unchanged).
 WORKSPACE_DETAILED_MAX_TOOLS = 25
 WORKSPACE_DETAILED_MAX_CHARS = 8000
+
+
+def workspace_path_vars(
+    layout: WorkspaceLayout | None, *, root: str, legacy_layout: bool = False
+) -> dict[str, Any]:
+    """Template vars for the canonical path table, read off the layout classes.
+
+    The table is the one prompt surface that has to stay exact, so it
+    transcribes ``paths.py`` rather than spelling the names a second time.
+    ``layout`` is None wherever a build has no workspace folder bound, and the
+    workspace is then the computer root, which is what a single-workspace
+    computer looks like anyway.
+    """
+    layout = layout if layout is not None else WorkspaceLayout(root)
+    return {
+        "working_directory": layout.workspace,
+        "legacy_layout": legacy_layout,
+        "legacy_root": root,
+        "legacy_tools_docs": LEGACY_ROOT_TOOLS_DIR + "/docs",
+        "workspace_paths": {
+            "agent_md": WorkspaceLayout.AGENT_MD_FILE,
+            "data": WorkspaceLayout.DATA_DIR,
+            "skills": WorkspaceLayout.SKILLS_DIR,
+            "memory": WorkspaceLayout.MEMORY_DIR,
+            "tools_docs": SandboxLayout.TOOLS_DOCS_DIR,
+            "user": SandboxLayout.USER_DIR,
+        },
+    }
 
 
 def _is_workspace_source(config: Any) -> bool:
@@ -270,11 +299,15 @@ def _format_server_detailed(server_name: str, tools: list, config: Any) -> list:
                 param_strs = []
                 for pname, pinfo in params.items():
                     safe_name = _safe_param_name(pname, workspace=workspace)
-                    safe_type = _safe_param_text(pinfo.get("type", "any"), workspace=workspace)
+                    safe_type = _safe_param_text(
+                        pinfo.get("type", "any"), workspace=workspace
+                    )
                     if pinfo.get("required", False):
                         param_strs.append(f"{safe_name}: {safe_type}")
                     else:
-                        safe_default = _safe_param_text(pinfo.get("default", "None"), workspace=workspace)
+                        safe_default = _safe_param_text(
+                            pinfo.get("default", "None"), workspace=workspace
+                        )
                         param_strs.append(f"{safe_name}: {safe_type} = {safe_default}")
                 tool_line += ", ".join(param_strs)
 
@@ -282,11 +315,15 @@ def _format_server_detailed(server_name: str, tools: list, config: Any) -> list:
 
         # Add return type
         if tool.get("return_type"):
-            tool_line += f" -> {_safe_param_text(tool['return_type'], workspace=workspace)}"
+            tool_line += (
+                f" -> {_safe_param_text(tool['return_type'], workspace=workspace)}"
+            )
 
         # Add description
         if tool.get("description"):
-            tool_line += f": {_safe_param_text(tool['description'], workspace=workspace)}"
+            tool_line += (
+                f": {_safe_param_text(tool['description'], workspace=workspace)}"
+            )
 
         lines.append(tool_line)
 
@@ -327,10 +364,12 @@ def _format_tool_summary_brief(
         if config and config.instruction:
             lines.append(f"  Instructions: {config.instruction}")
 
-        lines.append(f"  - Module: tools/{server_name}.py")
+        lines.append(f"  - Module: {WorkspaceLayout.TOOLS_DIR}/{server_name}.py")
         lines.append(f"  - Tools: {tool_count} {tools_word} available")
         lines.append(f"  - Import: from tools.{server_name} import <tool_name>")
-        lines.append(f"  - Documentation: tools/docs/{server_name}/*.md")
+        lines.append(
+            f"  - Documentation: {SandboxLayout.TOOLS_DOCS_DIR}/{server_name}/*.md"
+        )
 
     if not lines:
         return "\nNo MCP servers configured."
@@ -369,7 +408,7 @@ def _format_tool_summary_detailed(
         if config and config.instruction:
             lines.append(f"  Instructions: {config.instruction}")
 
-        lines.append(f"  Module: tools/{server_name}.py")
+        lines.append(f"  Module: {WorkspaceLayout.TOOLS_DIR}/{server_name}.py")
         lines.append("  Available tools:")
 
         workspace = _is_workspace_source(config)
@@ -385,23 +424,33 @@ def _format_tool_summary_detailed(
                     param_strs = []
                     for pname, pinfo in params.items():
                         safe_name = _safe_param_name(pname, workspace=workspace)
-                        safe_type = _safe_param_text(pinfo.get("type", "any"), workspace=workspace)
+                        safe_type = _safe_param_text(
+                            pinfo.get("type", "any"), workspace=workspace
+                        )
                         if pinfo.get("required", False):
                             param_strs.append(f"{safe_name}: {safe_type}")
                         else:
-                            safe_default = _safe_param_text(pinfo.get("default", "None"), workspace=workspace)
-                            param_strs.append(f"{safe_name}: {safe_type} = {safe_default}")
+                            safe_default = _safe_param_text(
+                                pinfo.get("default", "None"), workspace=workspace
+                            )
+                            param_strs.append(
+                                f"{safe_name}: {safe_type} = {safe_default}"
+                            )
                     tool_line += ", ".join(param_strs)
 
             tool_line += ")"
 
             # Add return type
             if tool.get("return_type"):
-                tool_line += f" -> {_safe_param_text(tool['return_type'], workspace=workspace)}"
+                tool_line += (
+                    f" -> {_safe_param_text(tool['return_type'], workspace=workspace)}"
+                )
 
             # Add description
             if tool.get("description"):
-                tool_line += f": {_safe_param_text(tool['description'], workspace=workspace)}"
+                tool_line += (
+                    f": {_safe_param_text(tool['description'], workspace=workspace)}"
+                )
 
             lines.append(tool_line)
 

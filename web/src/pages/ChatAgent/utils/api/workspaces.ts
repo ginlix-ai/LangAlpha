@@ -3,7 +3,7 @@
  */
 import { api } from '@/api/client';
 import type { ResourceTier, Workspace, WorkspaceQuota, WorkspacesResponse } from '@/types/api';
-import { baseURL, getAuthHeaders } from './transport';
+import { streamStatusEvents } from './statusStream';
 
 // The shared axios instance sets no global timeout. Workspace-management ops
 // legitimately run tens of seconds (a spec change rebuilds the sandbox,
@@ -144,86 +144,31 @@ export async function startWorkspace(
  * Subscribe to workspace lifecycle status via SSE. Invokes `onStatus`
  * for each status transition reported by the backend, passing an optional
  * `sandboxState` refinement (e.g. 'archived') when present so callers can
- * show a slow-restore spinner. Resolves when the stream closes (terminal
- * status, server timeout, or aborted via the AbortController signal).
- * Best-effort: network errors resolve without throwing so callers don't
- * need defensive wrappers.
+ * show a slow-restore spinner, and the `computerId` of the machine the
+ * workspace runs on when the backend reports one. Resolves when the stream
+ * closes (terminal status, server timeout, or aborted via the AbortController
+ * signal). Best-effort: network errors resolve without throwing so callers
+ * don't need defensive wrappers.
+ *
+ * This is the fallback channel once a workspace names a computer: the machine
+ * is what actually moves, so `streamComputerEvents` is the subscription a
+ * surface showing several workspaces should open.
  */
 export async function streamWorkspaceEvents(
   workspaceId: string,
-  onStatus: (status: string, sandboxState?: string) => void,
+  onStatus: (
+    status: string,
+    sandboxState?: string,
+    computerId?: string,
+  ) => void,
   signal: AbortSignal,
 ): Promise<void> {
   if (!workspaceId) return;
-  const authHeaders = await getAuthHeaders();
-  let res: Response;
-  try {
-    res = await fetch(`${baseURL}/api/v1/workspaces/${workspaceId}/events`, {
-      method: 'GET',
-      headers: { ...authHeaders, Accept: 'text/event-stream' },
-      signal,
-    });
-  } catch {
-    return; // network error or aborted — caller wants best-effort
-  }
-  if (!res.ok || !res.body) return;
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      buffer += decoder.decode(value, { stream: true });
-      const chunks = buffer.split('\n\n');
-      buffer = chunks.pop() ?? '';
-      for (const chunk of chunks) {
-        let eventType = '';
-        const dataLines: string[] = [];
-        for (const raw of chunk.split('\n')) {
-          if (raw.startsWith('event:')) eventType = raw.slice(6).trim();
-          else if (raw.startsWith('data:')) dataLines.push(raw.slice(5).trim());
-          // Comments (lines starting with ':') and unknown fields ignored.
-        }
-        // Per the SSE spec, multiple data: lines join with a newline. The
-        // backend emits single-line json.dumps payloads, so this is one line in
-        // practice — but joining correctly keeps a multi-line payload parseable
-        // instead of silently corrupting the JSON.
-        const data = dataLines.join('\n');
-        if (eventType === 'status' && data) {
-          try {
-            const parsed = JSON.parse(data) as {
-              status?: string;
-              sandbox_state?: string;
-            };
-            if (typeof parsed.status === 'string') {
-              onStatus(
-                parsed.status,
-                typeof parsed.sandbox_state === 'string'
-                  ? parsed.sandbox_state
-                  : undefined,
-              );
-            }
-          } catch { /* ignore malformed payload */ }
-        } else if (eventType === 'timeout') {
-          return;
-        }
-      }
-    }
-  } catch (err) {
-    if ((err as { name?: string })?.name === 'AbortError') return;
-    // Best-effort — drop everything else.
-  } finally {
-    // Deterministically release the stream so repeated workspace navigation
-    // doesn't retain fetch/body resources until browser GC. cancel() also
-    // releases the lock; both are no-ops if the stream already closed.
-    try {
-      await reader.cancel();
-    } catch {
-      /* already closed / aborted */
-    }
-  }
+  await streamStatusEvents(
+    `/api/v1/workspaces/${workspaceId}/events`,
+    (frame) => onStatus(frame.status, frame.sandbox_state, frame.computer_id),
+    signal,
+  );
 }
 
 // --- Threads ---

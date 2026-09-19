@@ -10,10 +10,12 @@ retired grant cannot survive in a second channel.
 Multi-worker contract: the `sandbox_egress_grants` table is the truth about
 which grants exist — `EgressBinding` on the session is execution context only
 (what THIS process last pushed), so a worker that never bound anything still
-converges removals by reading the table. The grant replacement itself is
-whole-set, so it is fenced in the DB layer by a workspace advisory lock plus a
-`mcp_config_version` CAS; a worker whose resolve was superseded is told so and
-pushes nothing. No cross-worker lock guards the credential-file push: the
+converges removals by reading the table. The grant replacement is whole-set for
+this project's share of its machine, so it is fenced in the DB layer by the
+owner's advisory lock plus a `mcp_config_version` CAS; the lock is the user's
+because every project on a machine is that one user's, so two replacements
+that could collide are two of theirs. A worker whose resolve was superseded is
+told so and pushes nothing. No cross-worker lock guards the credential-file push: the
 upload writes atomically (temp + same-dir rename in
 `upload_egress_relay_credentials`), so two workers pushing the same workspace
 concurrently can only ever leave one complete file — last rename wins, both
@@ -27,7 +29,10 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from src.config.env import EGRESS_RELAY_SECRET
-from src.server.database.egress_grants import sync_egress_grants
+from src.server.database.egress_grants import (
+    active_relay_grants_for_computer,
+    sync_egress_grants,
+)
 from src.server.services.egress.grant_scope import grant_refs
 
 if TYPE_CHECKING:
@@ -53,6 +58,7 @@ class RelayBind(StrEnum):
 
 async def sync_egress_relay(
     workspace_id: str,
+    computer_id: str,
     user_id: str | None,
     session: "Session",
     resolved: "ResolvedMCP",
@@ -60,10 +66,13 @@ async def sync_egress_relay(
     """Converge grants + relay JWT + sandbox credential file to ``resolved``.
 
     One grant per server that earns one (``grant_scope`` decides which, and of
-    which kind); grants the workspace no longer resolves are retired in the
-    same transaction (they are an authorization overhang otherwise; the
-    sandbox may still hold their ids and a live JWT). Removal of the last of
-    them also deletes the credential file, decided from the table so it
+    which kind); grants no live project on the machine resolves any more are
+    retired in the same transaction (they are an authorization overhang
+    otherwise; the sandbox may still hold their ids and a live JWT). What a
+    sibling project still resolves is spared, because the machine's grant set
+    is the union of its projects' and this workspace only speaks for its own
+    share. Removal of the last of them also deletes the credential file,
+    decided from the table so it
     converges on any worker. A no-op when ``resolved`` is already superseded by
     a newer config version.
 
@@ -109,27 +118,35 @@ async def sync_egress_relay(
     if synced is None:
         return RelayBind.SUPERSEDED
 
-    grants: dict[str, str] = {}
     for ref in refs:
-        grant_id = synced.grants.get(ref.key)
-        if grant_id is None:
+        if synced.grants.get(ref.key) is None:
             # The connection or the row vanished between resolve and here (a
             # disconnect or delete race): leave this one server unbound, keep
             # binding the rest.
             logger.warning(
                 "[EGRESS] %s %s gone for server %s, left unbound",
-                ref.kind, ref.subject, ref.server_name,
+                ref.kind,
+                ref.subject,
+                ref.server_name,
             )
-            continue
-        grants[ref.server_name] = grant_id
+
+    # The file is the machine's, so its map is the machine's whole active set
+    # read back from the table. Writing only this project's share is what
+    # unbinds a sibling's servers mid-turn, since one project's sync overwrites
+    # the one file every project on the sandbox reads.
+    grants = await active_relay_grants_for_computer(computer_id, user_id=user_id)
 
     if grants or synced.retired or session.egress_binding is not None:
-        pushed = await _push_credentials(workspace_id, session, user_id or "", grants)
+        pushed = await _push_credentials(
+            workspace_id, computer_id, session, user_id or "", grants
+        )
         return RelayBind.APPLIED if pushed else RelayBind.REFUSED
     return RelayBind.APPLIED
 
 
-async def maybe_remint_egress_jwt(workspace_id: str, session: "Session") -> None:
+async def maybe_remint_egress_jwt(
+    workspace_id: str, computer_id: str, session: "Session"
+) -> None:
     """Re-push credentials when the relay JWT nears expiry.
 
     Runs on the warm-cooldown path (which skips the resolve entirely), so a
@@ -147,17 +164,16 @@ async def maybe_remint_egress_jwt(workspace_id: str, session: "Session") -> None
         # A refused push already logged its own warning; jwt_exp stays put, so
         # the remint retries on the next warm acquire.
         if await _push_credentials(
-            workspace_id, session, binding.user_id, dict(binding.grants)
+            workspace_id, computer_id, session, binding.user_id, dict(binding.grants)
         ):
             logger.info("[EGRESS] relay JWT reminted for workspace %s", workspace_id)
     except Exception as e:
-        logger.warning(
-            "[EGRESS] relay JWT remint failed for %s: %s", workspace_id, e
-        )
+        logger.warning("[EGRESS] relay JWT remint failed for %s: %s", workspace_id, e)
 
 
 async def _push_credentials(
     workspace_id: str,
+    computer_id: str,
     session: "Session",
     user_id: str,
     grants: dict[str, str],
@@ -175,7 +191,7 @@ async def _push_credentials(
         effective_relay_base_url,
         relay_reachability_warning,
     )
-    from src.server.services.egress.relay_jwt import mint_relay_jwt
+    from src.server.services.egress.relay_jwt import identity_claim, mint_relay_jwt
 
     sandbox = session.sandbox
     if sandbox is None:
@@ -188,11 +204,18 @@ async def _push_credentials(
         warning = relay_reachability_warning(provider, relay_base)
         if warning:
             logger.warning("[EGRESS] %s", warning)
+        # Both identity claims are omitted when absent, and the sandbox here may
+        # not be provisioned yet: this used to mint ``sandbox_id=""``, which the
+        # validator refused, so the credential could not be used. Neither claim
+        # is authorized against, so an absent one costs audit detail and nothing
+        # else. The machine comes from the caller's binding rather than the
+        # session, whose own label is whichever project built it.
         minted = mint_relay_jwt(
             EGRESS_RELAY_SECRET,
             user_id=user_id,
             workspace_id=workspace_id,
-            sandbox_id=sandbox.sandbox_id or "",
+            sandbox_id=identity_claim(sandbox.sandbox_id),
+            computer_id=identity_claim(computer_id),
         )
         payload = {
             "relay_base_url": relay_base.rstrip("/"),

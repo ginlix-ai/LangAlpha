@@ -30,6 +30,7 @@ from src.server.database.workspace import (
     get_workspace as db_get_workspace,
 )
 from src.server.services.workspace_manager import WorkspaceManager
+from ptc_agent.core.paths import DEFAULT_SANDBOX_ROOT, SandboxLayout
 from ptc_agent.core.sandbox import PTCSandbox
 from src.utils.cache.redis_cache import get_cache_client
 
@@ -54,8 +55,8 @@ def _configured_provider() -> str | None:
     defeat the disk-quota branch this value exists to drive.
 
     Reads ``config.sandbox`` directly rather than via ``to_core_config()``, which
-    deep-copies the MCP config to hand each workspace its own — wasted work here,
-    since it passes ``sandbox`` straight through.
+    deep-copies every section to hand each workspace its own. That is wasted work
+    for a single field that reads the same in the copy and in the original.
     """
     try:
         config = WorkspaceManager.get_instance().config
@@ -64,6 +65,23 @@ def _configured_provider() -> str | None:
     except Exception as e:
         logger.debug(f"Could not resolve the configured sandbox provider: {e}")
         return None
+
+
+async def _provider_kind(workspace_id: str) -> str | None:
+    """Which provider this workspace's machine runs on.
+
+    The computer row carries the kind it was created with, so one deployment can
+    serve more than one backend and the reported provider has to come from the
+    machine. A workspace with no computer row reports the deployment's.
+    """
+    try:
+        manager = WorkspaceManager.get_instance()
+        kind = await manager.provider_kind_for_workspace(workspace_id)
+        if kind:
+            return kind
+    except Exception as e:
+        logger.debug(f"Could not resolve the machine's sandbox provider: {e}")
+    return _configured_provider()
 
 
 def _display_state(state: Any) -> str | None:
@@ -274,7 +292,9 @@ def _parse_df_output(stdout: str) -> DiskOverview | None:
     )
 
 
-def _parse_du_output(stdout: str, work_dir: str = "/home/workspace") -> list[DirectorySize]:
+def _parse_du_output(
+    stdout: str, work_dir: str = DEFAULT_SANDBOX_ROOT
+) -> list[DirectorySize]:
     """Parse `du -sh <work_dir>/*/` output into directory sizes."""
     work_dir_prefix = work_dir.rstrip("/") + "/"
     results: list[DirectorySize] = []
@@ -373,28 +393,27 @@ async def _get_offline_sandbox_stats(
 ) -> SandboxStatsResponse:
     """Get sandbox metadata for stopped/archived workspaces via Daytona API (no start)."""
     sandbox_id = workspace.get("sandbox_id")
+    provider_kind = await _provider_kind(workspace_id)
     if not sandbox_id:
         return SandboxStatsResponse(
             workspace_id=workspace_id,
             state=workspace.get("status", "unknown"),
-            provider=_configured_provider(),
+            provider=provider_kind,
             created_at=str(workspace.get("created_at", "")),
             resources=SandboxResources(),
         )
 
-    from ptc_agent.core.sandbox.providers import create_provider
-
     manager = WorkspaceManager.get_instance()
     provider = None
     try:
-        provider = create_provider(manager.config.to_core_config())
+        provider = await manager.provider_for_workspace(workspace_id)
         runtime = await provider.get(sandbox_id)
         meta = await runtime.get_metadata()
         return SandboxStatsResponse(
             workspace_id=workspace_id,
             sandbox_id=sandbox_id,
             state=_offline_display_state(meta.get("state"), workspace.get("status")),
-            provider=_configured_provider(),
+            provider=provider_kind,
             created_at=str(meta["created_at"]) if meta.get("created_at") else None,
             auto_stop_interval=meta.get("auto_stop_interval"),
             resources=SandboxResources(
@@ -410,7 +429,7 @@ async def _get_offline_sandbox_stats(
             workspace_id=workspace_id,
             sandbox_id=sandbox_id,
             state=workspace.get("status", "unknown"),
-            provider=_configured_provider(),
+            provider=provider_kind,
             created_at=str(workspace.get("created_at", "")),
             resources=SandboxResources(),
         )
@@ -426,6 +445,7 @@ async def _get_full_sandbox_stats(
 ) -> SandboxStatsResponse:
     """Get full sandbox stats for running workspaces (disk, packages, MCP, skills)."""
     session, sandbox = await _get_sandbox(workspace_id, x_user_id)
+    provider_kind = await _provider_kind(workspace_id)
 
     # --- 1. Static properties from the runtime metadata ---
     resources = SandboxResources()
@@ -495,7 +515,7 @@ async def _get_full_sandbox_stats(
         try:
             # Read SKILL.md frontmatter from each skill directory
             cmd = (
-                f"for d in {work_dir}/.agents/skills/*/; do "
+                f"for d in {SandboxLayout(work_dir).skills}/*/; do "
                 '  [ -f "$d/SKILL.md" ] && echo "=== $(basename "$d") ===" && head -5 "$d/SKILL.md"; '
                 "done 2>/dev/null || true"
             )
@@ -528,7 +548,7 @@ async def _get_full_sandbox_stats(
         workspace_id=workspace_id,
         sandbox_id=sandbox_id,
         state=state,
-        provider=_configured_provider(),
+        provider=provider_kind,
         created_at=created_at,
         auto_stop_interval=auto_stop_interval,
         resources=resources,

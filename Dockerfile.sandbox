@@ -11,9 +11,15 @@
 
 FROM ubuntu:24.04
 
-# Keep NODE_VERSION in sync with SANDBOX_NODE_VERSION in
-# src/ptc_agent/core/sandbox/_defaults.py (the Daytona snapshot uses that).
+# Keep NODE_VERSION and PLAYWRIGHT_VERSION in sync with SANDBOX_NODE_VERSION and
+# SANDBOX_PLAYWRIGHT_VERSION in src/ptc_agent/core/sandbox/_defaults.py (the
+# Daytona snapshot uses those).
 ARG NODE_VERSION=24.14.1
+ARG PLAYWRIGHT_VERSION=1.63.0
+
+# vCPU the container will actually be allowed to use. The BLAS/OpenMP caps below
+# are set from it; the Daytona snapshot takes the same number from its tier.
+ARG SANDBOX_CPUS=1
 
 # ---------- System packages ----------
 RUN echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections \
@@ -23,13 +29,21 @@ RUN echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selectio
         gcc gfortran build-essential \
     && ln -sf /usr/bin/python3 /usr/bin/python \
     && ln -sf /usr/bin/pip3 /usr/bin/pip \
-    && rm -f /usr/lib/python*/EXTERNALLY-MANAGED
+    && rm -f /usr/lib/python*/EXTERNALLY-MANAGED \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
+# --no-install-recommends, then name what document conversion actually needs.
+# The `libreoffice` metapackage's recommends were most of the office stack's
+# footprint: a JRE the headless converter never calls, Mesa/LLVM Vulkan drivers,
+# and the full Noto font set. docker-ce below keeps its recommends, because the
+# compose plugin is one of them.
 RUN apt-get update \
-    && apt-get install -y \
-        curl ripgrep jq git unzip \
-        libreoffice gcc poppler-utils pandoc qpdf \
-        fonts-noto-cjk \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl ripgrep jq git unzip gcc \
+        poppler-utils pandoc qpdf \
+        libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-draw \
+        fonts-noto-cjk fonts-dejavu-core fonts-opensymbol \
     # -- uv (Python package manager) — relocate BOTH uv and uvx; the MCP
     #    command allowlist permits `uvx`, so it must be on PATH too. --
     && curl -LsSf https://astral.sh/uv/install.sh | sh \
@@ -40,10 +54,14 @@ RUN apt-get update \
         -o /tmp/node.tar.xz \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
     && rm /tmp/node.tar.xz \
-    # -- NPM global packages --
-    && npm install -g playwright docx pptxgenjs@4.0.1 \
+    # -- NPM global packages. playwright is pinned to the same version as the
+    #    Python one below, so both language ports resolve the same browser
+    #    revision and only one Chromium is ever downloaded. --
+    && npm install -g "playwright@${PLAYWRIGHT_VERSION}" docx pptxgenjs@4.0.1 \
     && PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright \
        npx playwright install --with-deps chromium \
+    && npm cache clean --force \
+    && rm -rf /root/.npm/_npx \
     # -- GitHub CLI (multi-arch: amd64 / arm64) --
     && GH_ARCH=$(dpkg --print-architecture) \
     && curl -fsSL "https://github.com/cli/cli/releases/download/v2.87.3/gh_2.87.3_linux_${GH_ARCH}.tar.gz" \
@@ -85,6 +103,15 @@ RUN apt-get update \
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright
 ENV NODE_PATH=/usr/local/lib/node_modules
 
+# NumPy and its BLAS size their thread pools from the host's visible CPU count,
+# which the container's cpu limit does not mask. Left alone, a 2-vCPU sandbox on
+# a 48-core host oversubscribes ~24x and a 2000x2000 matmul goes from 0.14 s to
+# 1.07 s. Build with --build-arg SANDBOX_CPUS=N to match `docker run --cpus N`.
+ENV OMP_NUM_THREADS=${SANDBOX_CPUS}
+ENV OPENBLAS_NUM_THREADS=${SANDBOX_CPUS}
+ENV MKL_NUM_THREADS=${SANDBOX_CPUS}
+ENV NUMEXPR_NUM_THREADS=${SANDBOX_CPUS}
+
 # ---------- Python packages ----------
 # Mirrors DEFAULT_DEPENDENCIES in src/ptc_agent/core/sandbox/_defaults.py
 # (the list the Daytona snapshot installs). Keep both in sync.
@@ -103,15 +130,21 @@ RUN echo 'curl_cffi>=0.14' > /tmp/overrides.txt \
     beautifulsoup4 lxml pyyaml \
     defusedxml pdfplumber reportlab python-pptx ironcalc firecrawl-anydoc "markitdown[docx,pptx,xlsx]" \
     "scrapling[all]" html-to-markdown trafilatura youtube-transcript-api \
-    playwright \
+    "playwright==${PLAYWRIGHT_VERSION}" \
     tqdm tabulate \
-    && rm /tmp/overrides.txt
+    && rm /tmp/overrides.txt \
+    && uv cache clean \
+    && rm -rf /root/.cache/pip
 
 # ---------- Scrapling browser setup ----------
-# scrapling install needs root for `playwright install-deps` (apt packages).
-# Browsers are downloaded to /root/.cache/. After creating the workspace user,
-# we copy the caches so the non-root user can access them.
-RUN scrapling install
+# scrapling install needs root for `playwright install-deps` (apt packages). Its
+# Chromium is the one npx already placed in PLAYWRIGHT_BROWSERS_PATH, because
+# both pins are the same version; Camoufox still lands in /root/.cache, which the
+# workspace user gets a copy of below. The guard fails the build if a version
+# drift ever reintroduces a second browser revision.
+RUN scrapling install \
+    && n=$(ls -d /usr/local/ms-playwright/chromium-*/ 2>/dev/null | wc -l) \
+    && [ "$n" -eq 1 ]
 
 # ---------- Matplotlib CJK font config ----------
 RUN python3 -c "import matplotlib as mpl; import os; mpl_dir = mpl.get_configdir(); os.makedirs(mpl_dir, exist_ok=True); open(os.path.join(mpl_dir, 'matplotlibrc'), 'w').write('font.sans-serif: Noto Sans CJK SC, DejaVu Sans\n'); import matplotlib.font_manager; matplotlib.font_manager._load_fontmanager(try_read_cache=False)"

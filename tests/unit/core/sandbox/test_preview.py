@@ -538,7 +538,9 @@ class TestPreviewRedirectEndpoint:
 
         app = create_test_app(preview_redirect_router)
 
-        mock_manager = MagicMock()
+        from src.server.services.workspace_manager import WorkspaceManager
+
+        mock_manager = MagicMock(spec=WorkspaceManager)
         mock_manager.get_session_for_workspace = AsyncMock(
             return_value=mock_session_for_endpoint
         )
@@ -585,7 +587,9 @@ class TestPreviewRedirectEndpoint:
 
         app = create_test_app(preview_redirect_router)
 
-        mock_manager = MagicMock()
+        from src.server.services.workspace_manager import WorkspaceManager
+
+        mock_manager = MagicMock(spec=WorkspaceManager)
         mock_manager.get_session_for_workspace = AsyncMock(
             return_value=mock_session_for_endpoint
         )
@@ -625,7 +629,9 @@ class TestPreviewRedirectEndpoint:
 
         app = create_test_app(preview_redirect_router)
 
-        mock_manager = MagicMock()
+        from src.server.services.workspace_manager import WorkspaceManager
+
+        mock_manager = MagicMock(spec=WorkspaceManager)
         mock_manager.get_session_for_workspace = AsyncMock(
             return_value=mock_session_for_endpoint
         )
@@ -669,7 +675,9 @@ class TestPreviewRedirectEndpoint:
 
         from src.server.app.workspace_sandbox import _preview_redirect
 
-        mock_manager = MagicMock()
+        from src.server.services.workspace_manager import WorkspaceManager
+
+        mock_manager = MagicMock(spec=WorkspaceManager)
         mock_manager.get_session_for_workspace = AsyncMock(
             return_value=mock_session_for_endpoint
         )

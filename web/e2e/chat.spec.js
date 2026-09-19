@@ -111,7 +111,7 @@ test.describe('Workspace Gallery', () => {
         return route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify(sampleWorkspace({ workspace_id: 'ws-new', name: 'New Project' })),
+          body: JSON.stringify(sampleWorkspace({ workspace_id: 'a0000003-0000-4000-8000-000000000003', name: 'New Project' })),
         });
       },
     });
@@ -130,8 +130,10 @@ test.describe('Workspace Gallery', () => {
     await page.locator('div.cwm-modal input').first().fill('New Project');
     await page.locator('button.cwm-btn-create').click();
 
-    // Progress phase: wait for "done" state (open workspace button appears)
-    await expect(page.locator('button.cwm-btn-create', { hasText: /Open Workspace/ })).toBeVisible({ timeout: 10000 });
+    // With no files queued there is no progress phase: the modal closes and
+    // the new workspace opens.
+    await expect(page).toHaveURL(/\/chat\/a0000003-0000-4000-8000-000000000003/, { timeout: 10000 });
+    await expect(page.locator('h2.cwm-title')).toHaveCount(0);
   });
 
   test('delete workspace removes card', async ({ page }) => {

@@ -28,7 +28,7 @@ Both can be interactive, so the divide is **live served app vs. self-contained s
 
 | | interactive-dashboard (this skill) | html-report |
 |---|---|---|
-| Delivery | A **running server**, exposed via `GetPreviewUrl` | One **`.html` file** in `work/<task_name>/` |
+| Delivery | A **running server**, exposed via `GetPreviewUrl` | One **`.html` file** in `<task_name>/` |
 | Data | **Live / refreshing**, fetched from a backend; large datasets OK | A **snapshot** embedded in the file |
 | Interactivity | Full app — routing, server-side filtering, live updates | Client-side over the snapshot — sort, filter, tabs, chart hover/zoom |
 | Keep / print / share | A URL, live only while the workspace runs | Downloadable, PDF-exportable, share-linkable as one artifact |
@@ -69,7 +69,7 @@ The preview iframe enforces Content Security Policy (CSP). Certain patterns are 
 import subprocess
 result = subprocess.run(
     ["grep", "-rnE", r'on(click|input|change|focus|blur|submit|load|error|mouse|key)\s*=',
-     "work/dashboard/"],
+     "dashboard/"],
     capture_output=True, text=True
 )
 if result.stdout.strip():
@@ -105,10 +105,10 @@ When you call `GetPreviewUrl(port, command, title)`:
 
 ```bash
 # Simple tier — Bash tool with run_in_background=true
-cd work/<task> && python -m http.server 8050 --bind 0.0.0.0
+cd <task> && python -m http.server 8050 --bind 0.0.0.0
 
 # Docker tiers — Bash tool with run_in_background=true
-cd work/<task> && bash start.sh
+cd <task> && bash start.sh
 ```
 
 Then verify it's up in a separate (foreground) Bash call:
@@ -121,7 +121,7 @@ Then return **all three fields** to the orchestrating agent (it needs the comman
 
 ```
 port: 8050
-command: "cd work/<task> && python -m http.server 8050 --bind 0.0.0.0"  # or "bash work/<task>/start.sh"
+command: "cd <task> && python -m http.server 8050 --bind 0.0.0.0"  # or "bash <task>/start.sh"
 title: "AAPL Stock Dashboard"
 ```
 
@@ -215,7 +215,7 @@ html = f"""<!DOCTYPE html>
 </body>
 </html>"""
 
-with open("work/dashboard/index.html", "w") as f:
+with open("dashboard/index.html", "w") as f:
     f.write(html)
 ```
 
@@ -232,7 +232,7 @@ Extract `<script>` blocks from the HTML and check with `node --check`:
 ```python
 import re, subprocess, tempfile, os
 
-with open("work/dashboard/index.html") as f:
+with open("dashboard/index.html") as f:
     html = f.read()
 
 scripts = re.findall(r'<script(?![^>]*src)[^>]*>(.*?)</script>', html, re.DOTALL)
@@ -266,7 +266,7 @@ with sync_playwright() as p:
     page.goto("http://127.0.0.1:8050/", wait_until="networkidle", timeout=20000)
     assert not js_errors, f"JS runtime errors: {js_errors}"
     assert len(page.locator("body").inner_text().strip()) > 20, "Page appears blank"
-    page.screenshot(path="work/dashboard/verify-screenshot.png", full_page=True)
+    page.screenshot(path="dashboard/verify-screenshot.png", full_page=True)
     browser.close()
 print("Browser verification passed")
 ```
@@ -277,10 +277,10 @@ See [references/verification.md](references/verification.md) for extended templa
 
 ```python
 # Simple tier
-GetPreviewUrl(port=8050, command="cd work/dashboard && python -m http.server 8050 --bind 0.0.0.0", title="AAPL Dashboard")
+GetPreviewUrl(port=8050, command="cd dashboard && python -m http.server 8050 --bind 0.0.0.0", title="AAPL Dashboard")
 
 # FastAPI + HTML tier / Complex tier
-GetPreviewUrl(port=8050, command="bash work/dashboard/start.sh", title="Stock Dashboard")
+GetPreviewUrl(port=8050, command="bash dashboard/start.sh", title="Stock Dashboard")
 ```
 
 **Local verification before `GetPreviewUrl`** — if you need the server running for Playwright verification, use the Bash tool with `run_in_background=true` (see sub-agent fallback above for the pattern). Do NOT use `subprocess.Popen` from `execute_code` — the process becomes a zombie when the tool-call shell exits.
@@ -429,7 +429,7 @@ See [references/ui-components.md](references/ui-components.md) for complete CSS 
 For live-data dashboards without React. FastAPI serves API endpoints and static HTML directly — no npm, no build step. Use the **copy-ready template files** with `.fastapi-html` suffix in `references/`:
 
 ```
-work/<task>/
+<task>/
 ├── Dockerfile           # cp references/Dockerfile.fastapi-html Dockerfile
 ├── start.sh             # cp references/start.sh start.sh
 ├── server/
@@ -444,7 +444,7 @@ work/<task>/
 1. **Copy template files** — all four `cp` commands above, then add your API routes to `server/main.py`
 2. **Add your Python deps** to `server/requirements.txt` (append pandas, yfinance, etc.)
 3. **Write `static/index.html`** with `fetch()` calls to your API routes for live data
-4. **Serve**: `GetPreviewUrl(port=8050, command="bash work/<task>/start.sh", title="Dashboard")`
+4. **Serve**: `GetPreviewUrl(port=8050, command="bash <task>/start.sh", title="Dashboard")`
 
 ### Template Files
 
@@ -467,7 +467,7 @@ work/<task>/
 When using FastAPI + Vite/React, scaffold this structure using the **copy-ready template files** in `references/`:
 
 ```
-work/<task>/
+<task>/
 ├── Dockerfile           # Copy from references/Dockerfile
 ├── start.sh             # Copy from references/start.sh
 ├── server/
@@ -489,11 +489,11 @@ work/<task>/
 
 ### Setup Workflow
 
-1. **Copy template files** from `references/` into `work/<task>/` — they work with zero modifications for port 8050
+1. **Copy template files** from `references/` into `<task>/` — they work with zero modifications for port 8050
 2. **Add your API routes** to `server/main.py` (the template includes CORS, `HEAD /`, `/healthz`, and static file serving)
 3. **Add your Python deps** to `server/requirements.txt` (template includes fastapi + uvicorn)
 4. **Write frontend code** in `frontend/src/` (vite.config.js template proxies `/api` to backend on port 8051)
-5. **Serve**: `GetPreviewUrl(port=8050, command="bash work/<task>/start.sh", title="Dashboard")`
+5. **Serve**: `GetPreviewUrl(port=8050, command="bash <task>/start.sh", title="Dashboard")`
 
 ### Template Files
 
@@ -655,7 +655,7 @@ Before calling `GetPreviewUrl`:
 
 **Data & Code**
 - [ ] All data fetched and validated (no empty dataframes or None values)
-- [ ] Files written to `work/<task>/` directory
+- [ ] Files written to `<task>/` directory
 - [ ] JSON data properly escaped with `json.dumps()`
 - [ ] All chart containers exist in HTML before JS tries to reference them
 

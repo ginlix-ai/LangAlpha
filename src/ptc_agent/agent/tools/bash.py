@@ -6,7 +6,11 @@ import structlog
 from langchain_core.tools import BaseTool, tool
 
 from ptc_agent.agent.backends.sandbox import SandboxBackend
-from ptc_agent.core.paths import MEMO_USER_DIR, MEMORY_USER_DIR, MEMORY_WORKSPACE_DIR
+from ptc_agent.core.paths import (
+    MEMO_USER_DIR,
+    MEMORY_USER_DIR,
+    WorkspaceLayout,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -16,12 +20,13 @@ logger = structlog.get_logger(__name__)
 # fake memos invisible to the UI).
 _MEMORY_PATH_MARKERS: tuple[str, ...] = (
     f"{MEMORY_USER_DIR}/",
-    f"{MEMORY_WORKSPACE_DIR}/",
+    f"{WorkspaceLayout.MEMORY_DIR}/",
     f"{MEMO_USER_DIR}/",
 )
 
 _MEMORY_ROUTE_ERROR = (
-    f"ERROR: Store-backed paths ({MEMORY_USER_DIR}/**, {MEMORY_WORKSPACE_DIR}/**, "
+    f"ERROR: Store-backed paths ({MEMORY_USER_DIR}/**, "
+    f"{WorkspaceLayout.MEMORY_DIR}/**, "
     f"{MEMO_USER_DIR}/**) are managed by the long-term memory/memo system and "
     "are NOT on the workspace filesystem. Use the Write, Edit, Read, Glob, or "
     "Grep file tools for these paths so they route to the store. Memo paths are "
@@ -45,16 +50,13 @@ def create_execute_bash_tool(backend: SandboxBackend, thread_id: str = "") -> Ba
         Configured Bash tool function
     """
 
-    # Resolve the default working directory from sandbox config at tool creation time
-    _default_working_dir = backend.filesystem_config.working_directory
-
     @tool("Bash", response_format="content_and_artifact")
     async def Bash(
         command: str,
         description: str | None = None,
         timeout: int | None = 120000,
         run_in_background: bool | None = False,
-        working_dir: str | None = _default_working_dir,
+        working_dir: str | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """Execute bash commands in a persistent shell session.
 
@@ -69,7 +71,8 @@ def create_execute_bash_tool(backend: SandboxBackend, thread_id: str = "") -> Ba
             run_in_background: Run asynchronously (default: False). Use it for
                 anything likely to outlast the timeout — a backtest, a bulk pull
                 across many tickers, a dashboard server you need to keep alive.
-            working_dir: Working directory (default: /home/workspace)
+            working_dir: Where to run (default: your workspace folder, which
+                relative paths in the command resolve against)
 
         Returns:
             Combined stdout and stderr, or an ERROR message.
@@ -162,9 +165,5 @@ def create_execute_bash_tool(backend: SandboxBackend, thread_id: str = "") -> Ba
                 exc_info=True,
             )
             return f"ERROR: {error_msg}", {"mcp_trace": []}
-
-    # Patch the LLM-visible description with the actual configured working directory
-    if _default_working_dir != "/home/workspace":
-        Bash.description = Bash.description.replace("/home/workspace", _default_working_dir)
 
     return Bash

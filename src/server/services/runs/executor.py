@@ -207,6 +207,40 @@ class LocalRunExecutor:
             )
             return True
 
+    async def has_active_tasks_for_computer(
+        self, computer_id: str, *, workspace_id: str | None = None
+    ) -> bool:
+        """Whether any workspace bound to the computer still has work running.
+
+        What gates tearing a machine down, where ``has_active_tasks_for_workspace``
+        would answer for one project on it. ``workspace_id`` is the project the
+        caller already has in hand, used only for the cheap in-process
+        pre-check; the durable half spans the whole computer either way. Same
+        fail-closed contract: a probe failure counts as active.
+        """
+        if workspace_id is not None:
+            async with self.task_lock:
+                for info in self.executions.values():
+                    if (
+                        info.metadata.get("workspace_id") == workspace_id
+                        and info.status is LocalRunStatus.RUNNING
+                    ):
+                        return True
+        try:
+            from src.server.database.runs import subagent_runs as sr_db
+            from src.server.database.runs import lifecycle as tl_db
+
+            if await tl_db.computer_has_active_run(computer_id):
+                return True
+            return await sr_db.count_open_runs_for_computer(computer_id) > 0
+        except Exception:
+            logger.warning(
+                f"Computer activity probe failed for {computer_id}; "
+                "treating as active",
+                exc_info=True,
+            )
+            return True
+
     async def is_run_live(self, thread_id: str, run_id: str) -> bool:
         """True while this exact run's workflow task (or inner task) is still
         executing. A live executor owns the ledger row, the tracker, and all

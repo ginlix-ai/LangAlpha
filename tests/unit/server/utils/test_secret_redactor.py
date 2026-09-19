@@ -5,14 +5,13 @@ MCP config and redacts them in text and bytes content.
 """
 
 import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 import src.server.database.mcp_servers as mcp_servers_db
 import src.server.database.vault_secrets as vault_secrets_db
 import src.server.database.workspace as workspace_db
-import src.server.services.workspace_manager as workspace_manager
 import src.server.utils.secret_redactor as secret_redactor
 from src.server.utils.secret_redactor import (
     SecretRedactor,
@@ -241,14 +240,6 @@ class TestVaultSecretsForRedaction:
         it still holds the RETIRED value. Redacting from it would scrub the dead
         secret and pass the live one through in cleartext.
         """
-        stale = MagicMock()
-        stale.sandbox.vault_secrets = {"API_KEY": "retired_value_000"}
-        wm = MagicMock()
-        wm._sessions = {"ws-1": stale}
-        monkeypatch.setattr(
-            workspace_manager, "WorkspaceManager",
-            MagicMock(get_instance=MagicMock(return_value=wm)),
-        )
         monkeypatch.setattr(
             secret_redactor, "_connector_secret_literals",
             AsyncMock(return_value={}),

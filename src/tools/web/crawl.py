@@ -69,7 +69,7 @@ def _page_filename(page_url: str, used: set) -> str:
 async def _write_workspace_file(backend: Any, rel_path: str, content: str) -> Optional[str]:
     """Write through the agent filesystem backend; returns an error string on failure."""
     normalized = backend.normalize_path(rel_path)
-    if backend.filesystem_config.enable_path_validation and not backend.validate_path(normalized):
+    if backend.filesystem_config.enable_path_validation and not backend.validate_path(rel_path):
         return f"Access denied: {rel_path} is not in allowed directories"
     ok = await backend.awrite_text(normalized, content)
     return None if ok else f"Failed to write {rel_path}"
@@ -165,9 +165,10 @@ def create_crawl_tools(filesystem_backend: Any) -> List[Any]:
             include_paths: URL-pathname regex patterns to include (e.g. ["^/docs/.*"]).
             exclude_paths: URL-pathname regex patterns to exclude.
             max_depth: Max link-discovery depth from the start URL.
-            output_dir: Workspace directory to dump into; pages land in
-                <output_dir>/<host>/. Defaults to work/crawl. Pass your task's
-                work dir (e.g. work/<task>/crawl) when running a task workflow.
+            output_dir: Where to dump, relative to your workspace folder; pages
+                land in <output_dir>/<host>/. Defaults to work/crawl. Pass your
+                task's work dir (e.g. work/<task>/crawl) when running a task
+                workflow.
 
         Returns:
             A page count and the paths it wrote, never page content: one .md

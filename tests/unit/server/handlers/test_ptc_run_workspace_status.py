@@ -88,7 +88,9 @@ def _make_workspace_manager(
     reconnect callback is never invoked (new sandbox, no pre-existing
     state to observe).
     """
-    wm = MagicMock()
+    from src.server.services.workspace_manager import WorkspaceManager
+
+    wm = MagicMock(spec=WorkspaceManager)
     wm.has_ready_session = MagicMock(return_value=has_ready)
 
     async def _session_with_callback(
@@ -243,6 +245,26 @@ async def test_recovery_path_callback_never_fires_no_refinement(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_warm_sibling_acquisition_does_not_wait_for_state_callback():
+    req = _make_request()
+    wm = _make_workspace_manager(
+        has_ready=False,
+        observed_state=None,
+        session_delay_s=0.001,
+    )
+
+    started = asyncio.get_running_loop().time()
+    lines = await _run_to_sentinel(req, wm)
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 1.0
+    assert _parse_ws_status_events(lines) == [
+        {"status": "starting", "workspace_id": "ws-1"},
+        {"status": "ready", "workspace_id": "ws-1"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_warm_path_emits_zero_events():
     """has_ready_session=True → no workspace_status events at all."""
     req = _make_request()
@@ -256,7 +278,8 @@ async def test_warm_path_emits_zero_events():
     # cached session, but no callback should flow through because the
     # generator doesn't supply one on the warm branch.
     warm_calls = [
-        c for c in wm.get_session_for_workspace.await_args_list
+        c
+        for c in wm.get_session_for_workspace.await_args_list
         if c.kwargs.get("on_state_observed") is not None
     ]
     assert warm_calls == [], "warm path must not pass on_state_observed"

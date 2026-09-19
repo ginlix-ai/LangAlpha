@@ -86,7 +86,7 @@ Two stamps at the top, because they are different facts: the note carries the ti
 
 ### 5. Deliver
 
-Save to `$WORK_DIR/work/{task}/morning_note_YYYY-MM-DD.md`, as markdown for email or chat distribution. The note carries one posture from the ladder in `.agents/skills/research-conventions/SKILL.md`, stated once beside the stamps at the top.
+Save to `{task}/morning_note_YYYY-MM-DD.md`, as markdown for email or chat distribution. The note carries one posture from the ladder in `.agents/skills/research-conventions/SKILL.md`, stated once beside the stamps at the top.
 
 **One page is the bar.** Over it, cut in this order: the market recap the reader already saw on a screen, the second and third bullets on one name, the calendar entries with no view attached, and any trade idea with no dated catalyst. Depth bands and the general cut order: `.agents/skills/research-conventions/references/depth.md`.
 

@@ -95,12 +95,50 @@ _REFUSAL_MAX = 16
 # ---------------------------------------------------------------------------
 
 _SERVER_CONFIGS: "dict[str, _ServerCfg]"
+_LAYOUT: "dict[str, str]"
+_WS_LAYOUT: "dict[str, str]"
 _WORK_DIR: str
 _INTERNAL_ROOT: str
 _VAULT_SECRETS_FILE: str
 _EGRESS_RELAY_FILE: str
+_MCP_TOKENS_FILE: str
 _RESULT_BODY_MAX_BYTES: int
 _RESULT_BODY_TRACE_BUDGET_BYTES: int
+_CONFIG_VERSION: int
+
+# Fallback copy of ptc_agent.core.paths.SandboxLayout, for the standalone
+# import (lint, unit tests, a hand-run client). The host ships the real values
+# in the generated epilogue's "layout" block, keyed by layout class, and a unit
+# test holds these equal to the layout object so the two can never drift.
+_DEFAULT_ROOT = "/home/workspace"
+_LAYOUT_CLASS = "SandboxLayout"
+_DEFAULT_LAYOUT = {
+    "INTERNAL_DIR": "_internal",
+    "INTERNAL_SRC_DIR": "_internal/src",
+    "VAULT_SECRETS_FILE": "_internal/.vault_secrets.json",
+    "EGRESS_RELAY_FILE": "_internal/.egress_relay.json",
+    "MCP_TOKENS_FILE": "_internal/.mcp_tokens.json",
+    "UNION_LEDGER_FILE": "_internal/tools/.union.json",
+}
+
+# The workspace tier of the same emission. The wrappers a turn imports come
+# from ONE workspace's overlay, and these names are how the client finds that
+# overlay's view of which servers it may reach.
+_WS_LAYOUT_CLASS = "WorkspaceLayout"
+# Exactly the keys read below, so the fallback and the emission are the same
+# set: a name here that the emission does not carry is a fallback nothing can
+# override, and a name the runtime never reads re-hashes the codegen version
+# for every warm sandbox when it is renamed.
+_DEFAULT_WS_LAYOUT = {
+    "TOOLS_DIR": ".agents/tools",
+    "MCP_CLIENT_CONFIG_FILE": ".agents/tools/mcp_client_config.json",
+}
+
+
+# Resolved once per interpreter and cleared whenever a config is applied: the
+# overlay a turn imports its wrappers from does not move mid-execution, and the
+# lookup walks sys.path.
+_WORKSPACE_VIEW_CACHE: dict = {}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -118,11 +156,21 @@ class _ServerCfg:
     headers: dict
     discovery_uses_secrets: bool
     relay_bound: bool
+    #: The display name; ``name`` is the union key, which a workspace-local
+    #: server qualifies with its owner's claim.
+    label: str
+    #: The vault this server resolves ``${vault:NAME}`` against; empty means
+    #: the computer root's (user tier) file.
+    vault_file: str
+    #: Explicit credential files for a dependency that cannot be inferred.
+    credential_files: tuple
 
 
 def _normalize(name: str, entry: dict) -> _ServerCfg:
     return _ServerCfg(
         name=name,
+        label=str(entry.get("name") or name),
+        vault_file=str(entry.get("vault_file") or ""),
         transport=entry.get("transport") or "stdio",
         # The host computes trust; a missing flag fails CLOSED. Guessing
         # untrusted costs a builtin its inherited env; guessing trusted hands a
@@ -136,26 +184,79 @@ def _normalize(name: str, entry: dict) -> _ServerCfg:
         headers=dict(entry.get("headers") or {}),
         discovery_uses_secrets=bool(entry.get("discovery_uses_secrets")),
         relay_bound=bool(entry.get("relay_bound")),
+        credential_files=tuple(entry.get("credential_files") or ()),
     )
 
 
 def _apply_config_dict(cfg: dict) -> None:
     """(Re)initialize module state from a config dict (generated epilogue)."""
     global _SERVER_CONFIGS, _WORK_DIR, _INTERNAL_ROOT, _VAULT_SECRETS_FILE
-    global _EGRESS_RELAY_FILE, _RESULT_BODY_MAX_BYTES
+    global _EGRESS_RELAY_FILE, _MCP_TOKENS_FILE, _RESULT_BODY_MAX_BYTES
     global _RESULT_BODY_TRACE_BUDGET_BYTES
+    global _LAYOUT, _WS_LAYOUT, _CONFIG_VERSION
     _SERVER_CONFIGS = {
         _name: _normalize(_name, _entry)
         for _name, _entry in (cfg.get("servers") or {}).items()
     }
-    _WORK_DIR = cfg.get("working_dir") or "/home/workspace"
-    _INTERNAL_ROOT = _WORK_DIR + "/_internal"
-    _VAULT_SECRETS_FILE = _INTERNAL_ROOT + "/.vault_secrets.json"
-    _EGRESS_RELAY_FILE = _INTERNAL_ROOT + "/.egress_relay.json"
+    _LAYOUT = {
+        **_DEFAULT_LAYOUT,
+        **((cfg.get("layout") or {}).get(_LAYOUT_CLASS) or {}),
+    }
+    _WS_LAYOUT = {
+        **_DEFAULT_WS_LAYOUT,
+        **((cfg.get("layout") or {}).get(_WS_LAYOUT_CLASS) or {}),
+    }
+    _WORK_DIR = cfg.get("working_dir") or _DEFAULT_ROOT
+    _INTERNAL_ROOT = _WORK_DIR + "/" + _LAYOUT["INTERNAL_DIR"]
+    _VAULT_SECRETS_FILE = _WORK_DIR + "/" + _LAYOUT["VAULT_SECRETS_FILE"]
+    _EGRESS_RELAY_FILE = _WORK_DIR + "/" + _LAYOUT["EGRESS_RELAY_FILE"]
+    _MCP_TOKENS_FILE = _WORK_DIR + "/" + _LAYOUT["MCP_TOKENS_FILE"]
     _RESULT_BODY_MAX_BYTES = int(cfg.get("result_body_max_bytes") or 65536)
     _RESULT_BODY_TRACE_BUDGET_BYTES = int(
         cfg.get("result_body_trace_budget_bytes") or 4 * 1024 * 1024
     )
+    _CONFIG_VERSION = int(cfg.get("config_version") or 0)
+    # A discovery probe composes a client that must see the edited config it
+    # embeds, not the union's copy from before the edit.
+    if cfg.get("fold_union", True):
+        _apply_union_file()
+    _WORKSPACE_VIEW_CACHE.clear()
+
+
+def _apply_union_file() -> None:
+    """Fold the computer's wrapper union into this client's server map.
+
+    The embedded epilogue carries only the workspace that composed this file,
+    but one daemon serves every workspace on the computer, so a call for a
+    sibling's server has to find a config here. The union travels as a file
+    rather than as more embedded text because the merge that produces it runs
+    under a lock inside the sandbox, after this source was composed. An absent
+    or unreadable union degrades to the embedded set, which is what a sandbox
+    whose sync predates the ledger has.
+    """
+    global _SERVER_CONFIGS, _CONFIG_VERSION
+    relative = _LAYOUT.get("UNION_LEDGER_FILE")
+    if not relative:
+        return
+    try:
+        with open(_WORK_DIR + "/" + relative, encoding="utf-8") as fh:
+            ledger = json.load(fh)
+    except (OSError, ValueError):
+        return
+    if not isinstance(ledger, dict):
+        return
+    merged = dict(_SERVER_CONFIGS)
+    for name, entry in (ledger.get("servers") or {}).items():
+        if isinstance(name, str) and isinstance(entry, dict) and entry:
+            merged[name] = _normalize(name, entry)
+    _SERVER_CONFIGS = merged
+    # The version the merge decided under the lock. A supervisor holds the
+    # config it imported at start, so a caller carrying a newer one is how a
+    # superseded daemon learns it should stand down.
+    if "config_version" in ledger:
+        _CONFIG_VERSION = int(ledger.get("config_version") or 0)
+    else:
+        _CONFIG_VERSION = int(ledger.get("union_version") or _CONFIG_VERSION)
 
 
 _apply_config_dict({})  # seed standalone-import defaults through the one path
@@ -179,10 +280,16 @@ def _server_cfg(server_name: str) -> _ServerCfg:
 _VAULT_REF_RE = _re.compile(r"\$\{vault:([A-Za-z_][A-Za-z0-9_]{0,127})\}")
 
 
-def _load_vault() -> dict:
-    """Load the workspace vault. Returns {} when the file is absent (discovery)."""
+def _load_vault(cfg=None) -> dict:
+    """The vault a server resolves against; {} when the file is absent.
+
+    A workspace-local server reads its owner's vault, everything shared on the
+    computer reads the root one, so two workspaces holding one secret name
+    with different values never see each other's.
+    """
+    path = (cfg.vault_file if cfg is not None else "") or _VAULT_SECRETS_FILE
     try:
-        with open(_VAULT_SECRETS_FILE) as _f:
+        with open(path) as _f:
             return json.load(_f)
     except (FileNotFoundError, ValueError, OSError):
         return {}
@@ -195,6 +302,7 @@ def _resolve_vault_refs(value, vault, *, missing, discovery=False):
     discovery mode they become an inert empty string so tools/list still runs.
     There is NO fallback to os.environ — that is the whole point.
     """
+
     def _sub(match):
         name = match.group(1)
         if name in vault:
@@ -213,7 +321,7 @@ def _resolve_all(cfg, values, *, discovery=False):
     to list. Normal calls always resolve, and every missing secret is named
     together in ONE error (names only, never values).
     """
-    vault = _load_vault() if (not discovery or cfg.discovery_uses_secrets) else {}
+    vault = _load_vault(cfg) if (not discovery or cfg.discovery_uses_secrets) else {}
     missing = []
     resolved = [
         _resolve_vault_refs(str(_v), vault, missing=missing, discovery=discovery)
@@ -222,7 +330,9 @@ def _resolve_all(cfg, values, *, discovery=False):
     if missing and not discovery:
         raise RuntimeError(
             "Missing vault secret(s) for server "
-            + repr(cfg.name) + ": " + ", ".join(sorted(set(missing)))
+            + repr(cfg.name)
+            + ": "
+            + ", ".join(sorted(set(missing)))
         )
     return resolved
 
@@ -251,7 +361,8 @@ def _build_proc_env(cfg, *, discovery=False):
 
     internal_root = _INTERNAL_ROOT
     existing_pythonpath = proc_env.get("PYTHONPATH", "")
-    extra_paths = [_WORK_DIR, internal_root + "/src", internal_root]
+    internal_src = _WORK_DIR + "/" + _LAYOUT["INTERNAL_SRC_DIR"]
+    extra_paths = [_WORK_DIR, internal_src, internal_root]
     proc_env["PYTHONPATH"] = ":".join(
         [p for p in [existing_pythonpath, *extra_paths] if p]
     )
@@ -282,6 +393,7 @@ def _resolve_http(cfg, *, discovery=False):
         return _resolve_relay(cfg)
 
     if not cfg.untrusted:
+
         def _env_sub(match):
             return os.environ.get(match.group(1), match.group(0))
 
@@ -299,7 +411,10 @@ def _resolve_http(cfg, *, discovery=False):
         value = value.rstrip()
         if "\r" in value or "\n" in value:
             raise RuntimeError(
-                "Header " + repr(name) + " for server " + repr(cfg.name)
+                "Header "
+                + repr(name)
+                + " for server "
+                + repr(cfg.name)
                 + " resolves to a value HTTP cannot frame (a line break inside"
                 " the value); fix the header or its vault secret in Plugins"
             )
@@ -368,7 +483,9 @@ def _resolve_relay(cfg):
     session — a baked-in copy would outlive the grant it names.
     """
     creds = _load_relay_credentials()
-    grant_id = (creds.get("grants") or {}).get(cfg.name)
+    grants = creds.get("grants") or {}
+    # The host mints grants by display name; the key is a sandbox-side spelling.
+    grant_id = grants.get(cfg.name) or grants.get(cfg.label)
     base = (creds.get("relay_base_url") or "").rstrip("/")
     token = creds.get("token") or ""
     if not (grant_id and base and token):
@@ -481,15 +598,14 @@ def _unwrap_mcp_content(envelope: Any) -> Any:
                 return structured["result"]
             return structured
 
-    if (isinstance(envelope, dict) and
-        isinstance(envelope.get("content"), list)):
-
+    if isinstance(envelope, dict) and isinstance(envelope.get("content"), list):
         content_blocks = envelope["content"]
 
-        if (len(content_blocks) == 1 and
-            isinstance(content_blocks[0], dict) and
-            content_blocks[0].get("type") == "text"):
-
+        if (
+            len(content_blocks) == 1
+            and isinstance(content_blocks[0], dict)
+            and content_blocks[0].get("type") == "text"
+        ):
             unwrapped = content_blocks[0].get("text", "")
 
             if unwrapped.startswith(("{", "[")):
@@ -556,9 +672,9 @@ def _log_call_failure(
     """Dump a failed tool call to stderr — the agent's only view of the cause."""
     import traceback
 
-    print(f"\n{'='*60}", file=sys.stderr)  # noqa: T201
+    print(f"\n{'=' * 60}", file=sys.stderr)  # noqa: T201
     print(f"ERROR in {label}", file=sys.stderr)  # noqa: T201
-    print(f"{'='*60}", file=sys.stderr)  # noqa: T201
+    print(f"{'=' * 60}", file=sys.stderr)  # noqa: T201
     print(f"Error Type: {type(exc).__name__}", file=sys.stderr)  # noqa: T201
     print(f"Error Message: {exc}", file=sys.stderr)  # noqa: T201
     print(f"Server: {server_name}", file=sys.stderr)  # noqa: T201
@@ -566,7 +682,7 @@ def _log_call_failure(
     print(f"Arguments: {arguments}", file=sys.stderr)  # noqa: T201
     print("\nFull Traceback:", file=sys.stderr)  # noqa: T201
     traceback.print_exc(file=sys.stderr)
-    print(f"{'='*60}\n", file=sys.stderr)  # noqa: T201
+    print(f"{'=' * 60}\n", file=sys.stderr)  # noqa: T201
 
 
 # ---------------------------------------------------------------------------
@@ -580,6 +696,19 @@ def _get_next_message_id() -> int:
     with _message_id_lock:
         _message_id_counter += 1
         return _message_id_counter
+
+
+def _next_supervisor_id() -> int:
+    """A request id no other caller of this daemon can mint.
+
+    One daemon serves every process on the computer -- each ``execute_code``
+    run is a fresh interpreter -- and it keys its in-flight table by this id.
+    A per-process counter hands out 1 in every one of them, so two concurrent
+    calls collide: the heartbeat goes to one caller's socket and the first
+    reply to finish evicts the other caller's entry. The pid is the process
+    identity the counter was missing.
+    """
+    return (os.getpid() << 32) | _get_next_message_id()
 
 
 def _get_server_lock(server_name: str) -> threading.RLock:
@@ -620,11 +749,14 @@ def _legacy_request(method: str, params: dict) -> dict:
 
 def _legacy_init_request() -> dict:
     """The pre-2026 initialize both transports send — one spelling of the offer."""
-    return _legacy_request("initialize", {
-        "protocolVersion": _LEGACY_OFFER,
-        "capabilities": {},
-        "clientInfo": _CLIENT_INFO,
-    })
+    return _legacy_request(
+        "initialize",
+        {
+            "protocolVersion": _LEGACY_OFFER,
+            "capabilities": {},
+            "clientInfo": _CLIENT_INFO,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -657,7 +789,9 @@ def _send_message(server_name: str, proc: subprocess.Popen, message: dict) -> No
         raise RuntimeError(error_msg)
 
 
-def _read_reply(server_name: str, proc: subprocess.Popen, want_id: int, timeout: float) -> dict:
+def _read_reply(
+    server_name: str, proc: subprocess.Popen, want_id: int, timeout: float
+) -> dict:
     """Read the reply matching ``want_id``.
 
     Skips notifications and stale replies (abandoned ids from a prior timeout),
@@ -861,10 +995,14 @@ def _legacy_initialize(server_name: str, proc: subprocess.Popen) -> dict:
         msg = f"MCP initialization failed: {response['error']}"
         raise RuntimeError(msg)
     version = (response.get("result") or {}).get("protocolVersion") or _LEGACY_OFFER
-    _send_message(server_name, proc, {
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized",
-    })
+    _send_message(
+        server_name,
+        proc,
+        {
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+        },
+    )
     return {
         "mode": "legacy",
         "version": version,
@@ -873,7 +1011,9 @@ def _legacy_initialize(server_name: str, proc: subprocess.Popen) -> dict:
     }
 
 
-def _negotiate_stdio(server_name: str, proc: subprocess.Popen, discovery: bool = False) -> tuple:
+def _negotiate_stdio(
+    server_name: str, proc: subprocess.Popen, discovery: bool = False
+) -> tuple:
     """server/discover probe with a bounded fallback ladder.
 
     Mutual modern version => modern. JSON-RPC method error => legacy initialize
@@ -938,28 +1078,58 @@ def _ensure_stdio_server(server_name: str, discovery: bool = False) -> tuple:
         return proc, proto
 
 
-def _call_mcp_tool_stdio(server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
+def _stdio_reply(
+    server_name: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    timeout: float = _CALL_TIMEOUT,
+) -> dict:
+    """The raw JSON-RPC reply from a stdio server.
+
+    Separate from the settling half because the supervisor runs this side in a
+    different process from the one that traces and unwraps: the trace budget is
+    per execution, so it has to stay in the execution's own interpreter.
+    """
+    # Queue wait and request/reply share one clock. The daemon normally owns
+    # the outer queue, while this also keeps the in-process fallback bounded.
+    deadline = time.monotonic() + max(0.0, timeout)
+    lock = _get_server_lock(server_name)
+    if not lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+        raise RuntimeError(
+            f"MCP server {server_name} call expired waiting for its queue "
+            "[queue_timeout]"
+        )
+    try:
+        proc, proto = _ensure_stdio_server(server_name)
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(
+                f"MCP server {server_name} call expired before dispatch [queue_timeout]"
+            )
+
+        params = {"name": tool_name, "arguments": arguments}
+        if proto["mode"] == "modern":
+            request = _modern_request("tools/call", params, proto["version"])
+        else:
+            request = _legacy_request("tools/call", params)
+
+        _send_message(server_name, proc, request)
+        return _read_reply(server_name, proc, request["id"], remaining)
+    finally:
+        lock.release()
+
+
+def _call_mcp_tool_stdio(
+    server_name: str, tool_name: str, arguments: dict[str, Any]
+) -> Any:
     """Call an MCP tool via stdio transport (subprocess)."""
     try:
-        # The whole exchange holds the server lock: ensure (spawn+negotiate on
-        # cold start — RLock, so re-entry is fine), then write+read serialized.
-        with _get_server_lock(server_name):
-            proc, proto = _ensure_stdio_server(server_name)
-
-            params = {"name": tool_name, "arguments": arguments}
-            if proto["mode"] == "modern":
-                request = _modern_request("tools/call", params, proto["version"])
-            else:
-                request = _legacy_request("tools/call", params)
-
-            _send_message(server_name, proc, request)
-            response = _read_reply(server_name, proc, request["id"], _CALL_TIMEOUT)
-            return _settle_reply(response, server_name, tool_name, arguments)
+        response = _stdio_reply(server_name, tool_name, arguments)
+        return _settle_reply(response, server_name, tool_name, arguments)
 
     except Exception as e:  # noqa: BLE001 - Top-level error handler for MCP tool call
-        _log_call_failure(
-            "_call_mcp_tool_stdio", e, server_name, tool_name, arguments
-        )
+        _log_call_failure("_call_mcp_tool_stdio", e, server_name, tool_name, arguments)
         raise
 
 
@@ -975,20 +1145,22 @@ def _call_mcp_tool_stdio(server_name: str, tool_name: str, arguments: dict[str, 
 # ``egress_guard.RESERVED_HEADERS`` value for value, spelled out because this
 # module is uploaded into the sandbox and cannot import server code. A unit
 # test pins the two equal, so a row reads the same on every path that sends it.
-_RESERVED_HEADERS = frozenset({
-    "host",
-    "content-length",
-    "transfer-encoding",
-    "connection",
-    "te",
-    "upgrade",
-    "expect",
-    "content-encoding",
-    "mcp-protocol-version",
-    "mcp-method",
-    "mcp-name",
-    "mcp-session-id",
-})
+_RESERVED_HEADERS = frozenset(
+    {
+        "host",
+        "content-length",
+        "transfer-encoding",
+        "connection",
+        "te",
+        "upgrade",
+        "expect",
+        "content-encoding",
+        "mcp-protocol-version",
+        "mcp-method",
+        "mcp-name",
+        "mcp-session-id",
+    }
+)
 
 
 def _mcp_headers(method: str, mcp_name: str, proto: dict, extra: dict) -> dict:
@@ -1194,7 +1366,16 @@ def _read_body_capped(response, server_name: str, deadline: float | None) -> byt
 def _ensure_http_server(server_name: str, discovery: bool = False) -> dict:
     """Negotiate (once per interpreter) and return the server's proto state.
 
-    HTTP is stateless per POST, so a failed discover probe needs no restart —
+    Under the server's lock: the daemon runs calls on threads, and two first
+    calls racing here would both initialize and one would overwrite the
+    other's negotiated session.
+    """
+    with _get_server_lock(server_name):
+        return _negotiate_http_server(server_name, discovery)
+
+
+def _negotiate_http_server(server_name: str, discovery: bool) -> dict:
+    """HTTP is stateless per POST, so a failed discover probe needs no restart:
     the legacy initialize simply goes out as a fresh request, on a deadline of
     its own so a probe that hung cannot condemn it.
     """
@@ -1223,7 +1404,9 @@ def _ensure_http_server(server_name: str, discovery: bool = False) -> dict:
             )
             reply = None
             try:
-                with client.stream("POST", url, json=probe, headers=probe_headers) as response:
+                with client.stream(
+                    "POST", url, json=probe, headers=probe_headers
+                ) as response:
                     if response.status_code < 400:
                         reply = _parse_http_reply(
                             response,
@@ -1267,7 +1450,9 @@ def _ensure_http_server(server_name: str, discovery: bool = False) -> dict:
                 init_deadline = _phase_deadline(outer, floor=_HTTP_PHASE_FLOOR)
                 init_headers = {"Accept": "application/json, text/event-stream"}
                 init_headers.update(_headers)
-                with client.stream("POST", url, json=init, headers=init_headers) as response:
+                with client.stream(
+                    "POST", url, json=init, headers=init_headers
+                ) as response:
                     if (
                         response.headers.get("x-relay-error") == "relay_auth"
                         and not relay_auth_retried
@@ -1291,7 +1476,9 @@ def _ensure_http_server(server_name: str, discovery: bool = False) -> dict:
             if "error" in reply:
                 msg = f"MCP HTTP initialization failed: {reply['error']}"
                 raise RuntimeError(msg)
-            adopted = (reply.get("result") or {}).get("protocolVersion") or _LEGACY_OFFER
+            adopted = (reply.get("result") or {}).get(
+                "protocolVersion"
+            ) or _LEGACY_OFFER
             proto = {
                 "mode": "legacy",
                 "version": adopted,
@@ -1300,7 +1487,9 @@ def _ensure_http_server(server_name: str, discovery: bool = False) -> dict:
                     reply.get("result") or {}, modern=False
                 ),
             }
-            notif_headers = _mcp_headers("notifications/initialized", "", proto, _headers)
+            notif_headers = _mcp_headers(
+                "notifications/initialized", "", proto, _headers
+            )
             # Streamed and never read: the reply is discarded either way, and
             # buffering it would hand an unbounded body to the interpreter.
             with client.stream(
@@ -1318,84 +1507,518 @@ def _ensure_http_server(server_name: str, discovery: bool = False) -> dict:
         raise RuntimeError(msg) from e
 
 
-def _call_mcp_tool_http(server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
+def _call_mcp_tool_http(
+    server_name: str, tool_name: str, arguments: dict[str, Any]
+) -> Any:
     """Call an MCP tool via streamable HTTP transport."""
     try:
-        # Negotiate once per interpreter, then speak the agreed era
-        proto = _ensure_http_server(server_name)
-
-        cfg = _server_cfg(server_name)
-        url, _headers = _resolve_http(cfg)
-
-        params = {"name": tool_name, "arguments": arguments}
-
-        def _build(p: dict) -> dict:
-            return (
-                _modern_request("tools/call", params, p["version"])
-                if p["mode"] == "modern"
-                else _legacy_request("tools/call", params)
-            )
-
-        request = _build(proto)
-        headers = _mcp_headers("tools/call", tool_name, proto, _headers)
-
-        # Each attempt streams the reply under a size cap + a deadline of its
-        # own: the 65s budget sits strictly above the egress relay's 55s hard
-        # wall so relay budget errors stay typed, and the deadline bounds a
-        # direct server that drips bytes forever (httpx's read timeout can't).
-        # It is re-armed per send because the session-expiry path spends a whole
-        # re-negotiation first — a retry inheriting the first attempt's clock
-        # would fall back under the relay's wall and turn a typed relay error
-        # into a local timeout. The two recovery paths — relay credential
-        # re-mint and legacy session expiry — each fire at most once, so the
-        # loop is bounded to three sends.
-        with httpx.Client(timeout=_HTTP_CALL_BUDGET) as client:
-            relay_auth_retried = False
-            session_reinited = False
-            while True:
-                deadline = time.monotonic() + _HTTP_CALL_BUDGET
-                with client.stream("POST", url, json=request, headers=headers) as response:
-                    relay_code = response.headers.get("x-relay-error")
-                    if relay_code:
-                        if relay_code == "relay_auth" and not relay_auth_retried:
-                            # The credential file may have been re-minted between
-                            # our read and this call — re-read it and retry once.
-                            relay_auth_retried = True
-                            url, _headers = _resolve_http(cfg)
-                            headers = _mcp_headers("tools/call", tool_name, proto, _headers)
-                            continue
-                        # A relay rejection also invalidates the negotiated
-                        # vendor session (e.g. reconnect mints a new grant).
-                        _PROTO.pop(server_name, None)
-                        raise RuntimeError(_relay_error(response, server_name))
-                    if (
-                        response.status_code == 404
-                        and proto.get("mode") == "legacy"
-                        and proto.get("session_id")
-                        and not session_reinited
-                    ):
-                        # 2025-11-25 session expiry: the server dropped our
-                        # session id. Reinitialize once and retry with the fresh
-                        # session.
-                        session_reinited = True
-                        _PROTO.pop(server_name, None)
-                        proto = _ensure_http_server(server_name)
-                        request = _build(proto)
-                        headers = _mcp_headers("tools/call", tool_name, proto, _headers)
-                        continue
-                    response.raise_for_status()
-                    result = _parse_http_reply(
-                        response, request["id"], server_name, deadline
-                    )
-                    break
-
+        result = _http_exchange(server_name, tool_name, arguments)
         return _settle_reply(result, server_name, tool_name, arguments)
 
     except Exception as e:  # noqa: BLE001 - Top-level error handler for MCP tool call
-        _log_call_failure(
-            "_call_mcp_tool_http", e, server_name, tool_name, arguments
-        )
+        _log_call_failure("_call_mcp_tool_http", e, server_name, tool_name, arguments)
         raise
+
+
+def _http_exchange(server_name: str, tool_name: str, arguments: dict[str, Any]) -> dict:
+    """One tools/call over streamable HTTP, with its two bounded recoveries."""
+    # Negotiate once per interpreter, then speak the agreed era
+    proto = _ensure_http_server(server_name)
+
+    cfg = _server_cfg(server_name)
+    url, _headers = _resolve_http(cfg)
+
+    params = {"name": tool_name, "arguments": arguments}
+
+    def _build(p: dict) -> dict:
+        return (
+            _modern_request("tools/call", params, p["version"])
+            if p["mode"] == "modern"
+            else _legacy_request("tools/call", params)
+        )
+
+    request = _build(proto)
+    headers = _mcp_headers("tools/call", tool_name, proto, _headers)
+
+    # Each attempt streams the reply under a size cap + a deadline of its
+    # own: the 65s budget sits strictly above the egress relay's 55s hard
+    # wall so relay budget errors stay typed, and the deadline bounds a
+    # direct server that drips bytes forever (httpx's read timeout can't).
+    # It is re-armed per send because the session-expiry path spends a whole
+    # re-negotiation first: a retry inheriting the first attempt's clock
+    # would fall back under the relay's wall and turn a typed relay error
+    # into a local timeout. The two recovery paths (relay credential
+    # re-mint and legacy session expiry) each fire at most once, so the
+    # loop is bounded to three sends.
+    with httpx.Client(timeout=_HTTP_CALL_BUDGET) as client:
+        relay_auth_retried = False
+        session_reinited = False
+        while True:
+            deadline = time.monotonic() + _HTTP_CALL_BUDGET
+            with client.stream("POST", url, json=request, headers=headers) as response:
+                relay_code = response.headers.get("x-relay-error")
+                if relay_code:
+                    if relay_code == "relay_auth" and not relay_auth_retried:
+                        # The credential file may have been re-minted between
+                        # our read and this call. Re-read it and retry once.
+                        relay_auth_retried = True
+                        url, _headers = _resolve_http(cfg)
+                        headers = _mcp_headers("tools/call", tool_name, proto, _headers)
+                        continue
+                    # A relay rejection also invalidates the negotiated
+                    # vendor session (e.g. reconnect mints a new grant).
+                    _PROTO.pop(server_name, None)
+                    raise RuntimeError(_relay_error(response, server_name))
+                if (
+                    response.status_code == 404
+                    and proto.get("mode") == "legacy"
+                    and proto.get("session_id")
+                    and not session_reinited
+                ):
+                    # 2025-11-25 session expiry: the server dropped our
+                    # session id. Reinitialize once and retry with the fresh
+                    # session.
+                    session_reinited = True
+                    _PROTO.pop(server_name, None)
+                    proto = _ensure_http_server(server_name)
+                    request = _build(proto)
+                    headers = _mcp_headers("tools/call", tool_name, proto, _headers)
+                    continue
+                response.raise_for_status()
+                result = _parse_http_reply(
+                    response, request["id"], server_name, deadline
+                )
+                break
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Workspace view + supervisor client.
+# ---------------------------------------------------------------------------
+
+# Relative to ``_INTERNAL_ROOT``. The daemon's own artifacts; nothing outside
+# the supervisor addresses them, so they are not layout ClassVars.
+_SUPERVISOR_SOCKET_REL = "system/mcp-supervisor.sock"
+_SUPERVISOR_LOG_REL = "system/mcp-supervisor.log"
+_SUPERVISOR_PACKAGE = "supervisor"
+_SUPERVISOR_PROTOCOL_VERSION = 1
+_SUPERVISOR_CONNECT_TIMEOUT = 3.0
+_SUPERVISOR_START_TIMEOUT = 10.0
+# Wall clock per frame, not per call: the daemon sends a heartbeat while a call
+# is outstanding, so a slow tool re-arms this and only a silent daemon trips it.
+_SUPERVISOR_FRAME_TIMEOUT = 45.0
+_SUPERVISOR_ERR_FATAL = ("not_enabled", "unknown_server", "config_mismatch")
+_SUPERVISOR_ERR_RETRYABLE = (
+    "draining",
+    "queue_timeout",
+    "server_busy",
+    "stale_daemon",
+)
+_SUPERVISOR_RETRY_ATTEMPTS = 4
+_SUPERVISOR_RETRY_BACKOFF_S = 0.05
+
+_supervisor_start_lock = threading.Lock()
+# Set once per interpreter when the daemon is unreachable and unstartable, so a
+# computer without one pays the probe once rather than per call.
+_supervisor_unavailable = False
+
+
+def _internal_join(*parts: str) -> str:
+    return "/".join((_INTERNAL_ROOT, *(p.strip("/") for p in parts if p)))
+
+
+def _workspace_view() -> dict | None:
+    """The calling workspace's ``mcp_client_config.json``, or None.
+
+    Found from the ``tools`` package the wrappers were imported from, because
+    that names the exact overlay this call came through: several workspaces
+    share a computer and only one of them is this turn's. ``sys.path`` and the
+    cwd are the fallbacks for a caller that imported no wrapper.
+
+    None means no overlay exists (a sandbox whose sync predates the split), and
+    every caller reads that as the whole union rather than as a denial: taking
+    MCP away from a workspace that has it is the worse failure.
+    """
+    if "view" in _WORKSPACE_VIEW_CACHE:
+        return _WORKSPACE_VIEW_CACHE["view"]
+    pkg_name = _WS_LAYOUT["TOOLS_DIR"].rsplit("/", 1)[-1]
+    basename = _WS_LAYOUT["MCP_CLIENT_CONFIG_FILE"].rsplit("/", 1)[-1]
+    candidates = []
+    tools_pkg = sys.modules.get(pkg_name)
+    for entry in list(getattr(tools_pkg, "__path__", None) or ()):
+        candidates.append(entry + "/" + basename)
+    for entry in list(sys.path):
+        if entry:
+            candidates.append(entry + "/" + pkg_name + "/" + basename)
+    for base in (os.getcwd(), _WORK_DIR):
+        candidates.append(base + "/" + _WS_LAYOUT["MCP_CLIENT_CONFIG_FILE"])
+    view = None
+    for path in candidates:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                loaded = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(loaded, dict):
+            view = dict(loaded)
+            view["path"] = path
+            break
+    _WORKSPACE_VIEW_CACHE["view"] = view
+    return view
+
+
+def _require_enabled(server_name: str) -> None:
+    """Refuse a server this workspace has not enabled, by name.
+
+    The overlay already withholds the wrapper module, so this is what a caller
+    reaching ``_call_mcp_tool`` directly hits. Explicit refusal rather than a
+    silent pass: a workspace that quietly reached a sibling's connector would
+    be indistinguishable from one that had it enabled all along.
+    """
+    view = _workspace_view()
+    if not view:
+        return
+    servers = view.get("servers")
+    if isinstance(servers, dict) and server_name not in servers:
+        msg = f"MCP server '{server_name}' is not enabled for this workspace"
+        raise RuntimeError(msg)
+
+
+# -- the surface the supervisor daemon drives -------------------------------
+
+
+def raw_tool_reply(
+    server_name: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    timeout: float = _CALL_TIMEOUT,
+) -> dict:
+    """One tools/call, returning the JSON-RPC reply unsettled.
+
+    The daemon's entry point. Unwrapping and tracing stay in the execution's
+    own interpreter, so the per-execution result-body budget cannot become a
+    daemon-lifetime counter and ``MCP_TRACE_FILE`` keeps naming the execution
+    that made the call.
+    """
+    cfg = _server_cfg(server_name)
+    if cfg.transport == "sse":
+        raise RuntimeError(_legacy_sse_refusal(server_name))
+    if cfg.transport == "http":
+        return _http_exchange(server_name, tool_name, arguments)
+    return _stdio_reply(server_name, tool_name, arguments, timeout=timeout)
+
+
+def serializes_calls(server_name: str) -> bool:
+    return _server_cfg(server_name).transport == "stdio"
+
+
+def running_servers() -> list[str]:
+    """Servers this process is holding: a live stdio process or a live session."""
+    live = {
+        name for name, proc in list(_server_processes.items()) if proc.poll() is None
+    }
+    return sorted(live | set(_PROTO))
+
+
+def drop_server(server_name: str) -> None:
+    """Forget a server so the next call re-spawns and re-negotiates it."""
+    with _get_server_lock(server_name):
+        proc = _server_processes.pop(server_name, None)
+        _PROTO.pop(server_name, None)
+        if proc is not None:
+            _kill_server(server_name, proc)
+
+
+def secret_fingerprint() -> list:
+    """Comparable stamp of the on-disk secret material.
+
+    A stdio server's credentials are baked into its environment at spawn, so a
+    rotation reaches it only by respawning; the daemon watches this to know
+    when holding a process has become the wrong thing to do.
+    """
+    stamps = []
+    paths = {_VAULT_SECRETS_FILE, _MCP_TOKENS_FILE, _EGRESS_RELAY_FILE}
+    for name in _SERVER_CONFIGS:
+        dependencies = server_secret_dependencies(name)
+        if dependencies:
+            paths.update(dependencies)
+    for path in sorted(paths):
+        try:
+            st = os.stat(path)
+            stamps.append([path, st.st_mtime_ns, st.st_size])
+        except OSError:
+            stamps.append([path, 0, -1])
+    return stamps
+
+
+def server_secret_dependencies(server_name: str) -> list[str] | None:
+    """Credential files a held server depends on, or None when unknowable."""
+    cfg = _server_cfg(server_name)
+    if cfg.credential_files:
+        return sorted({str(path) for path in cfg.credential_files if path})
+    if not cfg.untrusted:
+        # Trusted servers inherit the whole sandbox environment, including
+        # file pointers not preserved in their generated entry.
+        return None
+    dependencies = set()
+    if cfg.relay_bound:
+        dependencies.add(_EGRESS_RELAY_FILE)
+    values = [*cfg.args, *cfg.env.values(), cfg.url, *cfg.headers.values()]
+    vault_path = cfg.vault_file or _VAULT_SECRETS_FILE
+    if any(_VAULT_REF_RE.search(str(value)) for value in values):
+        dependencies.add(vault_path)
+    known_paths = {
+        _VAULT_SECRETS_FILE,
+        _MCP_TOKENS_FILE,
+        _EGRESS_RELAY_FILE,
+        *(c.vault_file for c in _SERVER_CONFIGS.values() if c.vault_file),
+    }
+    for path in known_paths:
+        if path and any(path in str(value) for value in values):
+            dependencies.add(path)
+    file_hint = _re.compile(r"(?:CREDENTIAL|SECRET|TOKEN|KEY|FILE|PATH)", _re.I)
+    for name, value in cfg.env.items():
+        value = str(value)
+        if file_hint.search(name) and os.path.isabs(value):
+            dependencies.add(value)
+    previous = ""
+    for raw in cfg.args:
+        argument = str(raw)
+        if "=" in argument:
+            flag, value = argument.split("=", 1)
+            if file_hint.search(flag) and os.path.isabs(value):
+                dependencies.add(value)
+        elif file_hint.search(previous) and os.path.isabs(argument):
+            dependencies.add(argument)
+        previous = argument
+    return sorted(dependencies)
+
+
+# -- dialing the daemon ------------------------------------------------------
+
+
+def _supervisor_socket_path() -> str:
+    return _internal_join(_SUPERVISOR_SOCKET_REL)
+
+
+def _supervisor_connect(path: str):
+    import socket as _socket
+
+    sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    sock.settimeout(_SUPERVISOR_CONNECT_TIMEOUT)
+    sock.connect(path)
+    return sock
+
+
+def _start_supervisor(path: str) -> bool:
+    """Start the daemon and wait for it to listen. False when it cannot run.
+
+    The client starts it as well as the host so a daemon that died mid-turn is
+    replaced by the next call rather than by the next asset sync. Two racing
+    executions are safe: the daemon takes an exclusive lock before binding and
+    the loser exits without touching the socket.
+    """
+    src_root = _WORK_DIR + "/" + _LAYOUT["INTERNAL_SRC_DIR"]
+    if not os.path.exists(src_root + "/" + _SUPERVISOR_PACKAGE + "/daemon.py"):
+        return False
+    with _supervisor_start_lock:
+        if _socket_alive(path):
+            return True
+        # PTC_TURN_CWD is dropped with the trace file: both name this one
+        # caller, and the daemon outlives it serving every workspace on the
+        # computer, so inheriting either would pin it to whichever turn
+        # happened to start it. (_shared.TURN_CWD_ENV; this file ships into
+        # the sandbox and cannot import it.)
+        _CALLER_ONLY_ENV = ("MCP_TRACE_FILE", "PTC_TURN_CWD")
+        env = {k: v for k, v in os.environ.items() if k not in _CALLER_ONLY_ENV}
+        existing = env.get("PYTHONPATH") or ""
+        env["PYTHONPATH"] = src_root + (":" + existing if existing else "")
+        log_path = _internal_join(_SUPERVISOR_LOG_REL)
+        try:
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            log = open(log_path, "ab")  # noqa: SIM115 - handed to the child
+        except OSError:
+            return False
+        try:
+            subprocess.Popen(
+                [sys.executable or "python3", "-m", _SUPERVISOR_PACKAGE, _WORK_DIR],
+                env=env,
+                cwd=src_root,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=log,
+                start_new_session=True,
+            )
+        except OSError:
+            log.close()
+            return False
+        log.close()
+        deadline = time.monotonic() + _SUPERVISOR_START_TIMEOUT
+        while time.monotonic() < deadline:
+            if _socket_alive(path):
+                return True
+            time.sleep(0.05)
+    return False
+
+
+def _socket_alive(path: str) -> bool:
+    if not os.path.exists(path):
+        return False
+    try:
+        sock = _supervisor_connect(path)
+    except OSError:
+        return False
+    sock.close()
+    return True
+
+
+class _SupervisorBroke(Exception):
+    """The exchange failed before a terminal frame.
+
+    ``acked`` is the whole point: the daemon sends its ack once it has decided
+    to dispatch, so a failure after one means the tool may already have run.
+    Re-sending that is a second call, and for an order placement a second
+    order.
+    """
+
+    def __init__(self, cause: object, *, acked: bool):
+        super().__init__(str(cause))
+        self.acked = acked
+
+
+def _supervisor_exchange(path: str, request: dict) -> tuple[str, dict]:
+    """Send one request and read frames until the terminal one.
+
+    Returns ``(type, frame)``. Heartbeats only re-arm the read clock, which is
+    what keeps a 120 s tool call distinguishable from a wedged daemon.
+    """
+    acked = False
+    sock = None
+    try:
+        sock = _supervisor_connect(path)
+        sock.settimeout(_SUPERVISOR_FRAME_TIMEOUT)
+        sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
+        reader = sock.makefile("rb")
+        while True:
+            line = reader.readline()
+            if not line:
+                msg = "supervisor closed the connection"
+                raise OSError(msg)
+            frame = json.loads(line.decode("utf-8"))
+            kind = frame.get("type")
+            if kind == "ack":
+                acked = True
+                continue
+            if kind in ("reply", "result", "error"):
+                return kind, frame
+    except (OSError, ValueError) as exc:
+        raise _SupervisorBroke(exc, acked=acked) from exc
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
+def _supervisor_reply(
+    server_name: str, tool_name: str, arguments: dict[str, Any]
+) -> dict | None:
+    """The daemon's JSON-RPC reply, or None to fall back in-process.
+
+    Pre-ack capacity refusals can fall back safely because nothing ran.
+    Workspace denials and acknowledged failures must still raise.
+    """
+    global _supervisor_unavailable
+    if _supervisor_unavailable or os.environ.get("MCP_SUPERVISOR") == "off":
+        return None
+    path = _supervisor_socket_path()
+    view = _workspace_view() or {}
+    request = {
+        "v": _SUPERVISOR_PROTOCOL_VERSION,
+        "id": 0,
+        "op": "call",
+        "server": server_name,
+        "tool": tool_name,
+        "args": arguments,
+        "workspace_id": str(view.get("workspace_id") or ""),
+        "config_path": str(view.get("path") or ""),
+        "config_version": int(view.get("computer_config_version") or 0),
+    }
+    transport_failures = 0
+    for attempt in range(_SUPERVISOR_RETRY_ATTEMPTS):
+        if not _socket_alive(path) and not _start_supervisor(path):
+            _supervisor_unavailable = True
+            return None
+        # A fresh id per attempt, so a retry can never land on the in-flight
+        # entry of the attempt it is replacing.
+        request["id"] = _next_supervisor_id()
+        try:
+            kind, frame = _supervisor_exchange(path, request)
+        except _SupervisorBroke as exc:
+            if exc.acked:
+                # It had taken the call. Neither a resend nor the in-process
+                # fallback can tell whether the tool ran, and both would run
+                # it again, so this surfaces as a failed call instead.
+                msg = (
+                    f"MCP supervisor accepted {server_name}.{tool_name} and then "
+                    f"failed ({exc}); not retried, the call may have run"
+                )
+                raise RuntimeError(msg) from exc
+            transport_failures += 1
+            if transport_failures < 2:
+                continue
+            print(  # noqa: T201
+                f"MCP supervisor unreachable ({exc}); calling in process",
+                file=sys.stderr,
+            )
+            return None
+        if kind == "reply":
+            return frame.get("reply") or {}
+        if kind == "error":
+            code = str(frame.get("code") or "")
+            message = str(frame.get("message") or "supervisor refused the call")
+            if code in _SUPERVISOR_ERR_FATAL:
+                raise RuntimeError(message)
+            if code == "transport":
+                # Sent only after the ack, for a backend that raised mid-call.
+                # The tool may have run, so this is the same shape as an acked
+                # broken socket: a failed call, not a fallback.
+                msg = (
+                    f"MCP supervisor accepted {server_name}.{tool_name} and the "
+                    f"call failed ({message}); not retried, the call may have run"
+                )
+                raise RuntimeError(msg)
+            if code in _SUPERVISOR_ERR_RETRYABLE:
+                if attempt + 1 < _SUPERVISOR_RETRY_ATTEMPTS:
+                    delay = (
+                        0.1 * (2**attempt)
+                        if code == "draining"
+                        else _SUPERVISOR_RETRY_BACKOFF_S * (attempt + 1)
+                    )
+                    time.sleep(delay)
+                    continue
+                if code in ("draining", "server_busy", "queue_timeout"):
+                    print(  # noqa: T201
+                        f"MCP supervisor could not dispatch server {server_name} "
+                        f"[{code}]; calling in process",
+                        file=sys.stderr,
+                    )
+                    return None
+                raise RuntimeError(
+                    f"MCP supervisor could not dispatch server {server_name} "
+                    f"after {_SUPERVISOR_RETRY_ATTEMPTS} attempts "
+                    f"[{code}]: {message}"
+                )
+            print(f"MCP supervisor error ({code}): {message}", file=sys.stderr)  # noqa: T201
+            return None
+        return None
+    raise RuntimeError(
+        f"MCP supervisor could not dispatch server {server_name} after "
+        f"{_SUPERVISOR_RETRY_ATTEMPTS} attempts"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1419,31 +2042,61 @@ def _legacy_sse_refusal(server_name: str) -> str:
 
 
 def _call_mcp_tool(server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
-    """Call an MCP tool via the appropriate transport.
+    """Call an MCP tool, through the computer's supervisor when one is up.
 
-    Routes on the server's configured transport: streamable HTTP or stdio.
-    Legacy ``sse`` is refused (the old client never spoke the real SSE flow).
+    The daemon holds server processes across executions and across the
+    workspaces sharing the computer, so only the first call after an idle
+    window pays a handshake. It returns the reply unsettled and this side
+    unwraps and traces it, which keeps the per-execution trace budget in the
+    execution that owns it.
+
+    Falling back in process when no daemon answers is deliberate: the daemon is
+    a latency property, and degrading to the old per-execution spawn is
+    strictly better than losing every MCP call to a socket that failed to bind.
     """
     transport = _server_cfg(server_name).transport
+    _require_enabled(server_name)
+
+    if transport == "sse":
+        raise RuntimeError(_legacy_sse_refusal(server_name))
+
+    reply = _supervisor_reply(server_name, tool_name, arguments)
+    if reply is not None:
+        try:
+            return _settle_reply(reply, server_name, tool_name, arguments)
+        except Exception as e:  # noqa: BLE001 - mirror the transports' dump
+            _log_call_failure(
+                "_call_mcp_tool_supervisor", e, server_name, tool_name, arguments
+            )
+            raise
 
     # Tracing happens in the transport via _finalize_mcp_result, where the raw
     # envelope (incl. the MCP isError flag) is still visible — so failed calls
     # and error payloads are returned to the agent but never recorded as sources.
     if transport == "http":
         return _call_mcp_tool_http(server_name, tool_name, arguments)
-    if transport == "sse":
-        raise RuntimeError(_legacy_sse_refusal(server_name))
     return _call_mcp_tool_stdio(server_name, tool_name, arguments)
 
 
 def cleanup_mcp_servers():
-    """Clean up all MCP server processes."""
-    for server_name, proc in _server_processes.items():
+    """Terminate every MCP server process this interpreter owns.
+
+    The supervisor's shutdown path: in a daemon this reaps the whole
+    computer's server set, and in a one-shot interpreter it reaps whatever the
+    in-process fallback spawned.
+    """
+    for server_name, proc in list(_server_processes.items()):
         try:
             proc.terminate()
             proc.wait(timeout=5)
-        except (OSError, TimeoutError) as e:
+        except (OSError, subprocess.SubprocessError) as e:
+            # TimeoutExpired is a SubprocessError, not a TimeoutError; a server
+            # that ignores SIGTERM must not leave the rest of the set running.
             print(f"Error cleaning up MCP server {server_name}: {e}", file=sys.stderr)  # noqa: T201
+            try:
+                proc.kill()
+            except OSError:
+                pass
     _server_processes.clear()
     _PROTO.clear()
 
@@ -1457,8 +2110,12 @@ def discover(server_name: str) -> dict:
     """
     cfg = _SERVER_CONFIGS.get(server_name)
     if cfg is None:
-        return {"server": server_name, "status": "error",
-                "error": "unknown server", "tools": []}
+        return {
+            "server": server_name,
+            "status": "error",
+            "error": "unknown server",
+            "tools": [],
+        }
     try:
         if cfg.transport == "sse":
             # Refuse here too, so the connector saves as status=error with an
@@ -1470,17 +2127,18 @@ def discover(server_name: str) -> dict:
         else:
             raw = _discover_stdio(server_name)
     except Exception as e:  # noqa: BLE001 - discovery must never crash the driver
-        return {"server": server_name, "status": "error",
-                "error": str(e), "tools": []}
+        return {"server": server_name, "status": "error", "error": str(e), "tools": []}
     tools = []
     for t in raw or []:
         if not isinstance(t, dict):
             continue
-        tools.append({
-            "name": t.get("name", ""),
-            "description": t.get("description", "") or "",
-            "input_schema": t.get("inputSchema") or t.get("input_schema") or {},
-        })
+        tools.append(
+            {
+                "name": t.get("name", ""),
+                "description": t.get("description", "") or "",
+                "input_schema": t.get("inputSchema") or t.get("input_schema") or {},
+            }
+        )
     return {
         "server": server_name,
         "status": "ok",

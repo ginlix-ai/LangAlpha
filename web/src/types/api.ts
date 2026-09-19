@@ -61,6 +61,17 @@ export interface Workspace {
   resource_tier?: ResourceTier;
   /** Keep the sandbox running (idle auto-stop disabled). Absent on flash / legacy rows. */
   is_always_on?: boolean;
+  /**
+   * The machine this workspace lives on. Absent on flash workspaces and on rows
+   * that predate the split, which is exactly when the per-workspace status
+   * channel stays the only source for this row's state.
+   */
+  computer_id?: string | null;
+  /** Folder name under the computer's root: the workspace's address on disk. */
+  dir_name?: string | null;
+  /** The restore from this workspace's file backup did not finish, so the tree
+   *  is short some files until the next start retries it. */
+  files_restore_incomplete?: boolean;
   created_at?: string;
   updated_at?: string;
   [key: string]: unknown;
@@ -85,6 +96,82 @@ export interface WorkspaceQuota {
   performance: WorkspaceCapacity | null;
   max: WorkspaceCapacity | null;
   always_on: WorkspaceCapacity | null;
+}
+
+// --- Computer ---
+
+/**
+ * Lifecycle of the machine a workspace runs on. `running`, `error` and
+ * `deleted` are the statuses the status stream treats as terminal; the rest
+ * either settle on their own or wait for the user.
+ */
+export type ComputerStatus =
+  | 'creating'
+  | 'starting'
+  | 'running'
+  | 'stopping'
+  | 'stopped'
+  | 'error'
+  | 'deleted';
+
+export interface Computer {
+  computer_id: string;
+  user_id: string;
+  /** Execution backend, e.g. `daytona` or `docker`. */
+  kind: string;
+  name: string;
+  /** Wire value, kept plain: an unrecognized state is real, and
+   *  `computerStatusUi()` fails safe on one. {@link ComputerStatus} types the
+   *  status table instead, so adding a state there forces its copy. */
+  status: string;
+  resource_tier: ResourceTier;
+  is_always_on: boolean;
+  /** The machine a workspace is bound to when it names no other. */
+  is_primary: boolean;
+  /** How many workspaces live on the machine, counted by the server: a list
+   *  page a caller happens to hold is not that number. */
+  workspace_count?: number;
+  root_dir: string;
+  /** Vendor id of the running machine. Owner-only, and null before first boot. */
+  provider_ref?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  last_activity_at?: string | null;
+  stopped_at?: string | null;
+  config?: Record<string, unknown>;
+}
+
+export interface ComputersResponse {
+  computers: Computer[];
+  total?: number;
+}
+
+/**
+ * Payload of a `file_operation` artifact event. `file_path` is workspace
+ * relative, the spelling every path helper classifies; `sandbox_path` is the
+ * one the tool was called with, kept for opening the file where it sits.
+ */
+export interface FileOperationArtifactPayload {
+  operation: 'Write' | 'Edit' | string;
+  file_path: string;
+  sandbox_path?: string;
+  line_count?: number;
+  content?: string;
+  old_string?: string;
+  new_string?: string;
+  error?: string;
+}
+
+export interface ComputerActionResponse {
+  computer_id: string;
+  status: string;
+  message?: string;
+}
+
+/** Request body for `POST /api/v1/computers`. Tier is the machine's, not a workspace's. */
+export interface ComputerCreate {
+  name?: string;
+  resource_tier?: ResourceTier;
 }
 
 export interface ReorderItem {

@@ -6,10 +6,11 @@ semantics are unchanged.
 """
 
 import base64
+import hashlib
 import shlex
 import textwrap
 from collections.abc import Iterable
-from pathlib import Path
+from contextlib import AbstractAsyncContextManager
 from typing import Any
 
 import structlog
@@ -20,6 +21,7 @@ from src.observability import (
 )
 
 from ptc_agent.core.paths import ALWAYS_HIDDEN_DIR_NAMES
+from ptc_agent.core.sandbox import path_locks as _path_locks
 from ptc_agent.core.sandbox.retry import RetryPolicy
 from ptc_agent.core.sandbox.runtime import (
     RuntimeState,
@@ -39,6 +41,9 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+_INLINE_TEXT_WRITE_LIMIT = 256 * 1024
+_INLINE_TEXT_MARKER = "__LANGALPHA_TEXT_PAYLOAD__"
+
 # States a sandbox can still come back from. ``reconnect`` knows how to start a
 # stopped or archived sandbox, so reporting those as Gone would answer a merely
 # idle sandbox by deleting it and rebuilding from the last backup — losing
@@ -57,6 +62,76 @@ _RECOVERABLE_STATES = frozenset(
         RuntimeState.ERROR,
     }
 )
+
+
+class SandboxWriteVerificationError(SandboxTransientError):
+    """A write did not read back as the bytes written, twice in a row.
+
+    A ``SandboxTransientError`` so the HTTP layer keeps mapping it to 503 and the
+    edit path keeps re-raising it instead of answering the agent with "your edit
+    was wrong" for a write that never landed.
+    """
+
+
+def _lock_scope(sandbox: "PTCSandbox") -> str:
+    """Key that separates one sandbox's path locks from another's."""
+    return str(getattr(sandbox, "sandbox_id", None) or "unbound")
+
+
+def path_write_lock(
+    sandbox: "PTCSandbox", normalized_path: str
+) -> AbstractAsyncContextManager[None]:
+    """Public handle on the per-path write lock, for mutators outside this module.
+
+    A server route that deletes or replaces a file through a shell command
+    bypasses the write path entirely, so it has to take the same lock the
+    upload path takes or it can land between another writer's read and write.
+    """
+    return _path_locks.path_write_lock(_lock_scope(sandbox), normalized_path)
+
+
+def _path_write_lock(
+    sandbox: "PTCSandbox", normalized_path: str
+) -> AbstractAsyncContextManager[None]:
+    return _path_locks.path_write_lock(_lock_scope(sandbox), normalized_path)
+
+
+async def _remote_size(sandbox: "PTCSandbox", normalized_path: str) -> int | None:
+    """Byte count of a sandbox file, or None when the sandbox would not say."""
+    try:
+        result = await sandbox._runtime_call(
+            sandbox.runtime.exec,
+            f"wc -c < {shlex.quote(normalized_path)}",
+            timeout=15,
+            retry_policy=RetryPolicy.SAFE,
+        )
+    except Exception:  # noqa: BLE001 - an unanswered size falls back to the hash
+        return None
+    if getattr(result, "exit_code", 1) != 0:
+        return None
+    try:
+        return int((result.stdout or "").strip())
+    except ValueError:
+        return None
+
+
+async def _write_landed(
+    sandbox: "PTCSandbox", normalized_path: str, expected: bytes
+) -> bool:
+    """Whether the file now holds the bytes that were just written.
+
+    Sized rather than hashed: a lost, truncated or partially flushed write
+    changes the length, and hashing means downloading back every file the agent
+    writes, through a sandbox pinned to one CPU. The content hash stays as the
+    fallback for a sandbox that cannot answer the size.
+    """
+    size = await _remote_size(sandbox, normalized_path)
+    if size is not None:
+        return size == len(expected)
+    readback = await sandbox.adownload_file_bytes(normalized_path)
+    if readback is None:
+        return False
+    return hashlib.sha256(readback).digest() == hashlib.sha256(expected).digest()
 
 
 async def _raise_normalized(
@@ -80,9 +155,7 @@ async def _raise_normalized(
     kind = sandbox.provider.classify_error(exc)
 
     if kind is SandboxFailureKind.PATH_ABSENT:
-        logger.debug(
-            "Sandbox path not found", op=op, filepath=path, error=str(exc)
-        )
+        logger.debug("Sandbox path not found", op=op, filepath=path, error=str(exc))
         return
 
     if kind is SandboxFailureKind.SANDBOX_GONE:
@@ -114,7 +187,10 @@ async def _classify_by_liveness(
     try:
         state = await runtime.refresh_state()
     except Exception as probe_exc:
-        if sandbox.provider.classify_error(probe_exc) is SandboxFailureKind.SANDBOX_GONE:
+        if (
+            sandbox.provider.classify_error(probe_exc)
+            is SandboxFailureKind.SANDBOX_GONE
+        ):
             return SandboxGoneError(sandbox_id, str(exc))
         logger.warning(
             "Could not confirm sandbox liveness after an unclassifiable failure",
@@ -131,37 +207,19 @@ async def _classify_by_liveness(
     return SandboxTransientError(f"{op} failed on {path}: {exc}")
 
 
-def _normalize_search_path(sandbox: "PTCSandbox", path: str) -> str:
-    """Normalize search path to absolute sandbox path.
-
-        Converts relative/virtual paths to absolute paths for search operations.
-
-        Args:
-            path: Path to normalize (".", relative, or absolute)
-
-        Returns:
-            Absolute sandbox path
-        """
-    if path == ".":
-        return sandbox._work_dir
-    if not path.startswith("/"):
-        return f"{sandbox._work_dir}/{path}"
-    return path
-
-
 async def adownload_file_bytes(sandbox: "PTCSandbox", filepath: str) -> bytes | None:
     """Download raw bytes from sandbox.
 
-        This path is safe to retry automatically. Concurrency is bounded by a
-        semaphore to limit event-loop pressure from concurrent downloads.
+    This path is safe to retry automatically. Concurrency is bounded by a
+    semaphore to limit event-loop pressure from concurrent downloads.
 
-        Returns:
-            Bytes if downloaded, or None if the file genuinely does not exist.
+    Returns:
+        Bytes if downloaded, or None if the file genuinely does not exist.
 
-        Raises:
-            SandboxGoneError: If the sandbox itself is no longer there.
-            SandboxTransientError: If a transient sandbox transport error persists.
-        """
+    Raises:
+        SandboxGoneError: If the sandbox itself is no longer there.
+        SandboxTransientError: If a transient sandbox transport error persists.
+    """
     await sandbox._wait_ready()
 
     try:
@@ -182,45 +240,79 @@ async def adownload_file_bytes(sandbox: "PTCSandbox", filepath: str) -> bytes | 
 async def aread_file_text(sandbox: "PTCSandbox", filepath: str) -> str | None:
     """Read a UTF-8 text file from the sandbox.
 
-        This path is safe to retry automatically. ``None`` means absent (or not
-        decodable as UTF-8); sandbox failures propagate from
-        ``adownload_file_bytes``.
-        """
+    This path is safe to retry automatically. ``None`` means absent (or not
+    decodable as UTF-8); sandbox failures propagate from
+    ``adownload_file_bytes``.
+    """
     content_bytes = await sandbox.adownload_file_bytes(filepath)
     if not content_bytes:
         return None
     try:
         return content_bytes.decode("utf-8")
     except UnicodeDecodeError as e:
-        logger.debug(
-            "Failed to decode file as utf-8", filepath=filepath, error=str(e)
-        )
+        logger.debug("Failed to decode file as utf-8", filepath=filepath, error=str(e))
         return None
 
 
-async def aupload_file_bytes(sandbox: "PTCSandbox", filepath: str, content: bytes) -> bool:
+async def aupload_file_bytes(
+    sandbox: "PTCSandbox", filepath: str, content: bytes, *, verify: bool = False
+) -> bool:
     """Upload raw bytes to the sandbox.
 
-        This path is safe to retry automatically because uploads overwrite the target.
-        ``False`` means the path was rejected by validation — a sandbox failure
-        raises, since silently reporting "write failed" for an unreachable sandbox
-        makes a recoverable outage look like a permission problem.
+    This path is safe to retry automatically because uploads overwrite the target.
+    ``False`` means the path was rejected by validation — a sandbox failure
+    raises, since silently reporting "write failed" for an unreachable sandbox
+    makes a recoverable outage look like a permission problem.
 
-        Raises:
-            SandboxGoneError: If the sandbox itself is no longer there.
-            SandboxTransientError: If a transient sandbox transport error persists.
-        """
+    Writers of one absolute path are serialised in-process. ``verify``
+    checks the landed byte count and rewrites once before giving up; it is
+    off by default because bulk restore uploads a whole workspace through
+    here and would pay a round trip per file.
+
+    Raises:
+        SandboxGoneError: If the sandbox itself is no longer there.
+        SandboxTransientError: If a transient sandbox transport error persists.
+        SandboxWriteVerificationError: If a verified write never reads back.
+    """
     await sandbox._wait_ready()
 
     # Normalize the path to ensure it's absolute for the sandbox runtime
     normalized_path = sandbox.normalize_path(filepath)
 
+    # Validate the caller's spelling, not the normalizer's output: an absolute
+    # path outside the allowed roots is a virtual path by the rule above, so
+    # re-normalizing one folds it back inside and reads as allowed while the
+    # upload still goes to the path that left.
     if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(
-        normalized_path
+        filepath
     ):
         logger.error(f"Access denied: {filepath} is not in allowed directories")
         return False
 
+    async with _path_write_lock(sandbox, normalized_path):
+        for attempt in (1, 2):
+            written = await _upload_once(sandbox, filepath, normalized_path, content)
+            if not written or not verify:
+                return written
+            if await _write_landed(sandbox, normalized_path, content):
+                return True
+            logger.warning(
+                "File did not read back as written",
+                normalized_path=normalized_path,
+                attempt=attempt,
+                size=len(content),
+            )
+
+    raise SandboxWriteVerificationError(
+        f"Write verification failed for {normalized_path}: the file does not match "
+        f"the {len(content)} bytes written, after one rewrite"
+    )
+
+
+async def _upload_once(
+    sandbox: "PTCSandbox", filepath: str, normalized_path: str, content: bytes
+) -> bool:
+    """One upload attempt against an already validated, already locked path."""
     try:
         assert sandbox.runtime is not None
         # Use normalized path for upload - runtime expects absolute paths
@@ -245,18 +337,104 @@ async def aupload_file_bytes(sandbox: "PTCSandbox", filepath: str, content: byte
         return False
 
 
+async def _exec_text_write_once(
+    sandbox: "PTCSandbox", filepath: str, normalized_path: str, content: bytes
+) -> tuple[bool, int | None]:
+    payload = base64.b64encode(content).decode("ascii")
+    target = shlex.quote(normalized_path)
+    command = "\n".join(
+        [
+            "set -eu",
+            f"target={target}",
+            'tmp=$(mktemp "${target}.tmp.XXXXXX")',
+            "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM",
+            f"base64 -d > \"$tmp\" <<'{_INLINE_TEXT_MARKER}'",
+            payload,
+            _INLINE_TEXT_MARKER,
+            'count=$(wc -c < "$tmp")',
+            'mv -f -- "$tmp" "$target"',
+            "trap - EXIT HUP INT TERM",
+            "printf '%s\\n' \"$count\"",
+        ]
+    )
+    try:
+        assert sandbox.runtime is not None
+        result = await sandbox._runtime_call(
+            sandbox.runtime.exec,
+            command,
+            timeout=30,
+            retry_policy=RetryPolicy.SAFE,
+        )
+        if getattr(result, "exit_code", 1) != 0:
+            raise RuntimeError(
+                f"Atomic text write failed with exit code {result.exit_code}: "
+                f"{getattr(result, 'stderr', '')}"
+            )
+        safe_record(workspace_fs_bytes, len(content), {"op": "write"})
+        try:
+            return True, int((getattr(result, "stdout", "") or "").strip())
+        except ValueError:
+            return True, None
+    except Exception as e:
+        await _raise_normalized(sandbox, e, op="write_file", path=normalized_path)
+        logger.warning(
+            "Failed to write text file",
+            filepath=filepath,
+            normalized_path=normalized_path,
+            error=str(e),
+        )
+        return False, None
+
+
 async def awrite_file_text(sandbox: "PTCSandbox", filepath: str, content: str) -> bool:
     """Write UTF-8 text to a sandbox file (overwrites).
 
-        This path is safe to retry automatically.
-        """
+    This path is safe to retry automatically. The write is serialised per
+    absolute path and its landed size is checked, so a lost or truncated
+    write surfaces instead of being reported as success.
+    """
     try:
-        return await sandbox.aupload_file_bytes(filepath, content.encode("utf-8"))
+        encoded = content.encode("utf-8")
     except UnicodeEncodeError as e:
-        logger.debug(
-            "Failed to encode file as utf-8", filepath=filepath, error=str(e)
-        )
+        logger.debug("Failed to encode file as utf-8", filepath=filepath, error=str(e))
         return False
+
+    if len(encoded) >= _INLINE_TEXT_WRITE_LIMIT:
+        return await sandbox.aupload_file_bytes(filepath, encoded, verify=True)
+
+    await sandbox._wait_ready()
+    normalized_path = sandbox.normalize_path(filepath)
+    if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(
+        filepath
+    ):
+        logger.error(f"Access denied: {filepath} is not in allowed directories")
+        return False
+
+    async with _path_write_lock(sandbox, normalized_path):
+        for attempt in (1, 2):
+            written, landed_size = await _exec_text_write_once(
+                sandbox, filepath, normalized_path, encoded
+            )
+            if not written:
+                return False
+            landed = (
+                landed_size == len(encoded)
+                if landed_size is not None
+                else await _write_landed(sandbox, normalized_path, encoded)
+            )
+            if landed:
+                return True
+            logger.warning(
+                "File did not read back as written",
+                normalized_path=normalized_path,
+                attempt=attempt,
+                size=len(encoded),
+            )
+
+    raise SandboxWriteVerificationError(
+        f"Write verification failed for {normalized_path}: the file does not match "
+        f"the {len(encoded)} bytes written, after one rewrite"
+    )
 
 
 async def aread_file_range(
@@ -264,14 +442,14 @@ async def aread_file_range(
 ) -> str | None:
     """Read a specific range of lines from a UTF-8 text file.
 
-        Uses sed via process.exec to extract lines server-side, avoiding
-        full-file download through the multipart parser hot path.
+    Uses sed via process.exec to extract lines server-side, avoiding
+    full-file download through the multipart parser hot path.
 
-        Args:
-            file_path: Path to the file.
-            offset: Line offset (0-indexed).
-            limit: Maximum number of lines.
-        """
+    Args:
+        file_path: Path to the file.
+        offset: Line offset (0-indexed).
+        limit: Maximum number of lines.
+    """
     await sandbox._wait_ready()
     normalized = sandbox.normalize_path(file_path)
     start = max(0, offset)
@@ -312,141 +490,31 @@ async def _aread_file_range_fallback(
     return "\n".join(lines[start:end])
 
 
-def normalize_path(sandbox: "PTCSandbox", path: str) -> str:
-    """Normalize virtual path to absolute sandbox path (input normalization).
-
-        Converts agent's virtual paths to real sandbox paths:
-            "/" or "." or "" -> {working_directory}
-            "/work/task/file.txt" -> {working_directory}/work/task/file.txt
-            "data/file.txt" -> {working_directory}/data/file.txt
-            "{working_directory}/file.txt" -> unchanged
-            "/tmp/file.txt" -> unchanged
-
-        Args:
-            path: Virtual or relative path from agent
-
-        Returns:
-            Absolute sandbox path
-        """
-    # Use live working directory (updated by fetch_working_dir)
-    work_dir = sandbox._work_dir
-
-    if path in (None, "", ".", "/"):
-        return work_dir
-
-    path = path.strip()
-
-    # Already in allowed directories - keep as is (just normalize . and ..)
-    for allowed_dir in sandbox.config.filesystem.allowed_directories:
-        if path.startswith(allowed_dir):
-            return str(Path(path))
-
-    # Virtual absolute path: /foo -> {working_directory}/foo
-    if path.startswith("/"):
-        return str(Path(f"{work_dir}{path}"))
-
-    # Relative path: foo -> {working_directory}/foo
-    return str(Path(f"{work_dir}/{path}"))
-
-
-def virtualize_path(sandbox: "PTCSandbox", path: str) -> str:
-    """Convert real sandbox path to virtual path (output normalization).
-
-        Strips working_directory prefix from paths returned to agent:
-            {working_directory}/work/task/file.txt -> /work/task/file.txt
-            {working_directory}/tools/docs/foo.md -> /tools/docs/foo.md
-            /tmp/file.txt -> /tmp/file.txt (unchanged)
-
-        Args:
-            path: Absolute sandbox path
-
-        Returns:
-            Virtual path for agent consumption
-        """
-    # Use live working directory (updated by fetch_working_dir)
-    work_dir = sandbox._work_dir
-
-    if path.startswith(work_dir + "/"):
-        return path[len(work_dir) :]  # Strip prefix, keep leading /
-    if path == work_dir:
-        return "/"
-
-    return path  # /tmp or other paths unchanged
-
-
-def validate_path(sandbox: "PTCSandbox", filepath: str) -> bool:
-    """Validate if a path is within allowed directories.
-
-        Args:
-            filepath: Path to validate (virtual or absolute)
-
-        Returns:
-            True if path is allowed, False otherwise
-        """
-    if not sandbox.config.filesystem.enable_path_validation:
-        return True
-
-    # Normalize the path first (handles virtual paths like /work/task/...)
-    normalized_path = sandbox.normalize_path(filepath)
-
-    # Denylist takes priority over allowlist
-    for denied_dir in sandbox.config.filesystem.denied_directories:
-        if normalized_path == denied_dir or normalized_path.startswith(
-            denied_dir + "/"
-        ):
-            return False
-
-    # Check against allowed directories
-    for allowed_dir in sandbox.config.filesystem.allowed_directories:
-        # Exact match or path within allowed directory
-        if normalized_path == allowed_dir or normalized_path.startswith(
-            allowed_dir + "/"
-        ):
-            return True
-
-    logger.warning(
-        "Path validation failed",
-        path=filepath,
-        normalized_path=normalized_path,
-        allowed_dirs=sandbox.config.filesystem.allowed_directories,
-    )
-    return False
-
-
-def validate_and_normalize_path(sandbox: "PTCSandbox", path: str) -> tuple[str, str | None]:
-    """Normalize path and validate access.
-
-        Combines path normalization and validation into a single operation.
-
-        Args:
-            path: Virtual or relative path from agent
-
-        Returns:
-            Tuple of (normalized_path, error_message_or_none)
-        """
-    normalized = sandbox.normalize_path(path)
-    if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(
-        normalized
-    ):
-        return normalized, f"Access denied: {path} is not in allowed directories"
-    return normalized, None
-
-
-async def als_directory(sandbox: "PTCSandbox", directory: str = ".") -> list[dict[str, Any]]:
+async def als_directory(
+    sandbox: "PTCSandbox", directory: str = ".", *, allow_denied: bool = False
+) -> list[dict[str, Any]]:
     """List contents of a directory.
 
-        Returns entries as dicts with at least: name, path, is_dir. An empty list
-        means the directory is empty or absent — a sandbox failure raises, because
-        "200 with no files" for a broken sandbox reads as a deliberately emptied
-        workspace.
-        """
+    Returns entries as dicts with at least: name, path, is_dir. An empty list
+    means the directory is empty or absent — a sandbox failure raises, because
+    "200 with no files" for a broken sandbox reads as a deliberately emptied
+    workspace.
+
+    ``allow_denied`` drops the denylist and keeps the allowlist, for host
+    machinery reading its own runtime directories (the wrapper sweep). The
+    agent's own listing never passes it.
+    """
     await sandbox._wait_ready()
 
-    if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(
-        directory
-    ):
-        logger.error(f"Access denied: {directory} is not in allowed directories")
-        return []
+    if sandbox.config.filesystem.enable_path_validation:
+        is_allowed = (
+            sandbox._validate_path_allow_denied(directory)
+            if allow_denied
+            else sandbox.validate_path(directory)
+        )
+        if not is_allowed:
+            logger.error(f"Access denied: {directory} is not in allowed directories")
+            return []
 
     try:
         assert sandbox.runtime is not None
@@ -474,8 +542,8 @@ async def als_directory(sandbox: "PTCSandbox", directory: str = ".") -> list[dic
 async def acreate_directory(sandbox: "PTCSandbox", dirpath: str) -> bool:
     """Create a directory in the sandbox.
 
-        ``False`` means path validation rejected it; sandbox failures raise.
-        """
+    ``False`` means path validation rejected it; sandbox failures raise.
+    """
     await sandbox._wait_ready()
 
     if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(
@@ -501,11 +569,11 @@ async def acreate_directory(sandbox: "PTCSandbox", dirpath: str) -> bool:
 async def acreate_directories(sandbox: "PTCSandbox", dirpaths: Iterable[str]) -> bool:
     """Create multiple directories in a single ``mkdir -p`` exec call.
 
-        Much faster than N separate ``acreate_directory`` calls for bulk
-        setup (e.g. file restore), collapsing N round-trips into one.
-        ``mkdir -p`` is idempotent. Returns False if any validation or
-        exec fails; callers can fall back to per-dir creates.
-        """
+    Much faster than N separate ``acreate_directory`` calls for bulk
+    setup (e.g. file restore), collapsing N round-trips into one.
+    ``mkdir -p`` is idempotent. Returns False if any validation or
+    exec fails; callers can fall back to per-dir creates.
+    """
     paths = [p for p in dirpaths if p]
     if not paths:
         return True
@@ -547,10 +615,14 @@ async def aedit_file_text(
 ) -> dict[str, Any]:
     """Async edit for tools; safe to retry underlying I/O.
 
-        This does not retry the logical edit itself; it only makes file I/O resilient.
-        Sandbox failures propagate rather than becoming ``{"success": False}`` — the
-        agent must not read "the sandbox is unreachable" as "your edit was wrong".
-        """
+    This does not retry the logical edit itself; it only makes file I/O resilient.
+    Sandbox failures propagate rather than becoming ``{"success": False}`` — the
+    agent must not read "the sandbox is unreachable" as "your edit was wrong".
+
+    The read, the replace and the write run under this path's write lock, so a
+    second writer on the same file cannot land between the read and the write
+    and have its change overwritten.
+    """
     await sandbox._wait_ready()
 
     if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(
@@ -562,50 +634,51 @@ async def aedit_file_text(
         }
 
     try:
-        content = await sandbox.aread_file_text(filepath)
-        if content is None:
-            return {"success": False, "error": "File not found"}
+        async with _path_write_lock(sandbox, sandbox.normalize_path(filepath)):
+            content = await sandbox.aread_file_text(filepath)
+            if content is None:
+                return {"success": False, "error": "File not found"}
 
-        if old_string == new_string:
-            return {
-                "success": False,
-                "error": "old_string and new_string must be different",
-            }
-
-        if old_string not in content:
-            return {
-                "success": False,
-                "error": f"old_string not found in file: {filepath}",
-            }
-
-        if not replace_all:
-            occurrences = content.count(old_string)
-            if occurrences > 1:
+            if old_string == new_string:
                 return {
                     "success": False,
-                    "error": "old_string found multiple times and requires more code context to uniquely identify the intended match",
+                    "error": "old_string and new_string must be different",
                 }
 
-        updated = (
-            content.replace(old_string, new_string)
-            if replace_all
-            else content.replace(old_string, new_string, 1)
-        )
+            if old_string not in content:
+                return {
+                    "success": False,
+                    "error": f"old_string not found in file: {filepath}",
+                }
 
-        if updated == content:
-            return {"success": False, "error": "Edit produced no changes"}
+            if not replace_all:
+                occurrences = content.count(old_string)
+                if occurrences > 1:
+                    return {
+                        "success": False,
+                        "error": "old_string found multiple times and requires more code context to uniquely identify the intended match",
+                    }
 
-        write_ok = await sandbox.awrite_file_text(filepath, updated)
-        if not write_ok:
-            return {"success": False, "error": "Failed to write updated file"}
+            updated = (
+                content.replace(old_string, new_string)
+                if replace_all
+                else content.replace(old_string, new_string, 1)
+            )
 
-        return {
-            "success": True,
-            "message": "File edited successfully",
-            # Characters in the file after the edit, so a caller sizing the
-            # result against a cap does not have to read the file back.
-            "size": len(updated),
-        }
+            if updated == content:
+                return {"success": False, "error": "Edit produced no changes"}
+
+            write_ok = await sandbox.awrite_file_text(filepath, updated)
+            if not write_ok:
+                return {"success": False, "error": "Failed to write updated file"}
+
+            return {
+                "success": True,
+                "message": "File edited successfully",
+                # Characters in the file after the edit, so a caller sizing the
+                # result against a cap does not have to read the file back.
+                "size": len(updated),
+            }
 
     except (SandboxGoneError, SandboxTransientError):
         raise
@@ -614,31 +687,15 @@ async def aedit_file_text(
         return {"success": False, "error": f"Edit operation failed: {e!s}"}
 
 
-def _validate_path_allow_denied(sandbox: "PTCSandbox", path: str) -> bool:
-    """Validate path against allowlist only (ignores denied_directories).
-
-        Intended for user-initiated inspection flows where we want to keep
-        internal directories hidden by default, but still allow explicit access.
-        """
-
-    normalized_path = sandbox._normalize_search_path(path)
-    for allowed_dir in sandbox.config.filesystem.allowed_directories:
-        if normalized_path == allowed_dir or normalized_path.startswith(
-            allowed_dir + "/"
-        ):
-            return True
-    return False
-
-
 async def aglob_files(
     sandbox: "PTCSandbox", pattern: str, path: str = ".", *, allow_denied: bool = False
 ) -> list[str]:
     """Async glob; safe to retry automatically.
 
-        An empty list means no matches. A broken sandbox raises — returning ``[]``
-        made "the sandbox is unreachable" indistinguishable from "this workspace
-        has no files", which call sites then reported as success.
-        """
+    An empty list means no matches. A broken sandbox raises — returning ``[]``
+    made "the sandbox is unreachable" indistinguishable from "this workspace
+    has no files", which call sites then reported as success.
+    """
     await sandbox._wait_ready()
 
     if sandbox.config.filesystem.enable_path_validation:
@@ -733,9 +790,7 @@ async def aglob_files(
 
     except Exception as e:
         await _raise_normalized(sandbox, e, op="glob", path=path)
-        logger.warning(
-            "Async glob failed", pattern=pattern, path=path, error=str(e)
-        )
+        logger.warning("Async glob failed", pattern=pattern, path=path, error=str(e))
         return []
 
 
@@ -758,8 +813,8 @@ async def agrep_content(
 ) -> Any:
     """Async ripgrep; safe to retry automatically.
 
-        An empty result means no matches; a broken sandbox raises.
-        """
+    An empty result means no matches; a broken sandbox raises.
+    """
     await sandbox._wait_ready()
 
     if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(

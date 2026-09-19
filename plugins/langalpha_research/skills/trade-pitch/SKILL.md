@@ -113,6 +113,6 @@ Hand the running ledger to `.agents/skills/thesis-tracker/SKILL.md`: the pitch's
 
 **The missing-inputs block** is one compact block near the top, not a table of blanks. Each line names what is absent, what would supply it, and what it would change about the recommendation. A section whose input is unavailable keeps its heading and carries its labelled gap, because a short pitch reads as a thin idea while a full pitch with three labelled gaps reads as the truth.
 
-Deliver one to three pages as Word through `.agents/skills/docx/SKILL.md`, or a deck through `.agents/skills/pptx/SKILL.md` when the user asked for slides. Save to `$WORK_DIR/work/{task}/`. Depth bands and what to cut first when the draft runs long: `.agents/skills/research-conventions/references/depth.md`.
+Deliver one to three pages as Word through `.agents/skills/docx/SKILL.md`, or a deck through `.agents/skills/pptx/SKILL.md` when the user asked for slides. Save to `{task}/`. Depth bands and what to cut first when the draft runs long: `.agents/skills/research-conventions/references/depth.md`.
 
 **Done when** the first screen carries the action verb, the position, the posture and the variant view; every label the delivered document prints is the reader-facing word for its research label; the missing-inputs block names each absent input with what would supply it; and the file is written to the task directory.

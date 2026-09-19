@@ -6,7 +6,12 @@ import structlog
 from langchain_core.tools import BaseTool, tool
 
 from ptc_agent.agent.backends.sandbox import SandboxBackend
-from ptc_agent.core.paths import MEMO_USER_DIR, MEMORY_USER_DIR, MEMORY_WORKSPACE_DIR
+from ptc_agent.agent.tools.code_admission import code_run_slot, max_execution_time_of
+from ptc_agent.core.paths import (
+    MEMO_USER_DIR,
+    MEMORY_USER_DIR,
+    WorkspaceLayout,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -14,12 +19,13 @@ logger = structlog.get_logger(__name__)
 # user-managed memo store. Memo paths are additionally read-only to the agent.
 _MEMORY_PATH_MARKERS: tuple[str, ...] = (
     f"{MEMORY_USER_DIR}/",
-    f"{MEMORY_WORKSPACE_DIR}/",
+    f"{WorkspaceLayout.MEMORY_DIR}/",
     f"{MEMO_USER_DIR}/",
 )
 
 _MEMORY_ROUTE_ERROR = (
-    f"ERROR: Store-backed paths ({MEMORY_USER_DIR}/**, {MEMORY_WORKSPACE_DIR}/**, "
+    f"ERROR: Store-backed paths ({MEMORY_USER_DIR}/**, "
+    f"{WorkspaceLayout.MEMORY_DIR}/**, "
     f"{MEMO_USER_DIR}/**) are managed by the long-term memory/memo system and "
     "are NOT on the sandbox filesystem. Read them with the Read tool before this "
     "call and pass the content in as a string; write memory paths with "
@@ -32,13 +38,22 @@ def _code_touches_memory(code: str) -> bool:
     return any(marker in code for marker in _MEMORY_PATH_MARKERS)
 
 
-def create_execute_code_tool(backend: SandboxBackend, mcp_registry: Any, thread_id: str = "") -> BaseTool:
+def create_execute_code_tool(
+    backend: SandboxBackend,
+    mcp_registry: Any,
+    thread_id: str = "",
+    *,
+    session: Any = None,
+) -> BaseTool:
     """Factory function to create execute_code tool with injected dependencies.
 
     Args:
         backend: SandboxBackend wrapping the sandbox
         mcp_registry: MCPRegistry instance with available MCP tools
         thread_id: Short thread ID (first 8 chars) for thread-scoped code storage
+        session: The machine's session, read at call time for its ``computer_id``
+            and ``resource_tier`` to size per-computer admission. Omitted by
+            callers with no notion of a computer, which skips admission.
 
     Returns:
         Configured execute_code tool function
@@ -56,8 +71,10 @@ def create_execute_code_tool(backend: SandboxBackend, mcp_registry: Any, thread_
         Import MCP tools: from tools.{server} import {tool}
 
         Args:
-            code: Python code to execute. Print a summary to stdout. Use RELATIVE
-                paths (work/<task>/, data/), never a leading slash.
+            code: Python code to execute. Print a summary to stdout. It runs in
+                your workspace folder, so use RELATIVE paths (work/<task>/,
+                results/, data/); a leading slash is the real filesystem root,
+                where none of those exist.
             description: Brief description (5-10 words, active voice)
 
         Returns:
@@ -76,8 +93,16 @@ def create_execute_code_tool(backend: SandboxBackend, mcp_registry: Any, thread_
         try:
             logger.info("Executing code in sandbox", code_length=len(code), thread_id=thread_id)
 
-            # Execute code in sandbox (thread_id from closure for thread-scoped storage)
-            result = await backend.aexecute_code(code, thread_id=thread_id or None)
+            # Execute code in sandbox (thread_id from closure for thread-scoped storage).
+            # The machine's tier bounds how many of these run on it at once; the
+            # session is read here rather than closed over because a long turn's
+            # session can be rebound between agent build and call.
+            async with code_run_slot(
+                getattr(session, "computer_id", None),
+                tier=getattr(session, "resource_tier", None),
+                max_execution_time=max_execution_time_of(backend),
+            ):
+                result = await backend.aexecute_code(code, thread_id=thread_id or None)
 
             mcp_trace = list(getattr(result, "mcp_trace", []) or [])
             artifact = {"mcp_trace": mcp_trace}

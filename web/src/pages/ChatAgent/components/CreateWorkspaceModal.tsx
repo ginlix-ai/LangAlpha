@@ -4,7 +4,7 @@ import { X, Upload, FileText, CheckCircle2, Circle, AlertCircle } from 'lucide-r
 import { Loader } from '@/components/ui/loader';
 import { Input } from '../../../components/ui/input';
 import { uploadWorkspaceFile } from '../utils/api';
-import { buildRateLimitError } from '@/utils/rateLimitError';
+import { denialMessage } from '../utils/denialMessage';
 import './CreateWorkspaceModal.css';
 
 
@@ -32,14 +32,17 @@ interface CreateWorkspaceModalProps {
 }
 
 type Phase = 'form' | 'progress';
-type CreationStep = 'creating' | 'uploading' | 'done' | 'error';
+type CreationStep = 'uploading' | 'done' | 'error';
 type FileUploadStatus = 'pending' | 'uploading' | 'done' | 'failed';
 type DescMode = 'agent' | 'manual';
 
 /**
- * CreateWorkspaceModal -- two-phase modal:
- *  Phase 1 (form): name, description, file dropzone
- *  Phase 2 (progress): workspace creation -> file uploads -> done
+ * CreateWorkspaceModal.
+ *
+ * Creating a workspace is a row write on a machine the user already has, so
+ * there is nothing to wait for and no phase to show: with no files queued the
+ * form submits and the workspace opens. The progress phase survives only for
+ * the uploads, which genuinely take time.
  */
 function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateWorkspaceModalProps) {
   const { t } = useTranslation();
@@ -61,7 +64,8 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
 
   // Progress state
   const [phase, setPhase] = useState<Phase>('form');
-  const [creationStep, setCreationStep] = useState<CreationStep>('creating');
+  const [creationStep, setCreationStep] = useState<CreationStep>('uploading');
+  const [submitting, setSubmitting] = useState(false);
   const [fileStatuses, setFileStatuses] = useState<Record<string, FileUploadStatus>>({});
   const [currentUploadProgress, setCurrentUploadProgress] = useState(0);
   const [currentUploadName, setCurrentUploadName] = useState('');
@@ -123,87 +127,14 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
 
   // ---- Submit ----
 
-  const handleSubmit = async (e: React.FormEvent | Event) => {
-    e.preventDefault();
-    if (!name.trim()) {
-      setError(t('workspace.workspaceNameRequired'));
-      return;
-    }
-
-    setPhase('progress');
-    setCreationStep('creating');
-    setProgressError(null);
-
-    let workspace: CreatedWorkspace;
-    try {
-      workspace = await onCreate({
-        name: name.trim(),
-        description: descMode === 'manual' ? description.trim() : '',
-      });
-      setCreatedWorkspace(workspace);
-    } catch (err: any) { // TODO: type properly
-      setCreationStep('error');
-      if (err.status === 429 && err.rateLimitInfo) {
-        const platformUrl = (import.meta.env.VITE_PLATFORM_URL as string | undefined) || '/account';
-        const { message } = buildRateLimitError(err.rateLimitInfo, platformUrl);
-        setProgressError(message);
-      } else {
-        setProgressError(err.message || t('workspace.failedCreateWorkspace'));
-      }
-      return;
-    }
-
-    // Upload queued files
-    if (queuedFiles.length > 0) {
-      setCreationStep('uploading');
-      const statuses: Record<string, FileUploadStatus> = {};
-      queuedFiles.forEach((f) => { statuses[f.name] = 'pending'; });
-      setFileStatuses({ ...statuses });
-
-      for (const file of queuedFiles) {
-        setCurrentUploadName(file.name);
-        setCurrentUploadProgress(0);
-        setFileStatuses((prev) => ({ ...prev, [file.name]: 'uploading' }));
-
-        try {
-          await uploadWorkspaceFile(workspace.workspace_id, file, null, (pct: number) => {
-            setCurrentUploadProgress(pct);
-          });
-          setFileStatuses((prev) => ({ ...prev, [file.name]: 'done' }));
-        } catch (err: unknown) {
-          setFileStatuses((prev) => ({ ...prev, [file.name]: 'failed' }));
-          const e = err as { response?: { status?: number } };
-          if (e?.response?.status === 413) {
-            const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-            const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-            setProgressError(detail || `${file.name} is too large (${sizeMB} MB). Maximum upload size is 250 MB.`);
-          }
-        }
-      }
-    }
-
-    setCreationStep('done');
-  };
-
-  // ---- Retry (after error) ----
-
-  const handleRetry = () => {
-    if (createdWorkspace) {
-      // Workspace already created, retry uploads
-      retryUploads(createdWorkspace);
-    } else {
-      // Retry from scratch
-      handleSubmit(new Event('submit'));
-    }
-  };
-
-  const retryUploads = async (workspace: CreatedWorkspace) => {
+  const runUploads = async (workspace: CreatedWorkspace) => {
     setCreationStep('uploading');
     setProgressError(null);
 
     const statuses: Record<string, FileUploadStatus> = {};
     queuedFiles.forEach((f) => { statuses[f.name] = 'pending'; });
     setFileStatuses({ ...statuses });
+    let failed = false;
 
     for (const file of queuedFiles) {
       setCurrentUploadName(file.name);
@@ -216,16 +147,68 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
         });
         setFileStatuses((prev) => ({ ...prev, [file.name]: 'done' }));
       } catch (err: unknown) {
+        failed = true;
         setFileStatuses((prev) => ({ ...prev, [file.name]: 'failed' }));
         const e = err as { response?: { status?: number } };
         if (e?.response?.status === 413) {
           const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-          setProgressError(`${file.name} is too large (${sizeMB} MB). Maximum upload size is 250 MB.`);
+          const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+          setProgressError(detail || t('workspace.fileTooLarge', { name: file.name, size: sizeMB }));
+        } else {
+          setProgressError(denialMessage(err, t));
         }
       }
     }
 
-    setCreationStep('done');
+    // The workspace exists either way; 'error' keeps the reason and the
+    // retry on screen instead of a bare failed count.
+    setCreationStep(failed ? 'error' : 'done');
+  };
+
+  const handleSubmit = async (e: React.FormEvent | Event) => {
+    e.preventDefault();
+    if (!name.trim() || submitting) {
+      if (!name.trim()) setError(t('workspace.workspaceNameRequired'));
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    let workspace: CreatedWorkspace;
+    try {
+      workspace = await onCreate({
+        name: name.trim(),
+        description: descMode === 'manual' ? description.trim() : '',
+      });
+    } catch (err: unknown) {
+      // A refusal keeps the user on the form with their input intact. On a 429
+      // the sentence is the quota service's, relayed as it arrived.
+      setSubmitting(false);
+      setError(denialMessage(err, t));
+      return;
+    }
+
+    setCreatedWorkspace(workspace);
+    setSubmitting(false);
+
+    // Nothing to provision and nothing to upload: the workspace exists, so
+    // open it rather than showing a progress screen with nothing on it.
+    if (queuedFiles.length === 0) {
+      const wsId = workspace.workspace_id;
+      resetAndClose();
+      if (onComplete) onComplete(wsId);
+      return;
+    }
+
+    setPhase('progress');
+    await runUploads(workspace);
+  };
+
+  // ---- Retry (after an upload failure) ----
+
+  const handleRetry = () => {
+    if (createdWorkspace) void runUploads(createdWorkspace);
   };
 
   // ---- Reset & close ----
@@ -237,7 +220,8 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
     setQueuedFiles([]);
     setError(null);
     setPhase('form');
-    setCreationStep('creating');
+    setCreationStep('uploading');
+    setSubmitting(false);
     setFileStatuses({});
     setCurrentUploadProgress(0);
     setCurrentUploadName('');
@@ -254,7 +238,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
 
   // ---- Computed ----
 
-  const isInProgress = phase === 'progress' && (creationStep === 'creating' || creationStep === 'uploading');
+  const isInProgress = phase === 'progress' && creationStep === 'uploading';
   const canClose = !isInProgress;
 
   const failedCount = Object.values(fileStatuses).filter((s) => s === 'failed').length;
@@ -270,7 +254,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
           {/* Header */}
           <div className="cwm-header">
             <h2 className="cwm-title">
-              {creationStep === 'done' ? t('workspace.workspaceReady') : t('workspace.creatingWorkspace')}
+              {creationStep === 'done' ? t('workspace.workspaceReady') : t('workspace.uploadingFiles')}
             </h2>
             {canClose && (
               <button className="cwm-close-btn" onClick={handleOpenWorkspace}>
@@ -280,33 +264,17 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
           </div>
 
           <div className="cwm-progress">
-            {/* Steps */}
+            {/* Steps. The workspace already exists by the time this renders;
+                only the uploads are still running. */}
             <div className="cwm-steps">
-              {/* Step 1: Initialize */}
               <StepRow
-                label={t('workspace.initializingWorkspace')}
+                label={t('workspace.uploadingFiles')}
                 status={
-                  creationStep === 'creating' ? 'active'
-                    : creationStep === 'error' && !createdWorkspace ? 'error'
-                      : 'done'
+                  creationStep === 'uploading' ? 'active'
+                    : creationStep === 'done' ? (failedCount > 0 ? 'error' : 'done')
+                      : 'error'
                 }
               />
-
-              {/* Step 2: Upload (only if files queued) */}
-              {queuedFiles.length > 0 && (
-                <StepRow
-                  label={t('workspace.uploadingFiles')}
-                  status={
-                    creationStep === 'uploading' ? 'active'
-                      : creationStep === 'done' ? (failedCount > 0 ? 'error' : 'done')
-                        : creationStep === 'creating' ? 'pending'
-                          : creationStep === 'error' && createdWorkspace ? 'error'
-                            : 'pending'
-                  }
-                />
-              )}
-
-              {/* Step 3: Ready */}
               <StepRow
                 label={t('workspace.ready')}
                 status={creationStep === 'done' ? 'done' : 'pending'}
@@ -500,8 +468,15 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
             <button type="button" className="cwm-btn-cancel" onClick={resetAndClose}>
               {t('common.cancel')}
             </button>
-            <button type="submit" className="cwm-btn-create" disabled={!name.trim()}>
-              {t('common.create')}
+            <button type="submit" className="cwm-btn-create" disabled={!name.trim() || submitting} aria-busy={submitting}>
+              {submitting ? (
+                <>
+                  <Loader size={12} className="text-current" />
+                  {t('workspace.creating', 'Creating...')}
+                </>
+              ) : (
+                t('common.create')
+              )}
             </button>
           </div>
         </form>
