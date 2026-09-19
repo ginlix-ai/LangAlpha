@@ -96,7 +96,12 @@ class Stack:
             f"exec /app/.venv/bin/python /app/server.py --host 127.0.0.1 "
             f"--port {port} >> /tmp/gate_{name}.log 2>&1"
         )
-        sh(["docker", "exec", "-d", "-e", "RECOVERY_SCAN_INTERVAL=5",
+        # GATE_WORKER_ENV="HOST_MODE=oss OTHER=1" reaches the workers only,
+        # so a cell that needs an entitlement the platform stack lacks can
+        # run against the same stack without restarting it.
+        extra = [a for kv in os.environ.get("GATE_WORKER_ENV", "").split()
+                 for a in ("-e", kv)]
+        sh(["docker", "exec", "-d", "-e", "RECOVERY_SCAN_INTERVAL=5", *extra,
             self.backend, "sh", "-c", inner])
         deadline = time.time() + 90
         while time.time() < deadline:
@@ -426,6 +431,16 @@ def cell_18_sandbox_replacement(st: Stack) -> tuple[bool, str]:
         read_path = (
             f"/api/v1/workspaces/{ws}/files/read?path={path}&unlimited=true"
         )
+
+        # 0. Bring the machine up. Create returns as soon as the row is
+        # written: the workspace is bound to the caller's computer, and the
+        # machine comes up on the first turn or an explicit start. Without
+        # this the write below is refused (409, workspace is stopped) and the
+        # cell never reaches the replacement it exists to test.
+        acode, atext = st.api("A", "POST", f"/api/v1/workspaces/{ws}/start",
+                              max_time=300)
+        if acode != 200:
+            return False, f"workspace start failed: {acode} {atext[:200]} ws={ws}"
 
         # 1. Write through A — A must own the session /spec will replace.
         wcode, wtext = st.api("A", "PUT",
