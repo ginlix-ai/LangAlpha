@@ -11,6 +11,7 @@ import { getChatSession } from './hooks/utils/chatSessionRestore';
 import { useChatViewCache } from './hooks/useChatViewCache';
 import { useActiveThreadPublisher } from '@/lib/threadLifecycle/useActiveThreadPublisher';
 import { useWarmWorkspaceSandbox } from './hooks/useWarmWorkspaceSandbox';
+import { useComputerStatusFanout } from './hooks/useComputers';
 import { warmWorkspace } from './utils/warmWorkspace';
 import { isValidUuid } from './utils/uuid';
 import { shouldLeaveThreadRoute } from './utils/threadRouteGuard';
@@ -182,6 +183,12 @@ function ChatAgent(): React.ReactElement | null {
   // path also calls warmWorkspace via handleWorkspaceSelect; both share
   // the same in-flight dedupe Map.
   const warmingState = useWarmWorkspaceSandbox(workspaceId);
+
+  // One watch for every machine in flight, mounted above all three surfaces
+  // that can start or stop one (the gallery, the thread gallery's panel, the
+  // file panel's). Each of them arms it the same way, by writing the action's
+  // own status into the cache, so the watch cannot live on one of them.
+  useComputerStatusFanout();
 
   // Track in-progress __default__ → real threadId resolutions. Keyed by workspaceId:
   // at most one such resolution can be in flight per workspace (a fresh __default__

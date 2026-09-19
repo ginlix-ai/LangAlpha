@@ -7,7 +7,7 @@ import tseslint from '@typescript-eslint/eslint-plugin'
 import tsParser from '@typescript-eslint/parser'
 
 export default [
-  { ignores: ['dist/**', 'public/mockServiceWorker.js'] },
+  { ignores: ['dist/**', 'dist-perf/**', 'public/mockServiceWorker.js'] },
 
   js.configs.recommended,
 

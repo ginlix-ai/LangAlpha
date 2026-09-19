@@ -1,6 +1,7 @@
 import {
-  Archive, Cpu, HardDrive, MemoryStick, MonitorCog, Play, RefreshCw, Square,
+  Archive, Cpu, Folder, HardDrive, MemoryStick, MonitorCog, Play, RefreshCw, Server, Square,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Loader } from '@/components/ui/loader';
 import type { SandboxStats } from './sandboxTypes';
 
@@ -58,9 +59,14 @@ interface OverviewTabProps {
   refreshing: boolean;
   onStartStop: (action: string) => void;
   onRefresh: () => void;
+  /** The machine this workspace lives on, when it names one. */
+  computerName?: string | null;
+  /** The workspace's folder on that machine. */
+  dirName?: string | null;
 }
 
-export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onStartStop, onRefresh }: OverviewTabProps) {
+export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onStartStop, onRefresh, computerName, dirName }: OverviewTabProps) {
+  const { t } = useTranslation();
   const isTransitioning =
     actionLoading || (!!stats.state && !TERMINAL_STATES.has(stats.state));
   const stateLabel = stats.state
@@ -92,11 +98,35 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
         ))}
       </div>
 
-      {/* Status + metadata */}
+      {/* Status + control. The machine is shared, so the rows that say where
+          this workspace lives and what a stop reaches sit in the same card as
+          the button, read before it is pressed rather than found beneath it. */}
       <div
-        className="flex items-center justify-between p-3 rounded-lg"
+        className="flex flex-col gap-3 p-3 rounded-lg"
         style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}
       >
+      {(computerName || dirName) && (
+        <div className="flex flex-col gap-1 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+          {computerName && (
+            <div className="flex items-center gap-1.5">
+              <Server className="h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" />
+              <span className="font-medium">{t('computer.onComputer', { name: computerName })}</span>
+            </div>
+          )}
+          {dirName && (
+            <div className="flex items-center gap-1.5">
+              <Folder className="h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" />
+              <span className="font-mono">{dirName}</span>
+            </div>
+          )}
+          {computerName && (
+            <p style={{ color: 'var(--color-text-tertiary)' }}>
+              {t('computer.sharedActionWarning', 'Starting or stopping this computer affects every workspace on it.')}
+            </p>
+          )}
+        </div>
+      )}
+      <div className="flex items-center justify-between">
         <div className="flex items-center gap-3" role="status" aria-live="polite">
           {isTransitioning ? (
             <span aria-hidden="true" className="flex-shrink-0">
@@ -167,7 +197,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
               style={{ color: 'var(--color-loss)', border: '1px solid var(--color-border-loss)' }}
             >
               <Square className="h-3 w-3" />
-              Stop
+              {computerName ? t('computer.stopComputer', 'Stop computer') : t('computer.stop', 'Stop')}
             </button>
           ) : (
             <button
@@ -177,10 +207,11 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
               style={{ color: 'var(--color-profit)', border: '1px solid var(--color-profit-border)' }}
             >
               <Play className="h-3 w-3" />
-              Start
+              {computerName ? t('computer.startComputer', 'Start computer') : t('computer.start', 'Start')}
             </button>
           )}
         </div>
+      </div>
       </div>
 
       {/* Sandbox ID */}
