@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import logging
 import shlex
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from typing import Any
 
@@ -23,7 +24,10 @@ from fastapi.responses import Response
 from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.services.workspace_manager import WorkspaceManager
 from src.server.services.persistence.file import FilePersistenceService
-from src.server.utils.secret_redactor import get_redactor, get_vault_secrets_for_redaction
+from src.server.utils.secret_redactor import (
+    get_redactor,
+    get_vault_secrets_for_redaction,
+)
 from src.utils.mime import resolve_content_type
 
 from .file_refs import (
@@ -33,6 +37,16 @@ from .file_refs import (
     name_glob,
     resolve_file_ref,
     visible_paths,
+)
+from src.server.models.workspace import served_from_mirror
+
+from ._containment import (
+    contained_absolute_path,
+    contained_sandbox_paths,
+    contained_listing_path,
+    contained_sandbox_path,
+    is_within,
+    read_contained_sandbox_file,
 )
 from ._shared import (
     DEFAULT_READ_LIMIT_LINES,
@@ -44,7 +58,8 @@ from ._shared import (
     _USER_PROFILE_PREFIX,
     _acquire_sandbox,
     _decode_file_text,
-    _get_work_dir,
+    owner_layout,
+    owner_work_dir,
     _is_always_hidden_path,
     _is_binary,
     _is_flash_workspace,
@@ -64,8 +79,37 @@ from ._shared import (
 logger = logging.getLogger(__name__)
 
 
-
 router = APIRouter(prefix="/api/v1/workspaces", tags=["Workspace Files"])
+
+
+async def _contained_target(sandbox: Any, path: str, work_dir: str) -> str:
+    """The canonical absolute path a route may act on, or 404.
+
+    Two folds the sandbox handle cannot do for a route: the request path folds
+    into *this* workspace's folder rather than the computer root the handle
+    carries, and the result is canonicalised inside the sandbox so a symlink
+    into a sibling's folder is judged on where it lands. 404 rather than 403
+    throughout: a path that escapes is not told whether its target exists.
+    """
+    candidate = contained_absolute_path(path, work_dir)
+    if candidate is None or not sandbox.validate_path(candidate):
+        raise HTTPException(status_code=404, detail="File not found")
+    canonical = await contained_sandbox_path(sandbox, candidate, work_dir=work_dir)
+    if canonical is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return canonical
+
+
+async def _read_contained_target(
+    sandbox: Any, path: str, work_dir: str
+) -> tuple[str, bytes]:
+    candidate = contained_absolute_path(path, work_dir)
+    if candidate is None or not sandbox.validate_path(candidate):
+        raise HTTPException(status_code=404, detail="File not found")
+    resolved = await read_contained_sandbox_file(sandbox, candidate, work_dir=work_dir)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return resolved
 
 
 @router.get("/{workspace_id}/files")
@@ -97,10 +141,16 @@ async def list_workspace_files(
     if _is_flash_workspace(workspace):
         return {"files": [], "sandbox_ready": False, "flash_workspace": True}
 
-    work_dir = _get_work_dir()
+    work_dir = owner_work_dir(workspace)
+    # The directory to list, folded into this workspace's folder. A listing
+    # root is the one place a client names a directory rather than a file, and
+    # an unfolded one reaches a sibling's folder or the machine's shared /tmp.
+    requested_dir = contained_listing_path(path, work_dir)
+    if requested_dir is None:
+        raise HTTPException(status_code=404, detail="Not found")
 
     # DB fallback for stopped workspaces (unless auto_start requested)
-    if not auto_start and workspace.get("status") in ("stopped", "stopping", "starting"):
+    if not auto_start and served_from_mirror(workspace.get("status")):
         file_tree = await FilePersistenceService.get_file_tree(workspace_id)
         # Filter by path prefix if specified
         normalized_path = _normalize_requested_path(path, work_dir)
@@ -139,15 +189,23 @@ async def list_workspace_files(
     # sandbox rather than returning [], so the glob already reports the truth
     # and an extra round trip on every listing would buy nothing.
     allow_denied = _requested_hidden_ok(path, work_dir)
+    glob_root = f"{work_dir}/{requested_dir}" if requested_dir else work_dir
+    # Canonicalise the root before walking it: a symlinked directory inside the
+    # folder is how a contained request lists a sibling's files.
+    glob_root = await contained_sandbox_path(sandbox, glob_root, work_dir=work_dir)
+    if glob_root is None:
+        raise HTTPException(status_code=404, detail="Not found")
     absolute_paths: list[str] = await sandbox.aglob_files(
-        pattern, path=path, allow_denied=allow_denied
+        pattern, path=glob_root, allow_denied=allow_denied
     )
 
     allow_hidden = _requested_hidden_ok(path, work_dir)
 
     files: list[str] = []
     for absolute_path in absolute_paths:
-        client_path = _to_client_path(sandbox, absolute_path)
+        if not is_within(work_dir, absolute_path):
+            continue
+        client_path = _to_client_path(sandbox, absolute_path, work_dir)
 
         # Always hide internal cache/bytecode/bootstrap artifacts.
         if _is_always_hidden_path(client_path):
@@ -207,30 +265,55 @@ async def resolve_workspace_file(
     if _is_flash_workspace(workspace):
         return {"status": "unavailable", "reason": "flash_workspace", "matches": []}
 
-    work_dir = _get_work_dir()
+    work_dir = owner_work_dir(workspace)
     candidates = clean_candidates(body.candidates, work_dir)
     if not candidates:
         raise HTTPException(status_code=400, detail="A file reference is required")
-    recent_writes = [p for p in (clean_path(w, work_dir) for w in body.recent_writes) if p]
+    recent_writes = [
+        p for p in (clean_path(w, work_dir) for w in body.recent_writes) if p
+    ]
 
     profile = next((c for c in candidates if _is_user_profile_file(c)), None)
     if profile:
-        return {"status": "resolved", "path": profile, "match": "exact", "matches": [profile]}
+        return {
+            "status": "resolved",
+            "path": profile,
+            "match": "exact",
+            "matches": [profile],
+        }
 
     name = candidates[0].rsplit("/", 1)[-1]
-    if workspace.get("status") in ("stopped", "stopping", "starting"):
+    if served_from_mirror(workspace.get("status")):
         file_tree = await FilePersistenceService.get_file_tree(workspace_id)
         paths = [f["path"] for f in file_tree if f["path"].rsplit("/", 1)[-1] == name]
         source = "database"
     else:
         sandbox = await _acquire_sandbox(workspace_id, x_user_id)
         if not sandbox.is_ready():
-            return {"status": "unavailable", "reason": "sandbox_starting", "matches": []}
-        absolute_paths: list[str] = await sandbox.aglob_files(name_glob(name), path=".")
-        paths = [_to_client_path(sandbox, p) for p in absolute_paths]
+            return {
+                "status": "unavailable",
+                "reason": "sandbox_starting",
+                "matches": [],
+            }
+        # The search runs over this workspace's folder, canonicalised the way a
+        # listing's root is: the handle's own root is the computer, which holds
+        # every sibling's namesakes.
+        glob_root = await contained_sandbox_path(sandbox, work_dir, work_dir=work_dir)
+        if glob_root is None:
+            raise HTTPException(status_code=404, detail="Not found")
+        absolute_paths: list[str] = await sandbox.aglob_files(
+            name_glob(name), path=glob_root
+        )
+        paths = [
+            _to_client_path(sandbox, p, work_dir)
+            for p in absolute_paths
+            if is_within(work_dir, p)
+        ]
         source = "sandbox"
 
-    result = resolve_file_ref(candidates, visible_paths(paths, candidates), recent_writes)
+    result = resolve_file_ref(
+        candidates, visible_paths(paths, candidates), recent_writes
+    )
     return {**result, "source": source}
 
 
@@ -263,16 +346,21 @@ async def read_workspace_file(
 
     # Virtual user-profile JSON files — served from DB, independent of sandbox state.
     # Works whether the workspace is running, stopped, or never started.
-    work_dir = _get_work_dir()
+    work_dir = owner_work_dir(workspace)
     normalized_for_profile = _normalize_requested_path(path, work_dir)
     if _is_user_profile_file(normalized_for_profile):
         try:
-            text_content = await _serialize_user_profile_file(normalized_for_profile, x_user_id)
+            text_content = await _serialize_user_profile_file(
+                normalized_for_profile, x_user_id
+            )
         except Exception:
             logger.exception(
-                "user-profile virtual read failed", extra={"path": normalized_for_profile}
+                "user-profile virtual read failed",
+                extra={"path": normalized_for_profile},
             )
-            raise HTTPException(status_code=500, detail="Failed to read user profile data")
+            raise HTTPException(
+                status_code=500, detail="Failed to read user profile data"
+            )
         if unlimited:
             content = text_content
             truncated = False
@@ -292,7 +380,7 @@ async def read_workspace_file(
         }
 
     # DB fallback for stopped workspaces
-    if workspace.get("status") in ("stopped", "stopping", "starting"):
+    if served_from_mirror(workspace.get("status")):
         normalized_path = _normalize_requested_path(path, work_dir)
         if not normalized_path:
             raise HTTPException(status_code=400, detail="File path is required")
@@ -338,17 +426,7 @@ async def read_workspace_file(
 
     sandbox = await _acquire_sandbox(workspace_id, x_user_id)
 
-    normalized, error = sandbox.validate_and_normalize_path(path)
-    if error:
-        raise HTTPException(status_code=403, detail=error)
-
-    # Download raw bytes first to distinguish "not found" from "binary file".
-    # ``None`` means the file genuinely is not there; an unreachable or replaced
-    # sandbox raises (SandboxGoneError / SandboxTransientError, both
-    # RuntimeError) so it cannot masquerade as "the file was deleted".
-    raw_bytes = await sandbox.adownload_file_bytes(normalized)
-    if raw_bytes is None:
-        raise HTTPException(status_code=404, detail="File not found")
+    normalized, raw_bytes = await _read_contained_target(sandbox, path, work_dir)
 
     # Check for known binary extensions
     if _is_binary(normalized):
@@ -377,7 +455,7 @@ async def read_workspace_file(
         content = "\n".join(lines[offset : offset + limit])
         truncated = len(lines) > offset + limit
 
-    client_path = _to_client_path(sandbox, normalized)
+    client_path = _to_client_path(sandbox, normalized, work_dir)
     if _is_always_hidden_path(client_path):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -420,7 +498,7 @@ async def write_workspace_file(
             status_code=400, detail="Flash workspaces do not have a sandbox"
         )
 
-    if workspace.get("status") in ("stopped", "stopping", "starting"):
+    if served_from_mirror(workspace.get("status")):
         raise HTTPException(
             status_code=409,
             detail=f"Cannot write files — workspace is {workspace.get('status')}. Wait for it to be running.",
@@ -431,7 +509,7 @@ async def write_workspace_file(
     # CompositeFilesystemBackend → UserDataBackend route, both of which apply
     # schema validation and version checks that this generic write endpoint
     # cannot enforce safely.
-    work_dir = _get_work_dir()
+    work_dir = owner_work_dir(workspace)
     normalized_for_profile = _normalize_requested_path(path, work_dir)
     if _is_user_profile_file(normalized_for_profile):
         raise HTTPException(
@@ -448,20 +526,23 @@ async def write_workspace_file(
 
     sandbox = await _acquire_sandbox(workspace_id, x_user_id)
 
-    normalized, error = sandbox.validate_and_normalize_path(path)
-    if error:
-        raise HTTPException(status_code=403, detail=error)
+    normalized = await _contained_target(sandbox, path, work_dir)
 
+    # ``awrite_file_text`` takes this path's write lock for the write itself.
     ok = await sandbox.awrite_file_text(normalized, body.content)
     if not ok:
         raise HTTPException(status_code=500, detail="Write failed")
 
     # Invalidate agent.md cache when user edits agent.md via UI
-    client_path = _to_client_path(sandbox, normalized)
+    client_path = _to_client_path(sandbox, normalized, work_dir)
     if client_path == "agent.md":
         try:
             manager = WorkspaceManager.get_instance()
-            session = manager._sessions.get(workspace_id)
+            # The cache is keyed by machine; the project resolves to one only
+            # while this worker is serving it, which is the only time a stamp
+            # has a session to land on.
+            computer_id = manager._live_session_computer(workspace_id)
+            session = manager._cached_session(computer_id) if computer_id else None
             if session:
                 # Stamp the writer too, so the agent's runtime-context baseline
                 # attributes the next diff to the user rather than to whoever
@@ -527,9 +608,10 @@ async def download_workspace_file(
             status_code=400, detail="Flash workspaces do not have a sandbox"
         )
 
+    work_dir = owner_work_dir(workspace)
+
     # DB fallback for stopped workspaces
-    if workspace.get("status") in ("stopped", "stopping", "starting"):
-        work_dir = _get_work_dir()
+    if served_from_mirror(workspace.get("status")):
         normalized_path = _normalize_requested_path(path, work_dir)
         if not normalized_path:
             raise HTTPException(status_code=400, detail="File path is required")
@@ -554,15 +636,9 @@ async def download_workspace_file(
 
     sandbox = await _acquire_sandbox(workspace_id, x_user_id)
 
-    normalized, error = sandbox.validate_and_normalize_path(path)
-    if error:
-        raise HTTPException(status_code=403, detail=error)
+    normalized, content = await _read_contained_target(sandbox, path, work_dir)
 
-    content = await sandbox.adownload_file_bytes(normalized)
-    if content is None:
-        raise HTTPException(status_code=404, detail="File not found")
-
-    client_path = _to_client_path(sandbox, normalized)
+    client_path = _to_client_path(sandbox, normalized, work_dir)
     if _is_always_hidden_path(client_path):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -598,21 +674,20 @@ async def upload_workspace_file(
             status_code=400, detail="Flash workspaces do not have a sandbox"
         )
 
-    if workspace.get("status") in ("stopped", "stopping", "starting"):
+    if served_from_mirror(workspace.get("status")):
         raise HTTPException(
             status_code=409,
             detail=f"Cannot upload files — workspace is {workspace.get('status')}. Wait for it to be running.",
         )
 
     sandbox = await _acquire_sandbox(workspace_id, x_user_id)
+    work_dir = owner_work_dir(workspace)
 
     dest = path or file.filename
     if not dest:
         raise HTTPException(status_code=400, detail="Destination path is required")
 
-    normalized, error = sandbox.validate_and_normalize_path(dest)
-    if error:
-        raise HTTPException(status_code=403, detail=error)
+    normalized = await _contained_target(sandbox, dest, work_dir)
 
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
@@ -623,11 +698,12 @@ async def upload_workspace_file(
             detail=f"File is too large ({size_mb:.1f} MB). Maximum upload size is {limit_mb} MB.",
         )
 
+    # ``aupload_file_bytes`` takes this path's write lock for the write itself.
     ok = await sandbox.aupload_file_bytes(normalized, content)
     if not ok:
         raise HTTPException(status_code=500, detail="Upload failed")
 
-    client_path = _to_client_path(sandbox, normalized)
+    client_path = _to_client_path(sandbox, normalized, work_dir)
     _record_fs_bytes("upload", len(content))
     return {
         "workspace_id": workspace_id,
@@ -652,7 +728,7 @@ async def backup_workspace_files(
             status_code=400, detail="Flash workspaces do not have a sandbox"
         )
 
-    if workspace.get("status") in ("stopped", "stopping", "starting"):
+    if served_from_mirror(workspace.get("status")):
         raise HTTPException(
             status_code=409,
             detail=f"Cannot backup files — workspace is {workspace.get('status')}.",
@@ -661,7 +737,9 @@ async def backup_workspace_files(
     sandbox = await _acquire_sandbox(workspace_id, x_user_id)
 
     try:
-        result = await FilePersistenceService.sync_to_db(workspace_id, sandbox)
+        result = await FilePersistenceService.sync_to_db(
+            workspace_id, sandbox, layout=owner_layout(workspace)
+        )
     except RuntimeError as e:
         # Same wording as every other producer: the file panel keys its error
         # card off this string, so a fourth variant here would render a
@@ -690,10 +768,17 @@ async def get_backup_status(
     x_user_id: CurrentUserId,
 ) -> dict[str, Any]:
     """Get backup status: compare sandbox files against DB to show what's
-    backed up, modified, or untracked."""
+    backed up, modified, or untracked.
+
+    ``files_restore_incomplete`` rides along on every branch: a file this
+    status reports as backed up can still be absent from the folder after a
+    restore that could not recover it, and without the flag that reads as an
+    ordinary missing file.
+    """
 
     workspace = await db_get_workspace(workspace_id)
     require_workspace_owner(workspace, user_id=x_user_id)
+    restore_incomplete = bool((workspace or {}).get("files_restore_incomplete"))
 
     empty = {
         "workspace_id": workspace_id,
@@ -701,6 +786,7 @@ async def get_backup_status(
         "modified": [],
         "untracked": [],
         "total_backed_up_size": 0,
+        "files_restore_incomplete": restore_incomplete,
     }
 
     if _is_flash_workspace(workspace):
@@ -720,7 +806,7 @@ async def get_backup_status(
     }
 
     # If sandbox is stopped, everything in DB is "backed_up", nothing else
-    if workspace.get("status") in ("stopped", "stopping", "starting"):
+    if served_from_mirror(workspace.get("status")):
         total_size = await get_workspace_total_size(workspace_id)
         return {
             "workspace_id": workspace_id,
@@ -728,6 +814,7 @@ async def get_backup_status(
             "modified": [],
             "untracked": [],
             "total_backed_up_size": total_size,
+            "files_restore_incomplete": restore_incomplete,
         }
 
     # Sandbox is running — compare sandbox files against DB
@@ -742,12 +829,15 @@ async def get_backup_status(
             "modified": [],
             "untracked": [],
             "total_backed_up_size": total_size,
+            "files_restore_incomplete": restore_incomplete,
         }
 
     # The sandbox lists itself; known rows let it skip re-hashing.
     try:
         sandbox_meta = await FilePersistenceService.list_sandbox_files(
-            sandbox, prior=FilePersistenceService.prior_from_meta(db_meta)
+            sandbox,
+            prior=FilePersistenceService.prior_from_meta(db_meta),
+            layout=owner_layout(workspace),
         )
     except Exception:
         total_size = await get_workspace_total_size(workspace_id)
@@ -757,6 +847,7 @@ async def get_backup_status(
             "modified": [],
             "untracked": [],
             "total_backed_up_size": total_size,
+            "files_restore_incomplete": restore_incomplete,
         }
 
     backed_up: list[str] = []
@@ -787,6 +878,7 @@ async def get_backup_status(
         "modified": modified,
         "untracked": untracked,
         "total_backed_up_size": total_size,
+        "files_restore_incomplete": restore_incomplete,
     }
 
 
@@ -810,32 +902,48 @@ async def delete_workspace_files(
             status_code=400, detail="Flash workspaces do not have a sandbox"
         )
 
-    if workspace.get("status") in ("stopped", "stopping", "starting"):
+    if served_from_mirror(workspace.get("status")):
         raise HTTPException(
             status_code=409,
             detail=f"Cannot delete files — workspace is {workspace.get('status')}. Wait for it to be running.",
         )
 
     sandbox = await _acquire_sandbox(workspace_id, x_user_id)
+    work_dir = owner_work_dir(workspace)
 
     errors: list[dict[str, str]] = []
     valid_paths: list[tuple[str, str]] = []  # (normalized, client_path)
 
-    for path in body.paths:
-        normalized, error = sandbox.validate_and_normalize_path(path)
-        if error:
-            errors.append({"path": path, "detail": error})
+    # One probe for the whole batch. This route takes up to a hundred paths,
+    # and a probe apiece is a hundred sandbox round trips for one click.
+    probe_slot: dict[int, int] = {}
+    candidates: list[str] = []
+    for index, path in enumerate(body.paths):
+        candidate = contained_absolute_path(path, work_dir)
+        if candidate is None or not sandbox.validate_path(candidate):
+            continue
+        probe_slot[index] = len(candidates)
+        candidates.append(candidate)
+    canonicals = await contained_sandbox_paths(sandbox, candidates, work_dir=work_dir)
+
+    for index, path in enumerate(body.paths):
+        slot = probe_slot.get(index)
+        normalized = canonicals[slot] if slot is not None else None
+        if normalized is None:
+            errors.append({"path": path, "detail": "File not found"})
             continue
 
-        client_path = _to_client_path(sandbox, normalized)
+        client_path = _to_client_path(sandbox, normalized, work_dir)
         if _is_user_profile_file(client_path):
-            errors.append({
-                "path": path,
-                "detail": (
-                    "User-profile JSON files cannot be deleted through the file panel. "
-                    "Manage entries via the dashboard widgets."
-                ),
-            })
+            errors.append(
+                {
+                    "path": path,
+                    "detail": (
+                        "User-profile JSON files cannot be deleted through the file panel. "
+                        "Manage entries via the dashboard widgets."
+                    ),
+                }
+            )
             continue
         if _is_system_path(client_path):
             errors.append({"path": path, "detail": "Cannot delete system files"})
@@ -845,24 +953,32 @@ async def delete_workspace_files(
 
     deleted: list[str] = []
     if valid_paths:
-        rm_args = " ".join(shlex.quote(p) for p, _ in valid_paths)
-        result = await sandbox.execute_bash_command(f"rm -f {rm_args}")
-        if result.get("success"):
-            deleted = [cp for _, cp in valid_paths]
-        else:
-            # Batch failed — fall back to per-file delete
-            for normalized, client_path in valid_paths:
-                r = await sandbox.execute_bash_command(
-                    f"rm -f {shlex.quote(normalized)}"
-                )
-                if r.get("success"):
-                    deleted.append(client_path)
-                else:
-                    errors.append(
-                        {
-                            "path": client_path,
-                            "detail": r.get("stderr", "Delete failed"),
-                        }
+        # ``rm -f`` through the shell bypasses the write path, so it has to take
+        # the same per-path locks an upload takes or it can land between another
+        # writer's read and write. Acquired in sorted order, and only ever in
+        # that order, so two batches that overlap cannot deadlock on each other.
+        async with AsyncExitStack() as locks:
+            for normalized, _ in sorted(valid_paths):
+                await locks.enter_async_context(sandbox.path_write_lock(normalized))
+
+            rm_args = " ".join(shlex.quote(p) for p, _ in valid_paths)
+            result = await sandbox.execute_bash_command(f"rm -f {rm_args}")
+            if result.get("success"):
+                deleted = [cp for _, cp in valid_paths]
+            else:
+                # Batch failed: fall back to per-file delete
+                for normalized, client_path in valid_paths:
+                    r = await sandbox.execute_bash_command(
+                        f"rm -f {shlex.quote(normalized)}"
                     )
+                    if r.get("success"):
+                        deleted.append(client_path)
+                    else:
+                        errors.append(
+                            {
+                                "path": client_path,
+                                "detail": r.get("stderr", "Delete failed"),
+                            }
+                        )
 
     return {"deleted": deleted, "errors": errors}
