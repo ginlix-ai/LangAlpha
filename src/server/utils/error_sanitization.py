@@ -2,6 +2,8 @@
 
 import re
 
+from pydantic import ValidationError
+
 
 # httpx includes request URLs in some exception messages. Strip basic-auth
 # userinfo before those messages reach clients or durable conversation rows.
@@ -32,6 +34,20 @@ def sanitize_error_text(text: str) -> str:
     text = _URL_KEY_QUERY_RE.sub(r"\1[REDACTED]", text)
     text = _SK_TOKEN_RE.sub("[REDACTED]", text)
     return _GOOGLE_KEY_RE.sub("[REDACTED]", text)
+
+
+def validation_error_text(e: ValidationError) -> str:
+    """Each refusal as its field and the validator's own sentence.
+
+    Never the input it rejected, which can carry a credential, nor the framing
+    and link that a ValidationError's str() adds.
+    """
+    parts = []
+    for err in e.errors(include_url=False):
+        msg = err["msg"].removeprefix("Value error, ")
+        field = ".".join(str(p) for p in err["loc"])
+        parts.append(f"{field}: {msg}" if field else msg)
+    return "; ".join(parts) or "validation error"
 
 
 def single_line(text: str) -> str:

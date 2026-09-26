@@ -70,7 +70,6 @@ from src.server.models.mcp_server import (
     ProbeInput,
     ProbeResult,
     WorkspaceScopedServer,
-    _format_validation_error,
     catalog_row_to_response,
     isolation_warnings,
     parse_mcp_servers_payload,
@@ -97,6 +96,7 @@ from src.server.services.mcp_probe import (
 )
 from src.server.services.vault_invalidation import USER_TIER, after_secret_change
 from src.server.utils.api import CurrentUserId, handle_api_exceptions
+from src.server.utils.error_sanitization import validation_error_text
 
 logger = logging.getLogger(__name__)
 
@@ -427,7 +427,7 @@ async def create_server(
     try:
         server = McpServerInput(**body)
     except ValidationError as e:
-        raise HTTPException(status_code=422, detail=_format_validation_error(e))
+        raise HTTPException(status_code=422, detail=validation_error_text(e))
     reject_reserved_catalog_name(server.name)
     try:
         row = await create_catalog_server(
@@ -600,7 +600,7 @@ async def update_server(
     try:
         server = McpServerInput(**body)
     except ValidationError as e:
-        raise HTTPException(status_code=422, detail=_format_validation_error(e))
+        raise HTTPException(status_code=422, detail=validation_error_text(e))
     # The path name is authoritative; a renamed body is rejected to avoid
     # silently creating a second row under a different key.
     if server.name != name:

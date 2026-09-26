@@ -39,11 +39,7 @@ from src.server.database.user_vault_secrets import (
     create_user_secret,
     get_user_secret_names,
 )
-from src.server.models.mcp_server import (
-    McpServerInput,
-    _format_validation_error,
-    coerce_mcp_name,
-)
+from src.server.models.mcp_server import McpServerInput, coerce_mcp_name
 from src.server.models.plugin import ComponentResult, Diagnostic, InstallReport
 from src.server.services.mcp_catalog import apply_catalog_edit
 from src.server.services.mcp_import import plan_vault_extraction
@@ -75,6 +71,7 @@ from src.server.services.vault_invalidation import (
     USER_TIER,
     after_secrets_changed,
 )
+from src.server.utils.error_sanitization import validation_error_text
 
 logger = logging.getLogger(__name__)
 
@@ -294,7 +291,7 @@ async def _update_servers(
             report.components.append(
                 ComponentResult.of(
                     plan, "error", name=row_name,
-                    reason=_format_validation_error(e),
+                    reason=validation_error_text(e),
                 )
             )
             return

@@ -30,6 +30,7 @@ from ptc_agent.core.mcp_sanitize import (
     looks_like_secret,
 )
 from src.server.database.pool import get_db_connection
+from src.server.utils.error_sanitization import validation_error_text
 
 if TYPE_CHECKING:
     from src.server.models.mcp_server import ParsedMcpServer
@@ -117,10 +118,7 @@ async def run_mcp_import(parsed: list[Any], *, scope: ImportScope) -> ImportRepo
     place (``invalid`` / ``skipped`` / ``exists`` / ``error``) and the rest
     continue, so one bad server never aborts the blob.
     """
-    from src.server.models.mcp_server import (
-        McpServerInput,
-        _format_validation_error,
-    )
+    from src.server.models.mcp_server import McpServerInput
 
     report = ImportReport()
     seen_names: set[str] = set()
@@ -183,7 +181,7 @@ async def run_mcp_import(parsed: list[Any], *, scope: ImportScope) -> ImportRepo
             server = McpServerInput(**config)
         except ValidationError as e:
             report.results.append(
-                {**base, "status": "invalid", "error": _format_validation_error(e)}
+                {**base, "status": "invalid", "error": validation_error_text(e)}
             )
             continue
 

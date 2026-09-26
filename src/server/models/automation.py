@@ -20,6 +20,8 @@ from pydantic import (
     model_validator,
 )
 
+from src.server.utils.error_sanitization import validation_error_text
+
 
 # =============================================================================
 # Price Trigger Models
@@ -149,17 +151,6 @@ _SCHEDULE_FIELD: Dict[str, str] = {
 }
 
 
-def error_sentences(e: ValidationError) -> str:
-    """Each refusal as its field and the validator's own sentence, without the
-    framing, input dump and link that a ValidationError's str() adds."""
-    parts = []
-    for err in e.errors(include_url=False):
-        msg = err["msg"].removeprefix("Value error, ")
-        field = ".".join(str(p) for p in err["loc"])
-        parts.append(f"{field}: {msg}" if field else msg)
-    return "; ".join(parts)
-
-
 class _ScheduleFields(BaseModel):
     """The schedule fields, which a create and an update check the same way."""
 
@@ -194,7 +185,7 @@ class _ScheduleFields(BaseModel):
             try:
                 PriceTriggerConfig(**v)
             except ValidationError as e:
-                raise ValueError(f"Invalid price trigger config: {error_sentences(e)}")
+                raise ValueError(f"Invalid price trigger config: {validation_error_text(e)}")
         return v
 
     @field_validator("next_run_at")

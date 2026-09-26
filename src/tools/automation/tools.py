@@ -23,7 +23,8 @@ from pydantic import ValidationError
 
 from src.server.database import automation as auto_db
 from src.server.handlers import automation_handler as auto_handler
-from src.server.models.automation import AutomationCreate, error_sentences
+from src.server.models.automation import AutomationCreate
+from src.server.utils.error_sanitization import validation_error_text
 from src.utils.timezone_utils import zone_or_none
 
 logger = logging.getLogger(__name__)
@@ -97,7 +98,7 @@ def _disable_reason(automation: dict[str, Any]) -> dict[str, Any]:
 
 
 def _error_text(e: ValueError) -> str:
-    return error_sentences(e) if isinstance(e, ValidationError) else str(e)
+    return validation_error_text(e) if isinstance(e, ValidationError) else str(e)
 
 
 def _serialize(obj: Any) -> Any:
