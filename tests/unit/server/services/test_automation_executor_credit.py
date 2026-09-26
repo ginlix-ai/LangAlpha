@@ -310,7 +310,7 @@ class TestCredentialGate:
         settled = mock_adb.settle_execution.await_args.kwargs
         # But the automation itself is not held responsible.
         assert settled["strike"] is None
-        assert settled["failure_reason"] is None
+        assert settled["failure_reason"] == "server_error"
         assert settled["error_message"].startswith("HTTPException: ")
 
 

@@ -64,8 +64,8 @@ EXPECTED = {
     Outcome.FAILED: ("failed", _ANY, "count", REARMS, "automation.failed", None, None, "failure"),
     Outcome.KEY_REJECTED: ("failed", _ANY, "fuse", REARMS, "automation.failed", None, "provider_auth", "failure"),
     Outcome.LIMITED: ("failed", _ANY, None, CLOSES_ALERT, "automation.failed", None, "usage_limit", "limited"),
-    Outcome.FAILED_OURS: ("failed", _ANY, None, REARMS, "automation.failed", None, None, "failure"),
-    Outcome.INTERRUPTED: ("failed", ("pending", "running"), None, REARMS, "automation.failed", None, None, "interrupted"),
+    Outcome.FAILED_OURS: ("failed", _ANY, None, REARMS, "automation.failed", None, "server_error", "failure"),
+    Outcome.INTERRUPTED: ("failed", ("pending", "running"), None, REARMS, "automation.failed", None, "interrupted", "interrupted"),
     Outcome.STOPPED: ("skipped", ("running",), None, CLOSES, "automation.failed", "user", None, "stopped"),
     Outcome.SKIPPED: ("skipped", ("waiting",), None, CLOSES, None, None, None, "skipped"),
 }
@@ -167,36 +167,51 @@ async def test_the_webhook_names_the_run_it_settled():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "outcome, reason",
+    [(Outcome.LIMITED, "usage_limit"), (Outcome.FAILED_OURS, "server_error")],
+)
+@pytest.mark.parametrize(
     "run, previous, delivery, notified",
     [
         # Refused before its turn, as the firing before it was: the channel
         # already heard, or that firing was itself a repeat.
-        (None, "usage_limit", [{"method": "slack", "success": True}], False),
-        (None, "usage_limit", None, False),
+        (None, "same", [{"method": "slack", "success": True}], False),
+        (None, "same", None, False),
         (None, None, None, True),
         (None, "provider_auth", None, True),
         # The notice before this one never landed.
-        (None, "usage_limit", [{"method": "slack", "success": False}], True),
+        (None, "same", [{"method": "slack", "success": False}], True),
         # Admitted: its started notice needs the terminal event.
-        (_RUN, "usage_limit", None, True),
+        (_RUN, "same", None, True),
     ],
 )
-async def test_a_repeated_limit_before_admission_is_not_announced_again(
-    run, previous, delivery, notified
+async def test_a_repeated_refusal_before_admission_is_not_announced_again(
+    outcome, reason, run, previous, delivery, notified
 ):
+    previous = reason if previous == "same" else previous
     row = _row(run=run, previous_failure_reason=previous, previous_delivery_result=delivery)
     with _settlement(row) as fx:
-        assert await settle(_automation(), _EID, Outcome.LIMITED, error="Out of credits.")
-    assert fx.db.settle_execution.await_args.kwargs["failure_reason"] == "usage_limit"
-    assert fx.db.settle_execution.await_args.kwargs["error_message"] == "Out of credits."
+        assert await settle(_automation(), _EID, outcome, error="Refused.")
+    assert fx.db.settle_execution.await_args.kwargs["failure_reason"] == reason
+    assert fx.db.settle_execution.await_args.kwargs["error_message"] == "Refused."
     assert fx.fire.await_count == int(notified)
-    assert fx.metric.call_args.args[2]["status"] == "limited"
 
 
 @pytest.mark.asyncio
-async def test_only_a_limit_is_quieted():
-    with _settlement(_row(run=None, previous_failure_reason="usage_limit")) as fx:
-        assert await settle(_automation(), _EID, Outcome.FAILED, error="boom")
+@pytest.mark.parametrize(
+    "outcome, previous",
+    [
+        # Each streak is its own: our outage after a limit is news.
+        (Outcome.FAILED_OURS, "usage_limit"),
+        (Outcome.LIMITED, "server_error"),
+        # Only a limit or our outage comes in streaks.
+        (Outcome.FAILED, "usage_limit"),
+        (Outcome.INTERRUPTED, "interrupted"),
+    ],
+)
+async def test_only_a_repeat_of_the_same_streak_is_quieted(outcome, previous):
+    with _settlement(_row(run=None, previous_failure_reason=previous)) as fx:
+        assert await settle(_automation(), _EID, outcome, error="boom")
     fx.fire.assert_awaited_once()
 
 
@@ -431,10 +446,10 @@ _REJECTED = ["AuthenticationError: invalid x-api-key"]
     [
         (_ended("completed"), "completed", "reset", None, None),
         (_ended("cancelled", cancelled_by_user=True), "skipped", None, None, STOPPED_ERROR),
-        (_ended("cancelled"), "failed", None, None, INTERRUPTED_ERROR),
+        (_ended("cancelled"), "failed", None, "interrupted", INTERRUPTED_ERROR),
         (_ended("error", ["ValueError: the table has no rows"]), "failed", "count", None, "ValueError: the table has no rows"),
         (_ended("error", _REJECTED, error_status_code=401, error_credential_owned=True), "failed", "fuse", "provider_auth", _REJECTED[0]),
-        (_ended("error", _REJECTED, error_status_code=401, error_credential_owned=False), "failed", None, None, _REJECTED[0]),
+        (_ended("error", _REJECTED, error_status_code=401, error_credential_owned=False), "failed", None, "server_error", _REJECTED[0]),
         (_paused(_pause_event("Daily limit reached.")), "failed", None, "usage_limit", "Daily limit reached."),
     ],
     ids=["completed", "user_stop", "shutdown", "failed", "users_key", "platform_key", "credit_pause"],

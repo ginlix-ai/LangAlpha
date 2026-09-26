@@ -332,9 +332,11 @@ ExecutionStatus = Literal[
 # stopped its run, its thread stayed busy (or an earlier firing was already
 # waiting), or the server stopped while it waited.
 SkipReason = Literal["user", "thread_busy", "interrupted"]
-# A ``failed`` firing the user has to act on: a usage limit refused it or
-# paused its run, or the provider rejected the user's own key.
-FailureReason = Literal["usage_limit", "provider_auth"]
+# Why a ``failed`` firing failed, when it was not the automation's own doing:
+# a usage limit refused it or paused its run, the provider rejected the
+# user's own key, the service failed it (``server_error``), or the server cut
+# its run off (``interrupted``).
+FailureReason = Literal["usage_limit", "provider_auth", "server_error", "interrupted"]
 
 
 class AutomationExecutionResponse(BaseModel):

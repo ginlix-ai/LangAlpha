@@ -59,10 +59,12 @@ class WebhookClient:
         thread can start within seconds), so a receiver reading the report
         should read that turn, not the thread's latest.
 
-        ``failure_reason`` sets apart a failed run the user has to act on:
-        ``usage_limit`` (``error`` is then the quota service's own message)
-        or ``provider_auth`` (their key was rejected and the automation is
-        now disabled). None for any other event or failure.
+        ``failure_reason`` sets apart a failed run that was not the
+        automation's own failure: ``usage_limit`` (``error`` is then the quota
+        service's own message), ``provider_auth`` (their key was rejected and
+        the automation is now disabled), ``server_error`` (the service failed
+        it) or ``interrupted`` (the server cut its run off). None for any other
+        event or failure.
 
         Returns a list of per-method results, or None if no delivery configured.
         Each result: {"method": str, "success": bool, "error"?: str}

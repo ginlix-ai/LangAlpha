@@ -831,7 +831,8 @@ async def settle_legacy_executions(error_message: str) -> int:
         async with conn.cursor() as cur:
             await cur.execute(f"""
                 UPDATE automation_executions
-                SET status = 'failed', error_message = %s, completed_at = NOW()
+                SET status = 'failed', failure_reason = 'interrupted',
+                    error_message = %s, completed_at = NOW()
                 WHERE status IN {_UNSETTLED}
                   AND heartbeat_at IS NULL
                   AND created_at < NOW() - INTERVAL '1 day'

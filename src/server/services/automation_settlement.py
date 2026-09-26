@@ -136,6 +136,7 @@ _POLICIES: Dict[Outcome, _Policy] = {
         metric="failure",
         schedule="rearm_price",
         webhook="automation.failed",
+        failure_reason="server_error",
     ),
     # A wait the server stopped is skipped by its own wait loop, or by the
     # sweep, never failed.
@@ -146,6 +147,7 @@ _POLICIES: Dict[Outcome, _Policy] = {
         schedule="rearm_price",
         webhook="automation.failed",
         error=INTERRUPTED_ERROR,
+        failure_reason="interrupted",
     ),
     Outcome.STOPPED: _Policy(
         status="skipped",
@@ -383,7 +385,7 @@ async def _after_settling(
 ) -> None:
     """The webhook, the chat's wait line and the metric a settle sets off."""
     policy = _POLICIES[outcome]
-    if policy.webhook and not _repeats_a_limit(outcome, run_id, row):
+    if policy.webhook and not _repeats_a_refusal(policy.failure_reason, run_id, row):
         delivery_result = await fire_webhook(
             policy.webhook, automation, execution_id, thread_id, workspace_id,
             error=error, run_id=run_id, failure_reason=policy.failure_reason,
@@ -407,11 +409,17 @@ async def _after_settling(
     )
 
 
-def _repeats_a_limit(
-    outcome: Outcome, run_id: Optional[str], row: Dict[str, Any]
+# Reasons that refuse firing after firing until something outside the
+# automation changes: a usage limit until it resets, our outage until it ends.
+_STREAK_REASONS = frozenset({"usage_limit", "server_error"})
+
+
+def _repeats_a_refusal(
+    reason: Optional[FailureReason], run_id: Optional[str], row: Dict[str, Any]
 ) -> bool:
-    """A usage limit refused this firing as it did the one before, which the
-    channel already heard about.
+    """This firing was refused for the same streak reason as the one before,
+    which the channel already heard about, so a frequent schedule cannot
+    flood it.
 
     Only a firing refused before its turn: one that was admitted sent a
     started notice, and only a terminal event clears it. A notice no channel
@@ -419,9 +427,9 @@ def _repeats_a_limit(
     """
     delivered = row.get("previous_delivery_result")
     return (
-        outcome is Outcome.LIMITED
+        reason in _STREAK_REASONS
         and run_id is None
-        and row.get("previous_failure_reason") == "usage_limit"
+        and row.get("previous_failure_reason") == reason
         and not (delivered and not any(d.get("success") for d in delivered))
     )
 
