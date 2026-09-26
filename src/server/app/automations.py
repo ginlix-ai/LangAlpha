@@ -31,8 +31,6 @@ from src.server.database import automation as auto_db
 from src.server.handlers import automation_handler as handler
 from src.server.models.automation import (
     AutomationCreate,
-    AutomationExecutionResponse,
-    AutomationExecutionsListResponse,
     AutomationResponse,
     AutomationRunResponse,
     AutomationRunsListResponse,
@@ -93,16 +91,12 @@ async def list_automation_runs(
     status: Optional[ExecutionStatus] = Query(None),
 ):
     """List executions across all of the current user's automations."""
-    executions, total = await auto_db.list_executions(
+    return await _runs_page(
         user_id,
         thread_id=str(thread_id) if thread_id else None,
         status=status,
         limit=limit,
         offset=offset,
-    )
-    return AutomationRunsListResponse(
-        executions=[AutomationRunResponse.model_validate(e) for e in executions],
-        total=total,
     )
 
 
@@ -223,7 +217,7 @@ async def skip_execution(
 
 @router.get(
     "/automations/{automation_id}/executions",
-    response_model=AutomationExecutionsListResponse,
+    response_model=AutomationRunsListResponse,
 )
 @handle_api_exceptions("list executions", logger)
 async def list_executions(
@@ -233,12 +227,15 @@ async def list_executions(
     offset: int = Query(0, ge=0),
 ):
     """List execution history for an automation."""
-    executions, total = await auto_db.list_executions(
+    return await _runs_page(
         user_id, automation_id=str(automation_id), limit=limit, offset=offset,
     )
-    return AutomationExecutionsListResponse(
-        executions=[
-            AutomationExecutionResponse.model_validate(e) for e in executions
-        ],
-        total=total,
+
+
+async def _runs_page(user_id: str, **filters) -> AutomationRunsListResponse:
+    """The feed and one automation's history: one query, one page shape."""
+    executions, has_more = await auto_db.list_executions(user_id, **filters)
+    return AutomationRunsListResponse(
+        executions=[AutomationRunResponse.model_validate(e) for e in executions],
+        has_more=has_more,
     )

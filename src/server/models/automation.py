@@ -420,15 +420,8 @@ class AutomationsListResponse(BaseModel):
     total: int
 
 
-class AutomationExecutionsListResponse(BaseModel):
-    """Response model for listing automation executions."""
-
-    executions: List[AutomationExecutionResponse]
-    total: int
-
-
 class AutomationRunResponse(AutomationExecutionResponse):
-    """An execution in the user-wide run feed, with its automation's identity."""
+    """An execution with its automation's identity."""
 
     automation_name: str
     agent_mode: str
@@ -437,7 +430,7 @@ class AutomationRunResponse(AutomationExecutionResponse):
 
 
 class AutomationRunsListResponse(BaseModel):
-    """Response model for the user-wide run feed."""
+    """A page of runs: the user-wide feed, or one automation's history."""
 
     executions: List[AutomationRunResponse]
-    total: int
+    has_more: bool

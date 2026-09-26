@@ -195,9 +195,10 @@ async def check_automations(
         if not automation:
             return json.dumps({"error": f"Automation '{automation_id}' not found."}), {}
 
-        executions, exec_total = await auto_db.list_executions(
+        executions, _ = await auto_db.list_executions(
             user_id, automation_id=automation_id, limit=5
         )
+        exec_total = await auto_db.count_executions(automation_id)
 
         result = _serialize(
             {

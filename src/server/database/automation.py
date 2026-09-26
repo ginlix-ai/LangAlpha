@@ -689,17 +689,15 @@ async def list_executions(
     status: Optional[str] = None,
     limit: int = 20,
     offset: int = 0,
-) -> tuple[List[Dict[str, Any]], int]:
-    """List a user's executions newest first, narrowed to one automation,
-    thread or status when given.
+) -> tuple[List[Dict[str, Any]], bool]:
+    """A page of a user's executions newest first, narrowed to one
+    automation, thread or status when given, and whether more follow it.
 
     Every row is scoped by its automation's owner, which is the ownership
     check: another user's automation lists nothing. ``workspace_id`` prefers
     the run thread's workspace: a flash automation stores none and runs in
-    the user's shared flash workspace.
-
-    Returns:
-        Tuple of (list of execution dicts, total count).
+    the user's shared flash workspace. One row past the page answers whether
+    another follows, where a count would read every run the user has.
     """
     where_parts = ["a.user_id = %s"]
     params: list = [user_id]
@@ -716,14 +714,6 @@ async def list_executions(
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(f"""
-                SELECT COUNT(*) AS cnt
-                FROM automation_executions e
-                JOIN automations a ON a.automation_id = e.automation_id
-                WHERE {where_clause}
-            """, tuple(params))
-            total = (await cur.fetchone())["cnt"]
-
-            await cur.execute(f"""
                 SELECT
                     {EXECUTION_COLUMNS},
                     a.name AS automation_name, a.agent_mode, a.trigger_type,
@@ -735,10 +725,22 @@ async def list_executions(
                 WHERE {where_clause}
                 ORDER BY e.created_at DESC, e.automation_execution_id DESC
                 LIMIT %s OFFSET %s
-            """, (*params, limit, offset))
+            """, (*params, limit + 1, offset))
 
-            results = await cur.fetchall()
-            return [dict(row) for row in results], total
+            rows = [dict(row) for row in await cur.fetchall()]
+            return rows[:limit], len(rows) > limit
+
+
+async def count_executions(automation_id: str) -> int:
+    """How many runs an automation has: one index range, unlike a count
+    across every automation of a user."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                SELECT COUNT(*) FROM automation_executions
+                WHERE automation_id = %s
+            """, (automation_id,))
+            return (await cur.fetchone())[0]
 
 
 # =============================================================================
