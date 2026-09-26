@@ -17,6 +17,8 @@ Endpoints (/api/v1/automations):
 - GET    /automations/{automation_id}/executions    - Execution history
 - POST   /automations/{automation_id}/executions/{execution_id}/skip
                                                    - Skip a waiting run
+- POST   /automations/{automation_id}/executions/{execution_id}/dismiss
+                                                   - Dismiss a failed run
 """
 
 import logging
@@ -208,6 +210,25 @@ async def skip_execution(
     if result is None:
         raise_not_found("Automation")
     return result
+
+
+@router.post(
+    "/automations/{automation_id}/executions/{execution_id}/dismiss",
+    response_model=AutomationResponse,
+)
+@handle_api_exceptions("dismiss execution", logger, conflict_on_value_error=True)
+async def dismiss_execution(
+    automation_id: UUID,
+    execution_id: UUID,
+    user_id: CurrentUserId,
+):
+    """Take a failed run out of Needs attention until another run fails."""
+    automation = await handler.dismiss_execution(
+        str(automation_id), str(execution_id), user_id
+    )
+    if not automation:
+        raise_not_found("Automation")
+    return AutomationResponse.model_validate(automation)
 
 
 # =============================================================================

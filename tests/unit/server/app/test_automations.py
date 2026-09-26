@@ -548,6 +548,7 @@ async def test_skip_that_does_not_land(client, status_now, expected):
         ("POST", "/api/v1/automations/not-a-uuid/resume"),
         ("GET", "/api/v1/automations/not-a-uuid/executions"),
         ("POST", f"/api/v1/automations/not-a-uuid/executions/{EXEC_ID}/skip"),
+        ("POST", f"/api/v1/automations/not-a-uuid/executions/{EXEC_ID}/dismiss"),
     ],
 )
 async def test_a_malformed_automation_id_is_422(client, method, path):
@@ -568,3 +569,54 @@ async def test_skip_with_a_malformed_id_is_422(client):
 
     assert resp.status_code == 422
     mock_skip.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/automations/{automation_id}/executions/{execution_id}/dismiss
+# ---------------------------------------------------------------------------
+
+DISMISS_URL = f"/api/v1/automations/{AUTO_ID}/executions/{EXEC_ID}/dismiss"
+
+
+@pytest.mark.asyncio
+async def test_dismiss_answers_with_the_automation(client):
+    dismissed = _execution(status="failed", dismissed_at=NOW)
+    with patch(HANDLER_DB) as db:
+        db.get_automation = AsyncMock(
+            return_value=_automation(status="disabled", last_execution=dismissed)
+        )
+        db.dismiss_execution = AsyncMock(return_value=True)
+        resp = await client.post(DISMISS_URL)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "disabled"
+    assert body["last_execution"]["dismissed_at"] is not None
+    db.dismiss_execution.assert_awaited_once_with(EXEC_ID, automation_id=AUTO_ID)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_now", "expected"),
+    [("completed", 409), (None, 404)],
+    ids=["did-not-fail", "nonexistent"],
+)
+async def test_dismiss_that_does_not_land(client, status_now, expected):
+    with patch(HANDLER_DB) as db:
+        db.get_automation = AsyncMock(return_value=_automation())
+        db.dismiss_execution = AsyncMock(return_value=False)
+        db.get_execution_status = AsyncMock(return_value=status_now)
+        resp = await client.post(DISMISS_URL)
+
+    assert resp.status_code == expected
+
+
+@pytest.mark.asyncio
+async def test_dismiss_on_another_users_automation_writes_nothing(client):
+    with patch(HANDLER_DB) as db:
+        db.get_automation = AsyncMock(return_value=None)
+        db.dismiss_execution = AsyncMock()
+        resp = await client.post(DISMISS_URL)
+
+    assert resp.status_code == 404
+    db.dismiss_execution.assert_not_awaited()

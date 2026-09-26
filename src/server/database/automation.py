@@ -43,7 +43,7 @@ EXECUTION_COLUMNS = """
     e.status, e.conversation_thread_id,
     e.scheduled_at, e.started_at, e.completed_at,
     e.error_message, e.skip_reason, e.failure_reason, e.server_id,
-    e.delivery_result, e.created_at,
+    e.delivery_result, e.created_at, e.dismissed_at,
     e.result_excerpt AS excerpt
 """
 
@@ -680,6 +680,20 @@ async def record_delivery(execution_id: str, delivery_result: list) -> None:
                 UPDATE automation_executions SET delivery_result = %s
                 WHERE automation_execution_id = %s
             """, (Json(delivery_result), execution_id))
+
+
+async def dismiss_execution(execution_id: str, *, automation_id: str) -> bool:
+    """Mark a failed run of this automation dismissed. False when it has no
+    such failed run. A second dismissal keeps the first one's time."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                UPDATE automation_executions
+                SET dismissed_at = COALESCE(dismissed_at, NOW())
+                WHERE automation_execution_id = %s AND automation_id = %s
+                  AND status IN ('failed', 'timeout')
+            """, (execution_id, automation_id))
+            return cur.rowcount > 0
 
 
 async def list_executions(
