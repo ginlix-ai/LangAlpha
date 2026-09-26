@@ -24,8 +24,9 @@ export interface FormHost {
 /**
  * What the list marks and the pane shows. A choice the list does not hold
  * (deleted, or past the first page it loads) is `missing`, and the pane says
- * so rather than show another automation in its place. With no choice the
- * first row stands in, so the pane is never an empty frame; only a choice,
+ * so rather than show another automation in its place. With no choice a row
+ * stands in, the first one the pane opened on for as long as the list holds
+ * it, so the pane is never an empty frame; only a choice,
  * `chosen` or `missing`, opens the phone sheet. `runId` is the run a link
  * opened, which only a choice carries.
  */
