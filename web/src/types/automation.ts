@@ -67,6 +67,9 @@ export interface AutomationExecution {
   created_at: string;
   /** The start of the run's final answer, as plain text, when it gave one. */
   excerpt: string | null;
+  /** When the reader dismissed this run's failure. Only a failed or timed
+   *  out run can carry one. */
+  dismissed_at: string | null;
 }
 
 export interface Automation {

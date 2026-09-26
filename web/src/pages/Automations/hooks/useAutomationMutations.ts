@@ -69,8 +69,14 @@ export function useAutomationMutations() {
     },
   });
 
+  const dismiss = useMutation({
+    ...shared,
+    mutationFn: ({ automationId, executionId }: { automationId: string; executionId: string }) =>
+      automationApi.dismissRun(automationId, executionId),
+  });
+
   const busy = useIsMutating({ mutationKey: WRITE_KEY }) > 0;
-  return { create, update, remove, pause, resume, trigger, skip, busy };
+  return { create, update, remove, pause, resume, trigger, skip, dismiss, busy };
 }
 
 export type AutomationMutations = ReturnType<typeof useAutomationMutations>;

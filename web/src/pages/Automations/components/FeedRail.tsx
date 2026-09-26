@@ -150,12 +150,13 @@ export function FeedRail({ automations, readings, mutations, onOpenAutomation, o
  * One automation waiting on the reader: what went wrong, then the choices,
  * under it so the reason has the rail's full width. A usage limit is told in
  * the quota service's own words, and every failure that leaves the schedule
- * on offers the same two answers, another try or a pause. The run's thread is
+ * on offers the same two answers, another try or a pause. Dismiss, the
+ * quietest, takes the row away and changes nothing else. The run's thread is
  * one step away, since a run a usage limit paused midway resumes there.
  */
 function AttentionRow({
   automation: a,
-  mutations: { pause, resume, trigger, busy },
+  mutations: { pause, resume, trigger, dismiss, busy },
   onOpen,
 }: {
   automation: Automation;
@@ -166,7 +167,7 @@ function AttentionRow({
   const openThread = useOpenThread();
   const kind = attentionKind(a);
   const ui = automationStatusUi(a);
-  const { canPause, remedy } = automationActions(a);
+  const { canPause, canDismiss, remedy } = automationActions(a);
   const last = a.last_execution;
 
   const links = attentionLinks(a);
@@ -218,6 +219,16 @@ function AttentionRow({
                 </HeaderButton>
               )}
             </>
+          )}
+          {canDismiss && last && (
+            <HeaderButton
+              variant="ghost"
+              disabled={busy}
+              title={t('automation.dismissHint')}
+              onClick={() => dismiss.mutate({ automationId: a.automation_id, executionId: last.automation_execution_id })}
+            >
+              {t('automation.dismiss')}
+            </HeaderButton>
           )}
           {links.length > 0 && (
             <span className="automations-rail-links">

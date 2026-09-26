@@ -376,7 +376,7 @@ const HEADER_BUTTON = {
     'text-[color:var(--color-btn-primary-text)] bg-[color:var(--color-btn-primary-bg)] disabled:opacity-50',
   secondary:
     'text-[color:var(--color-text-secondary)] border-[color:var(--color-border-muted)] disabled:opacity-50',
-  ghost: 'text-[color:var(--color-text-tertiary)] hover:bg-foreground/10',
+  ghost: 'text-[color:var(--color-text-tertiary)] hover:bg-foreground/10 disabled:opacity-50 disabled:hover:bg-transparent',
 };
 
 /** Header action button: `primary` (Add), `secondary` (Import), `ghost` (links).

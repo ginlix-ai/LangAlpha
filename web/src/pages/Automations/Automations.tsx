@@ -156,6 +156,15 @@ export default function Automations() {
 
   const byId = useMemo(() => new Map(automations.map((a) => [a.automation_id, a])), [automations]);
   const groups = useOrderedGroups(automations);
+  // With no choice the first row stands in, and it goes on standing in while
+  // the list holds it. Acting on it, or its run settling, moves it to another
+  // group; were the pane to follow the list's order, the next automation's
+  // buttons would land under the pointer that just acted, and a second click
+  // would dismiss a failure nobody read.
+  const [standInId, setStandInId] = useState<string | null>(null);
+  const standIn =
+    selectedId || runId ? undefined : (standInId ? byId.get(standInId) : undefined) ?? groups[0]?.items[0];
+  if ((standIn?.automation_id ?? null) !== standInId) setStandInId(standIn?.automation_id ?? null);
   const selection = useMemo((): ManageSelection => {
     // A link to an automation the list does not hold (deleted, or past the
     // page it loads) must not quietly show a different one in its place. A
@@ -165,9 +174,8 @@ export default function Automations() {
       const chosen = id ? byId.get(id) : undefined;
       return chosen ? { kind: 'chosen', automation: chosen, runId } : { kind: 'missing', runId };
     }
-    const first = groups[0]?.items[0];
-    return first ? { kind: 'first', automation: first } : { kind: 'none' };
-  }, [selectedId, runId, automations, byId, groups]);
+    return standIn ? { kind: 'first', automation: standIn } : { kind: 'none' };
+  }, [selectedId, runId, automations, byId, standIn]);
 
   const editing = form?.kind === 'edit' ? byId.get(form.automationId) ?? null : null;
 

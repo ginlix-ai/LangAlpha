@@ -337,3 +337,24 @@ async def skip_execution(
         "automation_id": automation_id,
         "status": "skipped",
     }
+
+
+async def dismiss_execution(
+    automation_id: str,
+    execution_id: str,
+    user_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Take a failed run out of Needs attention, answering with the automation.
+
+    Returns None when the automation is not the user's and raises 404 when
+    the run does not exist; raises ValueError when the run did not fail.
+    """
+    if not await auto_db.get_automation(automation_id, user_id):
+        return None
+    if not await auto_db.dismiss_execution(execution_id, automation_id=automation_id):
+        if await auto_db.get_execution_status(
+            execution_id, automation_id=automation_id
+        ) is None:
+            raise_not_found("Execution")
+        raise ValueError("Only a failed run can be dismissed")
+    return await auto_db.get_automation(automation_id, user_id)

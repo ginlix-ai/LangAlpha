@@ -22,6 +22,7 @@ function run(id: string, started: Date | null, created: Date): AutomationRun {
     delivery_result: null,
     created_at: created.toISOString(),
     excerpt: null,
+    dismissed_at: null,
   };
 }
 

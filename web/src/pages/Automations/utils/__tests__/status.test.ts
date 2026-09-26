@@ -10,9 +10,11 @@ import type {
 } from '@/types/automation';
 import {
   attentionKind,
+  attentionLinks,
   automationActions,
   automationCensus,
   automationGroup,
+  automationState,
   automationStatusUi,
   describeRun,
   isUpcoming,
@@ -40,6 +42,7 @@ function run(status: ExecutionStatus, over: Partial<AutomationExecution> = {}): 
     delivery_result: null,
     created_at: '2026-09-25T13:00:00Z',
     excerpt: null,
+    dismissed_at: null,
     ...over,
   };
 }
@@ -161,7 +164,7 @@ describe('automationCensus', () => {
       automation('cron', 'paused', null),
       automation('once', 'completed', 'completed'),
     ]);
-    expect(census).toEqual({ running: 1, attention: 2, scheduled: 2, watching: 1, paused: 1, finished: 1 });
+    expect(census).toEqual({ running: 1, attention: 2, scheduled: 2, watching: 1, paused: 1, off: 0, finished: 1 });
   });
 });
 
@@ -218,15 +221,71 @@ describe('automationActions', () => {
   // The server pauses only from active and resumes from paused or disabled;
   // a manual run is refused while disabled, so that is answered by a resume.
   it.each([
-    ['active', null, { canPause: true, canResume: false, canRun: true, runBusy: false, remedy: 'retry' }],
-    ['active', 'failed', { canPause: true, canResume: false, canRun: true, runBusy: false, remedy: 'retry' }],
-    ['paused', null, { canPause: false, canResume: true, canRun: true, runBusy: false, remedy: 'retry' }],
-    ['disabled', 'failed', { canPause: false, canResume: true, canRun: false, runBusy: false, remedy: 'resume' }],
-    ['completed', 'completed', { canPause: false, canResume: false, canRun: true, runBusy: false, remedy: 'retry' }],
-    ['active', 'running', { canPause: true, canResume: false, canRun: true, runBusy: true, remedy: null }],
-    ['active', 'waiting', { canPause: true, canResume: false, canRun: true, runBusy: true, remedy: null }],
+    ['active', null, { canPause: true, canResume: false, canRun: true, runBusy: false, remedy: 'retry', canDismiss: false }],
+    ['active', 'failed', { canPause: true, canResume: false, canRun: true, runBusy: false, remedy: 'retry', canDismiss: true }],
+    ['paused', null, { canPause: false, canResume: true, canRun: true, runBusy: false, remedy: 'retry', canDismiss: false }],
+    ['disabled', 'failed', { canPause: false, canResume: true, canRun: false, runBusy: false, remedy: 'resume', canDismiss: true }],
+    ['completed', 'completed', { canPause: false, canResume: false, canRun: true, runBusy: false, remedy: 'retry', canDismiss: false }],
+    ['active', 'running', { canPause: true, canResume: false, canRun: true, runBusy: true, remedy: null, canDismiss: false }],
+    ['active', 'waiting', { canPause: true, canResume: false, canRun: true, runBusy: true, remedy: null, canDismiss: false }],
   ] as const)('%s with a %s run', (status, last, expected) => {
     expect(automationActions(automation('cron', status, last))).toEqual(expected);
+  });
+});
+
+describe('a dismissed run', () => {
+  const dismissed = (a: Automation): Automation => ({
+    ...a,
+    last_execution: { ...a.last_execution!, dismissed_at: '2026-09-25T14:00:00Z' },
+  });
+
+  it('takes a failure out of attention and back under its kind', () => {
+    const a = dismissed(automation('once', 'completed', 'failed'));
+    expect(needsAttention(a)).toBe(false);
+    expect(automationGroup(a)).toBe('finished');
+    expect(automationActions(a).canDismiss).toBe(false);
+  });
+
+  it('reads a one-time automation whose run failed as finished, not scheduled', () => {
+    // The claim clears next_run_at and a failure leaves the automation active.
+    const a = dismissed({ ...automation('once', 'active', 'failed'), next_run_at: null });
+    expect(automationState(a)).toBe('finished');
+    expect(automationGroup(a)).toBe('finished');
+    expect(automationCensus([a])).toMatchObject({ scheduled: 0, finished: 1 });
+    // Its run in flight still belongs under its kind.
+    expect(automationGroup({ ...automation('once', 'active', 'running'), next_run_at: null })).toBe('scheduled');
+  });
+
+  it('leaves a switched-off automation off, worded and counted apart from a pause', () => {
+    const a = dismissed(automation('cron', 'disabled', 'failed'));
+    const paused = automation('cron', 'paused', null);
+    expect(automationState(a)).toBe('off');
+    expect(automationStatusUi(a)).toEqual({ ...automationStatusUi(paused), labelKey: 'automation.stateDisabled' });
+    expect(automationGroup(a)).toBe('scheduled');
+    expect(automationGroup(dismissed(automation('price', 'disabled', 'failed')))).toBe('watching');
+    expect(rowTrailing(a, 'scheduled')).toEqual({ kind: 'state', labelKey: 'automation.stateDisabled' });
+    expect(automationActions(a)).toMatchObject({ canResume: true, canDismiss: false });
+    expect(automationCensus([a, paused])).toEqual({ running: 0, attention: 0, scheduled: 0, watching: 0, paused: 1, off: 1, finished: 0 });
+  });
+
+  it('keeps the way back to a rejected key once dismissed', () => {
+    const a = dismissed({ ...automation('cron', 'disabled', 'failed'), disable_reason: 'provider_auth' });
+    expect(attentionLinks(a).map((l) => l.labelKey)).toEqual(['chat.modelSelector.manageModels']);
+  });
+
+  it('asks again when a newer run fails', () => {
+    const a = dismissed(automation('cron', 'active', 'failed'));
+    const newer = { ...a, last_execution: run('timeout', { automation_execution_id: 'exec-2' }) };
+    expect(needsAttention(newer)).toBe(true);
+    expect(automationActions(newer).canDismiss).toBe(true);
+  });
+
+  it('is not offered without a failed run to dismiss', () => {
+    // Switched off, but its newest run did not fail: attention stays until a resume.
+    const a = automation('cron', 'disabled', 'skipped');
+    expect(needsAttention(a)).toBe(true);
+    expect(automationActions(a).canDismiss).toBe(false);
+    expect(automationActions(automation('cron', 'disabled', null)).canDismiss).toBe(false);
   });
 });
 

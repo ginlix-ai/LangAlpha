@@ -358,6 +358,8 @@ class AutomationExecutionResponse(BaseModel):
     server_id: Optional[str] = None
     delivery_result: Optional[List[Dict[str, Any]]] = None
     created_at: datetime
+    # When the user took this failed run out of Needs attention.
+    dismissed_at: Optional[datetime] = None
     excerpt: Optional[str] = None
 
     model_config = {"from_attributes": True}

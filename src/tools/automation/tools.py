@@ -145,7 +145,8 @@ async def check_automations(
     runs again once the key is fixed and the automation resumed) or max_failures.
     A run's failure_reason usage_limit is a usage limit, which never disables it;
     server_error and interrupted mean the service failed or cut the run off, so
-    nothing in the automation needs changing.
+    nothing in the automation needs changing. A failed run with dismissed_at is
+    one the user has already seen and set aside.
     """
     try:
         user_id = _get_user_id(config)
@@ -231,6 +232,7 @@ async def check_automations(
                         "error_message": e.get("error_message"),
                         **({"skip_reason": e["skip_reason"]} if e.get("skip_reason") else {}),
                         **({"failure_reason": e["failure_reason"]} if e.get("failure_reason") else {}),
+                        **({"dismissed_at": e["dismissed_at"]} if e.get("dismissed_at") else {}),
                     }
                     for e in executions
                 ],
