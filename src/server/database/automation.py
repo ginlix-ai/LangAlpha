@@ -823,19 +823,15 @@ async def settle_legacy_executions(error_message: str) -> int:
     previous build may still be running it through a deploy, so it gets a
     day. After that nothing is waiting on it, and it is closed as a row write
     alone: a failure notice weeks late, or reviving whatever it left on its
-    automation, would do more harm than the stale row.
+    automation, would do more harm than the stale row. None of these rows is
+    ``waiting``: that status came in with the heartbeat, and every firing
+    that can wait was written with one.
     """
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(f"""
                 UPDATE automation_executions
-                SET status = CASE WHEN status = 'waiting'
-                                  THEN 'skipped' ELSE 'failed' END,
-                    skip_reason = CASE WHEN status = 'waiting'
-                                       THEN 'interrupted' END,
-                    error_message = CASE WHEN status = 'waiting'
-                                         THEN error_message ELSE %s END,
-                    completed_at = NOW()
+                SET status = 'failed', error_message = %s, completed_at = NOW()
                 WHERE status IN {_UNSETTLED}
                   AND heartbeat_at IS NULL
                   AND created_at < NOW() - INTERVAL '1 day'

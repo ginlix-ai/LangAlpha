@@ -103,15 +103,11 @@ class TestSweepBoundaries:
         aid = await _automation(seed_user["user_id"])
         young = await _firing(db, aid, heartbeat="NULL")
         old_running = await _firing(db, aid, heartbeat="NULL", age=2 * 86400)
-        old_waiting = await _firing(
-            db, aid, status="waiting", heartbeat="NULL", age=2 * 86400
-        )
         stale = await _firing(db, aid, heartbeat=_STALE, age=2 * 86400)
 
-        assert await settle_legacy_executions("restarted") == 2
+        assert await settle_legacy_executions("restarted") == 1
 
         assert await _status(db, old_running) == ("failed", None, "restarted")
-        assert await _status(db, old_waiting) == ("skipped", "interrupted", None)
         assert (await _status(db, young))[0] == "running"
         assert (await _status(db, stale))[0] == "running"
         auto = await get_automation(aid, seed_user["user_id"])
