@@ -36,7 +36,28 @@ async def test_an_ownership_refusal_reaches_the_agent_as_its_reason(monkeypatch)
     monkeypatch.setattr(tools.auto_handler, "pause_automation", refuse)
 
     result = await tools.manage_automation.coroutine(
-        automation_id="a1", action="pause", config={"configurable": {"user_id": "u1"}}
+        automation_id="00000000-0000-4000-8000-0000000000a1", action="pause", config={"configurable": {"user_id": "u1"}}
     )
 
     assert result == {"error": "Forbidden"}
+
+
+@pytest.mark.asyncio
+async def test_an_id_that_cannot_name_an_automation_is_not_found(monkeypatch):
+    """A malformed id would reach the uuid cast; the agent gets the not-found error instead."""
+    from src.tools.automation import tools
+
+    async def unreachable(*_args, **_kwargs):
+        raise AssertionError("a malformed id reached the database")
+
+    monkeypatch.setattr(tools.auto_db, "get_automation", unreachable)
+    monkeypatch.setattr(tools.auto_handler, "pause_automation", unreachable)
+    config = {"configurable": {"user_id": "u1"}}
+
+    content, _ = await tools.check_automations.coroutine(config=config, automation_id="abc")
+    managed = await tools.manage_automation.coroutine(
+        automation_id="abc", action="pause", config=config
+    )
+
+    assert content == '{"error": "Automation \'abc\' not found."}'
+    assert managed == {"error": "Automation 'abc' not found."}

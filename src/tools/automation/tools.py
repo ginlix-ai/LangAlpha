@@ -97,6 +97,16 @@ def _disable_reason(automation: dict[str, Any]) -> dict[str, Any]:
     return {"disable_reason": reason} if reason else {}
 
 
+def _not_found(automation_id: str) -> str | None:
+    """The not-found error for an id that cannot name an automation, which
+    would otherwise reach the uuid cast and hand the model a driver error."""
+    try:
+        UUID(automation_id)
+    except ValueError:
+        return f"Automation '{automation_id}' not found."
+    return None
+
+
 def _error_text(e: ValueError) -> str:
     return validation_error_text(e) if isinstance(e, ValidationError) else str(e)
 
@@ -133,7 +143,9 @@ async def check_automations(
     A waiting run starts once the turn on its thread ends. A disabled automation's
     disable_reason is provider_auth (the provider rejected the user's own key: it
     runs again once the key is fixed and the automation resumed) or max_failures.
-    A run's failure_reason usage_limit is a usage limit, which never disables it.
+    A run's failure_reason usage_limit is a usage limit, which never disables it;
+    server_error and interrupted mean the service failed or cut the run off, so
+    nothing in the automation needs changing.
     """
     try:
         user_id = _get_user_id(config)
@@ -174,6 +186,8 @@ async def check_automations(
             return json.dumps({"automations": listed, "total": total}), artifact
 
         # Get details + last 5 executions
+        if error := _not_found(automation_id):
+            return json.dumps({"error": error}), {}
         automation = await auto_db.get_automation(automation_id, user_id)
         if not automation:
             return json.dumps({"error": f"Automation '{automation_id}' not found."}), {}
@@ -394,6 +408,8 @@ async def manage_automation(
     """Manage an existing automation: update settings, pause, resume, trigger immediately, or delete."""
     try:
         user_id = _get_user_id(config)
+        if error := _not_found(automation_id):
+            return {"error": error}
 
         if action == "pause":
             result = await auto_handler.pause_automation(automation_id, user_id)
