@@ -32,7 +32,6 @@ from ptc_agent.core.sandbox.runtime import (
     CodeRunResult,
     ExecResult,
     RuntimeState,
-    SandboxGoneError,
     SandboxProvider,
     SandboxRuntime,
 )
@@ -210,20 +209,21 @@ class TestPTCSandboxDelegation:
 
     @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
     @pytest.mark.asyncio
-    async def test_unrecoverable_archive_uses_secure_replacement_path(
+    async def test_archived_sandbox_is_restored_not_replaced(
         self, mock_create_provider, mock_provider, mock_runtime
     ):
+        """Daytona reports recoverable=False on every healthy sandbox, archived included."""
         from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
         mock_create_provider.return_value = mock_provider
         mock_runtime.get_state.return_value = RuntimeState.ARCHIVED
         mock_runtime.get_metadata.return_value = {"recoverable": False}
+        mock_runtime.fetch_working_dir = AsyncMock(return_value="/home/workspace")
         sandbox = PTCSandbox(config=_make_config())
 
-        with pytest.raises(SandboxGoneError, match="no longer recoverable"):
-            await sandbox.reconnect("archived-sandbox")
+        await sandbox.reconnect("archived-sandbox")
 
-        mock_runtime.start.assert_not_awaited()
+        mock_runtime.start.assert_awaited_once()
 
 
 class TestBackgroundBashTrace:

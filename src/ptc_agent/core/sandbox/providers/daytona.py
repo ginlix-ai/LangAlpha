@@ -368,7 +368,6 @@ class DaytonaRuntime(SandboxRuntime):
             "gpu",
             "created_at",
             "auto_stop_interval",
-            "recoverable",
         ):
             val = getattr(self._sandbox, attr, None)
             if val is not None:
