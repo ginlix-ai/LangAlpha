@@ -529,6 +529,29 @@ async def test_skip_that_does_not_land(client, status_now, expected):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/api/v1/automations/not-a-uuid"),
+        ("PATCH", "/api/v1/automations/not-a-uuid"),
+        ("DELETE", "/api/v1/automations/not-a-uuid"),
+        ("POST", "/api/v1/automations/not-a-uuid/trigger"),
+        ("POST", "/api/v1/automations/not-a-uuid/pause"),
+        ("POST", "/api/v1/automations/not-a-uuid/resume"),
+        ("GET", "/api/v1/automations/not-a-uuid/executions"),
+        ("POST", f"/api/v1/automations/not-a-uuid/executions/{EXEC_ID}/skip"),
+    ],
+)
+async def test_a_malformed_automation_id_is_422(client, method, path):
+    """Refused at the path, before it reaches a uuid column as a 500."""
+    with patch(AUTO_DB) as db, patch(HANDLER) as handler:
+        resp = await client.request(method, path, json={"name": "X"})
+
+    assert resp.status_code == 422
+    assert not db.mock_calls and not handler.mock_calls
+
+
+@pytest.mark.asyncio
 async def test_skip_with_a_malformed_id_is_422(client):
     with patch(f"{HANDLER}.skip_execution", new_callable=AsyncMock) as mock_skip:
         resp = await client.post(
