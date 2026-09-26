@@ -279,8 +279,7 @@ export function UserInfoTab() {
         <TimezonePicker
           value={timezone}
           onChange={handleTimezoneChange}
-          home={deviceTimezone()}
-          homeLabel={t('timezone.thisDevice')}
+          home={{ zone: deviceTimezone(), label: t('timezone.thisDevice') }}
           placeholder={t('settings.selectTimezone')}
           className="w-full"
           // The card fill the name and language fields beside it take.

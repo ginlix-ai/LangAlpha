@@ -222,8 +222,7 @@ export default function TriggerSection({ form, patch, isEdit, onZone }: TriggerS
     <TimezonePicker
       value={form.timezone}
       onChange={onZone}
-      home={homeZone}
-      homeLabel={t('timezone.yours')}
+      home={{ zone: homeZone, label: t('timezone.yours') }}
       className="min-w-40 max-w-64"
     />
   );
