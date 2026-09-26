@@ -19,15 +19,17 @@ interface AutomationsHeaderProps {
 export default function AutomationsHeader({ automations, view, onViewChange, onNew }: AutomationsHeaderProps) {
   const { t } = useTranslation();
 
-  // What is set up, so a finished automation is left out. Paused is counted
-  // apart, which the groups below, keeping it under its kind, do not do.
+  // What is set up, so a finished automation is left out. Paused and switched
+  // off are counted apart, which the groups below, keeping them under their
+  // kind, do not do.
   const census = useMemo(() => {
-    const { running, scheduled, watching, paused, attention } = automationCensus(automations);
+    const { running, scheduled, watching, paused, off, attention } = automationCensus(automations);
     const parts: string[] = [];
     if (running) parts.push(t('automation.censusRunning', { count: running }));
     if (scheduled) parts.push(t('automation.censusScheduled', { count: scheduled }));
     if (watching) parts.push(t('automation.censusWatching', { count: watching }));
     if (paused) parts.push(t('automation.censusPaused', { count: paused }));
+    if (off) parts.push(t('automation.censusOff', { count: off }));
     if (attention) parts.push(t('automation.censusAttention', { count: attention }));
     return parts;
   }, [automations, t]);

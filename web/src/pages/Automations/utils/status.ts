@@ -4,8 +4,9 @@
  *
  * Liveness is the shared ascii Loader (`live`), a finished run carries no
  * glyph, and only a failure gets an informative one (DESIGN.md, status
- * vocabulary). A paused automation is not a failure: it keeps its group and
- * shows the pause glyph in the muted tone.
+ * vocabulary). A paused automation is not a failure, nor is a switched-off one
+ * whose failure the reader dismissed: each keeps its group and shows the pause
+ * glyph in the muted tone.
  */
 import { AlertCircle, Clock, Pause, type LucideIcon } from 'lucide-react';
 import type { Automation, AutomationExecution, ExecutionStatus, FailureReason, SkipReason } from '@/types/automation';
@@ -48,9 +49,11 @@ export const GROUP_LABEL_KEY: Record<AutomationGroup, string> = {
  * the provider rejected; a last run that failed, a usage limit's refusal
  * included, means the next one may fail the same way, or, once the automation
  * has ended, that its report never came. Either wants a person, unless the
- * person already paused it.
+ * person already paused it or dismissed that run. A dismissal belongs to the
+ * run, so a newer run that fails is not dismissed and asks again.
  */
 export function needsAttention(a: Automation): boolean {
+  if (a.last_execution?.dismissed_at) return false;
   if (a.status === 'disabled') return true;
   if (a.status === 'paused') return false;
   return !isAutomationRunning(a) && !!a.last_execution && isRunFailed(a.last_execution.status);
@@ -67,8 +70,12 @@ export type AttentionKind = 'key_rejected' | 'switched_off' | 'usage_limit' | 'f
 
 export function attentionKind(a: Automation): AttentionKind | null {
   if (!needsAttention(a)) return null;
-  if (a.status === 'disabled') return a.disable_reason === 'provider_auth' ? 'key_rejected' : 'switched_off';
+  if (a.status === 'disabled') return isKeyRejected(a) ? 'key_rejected' : 'switched_off';
   return a.last_execution?.failure_reason === 'usage_limit' ? 'usage_limit' : 'failed';
+}
+
+function isKeyRejected(a: Automation): boolean {
+  return a.status === 'disabled' && a.disable_reason === 'provider_auth';
 }
 
 /** Next due by the clock: what the rail lists under "Up next" and the header
@@ -80,6 +87,20 @@ export function isUpcoming(a: Automation): boolean {
 /** A price automation still listening, mid-run included. */
 export function isWatching(a: Automation): boolean {
   return a.trigger_type === 'price' && (a.status === 'active' || a.status === 'executing');
+}
+
+/** Nothing left to fire by itself: completed, or a one-time automation left
+ *  active with no time set, as a failed run leaves it so the reader can give
+ *  it a new time. Its run in flight is not. */
+export function hasEnded(a: Automation): boolean {
+  if (a.status === 'completed') return true;
+  return (
+    a.trigger_type === 'once' &&
+    a.status === 'active' &&
+    !a.next_run_at &&
+    !isAutomationRunning(a) &&
+    !isAutomationWaiting(a)
+  );
 }
 
 /**
@@ -94,18 +115,20 @@ export interface AutomationCensus {
   scheduled: number;
   watching: number;
   paused: number;
+  off: number;
   finished: number;
 }
 
 export function automationCensus(automations: readonly Automation[]): AutomationCensus {
-  const census: AutomationCensus = { running: 0, attention: 0, scheduled: 0, watching: 0, paused: 0, finished: 0 };
+  const census: AutomationCensus = { running: 0, attention: 0, scheduled: 0, watching: 0, paused: 0, off: 0, finished: 0 };
   for (const a of automations) {
     if (isAutomationRunning(a)) census.running += 1;
     if (needsAttention(a)) census.attention += 1;
     else if (isUpcoming(a)) census.scheduled += 1;
     else if (isWatching(a)) census.watching += 1;
     else if (a.status === 'paused') census.paused += 1;
-    else if (a.status === 'completed') census.finished += 1;
+    else if (a.status === 'disabled') census.off += 1;
+    else if (hasEnded(a)) census.finished += 1;
   }
   return census;
 }
@@ -114,19 +137,19 @@ export function automationCensus(automations: readonly Automation[]): Automation
  *  there, since it is still a schedule. What runs next is isUpcoming. */
 export function automationGroup(a: Automation): AutomationGroup {
   if (needsAttention(a)) return 'attention';
-  if (a.status === 'completed') return 'finished';
+  if (hasEnded(a)) return 'finished';
   return a.trigger_type === 'price' ? 'watching' : 'scheduled';
 }
 
 /** Everything an automation's glyph and label can say. */
-export type AutomationState = 'waiting' | 'running' | AttentionKind | 'paused' | 'finished' | 'watching' | 'scheduled';
+export type AutomationState = 'waiting' | 'running' | AttentionKind | 'paused' | 'off' | 'finished' | 'watching' | 'scheduled';
 
 /**
  * The ladder: which one state an automation shows. A run in flight comes
  * first, since it may be about to fix the failure below it; then why it wants
- * a person, then a pause, an end, and what kind of automation it is. The
- * groups and the header's census do not read it, since they count an
- * automation that is mid-run under its kind as well.
+ * a person, then a pause, a switch-off the reader dismissed, an end, and what
+ * kind of automation it is. The groups and the header's census do not read
+ * it, since they count an automation that is mid-run under its kind as well.
  */
 export function automationState(a: Automation): AutomationState {
   if (isAutomationWaiting(a)) return 'waiting';
@@ -134,7 +157,8 @@ export function automationState(a: Automation): AutomationState {
   const attention = attentionKind(a);
   if (attention) return attention;
   if (a.status === 'paused') return 'paused';
-  if (a.status === 'completed') return 'finished';
+  if (a.status === 'disabled') return 'off';
+  if (hasEnded(a)) return 'finished';
   return a.trigger_type === 'price' ? 'watching' : 'scheduled';
 }
 
@@ -159,6 +183,7 @@ const STATE_UI: Record<AutomationState, StatusUi> = {
   usage_limit: { labelKey: 'automation.stateUsageLimit', Icon: AlertCircle, color: DANGER, danger: true },
   failed: { labelKey: 'automation.stateLastRunFailed', Icon: AlertCircle, color: DANGER, danger: true },
   paused: { labelKey: 'automation.statePaused', Icon: Pause, color: 'var(--color-text-tertiary)' },
+  off: { labelKey: 'automation.stateDisabled', Icon: Pause, color: 'var(--color-text-tertiary)' },
   finished: { labelKey: 'automation.stateFinished', Icon: null, color: 'var(--color-text-tertiary)' },
   watching: { labelKey: 'automation.stateWatching', Icon: null, color: 'var(--color-text-tertiary)' },
   scheduled: { labelKey: 'automation.stateScheduled', Icon: null, color: 'var(--color-text-tertiary)' },
@@ -173,13 +198,17 @@ export function automationStatusUi(a: Automation): StatusUi {
  *  from paused or disabled, and a manual run from anything but disabled,
  *  offered only while nothing is already running or waiting. A failed run is
  *  answered by `remedy`: a resume once the server has switched the automation
- *  off, else another run, so the rail and the feed offer the same one. */
+ *  off, else another run, so the rail and the feed offer the same one.
+ *  `canDismiss` answers the run and leaves the automation as it is: the
+ *  server dismisses a run, so it needs a failed newest run holding the
+ *  automation in Needs attention. */
 export interface AutomationActions {
   canPause: boolean;
   canResume: boolean;
   canRun: boolean;
   runBusy: boolean;
   remedy: 'resume' | 'retry' | null;
+  canDismiss: boolean;
 }
 
 export function automationActions(a: Automation): AutomationActions {
@@ -192,6 +221,7 @@ export function automationActions(a: Automation): AutomationActions {
     canRun,
     runBusy,
     remedy: !canRun ? 'resume' : runBusy ? null : 'retry',
+    canDismiss: needsAttention(a) && !!a.last_execution && isRunFailed(a.last_execution.status),
   };
 }
 
@@ -215,9 +245,10 @@ const MODEL_SETTINGS_LINK: ErrorLinkSpec = {
 };
 
 /** Where the reader fixes what stopped an automation's newest run: model
- *  settings for a rejected key, the plan pages for a usage limit. */
+ *  settings for a rejected key, the plan pages for a usage limit. Read from
+ *  the automation, not its attention, so a dismissal keeps the way back. */
 export function attentionLinks(a: Automation): ErrorLinkSpec[] {
-  if (attentionKind(a) === 'key_rejected') return [MODEL_SETTINGS_LINK];
+  if (isKeyRejected(a)) return [MODEL_SETTINGS_LINK];
   return a.last_execution ? usageLimitLinks(a.last_execution) : [];
 }
 
@@ -242,7 +273,7 @@ export type RowTrailing =
 
 export function rowTrailing(a: Automation, group: AutomationGroup): RowTrailing {
   const state = automationState(a);
-  if (state === 'waiting' || state === 'running' || state === 'paused') {
+  if (state === 'waiting' || state === 'running' || state === 'paused' || state === 'off') {
     return { kind: 'state', labelKey: STATE_UI[state].labelKey };
   }
   if (group === 'scheduled' && a.next_run_at) return { kind: 'next', at: a.next_run_at };

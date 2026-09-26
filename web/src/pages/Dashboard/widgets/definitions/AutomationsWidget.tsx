@@ -40,6 +40,7 @@ const CENSUS_WORDS: ReadonlyArray<[keyof AutomationCensus, string]> = [
   ['scheduled', 'scheduled'],
   ['watching', 'watching'],
   ['paused', 'paused'],
+  ['off', 'switched off'],
   ['finished', 'finished'],
 ];
 

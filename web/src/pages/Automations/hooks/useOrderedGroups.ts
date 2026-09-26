@@ -9,17 +9,19 @@ function lastRunMs(a: Automation): number {
 
 function sortGroup(group: AutomationGroup, list: Automation[]): Automation[] {
   const byName = (a: Automation, b: Automation) => a.name.localeCompare(b.name);
-  const paused = (a: Automation) => (a.status === 'paused' ? 1 : 0);
+  // A switched-off automation reaches these groups only once its failure is
+  // dismissed, and then sorts after the live ones, as a paused one does.
+  const stopped = (a: Automation) => (a.status === 'paused' || a.status === 'disabled' ? 1 : 0);
   switch (group) {
     case 'scheduled':
       return [...list].sort(
         (a, b) =>
-          paused(a) - paused(b) ||
+          stopped(a) - stopped(b) ||
           (a.next_run_at ? Date.parse(a.next_run_at) : Infinity) - (b.next_run_at ? Date.parse(b.next_run_at) : Infinity) ||
           byName(a, b),
       );
     case 'watching':
-      return [...list].sort((a, b) => paused(a) - paused(b) || byName(a, b));
+      return [...list].sort((a, b) => stopped(a) - stopped(b) || byName(a, b));
     default:
       return [...list].sort((a, b) => lastRunMs(b) - lastRunMs(a) || byName(a, b));
   }

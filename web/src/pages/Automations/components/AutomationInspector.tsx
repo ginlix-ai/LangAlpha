@@ -1,6 +1,6 @@
 import React, { Fragment, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertCircle, ArrowUpRight, Pause, Pencil, Play, Trash2, Zap } from 'lucide-react';
+import { AlertCircle, ArrowUpRight, EyeOff, Pause, Pencil, Play, Trash2, Zap } from 'lucide-react';
 import { HeaderButton, ListSkeleton } from '@/components/mcp/McpPrimitives';
 import { cn } from '@/lib/utils';
 import type { Automation, AutomationExecution } from '@/types/automation';
@@ -50,13 +50,13 @@ export default function AutomationInspector({
 }: AutomationInspectorProps) {
   const { t } = useTranslation();
   const openThread = useOpenThread();
-  const { pause, resume, trigger, skip, busy } = useAutomationMutations();
+  const { pause, resume, trigger, skip, dismiss, busy } = useAutomationMutations();
   const { executions, loading } = useExecutions(a.automation_id);
   const workspaceName = workspaceNameOf(useWorkspaceOptions(), a.workspace_id);
   const deliveryMethods = a.delivery_config?.methods ?? [];
 
   const ui = automationStatusUi(a);
-  const { canPause, canResume, canRun, runBusy } = automationActions(a);
+  const { canPause, canResume, canRun, runBusy, canDismiss } = automationActions(a);
   const last = a.last_execution;
   // The opened run is looked for on the list row and in the history this
   // pane loads. There is no reading one run by its id, so one older than
@@ -117,6 +117,20 @@ export default function AutomationInspector({
         {canResume && (
           <HeaderButton variant="secondary" icon={Play} disabled={busy} onClick={() => resume.mutate(a.automation_id)}>
             {t('automation.resume')}
+          </HeaderButton>
+        )}
+        {/* Only while the newest run, the one dismissed, is the one shown:
+            an opened older run, or one still being placed, would leave a
+            failure dismissed unseen. */}
+        {canDismiss && isLatest && !placing && last && (
+          <HeaderButton
+            variant="secondary"
+            icon={EyeOff}
+            disabled={busy}
+            title={t('automation.dismissHint')}
+            onClick={() => dismiss.mutate({ automationId: a.automation_id, executionId: last.automation_execution_id })}
+          >
+            {t('automation.dismiss')}
           </HeaderButton>
         )}
         <HeaderButton variant="secondary" icon={Pencil} onClick={() => onEdit(a)}>

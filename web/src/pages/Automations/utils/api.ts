@@ -55,3 +55,8 @@ export const listRecentRuns = (params: Record<string, unknown>): Promise<AxiosRe
 /** Skip a run waiting for the turn in its thread to end. */
 export const skipRun = (automationId: string, executionId: string): Promise<AxiosResponse> =>
   api.post(`/api/v1/automations/${automationId}/executions/${executionId}/skip`);
+
+/** Acknowledge a failed run, which takes its automation out of Needs
+ *  attention until a newer run fails. */
+export const dismissRun = (automationId: string, executionId: string): Promise<AxiosResponse<Automation>> =>
+  api.post(`/api/v1/automations/${automationId}/executions/${executionId}/dismiss`);

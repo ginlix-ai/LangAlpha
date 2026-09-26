@@ -17,6 +17,7 @@ vi.mock('../../utils/api', async (importOriginal) => ({
   pauseAutomation: vi.fn(() => Promise.resolve({})),
   resumeAutomation: vi.fn(() => Promise.resolve({})),
   triggerAutomation: vi.fn(() => Promise.resolve({})),
+  dismissRun: vi.fn(() => Promise.resolve({})),
 }));
 
 afterEach(() => vi.clearAllMocks());
@@ -74,6 +75,7 @@ function failing({
       delivery_result: null,
       created_at: '2026-09-25T13:00:00Z',
       excerpt: null,
+      dismissed_at: null,
     },
   };
 }
@@ -112,7 +114,7 @@ describe('FeedRail attention row', () => {
     const { row, buttons, links } = renderRow(failing({ reason: 'usage_limit', message }));
 
     expect(within(row).getByText(message)).toBeInTheDocument();
-    expect(buttons).toEqual([label('common.retry'), label('automation.pause'), label('automation.openThread')]);
+    expect(buttons).toEqual([label('common.retry'), label('automation.pause'), label('automation.dismiss'), label('automation.openThread')]);
     expect(links.map((l) => l.textContent)).toEqual([label('chat.errorLinkManagePlan'), label('chat.errorLinkViewUsage')]);
     for (const link of links) expect(link).toHaveAttribute('target', '_blank');
 
@@ -128,7 +130,7 @@ describe('FeedRail attention row', () => {
     const { row, buttons, links } = renderRow(failing({ reason: 'usage_limit' }));
 
     expect(within(row).getByText(label('automation.stateUsageLimit'))).toBeInTheDocument();
-    expect(buttons).toEqual([label('common.retry'), label('automation.pause'), label('automation.openThread')]);
+    expect(buttons).toEqual([label('common.retry'), label('automation.pause'), label('automation.dismiss'), label('automation.openThread')]);
     expect(links).toHaveLength(2);
   });
 
@@ -138,7 +140,7 @@ describe('FeedRail attention row', () => {
     );
 
     expect(within(row).getByText(label('automation.keyRejectedReason'))).toBeInTheDocument();
-    expect(buttons).toEqual([label('automation.resume'), label('automation.openThread')]);
+    expect(buttons).toEqual([label('automation.resume'), label('automation.dismiss'), label('automation.openThread')]);
     expect(links.map((l) => [l.textContent, l.getAttribute('href')])).toEqual([
       [label('chat.modelSelector.manageModels'), '/settings?tab=model'],
     ]);
@@ -151,7 +153,7 @@ describe('FeedRail attention row', () => {
     const { row, buttons, links } = renderRow(failing({ status: 'disabled', disable: 'max_failures', failures: 3 }));
 
     expect(within(row).getByText(label('automation.disabledAfter', { count: 3 }))).toBeInTheDocument();
-    expect(buttons).toEqual([label('automation.resume'), label('automation.openThread')]);
+    expect(buttons).toEqual([label('automation.resume'), label('automation.dismiss'), label('automation.openThread')]);
     expect(links).toHaveLength(0);
   });
 
@@ -159,7 +161,7 @@ describe('FeedRail attention row', () => {
     const a = failing({ reason: 'usage_limit', message: 'Out of credits.' });
     const { buttons } = renderRow({ ...a, last_execution: { ...a.last_execution!, conversation_thread_id: null } });
 
-    expect(buttons).toEqual([label('common.retry'), label('automation.pause')]);
+    expect(buttons).toEqual([label('common.retry'), label('automation.pause'), label('automation.dismiss')]);
   });
 
   it('offers another try or a pause for any other failure', () => {
@@ -168,7 +170,16 @@ describe('FeedRail attention row', () => {
     expect(
       within(row).getByText(label('automation.lastRunFailedAgo', { when: relativeTime(COMPLETED_AT) })),
     ).toBeInTheDocument();
-    expect(buttons).toEqual([label('common.retry'), label('automation.pause'), label('automation.openThread')]);
+    expect(buttons).toEqual([label('common.retry'), label('automation.pause'), label('automation.dismiss'), label('automation.openThread')]);
     expect(links).toHaveLength(0);
+  });
+
+  it('dismisses the newest run, the one holding it here', async () => {
+    const a = failing({ status: 'disabled', disable: 'max_failures', failures: 3 });
+    const { row } = renderRow({ ...a, last_execution: { ...a.last_execution!, automation_execution_id: 'exec-9' } });
+
+    fireEvent.click(within(row).getByRole('button', { name: label('automation.dismiss') }));
+    await waitFor(() => expect(api.dismissRun).toHaveBeenCalledWith('auto-1', 'exec-9'));
+    expect(api.resumeAutomation).not.toHaveBeenCalled();
   });
 });
