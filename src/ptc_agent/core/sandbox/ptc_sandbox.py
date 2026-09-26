@@ -877,12 +877,12 @@ class PTCSandbox:
                 )
             _mark_rc("wait_stopping")
         elif state_value == "archived":
-            metadata = await self.runtime.get_metadata()
-            if metadata.get("recoverable") is False:
-                raise SandboxGoneError(
-                    sandbox_id,
-                    "archived sandbox is no longer recoverable",
-                )
+            # Always restore. Daytona's ``recoverable`` flag describes an
+            # errored sandbox and reads False on every healthy one, so gating
+            # on it called each auto-archived sandbox gone: the recover path
+            # rebuilt it from the DB backup, dropping whatever only the archive
+            # held, and orphaned the archive. A restore that truly fails is
+            # classified like any start, Gone only on a positive absence.
             logger.info(
                 "Starting archived sandbox (restore may take longer)",
                 sandbox_id=sandbox_id,
