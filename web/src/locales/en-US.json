@@ -2283,6 +2283,8 @@
     "waitingNote": "It runs when the turn now running in its thread ends.",
     "skippedThreadBusy": "Skipped because its thread stayed busy.",
     "skippedInterrupted": "Skipped because the server restarted while it waited.",
+    "failedServerError": "The server ran into a problem with this run. Your automation didn't cause it, and nothing needs changing.",
+    "failedInterrupted": "The server stopped this run before it finished. Your automation didn't cause it, and nothing needs changing.",
     "skipRun": "Skip",
     "ptc": "PTC",
     "runNow": "Run now",

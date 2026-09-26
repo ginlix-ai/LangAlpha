@@ -32,10 +32,12 @@ export type ExecutionStatus = 'pending' | 'waiting' | 'running' | 'completed' | 
  *  earlier firing was already waiting), or the server stopped mid-wait. */
 export type SkipReason = 'user' | 'thread_busy' | 'interrupted';
 
-/** A failed run's cause, where the reader can act on it: a usage limit
- *  refused the firing or paused its run (`error_message` is then the quota
- *  service's own words), or the model provider rejected the user's own key. */
-export type FailureReason = 'usage_limit' | 'provider_auth';
+/** A failed run's cause, where the server knows it: a usage limit refused
+ *  the firing or paused its run (`error_message` is then the quota service's
+ *  own words), the model provider rejected the user's own key, the run failed
+ *  on the server's side, or the server cut it off. Only the first two are the
+ *  reader's to act on. */
+export type FailureReason = 'usage_limit' | 'provider_auth' | 'server_error' | 'interrupted';
 
 /** Why the server switched an automation off. Cleared by a resume. */
 export type DisableReason = 'provider_auth' | 'max_failures';

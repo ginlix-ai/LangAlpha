@@ -2273,6 +2273,8 @@
     "waitingNote": "所在对话中正在进行的轮次结束后运行。",
     "skippedThreadBusy": "所在对话一直有轮次在运行，本次已跳过。",
     "skippedInterrupted": "等待期间服务重启，本次已跳过。",
+    "failedServerError": "服务端在本次运行中出了问题。这不是你的自动化导致的，无需做任何修改。",
+    "failedInterrupted": "服务在本次运行结束前将其中止。这不是你的自动化导致的，无需做任何修改。",
     "skipRun": "跳过",
     "ptc": "PTC",
     "runNow": "立即运行",

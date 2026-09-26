@@ -133,6 +133,9 @@ describe('why an automation needs attention', () => {
     ['active', null, null, 'failed', 'stateLastRunFailed'],
     // Resumed after a rejected key: an ordinary failure until the next run.
     ['active', null, 'provider_auth', 'failed', 'stateLastRunFailed'],
+    // The server's own failure is an ordinary one here; the run says whose.
+    ['active', null, 'server_error', 'failed', 'stateLastRunFailed'],
+    ['active', null, 'interrupted', 'failed', 'stateLastRunFailed'],
     // A pause is the reader's decision already.
     ['paused', null, 'usage_limit', null, 'statePaused'],
     // A one-shot price alert a limit ended: the report is still owed.
@@ -199,6 +202,15 @@ describe('describeRun', () => {
     expect(describeRun(run('skipped', { skip_reason: 'thread_busy' })).noteKey).toBe('automation.skippedThreadBusy');
     expect(describeRun(run('skipped', { skip_reason: 'user' })).noteKey).toBeNull();
     expect(describeRun(run('completed')).noteKey).toBeNull();
+  });
+
+  it('notes a failure that was not the automation\'s, and leaves the rest to the error', () => {
+    expect(describeRun(run('failed', { failure_reason: 'server_error' })).noteKey).toBe('automation.failedServerError');
+    expect(describeRun(run('timeout', { failure_reason: 'interrupted' })).noteKey).toBe('automation.failedInterrupted');
+    expect(describeRun(run('failed', { failure_reason: 'usage_limit' })).noteKey).toBeNull();
+    expect(describeRun(run('failed', { failure_reason: 'provider_auth' })).noteKey).toBeNull();
+    // A newer server's reason has no word here yet.
+    expect(describeRun(run('failed', { failure_reason: 'quota_v2' as FailureReason })).noteKey).toBeNull();
   });
 });
 

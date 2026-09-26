@@ -8,7 +8,7 @@
  * shows the pause glyph in the muted tone.
  */
 import { AlertCircle, Clock, Pause, type LucideIcon } from 'lucide-react';
-import type { Automation, AutomationExecution, ExecutionStatus, SkipReason } from '@/types/automation';
+import type { Automation, AutomationExecution, ExecutionStatus, FailureReason, SkipReason } from '@/types/automation';
 import { buildRateLimitError, type ErrorLinkSpec } from '@/utils/rateLimitError';
 
 export function isRunLive(status: ExecutionStatus): boolean {
@@ -265,10 +265,23 @@ const RUN_STATUS_UI: Record<ExecutionStatus, StatusUi> = {
  *  predates it, which is why the API keeps the column an open string. */
 const UNKNOWN_RUN_UI: StatusUi = { labelKey: 'automation.runUnknown', Icon: null, color: 'var(--color-text-tertiary)' };
 
-/** The line a skipped run carries when the reader did not skip it. */
-export const SKIP_REASON_KEY: Partial<Record<SkipReason, string>> = {
+/** The line a skipped run carries when the reader did not skip it. Both
+ *  tables name every reason the server writes, a test holds them to its
+ *  Literals, and null is a reason with nothing to add. */
+const SKIP_REASON_NOTE: Record<SkipReason, string | null> = {
+  user: null,
   thread_busy: 'automation.skippedThreadBusy',
   interrupted: 'automation.skippedInterrupted',
+};
+
+/** The line a failed run carries when the failure was not the automation's.
+ *  A usage limit and a rejected key are told by the error, the attention
+ *  state and its links instead. */
+const FAILURE_REASON_NOTE: Record<FailureReason, string | null> = {
+  usage_limit: null,
+  provider_auth: null,
+  server_error: 'automation.failedServerError',
+  interrupted: 'automation.failedInterrupted',
 };
 
 /** One run as the feed entry, the latest report and the history row read it.
@@ -276,7 +289,8 @@ export const SKIP_REASON_KEY: Partial<Record<SkipReason, string>> = {
 export interface RunView {
   ui: StatusUi;
   waiting: boolean;
-  /** Why it waits, or why it was skipped; null when there is nothing to say. */
+  /** Why it waits, was skipped, or failed through no fault of its own; null
+   *  when there is nothing to say. */
   noteKey: string | null;
   /** Only a run that actually ran to an end has a length worth stating. */
   showDuration: boolean;
@@ -287,7 +301,8 @@ export function describeRun(run: AutomationExecution): RunView {
   const waiting = status === 'waiting';
   let noteKey: string | null = null;
   if (waiting) noteKey = 'automation.waitingNote';
-  else if (status === 'skipped' && run.skip_reason) noteKey = SKIP_REASON_KEY[run.skip_reason] ?? null;
+  else if (status === 'skipped' && run.skip_reason) noteKey = SKIP_REASON_NOTE[run.skip_reason] ?? null;
+  else if (isRunFailed(status) && run.failure_reason) noteKey = FAILURE_REASON_NOTE[run.failure_reason] ?? null;
   const ended = status === 'completed' || isRunFailed(status);
   return {
     ui: RUN_STATUS_UI[status] ?? UNKNOWN_RUN_UI,
