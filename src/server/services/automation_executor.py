@@ -32,6 +32,7 @@ from src.server.services.automation_settlement import (
     fire_webhook,
     settle,
 )
+from src.server.services.runs.admission import BUSY_STATES
 from src.observability.tracing import hash_id as _obs_hash_id, tracer as _otel_tracer
 
 logger = logging.getLogger(__name__)
@@ -46,9 +47,6 @@ _WAIT_POLL_SECONDS = 5
 # stalls, which delay a beat without the process being gone.
 _HEARTBEAT_SECONDS = 60
 ABANDONED_AFTER_SECONDS = 5 * 60
-
-# Admission 409s that mean "a turn holds this thread": get back in line.
-_THREAD_BUSY_CODES = frozenset({"running", "stopping", "compacting"})
 
 # 429s that are our capacity rather than the user's usage limit.
 _OUR_429_TYPES = frozenset({"burst_limit", "service_unavailable"})
@@ -139,7 +137,7 @@ def _lost_thread_race(e: BaseException) -> bool:
         isinstance(e, HTTPException)
         and e.status_code == 409
         and isinstance(e.detail, dict)
-        and e.detail.get("code") in _THREAD_BUSY_CODES
+        and e.detail.get("code") in BUSY_STATES
     )
 
 

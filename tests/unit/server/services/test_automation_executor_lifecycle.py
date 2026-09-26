@@ -25,6 +25,7 @@ from src.server.handlers.chat.admission_gate import (
 from src.server.services import automation_executor as executor_mod
 from src.server.services.automation_executor import AutomationExecutor
 from src.server.services.automation_settlement import INTERRUPTED_ERROR
+from src.server.services.runs.admission import BUSY_STATES
 from src.server.services.writer_guard import WriterGuardUnavailable
 
 _MOD = "src.server.services.automation_executor"
@@ -32,12 +33,18 @@ _USER = "user-1"
 _EXEC = "exec-1"
 
 
-def test_busy_codes_are_the_admission_gates_thread_busy_answers():
-    for state in ("running", "stopping", "compacting"):
-        assert admission_conflict_detail(state)["code"] in executor_mod._THREAD_BUSY_CODES
-    assert executor_mod._THREAD_BUSY_CODES <= ADMISSION_CONFLICT_CODES
-    # A steer probe's refusal is not a busy thread.
-    assert "not_running" not in executor_mod._THREAD_BUSY_CODES
+@pytest.mark.parametrize("state", sorted(BUSY_STATES))
+def test_every_busy_admission_answer_sends_the_firing_back_to_wait(state):
+    busy = HTTPException(status_code=409, detail=admission_conflict_detail(state))
+    assert state in ADMISSION_CONFLICT_CODES
+    assert executor_mod._lost_thread_race(busy)
+
+
+def test_a_steer_probes_refusal_is_not_a_busy_thread():
+    refused = HTTPException(
+        status_code=409, detail=admission_conflict_detail("not_running")
+    )
+    assert not executor_mod._lost_thread_race(refused)
 
 
 def _automation(**overrides):
