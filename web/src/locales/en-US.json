@@ -2356,6 +2356,7 @@
     "oncePassed": "That time has already passed. Pick a later one.",
     "priceHint": "Pick a symbol and a level to see how far it has to go.",
     "priceSymbolInvalid": "Enter a valid ticker, like AAPL or SPX.",
+    "instructionSymbolUnfilled": "Replace {symbol} in the instruction with the company or ticker to cover.",
     "priceValuePositive": "Enter a level above zero.",
     "pctFrom": "from",
     "ptcInWorkspace": "PTC in {{workspace}}",

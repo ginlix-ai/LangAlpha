@@ -2343,6 +2343,7 @@
     "oncePassed": "这个时间已经过去，请选择更晚的时间。",
     "priceHint": "选好标的和价位后，这里会显示还差多少。",
     "priceSymbolInvalid": "请输入有效的代码，例如 AAPL 或 SPX。",
+    "instructionSymbolUnfilled": "请把指令中的 {symbol} 换成要分析的公司或股票代码。",
     "priceValuePositive": "请输入大于 0 的数值。",
     "pctFrom": "相对于",
     "ptcInWorkspace": "PTC（{{workspace}}）",

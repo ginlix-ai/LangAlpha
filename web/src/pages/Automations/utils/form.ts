@@ -120,7 +120,16 @@ export function isFormChanged(initial: FormState, form: FormState): boolean {
  *  the part of the form holding the field, so a folded part can open. */
 export interface FormProblem {
   messageKey: string;
-  section: 'when' | 'more';
+  section: 'when' | 'instruction' | 'more';
+}
+
+/** How a template's instruction names its ticker. Only a price trigger has
+ *  a symbol to fill it with. */
+const SYMBOL_PLACEHOLDER = '{symbol}';
+
+function fillSymbol(form: FormState): string {
+  const symbol = normalizeSymbol(form.price_symbol);
+  return symbol ? form.instruction.replaceAll(SYMBOL_PLACEHOLDER, symbol) : form.instruction;
 }
 
 /** The cooldown as whole minutes, or null when none was typed. The validator
@@ -156,6 +165,10 @@ export function validateForm(form: FormState, now = Date.now(), initial?: FormSt
         return { messageKey: 'automation.cooldownTooShort', section: 'more' };
       }
     }
+  }
+  // Saved unfilled, the agent would be asked about "{symbol}" itself.
+  if (fillSymbol(form).includes(SYMBOL_PLACEHOLDER)) {
+    return { messageKey: 'automation.instructionSymbolUnfilled', section: 'instruction' };
   }
   if (form.agent_mode === 'ptc' && !form.workspace_id) {
     return { messageKey: 'automation.workspaceRequired', section: 'more' };
@@ -195,12 +208,10 @@ type Trigger = Pick<AutomationUpdatePayload, 'cron_expression' | 'next_run_at' |
 
 /** What every save states, whatever starts the automation. */
 function settingsPayload(form: FormState): Settings {
-  const symbol = normalizeSymbol(form.price_symbol);
   const settings: Settings = {
     name: form.name,
     agent_mode: form.agent_mode,
-    // A template's instruction names its ticker as {symbol}.
-    instruction: symbol ? form.instruction.replaceAll('{symbol}', symbol) : form.instruction,
+    instruction: fillSymbol(form),
     thread_strategy: form.thread_strategy,
     max_failures: form.max_failures,
     delivery_config: { methods: form.delivery_methods },
