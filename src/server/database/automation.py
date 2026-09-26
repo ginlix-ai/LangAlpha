@@ -13,6 +13,7 @@ from uuid import uuid4
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from src.server.contracts.status import INTERRUPT_REASON_CREDIT_PAUSE
 from src.server.database.pool import get_db_connection
 from src.server.utils.db import UpdateQueryBuilder
 
@@ -872,6 +873,27 @@ async def list_abandoned_executions(
                 LIMIT %s
             """, (quiet_seconds, limit))
             return [dict(row) for row in await cur.fetchall()]
+
+
+async def get_settling_run(run_id: str) -> Optional[Dict[str, Any]]:
+    """The columns of a run's ledger row that settling its firing reads.
+
+    ``sse_events`` is the turn's whole event archive, which can run to
+    megabytes, so it is read only for a credit pause, whose interrupt
+    carries the denial the user is told.
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("""
+                SELECT conversation_response_id, status, interrupt_reason,
+                       metadata, errors,
+                       CASE WHEN interrupt_reason = %s THEN sse_events END
+                           AS sse_events
+                FROM conversation_responses
+                WHERE conversation_response_id = %s
+            """, (INTERRUPT_REASON_CREDIT_PAUSE, run_id))
+            row = await cur.fetchone()
+            return dict(row) if row else None
 
 
 async def create_execution(

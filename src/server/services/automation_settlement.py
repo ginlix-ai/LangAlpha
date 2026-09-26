@@ -24,7 +24,6 @@ from typing import Any, Dict, Literal, Optional
 from src.observability import automation_executions, safe_add
 from src.server.contracts.status import INTERRUPT_REASON_CREDIT_PAUSE
 from src.server.database import automation as auto_db
-from src.server.database.runs import lifecycle as tl_db
 from src.server.models.automation import (
     ExecutionStatus,
     FailureReason,
@@ -500,7 +499,7 @@ async def settle_abandoned(
         return Outcome.SKIPPED if settled else None
     return await settle_by_run(
         automation, execution_id, run_id,
-        await tl_db.get_run(run_id) if run_id else None,
+        await auto_db.get_settling_run(run_id) if run_id else None,
         thread_id=thread_id, workspace_id=workspace_id, quiet_for=quiet_for,
     )
 
@@ -523,7 +522,8 @@ async def _settle_finished_run(job: Dict[str, Any]) -> None:
         return
     run_id = str(job["run_id"])
     await settle_by_run(
-        automation, payload["execution_id"], run_id, await tl_db.get_run(run_id),
+        automation, payload["execution_id"], run_id,
+        await auto_db.get_settling_run(run_id),
         thread_id=str(job["conversation_thread_id"]),
         workspace_id=payload.get("workspace_id"),
     )

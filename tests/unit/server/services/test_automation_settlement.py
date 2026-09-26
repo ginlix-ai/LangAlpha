@@ -412,11 +412,9 @@ def _finalize_job():
 def _finished(run, automation=None):
     with _settlement(_row()) as fx:
         fx.db.get_automation = AsyncMock(return_value=automation)
+        fx.db.get_settling_run = AsyncMock(return_value=run)
         fx.excerpt = AsyncMock(return_value="Markets rose")
-        with (
-            patch("src.server.database.runs.lifecycle.get_run", new=AsyncMock(return_value=run)),
-            patch(f"{_MOD}.read_run_excerpt", new=fx.excerpt),
-        ):
+        with patch(f"{_MOD}.read_run_excerpt", new=fx.excerpt):
             yield fx
 
 
@@ -512,7 +510,7 @@ def _sweep(run_row):
     )
     with (
         patch(f"{_MOD}.settle", new=fx.settle),
-        patch("src.server.database.runs.lifecycle.get_run", new=fx.get_run),
+        patch(f"{_MOD}.auto_db.get_settling_run", new=fx.get_run),
         patch(f"{_MOD}.read_run_excerpt", new=fx.excerpt),
     ):
         yield fx
