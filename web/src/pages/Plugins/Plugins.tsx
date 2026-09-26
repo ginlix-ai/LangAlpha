@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useScrollMemory } from '@/lib/scrollMemory';
 import { toast } from '@/components/ui/use-toast';
+import { HeaderButton } from '@/components/mcp/McpPrimitives';
 import { Brokerages } from './components/Brokerages';
 import { McpServers } from './components/McpServers';
 import { SkillsList } from './components/SkillsList';
@@ -196,18 +197,14 @@ function Plugins() {
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-transparent transition-opacity hover:opacity-90 flex-shrink-0"
-                  style={{
-                    color: 'var(--color-btn-primary-text)',
-                    backgroundColor: 'var(--color-btn-primary-bg)',
-                  }}
+                <HeaderButton
+                  variant="primary"
+                  icon={Plus}
+                  className="transition-opacity hover:opacity-90 flex-shrink-0"
                 >
-                  <Plus className="h-3 w-3" />
                   {t('plugins.addMenu.add')}
                   <ChevronDown className="h-3 w-3" />
-                </button>
+                </HeaderButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onSelect={() => requestAdd('plugin')}>

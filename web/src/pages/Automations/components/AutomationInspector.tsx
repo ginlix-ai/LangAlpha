@@ -91,7 +91,7 @@ export default function AutomationInspector({ automation: a, reading, onEdit, on
         <HeaderButton variant="secondary" icon={Pencil} onClick={() => onEdit(a)}>
           {t('automation.edit')}
         </HeaderButton>
-        <HeaderButton variant="ghost" tone="danger" icon={Trash2} className="ml-auto" onClick={() => onDelete(a)}>
+        <HeaderButton variant="ghost" icon={Trash2} className="ml-auto hover:text-[color:var(--color-icon-danger)]" onClick={() => onDelete(a)}>
           {t('common.delete')}
         </HeaderButton>
       </div>
