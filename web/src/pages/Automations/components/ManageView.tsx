@@ -9,34 +9,35 @@ import type { OrderedGroup } from '../hooks/useOrderedGroups';
 import { useScrollReveal } from '../hooks/useScrollReveal';
 import type { WatchedReading } from '../hooks/useWatchedReadings';
 import { PANE_CROSSFADE } from '../utils/motion';
-import type { FormState } from '../utils/form';
-import AutomationInlineForm, { type FormSubmission } from './AutomationInlineForm';
+import AutomationInlineForm, { type AutomationInlineFormProps } from './AutomationInlineForm';
 import AutomationInspector from './AutomationInspector';
 import { AutomationList } from './AutomationList';
 import './ManageView.css';
 
+/** The open form: the props it mounts with, and the key that remounts it
+ *  for another automation or a fresh start. */
 export interface FormHost {
   key: string;
-  initialValues: FormState;
-  /** The automation being edited, or null for a new one. */
-  original: Automation | null;
-  onSubmit: (submission: FormSubmission) => void;
-  onCancel: () => void;
-  onDirtyChange: (dirty: boolean) => void;
-  loading: boolean;
+  props: AutomationInlineFormProps;
 }
+
+/**
+ * What the list marks and the pane shows. A choice the list does not hold
+ * (deleted, or past the first page it loads) is `missing`, and the pane says
+ * so rather than show another automation in its place. With no choice the
+ * first row stands in, so the pane is never an empty frame; only a choice,
+ * `chosen` or `missing`, opens the phone sheet.
+ */
+export type ManageSelection =
+  | { kind: 'chosen'; automation: Automation }
+  | { kind: 'first'; automation: Automation }
+  | { kind: 'missing' }
+  | { kind: 'none' };
 
 interface ManageViewProps {
   groups: OrderedGroup[];
   readings: Map<string, WatchedReading>;
-  /** What the list marks and the pane shows: the chosen row, or the first
-   *  one when nothing is chosen, so the pane is never an empty frame. */
-  shown: Automation | null;
-  /** Only an explicit choice opens the phone sheet. */
-  explicitlySelected: boolean;
-  /** The chosen automation is not in the list: deleted, or past the first
-   *  page the list holds. The pane says so rather than show another one. */
-  missing: boolean;
+  selection: ManageSelection;
   onSelect: (id: string | null) => void;
   form: FormHost | null;
   onEdit: (a: Automation) => void;
@@ -51,9 +52,7 @@ interface ManageViewProps {
 export default function ManageView({
   groups,
   readings,
-  shown,
-  explicitlySelected,
-  missing,
+  selection,
   onSelect,
   form,
   onEdit,
@@ -63,22 +62,16 @@ export default function ManageView({
   const isMobile = useIsMobile();
   const revealListScroll = useScrollReveal();
   const revealPaneScroll = useScrollReveal();
+  const shown = selection.kind === 'chosen' || selection.kind === 'first' ? selection.automation : null;
+  const missing = selection.kind === 'missing';
 
   const formPane = form && (
     <div className="automation-form-pane">
       <h2 className="title-font automation-form-title">
-        {t(form.original ? 'automation.editAutomation' : 'automation.newAutomation')}
+        {t(form.props.original ? 'automation.editAutomation' : 'automation.newAutomation')}
       </h2>
       <AnimatePresence initial={false} mode="wait">
-        <AutomationInlineForm
-          key={form.key}
-          initialValues={form.initialValues}
-          original={form.original}
-          onSubmit={form.onSubmit}
-          onCancel={form.onCancel}
-          onDirtyChange={form.onDirtyChange}
-          loading={form.loading}
-        />
+        <AutomationInlineForm key={form.key} {...form.props} />
       </AnimatePresence>
     </div>
   );
@@ -126,10 +119,10 @@ export default function ManageView({
         <AutomationList
           groups={groups}
           readings={readings}
-          selectedId={explicitlySelected ? shown?.automation_id ?? null : null}
+          selectedId={selection.kind === 'chosen' ? selection.automation.automation_id : null}
           onSelect={onSelect}
         />
-        <MobileBottomSheet open={!form && explicitlySelected && !!inspector} onClose={() => onSelect(null)} height="88vh">
+        <MobileBottomSheet open={!form && (selection.kind === 'chosen' || missing)} onClose={() => onSelect(null)} height="88vh">
           <div className="px-1 pb-6">{inspector}</div>
         </MobileBottomSheet>
       </div>

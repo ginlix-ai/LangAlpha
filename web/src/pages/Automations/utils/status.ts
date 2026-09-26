@@ -251,7 +251,7 @@ export function rowTrailing(a: Automation, group: AutomationGroup): RowTrailing 
   return at ? { kind: 'last', at } : null;
 }
 
-export const RUN_STATUS_UI: Record<ExecutionStatus, StatusUi> = {
+const RUN_STATUS_UI: Record<ExecutionStatus, StatusUi> = {
   pending: { labelKey: 'automation.runQueued', Icon: null, live: true, color: 'var(--color-accent-primary)' },
   waiting: { labelKey: 'automation.runWaiting', Icon: Clock, color: 'var(--color-accent-primary)' },
   running: { labelKey: 'automation.runRunning', Icon: null, live: true, color: 'var(--color-accent-primary)' },

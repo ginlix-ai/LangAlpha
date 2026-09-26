@@ -4,6 +4,7 @@ import i18n from '@/i18n';
 import { relativeTime } from '@/lib/format';
 import { renderWithProviders } from '@/test/utils';
 import type { Automation, AutomationStatus, DisableReason, FailureReason } from '@/types/automation';
+import { useAutomationMutations } from '../../hooks/useAutomationMutations';
 import * as api from '../../utils/api';
 import { FeedRail } from '../FeedRail';
 
@@ -77,10 +78,23 @@ function failing({
   };
 }
 
-function renderRow(a: Automation) {
-  renderWithProviders(
-    <FeedRail automations={[a]} readings={new Map()} onOpenAutomation={vi.fn()} onManage={vi.fn()} onNew={vi.fn()} />,
+/** The rail takes the feed's one set of mutations, as FeedView hands it. */
+function Rail({ automation }: { automation: Automation }) {
+  const mutations = useAutomationMutations();
+  return (
+    <FeedRail
+      automations={[automation]}
+      readings={new Map()}
+      mutations={mutations}
+      onOpenAutomation={vi.fn()}
+      onManage={vi.fn()}
+      onNew={vi.fn()}
+    />
   );
+}
+
+function renderRow(a: Automation) {
+  renderWithProviders(<Rail automation={a} />);
   const row = screen.getByRole('button', { name: a.name }).closest('.automations-rail-row') as HTMLElement;
   const buttons = within(row)
     .getAllByRole('button')

@@ -34,8 +34,8 @@ interface FeedViewProps {
 export default function FeedView({ automations, readings, onOpenAutomation, onManage, onNew }: FeedViewProps) {
   const { t } = useTranslation();
   const { runs, isLoading, error, hasNextPage, fetchNextPage, isFetchingNextPage } = useRecentRuns();
-  // Once for the feed rather than per entry: every entry would otherwise
-  // hold its own observer for each verb.
+  // Once for the feed, its entries and its rail: each would otherwise hold
+  // its own observer for each verb.
   const mutations = useAutomationMutations();
   const byId = useMemo(() => new Map(automations.map((a) => [a.automation_id, a])), [automations]);
 
@@ -83,6 +83,7 @@ export default function FeedView({ automations, readings, onOpenAutomation, onMa
       <FeedRail
         automations={automations}
         readings={readings}
+        mutations={mutations}
         onOpenAutomation={onOpenAutomation}
         onManage={onManage}
         onNew={onNew}

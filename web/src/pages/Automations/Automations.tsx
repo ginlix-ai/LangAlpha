@@ -9,7 +9,7 @@ import AutomationsHeader, { type AutomationsView } from './components/Automation
 import AutomationInlineForm, { type FormSubmission } from './components/AutomationInlineForm';
 import ConfirmDeleteDialog from './components/ConfirmDeleteDialog';
 import FeedView from './components/FeedView';
-import ManageView, { type FormHost } from './components/ManageView';
+import ManageView, { type FormHost, type ManageSelection } from './components/ManageView';
 import Starters from './components/Starters';
 import { useAutomations } from './hooks/useAutomations';
 import { useOrderedGroups } from './hooks/useOrderedGroups';
@@ -143,11 +143,16 @@ export default function Automations() {
 
   const byId = useMemo(() => new Map(automations.map((a) => [a.automation_id, a])), [automations]);
   const groups = useOrderedGroups(automations);
-  const selected = selectedId ? byId.get(selectedId) ?? null : null;
-  // A link to an automation the list does not hold (deleted, or past the
-  // page it loads) must not quietly show a different one in its place.
-  const missing = !!selectedId && !selected && !loading;
-  const shown = selected ?? (missing ? null : groups[0]?.items[0] ?? null);
+  const selection = useMemo((): ManageSelection => {
+    // A link to an automation the list does not hold (deleted, or past the
+    // page it loads) must not quietly show a different one in its place.
+    if (selectedId) {
+      const chosen = byId.get(selectedId);
+      return chosen ? { kind: 'chosen', automation: chosen } : { kind: 'missing' };
+    }
+    const first = groups[0]?.items[0];
+    return first ? { kind: 'first', automation: first } : { kind: 'none' };
+  }, [selectedId, byId, groups]);
 
   const editing = form?.kind === 'edit' ? byId.get(form.automationId) ?? null : null;
 
@@ -183,26 +188,17 @@ export default function Automations() {
 
   const formHost: FormHost | null = useMemo(() => {
     if (!form) return null;
+    const handlers = { onSubmit: handleSubmit, onCancel: () => setForm(null), onDirtyChange: setDraftDirty, loading: busy };
     if (form.kind === 'edit') {
       if (!editing) return null;
       return {
         key: `edit:${editing.automation_id}`,
-        initialValues: automationToFormState(editing, homeZone),
-        original: editing,
-        onSubmit: handleSubmit,
-        onCancel: () => setForm(null),
-        onDirtyChange: setDraftDirty,
-        loading: busy,
+        props: { ...handlers, initialValues: automationToFormState(editing, homeZone), original: editing },
       };
     }
     return {
       key: `create:${form.template}:${form.nonce}`,
-      initialValues: applyTemplate(form.template, homeZone),
-      original: null,
-      onSubmit: handleSubmit,
-      onCancel: () => setForm(null),
-      onDirtyChange: setDraftDirty,
-      loading: busy,
+      props: { ...handlers, initialValues: applyTemplate(form.template, homeZone), original: null },
     };
   }, [form, editing, handleSubmit, busy, homeZone]);
 
@@ -230,15 +226,7 @@ export default function Automations() {
           {formHost ? (
             <div className="automation-form-pane automations-zero-form">
               <h2 className="title-font automation-form-title">{t('automation.newAutomation')}</h2>
-              <AutomationInlineForm
-                key={formHost.key}
-                initialValues={formHost.initialValues}
-                original={null}
-                onSubmit={formHost.onSubmit}
-                onCancel={formHost.onCancel}
-                onDirtyChange={formHost.onDirtyChange}
-                loading={formHost.loading}
-              />
+              <AutomationInlineForm key={formHost.key} {...formHost.props} />
             </div>
           ) : (
             <Starters onPick={startCreate} />
@@ -266,9 +254,7 @@ export default function Automations() {
         <ManageView
           groups={groups}
           readings={readings}
-          shown={shown}
-          explicitlySelected={!!selectedId}
-          missing={missing}
+          selection={selection}
           onSelect={openAutomation}
           form={formHost}
           onEdit={(a) => setForm({ kind: 'edit', automationId: a.automation_id })}
