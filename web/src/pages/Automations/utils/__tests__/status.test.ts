@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type {
   Automation,
+  AutomationExecution,
   AutomationStatus,
   DisableReason,
   ExecutionStatus,
   FailureReason,
-  RunSummary,
   TriggerType,
 } from '@/types/automation';
 import {
@@ -25,9 +25,10 @@ import {
 
 const NEXT = '2026-10-01T13:00:00Z';
 
-function run(status: ExecutionStatus, over: Partial<RunSummary> = {}): RunSummary {
+function run(status: ExecutionStatus, over: Partial<AutomationExecution> = {}): AutomationExecution {
   return {
     automation_execution_id: 'exec-1',
+    automation_id: 'auto-1',
     status,
     conversation_thread_id: null,
     scheduled_at: '2026-09-25T13:00:00Z',
@@ -36,6 +37,9 @@ function run(status: ExecutionStatus, over: Partial<RunSummary> = {}): RunSummar
     error_message: null,
     skip_reason: null,
     failure_reason: null,
+    delivery_result: null,
+    created_at: '2026-09-25T13:00:00Z',
+    excerpt: null,
     ...over,
   };
 }
@@ -64,7 +68,7 @@ function automation(trigger: TriggerType, status: AutomationStatus, last: Execut
     delivery_config: null,
     created_at: '2026-09-01T00:00:00Z',
     updated_at: '2026-09-01T00:00:00Z',
-    last_execution: last ? { ...run(last), excerpt: null } : null,
+    last_execution: last ? run(last) : null,
   };
 }
 
@@ -159,7 +163,7 @@ describe('automationCensus', () => {
 });
 
 describe('describeRun', () => {
-  it.each<[ExecutionStatus, Partial<RunSummary>, boolean]>([
+  it.each<[ExecutionStatus, Partial<AutomationExecution>, boolean]>([
     ['completed', {}, true],
     ['failed', {}, true],
     ['timeout', {}, true],

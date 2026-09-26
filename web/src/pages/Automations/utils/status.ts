@@ -8,7 +8,7 @@
  * shows the pause glyph in the muted tone.
  */
 import { AlertCircle, Clock, Pause, type LucideIcon } from 'lucide-react';
-import type { Automation, ExecutionStatus, RunSummary, SkipReason } from '@/types/automation';
+import type { Automation, AutomationExecution, ExecutionStatus, SkipReason } from '@/types/automation';
 import { buildRateLimitError, type ErrorLinkSpec } from '@/utils/rateLimitError';
 
 export function isRunLive(status: ExecutionStatus): boolean {
@@ -201,7 +201,7 @@ const PLATFORM_URL = (import.meta.env.VITE_PLATFORM_URL as string | undefined) |
 /** Where a run a usage limit stopped sends the reader: the plan and usage
  *  pages every quota denial offers, from the builder that words them, so an
  *  automation never links somewhere a chat would not. */
-export function usageLimitLinks(run: RunSummary): ErrorLinkSpec[] {
+export function usageLimitLinks(run: AutomationExecution): ErrorLinkSpec[] {
   if (!isRunFailed(run.status) || run.failure_reason !== 'usage_limit') return [];
   return buildRateLimitError({ message: run.error_message ?? undefined }, PLATFORM_URL).links ?? [];
 }
@@ -282,7 +282,7 @@ export interface RunView {
   showDuration: boolean;
 }
 
-export function describeRun(run: RunSummary): RunView {
+export function describeRun(run: AutomationExecution): RunView {
   const { status } = run;
   const waiting = status === 'waiting';
   let noteKey: string | null = null;

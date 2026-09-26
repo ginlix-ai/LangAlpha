@@ -48,10 +48,12 @@ export interface DeliveryAttempt {
   error?: string | null;
 }
 
-/** One run as every endpoint that carries it describes it: the list row's
- *  newest execution, an automation's history, and the cross-automation feed. */
-export interface RunSummary {
+/** One run as the server sends it: a list row's newest execution, an
+ *  automation's history and the cross-automation feed all read the same
+ *  columns. */
+export interface AutomationExecution {
   automation_execution_id: string;
+  automation_id: string;
   status: ExecutionStatus;
   conversation_thread_id: string | null;
   scheduled_at: string;
@@ -60,11 +62,9 @@ export interface RunSummary {
   error_message: string | null;
   skip_reason: SkipReason | null;
   failure_reason: FailureReason | null;
-}
-
-/** The newest execution of an automation, carried on each list row. */
-export interface AutomationLastExecution extends RunSummary {
-  /** The start of the run's final answer, as plain text. */
+  delivery_result: DeliveryAttempt[] | null;
+  created_at: string;
+  /** The start of the run's final answer, as plain text, when it gave one. */
   excerpt: string | null;
 }
 
@@ -100,7 +100,7 @@ export interface Automation {
   created_at: string;
   updated_at: string;
 
-  last_execution: AutomationLastExecution | null;
+  last_execution: AutomationExecution | null;
 }
 
 /** The settings the form writes: every field on a create, and the whole set
@@ -126,18 +126,11 @@ export interface AutomationPayload {
  *  trigger for life, so there is no `trigger_type`. */
 export type AutomationUpdatePayload = Partial<Omit<AutomationPayload, 'trigger_type'>>;
 
-export interface AutomationExecution extends RunSummary {
-  automation_id: string;
-  delivery_result: DeliveryAttempt[] | null;
-  created_at: string;
-}
-
-/** One entry of the cross-automation run feed. */
+/** One entry of the cross-automation run feed: a run and the identity of
+ *  the automation it belongs to. */
 export interface AutomationRun extends AutomationExecution {
   automation_name: string;
   agent_mode: Automation['agent_mode'];
   trigger_type: TriggerType;
   workspace_id: string | null;
-  /** The start of the run's final answer, when the run produced one. */
-  excerpt: string | null;
 }

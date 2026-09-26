@@ -61,6 +61,7 @@ function failing({
     updated_at: '2026-09-01T00:00:00Z',
     last_execution: {
       automation_execution_id: 'exec-1',
+      automation_id: 'auto-1',
       status: 'failed',
       conversation_thread_id: 'thread-1',
       scheduled_at: '2026-09-25T13:00:00Z',
@@ -69,6 +70,8 @@ function failing({
       error_message: message,
       skip_reason: null,
       failure_reason: reason,
+      delivery_result: null,
+      created_at: '2026-09-25T13:00:00Z',
       excerpt: null,
     },
   };

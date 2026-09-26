@@ -180,7 +180,7 @@ function LatestReport({
   onOpen,
   onSkip,
 }: {
-  execution: NonNullable<Automation['last_execution']>;
+  execution: AutomationExecution;
   links: ErrorLinkSpec[];
   busy: boolean;
   onOpen: () => void;
