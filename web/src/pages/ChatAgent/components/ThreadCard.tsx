@@ -27,7 +27,7 @@ interface ThreadCardProps {
  * - Click handler to navigate to the thread conversation
  */
 function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchive }: ThreadCardProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const isMobile = useIsMobile();
   // Lifecycle indicator: live store state first (updates in place via the
   // user feed), falling back to the row's own enrichment for threads the
@@ -102,7 +102,7 @@ function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchiv
         </h3>
         {!!thread.updated_at && (
           <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>
-            {new Date(thread.updated_at as string).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+            {new Date(thread.updated_at as string).toLocaleDateString(i18n.language, { month: 'short', day: 'numeric' })}
           </p>
         )}
       </div>
