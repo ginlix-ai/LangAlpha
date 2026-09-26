@@ -436,13 +436,21 @@ async def test_resume_automation_not_found(client):
 # ---------------------------------------------------------------------------
 
 
+def _run(**overrides):
+    """An execution as the run query returns it, its automation's identity
+    included."""
+    return _execution(
+        automation_name="Daily Briefing", agent_mode="flash", trigger_type="cron",
+        **overrides,
+    )
+
+
 @pytest.mark.asyncio
 async def test_list_executions(client):
-    ex = _execution()
     with patch(
         f"{AUTO_DB}.list_executions",
         new_callable=AsyncMock,
-        return_value=([ex], 1),
+        return_value=([_run()], True),
     ):
         resp = await client.get(
             f"/api/v1/automations/{AUTO_ID}/executions"
@@ -450,8 +458,10 @@ async def test_list_executions(client):
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["total"] == 1
-    assert len(body["executions"]) == 1
+    assert body["has_more"] is True
+    assert "total" not in body
+    [run] = body["executions"]
+    assert run["automation_name"] == "Daily Briefing"
 
 
 @pytest.mark.asyncio
@@ -459,7 +469,7 @@ async def test_list_executions_with_pagination(client):
     with patch(
         f"{AUTO_DB}.list_executions",
         new_callable=AsyncMock,
-        return_value=([], 0),
+        return_value=([], False),
     ) as mock_list:
         resp = await client.get(
             f"/api/v1/automations/{AUTO_ID}/executions?limit=5&offset=10"
@@ -480,14 +490,11 @@ async def test_list_executions_with_pagination(client):
 async def test_run_feed_is_not_captured_by_the_automation_route(client):
     """Declared before /automations/{automation_id}; moved after it, the feed
     would be read as an automation named "executions"."""
-    run = _execution(
-        automation_name="Daily Briefing", agent_mode="flash", trigger_type="cron"
-    )
     with (
         patch(
             f"{AUTO_DB}.list_executions",
             new_callable=AsyncMock,
-            return_value=([run], 1),
+            return_value=([_run()], False),
         ) as mock_list,
         patch(f"{AUTO_DB}.get_automation", new_callable=AsyncMock) as mock_get,
     ):
@@ -495,6 +502,7 @@ async def test_run_feed_is_not_captured_by_the_automation_route(client):
 
     assert resp.status_code == 200
     assert resp.json()["executions"][0]["automation_name"] == "Daily Briefing"
+    assert resp.json()["has_more"] is False
     mock_list.assert_awaited_once_with(
         "test-user-123", thread_id=None, status=None, limit=20, offset=0
     )
@@ -526,6 +534,29 @@ async def test_skip_that_does_not_land(client, status_now, expected):
         resp = await client.post(SKIP_URL)
 
     assert resp.status_code == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/api/v1/automations/not-a-uuid"),
+        ("PATCH", "/api/v1/automations/not-a-uuid"),
+        ("DELETE", "/api/v1/automations/not-a-uuid"),
+        ("POST", "/api/v1/automations/not-a-uuid/trigger"),
+        ("POST", "/api/v1/automations/not-a-uuid/pause"),
+        ("POST", "/api/v1/automations/not-a-uuid/resume"),
+        ("GET", "/api/v1/automations/not-a-uuid/executions"),
+        ("POST", f"/api/v1/automations/not-a-uuid/executions/{EXEC_ID}/skip"),
+    ],
+)
+async def test_a_malformed_automation_id_is_422(client, method, path):
+    """Refused at the path, before it reaches a uuid column as a 500."""
+    with patch(AUTO_DB) as db, patch(HANDLER) as handler:
+        resp = await client.request(method, path, json={"name": "X"})
+
+    assert resp.status_code == 422
+    assert not db.mock_calls and not handler.mock_calls
 
 
 @pytest.mark.asyncio

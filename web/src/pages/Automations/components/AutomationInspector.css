@@ -109,6 +109,22 @@
   font-size: 0.75rem;
 }
 
+/* A run's start opens it in the report above; the one shown there takes the
+   list's selected fill. The negative margin keeps the time on the column. */
+.automation-history-run {
+  margin-left: -4px;
+  padding: 1px 4px;
+}
+
+.automation-history-run[aria-current='true'] {
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-hover);
+}
+
+.automation-run-missing {
+  margin-bottom: 8px;
+}
+
 /* A failed run's error reads as the second line of its row: the hairline
    moves below it, and the text wraps across the whole table. */
 .automation-history tr.has-error td {

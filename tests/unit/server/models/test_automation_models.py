@@ -16,8 +16,8 @@ from pydantic import ValidationError
 from src.server.models.automation import (
     AutomationCreate,
     AutomationExecutionResponse,
-    AutomationExecutionsListResponse,
     AutomationResponse,
+    AutomationRunsListResponse,
     AutomationsListResponse,
     AutomationUpdate,
     ExecutionStatus,
@@ -305,9 +305,9 @@ class TestAutomationsListResponse:
         assert resp.total == 0
 
 
-class TestAutomationExecutionsListResponse:
-    """Execution list response."""
+class TestAutomationRunsListResponse:
+    """A page of runs."""
 
     def test_empty(self):
-        resp = AutomationExecutionsListResponse(executions=[], total=0)
-        assert resp.total == 0
+        resp = AutomationRunsListResponse(executions=[], has_more=False)
+        assert resp.has_more is False

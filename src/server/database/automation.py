@@ -13,6 +13,7 @@ from uuid import uuid4
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from src.server.contracts.status import INTERRUPT_REASON_CREDIT_PAUSE
 from src.server.database.pool import get_db_connection
 from src.server.utils.db import UpdateQueryBuilder
 
@@ -689,17 +690,15 @@ async def list_executions(
     status: Optional[str] = None,
     limit: int = 20,
     offset: int = 0,
-) -> tuple[List[Dict[str, Any]], int]:
-    """List a user's executions newest first, narrowed to one automation,
-    thread or status when given.
+) -> tuple[List[Dict[str, Any]], bool]:
+    """A page of a user's executions newest first, narrowed to one
+    automation, thread or status when given, and whether more follow it.
 
     Every row is scoped by its automation's owner, which is the ownership
     check: another user's automation lists nothing. ``workspace_id`` prefers
     the run thread's workspace: a flash automation stores none and runs in
-    the user's shared flash workspace.
-
-    Returns:
-        Tuple of (list of execution dicts, total count).
+    the user's shared flash workspace. One row past the page answers whether
+    another follows, where a count would read every run the user has.
     """
     where_parts = ["a.user_id = %s"]
     params: list = [user_id]
@@ -716,14 +715,6 @@ async def list_executions(
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(f"""
-                SELECT COUNT(*) AS cnt
-                FROM automation_executions e
-                JOIN automations a ON a.automation_id = e.automation_id
-                WHERE {where_clause}
-            """, tuple(params))
-            total = (await cur.fetchone())["cnt"]
-
-            await cur.execute(f"""
                 SELECT
                     {EXECUTION_COLUMNS},
                     a.name AS automation_name, a.agent_mode, a.trigger_type,
@@ -735,10 +726,22 @@ async def list_executions(
                 WHERE {where_clause}
                 ORDER BY e.created_at DESC, e.automation_execution_id DESC
                 LIMIT %s OFFSET %s
-            """, (*params, limit, offset))
+            """, (*params, limit + 1, offset))
 
-            results = await cur.fetchall()
-            return [dict(row) for row in results], total
+            rows = [dict(row) for row in await cur.fetchall()]
+            return rows[:limit], len(rows) > limit
+
+
+async def count_executions(automation_id: str) -> int:
+    """How many runs an automation has: one index range, unlike a count
+    across every automation of a user."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                SELECT COUNT(*) FROM automation_executions
+                WHERE automation_id = %s
+            """, (automation_id,))
+            return (await cur.fetchone())[0]
 
 
 # =============================================================================
@@ -820,19 +823,16 @@ async def settle_legacy_executions(error_message: str) -> int:
     previous build may still be running it through a deploy, so it gets a
     day. After that nothing is waiting on it, and it is closed as a row write
     alone: a failure notice weeks late, or reviving whatever it left on its
-    automation, would do more harm than the stale row.
+    automation, would do more harm than the stale row. None of these rows is
+    ``waiting``: that status came in with the heartbeat, and every firing
+    that can wait was written with one.
     """
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(f"""
                 UPDATE automation_executions
-                SET status = CASE WHEN status = 'waiting'
-                                  THEN 'skipped' ELSE 'failed' END,
-                    skip_reason = CASE WHEN status = 'waiting'
-                                       THEN 'interrupted' END,
-                    error_message = CASE WHEN status = 'waiting'
-                                         THEN error_message ELSE %s END,
-                    completed_at = NOW()
+                SET status = 'failed', failure_reason = 'interrupted',
+                    error_message = %s, completed_at = NOW()
                 WHERE status IN {_UNSETTLED}
                   AND heartbeat_at IS NULL
                   AND created_at < NOW() - INTERVAL '1 day'
@@ -870,6 +870,27 @@ async def list_abandoned_executions(
                 LIMIT %s
             """, (quiet_seconds, limit))
             return [dict(row) for row in await cur.fetchall()]
+
+
+async def get_settling_run(run_id: str) -> Optional[Dict[str, Any]]:
+    """The columns of a run's ledger row that settling its firing reads.
+
+    ``sse_events`` is the turn's whole event archive, which can run to
+    megabytes, so it is read only for a credit pause, whose interrupt
+    carries the denial the user is told.
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("""
+                SELECT conversation_response_id, status, interrupt_reason,
+                       metadata, errors,
+                       CASE WHEN interrupt_reason = %s THEN sse_events END
+                           AS sse_events
+                FROM conversation_responses
+                WHERE conversation_response_id = %s
+            """, (INTERRUPT_REASON_CREDIT_PAUSE, run_id))
+            row = await cur.fetchone()
+            return dict(row) if row else None
 
 
 async def create_execution(

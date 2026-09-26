@@ -392,7 +392,6 @@ class PriceMonitorService:
 
         from src.server.database import automation as auto_db
         from src.server.services.automation_scheduler import AutomationScheduler
-        from src.server.services.automation_settlement import Outcome, settle
 
         scheduler = AutomationScheduler.get_instance()
         try:
@@ -415,27 +414,9 @@ class PriceMonitorService:
             await self._hold_until_reload(automation_id, lock_key, lock_ttl)
             return
 
-        try:
-            scheduler.dispatch(
-                automation, execution_id, name=f"price_exec_{automation_id[:8]}"
-            )
-        except Exception as e:
-            logger.error(
-                "[PriceMonitor] Failed to dispatch execution for %s",
-                automation_id, exc_info=True,
-            )
-            # The claimed firing never ran: ours, which puts the alert back
-            # to watching without a strike. Should this fail too, the sweep
-            # settles the firing once its heartbeat goes quiet.
-            try:
-                await settle(
-                    automation, execution_id, Outcome.FAILED_OURS, error=str(e)
-                )
-            except Exception:
-                logger.error(
-                    "[PriceMonitor] Failed to settle undispatched %s",
-                    execution_id, exc_info=True,
-                )
+        scheduler.dispatch(
+            automation, execution_id, name=f"price_exec_{automation_id[:8]}"
+        )
 
     # ─── Dedup Locking ────────────────────────────────────────────────
 

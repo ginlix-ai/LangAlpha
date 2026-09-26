@@ -28,7 +28,7 @@ export type FormSubmission =
   | { kind: 'create'; payload: AutomationPayload }
   | { kind: 'edit'; payload: AutomationUpdatePayload };
 
-interface AutomationInlineFormProps {
+export interface AutomationInlineFormProps {
   initialValues: FormState;
   /** The automation being edited, or null for a new one. */
   original: Automation | null;

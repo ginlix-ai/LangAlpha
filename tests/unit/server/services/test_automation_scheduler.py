@@ -228,6 +228,34 @@ class TestPollOnce:
     @pytest.mark.asyncio
     @patch(f"{_MOD}.auto_db")
     @patch(f"{_MOD}.AutomationExecutor")
+    async def test_a_failed_reschedule_still_runs_the_whole_batch(
+        self, mock_executor_cls, mock_auto_db
+    ):
+        """Every row is claimed before the loop: one left undispatched would
+        sit until the sweep failed it as interrupted."""
+        mock_executor = AsyncMock()
+        mock_executor_cls.get_instance.return_value = mock_executor
+        first, second = _make_automation(), _make_automation()
+        mock_auto_db.claim_due_automations = AsyncMock(return_value=[first, second])
+        mock_auto_db.update_automation_next_run = AsyncMock(
+            side_effect=[RuntimeError("db blip"), None]
+        )
+        _quiet_sweep(mock_auto_db)
+
+        scheduler = AutomationScheduler()
+        await scheduler._poll_once()
+        await asyncio.gather(*scheduler._running_tasks, scheduler._sweep_task)
+
+        assert mock_auto_db.update_automation_next_run.await_count == 2
+        assert [c.args[1] for c in mock_executor.execute.await_args_list] == [
+            first["_execution_id"],
+            second["_execution_id"],
+        ]
+        mock_auto_db.list_abandoned_executions.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch(f"{_MOD}.auto_db")
+    @patch(f"{_MOD}.AutomationExecutor")
     async def test_poll_claims_before_it_sweeps(self, mock_executor_cls, mock_auto_db):
         mock_executor_cls.get_instance.return_value = AsyncMock()
         calls = []

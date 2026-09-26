@@ -24,7 +24,6 @@ from typing import Any, Dict, Literal, Optional
 from src.observability import automation_executions, safe_add
 from src.server.contracts.status import INTERRUPT_REASON_CREDIT_PAUSE
 from src.server.database import automation as auto_db
-from src.server.database.runs import lifecycle as tl_db
 from src.server.models.automation import (
     ExecutionStatus,
     FailureReason,
@@ -33,6 +32,7 @@ from src.server.models.automation import (
     SkipReason,
 )
 from src.server.services.automation_excerpt import read_run_excerpt
+from src.server.services.thread_lifecycle_feed import publish_automation_wait
 from src.server.services.webhook_client import WebhookClient
 from src.server.utils.error_sanitization import sanitize_error_text
 
@@ -137,6 +137,7 @@ _POLICIES: Dict[Outcome, _Policy] = {
         metric="failure",
         schedule="rearm_price",
         webhook="automation.failed",
+        failure_reason="server_error",
     ),
     # A wait the server stopped is skipped by its own wait loop, or by the
     # sweep, never failed.
@@ -147,6 +148,7 @@ _POLICIES: Dict[Outcome, _Policy] = {
         schedule="rearm_price",
         webhook="automation.failed",
         error=INTERRUPTED_ERROR,
+        failure_reason="interrupted",
     ),
     Outcome.STOPPED: _Policy(
         status="skipped",
@@ -384,8 +386,8 @@ async def _after_settling(
 ) -> None:
     """The webhook, the chat's wait line and the metric a settle sets off."""
     policy = _POLICIES[outcome]
-    if policy.webhook and not _repeats_a_limit(outcome, run_id, row):
-        delivery_result = await fire_webhook(
+    if policy.webhook and not _repeats_a_refusal(policy.failure_reason, run_id, row):
+        delivery_result = await WebhookClient().fire_event(
             policy.webhook, automation, execution_id, thread_id, workspace_id,
             error=error, run_id=run_id, failure_reason=policy.failure_reason,
         )
@@ -398,8 +400,11 @@ async def _after_settling(
                     f"execution_id={execution_id} error={e}"
                 )
     if row["settled_from"] == "waiting" and thread_id:
-        await announce_wait(
-            automation["user_id"], thread_id, execution_id, waiting=False
+        await publish_automation_wait(
+            user_id=automation["user_id"],
+            thread_id=thread_id,
+            automation_execution_id=execution_id,
+            waiting=False,
         )
     safe_add(
         automation_executions,
@@ -408,11 +413,17 @@ async def _after_settling(
     )
 
 
-def _repeats_a_limit(
-    outcome: Outcome, run_id: Optional[str], row: Dict[str, Any]
+# Reasons that refuse firing after firing until something outside the
+# automation changes: a usage limit until it resets, our outage until it ends.
+_STREAK_REASONS = frozenset({"usage_limit", "server_error"})
+
+
+def _repeats_a_refusal(
+    reason: Optional[FailureReason], run_id: Optional[str], row: Dict[str, Any]
 ) -> bool:
-    """A usage limit refused this firing as it did the one before, which the
-    channel already heard about.
+    """This firing was refused for the same streak reason as the one before,
+    which the channel already heard about, so a frequent schedule cannot
+    flood it.
 
     Only a firing refused before its turn: one that was admitted sent a
     started notice, and only a terminal event clears it. A notice no channel
@@ -420,9 +431,9 @@ def _repeats_a_limit(
     """
     delivered = row.get("previous_delivery_result")
     return (
-        outcome is Outcome.LIMITED
+        reason in _STREAK_REASONS
         and run_id is None
-        and row.get("previous_failure_reason") == "usage_limit"
+        and row.get("previous_failure_reason") == reason
         and not (delivered and not any(d.get("success") for d in delivered))
     )
 
@@ -500,7 +511,7 @@ async def settle_abandoned(
         return Outcome.SKIPPED if settled else None
     return await settle_by_run(
         automation, execution_id, run_id,
-        await tl_db.get_run(run_id) if run_id else None,
+        await auto_db.get_settling_run(run_id) if run_id else None,
         thread_id=thread_id, workspace_id=workspace_id, quiet_for=quiet_for,
     )
 
@@ -523,7 +534,8 @@ async def _settle_finished_run(job: Dict[str, Any]) -> None:
         return
     run_id = str(job["run_id"])
     await settle_by_run(
-        automation, payload["execution_id"], run_id, await tl_db.get_run(run_id),
+        automation, payload["execution_id"], run_id,
+        await auto_db.get_settling_run(run_id),
         thread_id=str(job["conversation_thread_id"]),
         workspace_id=payload.get("workspace_id"),
     )
@@ -534,42 +546,3 @@ def register_outbox_executors() -> None:
     from src.server.services.hook_outbox import register_hook_executor
 
     register_hook_executor("automation_settle", _settle_finished_run)
-
-
-async def fire_webhook(
-    event: str,
-    automation: Dict[str, Any],
-    execution_id: str,
-    thread_id: Optional[str],
-    workspace_id: Optional[str],
-    error: Optional[str] = None,
-    run_id: Optional[str] = None,
-    failure_reason: Optional[FailureReason] = None,
-) -> Optional[list[dict]]:
-    """Fire webhook event. Never raises. Returns per-method results."""
-    try:
-        return await WebhookClient().fire_event(
-            event, automation, execution_id, thread_id, workspace_id,
-            error=error, run_id=run_id, failure_reason=failure_reason,
-        )
-    except Exception as e:
-        logger.error(f"[AUTOMATION_SETTLE] Webhook fire failed: {e}")
-        return None
-
-
-async def announce_wait(
-    user_id: str, thread_id: str, execution_id: str, *, waiting: bool
-) -> None:
-    """Tell the user's open tabs a firing joined or left its thread's line.
-
-    A chat open on that thread shows or clears its notice from this rather
-    than polling.
-    """
-    from src.server.services.thread_lifecycle_feed import publish_automation_wait
-
-    await publish_automation_wait(
-        user_id=user_id,
-        thread_id=thread_id,
-        automation_execution_id=execution_id,
-        waiting=waiting,
-    )

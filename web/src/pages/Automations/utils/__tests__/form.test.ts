@@ -291,6 +291,18 @@ describe('validateForm', () => {
     expect(validateForm({ ...ok, price_value: '' }, now)?.messageKey).toBe('automation.priceValuePositive');
   });
 
+  it('refuses an instruction whose {symbol} nothing fills', () => {
+    const unfilled = { messageKey: 'automation.instructionSymbolUnfilled', section: 'instruction' };
+    // The earnings template runs once, and a one-time trigger has no symbol.
+    const earnings = { ...applyTemplate('earnings_watch'), workspace_id: 'ws-1', next_run_at: '2026-10-28T13:00:00Z' };
+    expect(validateForm(earnings, now)).toEqual(unfilled);
+    expect(validateForm({ ...earnings, instruction: earnings.instruction.replace('{symbol}', 'NVDA') }, now)).toBeNull();
+    // A price template moved onto a schedule keeps the placeholder too.
+    expect(validateForm({ ...applyTemplate('price_alert'), trigger_type: 'cron' }, now)).toEqual(unfilled);
+    // A price trigger's symbol fills it.
+    expect(validateForm(priceForm({ price_symbol: 'AAPL', price_value: '150', instruction: 'Why did {symbol} move?' }), now)).toBeNull();
+  });
+
   it('opens the folded options for a cooldown the server would refuse', () => {
     const recurring = priceForm({ price_symbol: 'AAPL', price_value: '150', price_retrigger_mode: 'recurring' });
     expect(validateForm({ ...recurring, price_cooldown_minutes: '' }, now)).toBeNull();

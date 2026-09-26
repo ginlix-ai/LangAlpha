@@ -9,7 +9,7 @@ import AutomationsHeader, { type AutomationsView } from './components/Automation
 import AutomationInlineForm, { type FormSubmission } from './components/AutomationInlineForm';
 import ConfirmDeleteDialog from './components/ConfirmDeleteDialog';
 import FeedView from './components/FeedView';
-import ManageView, { type FormHost } from './components/ManageView';
+import ManageView, { type FormHost, type ManageSelection } from './components/ManageView';
 import Starters from './components/Starters';
 import { useAutomations } from './hooks/useAutomations';
 import { useOrderedGroups } from './hooks/useOrderedGroups';
@@ -59,10 +59,11 @@ function RememberedScroll({ memoryKey, children }: { memoryKey: string; children
  * they found, newest first, beside what is coming and what needs a hand; the
  * manage view is the list itself with one automation open beside it.
  *
- * The view and the open automation live in the URL (`?view=`, `?id=`), so a
- * link to one automation is a link somebody can send, and the dashboard's
- * `?id=` deep link lands on it. Without a `view` the last one used wins, which
- * is a per-browser convenience and so lives in local storage.
+ * The view, the open automation and the run its report shows live in the URL
+ * (`?view=`, `?id=`, `?run=`), so a link to one automation, or to one of its
+ * runs, is a link somebody can send, and the dashboard's `?id=` deep link
+ * lands on it. Without a `view` the last one used wins, which is a
+ * per-browser convenience and so lives in local storage.
  */
 export default function Automations() {
   const { t } = useTranslation();
@@ -81,9 +82,10 @@ export default function Automations() {
 
   const [storedView, setStoredView] = useState(readStoredView);
   const selectedId = searchParams.get('id');
+  const runId = searchParams.get('run');
   const urlView = searchParams.get('view');
   const view: AutomationsView =
-    urlView === 'feed' || urlView === 'manage' ? urlView : selectedId ? 'manage' : storedView ?? 'feed';
+    urlView === 'feed' || urlView === 'manage' ? urlView : selectedId || runId ? 'manage' : storedView ?? 'feed';
 
   const [form, setForm] = useState<FormMode | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Automation | null>(null);
@@ -100,13 +102,15 @@ export default function Automations() {
   );
 
   // Crossing views is a navigation the back button should undo; moving
-  // within one is not.
+  // within one is not. A run is only ever open within its automation.
   const navigateTo = useCallback(
-    (next: AutomationsView, id: string | null) => {
+    (next: AutomationsView, id: string | null, run: string | null = null) => {
       const params = new URLSearchParams(searchParams);
       params.set('view', next);
       if (id) params.set('id', id);
       else params.delete('id');
+      if (id && run) params.set('run', run);
+      else params.delete('run');
       storeView(next);
       setStoredView(next);
       setSearchParams(params, { replace: next === view });
@@ -119,6 +123,15 @@ export default function Automations() {
       leaveForm(() => {
         setForm(null);
         navigateTo('manage', id);
+      }),
+    [leaveForm, navigateTo],
+  );
+
+  const openRun = useCallback(
+    (id: string, run: string | null) =>
+      leaveForm(() => {
+        setForm(null);
+        navigateTo('manage', id, run);
       }),
     [leaveForm, navigateTo],
   );
@@ -143,11 +156,18 @@ export default function Automations() {
 
   const byId = useMemo(() => new Map(automations.map((a) => [a.automation_id, a])), [automations]);
   const groups = useOrderedGroups(automations);
-  const selected = selectedId ? byId.get(selectedId) ?? null : null;
-  // A link to an automation the list does not hold (deleted, or past the
-  // page it loads) must not quietly show a different one in its place.
-  const missing = !!selectedId && !selected && !loading;
-  const shown = selected ?? (missing ? null : groups[0]?.items[0] ?? null);
+  const selection = useMemo((): ManageSelection => {
+    // A link to an automation the list does not hold (deleted, or past the
+    // page it loads) must not quietly show a different one in its place. A
+    // link naming only a run finds its automation by that newest run.
+    if (selectedId || runId) {
+      const id = selectedId ?? automations.find((a) => a.last_execution?.automation_execution_id === runId)?.automation_id;
+      const chosen = id ? byId.get(id) : undefined;
+      return chosen ? { kind: 'chosen', automation: chosen, runId } : { kind: 'missing', runId };
+    }
+    const first = groups[0]?.items[0];
+    return first ? { kind: 'first', automation: first } : { kind: 'none' };
+  }, [selectedId, runId, automations, byId, groups]);
 
   const editing = form?.kind === 'edit' ? byId.get(form.automationId) ?? null : null;
 
@@ -183,26 +203,17 @@ export default function Automations() {
 
   const formHost: FormHost | null = useMemo(() => {
     if (!form) return null;
+    const handlers = { onSubmit: handleSubmit, onCancel: () => setForm(null), onDirtyChange: setDraftDirty, loading: busy };
     if (form.kind === 'edit') {
       if (!editing) return null;
       return {
         key: `edit:${editing.automation_id}`,
-        initialValues: automationToFormState(editing, homeZone),
-        original: editing,
-        onSubmit: handleSubmit,
-        onCancel: () => setForm(null),
-        onDirtyChange: setDraftDirty,
-        loading: busy,
+        props: { ...handlers, initialValues: automationToFormState(editing, homeZone), original: editing },
       };
     }
     return {
       key: `create:${form.template}:${form.nonce}`,
-      initialValues: applyTemplate(form.template, homeZone),
-      original: null,
-      onSubmit: handleSubmit,
-      onCancel: () => setForm(null),
-      onDirtyChange: setDraftDirty,
-      loading: busy,
+      props: { ...handlers, initialValues: applyTemplate(form.template, homeZone), original: null },
     };
   }, [form, editing, handleSubmit, busy, homeZone]);
 
@@ -230,15 +241,7 @@ export default function Automations() {
           {formHost ? (
             <div className="automation-form-pane automations-zero-form">
               <h2 className="title-font automation-form-title">{t('automation.newAutomation')}</h2>
-              <AutomationInlineForm
-                key={formHost.key}
-                initialValues={formHost.initialValues}
-                original={null}
-                onSubmit={formHost.onSubmit}
-                onCancel={formHost.onCancel}
-                onDirtyChange={formHost.onDirtyChange}
-                loading={formHost.loading}
-              />
+              <AutomationInlineForm key={formHost.key} {...formHost.props} />
             </div>
           ) : (
             <Starters onPick={startCreate} />
@@ -254,6 +257,7 @@ export default function Automations() {
             automations={automations}
             readings={readings}
             onOpenAutomation={openAutomation}
+            onOpenRun={openRun}
             onManage={() => changeView('manage')}
             onNew={startCreate}
           />
@@ -266,10 +270,9 @@ export default function Automations() {
         <ManageView
           groups={groups}
           readings={readings}
-          shown={shown}
-          explicitlySelected={!!selectedId}
-          missing={missing}
+          selection={selection}
           onSelect={openAutomation}
+          onOpenRun={openRun}
           form={formHost}
           onEdit={(a) => setForm({ kind: 'edit', automationId: a.automation_id })}
           onDelete={setDeleteTarget}

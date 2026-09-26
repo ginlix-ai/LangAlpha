@@ -10,7 +10,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
-import { deviceTimezone } from '@/lib/deviceTimezone';
+import { useHomeTimezone } from '@/hooks/useHomeTimezone';
 import { useUser } from '@/hooks/useUser';
 import { sendChatMessageStream, sendRetryStream, getWorkflowStatus, sendHitlResponse, fetchThreadTurns, cancelWorkflow } from '../utils/api';
 import { useLocalRunPublisher } from '@/lib/threadLifecycle/useLocalRunPublisher';
@@ -95,7 +95,7 @@ export function useChatMessages(
   // User locale/timezone — prefer saved preference, fall back to browser detection
   const { user } = useUser();
   const userLocale = user?.locale || navigator.language || 'en-US';
-  const userTimezone = user?.timezone || deviceTimezone();
+  const userTimezone = useHomeTimezone();
 
   // State
   const [messages, setMessages] = useState<MessageRecord[]>([]);
@@ -323,6 +323,10 @@ export function useChatMessages(
   // Local-layer run-liveness publish (declared here so it sits below the
   // run-id ref it reads).
   useLocalRunPublisher(threadId, isLoading, currentRunIdRef);
+  // The host's read of that ref: whether a run is the one this view is
+  // streaming or last streamed. Read, not handed out, so no caller can move
+  // the reconnect target.
+  const isOwnRun = useCallback((runId: string) => runId === currentRunIdRef.current, []);
   // Highest turn_index this view has RENDERED, compared against
   // /status.latest_turn_index by the reactivation staleness check (a run that
   // finished while this cached view was hidden is terminal — can_reconnect is
@@ -1718,6 +1722,7 @@ export function useChatMessages(
       message,
       agentMode,
       platform,
+      timezone: userTimezone,
       queryClient,
       threadIdRef,
       setThreadId,
@@ -2709,9 +2714,9 @@ export function useChatMessages(
     fallbackSuggestion,
     clearFallbackSuggestion,
     reconnectIfStaleRun: reportBackWatch.reconnectIfStaleRun,
-    // The run this view is streaming or last streamed, so the host can tell
-    // its own run apart from one the user feed reports starting elsewhere.
-    currentRunIdRef,
+    // Tells this view's own run apart from one the user feed reports
+    // starting elsewhere.
+    isOwnRun,
     messageError,
     returnedSteering,
     clearReturnedSteering: () => setReturnedSteering(null),

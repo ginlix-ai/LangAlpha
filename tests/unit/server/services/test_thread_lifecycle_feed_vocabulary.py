@@ -9,6 +9,7 @@ these exact strings. This is that guard.
 
 import re
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -73,11 +74,18 @@ def test_every_pinned_type_builds_the_one_wire_shape(type_name):
     assert event["v"] == thread_lifecycle_feed.EVENT_VERSION
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("waiting", [True, False])
-def test_automation_wait_events_name_their_firing(waiting):
-    event = thread_lifecycle_feed.build_automation_wait_event(
-        thread_id="t-1", automation_execution_id="exec-1", waiting=waiting
-    )
+async def test_automation_wait_events_name_their_firing(waiting):
+    with patch.object(thread_lifecycle_feed, "publish_user_event", AsyncMock()) as sent:
+        await thread_lifecycle_feed.publish_automation_wait(
+            user_id="user-1",
+            thread_id="t-1",
+            automation_execution_id="exec-1",
+            waiting=waiting,
+        )
+    user_id, event = sent.await_args.args
+    assert user_id == "user-1"
     assert event["type"] == (
         "automation_waiting" if waiting else "automation_waiting_ended"
     )

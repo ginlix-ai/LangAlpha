@@ -81,7 +81,6 @@ from src.server.models.mcp_server import (
     ParsedMcpServer,
     PromoteInput,
     ToolSummary,
-    _format_validation_error,
     catalog_row_to_response,
     collect_vault_refs,
     isolation_warnings,
@@ -89,6 +88,7 @@ from src.server.models.mcp_server import (
 )
 from src.server.services.workspace_manager import WorkspaceManager
 from src.server.utils.api import CurrentUserId, handle_api_exceptions, require_workspace_owner
+from src.server.utils.error_sanitization import validation_error_text
 
 logger = logging.getLogger(__name__)
 
@@ -388,7 +388,7 @@ async def add_server(
     try:
         server = McpServerInput(**body)
     except ValidationError as e:
-        raise HTTPException(status_code=422, detail=_format_validation_error(e))
+        raise HTTPException(status_code=422, detail=validation_error_text(e))
 
     if server.name in builtin_names():
         raise HTTPException(
@@ -462,7 +462,7 @@ async def promote_server(
     try:
         server = McpServerInput(**(existing.get("config") or {}))
     except ValidationError as e:
-        raise HTTPException(status_code=422, detail=_format_validation_error(e))
+        raise HTTPException(status_code=422, detail=validation_error_text(e))
 
     fields = server.to_catalog_fields()
 
@@ -606,7 +606,7 @@ async def adopt_server(
             },
         )
     except ValidationError as e:
-        raise HTTPException(status_code=422, detail=_format_validation_error(e))
+        raise HTTPException(status_code=422, detail=validation_error_text(e))
 
     try:
         ws_row = await _insert_local_fork(workspace_id, server)

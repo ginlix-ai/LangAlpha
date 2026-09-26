@@ -18,6 +18,8 @@ export interface EnsureThreadIdArgs {
   message: string;
   agentMode: string | undefined;
   platform: string | null | undefined;
+  /** The user's zone, which the title reads relative dates on. */
+  timezone: string;
   queryClient: QueryClient;
   /** Kept in sync so in-flight closures see the real id immediately. */
   threadIdRef: { current: string };
@@ -42,6 +44,7 @@ export async function ensureThreadId({
   message,
   agentMode,
   platform,
+  timezone,
   queryClient,
   threadIdRef,
   setThreadId,
@@ -57,6 +60,7 @@ export async function ensureThreadId({
       firstQuery: message,
       agentMode: agentMode === 'flash' ? 'flash' : 'ptc',
       platform,
+      timezone,
     });
     // Stop landed during the round-trip: adopting the id now (navigate,
     // optimistic row, nav bump) would resurrect the UI the stop finalized.

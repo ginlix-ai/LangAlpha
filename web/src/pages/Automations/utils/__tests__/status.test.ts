@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type {
   Automation,
+  AutomationExecution,
   AutomationStatus,
   DisableReason,
   ExecutionStatus,
   FailureReason,
-  RunSummary,
   TriggerType,
 } from '@/types/automation';
 import {
@@ -25,9 +25,10 @@ import {
 
 const NEXT = '2026-10-01T13:00:00Z';
 
-function run(status: ExecutionStatus, over: Partial<RunSummary> = {}): RunSummary {
+function run(status: ExecutionStatus, over: Partial<AutomationExecution> = {}): AutomationExecution {
   return {
     automation_execution_id: 'exec-1',
+    automation_id: 'auto-1',
     status,
     conversation_thread_id: null,
     scheduled_at: '2026-09-25T13:00:00Z',
@@ -36,6 +37,9 @@ function run(status: ExecutionStatus, over: Partial<RunSummary> = {}): RunSummar
     error_message: null,
     skip_reason: null,
     failure_reason: null,
+    delivery_result: null,
+    created_at: '2026-09-25T13:00:00Z',
+    excerpt: null,
     ...over,
   };
 }
@@ -64,7 +68,7 @@ function automation(trigger: TriggerType, status: AutomationStatus, last: Execut
     delivery_config: null,
     created_at: '2026-09-01T00:00:00Z',
     updated_at: '2026-09-01T00:00:00Z',
-    last_execution: last ? { ...run(last), excerpt: null } : null,
+    last_execution: last ? run(last) : null,
   };
 }
 
@@ -129,6 +133,9 @@ describe('why an automation needs attention', () => {
     ['active', null, null, 'failed', 'stateLastRunFailed'],
     // Resumed after a rejected key: an ordinary failure until the next run.
     ['active', null, 'provider_auth', 'failed', 'stateLastRunFailed'],
+    // The server's own failure is an ordinary one here; the run says whose.
+    ['active', null, 'server_error', 'failed', 'stateLastRunFailed'],
+    ['active', null, 'interrupted', 'failed', 'stateLastRunFailed'],
     // A pause is the reader's decision already.
     ['paused', null, 'usage_limit', null, 'statePaused'],
     // A one-shot price alert a limit ended: the report is still owed.
@@ -159,7 +166,7 @@ describe('automationCensus', () => {
 });
 
 describe('describeRun', () => {
-  it.each<[ExecutionStatus, Partial<RunSummary>, boolean]>([
+  it.each<[ExecutionStatus, Partial<AutomationExecution>, boolean]>([
     ['completed', {}, true],
     ['failed', {}, true],
     ['timeout', {}, true],
@@ -195,6 +202,15 @@ describe('describeRun', () => {
     expect(describeRun(run('skipped', { skip_reason: 'thread_busy' })).noteKey).toBe('automation.skippedThreadBusy');
     expect(describeRun(run('skipped', { skip_reason: 'user' })).noteKey).toBeNull();
     expect(describeRun(run('completed')).noteKey).toBeNull();
+  });
+
+  it('notes a failure that was not the automation\'s, and leaves the rest to the error', () => {
+    expect(describeRun(run('failed', { failure_reason: 'server_error' })).noteKey).toBe('automation.failedServerError');
+    expect(describeRun(run('timeout', { failure_reason: 'interrupted' })).noteKey).toBe('automation.failedInterrupted');
+    expect(describeRun(run('failed', { failure_reason: 'usage_limit' })).noteKey).toBeNull();
+    expect(describeRun(run('failed', { failure_reason: 'provider_auth' })).noteKey).toBeNull();
+    // A newer server's reason has no word here yet.
+    expect(describeRun(run('failed', { failure_reason: 'quota_v2' as FailureReason })).noteKey).toBeNull();
   });
 });
 

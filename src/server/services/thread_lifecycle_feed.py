@@ -226,13 +226,19 @@ async def publish_thread_unarchived(
     )
 
 
-def build_automation_wait_event(
-    *, thread_id: str, automation_execution_id: str, waiting: bool
-) -> Dict[str, Any]:
+async def publish_automation_wait(
+    *,
+    user_id: Optional[str],
+    thread_id: str,
+    automation_execution_id: str,
+    waiting: bool,
+) -> None:
     """An automation firing joined (``waiting``) or left its thread's line.
 
-    The one event that carries ``automation_execution_id``: a chat shows or
-    clears its notice for that firing, and the skip it offers names it.
+    The one event that carries ``automation_execution_id``: a chat open on the
+    thread shows or clears its notice for that firing rather than polling, and
+    the skip it offers names it. Advisory like the other thread events: the
+    chat reads the line again on load.
     """
     if waiting:
         event = build_lifecycle_event(type="automation_waiting", thread_id=thread_id)
@@ -241,26 +247,7 @@ def build_automation_wait_event(
             type="automation_waiting_ended", thread_id=thread_id
         )
     event["automation_execution_id"] = automation_execution_id
-    return event
-
-
-async def publish_automation_wait(
-    *,
-    user_id: Optional[str],
-    thread_id: str,
-    automation_execution_id: str,
-    waiting: bool,
-) -> None:
-    """Advisory like the other thread events: the chat reads the line again
-    on load."""
-    await publish_user_event(
-        user_id,
-        build_automation_wait_event(
-            thread_id=thread_id,
-            automation_execution_id=automation_execution_id,
-            waiting=waiting,
-        ),
-    )
+    await publish_user_event(user_id, event)
 
 
 # ---------------------------------------------------------------------------

@@ -12,28 +12,27 @@ import {
 import { Autocomplete, SearchField } from '@/components/ui/aria-search-field';
 import { currentTimezoneName, isKnownTimezone } from '@/lib/deviceTimezone';
 import { formatTimezoneName } from '@/lib/format';
+import { formatUtcOffset } from '@/lib/timezones';
+import { cn } from '@/lib/utils';
 import {
   allTimezones,
   byOffset,
   COMMON_TIMEZONES,
   describeZone,
   foldZoneText,
-  formatUtcOffset,
   searchZones,
   warmZoneSearch,
   type Zone,
-} from '@/lib/timezones';
-import { cn } from '@/lib/utils';
+} from './TimezonePicker.zones';
 import './TimezonePicker.css';
 
 interface TimezonePickerProps {
   /** An IANA zone, or '' while none is set. */
   value: string;
   onChange: (tz: string) => void;
-  /** The zone offered first, under `homeLabel`: the user's own zone, or
+  /** The zone offered first, under its own heading: the user's own zone, or
    *  this device's where the user is choosing their own. */
-  home?: string;
-  homeLabel?: string;
+  home?: { zone: string; label: string };
   placeholder?: string;
   className?: string;
   /** The trigger's own classes, for a form whose fields take another fill. */
@@ -52,7 +51,6 @@ export default function TimezonePicker({
   value,
   onChange,
   home,
-  homeLabel,
   placeholder,
   className,
   triggerClassName,
@@ -63,9 +61,9 @@ export default function TimezonePicker({
   const [query, setQuery] = useState('');
   // Taken again on every opening, so the offsets are the ones in force that day.
   const [now, setNow] = useState(() => new Date());
-  const homeId = home && isKnownTimezone(home) ? home : undefined;
-  // A stored zone may carry a retired name (Asia/Calcutta) that the lists
-  // below hold under its current one, so it is looked up by that one.
+  // A zone may carry a retired name (Asia/Calcutta) that the lists below hold
+  // under its current one, so each is looked up by that one.
+  const homeId = home && isKnownTimezone(home.zone) ? currentTimezoneName(home.zone) : undefined;
   const selected = value ? currentTimezoneName(value) : '';
 
   // The shortlist is always built: Select refuses to open on an empty list.
@@ -93,8 +91,8 @@ export default function TimezonePicker({
     );
   }, [open, selected, now, i18n.language]);
   const results = useMemo(
-    () => searchZones(zones, query, new Set([...(home ? [home] : []), ...COMMON_TIMEZONES])),
-    [zones, query, home],
+    () => searchZones(zones, query, new Set([...(homeId ? [homeId] : []), ...COMMON_TIMEZONES])),
+    [zones, query, homeId],
   );
 
   const option = (z: Zone) => (
@@ -150,7 +148,7 @@ export default function TimezonePicker({
               <>
                 {homeZone && (
                   <SelectSection id="home">
-                    <SelectHeader className={HEADING}>{homeLabel}</SelectHeader>
+                    <SelectHeader className={HEADING}>{home?.label}</SelectHeader>
                     {option(homeZone)}
                   </SelectSection>
                 )}

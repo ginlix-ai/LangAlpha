@@ -20,6 +20,8 @@ from pydantic import (
     model_validator,
 )
 
+from src.server.utils.error_sanitization import validation_error_text
+
 
 # =============================================================================
 # Price Trigger Models
@@ -149,17 +151,6 @@ _SCHEDULE_FIELD: Dict[str, str] = {
 }
 
 
-def error_sentences(e: ValidationError) -> str:
-    """Each refusal as its field and the validator's own sentence, without the
-    framing, input dump and link that a ValidationError's str() adds."""
-    parts = []
-    for err in e.errors(include_url=False):
-        msg = err["msg"].removeprefix("Value error, ")
-        field = ".".join(str(p) for p in err["loc"])
-        parts.append(f"{field}: {msg}" if field else msg)
-    return "; ".join(parts)
-
-
 class _ScheduleFields(BaseModel):
     """The schedule fields, which a create and an update check the same way."""
 
@@ -194,7 +185,7 @@ class _ScheduleFields(BaseModel):
             try:
                 PriceTriggerConfig(**v)
             except ValidationError as e:
-                raise ValueError(f"Invalid price trigger config: {error_sentences(e)}")
+                raise ValueError(f"Invalid price trigger config: {validation_error_text(e)}")
         return v
 
     @field_validator("next_run_at")
@@ -341,9 +332,11 @@ ExecutionStatus = Literal[
 # stopped its run, its thread stayed busy (or an earlier firing was already
 # waiting), or the server stopped while it waited.
 SkipReason = Literal["user", "thread_busy", "interrupted"]
-# A ``failed`` firing the user has to act on: a usage limit refused it or
-# paused its run, or the provider rejected the user's own key.
-FailureReason = Literal["usage_limit", "provider_auth"]
+# Why a ``failed`` firing failed, when it was not the automation's own doing:
+# a usage limit refused it or paused its run, the provider rejected the
+# user's own key, the service failed it (``server_error``), or the server cut
+# its run off (``interrupted``).
+FailureReason = Literal["usage_limit", "provider_auth", "server_error", "interrupted"]
 
 
 class AutomationExecutionResponse(BaseModel):
@@ -420,15 +413,8 @@ class AutomationsListResponse(BaseModel):
     total: int
 
 
-class AutomationExecutionsListResponse(BaseModel):
-    """Response model for listing automation executions."""
-
-    executions: List[AutomationExecutionResponse]
-    total: int
-
-
 class AutomationRunResponse(AutomationExecutionResponse):
-    """An execution in the user-wide run feed, with its automation's identity."""
+    """An execution with its automation's identity."""
 
     automation_name: str
     agent_mode: str
@@ -437,7 +423,7 @@ class AutomationRunResponse(AutomationExecutionResponse):
 
 
 class AutomationRunsListResponse(BaseModel):
-    """Response model for the user-wide run feed."""
+    """A page of runs: the user-wide feed, or one automation's history."""
 
     executions: List[AutomationRunResponse]
-    total: int
+    has_more: bool

@@ -7,7 +7,6 @@ import {
   type CalendarDate,
 } from "@internationalized/date"
 import { ChevronLeft, ChevronRight } from "lucide-react"
-import { useTranslation } from "react-i18next"
 import {
   Button as AriaButton,
   Calendar as AriaCalendar,
@@ -22,7 +21,6 @@ import {
   CalendarProps as AriaCalendarProps,
   DateValue as AriaDateValue,
   Heading as AriaHeading,
-  I18nProvider,
   composeRenderProps,
 } from "react-aria-components"
 
@@ -39,25 +37,20 @@ interface CalendarProps<T extends AriaDateValue> extends AriaCalendarProps<T> {
   today?: CalendarDate
 }
 
-/** Month names, weekday names and reading direction in the app's language
- *  rather than the browser's. */
 function Calendar<T extends AriaDateValue>({
   className,
   today,
   ...props
 }: CalendarProps<T>) {
-  const { i18n } = useTranslation()
   return (
-    <I18nProvider locale={i18n.language}>
-      <TodayContext.Provider value={today ?? todayIn(getLocalTimeZone())}>
-        <AriaCalendar
-          className={composeRenderProps(className, (className) =>
-            cn("w-fit", className)
-          )}
-          {...props}
-        />
-      </TodayContext.Provider>
-    </I18nProvider>
+    <TodayContext.Provider value={today ?? todayIn(getLocalTimeZone())}>
+      <AriaCalendar
+        className={composeRenderProps(className, (className) =>
+          cn("w-fit", className)
+        )}
+        {...props}
+      />
+    </TodayContext.Provider>
   )
 }
 

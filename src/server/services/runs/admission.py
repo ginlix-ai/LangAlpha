@@ -111,6 +111,11 @@ ADMISSION_TEARDOWN_MARGIN_S = 2.0
 # guard's Event after the call returns or times out.
 COMPACTION_ADMISSION_MARGIN_S = 20.0
 
+# The answers of ``wait_for_admission`` that mean a turn or a mutation holds
+# the thread. Each is also the code of the 409 a caller that may not steer
+# gets (``admission_gate``), which is how an automation knows to wait.
+BUSY_STATES = frozenset({"running", "stopping", "compacting"})
+
 
 async def wait_for_admission(
     thread_id: str,

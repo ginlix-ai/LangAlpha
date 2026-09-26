@@ -15,12 +15,12 @@ export interface AutomationList {
 
 export interface ExecutionList {
   executions: AutomationExecution[];
-  total: number;
+  has_more: boolean;
 }
 
 export interface RunFeedPage {
   executions: AutomationRun[];
-  total: number;
+  has_more: boolean;
 }
 
 export const listAutomations = (params: Record<string, unknown>): Promise<AxiosResponse<AutomationList>> =>

@@ -2,7 +2,6 @@
  * Thread CRUD, sharing and compaction endpoints.
  */
 import { api } from '@/api/client';
-import { detectedTimezone } from '@/lib/deviceTimezone';
 
 export interface ThreadCreatedInfo {
   thread_id: string;
@@ -26,16 +25,16 @@ export async function createThreadWithTitle(opts: {
   firstQuery: string;
   agentMode?: 'flash' | 'ptc';
   platform?: string | null;
+  /** Lets title generation resolve relative dates ("today") on the user's
+   *  wall clock; the server reads UTC without it. */
+  timezone?: string;
   timeoutMs?: number;
 }): Promise<ThreadCreatedInfo> {
-  const { workspaceId, firstQuery, agentMode = 'ptc', platform, timeoutMs = 8000 } = opts;
+  const { workspaceId, firstQuery, agentMode = 'ptc', platform, timezone, timeoutMs = 8000 } = opts;
 
   const body: Record<string, unknown> = { first_query: firstQuery, agent_mode: agentMode };
   if (workspaceId) body.workspace_id = workspaceId;
   if (platform) body.platform = platform;
-  // Lets title generation resolve relative dates ("today") on the user's wall
-  // clock. Omitted when the browser cannot say: the server falls back to UTC.
-  const timezone = detectedTimezone();
   if (timezone) body.timezone = timezone;
 
   const { data } = await api.post<ThreadCreatedInfo>('/api/v1/threads', body, { timeout: timeoutMs });

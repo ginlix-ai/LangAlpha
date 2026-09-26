@@ -26,10 +26,8 @@ export function useRecentRuns() {
     queryFn: async ({ pageParam }) =>
       (await listRecentRuns({ limit: PAGE_SIZE, offset: pageParam })).data,
     initialPageParam: 0,
-    getNextPageParam: (lastPage: RunFeedPage, pages: RunFeedPage[]) => {
-      const loaded = pages.reduce((n, p) => n + p.executions.length, 0);
-      return loaded < lastPage.total ? loaded : undefined;
-    },
+    getNextPageParam: (lastPage: RunFeedPage, pages: RunFeedPage[]) =>
+      lastPage.has_more ? pages.reduce((n, p) => n + p.executions.length, 0) : undefined,
     refetchInterval: (q) => {
       const pages = q.state.data?.pages ?? [];
       if (pages.length > 1) return false;

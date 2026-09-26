@@ -198,13 +198,24 @@ class AutomationScheduler:
             automation_id = str(automation["automation_id"])
             execution_id = automation["_execution_id"]
 
-            # Calculate and set next_run_at for cron automations
+            # Calculate and set next_run_at for cron automations. Every row
+            # here is already claimed, so a failure stops at its own schedule:
+            # its firing and the rest of the batch still run, where one left
+            # undispatched would wait for the sweep to fail it as interrupted.
             if automation["trigger_type"] == "cron" and automation.get("cron_expression"):
-                next_run = self._calculate_next_run(
-                    automation["cron_expression"],
-                    automation.get("timezone", "UTC"),
-                )
-                await auto_db.update_automation_next_run(automation_id, next_run)
+                try:
+                    next_run = self._calculate_next_run(
+                        automation["cron_expression"],
+                        automation.get("timezone", "UTC"),
+                    )
+                    await auto_db.update_automation_next_run(automation_id, next_run)
+                except Exception as e:
+                    logger.error(
+                        f"[SCHEDULER] Scheduling the next run failed, so it has "
+                        f"none until rescheduled: automation_id={automation_id} "
+                        f"error={e}",
+                        exc_info=True,
+                    )
             # One-time automations: next_run_at already set to NULL by claim
 
             self.dispatch(

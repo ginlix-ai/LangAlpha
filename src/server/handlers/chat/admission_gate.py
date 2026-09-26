@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
 
+from src.server.services.runs.admission import BUSY_STATES
+
 if TYPE_CHECKING:
     from src.server.models.chat import ChatRequest
     from src.server.services.runs.executor import LocalRunExecutor
@@ -27,11 +29,9 @@ if TYPE_CHECKING:
 # wrapper) is included defensively though it does not currently reach this path.
 # ``not_running`` (steer_only probe against a fresh thread) is likewise an
 # admission outcome, not a workflow failure — nothing was admitted to persist
-# or mark failed.
+# or mark failed. The busy states are the thread-held conflicts, one code each.
 ADMISSION_CONFLICT_CODES = {
-    "stopping",
-    "compacting",
-    "running",
+    *BUSY_STATES,
     "not_running",
     "request_cancelled",
     # Retry-validation outcomes from ``resolve_retry_of``: protocol

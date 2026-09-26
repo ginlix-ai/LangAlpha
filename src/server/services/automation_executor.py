@@ -27,11 +27,12 @@ from src.server.dependencies.usage_limits import enforce_credit_limit
 from src.server.models.chat import ChatMessage, ChatRequest, ThreadOrigin
 from src.server.services.automation_settlement import (
     Outcome,
-    announce_wait,
     clean_error_text,
-    fire_webhook,
     settle,
 )
+from src.server.services.runs.admission import BUSY_STATES
+from src.server.services.thread_lifecycle_feed import publish_automation_wait
+from src.server.services.webhook_client import WebhookClient
 from src.observability.tracing import hash_id as _obs_hash_id, tracer as _otel_tracer
 
 logger = logging.getLogger(__name__)
@@ -46,9 +47,6 @@ _WAIT_POLL_SECONDS = 5
 # stalls, which delay a beat without the process being gone.
 _HEARTBEAT_SECONDS = 60
 ABANDONED_AFTER_SECONDS = 5 * 60
-
-# Admission 409s that mean "a turn holds this thread": get back in line.
-_THREAD_BUSY_CODES = frozenset({"running", "stopping", "compacting"})
 
 # 429s that are our capacity rather than the user's usage limit.
 _OUR_429_TYPES = frozenset({"burst_limit", "service_unavailable"})
@@ -139,7 +137,7 @@ def _lost_thread_race(e: BaseException) -> bool:
         isinstance(e, HTTPException)
         and e.status_code == 409
         and isinstance(e.detail, dict)
-        and e.detail.get("code") in _THREAD_BUSY_CODES
+        and e.detail.get("code") in BUSY_STATES
     )
 
 
@@ -327,7 +325,12 @@ class AutomationExecutor:
             f"[AUTOMATION_EXEC] Waiting for thread: execution_id={execution_id} "
             f"thread_id={thread_id}"
         )
-        await announce_wait(automation["user_id"], thread_id, execution_id, waiting=True)
+        await publish_automation_wait(
+            user_id=automation["user_id"],
+            thread_id=thread_id,
+            automation_execution_id=execution_id,
+            waiting=True,
+        )
         try:
             while True:
                 try:
@@ -406,8 +409,11 @@ class AutomationExecutor:
                 started_at=datetime.now(timezone.utc),
             ):
                 return None
-            await announce_wait(
-                automation["user_id"], thread_id, execution_id, waiting=False
+            await publish_automation_wait(
+                user_id=automation["user_id"],
+                thread_id=thread_id,
+                automation_execution_id=execution_id,
+                waiting=False,
             )
             return fresh
         if time.monotonic() >= deadline:
@@ -425,6 +431,11 @@ class AutomationExecutor:
         The turn is already running then, and a bookkeeping error must not
         fail it; the drain's end links the run if no event ever did. A run the
         admission itself cancelled was never the automation's turn.
+
+        The start goes out only while the run is still going. The terminal
+        notice leaves from the run's settle job, possibly on another worker,
+        and a start landing after it would leave a channel showing a run
+        that already ended. This narrows that window; it does not close it.
         """
         try:
             run = await tl_db.get_run(firing.run_id)
@@ -432,8 +443,11 @@ class AutomationExecutor:
                 return False
             if run["status"] == "cancelled":
                 return True
-            if await _link_run(execution_id, firing.run_id):
-                await fire_webhook(
+            if (
+                await _link_run(execution_id, firing.run_id)
+                and run["status"] == "in_progress"
+            ):
+                await WebhookClient().fire_event(
                     "automation.started", firing.automation, execution_id,
                     firing.thread_id, firing.workspace_id, run_id=firing.run_id,
                 )

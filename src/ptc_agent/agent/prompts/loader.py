@@ -3,14 +3,13 @@
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import yaml
 from jinja2 import Environment, FileSystemLoader
 
 from ptc_agent.agent.prompts.formatter import workspace_path_vars
 from ptc_agent.core.paths import DEFAULT_SANDBOX_ROOT
-from src.utils.timezone_utils import get_timezone_label
+from src.utils.timezone_utils import get_timezone_label, zone_or_none
 
 
 class PromptLoader:
@@ -230,10 +229,8 @@ def format_current_time(dt: datetime, timezone_str: str | None = None) -> str:
     Returns:
         Formatted string like "3:00 PM EST, Monday, February 23, 2026"
     """
-    if timezone_str:
-        try:
-            dt = dt.astimezone(ZoneInfo(timezone_str))
-        except (KeyError, TypeError):
-            pass
+    zone = zone_or_none(timezone_str)
+    if zone is not None:
+        dt = dt.astimezone(zone)
     tz_label = get_timezone_label(dt)
     return dt.strftime("%-I:%M %p") + f" {tz_label}, " + dt.strftime("%A, %B %-d, %Y")

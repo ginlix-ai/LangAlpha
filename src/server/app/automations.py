@@ -31,8 +31,6 @@ from src.server.database import automation as auto_db
 from src.server.handlers import automation_handler as handler
 from src.server.models.automation import (
     AutomationCreate,
-    AutomationExecutionResponse,
-    AutomationExecutionsListResponse,
     AutomationResponse,
     AutomationRunResponse,
     AutomationRunsListResponse,
@@ -93,27 +91,23 @@ async def list_automation_runs(
     status: Optional[ExecutionStatus] = Query(None),
 ):
     """List executions across all of the current user's automations."""
-    executions, total = await auto_db.list_executions(
+    return await _runs_page(
         user_id,
         thread_id=str(thread_id) if thread_id else None,
         status=status,
         limit=limit,
         offset=offset,
     )
-    return AutomationRunsListResponse(
-        executions=[AutomationRunResponse.model_validate(e) for e in executions],
-        total=total,
-    )
 
 
 @router.get("/automations/{automation_id}", response_model=AutomationResponse)
 @handle_api_exceptions("get automation", logger)
 async def get_automation(
-    automation_id: str,
+    automation_id: UUID,
     user_id: CurrentUserId,
 ):
     """Get a specific automation."""
-    automation = await auto_db.get_automation(automation_id, user_id)
+    automation = await auto_db.get_automation(str(automation_id), user_id)
     if not automation:
         raise_not_found("Automation")
     return AutomationResponse.model_validate(automation)
@@ -122,14 +116,14 @@ async def get_automation(
 @router.patch("/automations/{automation_id}", response_model=AutomationResponse)
 @handle_api_exceptions("update automation", logger, conflict_on_value_error=True)
 async def update_automation(
-    automation_id: str,
+    automation_id: UUID,
     request: AutomationUpdate,
     user_id: CurrentUserId,
 ):
     """Partial update of an automation."""
     try:
         automation = await handler.update_automation(
-            automation_id=automation_id,
+            automation_id=str(automation_id),
             user_id=user_id,
             fields=request.model_dump(exclude_none=True),
         )
@@ -148,11 +142,11 @@ async def update_automation(
 @router.delete("/automations/{automation_id}", status_code=204)
 @handle_api_exceptions("delete automation", logger)
 async def delete_automation(
-    automation_id: str,
+    automation_id: UUID,
     user_id: CurrentUserId,
 ):
     """Delete an automation (cascade deletes executions)."""
-    deleted = await auto_db.delete_automation(automation_id, user_id)
+    deleted = await auto_db.delete_automation(str(automation_id), user_id)
     if not deleted:
         raise_not_found("Automation")
     return Response(status_code=204)
@@ -166,22 +160,22 @@ async def delete_automation(
 @router.post("/automations/{automation_id}/trigger")
 @handle_api_exceptions("trigger automation", logger, conflict_on_value_error=True)
 async def trigger_automation(
-    automation_id: str,
+    automation_id: UUID,
     user_id: CurrentUserId,
 ):
     """Manually trigger an automation immediately (doesn't affect next_run_at)."""
-    result = await handler.trigger_automation(automation_id, user_id)
+    result = await handler.trigger_automation(str(automation_id), user_id)
     return result
 
 
 @router.post("/automations/{automation_id}/pause", response_model=AutomationResponse)
 @handle_api_exceptions("pause automation", logger, conflict_on_value_error=True)
 async def pause_automation(
-    automation_id: str,
+    automation_id: UUID,
     user_id: CurrentUserId,
 ):
     """Pause an active automation."""
-    automation = await handler.pause_automation(automation_id, user_id)
+    automation = await handler.pause_automation(str(automation_id), user_id)
     if not automation:
         raise_not_found("Automation")
     return AutomationResponse.model_validate(automation)
@@ -190,11 +184,11 @@ async def pause_automation(
 @router.post("/automations/{automation_id}/resume", response_model=AutomationResponse)
 @handle_api_exceptions("resume automation", logger, conflict_on_value_error=True)
 async def resume_automation(
-    automation_id: str,
+    automation_id: UUID,
     user_id: CurrentUserId,
 ):
     """Resume a paused or disabled automation."""
-    automation = await handler.resume_automation(automation_id, user_id)
+    automation = await handler.resume_automation(str(automation_id), user_id)
     if not automation:
         raise_not_found("Automation")
     return AutomationResponse.model_validate(automation)
@@ -223,22 +217,25 @@ async def skip_execution(
 
 @router.get(
     "/automations/{automation_id}/executions",
-    response_model=AutomationExecutionsListResponse,
+    response_model=AutomationRunsListResponse,
 )
 @handle_api_exceptions("list executions", logger)
 async def list_executions(
-    automation_id: str,
+    automation_id: UUID,
     user_id: CurrentUserId,
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
     """List execution history for an automation."""
-    executions, total = await auto_db.list_executions(
-        user_id, automation_id=automation_id, limit=limit, offset=offset,
+    return await _runs_page(
+        user_id, automation_id=str(automation_id), limit=limit, offset=offset,
     )
-    return AutomationExecutionsListResponse(
-        executions=[
-            AutomationExecutionResponse.model_validate(e) for e in executions
-        ],
-        total=total,
+
+
+async def _runs_page(user_id: str, **filters) -> AutomationRunsListResponse:
+    """The feed and one automation's history: one query, one page shape."""
+    executions, has_more = await auto_db.list_executions(user_id, **filters)
+    return AutomationRunsListResponse(
+        executions=[AutomationRunResponse.model_validate(e) for e in executions],
+        has_more=has_more,
     )

@@ -18,14 +18,15 @@ class WebhookClient:
     async def fire(self, url: str, payload: dict, secret: str | None = None) -> bool:
         """POST JSON payload to url with optional HMAC-SHA256 signature.
 
-        Returns True on 2xx, False otherwise. Never raises.
+        Returns True on 2xx, False otherwise. Never raises: this is the one
+        guard on a delivery, so a method that fails leaves the others sent.
         """
-        body = json.dumps(payload, default=str)
-        headers = {"Content-Type": "application/json"}
-        if secret:
-            sig = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
-            headers["X-Webhook-Signature"] = f"sha256={sig}"
         try:
+            body = json.dumps(payload, default=str)
+            headers = {"Content-Type": "application/json"}
+            if secret:
+                sig = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+                headers["X-Webhook-Signature"] = f"sha256={sig}"
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(url, content=body, headers=headers)
                 if not resp.is_success:
@@ -51,21 +52,23 @@ class WebhookClient:
         """Fire an event to all configured delivery methods.
 
         Reads delivery_config.methods from the automation and resolves
-        the webhook URL and secret from environment variables.
-        Never raises — all errors are logged and swallowed.
+        the webhook URL and secret from environment variables. A failed
+        delivery never raises: ``fire`` reports it as that method's result.
 
         ``run_id`` names the turn this execution ran. A thread can hold a
         newer turn by the time the event lands (the next firing of a pinned
         thread can start within seconds), so a receiver reading the report
         should read that turn, not the thread's latest.
 
-        ``failure_reason`` sets apart a failed run the user has to act on:
-        ``usage_limit`` (``error`` is then the quota service's own message)
-        or ``provider_auth`` (their key was rejected and the automation is
-        now disabled). None for any other event or failure.
+        ``failure_reason`` sets apart a failed run that was not the
+        automation's own failure: ``usage_limit`` (``error`` is then the quota
+        service's own message), ``provider_auth`` (their key was rejected and
+        the automation is now disabled), ``server_error`` (the service failed
+        it) or ``interrupted`` (the server cut its run off). None for any other
+        event or failure.
 
         Returns a list of per-method results, or None if no delivery configured.
-        Each result: {"method": str, "success": bool, "error"?: str}
+        Each result: {"method": str, "success": bool}
         """
         delivery_config = automation.get("delivery_config") or {}
         methods = delivery_config.get("methods", [])
@@ -97,13 +100,14 @@ class WebhookClient:
         if error:
             base_payload["error"] = error
 
-        results = []
-        for method in methods:
-            payload = {**base_payload, "config": {"channel": method}}
-            try:
-                success = await self.fire(webhook_url, payload, webhook_secret or None)
-                results.append({"method": method, "success": success})
-            except Exception as e:
-                logger.error(f"[WEBHOOK] fire_event failed: method={method} error={e}")
-                results.append({"method": method, "success": False, "error": str(e)})
-        return results
+        return [
+            {
+                "method": method,
+                "success": await self.fire(
+                    webhook_url,
+                    {**base_payload, "config": {"channel": method}},
+                    webhook_secret or None,
+                ),
+            }
+            for method in methods
+        ]

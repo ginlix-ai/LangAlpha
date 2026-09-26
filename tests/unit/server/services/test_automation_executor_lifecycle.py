@@ -25,6 +25,7 @@ from src.server.handlers.chat.admission_gate import (
 from src.server.services import automation_executor as executor_mod
 from src.server.services.automation_executor import AutomationExecutor
 from src.server.services.automation_settlement import INTERRUPTED_ERROR
+from src.server.services.runs.admission import BUSY_STATES
 from src.server.services.writer_guard import WriterGuardUnavailable
 
 _MOD = "src.server.services.automation_executor"
@@ -32,12 +33,18 @@ _USER = "user-1"
 _EXEC = "exec-1"
 
 
-def test_busy_codes_are_the_admission_gates_thread_busy_answers():
-    for state in ("running", "stopping", "compacting"):
-        assert admission_conflict_detail(state)["code"] in executor_mod._THREAD_BUSY_CODES
-    assert executor_mod._THREAD_BUSY_CODES <= ADMISSION_CONFLICT_CODES
-    # A steer probe's refusal is not a busy thread.
-    assert "not_running" not in executor_mod._THREAD_BUSY_CODES
+@pytest.mark.parametrize("state", sorted(BUSY_STATES))
+def test_every_busy_admission_answer_sends_the_firing_back_to_wait(state):
+    busy = HTTPException(status_code=409, detail=admission_conflict_detail(state))
+    assert state in ADMISSION_CONFLICT_CODES
+    assert executor_mod._lost_thread_race(busy)
+
+
+def test_a_steer_probes_refusal_is_not_a_busy_thread():
+    refused = HTTPException(
+        status_code=409, detail=admission_conflict_detail("not_running")
+    )
+    assert not executor_mod._lost_thread_race(refused)
 
 
 def _automation(**overrides):
@@ -120,10 +127,13 @@ def _firing(turns, *, runs=None, busy=(), fresh=None, is_byok=(False,)):
             f"{_MOD}.get_or_create_flash_workspace",
             new=AsyncMock(return_value={"workspace_id": "ws-1"}),
         ),
-        patch(f"{_MOD}.fire_webhook", new=fx.started),
-        patch("src.server.services.automation_settlement.fire_webhook", new=fx.settled_webhook),
-        patch(f"{_MOD}.announce_wait", new=fx.announce),
-        patch("src.server.services.automation_settlement.announce_wait", new=AsyncMock()),
+        patch(f"{_MOD}.WebhookClient", return_value=MagicMock(fire_event=fx.started)),
+        patch(
+            "src.server.services.automation_settlement.WebhookClient",
+            return_value=MagicMock(fire_event=fx.settled_webhook),
+        ),
+        patch(f"{_MOD}.publish_automation_wait", new=fx.announce),
+        patch("src.server.services.automation_settlement.publish_automation_wait", new=AsyncMock()),
         patch(f"{_MOD}._thread_busy", new=AsyncMock(side_effect=lambda _: next(busy_answers, False))),
         patch(f"{_MOD}._WAIT_POLL_SECONDS", new=0),
         patch("src.server.database.runs.lifecycle.get_run", new=AsyncMock(side_effect=get_run)),
@@ -240,6 +250,18 @@ async def test_a_turn_stopped_before_its_first_event_is_left_to_its_run():
     its run settles it as the stop it was."""
     stopped = _run("run-1", "cancelled", cancelled_by_user=True)
     with _firing([_streams], runs={0: stopped}) as fx:
+        await AutomationExecutor().execute(_automation(), _EXEC)
+
+    assert _left_to_run(fx) == fx.run_ids[0]
+    fx.started.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("run", ["completed", "error"])
+async def test_a_run_already_over_at_admission_is_not_announced(run):
+    """Its terminal notice may already be out from the settle job, and a
+    start behind it would leave a channel showing a run that ended."""
+    with _firing([_streams], runs={0: run}) as fx:
         await AutomationExecutor().execute(_automation(), _EXEC)
 
     assert _left_to_run(fx) == fx.run_ids[0]

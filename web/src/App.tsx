@@ -1,5 +1,6 @@
 import React, { Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { MotionConfig } from 'framer-motion';
+import { I18nProvider } from 'react-aria-components';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import AppSidebar from './components/Sidebar/AppSidebar';
 import { SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth } from './components/Sidebar/sidebarWidth';
@@ -315,6 +316,14 @@ function AuthenticatedShell() {
   );
 }
 
+/** The app's language for every react-aria control (month and weekday names,
+ *  typeahead order, the controls' own labels) rather than the browser's. A
+ *  component of its own, so a language switch re-renders only what reads it. */
+function AriaLocale({ children }: { children: React.ReactNode }) {
+  const { i18n } = useTranslation();
+  return <I18nProvider locale={i18n.language}>{children}</I18nProvider>;
+}
+
 function App() {
   const { isLoggedIn, isInitialized } = useAuth();
 
@@ -345,6 +354,7 @@ function App() {
     // app-wide collapses to instant for prefers-reduced-motion users (opacity
     // still animates) — no per-component wiring.
     <MotionConfig reducedMotion="user">
+    <AriaLocale>
     <Routes>
       <Route path={APP_ENTRY_PATH} element={appEntryElement} />
       {isPlatformMode && APP_ENTRY_PATH === '/' && (
@@ -406,6 +416,7 @@ function App() {
         isLoggedIn ? <AuthenticatedShell /> : <Navigate to={APP_ENTRY_PATH} replace />
       } />
     </Routes>
+    </AriaLocale>
     </MotionConfig>
   );
 }

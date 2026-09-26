@@ -62,3 +62,15 @@ async def test_no_method_sends_nothing():
             "exec-1", None, None,
         ) is None
     fire.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_post_that_raises_is_a_failed_method_not_an_error():
+    # ``fire`` is the only guard between a delivery and the settle that sent it.
+    with patch(
+        "src.server.services.webhook_client.httpx.AsyncClient",
+        side_effect=OSError("connection refused"),
+    ):
+        assert await WebhookClient().fire(
+            "http://hook.example.com", {"event": "automation.failed"}, "secret"
+        ) is False

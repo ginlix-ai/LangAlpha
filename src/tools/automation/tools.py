@@ -23,7 +23,8 @@ from pydantic import ValidationError
 
 from src.server.database import automation as auto_db
 from src.server.handlers import automation_handler as auto_handler
-from src.server.models.automation import AutomationCreate, error_sentences
+from src.server.models.automation import AutomationCreate
+from src.server.utils.error_sanitization import validation_error_text
 from src.utils.timezone_utils import zone_or_none
 
 logger = logging.getLogger(__name__)
@@ -96,8 +97,18 @@ def _disable_reason(automation: dict[str, Any]) -> dict[str, Any]:
     return {"disable_reason": reason} if reason else {}
 
 
+def _not_found(automation_id: str) -> str | None:
+    """The not-found error for an id that cannot name an automation, which
+    would otherwise reach the uuid cast and hand the model a driver error."""
+    try:
+        UUID(automation_id)
+    except ValueError:
+        return f"Automation '{automation_id}' not found."
+    return None
+
+
 def _error_text(e: ValueError) -> str:
-    return error_sentences(e) if isinstance(e, ValidationError) else str(e)
+    return validation_error_text(e) if isinstance(e, ValidationError) else str(e)
 
 
 def _serialize(obj: Any) -> Any:
@@ -132,72 +143,59 @@ async def check_automations(
     A waiting run starts once the turn on its thread ends. A disabled automation's
     disable_reason is provider_auth (the provider rejected the user's own key: it
     runs again once the key is fixed and the automation resumed) or max_failures.
-    A run's failure_reason usage_limit is a usage limit, which never disables it.
+    A run's failure_reason usage_limit is a usage limit, which never disables it;
+    server_error and interrupted mean the service failed or cut the run off, so
+    nothing in the automation needs changing.
     """
     try:
         user_id = _get_user_id(config)
 
         if automation_id is None:
             automations, total = await auto_db.list_automations(user_id)
-            result = _serialize(
-                {
-                    "automations": [
-                        {
-                            "automation_id": a["automation_id"],
-                            "name": a["name"],
-                            "status": a["status"],
-                            "agent_mode": a["agent_mode"],
-                            "schedule": a.get("cron_expression")
-                            or (
-                                a["next_run_at"].isoformat()
-                                if a.get("next_run_at")
-                                else None
-                            ),
-                            "next_run_at": a.get("next_run_at"),
-                            **({"trigger_config": a.get("trigger_config")} if a.get("trigger_type") == "price" else {}),
-                            **_disable_reason(a),
-                        }
-                        for a in automations
-                    ],
-                    "total": total,
-                }
+            listed = _serialize(
+                [
+                    {
+                        "automation_id": a["automation_id"],
+                        "name": a["name"],
+                        "status": a["status"],
+                        "agent_mode": a["agent_mode"],
+                        "schedule": a.get("cron_expression")
+                        or (
+                            a["next_run_at"].isoformat()
+                            if a.get("next_run_at")
+                            else None
+                        ),
+                        "next_run_at": a.get("next_run_at"),
+                        **({"trigger_config": a.get("trigger_config")} if a.get("trigger_type") == "price" else {}),
+                        **_disable_reason(a),
+                    }
+                    for a in automations
+                ]
             )
-            artifact = _serialize(
-                {
-                    "type": "automations",
-                    "mode": "list",
-                    "automations": [
-                        {
-                            "automation_id": a["automation_id"],
-                            "name": a["name"],
-                            "status": a["status"],
-                            "agent_mode": a["agent_mode"],
-                            "schedule": a.get("cron_expression")
-                            or (
-                                a["next_run_at"].isoformat()
-                                if a.get("next_run_at")
-                                else None
-                            ),
-                            "next_run_at": a.get("next_run_at"),
-                            "trigger_type": a.get("trigger_type", "cron"),
-                            **({"trigger_config": a.get("trigger_config")} if a.get("trigger_type") == "price" else {}),
-                            **_disable_reason(a),
-                        }
-                        for a in automations
-                    ],
-                    "total": total,
-                }
-            )
-            return json.dumps(result), artifact
+            artifact = {
+                "type": "automations",
+                "mode": "list",
+                # The cards pick their icon and schedule line by the kind of
+                # trigger.
+                "automations": [
+                    {**entry, "trigger_type": a.get("trigger_type", "cron")}
+                    for entry, a in zip(listed, automations)
+                ],
+                "total": total,
+            }
+            return json.dumps({"automations": listed, "total": total}), artifact
 
         # Get details + last 5 executions
+        if error := _not_found(automation_id):
+            return json.dumps({"error": error}), {}
         automation = await auto_db.get_automation(automation_id, user_id)
         if not automation:
             return json.dumps({"error": f"Automation '{automation_id}' not found."}), {}
 
-        executions, exec_total = await auto_db.list_executions(
+        executions, _ = await auto_db.list_executions(
             user_id, automation_id=automation_id, limit=5
         )
+        exec_total = await auto_db.count_executions(automation_id)
 
         result = _serialize(
             {
@@ -410,6 +408,8 @@ async def manage_automation(
     """Manage an existing automation: update settings, pause, resume, trigger immediately, or delete."""
     try:
         user_id = _get_user_id(config)
+        if error := _not_found(automation_id):
+            return {"error": error}
 
         if action == "pause":
             result = await auto_handler.pause_automation(automation_id, user_id)

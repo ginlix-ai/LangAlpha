@@ -35,15 +35,6 @@ from src.server.services.brokerages import Brokerage
 from src.server.services.mcp_config import Origin
 from src.server.services.tool_binding import order_approval_map
 
-
-def _format_validation_error(exc: ValidationError) -> str:
-    """Flatten a Pydantic ValidationError into a JSON-safe detail string."""
-    parts = []
-    for err in exc.errors(include_url=False):
-        loc = ".".join(str(p) for p in err.get("loc", ())) or "body"
-        parts.append(f"{loc}: {err.get('msg', 'invalid')}")
-    return "; ".join(parts) or "validation error"
-
 # ---------------------------------------------------------------------------
 # Shared constants — single source of truth for validators (also mirrored
 # in the frontend Zod schema; keep the two in sync).

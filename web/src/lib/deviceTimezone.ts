@@ -1,7 +1,7 @@
-// Apart from `lib/timezones` because the entry reads the device's zone (the
-// sign-in sync, every thread request), and a module the entry imports ships
-// in it whole, with every export a lazy chunk uses: the picker's zone list and
-// search rode first paint that way.
+// Apart from `lib/timezones` and the picker's zone list because the entry
+// reads the device's zone (the sign-in sync), and a module the entry imports
+// ships in it whole, with every export a lazy chunk uses: the picker's zone
+// list and search rode first paint that way.
 
 /** Names the IANA database has retired but ICU still reports, Chrome's own
  *  zone included for a reader in India or Vietnam. Each is kept under the
@@ -28,20 +28,33 @@ export const CURRENT_NAME: Record<string, string> = {
   'Pacific/Truk': 'Pacific/Chuuk',
 };
 
-const offsetFormats = new Map<string, Intl.DateTimeFormat>();
+const clocks = new Map<string, Intl.DateTimeFormat>();
 
-export function offsetFormat(tz: string): Intl.DateTimeFormat {
-  let fmt = offsetFormats.get(tz);
+/** A zone's wall clock to the second, cached per zone since a clock ticking
+ *  every second reads through it. Numeric fields only: the named offset
+ *  styles (`longOffset`, `shortOffset`) throw a RangeError before Chrome 95
+ *  and Safari 15.4. Throws for a zone this browser does not know. */
+export function zoneClock(tz: string): Intl.DateTimeFormat {
+  let fmt = clocks.get(tz);
   if (!fmt) {
-    fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'longOffset' });
-    offsetFormats.set(tz, fmt);
+    fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+    });
+    clocks.set(tz, fmt);
   }
   return fmt;
 }
 
 export function isKnownTimezone(tz: string): boolean {
   try {
-    offsetFormat(tz);
+    zoneClock(tz);
     return true;
   } catch {
     return false;

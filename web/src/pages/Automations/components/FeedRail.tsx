@@ -6,7 +6,7 @@ import { ErrorLink } from '@/components/ui/error-banner';
 import { relativeTime } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import type { Automation } from '@/types/automation';
-import { useAutomationMutations, type AutomationMutations } from '../hooks/useAutomationMutations';
+import type { AutomationMutations } from '../hooks/useAutomationMutations';
 import { useOpenThread } from '../hooks/useOpenThread';
 import type { WatchedReading } from '../hooks/useWatchedReadings';
 import { distanceLabel } from '../utils/price';
@@ -34,6 +34,7 @@ const RECURRING_STARTERS = templatesById(['morning_briefing', 'weekly_review', '
 interface FeedRailProps {
   automations: Automation[];
   readings: Map<string, WatchedReading>;
+  mutations: AutomationMutations;
   onOpenAutomation: (id: string) => void;
   onManage: () => void;
   onNew: (template: TemplateId) => void;
@@ -43,9 +44,8 @@ interface FeedRailProps {
  *  A section with nothing in it is left out rather than shown empty, except
  *  that when nothing at all is set to run again the rail says so and offers
  *  the recurring kinds. */
-export function FeedRail({ automations, readings, onOpenAutomation, onManage, onNew }: FeedRailProps) {
+export function FeedRail({ automations, readings, mutations, onOpenAutomation, onManage, onNew }: FeedRailProps) {
   const { t } = useTranslation();
-  const mutations = useAutomationMutations();
 
   const upNext = useMemo(
     () =>

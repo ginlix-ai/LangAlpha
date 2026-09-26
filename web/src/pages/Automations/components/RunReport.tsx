@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ArrowUpRight } from 'lucide-react';
 import { HeaderButton } from '@/components/mcp/McpPrimitives';
 import { ErrorLink } from '@/components/ui/error-banner';
-import type { RunSummary } from '@/types/automation';
+import type { AutomationExecution } from '@/types/automation';
 import type { ErrorLinkSpec } from '@/utils/rateLimitError';
 import type { RunView } from '../utils/status';
 import { StatusGlyph } from './StatusMark';
@@ -18,7 +18,7 @@ const LAYOUT = {
 } as const;
 
 interface RunReportProps {
-  run: RunSummary & { excerpt: string | null };
+  run: AutomationExecution;
   view: RunView;
   meta: string[];
   layout: keyof typeof LAYOUT;
