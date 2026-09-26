@@ -26,7 +26,7 @@ import { downloadTarget } from '../utils/fileRefResolver';
 import { toast } from '@/components/ui/use-toast';
 import { mergeWarmingDisplay } from '../utils/warmWorkspace';
 import { useChatMessages } from '../hooks/useChatMessages';
-import { useThreadFeedRunId } from '@/lib/threadLifecycle/store';
+import { useForeignRunCatchUp } from '../hooks/useForeignRunCatchUp';
 import { QueuedAutomationNotice } from './QueuedAutomationNotice';
 import { saveChatSession, getChatSession, clearChatSession } from '../hooks/utils/chatSessionRestore';
 import type { PreviewData } from '../hooks/utils/types';
@@ -316,7 +316,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     handleThumbDown,
     feedbackByTurn,
     reconnectIfStaleRun,
-    currentRunIdRef,
+    isOwnRun,
     getSubagentHistory,
     resolveSubagentIdToAgentId,
     hydrateTaskTranscript,
@@ -1287,32 +1287,15 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     prevIsActiveRef.current = isActive;
   }, [isActive, getScrollContainer, currentThreadId, threadId, pinToBottom, inheritNavOnActivate, skipNavAnimRef, isNearBottomRef, restoredForThreadRef]);
 
-  // A run that starts on this thread from somewhere else (another tab, an
-  // automation that waited for the last turn) is announced on the user feed
-  // and brought in the way a re-shown view catches up. It is held while this
-  // view streams or loads: a waiting automation starts the moment the turn
-  // settles, often before this view's stream has closed. The view's own run
-  // is announced too and can end before its announcement lands, when the turn
-  // watermark (only a lower bound) could take the view for stale and reload
-  // it for nothing, so a run this view streamed is passed over. So is a run
-  // while the report-back watch is armed, since that watch attaches the
-  // thread's report-back runs itself and a reload would race it.
   const feedThreadId = currentThreadId || threadId;
-  const feedRunId = useThreadFeedRunId(feedThreadId);
-  const lastFeedRunRef = useRef({ threadId: feedThreadId, runId: feedRunId });
-  const pendingFeedRunRef = useRef<string | null>(null);
-  useEffect(() => {
-    const last = lastFeedRunRef.current;
-    lastFeedRunRef.current = { threadId: feedThreadId, runId: feedRunId };
-    // Hidden, the become-active effect above catches up instead.
-    if (last.threadId !== feedThreadId || !isActive) pendingFeedRunRef.current = null;
-    else if (feedRunId && feedRunId !== last.runId) pendingFeedRunRef.current = feedRunId;
-    const pending = pendingFeedRunRef.current;
-    if (!pending || isLoading || isLoadingHistory) return;
-    pendingFeedRunRef.current = null;
-    if (awaitingReportBack || pending === currentRunIdRef.current) return;
-    void reconnectIfStaleRunRef.current();
-  }, [feedThreadId, feedRunId, isActive, isLoading, isLoadingHistory, awaitingReportBack, currentRunIdRef]);
+  useForeignRunCatchUp({
+    threadId: feedThreadId,
+    isActive,
+    busy: isLoading || isLoadingHistory,
+    awaitingReportBack,
+    isOwnRun,
+    catchUp: reconnectIfStaleRun,
+  });
 
   // Early return if workspaceId or threadId is missing
   if (!workspaceId || !threadId) {

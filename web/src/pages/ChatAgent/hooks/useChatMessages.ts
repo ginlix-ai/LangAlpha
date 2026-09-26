@@ -323,6 +323,10 @@ export function useChatMessages(
   // Local-layer run-liveness publish (declared here so it sits below the
   // run-id ref it reads).
   useLocalRunPublisher(threadId, isLoading, currentRunIdRef);
+  // The host's read of that ref: whether a run is the one this view is
+  // streaming or last streamed. Read, not handed out, so no caller can move
+  // the reconnect target.
+  const isOwnRun = useCallback((runId: string) => runId === currentRunIdRef.current, []);
   // Highest turn_index this view has RENDERED, compared against
   // /status.latest_turn_index by the reactivation staleness check (a run that
   // finished while this cached view was hidden is terminal — can_reconnect is
@@ -2710,9 +2714,9 @@ export function useChatMessages(
     fallbackSuggestion,
     clearFallbackSuggestion,
     reconnectIfStaleRun: reportBackWatch.reconnectIfStaleRun,
-    // The run this view is streaming or last streamed, so the host can tell
-    // its own run apart from one the user feed reports starting elsewhere.
-    currentRunIdRef,
+    // Tells this view's own run apart from one the user feed reports
+    // starting elsewhere.
+    isOwnRun,
     messageError,
     returnedSteering,
     clearReturnedSteering: () => setReturnedSteering(null),
