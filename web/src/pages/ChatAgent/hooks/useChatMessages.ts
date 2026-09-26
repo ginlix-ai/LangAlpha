@@ -10,7 +10,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
-import { deviceTimezone } from '@/lib/deviceTimezone';
+import { useHomeTimezone } from '@/hooks/useHomeTimezone';
 import { useUser } from '@/hooks/useUser';
 import { sendChatMessageStream, sendRetryStream, getWorkflowStatus, sendHitlResponse, fetchThreadTurns, cancelWorkflow } from '../utils/api';
 import { useLocalRunPublisher } from '@/lib/threadLifecycle/useLocalRunPublisher';
@@ -95,7 +95,7 @@ export function useChatMessages(
   // User locale/timezone — prefer saved preference, fall back to browser detection
   const { user } = useUser();
   const userLocale = user?.locale || navigator.language || 'en-US';
-  const userTimezone = user?.timezone || deviceTimezone();
+  const userTimezone = useHomeTimezone();
 
   // State
   const [messages, setMessages] = useState<MessageRecord[]>([]);
@@ -1718,6 +1718,7 @@ export function useChatMessages(
       message,
       agentMode,
       platform,
+      timezone: userTimezone,
       queryClient,
       threadIdRef,
       setThreadId,

@@ -1,7 +1,7 @@
 // Apart from `lib/timezones` and the picker's zone list because the entry
-// reads the device's zone (the sign-in sync, every thread request), and a
-// module the entry imports ships in it whole, with every export a lazy chunk
-// uses: the picker's zone list and search rode first paint that way.
+// reads the device's zone (the sign-in sync), and a module the entry imports
+// ships in it whole, with every export a lazy chunk uses: the picker's zone
+// list and search rode first paint that way.
 
 /** Names the IANA database has retired but ICU still reports, Chrome's own
  *  zone included for a reader in India or Vietnam. Each is kept under the
