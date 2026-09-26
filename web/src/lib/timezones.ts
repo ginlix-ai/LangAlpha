@@ -1,13 +1,15 @@
-import { offsetFormat } from './deviceTimezone';
+import { zoneClock } from './deviceTimezone';
 
-/** How many minutes a clock in `tz` runs ahead of UTC at `at`. Callers on a
- *  clock tick call this every second, so the formatter is cached per zone. */
+/** How many minutes a clock in `tz` runs ahead of UTC at `at`: its wall clock
+ *  read as though it were UTC, less the instant. 0 for a zone this browser
+ *  does not know. */
 export function utcOffsetMinutes(tz: string, at: Date = new Date()): number {
   try {
-    // Bare "GMT" is UTC itself; some ICU builds spell it "GMT+00:00".
-    const name = offsetFormat(tz).formatToParts(at).find((p) => p.type === 'timeZoneName')?.value ?? '';
-    const m = /([+\-−])(\d{2}):(\d{2})/.exec(name);
-    return m ? (m[1] === '+' ? 1 : -1) * (Number(m[2]) * 60 + Number(m[3])) : 0;
+    const f: Partial<Record<Intl.DateTimeFormatPartTypes, number>> = {};
+    for (const p of zoneClock(tz).formatToParts(at)) f[p.type] = Number(p.value);
+    // Some engines write midnight as 24 even on a 23-hour clock.
+    const wall = Date.UTC(f.year!, f.month! - 1, f.day, f.hour! % 24, f.minute, f.second);
+    return Math.round((wall - at.getTime()) / 60_000) || 0;
   } catch {
     return 0;
   }

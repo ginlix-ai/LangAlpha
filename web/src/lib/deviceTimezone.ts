@@ -28,20 +28,33 @@ export const CURRENT_NAME: Record<string, string> = {
   'Pacific/Truk': 'Pacific/Chuuk',
 };
 
-const offsetFormats = new Map<string, Intl.DateTimeFormat>();
+const clocks = new Map<string, Intl.DateTimeFormat>();
 
-export function offsetFormat(tz: string): Intl.DateTimeFormat {
-  let fmt = offsetFormats.get(tz);
+/** A zone's wall clock to the second, cached per zone since a clock ticking
+ *  every second reads through it. Numeric fields only: the named offset
+ *  styles (`longOffset`, `shortOffset`) throw a RangeError before Chrome 95
+ *  and Safari 15.4. Throws for a zone this browser does not know. */
+export function zoneClock(tz: string): Intl.DateTimeFormat {
+  let fmt = clocks.get(tz);
   if (!fmt) {
-    fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'longOffset' });
-    offsetFormats.set(tz, fmt);
+    fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+    });
+    clocks.set(tz, fmt);
   }
   return fmt;
 }
 
 export function isKnownTimezone(tz: string): boolean {
   try {
-    offsetFormat(tz);
+    zoneClock(tz);
     return true;
   } catch {
     return false;
