@@ -8,9 +8,10 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        // Route the `font-mono` utility onto the locked JetBrains Mono face
-        // (DESIGN.md); without this it silently resolves to ui-monospace.
-        mono: ["JetBrains Mono", "Menlo", "Noto Sans SC", "ui-monospace", "SFMono-Regular", "monospace"],
+        // Route the `font-mono` utility onto the `--font-mono` stack in
+        // styles/tokens.css, the locked JetBrains Mono face (DESIGN.md);
+        // without this it silently resolves to ui-monospace.
+        mono: ["var(--font-mono)"],
       },
       colors: {
         border: "hsl(var(--border))",
