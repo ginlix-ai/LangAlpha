@@ -425,6 +425,11 @@ class AutomationExecutor:
         The turn is already running then, and a bookkeeping error must not
         fail it; the drain's end links the run if no event ever did. A run the
         admission itself cancelled was never the automation's turn.
+
+        The start goes out only while the run is still going. The terminal
+        notice leaves from the run's settle job, possibly on another worker,
+        and a start landing after it would leave a channel showing a run
+        that already ended. This narrows that window; it does not close it.
         """
         try:
             run = await tl_db.get_run(firing.run_id)
@@ -432,7 +437,10 @@ class AutomationExecutor:
                 return False
             if run["status"] == "cancelled":
                 return True
-            if await _link_run(execution_id, firing.run_id):
+            if (
+                await _link_run(execution_id, firing.run_id)
+                and run["status"] == "in_progress"
+            ):
                 await fire_webhook(
                     "automation.started", firing.automation, execution_id,
                     firing.thread_id, firing.workspace_id, run_id=firing.run_id,

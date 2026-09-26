@@ -247,6 +247,18 @@ async def test_a_turn_stopped_before_its_first_event_is_left_to_its_run():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("run", ["completed", "error"])
+async def test_a_run_already_over_at_admission_is_not_announced(run):
+    """Its terminal notice may already be out from the settle job, and a
+    start behind it would leave a channel showing a run that ended."""
+    with _firing([_streams], runs={0: run}) as fx:
+        await AutomationExecutor().execute(_automation(), _EXEC)
+
+    assert _left_to_run(fx) == fx.run_ids[0]
+    fx.started.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_an_unavailable_writer_guard_is_ours():
     with _firing([_loses(WriterGuardUnavailable("budget"))], runs={0: None}) as fx:
         await AutomationExecutor().execute(_automation(), _EXEC)
