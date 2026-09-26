@@ -21,6 +21,7 @@ interface FeedViewProps {
   automations: Automation[];
   readings: Map<string, WatchedReading>;
   onOpenAutomation: (id: string) => void;
+  onOpenRun: (automationId: string, runId: string) => void;
   onManage: () => void;
   onNew: (template: TemplateId) => void;
 }
@@ -31,7 +32,7 @@ interface FeedViewProps {
  * the run's bookkeeping, since the answer is why the automation exists; the
  * rail beside it holds what is coming and what is waiting on the reader.
  */
-export default function FeedView({ automations, readings, onOpenAutomation, onManage, onNew }: FeedViewProps) {
+export default function FeedView({ automations, readings, onOpenAutomation, onOpenRun, onManage, onNew }: FeedViewProps) {
   const { t } = useTranslation();
   const { runs, isLoading, error, hasNextPage, fetchNextPage, isFetchingNextPage } = useRecentRuns();
   // Once for the feed, its entries and its rail: each would otherwise hold
@@ -65,7 +66,7 @@ export default function FeedView({ automations, readings, onOpenAutomation, onMa
                     run={run}
                     automation={byId.get(run.automation_id)}
                     mutations={mutations}
-                    onOpenAutomation={onOpenAutomation}
+                    onOpenRun={onOpenRun}
                   />
                 ))}
               </div>
@@ -96,12 +97,12 @@ function RunEntry({
   run,
   automation,
   mutations,
-  onOpenAutomation,
+  onOpenRun,
 }: {
   run: AutomationRun;
   automation: Automation | undefined;
   mutations: AutomationMutations;
-  onOpenAutomation: (id: string) => void;
+  onOpenRun: (automationId: string, runId: string) => void;
 }) {
   const { t } = useTranslation();
   const openThread = useOpenThread();
@@ -138,7 +139,12 @@ function RunEntry({
               <StatusGlyph ui={ui} label={t(ui.labelKey)} size={14} />
             </span>
           ) : null}
-          <button type="button" className="automation-name automation-run-name" onClick={() => onOpenAutomation(run.automation_id)}>
+          {/* Opens the automation on this run's report, not its newest. */}
+          <button
+            type="button"
+            className="automation-name automation-run-name"
+            onClick={() => onOpenRun(run.automation_id, run.automation_execution_id)}
+          >
             {run.automation_name}
           </button>
         </div>

@@ -1,4 +1,4 @@
-import React, { Fragment, useState } from 'react';
+import React, { Fragment, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertCircle, ArrowUpRight, Pause, Pencil, Play, Trash2, Zap } from 'lucide-react';
 import { HeaderButton, ListSkeleton } from '@/components/mcp/McpPrimitives';
@@ -28,6 +28,9 @@ const INSTRUCTION_FOLD_LINES = 10;
 interface AutomationInspectorProps {
   automation: Automation;
   reading: WatchedReading | undefined;
+  /** The run a link or a history row opened; null reports the newest. */
+  runId: string | null;
+  onOpenRun: (runId: string) => void;
   onEdit: (a: Automation) => void;
   onDelete: (a: Automation) => void;
 }
@@ -37,7 +40,14 @@ interface AutomationInspectorProps {
  * what is it and when does it run, what did it last find, what was it told to
  * do, how have its runs gone, and the settings nobody needs until they do.
  */
-export default function AutomationInspector({ automation: a, reading, onEdit, onDelete }: AutomationInspectorProps) {
+export default function AutomationInspector({
+  automation: a,
+  reading,
+  runId,
+  onOpenRun,
+  onEdit,
+  onDelete,
+}: AutomationInspectorProps) {
   const { t } = useTranslation();
   const openThread = useOpenThread();
   const { pause, resume, trigger, skip, busy } = useAutomationMutations();
@@ -48,6 +58,27 @@ export default function AutomationInspector({ automation: a, reading, onEdit, on
   const ui = automationStatusUi(a);
   const { canPause, canResume, canRun, runBusy } = automationActions(a);
   const last = a.last_execution;
+  // The opened run is looked for on the list row and in the history this
+  // pane loads. There is no reading one run by its id, so one older than
+  // that history is not fetched: the newest stands in, and says so.
+  const opened = runId
+    ? runId === last?.automation_execution_id
+      ? last
+      : executions.find((e) => e.automation_execution_id === runId) ?? null
+    : null;
+  const placing = !!runId && !opened && loading;
+  const runMissing = !!runId && !opened && !loading;
+  const shownRun = opened ?? last;
+  const isLatest = shownRun === last;
+
+  // A run opened from the history below brings its report into view.
+  const reportRef = useRef<HTMLElement>(null);
+  const openedOnMount = useRef(runId);
+  useEffect(() => {
+    if (openedOnMount.current === runId) return;
+    openedOnMount.current = runId;
+    reportRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+  }, [runId]);
 
   const kicker = [t(ui.labelKey), t(a.agent_mode === 'ptc' ? 'automation.ptc' : 'automation.flash')];
   if (workspaceName) kicker.push(workspaceName);
@@ -96,15 +127,20 @@ export default function AutomationInspector({ automation: a, reading, onEdit, on
         </HeaderButton>
       </div>
 
-      <section className="automation-inspector-section">
-        <h3 className="automations-kicker">{t('automation.latestRun')}</h3>
-        {last ? (
-          <LatestReport
-            execution={last}
-            links={attentionLinks(a)}
+      <section ref={reportRef} className="automation-inspector-section">
+        <h3 className="automations-kicker">{t(isLatest ? 'automation.latestRun' : 'automation.selectedRun')}</h3>
+        {runMissing && <p className="automations-quiet-note automation-run-missing">{t('automation.runNotFound')}</p>}
+        {placing ? (
+          <ListSkeleton rows={2} />
+        ) : shownRun ? (
+          <RunCard
+            execution={shownRun}
+            // Only the newest run links to a fix: an older limit may be long
+            // lifted, and in the feed the rail already offers the links.
+            links={isLatest ? attentionLinks(a) : []}
             busy={busy}
-            onOpen={() => openThread(last.conversation_thread_id)}
-            onSkip={() => skip.mutate({ automationId: a.automation_id, executionId: last.automation_execution_id })}
+            onOpen={() => openThread(shownRun.conversation_thread_id)}
+            onSkip={() => skip.mutate({ automationId: a.automation_id, executionId: shownRun.automation_execution_id })}
           />
         ) : (
           <p className="automations-quiet-note">{t('automation.noRunsForThis')}</p>
@@ -123,7 +159,12 @@ export default function AutomationInspector({ automation: a, reading, onEdit, on
         ) : executions.length === 0 ? (
           <p className="automations-quiet-note">{t('automation.noRunsForThis')}</p>
         ) : (
-          <RunHistory executions={executions} onOpen={(threadId) => openThread(threadId)} />
+          <RunHistory
+            executions={executions}
+            shownId={placing ? null : shownRun?.automation_execution_id ?? null}
+            onOpenRun={onOpenRun}
+            onOpen={(threadId) => openThread(threadId)}
+          />
         )}
       </section>
 
@@ -173,7 +214,7 @@ function Instruction({ text }: { text: string }) {
   );
 }
 
-function LatestReport({
+function RunCard({
   execution: e,
   links,
   busy,
@@ -190,8 +231,6 @@ function LatestReport({
   const view = describeRun(e);
   const meta = [t(view.ui.labelKey), formatDateTimeShort(e.started_at ?? e.scheduled_at)];
   if (view.showDuration) meta.push(formatDuration(e.started_at, e.completed_at));
-  // Only the newest run links to a fix: an older limit may be long lifted,
-  // and in the feed the rail beside the entries already offers the links.
   return (
     <div className="automation-report">
       <RunReport
@@ -210,9 +249,14 @@ function LatestReport({
 
 function RunHistory({
   executions,
+  shownId,
+  onOpenRun,
   onOpen,
 }: {
   executions: AutomationExecution[];
+  /** The run the report above shows. */
+  shownId: string | null;
+  onOpenRun: (runId: string) => void;
   onOpen: (threadId: string | null) => void;
 }) {
   const { t } = useTranslation();
@@ -234,6 +278,7 @@ function RunHistory({
             // Only a failure's label takes the glyph's color: amber marks
             // liveness on the glyph and never tints words.
             const error = ui.danger ? e.error_message : null;
+            const shown = e.automation_execution_id === shownId;
             return (
               <Fragment key={e.automation_execution_id}>
                 <tr className={error ? 'has-error' : undefined}>
@@ -243,7 +288,17 @@ function RunHistory({
                       <span style={{ color: ui.danger ? ui.color : undefined }}>{t(ui.labelKey)}</span>
                     </span>
                   </td>
-                  <td className="automation-mono">{formatDateTimeShort(e.started_at ?? e.scheduled_at)}</td>
+                  <td className="automation-mono">
+                    {/* Opens this run in the report above, and in the link. */}
+                    <button
+                      type="button"
+                      className="automation-link automation-history-run"
+                      aria-current={shown ? 'true' : undefined}
+                      onClick={() => onOpenRun(e.automation_execution_id)}
+                    >
+                      {formatDateTimeShort(e.started_at ?? e.scheduled_at)}
+                    </button>
+                  </td>
                   <td className="automation-mono">{showDuration ? formatDuration(e.started_at, e.completed_at) : ''}</td>
                   <td>
                     {(e.delivery_result ?? []).map((d) => (

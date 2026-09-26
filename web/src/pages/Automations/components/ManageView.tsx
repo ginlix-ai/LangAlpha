@@ -26,12 +26,13 @@ export interface FormHost {
  * (deleted, or past the first page it loads) is `missing`, and the pane says
  * so rather than show another automation in its place. With no choice the
  * first row stands in, so the pane is never an empty frame; only a choice,
- * `chosen` or `missing`, opens the phone sheet.
+ * `chosen` or `missing`, opens the phone sheet. `runId` is the run a link
+ * opened, which only a choice carries.
  */
 export type ManageSelection =
-  | { kind: 'chosen'; automation: Automation }
+  | { kind: 'chosen'; automation: Automation; runId: string | null }
   | { kind: 'first'; automation: Automation }
-  | { kind: 'missing' }
+  | { kind: 'missing'; runId: string | null }
   | { kind: 'none' };
 
 interface ManageViewProps {
@@ -39,6 +40,7 @@ interface ManageViewProps {
   readings: Map<string, WatchedReading>;
   selection: ManageSelection;
   onSelect: (id: string | null) => void;
+  onOpenRun: (automationId: string, runId: string | null) => void;
   form: FormHost | null;
   onEdit: (a: Automation) => void;
   onDelete: (a: Automation) => void;
@@ -54,6 +56,7 @@ export default function ManageView({
   readings,
   selection,
   onSelect,
+  onOpenRun,
   form,
   onEdit,
   onDelete,
@@ -81,11 +84,13 @@ export default function ManageView({
       key={shown.automation_id}
       automation={shown}
       reading={readings.get(shown.automation_id)}
+      runId={selection.kind === 'chosen' ? selection.runId : null}
+      onOpenRun={(run) => onOpenRun(shown.automation_id, run)}
       onEdit={onEdit}
       onDelete={onDelete}
     />
-  ) : missing ? (
-    <p className="automations-quiet-note">{t('automation.notFound')}</p>
+  ) : selection.kind === 'missing' ? (
+    <p className="automations-quiet-note">{t(selection.runId ? 'automation.runLinkNotFound' : 'automation.notFound')}</p>
   ) : null;
 
   // What the pane holds. On a phone the list's scroller is the pane and only
