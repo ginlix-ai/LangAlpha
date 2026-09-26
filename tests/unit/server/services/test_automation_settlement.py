@@ -88,8 +88,8 @@ def _settlement(row):
     )
     with (
         patch(f"{_MOD}.auto_db", new=fx.db),
-        patch(f"{_MOD}.fire_webhook", new=fx.fire),
-        patch(f"{_MOD}.announce_wait", new=fx.announce),
+        patch(f"{_MOD}.WebhookClient", return_value=MagicMock(fire_event=fx.fire)),
+        patch(f"{_MOD}.publish_automation_wait", new=fx.announce),
         patch(f"{_MOD}.safe_add", new=fx.metric),
     ):
         yield fx
@@ -154,7 +154,10 @@ async def test_outcome_effects(outcome, trigger):
 async def test_leaving_the_line_clears_the_wait_notice(outcome):
     with _settlement(_row(settled_from="waiting")) as fx:
         assert await settle(_automation(), _EID, outcome)
-    fx.announce.assert_awaited_once_with("user-1", _THREAD, _EID, waiting=False)
+    fx.announce.assert_awaited_once_with(
+        user_id="user-1", thread_id=_THREAD, automation_execution_id=_EID,
+        waiting=False,
+    )
 
 
 @pytest.mark.asyncio

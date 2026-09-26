@@ -13,6 +13,7 @@ Covers:
   run row, and is left to that run to settle
 """
 
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -70,10 +71,17 @@ _PATCHES = {
     "auto_db": "src.server.services.automation_executor.auto_db",
     "settlement_db": "src.server.services.automation_settlement.auto_db",
     "flash_ws": "src.server.services.automation_executor.get_or_create_flash_workspace",
-    "fire_webhook": "src.server.services.automation_executor.fire_webhook",
-    "settlement_webhook": "src.server.services.automation_settlement.fire_webhook",
     "get_run": "src.server.database.runs.lifecycle.get_run",
 }
+
+
+@contextmanager
+def _webhook_of(module):
+    """Stub the ``WebhookClient`` a module sends through; yields its
+    ``fire_event``."""
+    fire = AsyncMock(return_value=None)
+    with patch(f"{module}.WebhookClient", return_value=MagicMock(fire_event=fire)):
+        yield fire
 
 
 def _patch_all(
@@ -104,12 +112,8 @@ def _patch_all(
             _PATCHES["flash_ws"],
             new=AsyncMock(return_value={"workspace_id": _WS_ID}),
         ),
-        "fire_webhook": patch(
-            _PATCHES["fire_webhook"], new=AsyncMock(return_value=None)
-        ),
-        "settlement_webhook": patch(
-            _PATCHES["settlement_webhook"], new=AsyncMock(return_value=None)
-        ),
+        "webhook": _webhook_of("src.server.services.automation_executor"),
+        "settlement_webhook": _webhook_of("src.server.services.automation_settlement"),
         "get_run": patch(_PATCHES["get_run"], new=AsyncMock(side_effect=_run_row)),
     }
 
@@ -142,7 +146,7 @@ class TestCredentialGate:
             patches["auto_db"] as mock_adb,
             patches["settlement_db"],
             patches["flash_ws"],
-            patches["fire_webhook"],
+            patches["webhook"],
             patches["settlement_webhook"],
             patches["get_run"],
             patch(
@@ -175,7 +179,7 @@ class TestCredentialGate:
             patches["auto_db"] as mock_adb,
             patches["settlement_db"],
             patches["flash_ws"],
-            patches["fire_webhook"],
+            patches["webhook"],
             patches["settlement_webhook"],
             patches["get_run"],
             patch(
@@ -208,7 +212,7 @@ class TestCredentialGate:
             patches["auto_db"] as mock_adb,
             patches["settlement_db"],
             patches["flash_ws"],
-            patches["fire_webhook"],
+            patches["webhook"],
             patches["settlement_webhook"],
             patches["get_run"],
             patch(
@@ -238,7 +242,7 @@ class TestCredentialGate:
             patches["auto_db"] as mock_adb,
             patches["settlement_db"],
             patches["flash_ws"],
-            patches["fire_webhook"],
+            patches["webhook"],
             patches["settlement_webhook"],
             patches["get_run"],
             patch(
@@ -324,7 +328,7 @@ async def _gated(exc):
         patches["auto_db"] as mock_adb,
         patches["settlement_db"],
         patches["flash_ws"],
-        patches["fire_webhook"],
+        patches["webhook"],
         patches["settlement_webhook"] as mock_settled,
         patches["get_run"],
         patch(
@@ -351,7 +355,7 @@ class TestAdmitted:
             patches["auto_db"] as mock_adb,
             patches["settlement_db"],
             patches["flash_ws"],
-            patches["fire_webhook"] as mock_started,
+            patches["webhook"] as mock_started,
             patches["settlement_webhook"] as mock_settled,
             patches["get_run"] as mock_get_run,
             patch(

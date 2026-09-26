@@ -27,12 +27,12 @@ from src.server.dependencies.usage_limits import enforce_credit_limit
 from src.server.models.chat import ChatMessage, ChatRequest, ThreadOrigin
 from src.server.services.automation_settlement import (
     Outcome,
-    announce_wait,
     clean_error_text,
-    fire_webhook,
     settle,
 )
 from src.server.services.runs.admission import BUSY_STATES
+from src.server.services.thread_lifecycle_feed import publish_automation_wait
+from src.server.services.webhook_client import WebhookClient
 from src.observability.tracing import hash_id as _obs_hash_id, tracer as _otel_tracer
 
 logger = logging.getLogger(__name__)
@@ -325,7 +325,12 @@ class AutomationExecutor:
             f"[AUTOMATION_EXEC] Waiting for thread: execution_id={execution_id} "
             f"thread_id={thread_id}"
         )
-        await announce_wait(automation["user_id"], thread_id, execution_id, waiting=True)
+        await publish_automation_wait(
+            user_id=automation["user_id"],
+            thread_id=thread_id,
+            automation_execution_id=execution_id,
+            waiting=True,
+        )
         try:
             while True:
                 try:
@@ -404,8 +409,11 @@ class AutomationExecutor:
                 started_at=datetime.now(timezone.utc),
             ):
                 return None
-            await announce_wait(
-                automation["user_id"], thread_id, execution_id, waiting=False
+            await publish_automation_wait(
+                user_id=automation["user_id"],
+                thread_id=thread_id,
+                automation_execution_id=execution_id,
+                waiting=False,
             )
             return fresh
         if time.monotonic() >= deadline:
@@ -439,7 +447,7 @@ class AutomationExecutor:
                 await _link_run(execution_id, firing.run_id)
                 and run["status"] == "in_progress"
             ):
-                await fire_webhook(
+                await WebhookClient().fire_event(
                     "automation.started", firing.automation, execution_id,
                     firing.thread_id, firing.workspace_id, run_id=firing.run_id,
                 )

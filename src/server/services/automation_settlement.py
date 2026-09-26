@@ -32,6 +32,7 @@ from src.server.models.automation import (
     SkipReason,
 )
 from src.server.services.automation_excerpt import read_run_excerpt
+from src.server.services.thread_lifecycle_feed import publish_automation_wait
 from src.server.services.webhook_client import WebhookClient
 from src.server.utils.error_sanitization import sanitize_error_text
 
@@ -386,7 +387,7 @@ async def _after_settling(
     """The webhook, the chat's wait line and the metric a settle sets off."""
     policy = _POLICIES[outcome]
     if policy.webhook and not _repeats_a_refusal(policy.failure_reason, run_id, row):
-        delivery_result = await fire_webhook(
+        delivery_result = await WebhookClient().fire_event(
             policy.webhook, automation, execution_id, thread_id, workspace_id,
             error=error, run_id=run_id, failure_reason=policy.failure_reason,
         )
@@ -399,8 +400,11 @@ async def _after_settling(
                     f"execution_id={execution_id} error={e}"
                 )
     if row["settled_from"] == "waiting" and thread_id:
-        await announce_wait(
-            automation["user_id"], thread_id, execution_id, waiting=False
+        await publish_automation_wait(
+            user_id=automation["user_id"],
+            thread_id=thread_id,
+            automation_execution_id=execution_id,
+            waiting=False,
         )
     safe_add(
         automation_executions,
@@ -542,42 +546,3 @@ def register_outbox_executors() -> None:
     from src.server.services.hook_outbox import register_hook_executor
 
     register_hook_executor("automation_settle", _settle_finished_run)
-
-
-async def fire_webhook(
-    event: str,
-    automation: Dict[str, Any],
-    execution_id: str,
-    thread_id: Optional[str],
-    workspace_id: Optional[str],
-    error: Optional[str] = None,
-    run_id: Optional[str] = None,
-    failure_reason: Optional[FailureReason] = None,
-) -> Optional[list[dict]]:
-    """Fire webhook event. Never raises. Returns per-method results."""
-    try:
-        return await WebhookClient().fire_event(
-            event, automation, execution_id, thread_id, workspace_id,
-            error=error, run_id=run_id, failure_reason=failure_reason,
-        )
-    except Exception as e:
-        logger.error(f"[AUTOMATION_SETTLE] Webhook fire failed: {e}")
-        return None
-
-
-async def announce_wait(
-    user_id: str, thread_id: str, execution_id: str, *, waiting: bool
-) -> None:
-    """Tell the user's open tabs a firing joined or left its thread's line.
-
-    A chat open on that thread shows or clears its notice from this rather
-    than polling.
-    """
-    from src.server.services.thread_lifecycle_feed import publish_automation_wait
-
-    await publish_automation_wait(
-        user_id=user_id,
-        thread_id=thread_id,
-        automation_execution_id=execution_id,
-        waiting=waiting,
-    )
