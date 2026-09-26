@@ -61,7 +61,9 @@
 
 /* --- A small surface popping open at its anchor: menus, popovers, hover
        cards. `data-side` is Radix's own answer for which side of the trigger
-       it landed on, so the nudge always travels away from the trigger. --- */
+       it landed on and `data-placement` react-aria's, so the nudge always
+       travels away from the trigger; react-aria marks the two phases with
+       `data-entering` and `data-exiting` rather than a state. --- */
 @keyframes pop-in {
   from { opacity: 0; transform: translate(var(--pop-x, 0), var(--pop-y, 0)) scale(0.95); }
   to   { opacity: 1; transform: translate(0, 0) scale(1); }
@@ -72,16 +74,18 @@
   to   { opacity: 0; transform: scale(0.95); }
 }
 
-.pop-in[data-side='bottom'] { --pop-y: -0.5rem; }
-.pop-in[data-side='top']    { --pop-y: 0.5rem; }
-.pop-in[data-side='left']   { --pop-x: 0.5rem; }
-.pop-in[data-side='right']  { --pop-x: -0.5rem; }
+.pop-in[data-side='bottom'], .pop-in[data-placement='bottom'] { --pop-y: -0.5rem; }
+.pop-in[data-side='top'],    .pop-in[data-placement='top']    { --pop-y: 0.5rem; }
+.pop-in[data-side='left'],   .pop-in[data-placement='left']   { --pop-x: 0.5rem; }
+.pop-in[data-side='right'],  .pop-in[data-placement='right']  { --pop-x: -0.5rem; }
 
-.pop-in[data-state='open'] {
+.pop-in[data-state='open'],
+.pop-in[data-entering] {
   animation: pop-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.pop-in[data-state='closed'] {
+.pop-in[data-state='closed'],
+.pop-in[data-exiting] {
   animation: pop-out 140ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -212,6 +216,8 @@
   .overlay-fade[data-state='closed'],
   .pop-in[data-state='open'],
   .pop-in[data-state='closed'],
+  .pop-in[data-entering],
+  .pop-in[data-exiting],
   .pop-in-center[data-state='open'],
   .pop-in-center[data-state='closed'],
   .sheet-in[data-state='open'],
