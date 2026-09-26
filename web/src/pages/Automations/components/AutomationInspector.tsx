@@ -302,7 +302,7 @@ function RunHistory({
                   <td className="automation-mono">{showDuration ? formatDuration(e.started_at, e.completed_at) : ''}</td>
                   <td>
                     {(e.delivery_result ?? []).map((d) => (
-                      <span key={d.method} className="mr-2 inline-flex items-center gap-1" title={d.error ?? undefined}>
+                      <span key={d.method} className="mr-2 inline-flex items-center gap-1">
                         {!d.success && (
                           <AlertCircle className="h-3 w-3" style={{ color: 'var(--color-icon-danger)' }} aria-label={t('automation.runFailed')} />
                         )}

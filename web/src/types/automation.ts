@@ -47,7 +47,6 @@ export type TriggerType = 'cron' | 'once' | 'price';
 export interface DeliveryAttempt {
   method: string;
   success: boolean;
-  error?: string | null;
 }
 
 /** One run as the server sends it: a list row's newest execution, an
