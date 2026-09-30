@@ -682,6 +682,67 @@ class TestTheDeliveryRulesRideWhenTheyAreNews:
         assert SLACK_RULES in text
 
 
+class TestANotificationKeepsTheRulesItReportsUnder:
+    """A notification turn is the harness reporting finished background work
+    into the thread that dispatched it. Nobody sent it and it names no surface,
+    so it must neither take a channel's rules back (the report lands in that
+    channel) nor stand in for the person an automation's handoff waits for.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_report_into_a_channel_keeps_the_channel_rules_in_force(self):
+        slack = await _row(platform="slack", surface_rules=SLACK_RULES)
+        report = await _row(inherits_rules=True, state=_state([slack]))
+
+        assert _provenance(report)["rules_key"] == _provenance(slack)["rules_key"]
+        assert "no delivery rules of its own" not in report.content
+        assert SLACK_RULES not in report.content
+
+        # Still the last rules stated, so the channel's next turn does not
+        # repeat them.
+        back = await _row(
+            platform="slack", surface_rules=SLACK_RULES, state=_state([slack, report])
+        )
+        assert SLACK_RULES not in back.content
+
+    @pytest.mark.asyncio
+    async def test_the_same_turn_without_the_flag_takes_the_rules_back(self):
+        """What the flag changes: a turn with no surface otherwise reads as
+        the web app continuing the thread."""
+        slack = await _row(platform="slack", surface_rules=SLACK_RULES)
+        plain = await _row(state=_state([slack]))
+
+        assert _provenance(plain)["rules_key"] == "default"
+        assert "no delivery rules of its own" in plain.content
+
+    @pytest.mark.asyncio
+    async def test_a_plain_turn_after_the_report_still_returns_to_the_default(self):
+        slack = await _row(platform="slack", surface_rules=SLACK_RULES)
+        report = await _row(inherits_rules=True, state=_state([slack]))
+        web = await _row(state=_state([slack, report]))
+
+        assert _provenance(web)["rules_key"] == "default"
+        assert "no delivery rules of its own" in web.content
+
+    @pytest.mark.asyncio
+    async def test_a_report_is_not_the_attended_turn_after_an_automation(self):
+        auto = await _row(platform="web", origin="automation")
+        report = await _row(inherits_rules=True, state=_state([auto]))
+
+        assert _provenance(report)["rules_key"] == "web+automation"
+        assert "waiting for the reply" not in report.content
+
+        manual = await _row(platform="web", state=_state([auto, report]))
+        assert "A person sent this turn and is waiting for the reply." in manual.content
+
+    @pytest.mark.asyncio
+    async def test_a_report_on_a_thread_with_no_rules_states_none(self):
+        report = await _row(inherits_rules=True)
+
+        assert "rules_key" not in _provenance(report)
+        assert "delivery rules" not in report.content
+
+
 class TestTheLowDiskLineIsTakenBack:
     """The low-disk line is an instruction in a row nothing rewrites, so the
     first turn after it stops applying has to say so."""

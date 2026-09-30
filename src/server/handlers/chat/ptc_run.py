@@ -81,9 +81,12 @@ from .request_prep import (
     normalize_request_messages,
     prepare_skill_contexts,
     process_hitl_response,
+    retried_on_its_surface,
     serialize_context_metadata,
     setup_steering_tracking,
+    surface_stamp,
     turn_skill_names,
+    turn_surface,
     user_skill_commands,
 )
 from src.server.services.credit_gate_port import build_run_credit_gate
@@ -295,6 +298,9 @@ async def astream_ptc_workflow(
             msg_type="ptc",
             initial_query=user_input,
         )
+        # /retry builds its attempt with no surface: it runs where the
+        # attempt it retries did, under the same rules.
+        request, inherits_rules = await retried_on_its_surface(request)
         disk_free_mb, disk_known = await read_disk_notice(workspace_id)
         user_profile = await get_user_profile_for_prompt(user_id) if user_id else None
         turn_context = build_turn_context(
@@ -303,6 +309,7 @@ async def astream_ptc_workflow(
             user_profile=user_profile,
             disk_free_mb=disk_free_mb,
             disk_known=disk_known,
+            inherits_rules=inherits_rules,
         )
 
         query_type, fork = _resolve_fork(request=request)
@@ -417,7 +424,14 @@ async def astream_ptc_workflow(
             query_metadata=query_metadata,
             fork=fork,
             is_checkpoint_replay=is_checkpoint_replay,
-            extra_run_metadata={**origin_meta, **carried, **(run_metadata or {})},
+            extra_run_metadata={
+                **origin_meta,
+                **carried,
+                **surface_stamp(
+                    request, prior_thread, inherits_rules=turn_context.inherits_rules
+                ),
+                **(run_metadata or {}),
+            },
         )
         if not is_checkpoint_replay:
             logger.debug(
@@ -819,6 +833,7 @@ async def astream_ptc_workflow(
             skill_dirs=skill_dirs,
             run_id=run_id,
             turn_index=run_handle.turn_index,
+            surface=turn_surface(request, prior_thread),
         )
         # Propagate run_id to LangGraph via the top-level config key; it
         # lands on ExecutionInfo.run_id and CheckpointMetadata.run_id so

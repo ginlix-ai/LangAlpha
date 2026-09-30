@@ -69,6 +69,7 @@ from .request_prep import (
     serialize_context_metadata,
     setup_steering_tracking,
     turn_skill_names,
+    turn_surface,
     user_skill_commands,
 )
 from src.server.services.credit_gate_port import build_run_credit_gate
@@ -511,6 +512,7 @@ async def astream_flash_workflow(
             skill_dirs=skill_dirs,
             run_id=run_id,
             turn_index=run_handle.turn_index,
+            surface=turn_surface(request, prior_thread),
         )
         graph_config["run_id"] = run_id
 

@@ -92,6 +92,7 @@ def build_context_middleware(
             platform=turn.platform,
             origin=turn.origin,
             surface_rules=turn.surface_rules,
+            inherits_rules=turn.inherits_rules,
             disk_free_mb=turn.disk_free_mb,
             disk_known=turn.disk_known,
         ),

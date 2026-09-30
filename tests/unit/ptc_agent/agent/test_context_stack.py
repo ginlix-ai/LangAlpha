@@ -75,3 +75,17 @@ def test_the_role_reaches_the_agentmd_block(monkeypatch):
 def test_a_build_that_names_no_role_is_the_analyst(monkeypatch):
     """Subagents, Flash and the CLI build the stack without a role."""
     assert _agentmd_kwargs(monkeypatch, _stack(timezone=None))["role"] == "analyst"
+
+
+def test_a_notification_turn_reaches_the_turn_row_as_inheriting_its_rules():
+    """The flag the request prep sets for a turn nobody sent has to arrive at
+    the middleware that decides whether the conversation's rules stay."""
+    stack = build_context_middleware(
+        now=datetime(2026, 9, 13, 6, 0, tzinfo=UTC),
+        guidance=None,
+        model_name=None,
+        sandbox_enabled=False,
+        turn_context=TurnContext(inherits_rules=True),
+    )
+    assert stack.turn._inherits_rules is True
+    assert _stack(timezone=None).turn._inherits_rules is False
