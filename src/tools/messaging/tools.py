@@ -1,0 +1,466 @@
+"""Tools that message the user on the chat apps connected to their account.
+
+Delivery belongs to the channel gateway: it holds the user's linked accounts,
+knows what each app accepts, and keeps the list of chats this user allowed.
+These tools carry the turn's identity and the model's request to it and hand
+the answer back. An address the model passes is a claim the gateway re-checks
+on every send, never a credential, so nothing here decides who may be reached.
+
+Every failure comes back as a result the model can read, never as an exception
+into the graph: a messaging hiccup is not worth failing the turn for, and the
+model has to know whether anything went out before it tells the user so.
+"""
+
+import logging
+import os
+from typing import Annotated, Any
+
+import httpx
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import BaseTool, StructuredTool
+
+from src.config import env
+
+try:
+    from langchain.tools import InjectedToolCallId
+except ImportError:  # pragma: no cover - older langchain
+    from langchain_core.tools import InjectedToolCallId
+
+logger = logging.getLogger(__name__)
+
+MAX_TEXT_CHARS = 20_000
+MAX_FILES = 10
+
+# A send fetches each file from the workspace and uploads it to the app
+# before answering, so it gets far longer than a listing does.
+_SEND_TIMEOUT = httpx.Timeout(90.0, connect=5.0)
+_TARGETS_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
+
+
+def _service_token() -> str:
+    return os.getenv("INTERNAL_SERVICE_TOKEN", "")
+
+
+def messaging_enabled() -> bool:
+    """Whether a gateway is configured to deliver through.
+
+    Read at build time, per turn, so the tools appear and disappear with the
+    deployment's configuration rather than with anything a request says.
+    """
+    return bool(env.CHANNEL_GATEWAY_URL and _service_token().strip())
+
+
+def _client(timeout: httpx.Timeout) -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+
+
+def _turn(config: RunnableConfig | None) -> dict[str, Any]:
+    configurable = (config or {}).get("configurable") or {}
+    return {
+        "user_id": configurable.get("user_id"),
+        "thread_id": configurable.get("thread_id"),
+        "run_id": configurable.get("run_id"),
+        "workspace_id": configurable.get("workspace_id"),
+        "turn_platform": configurable.get("platform"),
+    }
+
+
+# -- results ------------------------------------------------------------------
+
+
+def _result(status: str, code: str | None, message: str) -> str:
+    lines = [f"status: {status}"]
+    if code:
+        lines.append(f"code: {code}")
+    lines.append(message)
+    return "\n".join(lines)
+
+
+def format_send_result(data: dict[str, Any]) -> str:
+    """The gateway's delivery answer, as the model reads it."""
+    status = data.get("status") or "failed"
+    lines = [f"status: {status}"]
+    if data.get("code"):
+        lines.append(f"code: {data['code']}")
+    if data.get("address"):
+        here = " (this conversation)" if data.get("current") else ""
+        lines.append(f"to: {data['address']}{here}")
+    if data.get("duplicate"):
+        lines.append(
+            "An earlier attempt of this same call already delivered it; nothing was sent twice."
+        )
+    if data.get("message"):
+        lines.append(str(data["message"]))
+    files = data.get("files") or []
+    if files:
+        lines.append("files:")
+        for entry in files:
+            if not isinstance(entry, dict):
+                continue
+            outcome = entry.get("status") or "failed"
+            reason = entry.get("reason")
+            if not reason and outcome == "linked":
+                reason = "sent as a download link"
+            detail = f" ({reason})" if reason else ""
+            lines.append(f"- {entry.get('path')}: {outcome}{detail}")
+    return "\n".join(lines)
+
+
+def format_targets_result(data: dict[str, Any]) -> str:
+    """The gateway's list of reachable addresses, as the model reads it."""
+    if _listing_failed(data):
+        return (
+            "The messaging service could not list the targets. "
+            "Where you can send is unknown right now."
+        )
+    lines: list[str] = []
+    current = data.get("current")
+    if isinstance(current, dict) and current.get("address"):
+        lines.append(
+            f"This conversation: {current['address']}. Omit target to send here."
+        )
+    else:
+        lines.append(
+            "This turn is not in a messaging conversation, so every send needs a target."
+        )
+    targets = [t for t in data.get("targets") or [] if isinstance(t, dict)]
+    if targets:
+        lines.append("Targets:")
+        for target in targets:
+            kind = f" ({target['kind']})" if target.get("kind") else ""
+            name = f": {target['name']}" if target.get("name") else ""
+            lines.append(f"- {target.get('address')}{kind}{name}")
+    else:
+        lines.append("Targets: none.")
+    unavailable = [u for u in data.get("unavailable") or [] if isinstance(u, dict)]
+    if unavailable:
+        lines.append("Unavailable:")
+        for entry in unavailable:
+            reason = f" ({entry['reason']})" if entry.get("reason") else ""
+            message = f": {entry['message']}" if entry.get("message") else ""
+            lines.append(f"- {entry.get('platform')}{reason}{message}")
+    if data.get("settings_url"):
+        lines.append(f"Settings: {data['settings_url']}")
+    return "\n".join(lines)
+
+
+def _listing_failed(data: dict[str, Any]) -> bool:
+    """Whether the answer is the one the messaging service gives when the listing
+    itself failed: nothing reachable, and every app it names unavailable. Its
+    current conversation is then unknown, not absent."""
+    current = data.get("current")
+    if (isinstance(current, dict) and current.get("address")) or data.get("targets"):
+        return False
+    unavailable = [u for u in data.get("unavailable") or [] if isinstance(u, dict)]
+    return bool(unavailable) and all(u.get("reason") == "unavailable" for u in unavailable)
+
+
+# -- transport ----------------------------------------------------------------
+
+
+class _GatewayError(Exception):
+    """A call that produced no answer the model can act on.
+
+    ``delivered_unknown`` is True when the request may have reached the
+    gateway and been acted on, so a send cannot be called either way.
+    """
+
+    def __init__(self, message: str, *, delivered_unknown: bool) -> None:
+        super().__init__(message)
+        self.message = message
+        self.delivered_unknown = delivered_unknown
+
+
+async def _call(
+    method: str,
+    path: str,
+    *,
+    user_id: str,
+    timeout: httpx.Timeout,
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    headers = {"X-Service-Token": _service_token(), "X-User-Id": str(user_id)}
+    url = f"{env.CHANNEL_GATEWAY_URL}{path}"
+    try:
+        async with _client(timeout) as client:
+            response = await client.request(
+                method, url, params=params, json=body, headers=headers
+            )
+    except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+        logger.warning("[messaging] gateway unreachable for %s: %r", path, e)
+        raise _GatewayError(
+            "The messaging service could not be reached.", delivered_unknown=False
+        ) from e
+    except httpx.TimeoutException as e:
+        logger.warning("[messaging] gateway timed out for %s: %r", path, e)
+        raise _GatewayError(
+            "The messaging service did not answer in time.", delivered_unknown=True
+        ) from e
+    except httpx.HTTPError as e:
+        logger.warning("[messaging] gateway call failed for %s: %r", path, e)
+        raise _GatewayError(
+            "The connection to the messaging service broke.", delivered_unknown=True
+        ) from e
+
+    if response.status_code in (401, 403):
+        logger.error(
+            "[messaging] gateway refused this server's service token (%s) on %s",
+            response.status_code,
+            path,
+        )
+        raise _GatewayError(
+            "The messaging service refused this server's credentials.",
+            delivered_unknown=False,
+        )
+    if response.status_code == 422:
+        raise _GatewayError(
+            f"The messaging service rejected the request: {_detail(response)}",
+            delivered_unknown=False,
+        )
+    if response.status_code != 200:
+        logger.warning(
+            "[messaging] gateway answered %s on %s", response.status_code, path
+        )
+        raise _GatewayError(
+            f"The messaging service failed ({response.status_code}).",
+            delivered_unknown=True,
+        )
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        raise _GatewayError(
+            "The messaging service sent an answer that could not be read.",
+            delivered_unknown=True,
+        )
+    return data
+
+
+def _detail(response: httpx.Response) -> str:
+    try:
+        detail = response.json().get("detail")
+    except (ValueError, AttributeError):
+        detail = None
+    text = detail if isinstance(detail, str) else (str(detail) if detail else "")
+    return (text or response.text or "malformed request")[:300]
+
+
+# -- the tools ----------------------------------------------------------------
+
+
+async def _send(
+    *,
+    text: str,
+    files: list[str] | None,
+    target: str | None,
+    reply: bool,
+    files_workspace_id: str | None,
+    config: RunnableConfig | None,
+    tool_call_id: str,
+    files_need_workspace: bool,
+) -> str:
+    turn = _turn(config)
+    if not turn["user_id"]:
+        return _result(
+            "failed",
+            "unavailable",
+            "This turn has no user attached, so there is no one to message.",
+        )
+    text = text or ""
+    paths = [p.strip() for p in files or [] if isinstance(p, str) and p.strip()]
+    if not text.strip() and not paths:
+        return _result(
+            "failed", "invalid_request", "Nothing to send: pass text, files, or both."
+        )
+    if len(text) > MAX_TEXT_CHARS:
+        return _result(
+            "failed",
+            "invalid_request",
+            f"The text is {len(text)} characters; the limit is {MAX_TEXT_CHARS}. "
+            "Split it across messages.",
+        )
+    if len(paths) > MAX_FILES:
+        return _result(
+            "failed",
+            "invalid_request",
+            f"{len(paths)} files given; a message carries at most {MAX_FILES}.",
+        )
+    files_workspace_id = (files_workspace_id or "").strip() or None
+    if paths and files_need_workspace and not files_workspace_id:
+        return _result(
+            "failed",
+            "invalid_request",
+            "Pass workspace_id: the workspace the files are in, such as the one a "
+            "dispatched run used.",
+        )
+
+    body = {
+        "thread_id": turn["thread_id"],
+        "run_id": turn["run_id"],
+        "tool_call_id": tool_call_id or None,
+        "turn_platform": turn["turn_platform"],
+        "workspace_id": turn["workspace_id"],
+        "target": (target or "").strip() or None,
+        "text": text,
+        "files": [{"path": p, "workspace_id": files_workspace_id} for p in paths],
+        "reply": bool(reply),
+    }
+    try:
+        data = await _call(
+            "POST",
+            "/agent/send",
+            user_id=turn["user_id"],
+            timeout=_SEND_TIMEOUT,
+            body=body,
+        )
+    except _GatewayError as e:
+        if e.delivered_unknown:
+            return _result(
+                "unknown",
+                "unavailable",
+                f"{e.message} Whether the message went out is unknown; do not tell "
+                "the user it was sent.",
+            )
+        return _result("failed", "unavailable", f"{e.message} Nothing was sent.")
+    return format_send_result(data)
+
+
+_TEXT_ARG = Annotated[
+    str,
+    f"The message, in markdown, up to {MAX_TEXT_CHARS} characters. May be empty only "
+    "when files are given.",
+]
+_TARGET_ARG = Annotated[
+    str | None,
+    "An address from list_message_targets. Omit it to send into the conversation this "
+    "turn is in, which exists only when the turn arrived from a messaging app.",
+]
+_REPLY_ARG = Annotated[
+    bool,
+    "True to reply to the user's message that started this turn, where the app "
+    "supports it. Applies only to the conversation this turn is in.",
+]
+
+
+async def _send_from_workspace(
+    text: _TEXT_ARG,
+    config: RunnableConfig,
+    files: Annotated[
+        list[str] | None,
+        f"Up to {MAX_FILES} workspace file paths to attach, such as results/report.xlsx.",
+    ] = None,
+    target: _TARGET_ARG = None,
+    reply: _REPLY_ARG = False,
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+) -> str:
+    return await _send(
+        text=text,
+        files=files,
+        target=target,
+        reply=reply,
+        files_workspace_id=None,
+        config=config,
+        tool_call_id=tool_call_id,
+        files_need_workspace=False,
+    )
+
+
+async def _send_without_workspace(
+    text: _TEXT_ARG,
+    config: RunnableConfig,
+    files: Annotated[
+        list[str] | None,
+        f"Up to {MAX_FILES} file paths to attach, such as results/report.xlsx, from the "
+        "workspace named in workspace_id.",
+    ] = None,
+    workspace_id: Annotated[
+        str | None,
+        "The workspace the files are in, such as the one a dispatched run used. "
+        "Required with files: you have no files of your own.",
+    ] = None,
+    target: _TARGET_ARG = None,
+    reply: _REPLY_ARG = False,
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+) -> str:
+    return await _send(
+        text=text,
+        files=files,
+        target=target,
+        reply=reply,
+        files_workspace_id=workspace_id,
+        config=config,
+        tool_call_id=tool_call_id,
+        files_need_workspace=True,
+    )
+
+
+async def _list_message_targets(config: RunnableConfig) -> str:
+    turn = _turn(config)
+    if not turn["user_id"]:
+        return "This turn has no user attached, so there is no one to message."
+    params = {
+        key: value
+        for key, value in (
+            ("thread_id", turn["thread_id"]),
+            ("run_id", turn["run_id"]),
+            ("turn_platform", turn["turn_platform"]),
+        )
+        if value
+    }
+    try:
+        data = await _call(
+            "GET",
+            "/agent/targets",
+            user_id=turn["user_id"],
+            timeout=_TARGETS_TIMEOUT,
+            params=params,
+        )
+    except _GatewayError as e:
+        return f"{e.message} Where you can send is unknown right now."
+    return format_targets_result(data)
+
+
+SEND_MESSAGE_DESCRIPTION = """Send a message to the user on a messaging app connected to their account, with files attached if needed. Use it when the user asks for something to be sent to them or to a chat, or when this conversation's delivery rules say to reply through it.
+Reaches only the conversation this turn is in, the user's own direct messages, and the shared chats they allowed.
+
+Returns:
+    The delivery status (sent, partial, failed or unknown), where it went, and each file's outcome.
+
+Tell the user something was sent only when the status is sent. On partial the text went and the files not marked sent or linked did not."""
+
+LIST_MESSAGE_TARGETS_DESCRIPTION = """List where send_message can deliver for this user: the conversation this turn is in, if any, then their direct messages and allowed shared chats on each connected messaging app, and the apps that are unavailable with the reason.
+
+Returns:
+    Addresses to pass as send_message's target, and a link to the settings where the user allows more."""
+
+
+_SEND_MESSAGE = StructuredTool.from_function(
+    coroutine=_send_from_workspace,
+    name="send_message",
+    description=SEND_MESSAGE_DESCRIPTION,
+)
+_SEND_MESSAGE_NO_WORKSPACE = StructuredTool.from_function(
+    coroutine=_send_without_workspace,
+    name="send_message",
+    description=SEND_MESSAGE_DESCRIPTION,
+)
+_LIST_MESSAGE_TARGETS = StructuredTool.from_function(
+    coroutine=_list_message_targets,
+    name="list_message_targets",
+    description=LIST_MESSAGE_TARGETS_DESCRIPTION,
+)
+
+
+def build_messaging_tools(*, has_workspace_files: bool) -> list[BaseTool]:
+    """The messaging tools for one agent build, or none when unconfigured.
+
+    ``has_workspace_files`` picks the ``send_message`` shape: an agent working
+    in a workspace attaches its own files by path, and one without (Flash)
+    names the workspace a file lives in, since it has none of its own.
+    """
+    if not messaging_enabled():
+        return []
+    send = _SEND_MESSAGE if has_workspace_files else _SEND_MESSAGE_NO_WORKSPACE
+    return [send, _LIST_MESSAGE_TARGETS]

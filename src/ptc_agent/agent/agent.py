@@ -129,6 +129,7 @@ from src.tools.market_data.tool import (
 )
 from src.tools.market_watch import watch_market
 from src.tools.chart_annotation import CHART_ANNOTATION_TOOLS
+from src.tools.messaging import build_messaging_tools
 from ptc_agent.config import AgentConfig
 from ptc_agent.core.mcp_registry import MCPRegistry
 from ptc_agent.core.sandbox import PTCSandbox
@@ -875,6 +876,11 @@ class PTCAgent:
         # answers the main agent, not the user.
         if chart_annotation:
             tools.extend(CHART_ANNOTATION_TOOLS)
+
+        # Messaging the user (send_message, list_message_targets), present only
+        # when a channel gateway is configured. Main agent only, added after the
+        # subagent snapshot: a subagent reports to its parent, never to a person.
+        tools.extend(build_messaging_tools(has_workspace_files=True))
 
         # Main agent middleware (includes SubAgentMiddleware + main_only)
         # Ordering matters for prompt caching:

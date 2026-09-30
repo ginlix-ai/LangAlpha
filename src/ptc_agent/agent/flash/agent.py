@@ -173,6 +173,13 @@ class FlashAgent:
         if chart_annotation:
             tools.extend(CHART_ANNOTATION_TOOLS)
 
+        # Present only when a channel gateway is configured. Flash has no
+        # workspace files of its own, so its send_message names the workspace
+        # a file lives in.
+        from src.tools.messaging import build_messaging_tools
+
+        tools.extend(build_messaging_tools(has_workspace_files=False))
+
         return tools
 
     def _build_system_prompt(
