@@ -335,7 +335,9 @@ _TEXT_ARG = Annotated[
 _TARGET_ARG = Annotated[
     str | None,
     "An address from list_message_targets. Omit it to send into the conversation this "
-    "turn is in, which exists only when the turn arrived from a messaging app.",
+    "turn is in, which exists only when the turn arrived from a messaging app. Address "
+    "a channel or chat, never a thread: related messages are grouped into threads for "
+    "you, and the result says where each one landed.",
 ]
 _REPLY_ARG = Annotated[
     bool,
