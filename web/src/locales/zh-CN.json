@@ -2991,7 +2991,8 @@
         "failed": "失败",
         "notSent": "未发送"
       },
-      "thisConversation": "当前对话",
+      "thisConversation": "同一聊天",
+      "fileCount_other": "{{count}} 个文件",
       "message": "消息",
       "files": "附件",
       "sentEarlier": "此前已发送"

@@ -1,143 +1,74 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertCircle, Link2, Paperclip, Send } from 'lucide-react';
-import { useIsMobile } from '@/hooks/useIsMobile';
-import { clip, plainText } from '../minimapEntries';
-import {
-  SIZES_DESKTOP,
-  SIZES_MOBILE,
-  TEXT_COLOR,
-  cardStyle,
-  mobileCardStyle,
-  type InlineCardProps,
-} from '../charts/inlineCardsShared';
+import { Paperclip } from 'lucide-react';
+import { FaviconImg, googleFaviconUrl } from '../charts/InlineArtifactCards';
+import type { InlineCardProps } from '../charts/inlineCardsShared';
 import { DeliveryStatusPill } from './deliveryStatusUi';
-import { fileName, messagingAppName, readMessageDelivery, type DeliveryFile } from './messageDelivery';
-
-const PREVIEW_MAX = 400;
-const MAX_CHIPS = 3;
-
-/** The message's head as plain text, line by line, so a heading keeps its own
- *  line rather than running into the sentence after it. */
-function previewOf(text: string): string {
-  const head = text.slice(0, PREVIEW_MAX * 4);
-  const lines = head
-    .replace(/```[\s\S]*?(```|$)/g, '\n')
-    .split('\n')
-    .map((line) => plainText(line))
-    .filter(Boolean);
-  return clip(lines.length ? lines.join('\n') : plainText(head), PREVIEW_MAX);
-}
+import {
+  deliveredFileCount,
+  messagingAppDomain,
+  messagingAppName,
+  readMessageDelivery,
+} from './messageDelivery';
 
 /**
- * A message the agent sent to a chat app: where it went, whether it arrived,
- * and the head of what it said. The text is the call's own argument, since the
- * delivery result does not repeat it. A click opens the detail panel, which
+ * A message the agent sent to a chat app, as a pill: the app, how many files
+ * went with it, and whether it arrived. A click opens the detail panel, which
  * carries the whole message and each file's outcome.
  */
 export function MessageDeliveryCard({ artifact, toolArgs, onClick }: InlineCardProps): React.ReactElement | null {
   const { t } = useTranslation();
-  const isMobile = useIsMobile();
   const delivery = readMessageDelivery(artifact, toolArgs);
   if (!delivery) return null;
 
-  const sz = isMobile ? SIZES_MOBILE : SIZES_DESKTOP;
-  const app = messagingAppName(delivery.platform);
-  const preview = delivery.text ? previewOf(delivery.text) : '';
-  // A file that did not go is never the one hidden behind "+N".
-  const files = [...delivery.files].sort((a, b) => Number(b.status === 'failed') - Number(a.status === 'failed'));
-  const chips = files.slice(0, MAX_CHIPS);
-  const more = files.length - chips.length;
+  const label = messagingAppName(delivery.platform) ?? t('toolArtifact.messageDelivery.message');
+  const domain = messagingAppDomain(delivery.platform) ?? '';
+  const total = delivery.files.length;
+  const delivered = deliveredFileCount(delivery.files);
+  // A file that did not go turns the count into "ok/N"; an unknown outcome stays "N".
+  const anyMissed = delivery.files.some((f) => f.status === 'failed' || f.status === 'not_sent');
+  const count = anyMissed ? `${delivered}/${total}` : `${total}`;
+  const statusLabel = t(`toolArtifact.messageDelivery.status.${delivery.status}`);
+  const summary = [label, total > 0 ? t('toolArtifact.messageDelivery.fileCount', { count: total }) : null, statusLabel]
+    .filter(Boolean)
+    .join(' · ');
 
   return (
-    <div
+    <button
+      type="button"
       data-testid="message-delivery-card"
-      role={onClick ? 'button' : undefined}
-      tabIndex={onClick ? 0 : undefined}
+      title={summary}
+      aria-label={summary}
       onClick={onClick}
-      onKeyDown={onClick ? (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onClick();
-        }
-      } : undefined}
-      className="border border-(--color-border-muted) hover:border-(--color-border-elevated) min-w-0"
-      // The shell's `outline: none` would hide the keyboard ring, and its
-      // inline border would beat the hover class.
+      className="inline-flex items-center min-w-0 max-w-full rounded-full border border-(--color-border-elevated) bg-(--color-bg-card) hover:bg-(--color-bg-surface)"
       style={{
-        ...(isMobile ? mobileCardStyle : cardStyle),
-        outline: undefined,
-        border: undefined,
-        cursor: onClick ? 'pointer' : 'default',
+        gap: 7,
+        padding: '5px 11px 5px 8px',
+        fontSize: 13,
+        cursor: 'pointer',
+        color: 'var(--color-text-primary)',
       }}
     >
-      <div className="flex items-center min-w-0" style={{ gap: sz.gap }}>
-        <Send className="h-3.5 w-3.5 shrink-0" style={{ color: TEXT_COLOR }} aria-hidden />
+      <FaviconImg src={googleFaviconUrl(domain)} domain={label} />
+      <span className="truncate" style={{ fontWeight: 560, whiteSpace: 'nowrap' }}>{label}</span>
+      {total > 0 && (
         <span
-          className="truncate"
-          style={{ fontWeight: 600, fontSize: sz.headerFs, color: 'var(--color-text-primary)' }}
-        >
-          {app ?? t('toolArtifact.messageDelivery.message')}
-        </span>
-        {delivery.current && (
-          <>
-            <span aria-hidden style={{ fontSize: sz.labelFs, color: TEXT_COLOR }}>·</span>
-            <span className="truncate" style={{ fontSize: sz.labelFs, color: TEXT_COLOR }}>
-              {t('toolArtifact.messageDelivery.thisConversation')}
-            </span>
-          </>
-        )}
-        <span className="ml-auto shrink-0">
-          <DeliveryStatusPill status={delivery.status} />
-        </span>
-      </div>
-
-      {preview && (
-        <p
-          data-testid="message-delivery-preview"
+          data-testid="message-delivery-files"
+          className="inline-flex items-center shrink-0"
           style={{
-            margin: `${sz.sectionMb}px 0 0`,
-            fontSize: sz.rowFs,
-            lineHeight: 1.5,
+            gap: 4,
             color: 'var(--color-text-secondary)',
-            display: '-webkit-box',
-            WebkitLineClamp: 3,
-            WebkitBoxOrient: 'vertical',
-            overflow: 'hidden',
-            overflowWrap: 'anywhere',
-            whiteSpace: 'pre-line',
+            fontVariantNumeric: 'tabular-nums',
           }}
         >
-          {preview}
-        </p>
+          <span aria-hidden style={{ color: 'var(--color-text-tertiary)' }}>·</span>
+          <Paperclip className="shrink-0" style={{ width: 13, height: 13 }} aria-hidden />
+          {count}
+        </span>
       )}
-
-      {chips.length > 0 && (
-        <div className="flex flex-wrap items-center min-w-0" style={{ gap: 4, marginTop: sz.sectionMb }}>
-          {chips.map((file, i) => <FileChip key={`${file.path}-${i}`} file={file} fontSize={sz.badgeFs} />)}
-          {more > 0 && <span style={{ fontSize: sz.badgeFs, color: TEXT_COLOR }}>+{more}</span>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function FileChip({ file, fontSize }: { file: DeliveryFile; fontSize: string }): React.ReactElement {
-  const failed = file.status === 'failed';
-  const Icon = failed ? AlertCircle : file.status === 'linked' ? Link2 : Paperclip;
-  return (
-    <span
-      data-testid={failed ? 'message-delivery-file-failed' : 'message-delivery-file'}
-      title={file.reason ? `${file.path} · ${file.reason}` : file.path}
-      className="inline-flex items-center gap-1 min-w-0 max-w-full rounded-full px-1.5 py-px"
-      style={{
-        fontSize,
-        color: failed ? 'var(--color-icon-danger)' : 'var(--color-text-tertiary)',
-        backgroundColor: failed ? 'var(--color-danger-soft)' : 'var(--color-bg-tag)',
-      }}
-    >
-      <Icon className="h-3 w-3 shrink-0" aria-hidden />
-      <span className="truncate">{fileName(file.path)}</span>
-    </span>
+      <span className="shrink-0">
+        <DeliveryStatusPill status={delivery.status} />
+      </span>
+    </button>
   );
 }

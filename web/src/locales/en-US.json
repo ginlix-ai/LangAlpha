@@ -3024,7 +3024,9 @@
         "failed": "Failed",
         "notSent": "Not sent"
       },
-      "thisConversation": "This conversation",
+      "thisConversation": "Same chat",
+      "fileCount_one": "{{count}} file",
+      "fileCount_other": "{{count}} files",
       "message": "Message",
       "files": "Files",
       "sentEarlier": "Sent earlier"

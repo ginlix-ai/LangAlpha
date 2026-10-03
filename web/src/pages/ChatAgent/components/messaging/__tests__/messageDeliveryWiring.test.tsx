@@ -1,11 +1,11 @@
 /**
  * How a settled `send_message` reaches the transcript.
  *
- * With a `message_delivery` artifact it becomes a card, on both surfaces that
- * draw inline cards, and the card is the way to the detail panel. The card's
- * text comes from the call's arguments, so a surface that forgot to hand them
- * over would draw a card with no message on it: the preview is asserted on
- * each surface for that reason. Without the artifact (a result recorded before
+ * With a `message_delivery` artifact it becomes a pill, on both surfaces that
+ * draw inline cards, and the pill is the way to the detail panel. The files it
+ * counts can come from the call's arguments, so a surface that forgot to hand
+ * them over would count none: the count is asserted on each surface for that
+ * reason. Without the artifact (a result recorded before
  * it existed) the call stays the plain step row it always was.
  */
 import React from 'react';
@@ -23,7 +23,7 @@ import {
 import type { ActivityItem } from '../../messageList/activityTypes';
 
 const CALL_ID = 'call-send';
-const ARGS = { text: 'Your NVDA brief is ready.', target: 'telegram:-100123' };
+const ARGS = { text: 'Your NVDA brief is ready.', target: 'telegram:-100123', files: ['out/brief.pdf'] };
 const ARTIFACT = {
   type: 'message_delivery',
   status: 'sent',
@@ -65,12 +65,12 @@ function renderTranscript(onToolCallDetailClick: (id: string) => void, artifact?
 }
 
 describe('a settled send_message in the transcript', () => {
-  it('renders the delivery card, with the message from the call', () => {
+  it('renders the delivery pill, with the files from the call', () => {
     renderTranscript(vi.fn(), ARTIFACT);
     const card = screen.getByTestId('message-delivery-card');
     expect(card).toHaveTextContent('Telegram');
     expect(card).toHaveTextContent('Sent');
-    expect(screen.getByTestId('message-delivery-preview')).toHaveTextContent(ARGS.text);
+    expect(screen.getByTestId('message-delivery-files')).toHaveTextContent('1');
   });
 
   it('opens the tool detail panel when the card is clicked', () => {
@@ -91,7 +91,7 @@ describe('a settled send_message in the transcript', () => {
 });
 
 describe('a settled send_message in an activity block', () => {
-  it('renders the card with the message from the call', () => {
+  it('renders the pill with the files from the call', () => {
     const onToolCallClick = vi.fn();
     const item = {
       ...proc(ARTIFACT),
@@ -102,7 +102,7 @@ describe('a settled send_message in an activity block', () => {
     renderWithProviders(
       <ActivityBlock items={[item]} isStreaming={false} onToolCallClick={onToolCallClick} />,
     );
-    expect(screen.getByTestId('message-delivery-preview')).toHaveTextContent(ARGS.text);
+    expect(screen.getByTestId('message-delivery-files')).toHaveTextContent('1');
     fireEvent.click(screen.getByTestId('message-delivery-card'));
     expect(onToolCallClick).toHaveBeenCalledWith(item);
   });

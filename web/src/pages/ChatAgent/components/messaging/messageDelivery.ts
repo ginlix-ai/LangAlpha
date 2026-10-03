@@ -49,6 +49,21 @@ const APP_NAMES: Record<string, string> = {
   feishu: 'Feishu',
 };
 
+/** The site whose favicon stands for each app. */
+const APP_DOMAINS: Record<string, string> = {
+  slack: 'slack.com',
+  discord: 'discord.com',
+  telegram: 'telegram.org',
+  imessage: 'apple.com',
+  feishu: 'feishu.cn',
+};
+
+/** The domain an app's favicon comes from; none for an app this build does not list. */
+export function messagingAppDomain(platform: string | null | undefined): string | null {
+  const key = platform?.trim().toLowerCase();
+  return (key && APP_DOMAINS[key]) || null;
+}
+
 /** The app an address belongs to: `slack:T1/C2` → `slack`, bare `imessage` → `imessage`. */
 export function platformOf(address: unknown): string | null {
   if (typeof address !== 'string') return null;
@@ -114,7 +129,7 @@ export function readMessageDelivery(
   };
 }
 
-/** The last segment of a workspace path, for a chip with no room for the rest. */
-export function fileName(path: string): string {
-  return path.split('/').filter(Boolean).pop() || path;
+/** Files that went out, as a link or as the file itself. */
+export function deliveredFileCount(files: DeliveryFile[]): number {
+  return files.filter((f) => f.status === 'sent' || f.status === 'linked').length;
 }

@@ -51,7 +51,7 @@ describe('the send_message detail panel', () => {
 
     const panel = screen.getByTestId('message-delivery-detail');
     expect(within(panel).getByText('Telegram')).toBeInTheDocument();
-    expect(within(panel).getByText('This conversation')).toBeInTheDocument();
+    expect(within(panel).getByText('Same chat')).toBeInTheDocument();
     expect(within(panel).getByText('telegram:-100123')).toBeInTheDocument();
     expect(within(panel).getByTestId('delivery-status-sent')).toHaveTextContent('Sent');
     // The message, as markdown, from the call: the artifact does not carry it.
