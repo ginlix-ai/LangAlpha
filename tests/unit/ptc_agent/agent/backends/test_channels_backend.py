@@ -397,6 +397,19 @@ class TestSave:
         assert gateway.puts == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("default", [None, "ptc", []])
+    async def test_the_default_must_be_an_object(self, backend, gateway, default):
+        def change(settings):
+            settings["default"] = default
+
+        exc = await _refused(backend, change)
+
+        assert exc.problems == [
+            ("default", "must be an object with mode and workspace_id")
+        ]
+        assert gateway.puts == []
+
+    @pytest.mark.asyncio
     async def test_every_shape_problem_is_listed_at_once(self, backend, gateway):
         def change(settings):
             settings["default"]["mode"] = "fast"
@@ -527,10 +540,12 @@ class TestGatewayAnswers:
         )
 
     @pytest.mark.asyncio
-    async def test_unavailable_saved_nothing(self, backend, gateway):
-        gateway.put = httpx.Response(
-            503, json={"code": "unavailable", "message": "storage down"}
-        )
+    @pytest.mark.parametrize("applied", [None, [], "default: mode is now flash"])
+    async def test_unavailable_saved_nothing(self, backend, gateway, applied):
+        body = {"code": "unavailable", "message": "storage down"}
+        if applied is not None:
+            body["applied"] = applied
+        gateway.put = httpx.Response(503, json=body)
 
         exc = await _refused(backend, _prefer_macro)
 
@@ -539,6 +554,40 @@ class TestGatewayAnswers:
             "can't save channel settings right now; nothing was saved. Retry once"
             in exc.message
         )
+        # Nothing moved, so the Read still vouches for a retry.
+        gateway.put = None
+        settings = copy.deepcopy(SETTINGS)
+        _prefer_macro(settings)
+        assert await backend.awrite_text(CHANNELS, json.dumps(settings)) is not None
+        assert len(gateway.puts) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_save_that_landed_in_part_says_what_and_drops_the_read(
+        self, backend, gateway
+    ):
+        gateway.put = httpx.Response(
+            503,
+            json={
+                "code": "unavailable",
+                "message": "The default was saved and the rest was not; try again shortly.",
+                "applied": ["default: mode is now flash", 7, ""],
+            },
+        )
+
+        exc = await _refused(backend, _prefer_macro)
+
+        assert exc.error_type == "server_error"
+        assert exc.message == (
+            "server_error:channels.json: The default was saved and the rest was not; "
+            "try again shortly.\n"
+            "What was saved:\n"
+            "- default: mode is now flash\n"
+            "Read channels.json again before you retry; it shows what saved, so reapply "
+            "only the rest. If that fails again, stop and tell the user."
+        )
+        with pytest.raises(UserDataValidationError) as again:
+            await backend.awrite_text(CHANNELS, json.dumps(SETTINGS))
+        assert again.value.error_type == "read_required"
 
     @pytest.mark.asyncio
     async def test_an_unreachable_gateway_saved_nothing(self, backend, gateway):
@@ -567,7 +616,10 @@ class TestGatewayAnswers:
 
         with pytest.raises(UserDataValidationError) as exc:
             await backend.awrite_text(
-                CHANNELS, json.dumps({**SETTINGS, "default": None})
+                CHANNELS,
+                json.dumps(
+                    {**SETTINGS, "default": {"mode": "flash", "workspace_id": None}}
+                ),
             )
 
         assert exc.value.error_type == "server_error"

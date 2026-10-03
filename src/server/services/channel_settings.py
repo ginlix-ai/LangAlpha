@@ -23,6 +23,7 @@ from ptc_agent.agent.backends.db_json_route import (
     DbJsonFile,
     Plan,
     ReadUnavailable,
+    SavedInPart,
     StaleVersion,
     UserDataValidationError,
 )
@@ -247,8 +248,8 @@ def _stored(models: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
 
     settings: dict[str, Any] = {}
     for key, model in models.items():
-        if model is None or isinstance(model, _Binding):
-            settings[key] = binding(model) if model else None
+        if isinstance(model, _Binding):
+            settings[key] = binding(model)
             continue
         settings[key] = {
             "preferred": model.preferred,
@@ -270,8 +271,10 @@ def _validate(value: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[str, st
     models: dict[str, Any] = {}
     problems: list[tuple[str, str]] = []
     for key, raw in value.items():
-        if key == _DEFAULT and raw is None:
-            models[key] = None
+        if key == _DEFAULT and not isinstance(raw, dict):
+            problems.append(
+                (_field(key), "must be an object with mode and workspace_id")
+            )
             continue
         try:
             models[key] = (_Binding if key == _DEFAULT else _App).model_validate(raw)
@@ -304,6 +307,27 @@ def _removed(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
             if a not in new["agent_messages"]["allowed"]
         ]
     return out
+
+
+def _saved_in_part(data: dict[str, Any]) -> str | None:
+    """What a refused save says it saved before the rest failed, for the
+    writer; None when it saved nothing."""
+    applied = data.get("applied")
+    if not isinstance(applied, list):
+        return None
+    lines = [f"- {c}" for c in applied if isinstance(c, str) and c]
+    if not lines:
+        return None
+    said = str(data.get("message") or "Part of the save landed and the rest didn't.")
+    return "\n".join(
+        [
+            said,
+            "What was saved:",
+            *lines,
+            f"Read {CHANNELS_FILE} again before you retry; it shows what saved, so "
+            "reapply only the rest. If that fails again, stop and tell the user.",
+        ]
+    )
 
 
 class Written(NamedTuple):
@@ -437,6 +461,8 @@ class ChannelsFile(_GatewayFile[Snapshot, Written, tuple[str, dict[str, Any]] | 
                 ]
             )
         if answer.status == 503:
+            if partly := _saved_in_part(data):
+                raise SavedInPart(partly)
             raise _failed(
                 f"the messaging service can't save channel settings right now; nothing was saved. {_RETRY}"
             )

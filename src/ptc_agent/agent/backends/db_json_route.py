@@ -127,6 +127,12 @@ class StaleVersion(Exception):
     another, which the save answers as any version conflict."""
 
 
+class SavedInPart(Exception):
+    """Raised by a commit whose store saved some of the changes and not the
+    rest. Its text reaches the writer, and the Read is dropped, since the file
+    moved."""
+
+
 class ReadUnavailable(Exception):
     """A read the store can't answer right now. Its text reaches the reader,
     where any other failure reads as no file at all."""
@@ -591,6 +597,10 @@ class DbJsonRoute:
                         report = await file.commit(user_id, plan.changes, conn)
                     except StaleVersion:
                         raise self._stale(filename, gone=False) from None
+                    except SavedInPart as exc:
+                        self._invalidate(filename)
+                        hint = str(exc)
+                        raise self._refusal("server_error", filename, hint) from None
                     if settle:
                         # A save that changed nothing leaves the rows it read,
                         # and one that deleted the file leaves none.
