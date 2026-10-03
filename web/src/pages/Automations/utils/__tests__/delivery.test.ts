@@ -17,9 +17,9 @@ describe('deliveryMethodName', () => {
     expect(deliveryMethodName('discord', t)).toBe('Discord');
   });
 
-  it('capitalizes a bare app the form does not offer', () => {
+  it('names a bare app the form does not offer', () => {
     expect(deliveryMethodName('telegram', t)).toBe('Telegram');
-    expect(deliveryMethodName('imessage', t)).toBe('Imessage');
+    expect(deliveryMethodName('imessage', t)).toBe('iMessage');
   });
 
   it.each([
