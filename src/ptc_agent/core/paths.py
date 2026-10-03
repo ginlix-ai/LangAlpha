@@ -522,7 +522,7 @@ THREAD_DIR_NAME = re.compile(r"^[0-9a-f]{8}$")
 # Not the backup exclusions: these hide harness scratch from the agent's globs,
 # while a backup skips mounted and regenerated trees. Keep them separate.
 # What the harness wrote about past turns: per-thread scratch (evicted messages,
-# truncated args, offloaded results, scripts) and the thread-less fallback for
+# saved attachments, offloaded results, scripts) and the thread-less fallback for
 # large results. The agent reaches each through a pointer that names its path,
 # so its own broad globs skip them rather than drown project files in copies of
 # them. Matched as a child of .agents, so a project's own threads/ stays visible.

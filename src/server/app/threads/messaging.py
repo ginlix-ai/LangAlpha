@@ -1111,7 +1111,7 @@ async def summarize_thread(
 
 @router.post("/{thread_id}/offload", status_code=200)
 async def offload_thread(thread_id: str, x_user_id: CurrentUserId):
-    """Truncate large tool arguments and offload originals to sandbox (Tier 1 only)."""
+    """Hide large tool arguments and stale Read results from the model (Tier 1 only)."""
     await auth_api.require_thread_owner(thread_id, x_user_id)
     from src.server.handlers.thread_maintenance import trigger_offload
 

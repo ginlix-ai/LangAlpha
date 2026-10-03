@@ -117,10 +117,10 @@ async def _resolve_graph_and_state(
 
     # Backend. Pinned to the thread's workspace folder because these routes
     # run outside a turn, where nothing has bound a project: an unpinned
-    # backend would file this thread's offloads on the machine root, which a
-    # later delete of the workspace would leave behind. No run keeps a settle
-    # off this folder, and an offload is the only copy once the checkpoint is
-    # truncated: ``held`` keeps the folder in place, and the row is read under it.
+    # backend would file this thread's saved attachments on the machine root,
+    # which a later delete of the workspace would leave behind. No run keeps a
+    # settle off this folder: ``held`` keeps the folder in place, and the row
+    # is read under it.
     backend = None
     if hasattr(session, "sandbox") and session.sandbox is not None:
         try:
@@ -288,25 +288,11 @@ async def trigger_compaction(
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
 
-            # Merge any Tier 1 offloaded IDs from compact_messages into existing state
-            existing_arg_ids = set(state.values.get("_offloaded_tool_call_ids") or ())
-            existing_read_ids = set(state.values.get("_offloaded_read_result_ids") or ())
-
-            # Write CompactionEvent + offloaded IDs + reset batch counter.
             # State key "_summarization_event" preserved for DB compatibility.
             await _update_graph_state(
                 graph,
                 lg_config,
-                {
-                    "_summarization_event": result["event"],
-                    "_truncation_batch_count": 0,
-                    "_offloaded_tool_call_ids": (
-                        existing_arg_ids | result.get("offloaded_arg_ids", set())
-                    ),
-                    "_offloaded_read_result_ids": (
-                        existing_read_ids | result.get("offloaded_read_ids", set())
-                    ),
-                },
+                {"_summarization_event": result["event"]},
                 thread_id,
                 "compact",
             )
@@ -363,8 +349,8 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
     Manually trigger tool-arg offloading for a thread (Tier 1 only).
 
     Records large tool arguments and stale Read results in older messages as
-    offloaded and writes the original arguments to the sandbox filesystem. No
-    LLM summarization is performed. ``user_id`` identifies the caller to the
+    offloaded, an argument only once the transcript that keeps it is saved.
+    No LLM summarization is performed. ``user_id`` identifies the caller to the
     session acquire, same as
     :func:`trigger_compaction`.
 
@@ -375,10 +361,7 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
         Dict with success, thread_id, message_count, offloaded_args, offloaded_reads
     """
     try:
-        from ptc_agent.agent.middleware.compaction import (
-            get_effective_messages,
-            offload_tool_args,
-        )
+        from ptc_agent.agent.middleware.compaction import offload_tool_args
 
         # Same fence as /compact — /offload also writes checkpoint state and
         # could race a running workflow's _offloaded_tool_call_ids updates.
@@ -400,19 +383,18 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
             already_offloaded_reads: set[str] = set(
                 state.values.get("_offloaded_read_result_ids") or ()
             )
-            effective = get_effective_messages(
-                messages, state.values.get("_summarization_event")
-            )
+            previous_event = state.values.get("_summarization_event")
 
             compaction_cfg = setup.agent_config.compaction if setup.agent_config else None
             try:
                 result = await offload_tool_args(
-                    messages=effective,
+                    messages=messages,
                     backend=backend,
                     already_offloaded=already_offloaded,
                     already_offloaded_reads=already_offloaded_reads,
                     compaction_config=compaction_cfg,
                     thread_id=thread_id,
+                    previous_event=previous_event,
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
@@ -420,8 +402,8 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
             offloaded_args = result["offloaded_args"]
             offloaded_reads = result["offloaded_reads"]
 
-            # Ids and the batch counter only, never messages. The counter
-            # holds the middleware's own auto pass off for one batch.
+            # Ids only, never messages. Unlike the automatic pass, this one
+            # does not wait for an idle turn: the user asked for it now.
             await _update_graph_state(
                 graph,
                 lg_config,
@@ -432,7 +414,6 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
                     "_offloaded_read_result_ids": (
                         already_offloaded_reads | result["offloaded_read_ids"]
                     ),
-                    "_truncation_batch_count": len(effective),
                 },
                 thread_id,
                 "offload",

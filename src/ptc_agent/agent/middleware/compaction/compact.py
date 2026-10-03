@@ -11,7 +11,6 @@ from langchain.chat_models import BaseChatModel
 from src.config.settings import get_compaction_timeout
 from src.llms.content_utils import format_llm_content
 from ptc_agent.config.agent import CompactionConfig
-from ptc_agent.core.paths import WorkspaceLayout
 from src.llms import get_llm_by_type
 
 from ptc_agent.agent.state import ensure_message_ids
@@ -25,8 +24,6 @@ from ptc_agent.agent.middleware.compaction.utils import (
     find_group_safe_cutoff,
     get_effective_messages,
     partition_at_cutoff,
-    truncate_message_args,
-    truncate_read_results,
 )
 from ptc_agent.agent.middleware.compaction.model import (
     summary_trim_budget,
@@ -35,9 +32,7 @@ from ptc_agent.agent.middleware.compaction.model import (
 from src.llms import maybe_disable_streaming
 from ptc_agent.agent.middleware.compaction.offloading import (
     aoffload_base64_content,
-    aoffload_truncated_args,
-    apply_recorded_offloads,
-    get_thread_id,
+    select_offloads,
 )
 from ptc_agent.agent.transcript.pointer import (
     TranscriptTurns,
@@ -58,31 +53,23 @@ async def compact_messages(
     llm_client: BaseChatModel | None = None,
     thread_id: str | None = None,
 ) -> dict[str, Any]:
-    """
-    Compact conversation messages with two-tier context management.
+    """Summarize all but the last ``keep_messages`` effective messages.
 
     Produces a ``CompactionEvent`` that the middleware can use to
     reconstruct the effective message list on subsequent model calls,
-    without destructively replacing checkpoint messages.
-
-    Two-tier offloading (when backend is provided):
-    - Tier 1: Truncate large tool args in old messages, offload originals to sandbox
-    - Tier 2: Summarize evicted messages; the summary points at the thread's
-      transcript, which is brought up to date alongside
-
-    When backend is None, offloading is skipped but truncation and summarization
-    still occur.
+    without destructively replacing checkpoint messages. Tier 1 has no part
+    here: what it would trim is in the stretch the summary replaces.
 
     Args:
         messages: List of conversation messages to compact (full state).
         keep_messages: Number of recent messages to preserve (default: 5).
         model_name: LLM model name for generating summaries (default: gpt-5-nano).
-        backend: Optional SandboxBackend for offloading to sandbox filesystem.
+        backend: Optional SandboxBackend, for attachments and the transcript.
         previous_event: Previous CompactionEvent for chained compactions.
         compaction_config: Optional CompactionConfig override.
         llm_client: Pre-built OAuth/BYOK client. When None, built from model_name.
         thread_id: The thread being compacted. This runs outside the graph, so
-            without it offloads and the transcript pointer have no thread dir.
+            without it the transcript pointer has no thread.
 
     Returns:
         Dict with:
@@ -91,8 +78,6 @@ async def compact_messages(
         - "summary_text": The generated summary text
         - "original_count": Number of effective messages before compaction
         - "preserved_count": Number of preserved messages + summary message
-        - "offloaded_arg_ids": Set of tool call IDs whose args were truncated/offloaded
-        - "offloaded_read_ids": Set of tool call IDs whose Read results were truncated
 
     Example:
         result = await compact_messages(messages, previous_event=prev_event)
@@ -106,42 +91,7 @@ async def compact_messages(
 
     # Reconstruct effective messages from previous event
     effective = get_effective_messages(messages, previous_event)
-
-    # ---- Tier 1: Truncate large tool args + stale Read results in old messages ----
     config = (compaction_config or CompactionConfig()).model_dump()
-    truncate_trigger_messages = config.get("truncate_args_trigger_messages")
-    offloaded_arg_ids: set[str] = set()
-    offloaded_read_ids: set[str] = set()
-    if truncate_trigger_messages is not None and len(effective) >= int(
-        truncate_trigger_messages
-    ):
-        truncate_keep = int(config.get("truncate_args_keep_messages", 20))
-        truncate_max_length = int(config.get("truncate_args_max_length", 2000))
-        truncation_text = "...(argument truncated)"
-
-        cutoff = max(0, len(effective) - truncate_keep)
-        thread_dir = None
-        if backend is not None:
-            thread_dir = WorkspaceLayout.thread_subdir(get_thread_id(thread_id))
-
-        effective, truncated, originals = truncate_message_args(
-            effective,
-            cutoff,
-            truncate_max_length,
-            truncation_text,
-            thread_dir,
-        )
-
-        # Offload original args before they're lost
-        if truncated and originals and backend is not None:
-            offloaded_arg_ids = await aoffload_truncated_args(
-                backend, originals, thread_id=thread_id
-            )
-
-        # Truncate duplicate/non-critical Read results (same cutoff)
-        effective, _read_truncated, offloaded_read_ids = truncate_read_results(
-            effective, cutoff
-        )
 
     # ---- Determine cutoff for summarization ----
     if len(effective) <= keep_messages:
@@ -233,8 +183,6 @@ async def compact_messages(
         "summary_text": summary_text,
         "original_count": len(effective),
         "preserved_count": len(preserved) + 1,  # +1 for summary message
-        "offloaded_arg_ids": offloaded_arg_ids,
-        "offloaded_read_ids": offloaded_read_ids,
     }
 
 
@@ -245,68 +193,65 @@ async def offload_tool_args(
     compaction_config: CompactionConfig | None = None,
     already_offloaded_reads: set[str] | None = None,
     thread_id: str | None = None,
+    previous_event: CompactionEvent | None = None,
 ) -> dict[str, Any]:
-    """Offload large tool args and stale read results (Tier 1 only).
+    """Choose the large tool args and stale Read results to hide (Tier 1 only).
 
-    Records which calls to offload and never rewrites checkpoint messages: the
-    middleware re-applies every recorded id on each model call, so the
-    checkpoint keeps full args and a write here cannot race a live turn's
-    appends. ``messages`` is the effective list (after any summarization), so
-    the cutoff and batch count match what the middleware sees.
+    Records which calls to hide and never rewrites checkpoint messages: the
+    middleware re-applies every recorded id on each model call. ``messages``
+    is the full checkpoint list, which the transcript is saved from; the
+    cutoff is taken over the view after ``previous_event``, as the middleware
+    takes it. An argument is hidden only once the transcript holding it is
+    saved, since that is then its only copy the agent can read.
 
     Returns:
-        Dict with "offloaded_arg_ids" and "offloaded_read_ids" (new ids only,
-        without args whose write failed), and their counts as
-        "offloaded_args" / "offloaded_reads".
+        Dict with "offloaded_arg_ids" and "offloaded_read_ids" (new ids
+        only), and their counts as "offloaded_args" / "offloaded_reads".
 
     Raises:
         ValueError: If no messages are provided or nothing new can be offloaded.
-        RuntimeError: If every arg write failed and no Read result was left.
+        RuntimeError: If only args were due and their transcript did not save.
     """
     if not messages:
         raise ValueError("No messages to offload")
 
     ensure_message_ids(messages)
+    effective = get_effective_messages(messages, previous_event)
 
     config = (compaction_config or CompactionConfig()).model_dump()
     truncate_keep = int(config.get("truncate_args_keep_messages", 20))
     truncate_max_length = int(config.get("truncate_args_max_length", 2000))
-    truncation_text = "...(argument truncated)"
 
-    cutoff = max(0, len(messages) - truncate_keep)
+    cutoff = max(0, len(effective) - truncate_keep)
     if cutoff == 0:
         raise ValueError(
-            f"Not enough messages to offload. Have {len(messages)}, "
+            f"Not enough messages to offload. Have {len(effective)}, "
             f"need more than {truncate_keep} to have any candidates."
         )
 
-    thread_dir = None
-    if backend is not None:
-        thread_dir = WorkspaceLayout.thread_subdir(get_thread_id(thread_id))
-
-    # Start from the view the model already has, so only new offloads count.
-    messages = apply_recorded_offloads(
-        messages,
-        already_offloaded or set(),
-        already_offloaded_reads or set(),
+    arg_ids, read_ids = select_offloads(
+        effective,
+        cutoff,
         truncate_max_length,
-        truncation_text,
-        thread_dir,
+        set(already_offloaded or ()),
+        set(already_offloaded_reads or ()),
     )
-    messages, _, originals = truncate_message_args(
-        messages, cutoff, truncate_max_length, truncation_text, thread_dir
-    )
-    _, _, read_ids = truncate_read_results(messages, cutoff)
 
-    if not originals and not read_ids:
+    if not arg_ids and not read_ids:
         raise ValueError("Nothing to offload at the current threshold")
 
-    # Persist original args before the view hides them
-    arg_ids = await aoffload_truncated_args(backend, originals, thread_id=thread_id)
-    if originals and not arg_ids and not read_ids:
-        # A failure to retry, not "nothing to offload": the caller turns this
-        # into a 500 and records nothing.
-        raise RuntimeError("Could not save any tool arguments to the sandbox")
+    if arg_ids:
+        transcript = transcript_target(backend, thread_id)
+        if transcript is None:
+            arg_ids = set()
+        elif await aexport_transcript(backend, transcript, messages) is None:
+            if not read_ids:
+                # A failure to retry, not "nothing to offload": the caller
+                # turns this into a 500 and records nothing.
+                raise RuntimeError("Could not save the transcript the arguments are kept in")
+            arg_ids = set()
+        if not arg_ids and not read_ids:
+            raise ValueError("Nothing to offload at the current threshold")
 
     return {
         "offloaded_arg_ids": arg_ids,

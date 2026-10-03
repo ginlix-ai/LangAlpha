@@ -13,6 +13,7 @@ Actions emitted via context_window events (values preserved as wire protocol):
 """
 
 import asyncio
+import time
 import warnings
 import logging
 from collections.abc import Awaitable, Callable
@@ -36,7 +37,6 @@ from src.config.settings import get_compaction_timeout
 from src.llms.content_utils import format_llm_content
 from src.llms.token_counter import extract_token_usage
 from ptc_agent.config.agent import CompactionConfig
-from ptc_agent.core.paths import WorkspaceLayout
 from src.llms import get_llm_by_type, maybe_disable_streaming
 
 from ptc_agent.agent.state import ensure_message_ids
@@ -60,8 +60,6 @@ from ptc_agent.agent.middleware.compaction.utils import (
     get_effective_messages,
     strip_base64_from_messages,
     partition_at_cutoff,
-    truncate_message_args,
-    truncate_read_results,
 )
 from ptc_agent.agent.middleware.compaction.model import (
     max_input_tokens,
@@ -70,9 +68,9 @@ from ptc_agent.agent.middleware.compaction.model import (
 )
 from ptc_agent.agent.middleware.compaction.offloading import (
     aoffload_base64_content,
-    aoffload_truncated_args,
     apply_recorded_offloads,
-    get_thread_id,
+    idle_offloads,
+    offload_turns,
     tool_call_ids,
 )
 from ptc_agent.agent.transcript import TranscriptTarget
@@ -98,7 +96,8 @@ class CompactionMiddleware(AgentMiddleware):
     recovery, and supporting chained compactions.
 
     Two-tier context management:
-    - Tier 1: Tool arg truncation (cheap, fires early at message count threshold)
+    - Tier 1: trims large tool args and stale Read results, in before_agent,
+      only when a turn starts after a long pause (the prompt cache is cold)
     - Tier 2: Full LLM summarization (expensive, fires at token count threshold)
 
     Key differences from LangChain's SummarizationMiddleware:
@@ -134,8 +133,7 @@ class CompactionMiddleware(AgentMiddleware):
             trim_tokens_to_summarize: Max tokens to keep for summarization call.
             backend: Backend for offloading conversation history (SandboxBackend for PTC,
                 None for flash). When None, no filesystem ops are attempted.
-            truncate_args_settings: Settings for truncating large tool arguments
-                in old messages. When None, argument truncation is disabled.
+            truncate_args_settings: Settings for Tier 1. When None, Tier 1 is off.
         """
         # Handle deprecated parameters
         if "max_tokens_before_summary" in deprecated_kwargs:
@@ -192,21 +190,16 @@ class CompactionMiddleware(AgentMiddleware):
         # Backend for offloading conversation history to sandbox (immutable config)
         self._backend = backend
 
-        # Parse truncate_args_settings
-        if truncate_args_settings is None:
-            self._truncate_args_trigger: ContextSize | None = None
-            self._truncate_args_keep: ContextSize = ("messages", 20)
-            self._max_arg_length = 2000
-            self._truncation_text = "...(argument truncated)"
-        else:
-            self._truncate_args_trigger = truncate_args_settings.get("trigger")
-            self._truncate_args_keep = truncate_args_settings.get(
-                "keep", ("messages", 20)
-            )
-            self._max_arg_length = truncate_args_settings.get("max_length", 2000)
-            self._truncation_text = truncate_args_settings.get(
-                "truncation_text", "...(argument truncated)"
-            )
+        tier1 = truncate_args_settings or {}
+        idle_minutes = tier1.get("idle_minutes", 90)
+        self._idle_seconds: float | None = (
+            float(idle_minutes) * 60
+            if truncate_args_settings is not None and idle_minutes is not None
+            else None
+        )
+        self._truncate_keep = int(tier1.get("keep_messages", 20))
+        self._max_arg_length = int(tier1.get("max_length", 2000))
+        self._truncation_text = tier1.get("truncation_text", "...(argument truncated)")
 
         requires_profile = any(
             condition[0] == "fraction" for condition in self._trigger_conditions
@@ -237,7 +230,7 @@ class CompactionMiddleware(AgentMiddleware):
 
         Flow:
         1. Reconstruct effective messages from previous summarization event
-        2. TIER 1: Truncate large tool args in old messages (cheap, fires early)
+        2. Re-apply the recorded Tier 1 offloads (chosen in abefore_agent)
         3. TIER 2: Check if full summarization is needed (expensive, fires later)
            - NO: call handler with truncated messages, cache tokens, return
              (catch ContextOverflowError -> fall through to summarize)
@@ -256,109 +249,32 @@ class CompactionMiddleware(AgentMiddleware):
         offloaded_read_result_ids = set(
             request.state.get("_offloaded_read_result_ids") or ()
         )
-        last_truncation_msg_count: int = request.state.get("_truncation_batch_count", 0)
         cached_input_tokens: int = request.state.get("_cached_input_tokens", 0)
         cached_output_tokens: int = request.state.get("_cached_output_tokens", 0)
 
-        # 2. Reconstruct effective messages
+        # 2. Reconstruct effective messages, with every recorded Tier 1
+        #    offload applied (Tier 1 itself runs in abefore_agent).
         ensure_message_ids(request.messages)
-        effective_messages = self._apply_recorded_offloads(
-            self._get_effective_messages(request.messages, previous_event),
+        effective = self._get_effective_messages(request.messages, previous_event)
+        truncated_messages = self._apply_recorded_offloads(
+            effective,
             offloaded_tool_call_ids,
             offloaded_read_result_ids,
+            request.messages,
         )
 
         # 3. Count tokens once (prefer cached from last model call, fall back to tiktoken).
-        #    Pass through to _truncate_args / _truncate_read_results to avoid recomputing.
         if cached_input_tokens > 0:
             total_tokens = cached_input_tokens + cached_output_tokens
         else:
             counted_msgs = (
-                [request.system_message, *effective_messages]
+                [request.system_message, *truncated_messages]
                 if request.system_message is not None
-                else effective_messages
+                else truncated_messages
             )
             total_tokens = self.token_counter(counted_msgs)
 
-        # 4. TIER 1: Truncate tool args in old messages (batch gated)
-        truncated_messages, truncated, originals = self._truncate_args(
-            effective_messages,
-            request.system_message,
-            request.tools,
-            total_tokens=total_tokens,
-            last_truncation_msg_count=last_truncation_msg_count,
-        )
-
-        # Track whether state needs persisting via ExtendedModelResponse
-        state_changed = False
-
-        # Offload original args to backend before they're lost (skip already-offloaded)
-        if truncated and originals:
-            new_originals = {
-                k: v for k, v in originals.items() if k not in offloaded_tool_call_ids
-            }
-            skipped_count = len(originals) - len(new_originals)
-            if new_originals:
-                saved = await aoffload_truncated_args(self._backend, new_originals)
-                if len(saved) < len(new_originals):
-                    # A call whose write failed stays in full on this call too;
-                    # left unrecorded, the next pass retries its write.
-                    truncated_messages = self._apply_recorded_offloads(
-                        effective_messages, saved, set()
-                    )
-                if saved:
-                    offloaded_tool_call_ids.update(saved)
-                    state_changed = True
-                    self._emit_context_signal(
-                        "offload",
-                        "complete",
-                        kind="args",
-                        offloaded_args=len(saved),
-                    )
-                    if skipped_count:
-                        logger.info(
-                            "[Compaction] Offloaded %d new tool args, skipped %d already-offloaded",
-                            len(saved),
-                            skipped_count,
-                        )
-            elif skipped_count:
-                logger.debug(
-                    "[Compaction] Tier 1 args: %d truncated in-memory, all already offloaded",
-                    skipped_count,
-                )
-
-        # 4b. TIER 1 (cont.): Offload duplicate/non-critical Read results
-        truncated_messages, read_truncated, read_offloaded_ids = (
-            self._truncate_read_results(
-                truncated_messages,
-                request.system_message,
-                request.tools,
-                total_tokens=total_tokens,
-                last_truncation_msg_count=last_truncation_msg_count,
-            )
-        )
-        if read_truncated and read_offloaded_ids:
-            new_ids = read_offloaded_ids - offloaded_read_result_ids
-            if new_ids:
-                offloaded_read_result_ids.update(new_ids)
-                state_changed = True
-                self._emit_context_signal(
-                    "offload",
-                    "complete",
-                    kind="reads",
-                    offloaded_reads=len(new_ids),
-                )
-            else:
-                logger.debug(
-                    "[Compaction] Tier 1 reads: %d truncated in-memory, all already offloaded",
-                    len(read_offloaded_ids),
-                )
-
-        # Advance batch counter when Tier 1 produced new offloads
-        if state_changed:
-            last_truncation_msg_count = len(effective_messages)
-
-        # 5. TIER 2: Check if summarization is needed
+        # 4. TIER 2: Check if summarization is needed
         if not self._should_summarize(truncated_messages, total_tokens):
             try:
                 response = await handler(request.override(messages=truncated_messages))
@@ -369,12 +285,7 @@ class CompactionMiddleware(AgentMiddleware):
                     model_response=response,
                     command=Command(
                         update=self._build_state_update(
-                            offloaded_tool_call_ids=offloaded_tool_call_ids,
-                            offloaded_read_result_ids=offloaded_read_result_ids,
-                            last_truncation_msg_count=last_truncation_msg_count,
-                            cached_input_tokens=cached_input_tokens,
-                            cached_output_tokens=cached_output_tokens,
-                            offloads_changed=state_changed,
+                            cached_input_tokens, cached_output_tokens
                         )
                     ),
                 )
@@ -387,7 +298,7 @@ class CompactionMiddleware(AgentMiddleware):
                     "[Compaction] ContextOverflowError caught, triggering emergency summarization"
                 )
 
-        # 6. Summarization needed
+        # 5. Summarization needed
         cutoff_index = self._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
             # Can't summarize — too few messages
@@ -399,12 +310,7 @@ class CompactionMiddleware(AgentMiddleware):
                 model_response=response,
                 command=Command(
                     update=self._build_state_update(
-                        offloaded_tool_call_ids=offloaded_tool_call_ids,
-                        offloaded_read_result_ids=offloaded_read_result_ids,
-                        last_truncation_msg_count=last_truncation_msg_count,
-                        cached_input_tokens=cached_input_tokens,
-                        cached_output_tokens=cached_output_tokens,
-                        offloads_changed=state_changed,
+                        cached_input_tokens, cached_output_tokens
                     )
                 ),
             )
@@ -447,12 +353,7 @@ class CompactionMiddleware(AgentMiddleware):
                 model_response=response,
                 command=Command(
                     update=self._build_state_update(
-                        offloaded_tool_call_ids=offloaded_tool_call_ids,
-                        offloaded_read_result_ids=offloaded_read_result_ids,
-                        last_truncation_msg_count=last_truncation_msg_count,
-                        cached_input_tokens=cached_input_tokens,
-                        cached_output_tokens=cached_output_tokens,
-                        offloads_changed=state_changed,
+                        cached_input_tokens, cached_output_tokens
                     )
                 ),
             )
@@ -477,8 +378,6 @@ class CompactionMiddleware(AgentMiddleware):
         # Cache tokens from the new (reduced) context
         cached_input_tokens, cached_output_tokens = self._extract_token_usage(response)
 
-        # Reset batch counter after summarization (message count drops dramatically)
-        last_truncation_msg_count = 0
         # Summarized calls never reach the model again, so their ids are dead.
         live_ids = tool_call_ids(preserved_messages)
         offloaded_tool_call_ids &= live_ids
@@ -491,11 +390,9 @@ class CompactionMiddleware(AgentMiddleware):
                 update={
                     "_summarization_event": new_event,
                     **self._build_state_update(
-                        offloaded_tool_call_ids=offloaded_tool_call_ids,
-                        offloaded_read_result_ids=offloaded_read_result_ids,
-                        last_truncation_msg_count=last_truncation_msg_count,
-                        cached_input_tokens=cached_input_tokens,
-                        cached_output_tokens=cached_output_tokens,
+                        cached_input_tokens,
+                        cached_output_tokens,
+                        offloads=(offloaded_tool_call_ids, offloaded_read_result_ids),
                     ),
                 }
             ),
@@ -511,7 +408,7 @@ class CompactionMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse | ExtendedModelResponse:
-        """Sync fallback — same flow as awrap_model_call but skips backend offloading."""
+        """Sync fallback: same flow as awrap_model_call, without the transcript."""
         # 1. Load all per-invocation state from graph state into locals
         previous_event: CompactionEvent | None = request.state.get(
             "_summarization_event"
@@ -522,55 +419,17 @@ class CompactionMiddleware(AgentMiddleware):
         offloaded_read_result_ids = set(
             request.state.get("_offloaded_read_result_ids") or ()
         )
-        last_truncation_msg_count: int = request.state.get("_truncation_batch_count", 0)
         cached_input_tokens: int = request.state.get("_cached_input_tokens", 0)
         cached_output_tokens: int = request.state.get("_cached_output_tokens", 0)
 
         ensure_message_ids(request.messages)
-        effective_messages = self._apply_recorded_offloads(
-            self._get_effective_messages(request.messages, previous_event),
+        effective = self._get_effective_messages(request.messages, previous_event)
+        truncated_messages = self._apply_recorded_offloads(
+            effective,
             offloaded_tool_call_ids,
             offloaded_read_result_ids,
+            request.messages,
         )
-
-        truncated_messages, truncated, originals = self._truncate_args(
-            effective_messages,
-            request.system_message,
-            request.tools,
-            last_truncation_msg_count=last_truncation_msg_count,
-        )
-        # Note: sync path skips backend offloading for truncated args
-
-        state_changed = False
-
-        # Track newly truncated args (no backend offload in sync path)
-        if truncated and originals:
-            new_originals = {
-                k: v for k, v in originals.items() if k not in offloaded_tool_call_ids
-            }
-            if new_originals:
-                offloaded_tool_call_ids.update(new_originals)
-                state_changed = True
-
-        # Tier 1 (cont.): Truncate duplicate/non-critical Read results
-        truncated_messages, read_truncated, read_offloaded_ids = (
-            self._truncate_read_results(
-                truncated_messages,
-                request.system_message,
-                request.tools,
-                last_truncation_msg_count=last_truncation_msg_count,
-            )
-        )
-        if read_truncated and read_offloaded_ids:
-            new_ids = read_offloaded_ids - offloaded_read_result_ids
-            if new_ids:
-                offloaded_read_result_ids.update(new_ids)
-                state_changed = True
-
-        # Advance batch counter when Tier 1 produced new offloads
-        if state_changed:
-            last_truncation_msg_count = len(effective_messages)
-
         if cached_input_tokens > 0:
             total_tokens = cached_input_tokens + cached_output_tokens
         else:
@@ -586,12 +445,7 @@ class CompactionMiddleware(AgentMiddleware):
                     model_response=response,
                     command=Command(
                         update=self._build_state_update(
-                            offloaded_tool_call_ids=offloaded_tool_call_ids,
-                            offloaded_read_result_ids=offloaded_read_result_ids,
-                            last_truncation_msg_count=last_truncation_msg_count,
-                            cached_input_tokens=cached_input_tokens,
-                            cached_output_tokens=cached_output_tokens,
-                            offloads_changed=state_changed,
+                            cached_input_tokens, cached_output_tokens
                         )
                     ),
                 )
@@ -612,12 +466,7 @@ class CompactionMiddleware(AgentMiddleware):
                 model_response=response,
                 command=Command(
                     update=self._build_state_update(
-                        offloaded_tool_call_ids=offloaded_tool_call_ids,
-                        offloaded_read_result_ids=offloaded_read_result_ids,
-                        last_truncation_msg_count=last_truncation_msg_count,
-                        cached_input_tokens=cached_input_tokens,
-                        cached_output_tokens=cached_output_tokens,
-                        offloads_changed=state_changed,
+                        cached_input_tokens, cached_output_tokens
                     )
                 ),
             )
@@ -650,12 +499,7 @@ class CompactionMiddleware(AgentMiddleware):
                 model_response=response,
                 command=Command(
                     update=self._build_state_update(
-                        offloaded_tool_call_ids=offloaded_tool_call_ids,
-                        offloaded_read_result_ids=offloaded_read_result_ids,
-                        last_truncation_msg_count=last_truncation_msg_count,
-                        cached_input_tokens=cached_input_tokens,
-                        cached_output_tokens=cached_output_tokens,
-                        offloads_changed=state_changed,
+                        cached_input_tokens, cached_output_tokens
                     )
                 ),
             )
@@ -674,8 +518,6 @@ class CompactionMiddleware(AgentMiddleware):
         response = handler(request.override(messages=modified_messages))
         cached_input_tokens, cached_output_tokens = self._extract_token_usage(response)
 
-        # Reset batch counter after summarization
-        last_truncation_msg_count = 0
         live_ids = tool_call_ids(preserved_messages)
         offloaded_tool_call_ids &= live_ids
         offloaded_read_result_ids &= live_ids
@@ -686,11 +528,9 @@ class CompactionMiddleware(AgentMiddleware):
                 update={
                     "_summarization_event": new_event,
                     **self._build_state_update(
-                        offloaded_tool_call_ids=offloaded_tool_call_ids,
-                        offloaded_read_result_ids=offloaded_read_result_ids,
-                        last_truncation_msg_count=last_truncation_msg_count,
-                        cached_input_tokens=cached_input_tokens,
-                        cached_output_tokens=cached_output_tokens,
+                        cached_input_tokens,
+                        cached_output_tokens,
+                        offloads=(offloaded_tool_call_ids, offloaded_read_result_ids),
                     ),
                 }
             ),
@@ -754,93 +594,55 @@ class CompactionMiddleware(AgentMiddleware):
         return (0, 0)
 
     # =========================================================================
-    # Tier 1: Tool argument truncation
+    # Tier 1: trimming old tool args and Read results after a long pause
     # =========================================================================
 
-    def _should_truncate_args(
-        self,
-        messages: list[AnyMessage],
-        total_tokens: int,
-        last_truncation_msg_count: int = 0,
-    ) -> bool:
-        """Check if argument truncation should be triggered (batch gated).
+    @override
+    async def abefore_agent(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        """Tier 1, once per turn and only when the model last answered more
+        than the idle threshold ago: by then the provider's prompt cache has
+        expired, so hiding part of the prefix costs no cache hit, while doing
+        it mid-turn would throw a warm one away. A resume after an interrupt
+        does not pass through here, since the graph picks up where it stopped.
+        An argument is hidden only once the transcript holding it is saved,
+        which is then its one copy the agent can read."""
+        args, reads = self._idle_offloads(state)
+        if args and not await self._save_transcript(state["messages"]):
+            args = set()
+        return self._record_offloads(state, args, reads)
 
-        Uses batch gating: after truncation fires at N messages, the next
-        trigger waits until N + trigger_value messages. This avoids cache
-        invalidation and SSE notification spam on every turn.
+    @override
+    def before_agent(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        # Reads only: the transcript an argument would point at saves async-only.
+        _, reads = self._idle_offloads(state)
+        return self._record_offloads(state, set(), reads)
 
-        Args:
-            messages: Current effective message history.
-            total_tokens: Total token count of messages.
-            last_truncation_msg_count: Message count at last Tier 1 trigger.
+    def _idle_offloads(self, state: Any) -> tuple[set[str], set[str]]:
+        return idle_offloads(
+            state,
+            idle_seconds=self._idle_seconds,
+            keep_messages=self._truncate_keep,
+            max_length=self._max_arg_length,
+            now=time.time(),
+        )
 
-        Returns:
-            True if truncation should occur.
-        """
-        if self._truncate_args_trigger is None:
-            return False
-
-        trigger_type, trigger_value = self._truncate_args_trigger
-
-        if trigger_type == "messages":
-            next_trigger = last_truncation_msg_count + trigger_value
-            return len(messages) >= next_trigger
-        if trigger_type == "tokens":
-            return total_tokens >= trigger_value
-        if trigger_type == "fraction":
-            window = max_input_tokens(self.model)
-            if window is None:
-                return False
-            threshold = int(window * trigger_value)
-            if threshold <= 0:
-                threshold = 1
-            return total_tokens >= threshold
-
-        return False
-
-    def _determine_truncate_cutoff_index(self, messages: list[AnyMessage]) -> int:
-        """Determine the cutoff index for argument truncation based on keep policy.
-
-        Messages at index >= cutoff are protected from truncation.
-        Messages at index < cutoff can have their tool args truncated.
-
-        Args:
-            messages: Current effective message history.
-
-        Returns:
-            Index where truncation cutoff occurs.
-        """
-        keep_type, keep_value = self._truncate_args_keep
-
-        if keep_type == "messages":
-            if len(messages) <= keep_value:
-                return len(messages)  # All messages are recent
-            return int(len(messages) - keep_value)
-
-        if keep_type in {"tokens", "fraction"}:
-            if keep_type == "fraction":
-                window = max_input_tokens(self.model)
-                if window is None:
-                    messages_to_keep = 20
-                    if len(messages) <= messages_to_keep:
-                        return len(messages)
-                    return len(messages) - messages_to_keep
-                target_token_count = int(window * keep_value)
-            else:
-                target_token_count = int(keep_value)
-
-            if target_token_count <= 0:
-                target_token_count = 1
-
-            tokens_kept = 0
-            for i in range(len(messages) - 1, -1, -1):
-                msg_tokens = self.token_counter([messages[i]])
-                if tokens_kept + msg_tokens > target_token_count:
-                    return i + 1
-                tokens_kept += msg_tokens
-            return 0
-
-        return len(messages)
+    def _record_offloads(
+        self, state: Any, args: set[str], reads: set[str]
+    ) -> dict[str, Any] | None:
+        update: dict[str, Any] = {}
+        if args:
+            known = set(state.get("_offloaded_tool_call_ids") or ())
+            update["_offloaded_tool_call_ids"] = known | args
+            self._emit_context_signal(
+                "offload", "complete", kind="args", offloaded_args=len(args)
+            )
+        if reads:
+            known = set(state.get("_offloaded_read_result_ids") or ())
+            update["_offloaded_read_result_ids"] = known | reads
+            self._emit_context_signal(
+                "offload", "complete", kind="reads", offloaded_reads=len(reads)
+            )
+        return update or None
 
     def _transcript_target(self) -> TranscriptTarget | None:
         """This agent's transcript, or None where no mount serves one."""
@@ -854,118 +656,39 @@ class CompactionMiddleware(AgentMiddleware):
             str(configurable.get("checkpoint_ns") or ""),
         )
 
-    def _offload_thread_dir(self) -> str | None:
-        # Markers name the offload path only when originals are written there.
-        if self._backend is None:
-            return None
-        return WorkspaceLayout.thread_subdir(get_thread_id())
+    async def _save_transcript(self, messages: list[AnyMessage]) -> bool:
+        target = self._transcript_target()
+        return (
+            target is not None
+            and await aexport_transcript(self._backend, target, messages) is not None
+        )
 
     def _apply_recorded_offloads(
         self,
         messages: list[AnyMessage],
         arg_ids: set[str],
         read_ids: set[str],
+        raw_messages: list[AnyMessage],
     ) -> list[AnyMessage]:
+        turns = None
+        if arg_ids and self._backend is not None:
+            try:
+                configurable = get_config().get("configurable", {})
+            except RuntimeError:
+                configurable = {}
+            turns = offload_turns(
+                raw_messages,
+                configurable.get("thread_id"),
+                str(configurable.get("checkpoint_ns") or ""),
+            )
         return apply_recorded_offloads(
             messages,
             arg_ids,
             read_ids,
             self._max_arg_length,
             self._truncation_text,
-            self._offload_thread_dir(),
+            turns,
         )
-
-    def _truncate_args(
-        self,
-        messages: list[AnyMessage],
-        system_message: Any | None,
-        tools: list[Any] | None,
-        *,
-        total_tokens: int | None = None,
-        last_truncation_msg_count: int = 0,
-    ) -> tuple[list[AnyMessage], bool, dict[str, dict[str, Any]]]:
-        """Truncate large tool call arguments in old messages.
-
-        Only processes messages before the keep cutoff. Only modifies AIMessages
-        with tool calls to truncatable tools (Write, Edit, ExecuteCode).
-
-        Args:
-            messages: Effective messages to potentially truncate.
-            system_message: Optional system message for token counting.
-            tools: Optional tools for token counting.
-            total_tokens: Pre-computed token count (avoids redundant counting).
-            last_truncation_msg_count: Message count at last Tier 1 trigger.
-
-        Returns:
-            Tuple of (messages, modified, originals). If modified is False,
-            messages is the same list object as input. originals maps
-            tool_call_id -> {"name": str, "args": dict} for calls that were
-            truncated, so callers can offload the original content.
-        """
-        # Count tokens for truncation threshold check
-        if total_tokens is None:
-            counted_messages = (
-                [system_message, *messages] if system_message is not None else messages
-            )
-            total_tokens = self.token_counter(counted_messages)
-
-        if not self._should_truncate_args(
-            messages, total_tokens, last_truncation_msg_count
-        ):
-            return messages, False, {}
-
-        cutoff_index = self._determine_truncate_cutoff_index(messages)
-        if cutoff_index >= len(messages):
-            return messages, False, {}
-
-        return truncate_message_args(
-            messages,
-            cutoff_index,
-            self._max_arg_length,
-            self._truncation_text,
-            self._offload_thread_dir(),
-        )
-
-    def _truncate_read_results(
-        self,
-        messages: list[AnyMessage],
-        system_message: Any | None,
-        tools: list[Any] | None,
-        *,
-        total_tokens: int | None = None,
-        last_truncation_msg_count: int = 0,
-    ) -> tuple[list[AnyMessage], bool, set[str]]:
-        """Truncate duplicate and non-critical Read tool results in old messages.
-
-        Reuses the same threshold/cutoff logic as _truncate_args to decide whether
-        and where to apply Read result truncation.
-
-        Args:
-            messages: Effective messages to potentially truncate.
-            system_message: Optional system message for token counting.
-            tools: Optional tools for token counting.
-            total_tokens: Pre-computed token count (avoids redundant counting).
-            last_truncation_msg_count: Message count at last Tier 1 trigger.
-
-        Returns:
-            Tuple of (messages, modified, offloaded_tool_call_ids).
-        """
-        if total_tokens is None:
-            counted_messages = (
-                [system_message, *messages] if system_message is not None else messages
-            )
-            total_tokens = self.token_counter(counted_messages)
-
-        if not self._should_truncate_args(
-            messages, total_tokens, last_truncation_msg_count
-        ):
-            return messages, False, set()
-
-        cutoff_index = self._determine_truncate_cutoff_index(messages)
-        if cutoff_index >= len(messages):
-            return messages, False, set()
-
-        return truncate_read_results(messages, cutoff_index)
 
     # =========================================================================
     # Summarization trigger and cutoff logic
@@ -1144,26 +867,24 @@ class CompactionMiddleware(AgentMiddleware):
 
     def _build_state_update(
         self,
-        offloaded_tool_call_ids: set[str],
-        offloaded_read_result_ids: set[str],
-        last_truncation_msg_count: int,
         cached_input_tokens: int,
         cached_output_tokens: int,
-        offloads_changed: bool = True,
+        *,
+        offloads: tuple[set[str], set[str]] | None = None,
     ) -> dict[str, Any]:
         """Build a state update dict for persisting per-invocation state.
 
-        The offload fields ride along only when they changed: each write is a
-        new checkpoint blob, and the id sets live as long as the thread.
+        The offload id sets ride along only when they changed: each write is
+        a new checkpoint blob, and they live as long as the thread. The
+        response time is what the next turn's Tier 1 gate measures from.
         """
         update: dict[str, Any] = {
             "_cached_input_tokens": cached_input_tokens,
             "_cached_output_tokens": cached_output_tokens,
+            "_last_model_response_at": time.time(),
         }
-        if offloads_changed:
-            update["_offloaded_tool_call_ids"] = offloaded_tool_call_ids
-            update["_offloaded_read_result_ids"] = offloaded_read_result_ids
-            update["_truncation_batch_count"] = last_truncation_msg_count
+        if offloads is not None:
+            update["_offloaded_tool_call_ids"], update["_offloaded_read_result_ids"] = offloads
         return update
 
     def _find_safe_cutoff(
@@ -1348,16 +1069,14 @@ class CompactionMiddleware(AgentMiddleware):
         token_threshold = config.get("token_threshold", 120000)
         keep_messages = config.get("keep_messages", 5)
 
-        # Build truncate_args_settings from config (None disables truncation)
+        # Tier 1 settings (an idle threshold of None turns Tier 1 off)
         truncate_args_settings: TruncateArgsSettings | None = None
-        truncate_trigger_messages = config.get("truncate_args_trigger_messages")
-        if truncate_trigger_messages is not None:
-            truncate_keep_messages = config.get("truncate_args_keep_messages", 20)
-            truncate_max_length = config.get("truncate_args_max_length", 2000)
+        idle_minutes = config.get("truncate_args_idle_minutes", 90)
+        if idle_minutes is not None:
             truncate_args_settings = TruncateArgsSettings(
-                trigger=("messages", int(truncate_trigger_messages)),
-                keep=("messages", int(truncate_keep_messages)),
-                max_length=int(truncate_max_length),
+                idle_minutes=float(idle_minutes),
+                keep_messages=int(config.get("truncate_args_keep_messages", 20)),
+                max_length=int(config.get("truncate_args_max_length", 2000)),
             )
 
         return cls(

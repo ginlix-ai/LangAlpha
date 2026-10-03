@@ -250,128 +250,41 @@ def strip_base64_from_messages(messages: list[AnyMessage]) -> list[AnyMessage]:
 
 
 def truncate_tool_call(
-    tool_call: dict[str, Any],
-    max_length: int,
-    truncation_text: str,
-    thread_dir: str | None = None,
+    tool_call: dict[str, Any], max_length: int, marker: str
 ) -> dict[str, Any]:
-    """Truncate large arguments in a single tool call.
-
-    Only clips individual string args exceeding max_length, preserving arg structure.
-
-    Args:
-        tool_call: The tool call dictionary to truncate.
-        max_length: Maximum character length for tool arguments before truncation.
-        truncation_text: Fallback text when no thread_dir is available.
-        thread_dir: If provided, the truncation marker includes the path where
-            the original content is saved, so the agent can retrieve it.
-
-    Returns:
-        A copy of the tool call with large arguments truncated, or the
-        original if no modifications were needed.
-    """
+    """A copy of ``tool_call`` with each string arg over ``max_length`` cut
+    to its head plus ``marker``, or the call itself when none is that long."""
     args = tool_call.get("args", {})
-
-    # Build the marker text — include file path when backend offloading is active
-    if thread_dir is not None:
-        tool_call_id = tool_call.get("id", "unknown")
-        path = f"{thread_dir}/truncated_args_{tool_call_id}.md"
-        marker = f"... [this tool call's arguments were offloaded to {path} — use Read to access when needed]"
-    else:
-        marker = truncation_text
-
     truncated_args = {}
     modified = False
-
     for key, value in args.items():
         if isinstance(value, str) and len(value) > max_length:
             truncated_args[key] = value[:20] + marker
             modified = True
         else:
             truncated_args[key] = value
-
     if modified:
         return {**tool_call, "args": truncated_args}
     return tool_call
 
 
-def truncate_message_args(
-    messages: list[AnyMessage],
-    cutoff_index: int,
-    max_length: int,
-    truncation_text: str,
-    thread_dir: str | None = None,
-) -> tuple[list[AnyMessage], bool, dict[str, dict[str, Any]]]:
-    """Truncate large tool call arguments in old messages.
-
-    Only processes messages before the cutoff index. Only modifies AIMessages
-    with tool calls to truncatable tools (Write, Edit, ExecuteCode).
-
-    Args:
-        messages: Effective messages to potentially truncate.
-        cutoff_index: Messages at index >= cutoff are protected from truncation.
-        max_length: Maximum character length for tool arguments before truncation.
-        truncation_text: Fallback text when no thread_dir is available.
-        thread_dir: If provided, truncation markers include the path where
-            the original content is saved.
-
-    Returns:
-        Tuple of (messages, modified, originals). If modified is False,
-        messages is the same list object as input. originals maps
-        tool_call_id -> {"name": str, "args": dict} for calls that were
-        truncated, so callers can offload the original content.
-    """
-    if cutoff_index >= len(messages):
-        return messages, False, {}
-
-    logger.debug(
-        "Truncating tool args in messages before index %d (of %d total)",
-        cutoff_index,
-        len(messages),
-    )
-
-    truncated_messages: list[AnyMessage] = []
-    modified = False
-    originals: dict[str, dict[str, Any]] = {}
-
-    for i, msg in enumerate(messages):
-        if i < cutoff_index and isinstance(msg, AIMessage) and msg.tool_calls:
-            truncated_tool_calls = []
-            msg_modified = False
-
-            for tool_call in msg.tool_calls:
-                if tool_call["name"] in TRUNCATABLE_TOOLS:
-                    truncated_call = truncate_tool_call(
-                        tool_call, max_length, truncation_text, thread_dir
-                    )
-                    if truncated_call is not tool_call:
-                        msg_modified = True
-                        originals[tool_call["id"]] = {
-                            "name": tool_call["name"],
-                            "args": tool_call["args"],
-                        }
-                    truncated_tool_calls.append(truncated_call)
-                else:
-                    truncated_tool_calls.append(tool_call)
-
-            if msg_modified:
-                truncated_msg = msg.model_copy()
-                truncated_msg.tool_calls = truncated_tool_calls
-                truncated_messages.append(truncated_msg)
-                modified = True
-            else:
-                truncated_messages.append(msg)
-        else:
-            truncated_messages.append(msg)
-
-    if modified:
-        logger.debug(
-            "Tool arg truncation applied to messages before index %d (%d tool calls)",
-            cutoff_index,
-            len(originals),
+def oversized_arg_calls(
+    messages: list[AnyMessage], cutoff_index: int, max_length: int
+) -> set[str]:
+    """Ids of the Write, Edit and ExecuteCode calls before ``cutoff_index``
+    that pass a string longer than ``max_length``."""
+    return {
+        call["id"]
+        for message in messages[:cutoff_index]
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls or ()
+        if call["name"] in TRUNCATABLE_TOOLS
+        and call.get("id")
+        and any(
+            isinstance(value, str) and len(value) > max_length
+            for value in (call.get("args") or {}).values()
         )
-
-    return truncated_messages, modified, originals
+    }
 
 
 # =============================================================================

@@ -1,9 +1,10 @@
 """Offloading: the view that re-applies recorded offloads to each model call,
-and the backend files that keep what truncated args and inline attachments cut."""
+and the backend files that keep what inline attachments cut."""
 
 import base64
 import logging
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
@@ -13,10 +14,15 @@ from ptc_agent.core.paths import WorkspaceLayout
 from src.llms.attachment_payload import FILE_BLOCK_TYPES
 from ptc_agent.agent.middleware.compaction.types import TRUNCATABLE_TOOLS
 from ptc_agent.agent.middleware.compaction.utils import (
+    get_effective_messages,
+    oversized_arg_calls,
     read_offload_marker,
     strip_base64_from_messages,
+    truncate_read_results,
     truncate_tool_call,
 )
+from ptc_agent.agent.transcript import TranscriptTarget
+from ptc_agent.agent.transcript.pointer import TranscriptTurns
 
 logger = logging.getLogger(__name__)
 
@@ -31,22 +37,89 @@ def tool_call_ids(messages: list[AnyMessage]) -> set[str]:
     }
 
 
+def arg_offload_marker(path: str, call_id: str) -> str:
+    return (
+        f"... [argument cut here. Its full call is in {path}; read it with "
+        f"jq -c 'select(.call_id==\"{call_id}\" and .type==\"tool_call\") "
+        f"| .args' {path}]"
+    )
+
+
+def offload_turns(
+    messages: list[AnyMessage], thread_id: str | None, checkpoint_ns: str = ""
+) -> TranscriptTurns | None:
+    """The transcript files a cut argument names, numbered over the agent's
+    whole checkpoint list ``messages``."""
+    if not thread_id:
+        return None
+    return TranscriptTurns.of(
+        TranscriptTarget.for_agent(str(thread_id), checkpoint_ns), messages
+    )
+
+
+def select_offloads(
+    effective: list[AnyMessage],
+    cutoff_index: int,
+    max_length: int,
+    arg_ids: set[str],
+    read_ids: set[str],
+) -> tuple[set[str], set[str]]:
+    """New (arg ids, read ids) to hide among the effective messages before
+    ``cutoff_index``, leaving out those already recorded."""
+    if cutoff_index <= 0:
+        return set(), set()
+    new_args = oversized_arg_calls(effective, cutoff_index, max_length) - arg_ids
+    _, _, stale_reads = truncate_read_results(effective, cutoff_index)
+    return new_args, stale_reads - read_ids
+
+
+def idle_offloads(
+    state: Mapping[str, Any],
+    *,
+    idle_seconds: float | None,
+    keep_messages: int,
+    max_length: int,
+    now: float,
+) -> tuple[set[str], set[str]]:
+    """New (arg ids, read ids) to hide as a turn starts: none unless the
+    model last answered at least ``idle_seconds`` before ``now``, and none
+    among the newest ``keep_messages`` of the view. A thread with no recorded
+    answer time (its first turn, or one from before the time was kept) waits
+    for one."""
+    last = state.get("_last_model_response_at")
+    if idle_seconds is None or not last or now - last < idle_seconds:
+        return set(), set()
+    effective = get_effective_messages(
+        list(state.get("messages") or ()), state.get("_summarization_event")
+    )
+    return select_offloads(
+        effective,
+        len(effective) - keep_messages,
+        max_length,
+        set(state.get("_offloaded_tool_call_ids") or ()),
+        set(state.get("_offloaded_read_result_ids") or ()),
+    )
+
+
 def apply_recorded_offloads(
     messages: list[AnyMessage],
     arg_ids: set[str],
     read_ids: set[str],
     max_length: int,
     truncation_text: str,
-    thread_dir: str | None = None,
+    turns: TranscriptTurns | None = None,
 ) -> list[AnyMessage]:
     """Re-apply every recorded Tier 1 offload to one model call's messages.
 
     An offload is a view over the checkpoint, not a rewrite of it: the id sets
-    are the record, and every call re-truncates them. The batch gate only
-    decides when new ids join; without this, a call truncated at one batch
-    came back in full on the next, busting the prompt cache each time. Each id
-    is checked against its tool, so an arg id never blanks a result and a read
-    id only replaces a Read result.
+    are the record, and every call re-truncates them, so a call cut once stays
+    cut and the prompt cache holds. Each id is checked against its tool, so an
+    arg id never blanks a result and a read id only replaces a Read result.
+
+    A cut argument points at its call in the transcript file of its turn
+    (``turns``), whether or not a mount serves that file right now: the text
+    has to be the same on every call. Without ``turns`` it reads
+    ``truncation_text``, as ids recorded where no transcript was kept did.
     """
     if not arg_ids and not read_ids:
         return messages
@@ -58,13 +131,15 @@ def apply_recorded_offloads(
         if isinstance(msg, AIMessage) and msg.tool_calls:
             calls = []
             msg_changed = False
+            path = turns.path(msg.id) if turns is not None else None
             for tc in msg.tool_calls:
                 if tc["name"] == "Read" and tc["id"] in read_ids:
                     read_paths[tc["id"]] = tc.get("args", {}).get("file_path", "")
                 if tc["id"] in arg_ids and tc["name"] in TRUNCATABLE_TOOLS:
-                    new_tc = truncate_tool_call(
-                        tc, max_length, truncation_text, thread_dir
+                    marker = (
+                        arg_offload_marker(path, tc["id"]) if path else truncation_text
                     )
+                    new_tc = truncate_tool_call(tc, max_length, marker)
                     msg_changed = msg_changed or new_tc is not tc
                     calls.append(new_tc)
                 else:
@@ -101,80 +176,6 @@ def get_thread_id(thread_id: str | None = None) -> str:
         pass
 
     return f"session_{uuid.uuid4().hex[:8]}"
-
-
-async def aoffload_truncated_args(
-    backend: Any,
-    originals: dict[str, dict[str, Any]],
-    *,
-    thread_id: str | None = None,
-) -> set[str]:
-    """Persist original tool call args to sandbox before truncation discards them.
-
-    Each truncated tool call gets its own file at
-    `.agents/threads/{tid}/truncated_args_{toolcall_id}.md`.
-
-    Non-fatal -- logs warnings on failure but never raises.
-
-    Args:
-        backend: The Daytona backend for filesystem operations.
-        originals: Mapping of tool_call_id -> {"name": str, "args": dict}
-                   as returned by truncate_message_args.
-
-    Returns:
-        The ids safe to record: those written, or all of them with no
-        backend, since the marker then names no file. A failed write stays
-        out, so its marker never names a missing file and a later pass
-        retries it.
-    """
-    if backend is None:
-        return set(originals)
-
-    short_id = get_thread_id(thread_id)
-    saved: set[str] = set()
-
-    for tool_call_id, original in originals.items():
-        path = WorkspaceLayout.thread_subdir(
-            short_id, f"truncated_args_{tool_call_id}.md"
-        )
-        tool_name = original["name"]
-        args = original["args"]
-
-        # Format each arg as a section
-        parts = [f"# {tool_name} (call {tool_call_id})\n"]
-        for key, value in args.items():
-            str_value = str(value) if not isinstance(value, str) else value
-            parts.append(f"## {key}\n\n```\n{str_value}\n```\n")
-
-        content = "\n".join(parts)
-
-        try:
-            result = await backend.awrite(path, content, overwrite=True)
-            if result is None or result.error:
-                error_msg = result.error if result else "backend returned None"
-                logger.warning(
-                    "Failed to offload truncated args for %s (%s): %s",
-                    tool_call_id,
-                    tool_name,
-                    error_msg,
-                )
-            else:
-                saved.add(tool_call_id)
-                logger.debug(
-                    "Offloaded truncated args for %s (%s) to %s",
-                    tool_call_id,
-                    tool_name,
-                    path,
-                )
-        except Exception as e:
-            logger.warning(
-                "Exception offloading truncated args for %s (%s): %s",
-                tool_call_id,
-                tool_name,
-                e,
-            )
-
-    return saved
 
 
 # =============================================================================

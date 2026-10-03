@@ -44,17 +44,19 @@ class CompactionEvent(TypedDict):
 
 
 class TruncateArgsSettings(TypedDict, total=False):
-    """Settings for truncating large tool arguments in old messages.
+    """Settings for Tier 1: trimming large tool args and stale Read results.
 
     Attributes:
-        trigger: Threshold to trigger argument truncation. If None, truncation is disabled.
-        keep: Context retention policy for message truncation (defaults to last 20 messages).
+        idle_minutes: How long since the last model response a turn must
+            start for Tier 1 to run; None turns Tier 1 off.
+        keep_messages: The newest messages Tier 1 never touches.
         max_length: Maximum character length for tool arguments before truncation.
-        truncation_text: Text to replace truncated arguments with.
+        truncation_text: What a cut argument ends in where no transcript
+            file can be named.
     """
 
-    trigger: "ContextSize | None"
-    keep: "ContextSize"
+    idle_minutes: float | None
+    keep_messages: int
     max_length: int
     truncation_text: str
 
@@ -63,8 +65,9 @@ class CompactionState(AgentState):
     """State for the compaction middleware.
 
     Extends AgentState with private fields for tracking compaction events,
-    offloaded tool call IDs, and batch truncation state.
-    The PrivateStateAttr annotation hides them from input/output schemas.
+    offloaded tool call IDs, and when the model last answered (epoch seconds),
+    which gates Tier 1. The PrivateStateAttr annotation hides them from
+    input/output schemas.
 
     Note: The ``_summarization_event`` field name is preserved because values are
     stored under that key in the LangGraph checkpointer — renaming it would
@@ -74,11 +77,11 @@ class CompactionState(AgentState):
     _summarization_event: Annotated[
         NotRequired[CompactionEvent | None], PrivateStateAttr
     ]
-    _truncation_batch_count: Annotated[NotRequired[int], PrivateStateAttr]
     _offloaded_tool_call_ids: Annotated[NotRequired[set[str]], PrivateStateAttr]
     _offloaded_read_result_ids: Annotated[NotRequired[set[str]], PrivateStateAttr]
     _cached_input_tokens: Annotated[NotRequired[int], PrivateStateAttr]
     _cached_output_tokens: Annotated[NotRequired[int], PrivateStateAttr]
+    _last_model_response_at: Annotated[NotRequired[float], PrivateStateAttr]
 
 
 # Tool names whose arguments carry large payloads (file contents, code strings)
