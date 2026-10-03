@@ -15,7 +15,13 @@ from ptc_agent.agent.backends import (
     StoreContentInvalidError,
     StoreContentTooLargeError,
 )
-from ptc_agent.agent.backends.read_window import DEFAULT_READ_LINES, MAX_READ_CHARS, format_cat_n
+from ptc_agent.agent.backends.read_window import (
+    DEFAULT_READ_LINES,
+    MAX_READ_CHARS,
+    READ_CLIPPED_NOTE,
+    READ_FULL_WINDOW_NOTE,
+    format_cat_n,
+)
 from ptc_agent.agent.tools.context_file_policy import (
     CappedFile,
     capped_file,
@@ -220,7 +226,7 @@ def create_filesystem_tools(
                     line_size = len(lines[0]) if lines else 0
                     slice_budget = MAX_READ_CHARS // 20  # ~8 KB chunks
                     marker = (
-                        f"\n\n[Read truncated: line {start_offset + 1} of '{file_path}' "
+                        f"{READ_CLIPPED_NOTE}: line {start_offset + 1} of '{file_path}' "
                         f"is ~{line_size} characters, exceeds the {MAX_READ_CHARS}-character "
                         f"context budget. Read won't help here (it's line-based). Use bash to "
                         f"slice the file, e.g. `head -c {slice_budget} '{file_path}'` or "
@@ -228,7 +234,7 @@ def create_filesystem_tools(
                     )
                 else:
                     marker = (
-                        f"\n\n[Read truncated at {MAX_READ_CHARS} characters to protect the context window. "
+                        f"{READ_CLIPPED_NOTE} at {MAX_READ_CHARS} characters to protect the context window. "
                         f"You saw lines {start_offset + 1}..{next_line}. "
                         f"Call Read(file_path='{file_path}', offset={next_line}, limit={max_lines}) "
                         "to continue, or pass a smaller limit to keep each chunk shorter.]"
@@ -239,7 +245,7 @@ def create_filesystem_tools(
                 # may be the whole file or its first page; say how to go on.
                 next_line = start_offset + max_lines
                 formatted += (
-                    f"\n\n[Read stopped at the {max_lines}-line limit (lines {start_offset + 1}..{next_line}). "
+                    f"{READ_FULL_WINDOW_NOTE}{max_lines}-line limit (lines {start_offset + 1}..{next_line}). "
                     f"The file may continue: Read(file_path='{file_path}', offset={next_line}) for more.]"
                 )
 

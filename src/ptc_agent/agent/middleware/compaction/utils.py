@@ -19,7 +19,12 @@ from langchain_core.messages import (
 from langchain_core.messages.human import HumanMessage
 from langchain_core.messages.utils import convert_to_messages
 
-from ptc_agent.agent.middleware._message_utils import message_id
+from ptc_agent.agent.middleware._message_utils import (
+    is_tool_message,
+    message_field,
+    message_id,
+)
+from ptc_agent.agent.middleware.skills.content import skill_bodies
 from ptc_agent.agent.transcript import TranscriptTarget
 from ptc_agent.agent.transcript.classify import is_summary_message
 from ptc_agent.agent.transcript.pointer import SummarySpan, transcript_note
@@ -354,21 +359,6 @@ def read_offload_marker(file_path: str) -> str:
 # =============================================================================
 
 
-def _is_tool_message(message: Any) -> bool:
-    """True for a tool result in either typed (``ToolMessage``) or dict shape.
-
-    The checkpoint reducer coerces every write via ``convert_to_messages`` (see
-    ``messages_delta_reducer``), so only typed messages should reach
-    reconstruction. But this predicate backs the orphaned-``tool_result`` crash
-    backstop, so it stays agnostic to message shape rather than trusting that
-    invariant — a dict-shaped tool result slipping in must still be caught.
-    """
-    if isinstance(message, ToolMessage):
-        return True
-    if isinstance(message, dict):
-        return message.get("role") == "tool" or message.get("type") == "tool"
-    return False
-
 
 def _tool_result_call_id(message: Any) -> str | None:
     """The call a tool result answers, in either typed or dict shape.
@@ -385,20 +375,6 @@ def _tool_result_call_id(message: Any) -> str | None:
     return call_id if isinstance(call_id, str) else None
 
 
-def _field(message: Any, name: str) -> Any:
-    """Read a field off a message in either typed or dict shape.
-
-    The same reason ``_is_tool_message`` gives: the reducer is supposed to have
-    coerced everything, and this side of the ownership rule is what deletes, so
-    it does not trust that. Reading only attributes made a dict-shaped assistant
-    turn declare nothing, which marked its own answered results as orphans and
-    stripped them. The two halves have to make the same shape assumption or the
-    mismatch loses content.
-    """
-    if isinstance(message, dict):
-        return message.get(name)
-    return getattr(message, name, None)
-
 
 def declared_tool_call_ids(message: Any) -> set[str]:
     """Every tool call an assistant turn is on the hook for an answer to.
@@ -414,14 +390,14 @@ def declared_tool_call_ids(message: Any) -> set[str]:
     ids: set[str] = set()
 
     for attr in ("tool_calls", "invalid_tool_calls"):
-        for call in _field(message, attr) or []:
+        for call in message_field(message, attr) or []:
             call_id = (
                 call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
             )
             if isinstance(call_id, str) and call_id:
                 ids.add(call_id)
 
-    content = _field(message, "content")
+    content = message_field(message, "content")
     if isinstance(content, list):
         for block in content:
             if not isinstance(block, dict):
@@ -459,7 +435,7 @@ def _result_owners(messages: list[AnyMessage]) -> dict[int, int | None]:
     owners: dict[int, int | None] = {}
 
     for i, msg in enumerate(messages):
-        if _is_tool_message(msg):
+        if is_tool_message(msg):
             call_id = _tool_result_call_id(msg)
             if call_id is not None:
                 owners[i] = last_declared.get(call_id)
@@ -716,8 +692,6 @@ def build_summary_message(
     ``skill_reload_note``). ``source`` says what wrote the summary (see
     ``summarize``).
     """
-    from ptc_agent.agent.middleware.skills.content import skill_reload_note
-
     content = f"{CONTEXT_SUMMARY_PREFIX}{summary}"
     if transcript is not None:
         content += transcript_note(transcript, span, index)
@@ -770,6 +744,42 @@ def listed_skills(messages: Iterable[Any]) -> list[str]:
         for name in _summarized(message).get("skills") or ()
         if isinstance(name, str)
     ]
+
+
+def compacted_skills(summarized: Any, kept: Any) -> list[str]:
+    """Skills whose body a summary replaces and no kept message still carries
+    whole.
+
+    Part of a body counts on the summarized side, since a skill read in pages
+    was still being followed. An earlier summary in ``summarized`` carries no
+    body, only the names its note listed, and those skills are still out of
+    context unless a kept message has read one again; dropping them would lose
+    them for good.
+    """
+    still = {name for name, whole in skill_bodies(kept).items() if whole}
+    names = dict.fromkeys([*listed_skills(summarized), *skill_bodies(summarized)])
+    return [name for name in names if name not in still]
+
+
+def skill_reload_note(names: list[str], *, files: bool) -> str:
+    """What a summary tells the agent about skills it may still be following.
+
+    ``files`` is whether the agent reaches skills as files (PTC, where a Read
+    of SKILL.md loads one) rather than through LoadSkill (Flash).
+    """
+    if not names:
+        return ""
+    listed = ", ".join(f"`{name}`" for name in names)
+    how = (
+        "Read its `.agents/skills/<name>/SKILL.md` again"
+        if files
+        else "call LoadSkill with its name"
+    )
+    return (
+        f"\n\nThe instructions of these skills were in the summarized part and "
+        f"are no longer in your context: {listed}. Before you continue with one "
+        f"you are still following, {how}."
+    )
 
 
 def summary_source(message: Any) -> str | None:

@@ -41,6 +41,7 @@ from ptc_agent.agent.middleware.compaction.summarize import (
 from ptc_agent.agent.middleware.compaction.utils import (
     build_compaction_event,
     build_summary_message,
+    compacted_skills,
     count_tokens_tiktoken,
     find_group_safe_cutoff,
     get_effective_messages,
@@ -206,8 +207,6 @@ def build_summary_event(
     agent mid-procedure needs every one to reload. ``skill_files`` says how
     the agent reloads one (see ``skill_reload_note``).
     """
-    from ptc_agent.agent.middleware.skills.content import compacted_skills
-
     # A summary of an earlier summary alone stands in for the same turns.
     earlier = summarized_span(to_summarize[0]) if to_summarize else None
     span = (
