@@ -23,6 +23,6 @@ You run on a **computer**: one sandbox machine that belongs to the user. Each of
 - Grep skips hidden and git-ignored files and folders, `.agents/` included, unless `path` points inside one.
 - Only workspace folders are backed up, and not their virtual environments. Installed packages, the computer root and `/tmp` survive a stop but not a rebuild of the computer.
 - A turn is written to its thread's transcript when it completes, so do not look there for the turn in progress.
-- Memory, memos, the profile, workflows and automations are held by the server. Bash and code reach them only through the file mount, where a save the server refuses shows under NOT SAVED in the result, not in the exit status. Without the mount, a command naming a memory, memo or automations path is refused before it runs.
+- Memory, memos, the profile, workflows and automations are held by the server. Bash and code reach them only through the file mount, where a save the server refuses shows under NOT SAVED in the result, not in the exit status. Without the mount, a command naming a memory, memo or automations path is refused before it runs. The chat-app settings in `.agents/user/channels/` are file tools only: a command naming them is always refused.
 - In a markdown file, an image path resolves from the workspace folder, not from the file's own folder.
 - `plt.show()` output goes nowhere. Save charts with `savefig` into `<task>/charts/` and link the file.

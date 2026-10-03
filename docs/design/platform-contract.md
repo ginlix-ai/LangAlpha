@@ -133,7 +133,8 @@ turn's sends none, whatever the thread is bound to.
 
 - `GET {base}/agent/targets?thread_id=&run_id=&turn_platform=` answers `current` (the
   conversation this turn is in, or null), `targets` (`address`, `platform`, `kind`, `name`, and
-  `thread.last_used_at`, epoch seconds, when this conversation already has a thread in that chat),
+  `thread.last_used_at`, epoch seconds, when this conversation already has a thread in that chat,
+  and `preferred`, true for the chat the user picked as the app's default target),
   `unavailable` (`platform`, `reason`, `message`) and `settings_url`.
 - `POST {base}/agent/send` takes `thread_id`, `run_id`, `tool_call_id`, `turn_platform`,
   `workspace_id`, `target` (null for the conversation this turn is in), `text`, `files`
@@ -153,6 +154,34 @@ clients to render, and the model never sees it.
 The tools never raise into the graph. A gateway that cannot be reached, refuses the token, or
 does not answer in time comes back to the model as a failed or unknown result, and the model is
 told to claim nothing as sent unless the status says so.
+
+### Channel settings
+
+With the same configuration, the PTC agent also gets `.agents/user/channels/`, reached only
+through the file tools (never the file mount, and Bash and ExecuteCode refuse a command naming
+it). `channels.json` is the user's settings and `available.json` the choices they may name; the
+gateway holds both, with the same two headers:
+
+- `GET {base}/agent/settings` answers `{"version", "settings"}`. `settings` has `default`
+  (`mode`, `workspace_id`) and one key per linked app: `preferred` (an address, or null for the
+  user's direct messages), `chats` (address → `mode`, `workspace_id`, `workspace`, `name`),
+  `automation_output` (workspace id → address) and `agent_messages` (`enabled`, `allowed`). A
+  preferred chat counts as allowed, and `name` is the gateway's read-only label.
+- `PUT {base}/agent/settings` takes `{"version", "settings"}` and answers 200
+  `{"version", "settings", "changes"}`, 409 `{"code": "version_conflict"}` when the settings moved
+  since `version`, 400 `{"code": "invalid", "message", "problems": [{"field", "message"}]}` or 503
+  `{"code": "unavailable"}`. langalpha checks the shape first and that every workspace id (in
+  `default`, `chats` and the `automation_output` keys) is one of the user's non-flash workspaces,
+  and fills each binding's `workspace` with that workspace's name. On a read it renders the names
+  from its own workspaces, since the gateway's copy may be stale.
+- `GET {base}/agent/settings/available` answers `{"apps": {app: {"chats": [{"address", "name",
+  "kind"}], "complete", "error"}}}`. `available.json` adds the user's workspaces by id and name.
+- `POST {base}/agent/check-target` takes `{"address", "purpose": "automation"}` and answers
+  `{"ok", "address", "name", "message"}`. Every save of an automation's `delivery` (file, REST or
+  tool) checks each chat address it newly names here and stores the canonical `address`; without
+  a gateway, an address entry is refused, while an app name (`"slack"`) saves as before. The
+  gateway resolves an automation's output chain: its own address, else the workspace's
+  `automation_output`, else the app's `preferred`, else the user's direct messages.
 
 ## Adding a surface
 
