@@ -183,8 +183,11 @@ compaction:
   enabled: true # Enable/disable context compaction
   token_threshold: 120000 # Trigger full compaction when messages exceed this token count
   keep_messages: 10 # Preserve last N messages after compaction
-  truncate_args_trigger_messages: 40 # Truncate tool args when >= N messages (Tier 1)
-  truncate_args_keep_messages: 10 # Protect last N messages from arg truncation
+  # Tier 1: when a turn starts this long after the model's last response
+  # (the prompt cache is cold by then), hide large tool args and stale Read
+  # results in older messages. null turns it off.
+  truncate_args_idle_minutes: 90
+  truncate_args_keep_messages: 10 # Protect last N messages from Tier 1
   truncate_args_max_length: 2000 # Per-arg-value max chars before truncation
 
 # =============================================================================
