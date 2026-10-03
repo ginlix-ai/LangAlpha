@@ -989,3 +989,13 @@ class TestThePreferredMark:
     def test_the_descriptions_name_the_preferred_chat(self):
         assert "that app's preferred chat" in messaging.SEND_MESSAGE_DESCRIPTION
         assert "preferred chat marked" in messaging.LIST_MESSAGE_TARGETS_DESCRIPTION
+
+    def test_the_descriptions_name_the_dm_by_address(self):
+        assert (
+            "only an app name, like `discord`, is the user's direct messages there, "
+            "the same as `discord:@me`" in messaging.SEND_MESSAGE_DESCRIPTION
+        )
+        assert (
+            "A direct message is listed as `<app>:@me`, or `slack:<team>` on Slack."
+            in messaging.LIST_MESSAGE_TARGETS_DESCRIPTION
+        )

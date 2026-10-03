@@ -135,9 +135,11 @@ turn's sends none, whatever the thread is bound to.
   conversation this turn is in, or null), `targets` (`address`, `platform`, `kind`, `name`, and
   `thread.last_used_at`, epoch seconds, when this conversation already has a thread in that chat,
   and `preferred`, true for the chat the user picked as the app's default target),
-  `unavailable` (`platform`, `reason`, `message`) and `settings_url`.
+  `unavailable` (`platform`, `reason`, `message`) and `settings_url`. A direct message's
+  `address` is `<app>:@me`, or `slack:<team>` on Slack.
 - `POST {base}/agent/send` takes `thread_id`, `run_id`, `tool_call_id`, `turn_platform`,
-  `workspace_id`, `target` (null for the conversation this turn is in), `text`, `files`
+  `workspace_id`, `target` (null for the conversation this turn is in; an app name alone is the
+  user's direct messages there), `text`, `files`
   (`[{"path", "workspace_id"}]`, a null `workspace_id` meaning the request's), `reply` and
   `new_thread` (true starts a fresh thread in the chat instead of continuing this conversation's;
   always sent). Every

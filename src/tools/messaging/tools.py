@@ -536,14 +536,14 @@ async def _list_message_targets(config: RunnableConfig) -> str:
 
 
 SEND_MESSAGE_DESCRIPTION = """Send a message to the user on a messaging app connected to their account, with files attached if needed. Use it when the user asks for something to be sent to them or to a chat, or when this conversation's delivery rules say to reply through it.
-Reaches only the conversation this turn is in, the user's own direct messages, and the shared chats they allowed. When the user names only an app, send to that app's preferred chat.
+Reaches only the conversation this turn is in, the user's own direct messages, and the shared chats they allowed. When the user names only an app, send to that app's preferred chat. A target that is only an app name, like `discord`, is the user's direct messages there, the same as `discord:@me`.
 
 Returns:
     The delivery status (sent, partial, failed or unknown), where it went, and each file's outcome.
 
 Tell the user something was sent only when the status is sent. On partial the text went and the files not marked sent or linked did not."""
 
-LIST_MESSAGE_TARGETS_DESCRIPTION = """List where send_message can deliver for this user: the conversation this turn is in, if any, then their direct messages and allowed shared chats on each connected messaging app with each app's preferred chat marked, and the apps that are unavailable with the reason.
+LIST_MESSAGE_TARGETS_DESCRIPTION = """List where send_message can deliver for this user: the conversation this turn is in, if any, then their direct messages and allowed shared chats on each connected messaging app with each app's preferred chat marked, and the apps that are unavailable with the reason. A direct message is listed as `<app>:@me`, or `slack:<team>` on Slack.
 
 Returns:
     Addresses to pass as send_message's target, and a link to the settings where the user allows more."""
