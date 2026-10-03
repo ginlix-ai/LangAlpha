@@ -413,7 +413,6 @@ class TestSave:
     async def test_every_shape_problem_is_listed_at_once(self, backend, gateway):
         def change(settings):
             settings["default"]["mode"] = "fast"
-            settings["slack"]["colour"] = "blue"
             settings["slack"]["agent_messages"]["enabled"] = "yes"
             del settings["slack"]["chats"]
 
@@ -423,10 +422,9 @@ class TestSave:
             "default.mode": "Input should be 'ptc' or 'flash'",
             "slack.chats": "missing",
             "slack.agent_messages.enabled": "must be true or false",
-            "slack.colour": "unknown field",
         }
         assert exc.message.startswith(
-            "schema_error:channels.json: 4 problems, nothing was saved."
+            "schema_error:channels.json: 3 problems, nothing was saved."
         )
         assert gateway.puts == []
 
@@ -490,6 +488,76 @@ class TestSave:
         assert exc.value.error_type == "incomplete_read"
         assert "slack chat slack:T1/C0456" in exc.value.message
         assert gateway.puts == []
+
+
+def _add_unmodelled_keys(settings: dict) -> None:
+    """A key langalpha doesn't model at each level it does, as a gateway
+    newer than this server may send."""
+    settings["default"]["note"] = "kept"
+    settings["slack"]["digest"] = {"hour": 9, "days": ["mon"]}
+    settings["slack"]["chats"]["slack:T1/C0456"]["colour"] = "blue"
+    settings["slack"]["agent_messages"]["quiet_hours"] = [22, 7]
+
+
+class TestKeysLangalphaDoesNotModel:
+    @pytest.mark.asyncio
+    async def test_one_the_gateway_sent_saves_back_as_it_was(self, backend, gateway):
+        _add_unmodelled_keys(gateway.settings)
+
+        await _write(backend, _prefer_macro)
+
+        (put,) = gateway.puts
+        assert put["settings"] == {
+            "default": {
+                "mode": "ptc",
+                "workspace_id": RESEARCH,
+                "workspace": "Research",
+                "note": "kept",
+            },
+            "slack": {
+                "preferred": "slack:T1/C0789",
+                "chats": {
+                    "slack:T1/C0456": {
+                        "mode": "ptc",
+                        "workspace_id": RESEARCH,
+                        "workspace": "Research",
+                        "colour": "blue",
+                    }
+                },
+                "automation_output": {RESEARCH: "slack:T1/C0123"},
+                "agent_messages": {
+                    "enabled": True,
+                    "allowed": ["slack:T1/C0456"],
+                    "quiet_hours": [22, 7],
+                },
+                "digest": {"hour": 9, "days": ["mon"]},
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_keeping_one_the_gateway_sent_changes_nothing(self, backend, gateway):
+        _add_unmodelled_keys(gateway.settings)
+        content = await backend.aread_range(CHANNELS)
+        assert '"colour": "blue"' in content
+
+        # Reformatted, so the save checks it rather than matching the Read.
+        result = await backend.awrite_text(CHANNELS, json.dumps(json.loads(content)))
+
+        assert result["message"] == channel_settings.ChannelsFile.unchanged
+        assert gateway.puts == []
+
+    @pytest.mark.asyncio
+    async def test_one_the_writer_adds_reaches_the_gateway_as_written(
+        self, backend, gateway
+    ):
+        await _write(backend, _add_unmodelled_keys)
+
+        (put,) = gateway.puts
+        settings = put["settings"]
+        assert settings["default"]["note"] == "kept"
+        assert settings["slack"]["digest"] == {"hour": 9, "days": ["mon"]}
+        assert settings["slack"]["chats"]["slack:T1/C0456"]["colour"] == "blue"
+        assert settings["slack"]["agent_messages"]["quiet_hours"] == [22, 7]
 
 
 class TestGatewayAnswers:
@@ -728,6 +796,34 @@ class TestThroughTheFileTools:
         assert result["success"] is False
         assert result["error"].startswith("version_conflict:")
         assert gateway.puts == []
+
+    @pytest.mark.asyncio
+    async def test_the_gateways_refusal_of_a_key_it_does_not_know_names_it(
+        self, filesystem, gateway
+    ):
+        field = 'slack.chats["slack:T1/C0456"].colour'
+        gateway.put = httpx.Response(
+            400,
+            json={
+                "code": "invalid",
+                "message": "Some settings can't be saved; nothing was saved.",
+                "problems": [{"field": field, "message": "Unknown field."}],
+            },
+        )
+        await filesystem.aread_range(CHANNELS)
+
+        result = await filesystem.aedit_text(
+            CHANNELS, '"name": "#research"', '"name": "#research", "colour": "blue"'
+        )
+
+        (put,) = gateway.puts
+        assert put["settings"]["slack"]["chats"]["slack:T1/C0456"]["colour"] == "blue"
+        assert result["success"] is False
+        assert result["error"] == (
+            "schema_error:channels.json: 1 problem, nothing was saved.\n"
+            f"- {field}: Unknown field.\n"
+            f"See {README} for the fields and examples."
+        )
 
     @pytest.mark.asyncio
     async def test_glob_finds_every_file(self, filesystem):

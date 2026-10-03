@@ -178,7 +178,8 @@ gateway holds both, with the same two headers:
   hold at that place passes as it is, so a binding left on a deleted workspace doesn't block other
   edits. It fills each binding's `workspace` with that workspace's name, null when it no longer
   exists. On a read it renders the names from its own workspaces, since the gateway's copy may be
-  stale.
+  stale. A key it doesn't model goes to the gateway as written, at every level: the gateway owns
+  the schema, so it refuses a key it doesn't know with a 400 problem naming that field.
 - `GET {base}/agent/settings/available` answers `{"apps": {app: {"chats": [{"address", "name",
   "kind"}], "complete", "error"}}}`. `available.json` adds the user's workspaces by id and name.
 - `POST {base}/agent/check-target` takes `{"address", "purpose": "automation"}` and answers

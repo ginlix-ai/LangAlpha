@@ -50,11 +50,14 @@ _RETRY = "Retry once. If it fails again, stop and tell the user."
 # --- the settings as a writer may send them ---
 
 
-class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+class _Model(BaseModel):
+    # A key not modelled here goes to the gateway as written: the gateway
+    # owns the settings and refuses a key it doesn't know, so a field it
+    # added since this server was built still saves.
+    model_config = ConfigDict(extra="allow", strict=True)
 
 
-class _Binding(_Strict):
+class _Binding(_Model):
     mode: Literal["ptc", "flash"]
     workspace_id: str | None = None
     # Labels for the reader, ignored on input: the workspace's name, which
@@ -63,12 +66,12 @@ class _Binding(_Strict):
     name: Any = None
 
 
-class _AgentMessages(_Strict):
+class _AgentMessages(_Model):
     enabled: bool
     allowed: list[str]
 
 
-class _App(_Strict):
+class _App(_Model):
     preferred: str | None
     chats: dict[str, _Binding]
     automation_output: dict[str, str]
@@ -96,8 +99,6 @@ def _problem_message(error: Any) -> str:
     kind = error.get("type")
     if kind == "missing":
         return "missing"
-    if kind == "extra_forbidden":
-        return "unknown field"
     if kind in ("model_type", "dict_type"):
         return "must be a JSON object"
     if kind == "list_type":
@@ -237,20 +238,22 @@ def _render_settings(settings: dict[str, Any], names: dict[str, str]) -> dict[st
 
 def _stored(models: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
     """Validated settings as the gateway takes them: chat names dropped,
-    workspace ids canonical and each named."""
+    workspace ids canonical and each named, and every key not modelled here
+    as written."""
 
     def binding(b: _Binding) -> dict[str, Any]:
         out: dict[str, Any] = {"mode": b.mode, "workspace_id": None}
         if b.workspace_id is not None:
             ws = normalize_uuid(b.workspace_id) or b.workspace_id
             out.update(workspace_id=ws, workspace=names.get(ws))
-        return out
+        return {**out, **(b.model_extra or {})}
 
     settings: dict[str, Any] = {}
     for key, model in models.items():
         if isinstance(model, _Binding):
             settings[key] = binding(model)
             continue
+        messages = model.agent_messages
         settings[key] = {
             "preferred": model.preferred,
             "chats": {address: binding(b) for address, b in model.chats.items()},
@@ -259,9 +262,11 @@ def _stored(models: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
                 for ws, address in model.automation_output.items()
             },
             "agent_messages": {
-                "enabled": model.agent_messages.enabled,
-                "allowed": list(model.agent_messages.allowed),
+                "enabled": messages.enabled,
+                "allowed": list(messages.allowed),
+                **(messages.model_extra or {}),
             },
+            **(model.model_extra or {}),
         }
     return settings
 
