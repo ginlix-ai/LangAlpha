@@ -12,6 +12,7 @@ from ptc_agent.agent.middleware.compaction.middleware import (
 from ptc_agent.agent.middleware.compaction.types import (
     CompactionEvent,
     CompactionState,
+    OffloadSettings,
 )
 from ptc_agent.agent.middleware.compaction.summary_request import (
     DEFAULT_SUMMARY_PROMPT,
@@ -32,16 +33,22 @@ from ptc_agent.agent.middleware.compaction.utils import (
 from ptc_agent.agent.middleware.compaction.model import resolve_compaction_client
 from ptc_agent.agent.middleware.compaction.offloading import (
     aoffload_base64_content,
+    record_offloads,
 )
 from ptc_agent.agent.middleware.compaction.compact import (
+    Compaction,
+    Summarizer,
     compact_messages,
     offload_tool_args,
 )
 
 __all__ = [
+    "Compaction",
     "CompactionMiddleware",
     "CompactionEvent",
     "CompactionState",
+    "OffloadSettings",
+    "Summarizer",
     "DEFAULT_SUMMARY_PROMPT",
     "aoffload_base64_content",
     "build_compaction_event",
@@ -57,5 +64,6 @@ __all__ = [
     "strip_base64_from_content",
     "strip_base64_from_messages",
     "partition_at_cutoff",
+    "record_offloads",
     "strip_orphan_tool_messages",
 ]

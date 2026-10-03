@@ -1,7 +1,10 @@
 """Types, constants, and defaults for the compaction middleware."""
 
+from __future__ import annotations
+
 from collections.abc import Callable, Iterable
-from typing import Annotated, Literal, NotRequired
+from dataclasses import dataclass
+from typing import Annotated, NotRequired
 
 from langchain_core.messages import MessageLikeRepresentation
 from langchain_core.messages.human import HumanMessage
@@ -9,6 +12,7 @@ from typing_extensions import TypedDict
 
 from langchain.agents.middleware.types import AgentState, PrivateStateAttr
 
+from ptc_agent.config.agent import CompactionConfig
 from ptc_agent.core.paths import AGENT_HISTORY_DIRS, SandboxLayout
 
 
@@ -43,22 +47,30 @@ class CompactionEvent(TypedDict):
     anchor_message_id: NotRequired[str | None]
 
 
-class TruncateArgsSettings(TypedDict, total=False):
-    """Settings for Tier 1: trimming large tool args and stale Read results.
+@dataclass(frozen=True)
+class OffloadSettings:
+    """Tier 1: which old tool arguments and Read results are hidden.
 
-    Attributes:
-        idle_minutes: How long since the last model response a turn must
-            start for Tier 1 to run; None turns Tier 1 off.
-        keep_messages: The newest messages Tier 1 never touches.
-        max_length: Maximum character length for tool arguments before truncation.
-        truncation_text: What a cut argument ends in where no transcript
-            file can be named.
+    ``max_length`` holds with Tier 1 off too: the view still re-applies the
+    cuts a manual /offload recorded, and has to cut them as they were chosen.
     """
 
-    idle_minutes: float | None
-    keep_messages: int
-    max_length: int
-    truncation_text: str
+    #: The newest messages Tier 1 never touches.
+    keep_messages: int = 20
+    #: The longest string argument left whole.
+    max_length: int = 2000
+    #: How long since the model last answered a turn must start for Tier 1
+    #: to run there; None turns automatic Tier 1 off.
+    idle_seconds: float | None = 90 * 60
+
+    @classmethod
+    def from_config(cls, config: CompactionConfig) -> OffloadSettings:
+        idle = config.truncate_args_idle_minutes
+        return cls(
+            keep_messages=config.truncate_args_keep_messages,
+            max_length=config.truncate_args_max_length,
+            idle_seconds=None if idle is None else float(idle) * 60,
+        )
 
 
 class CompactionState(AgentState):
@@ -96,11 +108,4 @@ NON_CRITICAL_READ_PREFIXES: tuple[str, ...] = tuple(
 
 TokenCounter = Callable[[Iterable[MessageLikeRepresentation]], int]
 
-_DEFAULT_MESSAGES_TO_KEEP = 20
-_DEFAULT_TRIM_TOKEN_LIMIT = 4000
 _DEFAULT_FALLBACK_MESSAGE_COUNT = 15
-
-ContextFraction = tuple[Literal["fraction"], float]
-ContextTokens = tuple[Literal["tokens"], int]
-ContextMessages = tuple[Literal["messages"], int]
-ContextSize = ContextFraction | ContextTokens | ContextMessages

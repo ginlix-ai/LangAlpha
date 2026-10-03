@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from langchain_core.messages import AnyMessage
 
 from ptc_agent.agent.transcript.classify import is_summary_message
-from ptc_agent.agent.transcript.render import message_turns, turn_map
+from ptc_agent.agent.transcript.render import turn_map
 from ptc_agent.agent.transcript.store import TranscriptTarget, segment_file
 
 if TYPE_CHECKING:
@@ -154,10 +154,11 @@ async def aexport_transcript(
     messages: list[AnyMessage],
     *,
     workspace_id: str | None,
+    budget: float = _EXPORT_TIMEOUT,
 ) -> TranscriptTarget | None:
-    """Bring the transcript up to date; the one a summary may point at, or
-    None unless the save landed and the mount serves ``workspace_id``'s
-    folder. Never raises.
+    """Bring the transcript up to date within ``budget`` seconds (at most
+    ``_EXPORT_TIMEOUT``); the one a summary may point at, or None unless the
+    save landed and the mount serves ``workspace_id``'s folder. Never raises.
 
     The turn-end export comes only after this agent finishes, so a pointer
     left on a failed save sends it for history that is not there for the
@@ -178,7 +179,9 @@ async def aexport_transcript(
         return saved.result(), settled.result()
 
     try:
-        saved, settled = await asyncio.wait_for(save_and_settle(), timeout=_EXPORT_TIMEOUT)
+        saved, settled = await asyncio.wait_for(
+            save_and_settle(), timeout=min(budget, _EXPORT_TIMEOUT)
+        )
     except Exception as e:
         logger.warning(
             "[Compaction] transcript save for %s failed: %r", transcript.directory, e
@@ -225,14 +228,15 @@ def transcript_note(
 
 
 def summary_span(
-    raw_messages: Sequence[AnyMessage],
+    turns: Mapping[str, int],
     to_summarize: Sequence[AnyMessage],
     summarized: Sequence[AnyMessage],
     earlier: SummarySpan | None = None,
 ) -> SummarySpan | None:
     """The turns the summary of ``to_summarize`` covers, ``summarized`` being
-    what the summarizer was sent of them after trimming. ``earlier`` is the
-    span the earlier summary at the head of ``to_summarize`` recorded, if any.
+    what the summarizer was sent of them after trimming, numbered by
+    ``turns`` (see ``TranscriptTurns.turns``). ``earlier`` is the span the
+    earlier summary at the head of ``to_summarize`` recorded, if any.
 
     An earlier summary kept at the head stands in for the turns it covered,
     so the span starts where it did, at the first turn unless it recorded
@@ -240,7 +244,6 @@ def summary_span(
     summarizer without its note saying so. Without one, the span starts at
     the first turn unless trimming dropped the head.
     """
-    turns = message_turns(raw_messages)
     last = next((turns[m.id] for m in reversed(to_summarize) if m.id in turns), None)
     if last is None:
         return None

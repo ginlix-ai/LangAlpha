@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import logging
+import json
 import re
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
@@ -22,12 +22,7 @@ from langchain_core.messages.utils import convert_to_messages
 from ptc_agent.agent.middleware._message_utils import message_id
 from ptc_agent.agent.transcript import TranscriptTarget
 from ptc_agent.agent.transcript.classify import is_summary_message
-from ptc_agent.agent.transcript.pointer import (
-    SummarySpan,
-    TranscriptTurns,
-    summary_span,
-    transcript_note,
-)
+from ptc_agent.agent.transcript.pointer import SummarySpan, transcript_note
 from src.llms.attachment_payload import FILE_BLOCK_TYPES, IMAGE_BLOCK_TYPES
 from ptc_agent.agent.middleware.compaction.types import (
     CONTEXT_SUMMARY_PREFIX,
@@ -35,8 +30,6 @@ from ptc_agent.agent.middleware.compaction.types import (
     CompactionEvent,
     TRUNCATABLE_TOOLS,
 )
-
-logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -108,8 +101,18 @@ def count_tokens_tiktoken(messages: Iterable[MessageLikeRepresentation]) -> int:
     enc = _get_tiktoken_encoder()
     total = 0
     for msg in convert_to_messages(messages):
-        # Extract from main content
-        text = _extract_text_from_content(msg.content)
+        tool_calls = getattr(msg, "tool_calls", None)
+        content = msg.content
+        if tool_calls and isinstance(content, list):
+            # Anthropic keeps each call as a tool_use block too; the provider
+            # is sent tool_calls, which a Tier 1 cut rewrites, so count those.
+            ids = {tc.get("id") for tc in tool_calls}
+            content = [
+                b
+                for b in content
+                if not (isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id") in ids)
+            ]
+        text = _extract_text_from_content(content)
 
         # Also check additional_kwargs for OpenAI reasoning (o1/o3 models)
         additional_kwargs = getattr(msg, "additional_kwargs", {}) or {}
@@ -123,6 +126,15 @@ def count_tokens_tiktoken(messages: Iterable[MessageLikeRepresentation]) -> int:
                 else str(reasoning)
             )
             text = f"{text} {reasoning_text}" if text else reasoning_text
+
+        # Sent with the message, and on a code-heavy turn most of its size.
+        if tool_calls:
+            calls = json.dumps(
+                [{"name": tc.get("name"), "args": tc.get("args")} for tc in tool_calls],
+                ensure_ascii=False,
+                default=str,
+            )
+            text = f"{text} {calls}" if text else calls
 
         total += len(enc.encode(text)) + 3  # +3 for role/message overhead
     return total
@@ -290,120 +302,47 @@ def oversized_arg_calls(
 
 
 # =============================================================================
-# Read result truncation
+# Stale Read results
 # =============================================================================
 
 
-def truncate_read_results(
-    messages: list[AnyMessage],
-    cutoff_index: int,
-) -> tuple[list[AnyMessage], bool, set[str]]:
-    """Truncate duplicate and non-critical Read tool results in old messages.
+def stale_read_ids(messages: list[AnyMessage], cutoff_index: int) -> set[str]:
+    """Ids of the Read results before ``cutoff_index`` the agent no longer
+    needs in full: one a later Read of the same file, offset and limit
+    supersedes, and one of a file under ``NON_CRITICAL_READ_PREFIXES``, whose
+    content the agent has already processed."""
+    read_args = {
+        call["id"]: call.get("args", {})
+        for message in messages
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls or ()
+        if call["name"] == "Read"
+    }
+    reads: dict[tuple, list[tuple[int, str]]] = {}
+    for i, message in enumerate(messages):
+        if isinstance(message, ToolMessage) and message.tool_call_id in read_args:
+            args = read_args[message.tool_call_id]
+            # Args as the model wrote them, not as Read accepted them: a null
+            # path or a list offset must not fail the turn start this runs in.
+            key = (
+                str(args.get("file_path") or ""),
+                repr(args.get("offset")),
+                repr(args.get("limit")),
+            )
+            reads.setdefault(key, []).append((i, message.tool_call_id))
 
-    Complements oversized_arg_calls (which picks AIMessage args) by targeting
-    ToolMessage content for Read tool calls. Two patterns are handled:
-
-    1. **Duplicate reads**: Same file read multiple times with identical
-       (file_path, offset, limit) — earlier results are superseded.
-    2. **Non-critical reads**: Reads of paths matching NON_CRITICAL_READ_PREFIXES
-       (e.g. .agents/threads/) — content already processed by the agent.
-
-    Only messages before cutoff_index are eligible for truncation.
-
-    Args:
-        messages: Effective messages to potentially truncate.
-        cutoff_index: Messages at index >= cutoff are protected from truncation.
-
-    Returns:
-        Tuple of (messages, modified, offloaded_tool_call_ids).
-        If modified is False, messages is the same list object as input.
-        offloaded_tool_call_ids contains the tool_call_id of every truncated ToolMessage.
-    """
-    if cutoff_index >= len(messages):
-        return messages, False, set()
-
-    # --- Pass 1: Build tool_call_id → Read args index from AIMessages ---
-    read_args_by_id: dict[str, dict[str, Any]] = {}
-    for msg in messages:
-        if isinstance(msg, AIMessage) and msg.tool_calls:
-            for tc in msg.tool_calls:
-                if tc["name"] == "Read":
-                    read_args_by_id[tc["id"]] = tc.get("args", {})
-
-    if not read_args_by_id:
-        return messages, False, set()
-
-    # --- Pass 2: Group ToolMessages by read signature, track latest index ---
-    # signature key → list of (msg_index, tool_call_id)
-    sig_groups: dict[tuple, list[tuple[int, str]]] = {}
-    for i, msg in enumerate(messages):
-        if not isinstance(msg, ToolMessage):
-            continue
-        tc_id = msg.tool_call_id
-        if tc_id not in read_args_by_id:
-            continue
-        args = read_args_by_id[tc_id]
-        sig = (
-            args.get("file_path", ""),
-            args.get("offset"),
-            args.get("limit"),
-        )
-        sig_groups.setdefault(sig, []).append((i, tc_id))
-
-    if not sig_groups:
-        return messages, False, set()
-
-    # Find the latest msg_index per signature
-    latest_per_sig: dict[tuple, int] = {}
-    for sig, entries in sig_groups.items():
-        latest_per_sig[sig] = max(idx for idx, _ in entries)
-
-    # --- Pass 3: Determine which ToolMessages to truncate ---
-    ids_to_truncate: dict[str, str] = {}  # tool_call_id → replacement content
-
-    for sig, entries in sig_groups.items():
-        file_path = sig[0]
-        latest_idx = latest_per_sig[sig]
-        is_non_critical = any(
-            file_path.startswith(prefix) for prefix in NON_CRITICAL_READ_PREFIXES
-        )
-
-        for msg_idx, tc_id in entries:
-            if msg_idx >= cutoff_index:
-                continue  # Protected — don't touch
-
-            is_duplicate = len(entries) > 1 and msg_idx != latest_idx
-
-            # Compute the marker we'd insert
-            marker: str | None = None
-            if is_duplicate or is_non_critical:
-                marker = read_offload_marker(file_path)
-
-            # Skip if content already equals the marker (idempotent)
-            if marker is not None and messages[msg_idx].content != marker:
-                ids_to_truncate[tc_id] = marker
-
-    if not ids_to_truncate:
-        return messages, False, set()
-
-    # --- Pass 4: Build new message list with replacements ---
-    new_messages: list[AnyMessage] = []
-    for msg in messages:
-        if isinstance(msg, ToolMessage) and msg.tool_call_id in ids_to_truncate:
-            replaced = msg.model_copy()
-            replaced.content = ids_to_truncate[msg.tool_call_id]
-            new_messages.append(replaced)
-        else:
-            new_messages.append(msg)
-
-    offloaded_ids = set(ids_to_truncate.keys())
-    logger.debug(
-        "Read result truncation applied before index %d (%d results truncated)",
-        cutoff_index,
-        len(offloaded_ids),
-    )
-
-    return new_messages, True, offloaded_ids
+    stale: set[str] = set()
+    for (file_path, _, _), entries in reads.items():
+        non_critical = file_path.startswith(NON_CRITICAL_READ_PREFIXES)
+        latest = entries[-1][0]
+        for i, call_id in entries:
+            if (
+                i < cutoff_index
+                and (non_critical or i != latest)
+                and messages[i].content != read_offload_marker(file_path)
+            ):
+                stale.add(call_id)
+    return stale
 
 
 def read_offload_marker(file_path: str) -> str:
@@ -833,58 +772,10 @@ def listed_skills(messages: Iterable[Any]) -> list[str]:
     ]
 
 
-def build_summary_event(
-    summary: str,
-    transcript: TranscriptTarget | None,
-    *,
-    raw_messages: list[AnyMessage],
-    preserved_messages: list[AnyMessage],
-    original_message_count: int,
-    to_summarize: Sequence[AnyMessage] = (),
-    summarized: Sequence[AnyMessage] = (),
-    skill_files: bool = False,
-    source: str = "model",
-) -> CompactionEvent:
-    """The event putting ``summary`` in place of ``to_summarize``, pointing
-    at the transcript when there is one. ``summarized`` is what the model was
-    sent of them after trimming, which says where the summary starts; an
-    earlier summary heading both is kept whole, so the start is after it.
-
-    The skills whose instructions go with ``to_summarize`` are listed from the
-    messages, not from the summary: a summarizer may drop a name, and the
-    agent mid-procedure needs every one to reload. ``skill_files`` says how
-    the agent reloads one (see ``skill_reload_note``).
-    """
-    from ptc_agent.agent.middleware.skills.content import compacted_skills
-
-    # A summary of an earlier summary alone stands in for the same turns.
-    earlier = summarized_span(to_summarize[0]) if to_summarize else None
-    span = (
-        summary_span(raw_messages, to_summarize, summarized, earlier) or earlier
-        if transcript is not None
-        else None
-    )
-    index = (
-        TranscriptTurns.of(transcript, raw_messages).index(span.last)
-        if transcript is not None and span is not None
-        else ()
-    )
-    summary_message = build_summary_message(
-        summary,
-        transcript,
-        original_message_count,
-        span=span,
-        index=index,
-        skills=compacted_skills(to_summarize, preserved_messages),
-        skill_files=skill_files,
-        source=source,
-    )
-    return build_compaction_event(
-        raw_messages=raw_messages,
-        preserved_messages=preserved_messages,
-        summary_message=summary_message,
-        file_path=transcript.directory if transcript else None,
-    )
+def summary_source(message: Any) -> str | None:
+    """What wrote a summary message (see ``summarize``), as it was stamped."""
+    stamp = (getattr(message, "additional_kwargs", None) or {}).get("summarize_complete")
+    return stamp.get("source") if isinstance(stamp, dict) else None
 
 
 def parse_summary_message(message: HumanMessage) -> str:

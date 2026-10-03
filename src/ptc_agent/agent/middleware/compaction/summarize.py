@@ -18,6 +18,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from itertools import groupby
 from typing import Any, Literal
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
@@ -29,14 +30,14 @@ from src.llms.content_utils import format_llm_content
 from ptc_agent.agent.middleware.compaction.model import max_input_tokens
 from ptc_agent.agent.middleware.compaction.summary_request import trim_for_summary
 from ptc_agent.agent.middleware.compaction.types import _DEFAULT_FALLBACK_MESSAGE_COUNT
-from ptc_agent.agent.middleware.compaction.utils import parse_summary_message
+from ptc_agent.agent.middleware.compaction.utils import parse_summary_message, summary_source
 from ptc_agent.agent.transcript.classify import (
     human_kind,
     is_run_boundary_message,
     is_summary_message,
 )
 from ptc_agent.agent.transcript.pointer import TranscriptTurns
-from ptc_agent.agent.transcript.render import _text, message_turns, split_runs
+from ptc_agent.agent.transcript.render import message_turns, visible_text
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,6 @@ class Summary:
 #: Given the most tokens a model's window leaves for the history (None when
 #: it does not say), the messages it is sent and the request built from them.
 Prepare = Callable[[int | None], Awaitable[tuple[list[AnyMessage], list[AnyMessage]]]]
-PrepareSync = Callable[[int | None], tuple[list[AnyMessage], list[AnyMessage]]]
 
 
 def model_label(model: Any) -> str | None:
@@ -128,27 +128,6 @@ def preparer(
     return prepare
 
 
-def preparer_sync(
-    to_summarize: list[AnyMessage],
-    *,
-    limit: int | None,
-    counter: Callable[[list[AnyMessage]], int],
-    render: Callable[[list[AnyMessage]], list[AnyMessage]],
-) -> PrepareSync:
-    made: dict[int | None, tuple[list[AnyMessage], list[AnyMessage]]] = {}
-
-    def prepare(room: int | None) -> tuple[list[AnyMessage], list[AnyMessage]]:
-        key = _limit(limit, room)
-        if key not in made:
-            trimmed = _trim(to_summarize, key, counter)
-            if to_summarize and not trimmed:
-                raise ValueError(f"no history fits {key} summary tokens")
-            made[key] = (trimmed, render(trimmed))
-        return made[key]
-
-    return prepare
-
-
 async def awrite_summary(
     *,
     model: Any,
@@ -186,25 +165,6 @@ async def _attempt(prepare: Prepare, model: Any) -> tuple[list[AnyMessage], Any]
     return covered, await model.ainvoke(request)
 
 
-def write_summary(
-    *,
-    model: Any,
-    fallback: Any | None,
-    prepare: PrepareSync,
-    server: Callable[[], Summary],
-) -> Summary:
-    """``awrite_summary`` for the sync path, with no budget: a blocking call
-    cannot be bounded by ``asyncio.wait_for``."""
-    has_fallback = is_other_model(model, fallback)
-    for source, candidate in _candidates(model, fallback if has_fallback else None):
-        try:
-            covered, request = prepare(_room(candidate))
-            return Summary(_checked(candidate.invoke(request)), source, covered)
-        except Exception as e:
-            _log_failure(source, candidate, e)
-    return _server(server)
-
-
 def summary_text(response: Any) -> str:
     """The response's text, without any reasoning the provider sent along."""
     content = response.content if hasattr(response, "content") else response
@@ -231,20 +191,26 @@ def server_summary(
 
     if head:
         # An earlier server summary already said the model failed; its own
-        # first line would only say it twice. Its newest turns and todo list
-        # come last, so it keeps its end where a model's summary, which opens
-        # on the goal, keeps its start.
+        # lead would only say it twice. Its newest turns and todo list come
+        # last, so it keeps its end where a model's summary, which opens on
+        # the goal, keeps its start.
         text = parse_summary_message(head[0])
-        body = text
-        for lead in (_LEAD + _LEAD_TRANSCRIPT, _LEAD):
-            body = body.removeprefix(lead).lstrip("\n")
-        cut = _cut_start(body, _EARLIER_CHARS) if body != text else _cut(body, _EARLIER_CHARS)
+        by_server = summary_source(head[0]) == "server"
+        body = text.partition("\n\n")[2] if by_server else text
+        cut = (_cut_start if by_server else _cut)(body, _EARLIER_CHARS)
         if cut == body and head[0].id:
             covered.add(head[0].id)
-        sections.append(f"## Earlier summary\n{cut}")
-        budget -= len(cut)
+        if cut:
+            sections.append(f"## Earlier summary\n{cut}")
+            budget -= len(cut)
 
-    runs = _runs(to_summarize[len(head) :], after_summary=bool(head))
+    # By turn number, not by request: after an earlier summary the messages
+    # can open partway through a turn whose request that summary holds, and
+    # they end that turn rather than lead into the next request.
+    runs = [
+        list(run)
+        for _, run in groupby(to_summarize[len(head) :], key=lambda m: numbers.get(m.id or ""))
+    ]
     blocks: list[str] = []
     for run in reversed(runs):
         block, whole = _turn_block(run, numbers, turns)
@@ -343,20 +309,6 @@ def _server(server: Callable[[], Summary]) -> Summary:
         )
 
 
-def _runs(messages: Sequence[AnyMessage], *, after_summary: bool) -> list[list[AnyMessage]]:
-    """``messages`` as turns. After an earlier summary they can open partway
-    through a turn whose request that summary holds; those messages end that
-    turn, so they are a run of their own, where ``split_runs`` would hand
-    them, and their reply, to the next request."""
-    runs = [run for run in split_runs(messages) if run]
-    if after_summary and runs:
-        first = runs[0]
-        at = next((i for i, m in enumerate(first) if is_run_boundary_message(m)), len(first))
-        if 0 < at < len(first):
-            runs[:1] = [first[:at], first[at:]]
-    return runs
-
-
 def _turn_block(
     run: list[AnyMessage],
     numbers: Mapping[str, int],
@@ -369,7 +321,9 @@ def _turn_block(
 
     opener = next((m for m in run if is_run_boundary_message(m)), None)
     replies = (
-        _text(m.content, attachments=False).strip() for m in reversed(run) if isinstance(m, AIMessage)
+        visible_text(m.content, attachments=False).strip()
+        for m in reversed(run)
+        if isinstance(m, AIMessage)
     )
     reply = next((text for text in replies if text), "")
     anchor = opener or run[0]
@@ -378,12 +332,12 @@ def _turn_block(
     lines = [f"## `{name}`" if name else f"## Turn {number}" if number else "## Turn"]
     whole = True
     if opener is not None:
-        request = skill_blocks_as_names(_text(opener.content)).strip()
+        request = skill_blocks_as_names(visible_text(opener.content)).strip()
         lines.append(f"Request: {_cut(request, _REQUEST_CHARS)}")
         whole = len(request) <= _REQUEST_CHARS
     for message in run:
         if isinstance(message, HumanMessage) and human_kind(message) == "steering":
-            added = _text(message.content).strip()
+            added = visible_text(message.content).strip()
             lines.append(f"Then: {_cut(added, _REQUEST_CHARS)}")
             whole = whole and len(added) <= _REQUEST_CHARS
     lines.append(f"Last reply: {_cut(reply, _REPLY_CHARS) or '(none)'}")

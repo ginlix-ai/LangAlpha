@@ -1,5 +1,6 @@
 """Offloading: the view that re-applies recorded offloads to each model call,
-and the backend files that keep what inline attachments cut."""
+the choice of what Tier 1 hides, and the backend files that keep what inline
+attachments cut."""
 
 import base64
 import logging
@@ -12,19 +13,23 @@ from langgraph.config import get_config
 
 from ptc_agent.core.paths import WorkspaceLayout
 from src.llms.attachment_payload import FILE_BLOCK_TYPES
-from ptc_agent.agent.middleware.compaction.types import TRUNCATABLE_TOOLS
+from ptc_agent.agent.middleware.compaction.types import OffloadSettings, TRUNCATABLE_TOOLS
 from ptc_agent.agent.middleware.compaction.utils import (
     get_effective_messages,
     oversized_arg_calls,
     read_offload_marker,
+    stale_read_ids,
     strip_base64_from_messages,
-    truncate_read_results,
     truncate_tool_call,
 )
 from ptc_agent.agent.transcript import TranscriptTarget
 from ptc_agent.agent.transcript.pointer import TranscriptTurns
 
 logger = logging.getLogger(__name__)
+
+#: Tool call ids in two sets: the calls whose arguments are cut, and the
+#: Read calls whose results are hidden.
+Offloads = tuple[set[str], set[str]]
 
 
 def tool_call_ids(messages: list[AnyMessage]) -> set[str]:
@@ -45,60 +50,81 @@ def arg_offload_marker(path: str, call_id: str) -> str:
     )
 
 
-def offload_turns(
-    messages: list[AnyMessage], thread_id: str | None, checkpoint_ns: str = ""
-) -> TranscriptTurns | None:
-    """The transcript files a cut argument names, numbered over the agent's
-    whole checkpoint list ``messages``."""
-    if not thread_id:
-        return None
-    return TranscriptTurns.of(
-        TranscriptTarget.for_agent(str(thread_id), checkpoint_ns), messages
-    )
-
-
-def select_offloads(
-    effective: list[AnyMessage],
-    cutoff_index: int,
-    max_length: int,
-    arg_ids: set[str],
-    read_ids: set[str],
-) -> tuple[set[str], set[str]]:
-    """New (arg ids, read ids) to hide among the effective messages before
-    ``cutoff_index``, leaving out those already recorded."""
-    if cutoff_index <= 0:
-        return set(), set()
-    new_args = oversized_arg_calls(effective, cutoff_index, max_length) - arg_ids
-    _, _, stale_reads = truncate_read_results(effective, cutoff_index)
-    return new_args, stale_reads - read_ids
-
-
-def idle_offloads(
-    state: Mapping[str, Any],
-    *,
-    idle_seconds: float | None,
-    keep_messages: int,
-    max_length: int,
-    now: float,
-) -> tuple[set[str], set[str]]:
-    """New (arg ids, read ids) to hide as a turn starts: none unless the
-    model last answered at least ``idle_seconds`` before ``now``, and none
-    among the newest ``keep_messages`` of the view. A thread with no recorded
-    answer time (its first turn, or one from before the time was kept) waits
-    for one."""
-    last = state.get("_last_model_response_at")
-    if idle_seconds is None or not last or now - last < idle_seconds:
-        return set(), set()
-    effective = get_effective_messages(
-        list(state.get("messages") or ()), state.get("_summarization_event")
-    )
-    return select_offloads(
-        effective,
-        len(effective) - keep_messages,
-        max_length,
+def recorded_offloads(state: Mapping[str, Any]) -> Offloads:
+    return (
         set(state.get("_offloaded_tool_call_ids") or ()),
         set(state.get("_offloaded_read_result_ids") or ()),
     )
+
+
+def record_offloads(state: Mapping[str, Any], args: set[str], reads: set[str]) -> dict[str, Any]:
+    """The state update adding ``args`` and ``reads`` to what ``state`` has
+    recorded. A set with nothing to add is left out: each write is a new
+    checkpoint blob, and they live as long as the thread.
+
+    New cuts also drop the cached token counts, which measured the view
+    before them: left in place, the next call would compact a context the
+    cuts may have brought under the threshold.
+    """
+    known_args, known_reads = recorded_offloads(state)
+    update: dict[str, Any] = {}
+    if args:
+        update["_offloaded_tool_call_ids"] = known_args | args
+    if reads:
+        update["_offloaded_read_result_ids"] = known_reads | reads
+    if update:
+        update["_cached_input_tokens"] = update["_cached_output_tokens"] = 0
+    return update
+
+
+def select_offloads(
+    effective: list[AnyMessage], settings: OffloadSettings, recorded: Offloads
+) -> Offloads:
+    """New (arg ids, read ids) to hide among the effective messages before
+    the newest ``settings.keep_messages``, leaving out those ``recorded``."""
+    cutoff = len(effective) - settings.keep_messages
+    if cutoff <= 0:
+        return set(), set()
+    arg_ids, read_ids = recorded
+    return (
+        oversized_arg_calls(effective, cutoff, settings.max_length) - arg_ids,
+        stale_read_ids(effective, cutoff) - read_ids,
+    )
+
+
+def is_idle(state: Mapping[str, Any], settings: OffloadSettings, now: float) -> bool:
+    """Whether the model last answered at least ``settings.idle_seconds``
+    before ``now``. A thread with no recorded answer time (its first turn,
+    or one from before the time was kept) waits for one."""
+    last = state.get("_last_model_response_at")
+    return settings.idle_seconds is not None and bool(last) and now - last >= settings.idle_seconds
+
+
+def offload_view(
+    messages: list[AnyMessage],
+    state: Mapping[str, Any],
+    *,
+    max_length: int,
+    transcript: TranscriptTarget | None,
+) -> list[AnyMessage]:
+    """What the model is sent of ``messages``: the view after ``state``'s
+    last summary, with every offload ``state`` recorded applied.
+
+    An offload is a view over the checkpoint, not a rewrite of it: the id sets
+    are the record, and every call cuts them again, so a call cut once stays
+    cut and the prompt cache holds. A cut argument points at its call in the
+    file of its turn in ``transcript``. Where no mount serves one
+    (``transcript`` is None) arguments stay whole until one does, since a
+    pointer there would name a file nothing can read.
+    """
+    effective = get_effective_messages(messages, state.get("_summarization_event"))
+    arg_ids, read_ids = recorded_offloads(state)
+    turns = (
+        TranscriptTurns.of(transcript, messages)
+        if arg_ids and transcript is not None
+        else None
+    )
+    return apply_recorded_offloads(effective, arg_ids, read_ids, max_length, turns)
 
 
 def apply_recorded_offloads(
@@ -106,23 +132,13 @@ def apply_recorded_offloads(
     arg_ids: set[str],
     read_ids: set[str],
     max_length: int,
-    truncation_text: str,
-    turns: TranscriptTurns | None = None,
+    turns: TranscriptTurns | None,
 ) -> list[AnyMessage]:
-    """Re-apply every recorded Tier 1 offload to one model call's messages.
-
-    An offload is a view over the checkpoint, not a rewrite of it: the id sets
-    are the record, and every call re-truncates them, so a call cut once stays
-    cut and the prompt cache holds. Each id is checked against its tool, so an
-    arg id never blanks a result and a read id only replaces a Read result.
-
-    A cut argument points at its call in the transcript file of its turn
-    (``turns``), which the caller passes only while a mount serves that file;
-    where none does it does not cut arguments at all. Without ``turns`` it
-    reads ``truncation_text``, as ids recorded where no transcript was kept
-    did.
-    """
-    if not arg_ids and not read_ids:
+    """Cut every recorded offload in ``messages``, an argument only where
+    ``turns`` names the file that keeps it. Each id is checked against its
+    tool, so an arg id never blanks a result and a read id only replaces a
+    Read result."""
+    if not read_ids and (not arg_ids or turns is None):
         return messages
 
     read_paths: dict[str, str] = {}
@@ -136,11 +152,8 @@ def apply_recorded_offloads(
             for tc in msg.tool_calls:
                 if tc["name"] == "Read" and tc["id"] in read_ids:
                     read_paths[tc["id"]] = tc.get("args", {}).get("file_path", "")
-                if tc["id"] in arg_ids and tc["name"] in TRUNCATABLE_TOOLS:
-                    marker = (
-                        arg_offload_marker(path, tc["id"]) if path else truncation_text
-                    )
-                    new_tc = truncate_tool_call(tc, max_length, marker)
+                if path and tc["id"] in arg_ids and tc["name"] in TRUNCATABLE_TOOLS:
+                    new_tc = truncate_tool_call(tc, max_length, arg_offload_marker(path, tc["id"]))
                     msg_changed = msg_changed or new_tc is not tc
                     calls.append(new_tc)
                 else:
@@ -163,7 +176,7 @@ def apply_recorded_offloads(
 def get_thread_id(thread_id: str | None = None) -> str:
     """Short thread id: the one passed, else graph config's, else a session id.
 
-    Manual /compact and /offload run outside the graph, so they pass the id;
+    Manual /compact runs outside the graph, so it passes the id;
     the session fallback is fresh on every call and names no real thread.
     """
     if thread_id:

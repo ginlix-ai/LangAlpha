@@ -189,10 +189,7 @@ async def trigger_compaction(
     /compact matches the auto path.
     """
     try:
-        from ptc_agent.agent.middleware.compaction import (
-            compact_messages,
-            resolve_compaction_client,
-        )
+        from ptc_agent.agent.middleware.compaction import compact_messages
         from src.server.app import setup
 
         # The mutation fence FIRST — before any graph state reads or writes:
@@ -258,55 +255,32 @@ async def trigger_compaction(
                 checkpointer=mutation.saver, user_id=user_id, held=held,
             )
 
-            compaction_cfg = agent_cfg.compaction if agent_cfg else None
-            model_name = (agent_cfg.llm.compaction_name or "") if agent_cfg and agent_cfg.llm else ""
-
-            # Same resolver as automatic compaction, so a manual /compact runs the
-            # same model: a named compaction model without a role client resolves
-            # by name, not on a copy of the main client. It returns a copy, which
-            # matters because compact_messages sets streaming=False in place.
-            compaction_client = (
-                resolve_compaction_client(agent_cfg) if agent_cfg is not None else None
-            )
-
-            # Read previous event from state (for chained compactions).
-            # The state key "_summarization_event" is preserved as a wire/storage
-            # contract (values live in the LangGraph checkpointer DB).
-            previous_event = state.values.get("_summarization_event")
-
+            # The same pipeline as automatic compaction, on the user's
+            # resolved config, so a manual /compact runs the same model.
             try:
-                result = await compact_messages(
-                    messages=messages,
-                    keep_messages=keep_messages,
-                    model_name=model_name,
-                    backend=backend,
-                    previous_event=previous_event,
-                    compaction_config=compaction_cfg,
-                    llm_client=compaction_client,
+                compaction = await compact_messages(
+                    messages,
+                    state.values,
+                    agent_cfg,
                     thread_id=thread_id,
+                    keep_messages=keep_messages,
+                    backend=backend,
                     workspace_id=workspace_id,
-                    # The user's main model, should the summary model fail.
-                    fallback_client=agent_cfg.get_llm_client if agent_cfg is not None else None,
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
 
-            # State key "_summarization_event" preserved for DB compatibility.
             await _update_graph_state(
-                graph,
-                lg_config,
-                {"_summarization_event": result["event"]},
-                thread_id,
-                "compact",
+                graph, lg_config, compaction.update(state.values), thread_id, "compact"
             )
 
             # The view that was compacted, as automatic compaction counts it,
             # not every message the checkpoint has kept since the thread began.
-            original_count = result["original_count"]
-            new_message_count = result["preserved_count"]
-            summary_text = result.get("summary_text", "")
+            original_count = compaction.original_count
+            new_message_count = len(compaction.messages)
+            summary_text = compaction.summary.text
             summary_length = len(summary_text)
-            summary_source = result.get("summary_source", "model")
+            summary_source = compaction.summary.source
 
             logger.info(
                 f"Manual compaction completed for thread {thread_id}: "
@@ -370,7 +344,11 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
         Dict with success, thread_id, message_count, offloaded_args, offloaded_reads
     """
     try:
-        from ptc_agent.agent.middleware.compaction import offload_tool_args
+        from ptc_agent.agent.middleware.compaction import (
+            OffloadSettings,
+            offload_tool_args,
+            record_offloads,
+        )
 
         # Same fence as /compact — /offload also writes checkpoint state and
         # could race a running workflow's _offloaded_tool_call_ids updates.
@@ -386,47 +364,31 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
                 thread_id, "offload", checkpointer=mutation.saver, user_id=user_id, held=held
             )
 
-            # Recorded offloads are the whole record: the checkpoint keeps full
-            # messages and the middleware re-applies these ids on every call.
-            already_offloaded: set[str] = set(
-                state.values.get("_offloaded_tool_call_ids") or ()
-            )
-            already_offloaded_reads: set[str] = set(
-                state.values.get("_offloaded_read_result_ids") or ()
-            )
-            previous_event = state.values.get("_summarization_event")
-
-            compaction_cfg = setup.agent_config.compaction if setup.agent_config else None
+            # Set: resolving the graph above refuses to run without it.
+            settings = OffloadSettings.from_config(setup.agent_config.compaction)
             try:
-                result = await offload_tool_args(
-                    messages=messages,
-                    backend=backend,
-                    already_offloaded=already_offloaded,
-                    already_offloaded_reads=already_offloaded_reads,
-                    compaction_config=compaction_cfg,
+                offloaded_arg_ids, offloaded_read_ids = await offload_tool_args(
+                    messages,
+                    state.values,
+                    settings,
                     thread_id=thread_id,
-                    previous_event=previous_event,
+                    backend=backend,
                     workspace_id=workspace_id,
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
 
-            offloaded_args = result["offloaded_args"]
-            offloaded_reads = result["offloaded_reads"]
+            offloaded_args = len(offloaded_arg_ids)
+            offloaded_reads = len(offloaded_read_ids)
 
-            # Ids only, never messages. Unlike the automatic pass, this one
-            # does not wait for an idle turn: the user asked for it now.
+            # Ids only, never messages: the checkpoint keeps every message and
+            # the middleware applies the recorded ids on every call. Unlike
+            # the automatic pass, this one does not wait for an idle turn: the
+            # user asked for it now.
             await _update_graph_state(
                 graph,
                 lg_config,
-                {
-                    "_offloaded_tool_call_ids": (
-                        already_offloaded | result["offloaded_arg_ids"]
-                    ),
-                    "_offloaded_read_result_ids": (
-                        already_offloaded_reads | result["offloaded_read_ids"]
-                    ),
-                },
+                record_offloads(state.values, offloaded_arg_ids, offloaded_read_ids),
                 thread_id,
                 "offload",
             )
