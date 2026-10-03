@@ -61,6 +61,21 @@ describe('the send_message detail panel', () => {
     expect(screen.queryByText(/status: sent/)).toBeNull();
   });
 
+  it("heads the panel with the app's favicon", () => {
+    render(<ToolCallDetailView toolCallProcess={proc(delivery())} />);
+
+    const panel = screen.getByTestId('message-delivery-detail');
+    expect(panel.querySelector('img')?.getAttribute('src')).toContain('domain=telegram.org');
+  });
+
+  it('leaves out an address that only repeats the app', () => {
+    render(<ToolCallDetailView toolCallProcess={proc(delivery({ address: 'telegram', current: false }))} />);
+
+    const panel = screen.getByTestId('message-delivery-detail');
+    expect(within(panel).getByText('Telegram')).toBeInTheDocument();
+    expect(within(panel).queryByText('telegram')).toBeNull();
+  });
+
   it('gives each file its own outcome and reason', () => {
     const files = [
       { path: 'messaging_test/attachment_test.png', status: 'sent', reason: null },

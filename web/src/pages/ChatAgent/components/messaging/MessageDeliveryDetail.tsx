@@ -1,9 +1,10 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { FileText, Send } from 'lucide-react';
+import { FileText } from 'lucide-react';
 import Markdown from '../Markdown';
+import { FaviconImg, googleFaviconUrl } from '../charts/InlineArtifactCards';
 import { DeliveryFileStatusLabel, DeliveryStatusPill } from './deliveryStatusUi';
-import { messagingAppName, type MessageDelivery } from './messageDelivery';
+import { messagingAppDomain, messagingAppName, type MessageDelivery } from './messageDelivery';
 
 const LABEL_CLASS = 'text-xs font-medium uppercase tracking-wider mb-2 px-1';
 const QUIET = { color: 'var(--color-text-tertiary)' };
@@ -15,14 +16,17 @@ const QUIET = { color: 'var(--color-text-tertiary)' };
 export function MessageDeliveryDetail({ delivery }: { delivery: MessageDelivery }): React.ReactElement {
   const { t } = useTranslation();
   const app = messagingAppName(delivery.platform);
+  const label = app ?? t('toolArtifact.messageDelivery.message');
+  // A bare address ("telegram") only repeats the app's name above it.
+  const address = delivery.address && delivery.address.toLowerCase() !== delivery.platform ? delivery.address : null;
 
   return (
     <div className="space-y-5 min-w-0" data-testid="message-delivery-detail">
       <div className="space-y-1 min-w-0 px-1">
         <div className="flex items-center gap-2 min-w-0">
-          <Send className="h-4 w-4 shrink-0" style={QUIET} aria-hidden />
+          <FaviconImg src={googleFaviconUrl(messagingAppDomain(delivery.platform) ?? '')} domain={label} size={16} />
           <span className="text-sm font-medium truncate" style={{ color: 'var(--color-text-primary)' }}>
-            {app ?? t('toolArtifact.messageDelivery.message')}
+            {label}
           </span>
           {delivery.current && (
             <>
@@ -36,9 +40,9 @@ export function MessageDeliveryDetail({ delivery }: { delivery: MessageDelivery 
             <DeliveryStatusPill status={delivery.status} />
           </span>
         </div>
-        {delivery.address && (
-          <div className="text-xs font-mono truncate" style={QUIET} title={delivery.address}>
-            {delivery.address}
+        {address && (
+          <div className="text-xs font-mono truncate" style={QUIET} title={address}>
+            {address}
           </div>
         )}
       </div>
