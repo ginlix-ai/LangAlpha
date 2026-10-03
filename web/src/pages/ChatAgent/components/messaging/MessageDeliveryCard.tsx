@@ -17,6 +17,18 @@ import { fileName, messagingAppName, readMessageDelivery, type DeliveryFile } fr
 const PREVIEW_MAX = 400;
 const MAX_CHIPS = 3;
 
+/** The message's head as plain text, line by line, so a heading keeps its own
+ *  line rather than running into the sentence after it. */
+function previewOf(text: string): string {
+  const head = text.slice(0, PREVIEW_MAX * 4);
+  const lines = head
+    .replace(/```[\s\S]*?(```|$)/g, '\n')
+    .split('\n')
+    .map((line) => plainText(line))
+    .filter(Boolean);
+  return clip(lines.length ? lines.join('\n') : plainText(head), PREVIEW_MAX);
+}
+
 /**
  * A message the agent sent to a chat app: where it went, whether it arrived,
  * and the head of what it said. The text is the call's own argument, since the
@@ -31,7 +43,7 @@ export function MessageDeliveryCard({ artifact, toolArgs, onClick }: InlineCardP
 
   const sz = isMobile ? SIZES_MOBILE : SIZES_DESKTOP;
   const app = messagingAppName(delivery.platform);
-  const preview = delivery.text ? clip(plainText(delivery.text.slice(0, PREVIEW_MAX * 4)), PREVIEW_MAX) : '';
+  const preview = delivery.text ? previewOf(delivery.text) : '';
   // A file that did not go is never the one hidden behind "+N".
   const files = [...delivery.files].sort((a, b) => Number(b.status === 'failed') - Number(a.status === 'failed'));
   const chips = files.slice(0, MAX_CHIPS);
@@ -93,6 +105,7 @@ export function MessageDeliveryCard({ artifact, toolArgs, onClick }: InlineCardP
             WebkitBoxOrient: 'vertical',
             overflow: 'hidden',
             overflowWrap: 'anywhere',
+            whiteSpace: 'pre-line',
           }}
         >
           {preview}

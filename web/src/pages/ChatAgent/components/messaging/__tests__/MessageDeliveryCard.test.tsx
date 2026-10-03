@@ -75,6 +75,23 @@ describe('MessageDeliveryCard', () => {
     );
   });
 
+  it('keeps each line of the message on its own line', () => {
+    render(
+      <MessageDeliveryCard
+        artifact={artifact()}
+        toolArgs={{ text: '# NVDA brief\n\n- closed up **3%**\n```py\nprint(1)\n```\nSee the chart.' }}
+      />,
+    );
+    expect(screen.getByTestId('message-delivery-preview').textContent).toBe(
+      'NVDA brief\nclosed up 3%\nSee the chart.',
+    );
+  });
+
+  it('previews a message that is only code by its code', () => {
+    render(<MessageDeliveryCard artifact={artifact()} toolArgs={{ text: '```\nls -la\n```' }} />);
+    expect(screen.getByTestId('message-delivery-preview')).toHaveTextContent('ls -la');
+  });
+
   it('shows no preview for a files-only send', () => {
     render(
       <MessageDeliveryCard
