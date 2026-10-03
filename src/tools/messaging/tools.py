@@ -76,6 +76,46 @@ def _result(status: str, code: str | None, message: str) -> str:
     return "\n".join(lines)
 
 
+def send_artifact(data: dict[str, Any]) -> dict[str, Any]:
+    """The delivery outcome as the client renders it; the model never sees it.
+
+    Takes the gateway's answer, or the same keys built locally for a send that
+    never got one, and applies the same defaults ``format_send_result`` does.
+    """
+    address = data.get("address") or None
+    files = [
+        {
+            "path": entry.get("path"),
+            "status": entry.get("status") or "failed",
+            "reason": entry.get("reason") or None,
+        }
+        for entry in data.get("files") or []
+        if isinstance(entry, dict)
+    ]
+    return {
+        "type": "message_delivery",
+        "status": data.get("status") or "failed",
+        "code": data.get("code") or None,
+        "address": address,
+        "platform": str(address).split(":", 1)[0].lower() if address else None,
+        "current": bool(data.get("current")),
+        "duplicate": bool(data.get("duplicate")),
+        "message": str(data.get("message") or ""),
+        "files": files,
+    }
+
+
+def _refusal(status: str, code: str | None, message: str) -> tuple[str, dict[str, Any]]:
+    """A send that got no gateway answer: what the model reads, and the artifact."""
+    artifact = send_artifact({"status": status, "code": code, "message": message})
+    return _result(status, code, message), artifact
+
+
+def send_result(data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """The gateway's delivery answer: what the model reads, and the artifact."""
+    return format_send_result(data), send_artifact(data)
+
+
 def format_send_result(data: dict[str, Any]) -> str:
     """The gateway's delivery answer, as the model reads it."""
     status = data.get("status") or "failed"
@@ -260,10 +300,10 @@ async def _send(
     config: RunnableConfig | None,
     tool_call_id: str,
     files_need_workspace: bool,
-) -> str:
+) -> tuple[str, dict[str, Any]]:
     turn = _turn(config)
     if not turn["user_id"]:
-        return _result(
+        return _refusal(
             "failed",
             "unavailable",
             "This turn has no user attached, so there is no one to message.",
@@ -271,25 +311,25 @@ async def _send(
     text = text or ""
     paths = [p.strip() for p in files or [] if isinstance(p, str) and p.strip()]
     if not text.strip() and not paths:
-        return _result(
+        return _refusal(
             "failed", "invalid_request", "Nothing to send: pass text, files, or both."
         )
     if len(text) > MAX_TEXT_CHARS:
-        return _result(
+        return _refusal(
             "failed",
             "invalid_request",
             f"The text is {len(text)} characters; the limit is {MAX_TEXT_CHARS}. "
             "Split it across messages.",
         )
     if len(paths) > MAX_FILES:
-        return _result(
+        return _refusal(
             "failed",
             "invalid_request",
             f"{len(paths)} files given; a message carries at most {MAX_FILES}.",
         )
     files_workspace_id = (files_workspace_id or "").strip() or None
     if paths and files_need_workspace and not files_workspace_id:
-        return _result(
+        return _refusal(
             "failed",
             "invalid_request",
             "Pass workspace_id: the workspace the files are in, such as the one a "
@@ -317,14 +357,14 @@ async def _send(
         )
     except _GatewayError as e:
         if e.delivered_unknown:
-            return _result(
+            return _refusal(
                 "unknown",
                 "unavailable",
                 f"{e.message} Whether the message went out is unknown; do not tell "
                 "the user it was sent.",
             )
-        return _result("failed", "unavailable", f"{e.message} Nothing was sent.")
-    return format_send_result(data)
+        return _refusal("failed", "unavailable", f"{e.message} Nothing was sent.")
+    return send_result(data)
 
 
 _TEXT_ARG = Annotated[
@@ -356,7 +396,7 @@ async def _send_from_workspace(
     target: _TARGET_ARG = None,
     reply: _REPLY_ARG = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
-) -> str:
+) -> tuple[str, dict[str, Any]]:
     return await _send(
         text=text,
         files=files,
@@ -385,7 +425,7 @@ async def _send_without_workspace(
     target: _TARGET_ARG = None,
     reply: _REPLY_ARG = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
-) -> str:
+) -> tuple[str, dict[str, Any]]:
     return await _send(
         text=text,
         files=files,
@@ -442,11 +482,13 @@ _SEND_MESSAGE = StructuredTool.from_function(
     coroutine=_send_from_workspace,
     name="send_message",
     description=SEND_MESSAGE_DESCRIPTION,
+    response_format="content_and_artifact",
 )
 _SEND_MESSAGE_NO_WORKSPACE = StructuredTool.from_function(
     coroutine=_send_without_workspace,
     name="send_message",
     description=SEND_MESSAGE_DESCRIPTION,
+    response_format="content_and_artifact",
 )
 _LIST_MESSAGE_TARGETS = StructuredTool.from_function(
     coroutine=_list_message_targets,

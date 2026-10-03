@@ -142,6 +142,11 @@ turn's sends none, whatever the thread is bound to.
   `tool_call_id` twice is the graph replaying a tool step after a resume, and must not send
   twice.
 
+`send_message` also returns a `message_delivery` artifact beside the text the model reads: `status`,
+`code`, `address`, `platform` (the address's app), `current`, `duplicate`, `message` and `files`
+(`path`, `status`, `reason`). It travels on the `tool_call_result` event and in replayed history for
+clients to render, and the model never sees it.
+
 The tools never raise into the graph. A gateway that cannot be reached, refuses the token, or
 does not answer in time comes back to the model as a failed or unknown result, and the model is
 told to claim nothing as sent unless the status says so.

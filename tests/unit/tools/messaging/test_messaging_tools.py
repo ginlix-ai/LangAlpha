@@ -81,6 +81,15 @@ async def _call(tool, args: dict, configurable: dict | None = None) -> str:
     return result.content
 
 
+async def _message(tool, args: dict, configurable: dict | None = None) -> ToolMessage:
+    result = await tool.ainvoke(
+        {"name": tool.name, "args": args, "id": "call-7", "type": "tool_call"},
+        config={"configurable": CONFIGURABLE if configurable is None else configurable},
+    )
+    assert isinstance(result, ToolMessage)
+    return result
+
+
 # -- registration -------------------------------------------------------------
 
 
@@ -528,6 +537,168 @@ class TestNoAnswerIsStillAResult:
 
         assert "could not be reached" in content
         assert "unknown right now" in content
+
+
+class TestTheDeliveryArtifact:
+    """The client renders the outcome from ``ToolMessage.artifact``; the model
+    reads only the content, so the artifact must not change what it reads."""
+
+    @pytest.mark.asyncio
+    async def test_a_send_into_this_conversation(self, gateway):
+        gateway.reply = httpx.Response(
+            200,
+            json={
+                "status": "sent",
+                "message": "Sent here.",
+                "address": "slack:T1/C1/1.2",
+                "current": True,
+            },
+        )
+
+        message = await _message(_tool("send_message"), {"text": "hi"})
+
+        assert message.artifact == {
+            "type": "message_delivery",
+            "status": "sent",
+            "code": None,
+            "address": "slack:T1/C1/1.2",
+            "platform": "slack",
+            "current": True,
+            "duplicate": False,
+            "message": "Sent here.",
+            "files": [],
+        }
+        assert message.content == (
+            "status: sent\nto: slack:T1/C1/1.2 (this conversation)\nSent here."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_partial_send_carries_each_file_as_the_gateway_said(self, gateway):
+        gateway.reply = httpx.Response(
+            200,
+            json={
+                "status": "partial",
+                "code": "file_error",
+                "message": "The text went; one file did not.",
+                "address": "imessage",
+                "files": [
+                    {"path": "a.xlsx", "status": "linked", "reason": None},
+                    {"path": "b.csv", "status": "failed", "reason": "not found"},
+                    "junk",
+                    {"path": "c.png"},
+                ],
+            },
+        )
+
+        artifact = (await _message(_tool("send_message"), {"text": "hi"})).artifact
+
+        assert artifact["status"] == "partial"
+        assert artifact["code"] == "file_error"
+        assert artifact["files"] == [
+            {"path": "a.xlsx", "status": "linked", "reason": None},
+            {"path": "b.csv", "status": "failed", "reason": "not found"},
+            {"path": "c.png", "status": "failed", "reason": None},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_carries_its_code(self, gateway):
+        gateway.reply = httpx.Response(
+            200,
+            json={"status": "failed", "code": "not_allowed", "message": "Not allowed."},
+        )
+
+        artifact = (await _message(_tool("send_message"), {"text": "hi"})).artifact
+
+        assert artifact["status"] == "failed"
+        assert artifact["code"] == "not_allowed"
+        assert artifact["message"] == "Not allowed."
+        assert artifact["address"] is None
+        assert artifact["platform"] is None
+        assert artifact["current"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_replayed_call_is_marked_duplicate(self, gateway):
+        gateway.reply = httpx.Response(
+            200, json={"status": "sent", "address": "imessage", "duplicate": True}
+        )
+
+        artifact = (await _message(_tool("send_message"), {"text": "hi"})).artifact
+
+        assert artifact["duplicate"] is True
+        assert artifact["status"] == "sent"
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_gateway_failed_with_no_files(self, gateway):
+        gateway.reply = httpx.ConnectError("refused")
+
+        message = await _message(_tool("send_message"), {"text": "hi"})
+
+        assert message.artifact["status"] == "failed"
+        assert message.artifact["code"] == "unavailable"
+        assert message.artifact["files"] == []
+        assert message.artifact["message"] == (
+            "The messaging service could not be reached. Nothing was sent."
+        )
+        assert message.artifact["message"] in message.content
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_is_unknown(self, gateway):
+        gateway.reply = httpx.ReadTimeout("slow")
+
+        artifact = (await _message(_tool("send_message"), {"text": "hi"})).artifact
+
+        assert artifact["status"] == "unknown"
+        assert artifact["code"] == "unavailable"
+        assert artifact["files"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_local_refusal_never_reaches_the_gateway(self, gateway):
+        message = await _message(_tool("send_message"), {"text": "  "})
+
+        assert gateway.requests == []
+        assert message.artifact["status"] == "failed"
+        assert message.artifact["code"] == "invalid_request"
+        assert message.artifact["message"] == (
+            "Nothing to send: pass text, files, or both."
+        )
+        assert message.content == (
+            "status: failed\ncode: invalid_request\n"
+            "Nothing to send: pass text, files, or both."
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("address", "platform"),
+        [
+            ("slack:T1/C2", "slack"),
+            ("imessage", "imessage"),
+            ("Telegram:42", "telegram"),
+        ],
+    )
+    async def test_the_platform_is_the_addresss_app(self, gateway, address, platform):
+        gateway.reply = httpx.Response(200, json={"status": "sent", "address": address})
+
+        artifact = (await _message(_tool("send_message"), {"text": "hi"})).artifact
+
+        assert artifact["platform"] == platform
+
+    @pytest.mark.parametrize("has_workspace_files", [True, False])
+    def test_the_schema_the_model_sees_has_no_new_args(
+        self, configured, has_workspace_files
+    ):
+        tool = _tool("send_message", has_workspace_files=has_workspace_files)
+
+        expected = {"text", "files", "target", "reply"}
+        if not has_workspace_files:
+            expected.add("workspace_id")
+        assert set(tool.args) == expected
+        assert tool.response_format == "content_and_artifact"
+
+    @pytest.mark.asyncio
+    async def test_the_listing_has_no_artifact(self, gateway):
+        message = await _message(_tool("list_message_targets"), {})
+
+        assert message.artifact is None
 
 
 class TestTheTargetsResult:
