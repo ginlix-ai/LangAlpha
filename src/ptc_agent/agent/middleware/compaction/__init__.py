@@ -13,8 +13,10 @@ from ptc_agent.agent.middleware.compaction.types import (
     CompactionEvent,
     CompactionState,
 )
-from ptc_agent.agent.middleware.compaction.utils import (
+from ptc_agent.agent.middleware.compaction.summary_request import (
     DEFAULT_SUMMARY_PROMPT,
+)
+from ptc_agent.agent.middleware.compaction.utils import (
     build_compaction_event,
     build_summary_message,
     count_tokens_tiktoken,

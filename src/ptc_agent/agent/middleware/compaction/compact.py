@@ -16,8 +16,11 @@ from src.llms import get_llm_by_type
 
 from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.middleware.compaction.types import CompactionEvent
-from ptc_agent.agent.middleware.compaction.utils import (
+from ptc_agent.agent.middleware.compaction.summary_request import (
     DEFAULT_SUMMARY_PROMPT,
+    build_summary_request,
+)
+from ptc_agent.agent.middleware.compaction.utils import (
     build_summary_event,
     find_group_safe_cutoff,
     get_effective_messages,
@@ -29,7 +32,6 @@ from ptc_agent.agent.middleware.compaction.model import (
     summary_trim_budget,
     trim_for_summary,
 )
-from ptc_agent.agent.middleware.compaction.middleware import _build_summary_request
 from src.llms import maybe_disable_streaming
 from ptc_agent.agent.middleware.compaction.offloading import (
     aoffload_base64_content,
@@ -37,7 +39,11 @@ from ptc_agent.agent.middleware.compaction.offloading import (
     apply_recorded_offloads,
     get_thread_id,
 )
-from ptc_agent.agent.transcript.pointer import aexport_transcript, transcript_target
+from ptc_agent.agent.transcript.pointer import (
+    TranscriptTurns,
+    aexport_transcript,
+    transcript_target,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +194,11 @@ async def compact_messages(
         response, transcript = await asyncio.gather(
             asyncio.wait_for(
                 compaction_model.ainvoke(
-                    _build_summary_request(DEFAULT_SUMMARY_PROMPT, request_messages)
+                    build_summary_request(
+                        DEFAULT_SUMMARY_PROMPT,
+                        request_messages,
+                        TranscriptTurns.of(transcript, messages) if transcript else None,
+                    )
                 ),
                 timeout=get_compaction_timeout(),
             ),
@@ -215,6 +225,7 @@ async def compact_messages(
         summarized=messages_to_summarize,
         preserved_messages=preserved,
         original_message_count=len(effective),
+        skill_files=backend is not None,
     )
 
     return {

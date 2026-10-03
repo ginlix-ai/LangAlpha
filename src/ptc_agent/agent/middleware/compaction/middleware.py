@@ -18,7 +18,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
-from langchain_core.messages import AIMessage, AnyMessage, SystemMessage
+from langchain_core.messages import AIMessage, AnyMessage
 from langchain_core.exceptions import ContextOverflowError
 from langgraph.config import get_config, get_stream_writer
 from langgraph.types import Command
@@ -49,8 +49,11 @@ from ptc_agent.agent.middleware.compaction.types import (
     _DEFAULT_MESSAGES_TO_KEEP,
     _DEFAULT_TRIM_TOKEN_LIMIT,
 )
-from ptc_agent.agent.middleware.compaction.utils import (
+from ptc_agent.agent.middleware.compaction.summary_request import (
     DEFAULT_SUMMARY_PROMPT,
+    build_summary_request,
+)
+from ptc_agent.agent.middleware.compaction.utils import (
     build_summary_event,
     count_tokens_tiktoken,
     find_group_safe_cutoff,
@@ -72,61 +75,14 @@ from ptc_agent.agent.middleware.compaction.offloading import (
     get_thread_id,
     tool_call_ids,
 )
-from ptc_agent.agent.middleware.runtime_context.durable import (
-    runtime_update_from_message,
-)
-from ptc_agent.agent.middleware.runtime_context.turn import NON_CHANGE_ROW_KINDS
 from ptc_agent.agent.transcript import TranscriptTarget
-from ptc_agent.agent.transcript.pointer import aexport_transcript, transcript_target
+from ptc_agent.agent.transcript.pointer import (
+    TranscriptTurns,
+    aexport_transcript,
+    transcript_target,
+)
 
 logger = logging.getLogger(__name__)
-
-
-_COMPACTION_USER_NUDGE = "Generate the summary now."
-
-
-def _build_summary_request(
-    summary_prompt: str, trimmed_messages: list[AnyMessage]
-) -> list[AnyMessage]:
-    """System = instructions, Human = nudge + rendered history.
-
-    Splitting the two channels keeps the system prompt small and cacheable,
-    lets Codex OAuth populate its ``instructions`` field cleanly, and avoids
-    Python repr inflation by rendering messages via ``get_buffer_string``.
-    """
-    from langchain_core.messages import get_buffer_string
-    from src.llms.api_call import create_messages
-
-    history = get_buffer_string(_summarizable(trimmed_messages))
-    user_prompt = f"{_COMPACTION_USER_NUDGE}\n\n<messages>\n{history}\n</messages>"
-
-    return create_messages(
-        system_prompt=summary_prompt,
-        user_prompt=user_prompt,
-    )
-
-
-def _summarizable(messages: list[AnyMessage]) -> list[AnyMessage]:
-    """History as the summarizer should read it: harness rows are not the user.
-
-    A runtime-context row is persisted as a ``HumanMessage`` because that is
-    the one role every provider accepts anywhere, but ``get_buffer_string``
-    would render it as ``Human:`` and the summarizer would take a time stamp
-    or a file diff for a request. Turn anchors are dropped, since the block
-    they annotate is rebuilt at compaction, and so are subagent-switch
-    notices, which restate themselves after a compaction while the switch is
-    off and would otherwise leave a summary saying it is off once it is back
-    on. Change rows are relabelled as ``System:`` so what they say survives
-    without being attributed to anyone.
-    """
-    out: list[AnyMessage] = []
-    for message in messages:
-        update = runtime_update_from_message(message)
-        if update is None:
-            out.append(message)
-        elif update.kind not in NON_CHANGE_ROW_KINDS:
-            out.append(SystemMessage(content=update.text))
-    return out
 
 
 class CompactionMiddleware(AgentMiddleware):
@@ -464,16 +420,16 @@ class CompactionMiddleware(AgentMiddleware):
         # Summarize (emits SSE start/complete/error signals) while the
         # transcript catches up with this turn; the summary points at it only
         # if that save lands.
+        target = self._transcript_target()
         summarized = self._trim_messages_for_summary(messages_to_summarize)
         summary, transcript = await asyncio.gather(
             self._acreate_summary(
                 messages_to_summarize,
                 original_count=len(truncated_messages),
                 trimmed=summarized,
+                turns=TranscriptTurns.of(target, request.messages) if target else None,
             ),
-            aexport_transcript(
-                self._backend, self._transcript_target(), request.messages
-            ),
+            aexport_transcript(self._backend, target, request.messages),
         )
         if summary is None:
             # A failed summary must not stand in for the history it was to
@@ -510,6 +466,7 @@ class CompactionMiddleware(AgentMiddleware):
             summarized=summarized,
             preserved_messages=preserved_messages,
             original_message_count=len(truncated_messages),
+            skill_files=self._backend is not None,
         )
         summary_message = new_event["summary_message"]
 
@@ -706,8 +663,10 @@ class CompactionMiddleware(AgentMiddleware):
             summary,
             None,
             raw_messages=request.messages,
+            to_summarize=messages_to_summarize,
             preserved_messages=preserved_messages,
             original_message_count=len(truncated_messages),
+            skill_files=self._backend is not None,
         )
         summary_message = new_event["summary_message"]
 
@@ -1243,7 +1202,7 @@ class CompactionMiddleware(AgentMiddleware):
         self._emit_context_signal("summarize", "start")
         try:
             response = self.model.invoke(
-                _build_summary_request(self.summary_prompt, trimmed_messages)
+                build_summary_request(self.summary_prompt, trimmed_messages)
             )
             summary = self._extract_summary_text(response)
             if not summary:
@@ -1269,12 +1228,15 @@ class CompactionMiddleware(AgentMiddleware):
         *,
         original_count: int = 0,
         trimmed: list[AnyMessage] | None = None,
+        turns: TranscriptTurns | None = None,
     ) -> str | None:
         """Generate summary for the given messages (async version with custom events).
 
         ``trimmed`` is the already-trimmed list, for a caller that also needs
-        to know what trimming dropped. None means the call failed or came back
-        empty, as manual compaction treats it, and its error signal is out.
+        to know what trimming dropped. ``turns`` heads each turn of the history
+        with its transcript file, for the summary to cite. None means the call
+        failed or came back empty, as manual compaction treats it, and its
+        error signal is out.
         """
         if not messages_to_summarize:
             return "No previous conversation history."
@@ -1313,7 +1275,7 @@ class CompactionMiddleware(AgentMiddleware):
             # of blocking the in-flight turn forever.
             response = await asyncio.wait_for(
                 self.model.ainvoke(
-                    _build_summary_request(self.summary_prompt, trimmed_messages)
+                    build_summary_request(self.summary_prompt, trimmed_messages, turns)
                 ),
                 timeout=get_compaction_timeout(),
             )

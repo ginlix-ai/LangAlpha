@@ -7,6 +7,7 @@ appended to the user message when a skill is activated. Lives in ``ptc_agent``
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -324,6 +325,76 @@ def _message_text(message: Any) -> str:
     return ""
 
 
+def _field(message: Any, name: str) -> Any:
+    if isinstance(message, dict):
+        return message.get(name)
+    return getattr(message, name, None)
+
+
+def _is_tool_result(message: Any) -> bool:
+    if isinstance(message, dict):
+        return message.get("role") == "tool" or message.get("type") == "tool"
+    return getattr(message, "type", None) == "tool"
+
+
+_BOUND_MARKER = re.compile(r'<loaded-skill name="([^"]+)" mid="([^"]+)">')
+_SKILL_MD = re.compile(r"(?:^|/)skills/([^/]+)/SKILL\.md$")
+
+
+def _skill_call(call: Any) -> tuple[str, str] | None:
+    """(skill, path read) for a call that brings a skill's body into context."""
+    name = call.get("name") if isinstance(call, dict) else getattr(call, "name", None)
+    args = (
+        call.get("args") if isinstance(call, dict) else getattr(call, "args", None)
+    ) or {}
+    if name == "Read":
+        path = str(args.get("file_path") or "")
+        match = _SKILL_MD.search(path)
+        return (match.group(1), path) if match else None
+    if name == "LoadSkill" and isinstance(args.get("skill_name"), str):
+        return args["skill_name"], ""
+    return None
+
+
+def skills_with_bodies(messages: Any) -> list[str]:
+    """Skills whose SKILL.md body these messages carry, first seen first.
+
+    Three carriers, one per way a body arrives: a ``<loaded-skill>`` block
+    bound to the message it sits in (a skill the client asked for), a Read of
+    a skill's SKILL.md (PTC) and a LoadSkill result (Flash). A result that
+    failed, or that Tier 1 replaced with a marker, carries nothing. Both the
+    injection dedup and the compaction hand-back read this one rule, so a body
+    the agent re-read after a summary is never pasted in again.
+    """
+    from ptc_agent.agent.middleware.compaction.utils import read_offload_marker
+
+    calls: dict[str, tuple[str, str]] = {}
+    found: dict[str, None] = {}
+    for message in messages or []:
+        if _is_tool_result(message):
+            call = calls.get(_field(message, "tool_call_id") or "")
+            text = _message_text(message)
+            if (
+                call is not None
+                and _field(message, "status") != "error"
+                and not text.startswith(("ERROR", "Error"))
+                and text != read_offload_marker(call[1])
+            ):
+                found.setdefault(call[0])
+            continue
+        for tool_call in _field(message, "tool_calls") or ():
+            skill = _skill_call(tool_call)
+            call_id = tool_call.get("id") if isinstance(tool_call, dict) else None
+            if skill is not None and call_id:
+                calls[call_id] = skill
+        mid = _message_id(message)
+        if mid:
+            for name, bound in _BOUND_MARKER.findall(_message_text(message)):
+                if bound == mid:
+                    found.setdefault(name)
+    return list(found)
+
+
 def compute_already_loaded(
     loaded: Any, messages: Any, summarization_event: Any
 ) -> set[str]:
@@ -340,11 +411,10 @@ def compute_already_loaded(
       that survives only inside the summary is gone verbatim and must be re-injected
       (its tools stay available via state regardless).
 
-    The marker scan is identity-bound: a skill counts as live only when its marker,
-    carrying ``mid`` equal to the scanned message's own framework id, is present in
-    that message. Content alone can't forge a match (a user-typed marker, or a
-    SKILL.md documenting the format, carries a ``mid`` that won't equal the id of the
-    message it sits in), so a spurious "still loaded" can't suppress a real body.
+    What counts as a body is ``skills_with_bodies``. Its marker scan is
+    identity-bound: a marker counts only when its ``mid`` equals the id of the
+    message it sits in, so neither user-typed text nor a SKILL.md documenting the
+    format can suppress a real body.
 
     Non-string skill names are filtered out; any unexpected shape degrades to an
     empty set so the caller re-injects in full.
@@ -360,13 +430,31 @@ def compute_already_loaded(
     from ptc_agent.agent.middleware.compaction import get_effective_messages
 
     effective = get_effective_messages(messages or [], event)[1:]
-    live: set[str] = set()
-    for m in effective:
-        mid = _message_id(m)
-        if not mid:
-            continue
-        text = _message_text(m)
-        for name in loaded_set:
-            if name not in live and loaded_skill_marker(name, mid) in text:
-                live.add(name)
-    return live
+    return loaded_set & set(skills_with_bodies(effective))
+
+
+def compacted_skills(summarized: Any, kept: Any) -> list[str]:
+    """Skills whose body a summary replaces and no kept message still carries."""
+    still = set(skills_with_bodies(kept))
+    return [name for name in skills_with_bodies(summarized) if name not in still]
+
+
+def skill_reload_note(names: list[str], *, files: bool) -> str:
+    """What a summary tells the agent about skills it may still be following.
+
+    ``files`` is whether the agent reaches skills as files (PTC, where a Read
+    of SKILL.md loads one) rather than through LoadSkill (Flash).
+    """
+    if not names:
+        return ""
+    listed = ", ".join(f"`{name}`" for name in names)
+    how = (
+        "Read its `.agents/skills/<name>/SKILL.md` again"
+        if files
+        else "call LoadSkill with its name"
+    )
+    return (
+        f"\n\nThe instructions of these skills were in the summarized part and "
+        f"are no longer in your context: {listed}. Before you continue with one "
+        f"you are still following, {how}."
+    )

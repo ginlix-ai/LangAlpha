@@ -22,8 +22,8 @@ from langchain_core.messages.utils import convert_to_messages
 from ptc_agent.agent.middleware._message_utils import message_id
 from ptc_agent.agent.transcript import TranscriptTarget
 from ptc_agent.agent.transcript.pointer import (
-    SummaryStart,
-    summary_resumes_at,
+    SummarySpan,
+    summary_span,
     transcript_note,
 )
 from src.llms.attachment_payload import FILE_BLOCK_TYPES, IMAGE_BLOCK_TYPES
@@ -856,7 +856,8 @@ def build_summary_message(
     transcript: TranscriptTarget | None = None,
     original_message_count: int = 0,
     *,
-    resumes_at: SummaryStart | None = None,
+    span: SummarySpan | None = None,
+    skills_note: str = "",
 ) -> HumanMessage:
     """Build the summary HumanMessage, pointing at the transcript when there is one.
 
@@ -867,7 +868,8 @@ def build_summary_message(
     """
     content = f"{CONTEXT_SUMMARY_PREFIX}{summary}"
     if transcript is not None:
-        content += transcript_note(transcript, resumes_at)
+        content += transcript_note(transcript, span)
+    content += skills_note
 
     return HumanMessage(
         content=content,
@@ -891,21 +893,36 @@ def build_summary_event(
     original_message_count: int,
     to_summarize: Sequence[AnyMessage] = (),
     summarized: Sequence[AnyMessage] = (),
+    skill_files: bool = False,
 ) -> CompactionEvent:
     """The event putting ``summary`` in place of ``to_summarize``, pointing
     at the transcript when there is one. ``summarized`` is what the model was
     sent of them after trimming, which says where the summary starts; an
-    earlier summary heading both is kept whole, so the start is after it."""
+    earlier summary heading both is kept whole, so the start is after it.
+
+    The skills whose instructions go with ``to_summarize`` are listed from the
+    messages, not from the summary: a summarizer may drop a name, and the
+    agent mid-procedure needs every one to reload. ``skill_files`` says how
+    the agent reloads one (see ``skill_reload_note``).
+    """
+    from ptc_agent.agent.middleware.skills.content import (
+        compacted_skills,
+        skill_reload_note,
+    )
+
     summary_message = build_summary_message(
         summary,
         transcript,
         original_message_count,
-        resumes_at=(
-            summary_resumes_at(
+        span=(
+            summary_span(
                 raw_messages, _after_summary(to_summarize), _after_summary(summarized)
             )
             if transcript is not None
             else None
+        ),
+        skills_note=skill_reload_note(
+            compacted_skills(to_summarize, preserved_messages), files=skill_files
         ),
     )
     return build_compaction_event(
@@ -929,68 +946,3 @@ def parse_summary_message(message: HumanMessage) -> str:
         return text[:length]
     # Legacy checkpoints without the stamp: fall back to note-prefix splitting.
     return text.rsplit(_LEGACY_FILE_NOTE, 1)[0]
-
-
-# =============================================================================
-# Prompt template
-# =============================================================================
-
-# Financial research summarization prompt. Instructions only — the conversation
-# history is delivered in a separate HumanMessage so the system channel stays
-# bounded and cacheable, and so BaseChatModel.format() doesn't try to interpret
-# message content as further format placeholders.
-DEFAULT_SUMMARY_PROMPT = """<role>
-Financial Research Context Summarizer
-</role>
-
-<context>
-You're nearing your input token limit. The conversation history in the user
-message will be replaced with the context you extract. This is critical -
-ensure you capture all important information so you can continue the research
-without losing progress.
-</context>
-
-<objective>
-Extract the most important context to preserve research continuity and prevent
-repeating completed work. Think deeply about what information is essential to
-achieving the user's overall goal.
-</objective>
-
-<instructions>
-Create a natural, readable summary that captures everything needed to continue the work.
-Write in the SAME LANGUAGE as the user's queries.
-Use your judgment on structure - the categories below are guidelines, not rigid templates.
-
-Key information to capture:
-
-1. **Current Query**: What is the user asking? Include the verbatim question, relevant tickers/entities, and scope.
-
-2. **Progress**: What has been done and what remains? List completed steps with outcomes, current work, and pending tasks.
-
-3. **Key Findings**: All critical discoveries with their sources:
-   - Data points with exact values: prices, ratios, growth rates (always include source)
-   - Observations and patterns identified
-   - Conclusions reached from analysis
-   - URLs crawled, APIs used, files created
-
-4. **Decisions**: Any methodology choices or user preferences that affect ongoing work.
-
-5. **Query History** (for multi-turn sessions only): Previous queries in chronological order with their outcomes.
-
-Guidelines:
-- Preserve ALL numerical data exactly as discovered
-- Include source/citation for each data point
-- Omit categories that have no content
-- Be concise but comprehensive
-- Use natural prose or bullet points as appropriate
-</instructions>
-
-<output_format>
-Respond ONLY with the extracted context. Do not include preamble or commentary.
-
-Begin with a Brief 1-2 sentence overview of the research session and current goal.
-Make sure you maintain the user original query and goal.
-
-Then organize naturally using markdown headers.
-Write as if briefing a colleague who needs to continue your work without repeating what's done.
-</output_format>"""

@@ -1,22 +1,24 @@
 """The pointer a compaction summary ends with: the agent's transcript.
 
 A summary alone reads as all that survived, so it names the transcript
-directory and how to search it, and the transcript is saved from the messages
-in hand while the summary is written. Only a sandbox the file mount serves has
-a transcript to point at, and only a save that landed is pointed at.
+directory, the turns it covers and how to search them, and the transcript is
+saved from the messages in hand while the summary is written. Only a sandbox
+the file mount serves has a transcript to point at, and only a save that
+landed is pointed at.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from langchain_core.messages import AnyMessage
 
 from ptc_agent.agent.transcript.render import message_turns
-from ptc_agent.agent.transcript.store import TranscriptTarget
+from ptc_agent.agent.transcript.store import TranscriptTarget, segment_file
 
 if TYPE_CHECKING:
     from ptc_agent.agent.backends.sandbox import SandboxBackend
@@ -30,8 +32,12 @@ _EXPORT_TIMEOUT = 30.0
 
 _NOTE = (
     "\n\nThe full history before this point is saved in `{directory}/`, one "
-    "`{unit}-NNNN.jsonl` per {unit}. For a detail the summary leaves out, Grep "
-    "that directory (pass it as `path`) and Read the matching file."
+    "`{unit}-NNNN.jsonl` per {unit}.{covers} For a detail the summary leaves "
+    "out, Grep that directory (pass it as `path`) and Read the matching file."
+)
+_COVERS_NOTE = (
+    " This summary covers {span}, and a file it names next to a point holds that "
+    "point in full."
 )
 _RESUMES_NOTE = " {units} before {number} did not fit in this summary and are only there."
 _RESUMES_PARTWAY_NOTE = (
@@ -41,6 +47,40 @@ _RESUMES_PARTWAY_NOTE = (
 
 # (turn number, whether trimming cut into that turn's first kept message)
 SummaryStart = tuple[int, bool]
+
+
+@dataclass(frozen=True)
+class TranscriptTurns:
+    """Which transcript file holds each message.
+
+    Numbered over the agent's whole checkpoint list, as the renderer numbers
+    its files: a trimmed or summarized view would number from the wrong turn.
+    """
+
+    target: TranscriptTarget
+    turns: Mapping[str, int]
+
+    @classmethod
+    def of(cls, target: TranscriptTarget, messages: Sequence[AnyMessage]) -> TranscriptTurns:
+        return cls(target, message_turns(messages))
+
+    def file(self, message_id: str | None) -> str | None:
+        number = self.turns.get(message_id or "")
+        return segment_file(self.target.unit, number) if number else None
+
+    def path(self, message_id: str | None) -> str | None:
+        name = self.file(message_id)
+        return f"{self.target.directory}/{name}" if name else None
+
+
+@dataclass(frozen=True)
+class SummarySpan:
+    """The turns a summary stands in for. ``start`` is set when trimming
+    dropped the head of the summarized stretch, and names where it resumes."""
+
+    first: int
+    last: int
+    start: SummaryStart | None = None
 
 
 def _mount(backend: SandboxBackend | None) -> MountHandle | None:
@@ -83,24 +123,47 @@ async def aexport_transcript(
     return transcript
 
 
-def transcript_note(
-    transcript: TranscriptTarget, resumes_at: SummaryStart | None = None
-) -> str:
-    note = _NOTE.format(directory=transcript.directory, unit=transcript.unit)
-    if resumes_at is None:
-        return note
-    number, partway = resumes_at
-    if partway:
-        note += _RESUMES_PARTWAY_NOTE.format(unit=transcript.unit, number=number)
-    elif number > 1:
-        note += _RESUMES_NOTE.format(
-            units=f"{transcript.unit.capitalize()}s", number=number
+def transcript_note(transcript: TranscriptTarget, span: SummarySpan | None = None) -> str:
+    unit = transcript.unit
+    covers = ""
+    if span is not None:
+        first, last = segment_file(unit, span.first), segment_file(unit, span.last)
+        covers = _COVERS_NOTE.format(
+            span=f"{unit} {span.last} (`{last}`)"
+            if span.first == span.last
+            else f"{unit}s {span.first} to {span.last} (`{first}` to `{last}`)"
         )
+    note = _NOTE.format(directory=transcript.directory, unit=unit, covers=covers)
+    if span is None or span.start is None:
+        return note
+    number, partway = span.start
+    if partway:
+        note += _RESUMES_PARTWAY_NOTE.format(unit=unit, number=number)
+    elif number > 1:
+        note += _RESUMES_NOTE.format(units=f"{unit.capitalize()}s", number=number)
     return note
 
 
-def summary_resumes_at(
+def summary_span(
     raw_messages: Sequence[AnyMessage],
+    to_summarize: Sequence[AnyMessage],
+    summarized: Sequence[AnyMessage],
+) -> SummarySpan | None:
+    """The turns the summary of ``to_summarize`` covers, ``summarized`` being
+    what the summarizer was sent of them after trimming. A summary at the
+    head of the stretch stands in for every turn before it, so an untrimmed
+    span starts at the first turn."""
+    turns = message_turns(raw_messages)
+    last = next((turns[m.id] for m in reversed(to_summarize) if m.id in turns), None)
+    if last is None:
+        return None
+    start = _resumes_at(turns, to_summarize, summarized)
+    first = start[0] if start is not None else 1
+    return SummarySpan(min(first, last), last, start)
+
+
+def _resumes_at(
+    turns: Mapping[str, int],
     to_summarize: Sequence[AnyMessage],
     summarized: Sequence[AnyMessage],
 ) -> SummaryStart | None:
@@ -117,7 +180,6 @@ def summary_resumes_at(
     partway = original is not None and original.content != first.content
     if original is to_summarize[0] and not partway:
         return None
-    turns = message_turns(raw_messages)
     for message in summarized:
         number = turns.get(message.id or "")
         if number is not None:
