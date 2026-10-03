@@ -19,6 +19,7 @@ HumanKind = Literal[
     "market-watch",
     "credit-gate",
     "runtime-context",
+    "orchestrator",
 ]
 
 #: How mid-turn input opens: the user's, and an orchestrator's follow-up to a
@@ -41,6 +42,14 @@ _CREDIT_GATE_SOURCE = "credit_gate"
 # durable rows it renders.
 _RUNTIME_CONTEXT_SOURCES = frozenset({"runtime_context", "runtime_update"})
 
+# Written by middleware/background_subagent/orchestrator.py: the trigger that
+# re-invokes the agent for pending steering, and background-task notices.
+# Checkpoints from before the stamp carry only the message name.
+ORCHESTRATOR_SOURCE = "orchestrator"
+#: The steering trigger's whole text. It only routes the graph back to the
+#: agent; the steering message that follows it carries the user's words.
+STEERING_TRIGGER = "User sent additional instructions."
+
 
 def human_kind(message: HumanMessage) -> HumanKind:
     """Classify a HumanMessage by its injection stamp; ``plain`` is real input."""
@@ -59,6 +68,8 @@ def human_kind(message: HumanMessage) -> HumanKind:
         return "credit-gate"
     if source in _RUNTIME_CONTEXT_SOURCES:
         return "runtime-context"
+    if source == ORCHESTRATOR_SOURCE or message.name == ORCHESTRATOR_SOURCE:
+        return "orchestrator"
     return "plain"
 
 
