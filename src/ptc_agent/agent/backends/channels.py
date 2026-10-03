@@ -65,9 +65,10 @@ must be one of the user's workspaces in `available.json`. A `workspace` of
 `null` means that workspace no longer exists: point the binding at another
 one or remove it. Left as it is, it doesn't stop other changes saving.
 
-An automation that delivers to an app posts to the chat it names, else to its
-workspace's `automation_output` on that app, else to the app's `preferred`,
-else to the user's direct messages.
+An automation whose `delivery` names only an app posts to its workspace's
+`automation_output` on that app, else to the app's `preferred`, else to the
+user's direct messages. To always post to the direct messages, name them:
+`discord:@me`, `imessage:@me`, or `slack:<team>` on Slack.
 
 ## Editing rules
 

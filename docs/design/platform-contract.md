@@ -181,13 +181,15 @@ gateway holds both, with the same two headers:
   stale. A key it doesn't model goes to the gateway as written, at every level: the gateway owns
   the schema, so it refuses a key it doesn't know with a 400 problem naming that field.
 - `GET {base}/agent/settings/available` answers `{"apps": {app: {"chats": [{"address", "name",
-  "kind"}], "complete", "error"}}}`. `available.json` adds the user's workspaces by id and name.
+  "kind"}], "complete", "error"}}}`, direct messages as `<app>:@me`, or `slack:<team>` on Slack.
+  `available.json` adds the user's workspaces by id and name.
 - `POST {base}/agent/check-target` takes `{"address", "purpose": "automation"}` and answers
-  `{"ok", "address", "name", "message"}`. Every save of an automation's `delivery` (file, REST or
-  tool) checks each chat address it newly names here and stores the canonical `address`; without
-  a gateway, an address entry is refused, while an app name (`"slack"`) saves as before. The
-  gateway resolves an automation's output chain: its own address, else the workspace's
-  `automation_output`, else the app's `preferred`, else the user's direct messages.
+  `{"ok", "address", "name", "message"}`, with `<app>:@me` back as sent. Every save of an
+  automation's `delivery` (file, REST or tool) checks each chat address it newly names here and
+  stores the canonical `address`; without a gateway, an address entry is refused, while an app
+  name (`"slack"`) saves as before. The gateway resolves an app name to the workspace's
+  `automation_output`, else the app's `preferred`, else the user's direct messages; an address,
+  `<app>:@me` included, posts to that chat.
 
 ## Adding a surface
 

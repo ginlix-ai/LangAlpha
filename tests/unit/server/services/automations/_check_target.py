@@ -13,6 +13,11 @@ CHAT = "slack:T1/C0123"
 CHAT_SPELLED = "slack:t1/c0123"
 REFUSED_CHAT = "slack:T1/CNOPE"
 REFUSAL = "the bot is not in that channel"
+# The user's direct messages by address, which pins them where an app name
+# would follow the app's chain; the gateway files them as written.
+DISCORD_DM = "discord:@me"
+SLACK_DM = "slack:T1"
+_AS_WRITTEN = (DISCORD_DM, SLACK_DM)
 
 
 class FakeCheckTarget:
@@ -38,6 +43,8 @@ class FakeCheckTarget:
                 200,
                 json={"ok": False, "address": None, "name": None, "message": REFUSAL},
             )
+        canonical = body["address"] if body["address"] in _AS_WRITTEN else CHAT
         return httpx.Response(
-            200, json={"ok": True, "address": CHAT, "name": "#alerts", "message": None}
+            200,
+            json={"ok": True, "address": canonical, "name": "#alerts", "message": None},
         )

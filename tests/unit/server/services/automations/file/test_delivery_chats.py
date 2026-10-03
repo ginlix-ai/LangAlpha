@@ -10,8 +10,10 @@ from src.server.services.automations import lifecycle
 from tests.unit.server.services.automations._check_target import (  # noqa: F401 - fixtures
     CHAT,
     CHAT_SPELLED,
+    DISCORD_DM,
     REFUSAL,
     REFUSED_CHAT,
+    SLACK_DM,
 )
 from tests.unit.server.services.automations.file._support import (
     BRIEF,
@@ -45,6 +47,15 @@ class TestDeliveryChats:
         # Checked before the save opened its transaction, and not again inside it.
         assert gateway.seen == [0]
         assert lifecycle.create_automation.await_args.kwargs["delivery_checked"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_dm_address_saves_beside_its_app_name(self, db, backend, gateway):
+        delivery = ["discord", DISCORD_DM, SLACK_DM]
+
+        await _create(backend, {**NEW, "delivery": delivery})
+
+        assert db.rows[CREATED]["delivery_config"] == {"methods": delivery}
+        assert gateway.asked == [DISCORD_DM, SLACK_DM]
 
     @pytest.mark.asyncio
     async def test_an_update_stores_the_canonical_chat(self, db, backend, gateway):

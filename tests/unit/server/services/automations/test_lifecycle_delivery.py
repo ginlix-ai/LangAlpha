@@ -17,8 +17,10 @@ from src.server.services.automations.lifecycle import (
 from tests.unit.server.services.automations._check_target import (  # noqa: F401 - fixtures
     CHAT,
     CHAT_SPELLED,
+    DISCORD_DM,
     REFUSAL,
     REFUSED_CHAT,
+    SLACK_DM,
 )
 
 OWNER = "user-owner"
@@ -95,6 +97,17 @@ class TestCheckDelivery:
             "slack",
         ]
         assert check_target.asked == []
+
+    @pytest.mark.asyncio
+    async def test_a_dm_address_is_checked_and_kept_apart_from_its_app(
+        self, check_target
+    ):
+        """An app name follows the app's chain and a DM address pins the DM,
+        so neither stands in for the other."""
+        methods = ["discord", DISCORD_DM, "slack", SLACK_DM]
+
+        assert await check_delivery(OWNER, methods) == methods
+        assert check_target.asked == [DISCORD_DM, SLACK_DM]
 
     @pytest.mark.asyncio
     async def test_app_names_are_kept_as_written(self, check_target):
