@@ -82,12 +82,9 @@ ALLOWLIST: dict[tuple[str, str], int] = {
     # fallback-model name path (build_fallback_pairs, OSS standalone — server
     # runs pre-resolve fallback_llm_clients via resolve_llm_config first).
     ("src/ptc_agent/agent/middleware/model_resilience.py", "get_llm_by_type"): 1,
-    # compaction summarizer name path (compact.py helper).
+    # compaction summarizer name path (Summarizer.for_agent, shared by the
+    # middleware and manual /compact; reached only without a role client).
     ("src/ptc_agent/agent/middleware/compaction/compact.py", "get_llm_by_type"): 1,
-    # compaction middleware fallback name path.
-    ("src/ptc_agent/agent/middleware/compaction/middleware.py", "get_llm_by_type"): 1,
-    # compaction middleware model coercion (string model -> chat model).
-    ("src/ptc_agent/agent/middleware/compaction/middleware.py", "init_chat_model"): 1,
     # non-BYOK fetch name path (reached only for non-credentialed users).
     ("src/tools/web/fetch.py", "get_llm"): 1,
     # The resolution layer itself, the sanctioned constructor home. Entered

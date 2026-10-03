@@ -416,7 +416,7 @@ class TestCompactionConfig:
         assert cfg.enabled is True
         assert cfg.token_threshold == 120000
         assert cfg.keep_messages == 5
-        assert cfg.truncate_args_trigger_messages is None
+        assert cfg.truncate_args_idle_minutes == 90
         assert cfg.truncate_args_keep_messages == 20
         assert cfg.truncate_args_max_length == 2000
 
@@ -425,12 +425,12 @@ class TestCompactionConfig:
             enabled=False,
             token_threshold=80000,
             keep_messages=3,
-            truncate_args_trigger_messages=15,
+            truncate_args_idle_minutes=None,
         )
         assert cfg.enabled is False
         assert cfg.token_threshold == 80000
         assert cfg.keep_messages == 3
-        assert cfg.truncate_args_trigger_messages == 15
+        assert cfg.truncate_args_idle_minutes is None
 
 
 # ---------------------------------------------------------------------------

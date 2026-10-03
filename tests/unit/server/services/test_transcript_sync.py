@@ -544,10 +544,12 @@ def live(monkeypatch):
     monkeypatch.setattr(
         "src.server.database.conversation.get_thread_checkpoint_id", state.stamped
     )
-    state.task_tip = AsyncMock(return_value=None)
+    state.tip = AsyncMock(return_value=None)
     monkeypatch.setattr(
         "src.server.services.history.reader.CheckpointHistoryReader.get_instance",
-        lambda: SimpleNamespace(alatest_task_checkpoint_id=state.task_tip),
+        lambda: SimpleNamespace(
+            alatest_checkpoint_id=state.tip,
+        ),
     )
     monkeypatch.setattr(
         transcripts, "_target", AsyncMock(return_value=_target(inline=True))
@@ -577,6 +579,27 @@ async def test_a_live_save_takes_the_threads_checkpoint_when_its_export_is_late(
     assert await transcripts.save_live(TranscriptTarget(T1), [_message("hi")])
     [(_, copy)] = live.saves
     assert copy.checkpoint_id == "cp-2"
+
+
+@pytest.mark.asyncio
+async def test_a_first_turn_live_save_takes_the_checkpoint_tip(live):
+    """Unstamped, the copy was labelled with no checkpoint, which any render
+    replaced: an export that read the checkpoint before this compaction then
+    dropped what the live save had added until the turn ended."""
+    live.tip.return_value = "cp-3"
+    assert await transcripts.save_live(TranscriptTarget(T1), [_message("hi")])
+    [(_, copy)] = live.saves
+    assert copy.checkpoint_id == "cp-3"
+    live.tip.assert_awaited_once_with(T1)
+
+    # Stamped, the stamp stays the label: one past it would stand the turn
+    # end's render down too.
+    live.saves.clear()
+    live.stamped.return_value = "cp-2"
+    assert await transcripts.save_live(TranscriptTarget(T1), [_message("bye")])
+    [(_, copy)] = live.saves
+    assert copy.checkpoint_id == "cp-2"
+    live.tip.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -623,11 +646,11 @@ async def test_a_live_save_of_a_task_takes_the_tasks_latest_checkpoint(live):
     at that checkpoint or an older one, and must not replace what it lacks."""
     live.stored["tasks/k1/"] = _stored(checkpoint_id="task-cp-1")
     live.stamped.return_value = "cp-9"
-    live.task_tip.return_value = "task-cp-2"
+    live.tip.return_value = "task-cp-2"
     assert await transcripts.save_live(TranscriptTarget(T1, "k1"), [_message("go")])
     [(_, copy)] = live.saves
     assert copy.fingerprint == "" and copy.checkpoint_id == "task-cp-2"
-    live.task_tip.assert_awaited_once_with(T1, "k1")
+    live.tip.assert_awaited_once_with(T1, "task:k1")
     live.stamped.assert_not_awaited()
 
 

@@ -355,7 +355,6 @@ class TestOtherModelPreferences:
             config = await resolve_llm_config(base_config, "user-1", None, False)
         preset = COMPACTION_PROFILES["aggressive"]
         assert config.compaction.token_threshold == preset["token_threshold"]
-        assert config.compaction.truncate_args_trigger_messages == preset["truncate_args_trigger_messages"]
         assert config.compaction.keep_messages == preset["keep_messages"]
 
     @pytest.mark.asyncio
@@ -376,7 +375,6 @@ class TestOtherModelPreferences:
             config = await resolve_llm_config(base_config, "user-1", None, False)
         preset = COMPACTION_PROFILES["extended"]
         assert config.compaction.token_threshold == preset["token_threshold"]
-        assert config.compaction.truncate_args_trigger_messages == preset["truncate_args_trigger_messages"]
         assert config.compaction.keep_messages == preset["keep_messages"]
 
     @pytest.mark.asyncio
@@ -398,7 +396,6 @@ class TestOtherModelPreferences:
             config = await resolve_llm_config(base_config, "user-1", None, False)
         preset = COMPACTION_PROFILES["relaxed"]
         assert config.compaction.token_threshold == preset["token_threshold"]
-        assert config.compaction.truncate_args_trigger_messages == preset["truncate_args_trigger_messages"]
         assert config.compaction.keep_messages == preset["keep_messages"]
 
     @pytest.mark.asyncio
@@ -420,7 +417,6 @@ class TestOtherModelPreferences:
             ):
                 config = await resolve_llm_config(base_config, "user-1", None, False)
             assert config.compaction.token_threshold == baseline.token_threshold
-            assert config.compaction.truncate_args_trigger_messages == baseline.truncate_args_trigger_messages
             assert config.compaction.keep_messages == baseline.keep_messages
 
 

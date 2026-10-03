@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from ptc_agent.agent.middleware.compaction.middleware import _summarizable
+from ptc_agent.agent.middleware.compaction.summary_request import _summarizable
 from ptc_agent.agent.middleware.runtime_context import (
     RUNTIME_UPDATE_KEY,
     RUNTIME_UPDATE_SOURCE,

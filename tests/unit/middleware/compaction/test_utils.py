@@ -438,7 +438,7 @@ class TestInheritedOrphansAreMatchedByIdentity:
 class TestBothHalvesReadTheSameShapes:
     """Ownership is decided on dict-shaped messages too, or it deletes them.
 
-    ``_is_tool_message`` documents why it refuses to assume the reducer coerced
+    ``is_tool_message`` documents why it refuses to assume the reducer coerced
     everything: this rule backs the crash backstop, so a dict-shaped result
     slipping in still has to be caught. ``declared_tool_call_ids`` read only
     attributes, so a dict-shaped assistant turn declared nothing, its own
@@ -582,3 +582,22 @@ class TestStripBase64PreservesSiblingKeys:
     def test_clean_text_block_is_returned_untouched(self) -> None:
         content = [{"type": "text", "text": "no data uri", "phase": "commentary"}]
         assert utils.strip_base64_from_content(content) is content
+
+
+def test_stale_reads_tolerate_args_read_never_accepted():
+    # Tier 1 runs at turn start: one malformed Read call in the history must
+    # not fail every turn after an idle gap.
+    messages = [
+        AIMessage("", id="a1", tool_calls=[
+            {"name": "Read", "id": "r1", "args": {"file_path": None, "offset": [1]}},
+            {"name": "Read", "id": "r2", "args": {"file_path": "notes.md"}},
+        ]),
+        ToolMessage("ERROR: bad args", tool_call_id="r1", id="t1"),
+        ToolMessage("v1", tool_call_id="r2", id="t2"),
+        AIMessage("", id="a2", tool_calls=[
+            {"name": "Read", "id": "r3", "args": {"file_path": "notes.md"}},
+        ]),
+        ToolMessage("v2", tool_call_id="r3", id="t3"),
+    ]
+
+    assert utils.stale_read_ids(messages, len(messages)) == {"r2"}
