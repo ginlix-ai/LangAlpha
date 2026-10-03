@@ -2319,6 +2319,7 @@
     "delivery": "Delivery",
     "deliverNone": "None",
     "deliverToSlack": "Slack",
+    "deliverToDm": "{{app}} DM",
     "deliverToDiscord": "Discord",
     "marketIndex": "Index",
     "priceSymbol": "Symbol",

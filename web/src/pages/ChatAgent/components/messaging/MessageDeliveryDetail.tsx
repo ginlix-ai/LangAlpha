@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { FileText } from 'lucide-react';
 import Markdown from '../Markdown';
 import { DeliveryFileStatusLabel, DeliveryStatusPill } from './deliveryStatusUi';
-import { messagingAppName, type MessageDelivery } from './messageDelivery';
+import { isDmAddress, messagingAppName, type MessageDelivery } from './messageDelivery';
 
 const LABEL_CLASS = 'text-xs font-medium uppercase tracking-wider mb-2 px-1';
 const QUIET = { color: 'var(--color-text-tertiary)' };
@@ -20,8 +20,8 @@ export function MessageDeliveryDetail({ delivery, onOpenFile }: {
   const { t } = useTranslation();
   const app = messagingAppName(delivery.platform);
   const label = app ?? t('toolArtifact.messageDelivery.message');
-  // A bare address ("telegram") only repeats the app's name above it.
-  const address = delivery.address && delivery.address.toLowerCase() !== delivery.platform ? delivery.address : null;
+  // A DM address ("telegram", "telegram:@me", "slack:T0123") only repeats the app's name above it.
+  const address = delivery.address && !isDmAddress(delivery.address) ? delivery.address : null;
 
   return (
     <div className="space-y-5 min-w-0" data-testid="message-delivery-detail">

@@ -2307,6 +2307,7 @@
     "delivery": "推送",
     "deliverNone": "无",
     "deliverToSlack": "Slack",
+    "deliverToDm": "{{app}} 私信",
     "deliverToDiscord": "Discord",
     "marketIndex": "指数",
     "priceSymbol": "代码",

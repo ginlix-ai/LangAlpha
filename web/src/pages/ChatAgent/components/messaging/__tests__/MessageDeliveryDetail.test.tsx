@@ -94,6 +94,28 @@ describe('the send_message detail panel', () => {
     expect(within(panel).queryByText('telegram')).toBeNull();
   });
 
+  it.each([
+    ['telegram', 'telegram:@me', 'Telegram'],
+    ['discord', 'DISCORD:@me', 'Discord'],
+    ['imessage', 'imessage:@me', 'iMessage'],
+    ['slack', 'slack:T0123', 'Slack'],
+  ])('leaves out the DM address %s', (platform, address, app) => {
+    render(<ToolCallDetailView toolCallProcess={proc(delivery({ address, platform, current: false }))} />);
+
+    const panel = screen.getByTestId('message-delivery-detail');
+    expect(within(panel).getByText(app)).toBeInTheDocument();
+    expect(within(panel).queryByText(address)).toBeNull();
+  });
+
+  it.each(['slack:T0123/C0456', 'slack:T0123/C0456/1712.3456', 'discord:1/2', 'telegram:-100123/7'])(
+    'keeps the chat address %s',
+    (address) => {
+      render(<ToolCallDetailView toolCallProcess={proc(delivery({ address, platform: address.split(':')[0] }))} />);
+
+      expect(within(screen.getByTestId('message-delivery-detail')).getByText(address)).toBeInTheDocument();
+    },
+  );
+
   it('gives each file its own outcome and reason', () => {
     const files = [
       { path: 'messaging_test/attachment_test.png', status: 'sent', reason: null },

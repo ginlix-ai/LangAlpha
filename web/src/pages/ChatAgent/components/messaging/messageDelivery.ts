@@ -73,6 +73,18 @@ export function platformOf(address: unknown): string | null {
   return prefix || null;
 }
 
+/** An address that is the user's DM in an app: the bare app name, `<app>:@me`,
+ *  or a Slack team id with no channel (`slack:T0123`). */
+export function isDmAddress(address: unknown): boolean {
+  if (typeof address !== 'string') return false;
+  const value = address.trim().toLowerCase();
+  const platform = platformOf(value);
+  if (!platform) return false;
+  if (value === platform) return true;
+  const rest = value.slice(platform.length + 1).trim();
+  return rest === '@me' || (platform === 'slack' && rest !== '' && !rest.includes('/'));
+}
+
 /** A platform's display name; an app this build does not list is capitalized. */
 export function messagingAppName(platform: string | null | undefined): string | null {
   const key = platform?.trim().toLowerCase();
