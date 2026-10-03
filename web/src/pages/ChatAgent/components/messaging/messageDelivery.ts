@@ -34,6 +34,8 @@ export interface MessageDelivery {
   /** The message as the agent wrote it (markdown). */
   text: string;
   files: DeliveryFile[];
+  /** The workspace the files were read from, when the call named one. */
+  workspaceId: string | null;
 }
 
 export const MESSAGE_DELIVERY_TYPE = 'message_delivery';
@@ -126,6 +128,7 @@ export function readMessageDelivery(
     outcome: str(artifact.message) ?? '',
     text: typeof args?.text === 'string' ? args.text : '',
     files,
+    workspaceId: str(args?.workspace_id),
   };
 }
 

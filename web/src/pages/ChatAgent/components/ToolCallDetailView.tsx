@@ -370,7 +370,7 @@ function ArtifactOrMarkdown({ artifact, content, toolName, toolCallProcess, onOp
       case 'message_delivery': {
         // The outcome rides the artifact; the message itself is the call's text.
         const delivery = readMessageDelivery(artifact, toolCallProcess.toolCall?.args);
-        if (delivery) return <MessageDeliveryDetail delivery={delivery} />;
+        if (delivery) return <MessageDeliveryDetail delivery={delivery} onOpenFile={onOpenFile} />;
         break;
       }
     }

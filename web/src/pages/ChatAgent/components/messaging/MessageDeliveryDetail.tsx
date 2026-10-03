@@ -2,18 +2,21 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { FileText } from 'lucide-react';
 import Markdown from '../Markdown';
-import { FaviconImg, googleFaviconUrl } from '../charts/InlineArtifactCards';
 import { DeliveryFileStatusLabel, DeliveryStatusPill } from './deliveryStatusUi';
-import { messagingAppDomain, messagingAppName, type MessageDelivery } from './messageDelivery';
+import { messagingAppName, type MessageDelivery } from './messageDelivery';
 
 const LABEL_CLASS = 'text-xs font-medium uppercase tracking-wider mb-2 px-1';
 const QUIET = { color: 'var(--color-text-tertiary)' };
 
 /**
  * A sent message in the tool detail panel: where it went, whether it arrived,
- * the message in full, and what happened to each file.
+ * the message in full, and what happened to each file. The app's favicon is
+ * on the panel's tab just above, so the heading is the name alone.
  */
-export function MessageDeliveryDetail({ delivery }: { delivery: MessageDelivery }): React.ReactElement {
+export function MessageDeliveryDetail({ delivery, onOpenFile }: {
+  delivery: MessageDelivery;
+  onOpenFile?: (filePath: string, workspaceId?: string) => void;
+}): React.ReactElement {
   const { t } = useTranslation();
   const app = messagingAppName(delivery.platform);
   const label = app ?? t('toolArtifact.messageDelivery.message');
@@ -24,7 +27,6 @@ export function MessageDeliveryDetail({ delivery }: { delivery: MessageDelivery 
     <div className="space-y-5 min-w-0" data-testid="message-delivery-detail">
       <div className="space-y-1 min-w-0 px-1">
         <div className="flex items-center gap-2 min-w-0">
-          <FaviconImg src={googleFaviconUrl(messagingAppDomain(delivery.platform) ?? '')} domain={label} size={16} />
           <span className="text-sm font-medium truncate" style={{ color: 'var(--color-text-primary)' }}>
             {label}
           </span>
@@ -67,9 +69,20 @@ export function MessageDeliveryDetail({ delivery }: { delivery: MessageDelivery 
               <li key={`${file.path}-${i}`} className="flex items-start gap-2 min-w-0" data-testid="message-delivery-detail-file">
                 <FileText className="h-3.5 w-3.5 shrink-0 mt-0.5" style={QUIET} aria-hidden />
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs font-mono" style={{ color: 'var(--color-text-primary)', overflowWrap: 'anywhere' }}>
-                    {file.path}
-                  </div>
+                  {onOpenFile ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenFile(file.path, delivery.workspaceId ?? undefined)}
+                      className="text-left text-xs font-mono hover:underline cursor-pointer"
+                      style={{ color: 'var(--color-text-primary)', overflowWrap: 'anywhere' }}
+                    >
+                      {file.path}
+                    </button>
+                  ) : (
+                    <div className="text-xs font-mono" style={{ color: 'var(--color-text-primary)', overflowWrap: 'anywhere' }}>
+                      {file.path}
+                    </div>
+                  )}
                   {file.reason && (
                     <div className="text-xs mt-0.5" style={{ ...QUIET, overflowWrap: 'anywhere' }}>{file.reason}</div>
                   )}

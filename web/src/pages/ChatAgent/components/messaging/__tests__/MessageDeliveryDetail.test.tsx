@@ -8,7 +8,7 @@
  */
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import '@testing-library/jest-dom';
 
 vi.mock('../../Markdown', () => ({
@@ -61,11 +61,29 @@ describe('the send_message detail panel', () => {
     expect(screen.queryByText(/status: sent/)).toBeNull();
   });
 
-  it("heads the panel with the app's favicon", () => {
+  it("leaves the app's favicon to the tab above", () => {
     render(<ToolCallDetailView toolCallProcess={proc(delivery())} />);
 
-    const panel = screen.getByTestId('message-delivery-detail');
-    expect(panel.querySelector('img')?.getAttribute('src')).toContain('domain=telegram.org');
+    expect(screen.getByTestId('message-delivery-detail').querySelector('img')).toBeNull();
+  });
+
+  it('opens a file in the file panel when it is clicked', () => {
+    const onOpenFile = vi.fn();
+    const files = [{ path: 'messaging_test/attachment_test.png', status: 'sent', reason: null }];
+    render(<ToolCallDetailView toolCallProcess={proc(delivery({ files }))} onOpenFile={onOpenFile} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'messaging_test/attachment_test.png' }));
+    expect(onOpenFile).toHaveBeenCalledWith('messaging_test/attachment_test.png', undefined);
+  });
+
+  it("opens a file from the workspace the call read it from", () => {
+    const onOpenFile = vi.fn();
+    const args = { text: TEXT, files: ['out/a.png'], workspace_id: 'ws-flash-1' };
+    const files = [{ path: 'out/a.png', status: 'sent', reason: null }];
+    render(<ToolCallDetailView toolCallProcess={proc(delivery({ files }), args)} onOpenFile={onOpenFile} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'out/a.png' }));
+    expect(onOpenFile).toHaveBeenCalledWith('out/a.png', 'ws-flash-1');
   });
 
   it('leaves out an address that only repeats the app', () => {
