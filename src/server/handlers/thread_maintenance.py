@@ -43,7 +43,7 @@ async def _resolve_graph_and_state(
     folder in place until the caller's block ends.
 
     Returns:
-        (graph, lg_config, state, messages, backend)
+        (graph, lg_config, state, messages, workspace_id, backend)
     """
     from src.server.database import conversation as qr_db
     from src.server.database.workspace import get_workspace
@@ -137,7 +137,7 @@ async def _resolve_graph_and_state(
         layout = SandboxLayout(session.sandbox.working_dir).for_workspace(dir_name)
         backend = SandboxBackend(session.sandbox, layout.workspace)
 
-    return graph, lg_config, state, messages, backend
+    return graph, lg_config, state, messages, workspace_id, backend
 
 
 async def _update_graph_state(
@@ -251,7 +251,9 @@ async def trigger_compaction(
                     )
                     agent_cfg = setup.agent_config
 
-            graph, lg_config, state, messages, backend = await _resolve_graph_and_state(
+            (
+                graph, lg_config, state, messages, workspace_id, backend
+            ) = await _resolve_graph_and_state(
                 thread_id, "compact", config=agent_cfg,
                 checkpointer=mutation.saver, user_id=user_id, held=held,
             )
@@ -284,6 +286,7 @@ async def trigger_compaction(
                     compaction_config=compaction_cfg,
                     llm_client=compaction_client,
                     thread_id=thread_id,
+                    workspace_id=workspace_id,
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
@@ -371,7 +374,9 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
             _hold_thread_mutation(thread_id, "offload") as mutation,
             AsyncExitStack() as held,
         ):
-            graph, lg_config, state, messages, backend = await _resolve_graph_and_state(
+            (
+                graph, lg_config, state, messages, workspace_id, backend
+            ) = await _resolve_graph_and_state(
                 thread_id, "offload", checkpointer=mutation.saver, user_id=user_id, held=held
             )
 
@@ -395,6 +400,7 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
                     compaction_config=compaction_cfg,
                     thread_id=thread_id,
                     previous_event=previous_event,
+                    workspace_id=workspace_id,
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))

@@ -47,11 +47,13 @@ from ptc_agent.agent.middleware.compaction.types import (
     TruncateArgsSettings,
     TokenCounter,
     _DEFAULT_MESSAGES_TO_KEEP,
+    _DEFAULT_FALLBACK_MESSAGE_COUNT,
     _DEFAULT_TRIM_TOKEN_LIMIT,
 )
 from ptc_agent.agent.middleware.compaction.summary_request import (
     DEFAULT_SUMMARY_PROMPT,
     build_summary_request,
+    trim_for_summary,
 )
 from ptc_agent.agent.middleware.compaction.utils import (
     build_summary_event,
@@ -64,7 +66,6 @@ from ptc_agent.agent.middleware.compaction.utils import (
 from ptc_agent.agent.middleware.compaction.model import (
     max_input_tokens,
     summary_trim_budget,
-    trim_for_summary,
 )
 from ptc_agent.agent.middleware.compaction.offloading import (
     aoffload_base64_content,
@@ -119,6 +120,7 @@ class CompactionMiddleware(AgentMiddleware):
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
         backend: Any | None = None,
         truncate_args_settings: TruncateArgsSettings | None = None,
+        workspace_id: str | None = None,
         **deprecated_kwargs: Any,
     ) -> None:
         """
@@ -134,6 +136,8 @@ class CompactionMiddleware(AgentMiddleware):
             backend: Backend for offloading conversation history (SandboxBackend for PTC,
                 None for flash). When None, no filesystem ops are attempted.
             truncate_args_settings: Settings for Tier 1. When None, Tier 1 is off.
+            workspace_id: The workspace the turn runs in, whose folder must
+                reach the transcript before anything points at it.
         """
         # Handle deprecated parameters
         if "max_tokens_before_summary" in deprecated_kwargs:
@@ -189,6 +193,7 @@ class CompactionMiddleware(AgentMiddleware):
 
         # Backend for offloading conversation history to sandbox (immutable config)
         self._backend = backend
+        self._workspace_id = workspace_id
 
         tier1 = truncate_args_settings or {}
         idle_minutes = tier1.get("idle_minutes", 90)
@@ -323,19 +328,17 @@ class CompactionMiddleware(AgentMiddleware):
         cached_input_tokens = 0
         cached_output_tokens = 0
 
-        # Summarize (emits SSE start/complete/error signals) while the
-        # transcript catches up with this turn; the summary points at it only
-        # if that save lands.
-        target = self._transcript_target()
+        # Bring the transcript up to date first: the summary cites its turn
+        # files and ends pointing at it only if that save lands and the
+        # workspace can read it, and a save takes milliseconds beside the
+        # summary call. Summarizing emits SSE start/complete/error signals.
+        transcript = await self._export_transcript(request.messages)
         summarized = self._trim_messages_for_summary(messages_to_summarize)
-        summary, transcript = await asyncio.gather(
-            self._acreate_summary(
-                messages_to_summarize,
-                original_count=len(truncated_messages),
-                trimmed=summarized,
-                turns=TranscriptTurns.of(target, request.messages) if target else None,
-            ),
-            aexport_transcript(self._backend, target, request.messages),
+        summary = await self._acreate_summary(
+            messages_to_summarize,
+            original_count=len(truncated_messages),
+            trimmed=summarized,
+            turns=TranscriptTurns.of(transcript, request.messages) if transcript else None,
         )
         if summary is None:
             # A failed summary must not stand in for the history it was to
@@ -604,10 +607,10 @@ class CompactionMiddleware(AgentMiddleware):
         expired, so hiding part of the prefix costs no cache hit, while doing
         it mid-turn would throw a warm one away. A resume after an interrupt
         does not pass through here, since the graph picks up where it stopped.
-        An argument is hidden only once the transcript holding it is saved,
-        which is then its one copy the agent can read."""
+        An argument is hidden only once the transcript holding it is saved
+        where the workspace can read it, since that is then its one copy."""
         args, reads = self._idle_offloads(state)
-        if args and not await self._save_transcript(state["messages"]):
+        if args and await self._export_transcript(state["messages"]) is None:
             args = set()
         return self._record_offloads(state, args, reads)
 
@@ -656,11 +659,15 @@ class CompactionMiddleware(AgentMiddleware):
             str(configurable.get("checkpoint_ns") or ""),
         )
 
-    async def _save_transcript(self, messages: list[AnyMessage]) -> bool:
-        target = self._transcript_target()
-        return (
-            target is not None
-            and await aexport_transcript(self._backend, target, messages) is not None
+    async def _export_transcript(
+        self, messages: list[AnyMessage]
+    ) -> TranscriptTarget | None:
+        """The transcript, saved from ``messages``, that may be pointed at."""
+        return await aexport_transcript(
+            self._backend,
+            self._transcript_target(),
+            messages,
+            workspace_id=self._workspace_id,
         )
 
     def _apply_recorded_offloads(
@@ -1024,9 +1031,14 @@ class CompactionMiddleware(AgentMiddleware):
         """Trim messages to fit within summary generation limits."""
         if self.trim_tokens_to_summarize is None:
             return messages
-        return trim_for_summary(
-            messages, self.trim_tokens_to_summarize, self.token_counter
-        )
+
+        try:
+            return trim_for_summary(
+                messages, self.trim_tokens_to_summarize, self.token_counter
+            )
+        except Exception as e:
+            logger.warning(f"[Compaction] trim_messages failed: {e}, using fallback")
+            return messages[-_DEFAULT_FALLBACK_MESSAGE_COUNT:]
 
     # =========================================================================
     # Factory
@@ -1037,6 +1049,7 @@ class CompactionMiddleware(AgentMiddleware):
         cls,
         config: dict | None = None,
         backend: Any | None = None,
+        workspace_id: str | None = None,
     ) -> "CompactionMiddleware | None":
         """Create a configured instance from agent_config.yaml settings.
 
@@ -1044,6 +1057,7 @@ class CompactionMiddleware(AgentMiddleware):
             config: Optional config override (defaults to CompactionConfig defaults).
             backend: Backend for offloading conversation history (SandboxBackend
                 for PTC, None for flash). When None, no filesystem ops are attempted.
+            workspace_id: The workspace the turn runs in.
 
         Returns:
             Configured CompactionMiddleware or None if disabled.
@@ -1087,4 +1101,5 @@ class CompactionMiddleware(AgentMiddleware):
             summary_prompt=DEFAULT_SUMMARY_PROMPT,
             backend=backend,
             truncate_args_settings=truncate_args_settings,
+            workspace_id=workspace_id,
         )

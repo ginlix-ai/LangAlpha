@@ -32,7 +32,7 @@ Usage:
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Annotated, Any
 
 import structlog
@@ -647,9 +647,13 @@ class SkillsMiddleware(AgentMiddleware):
         if skill and not _matches_mode(skill, self._mode):
             skill = None
 
-        # Block hidden skills from being loaded via LoadSkill
-        # (they can only be activated via additionalContext)
-        if skill and skill.exposure == "hidden":
+        # Block hidden skills from being loaded via LoadSkill (they can only
+        # be activated via additionalContext). One this thread already
+        # activated may be loaded again: a compaction summary tells the agent
+        # to reload a skill whose instructions it summarized away.
+        state = request.state if isinstance(request.state, Mapping) else {}
+        activated = state.get(LOADED_SKILLS_KEY) or ()
+        if skill and skill.exposure == "hidden" and skill_name not in activated:
             skill = None
 
         if not skill:

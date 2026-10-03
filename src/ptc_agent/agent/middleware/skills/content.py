@@ -8,6 +8,7 @@ appended to the user message when a skill is activated. Lives in ``ptc_agent``
 
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -338,16 +339,27 @@ def _is_tool_result(message: Any) -> bool:
 
 
 _BOUND_MARKER = re.compile(r'<loaded-skill name="([^"]+)" mid="([^"]+)">')
-_SKILL_MD = re.compile(r"(?:^|/)skills/([^/]+)/SKILL\.md$")
+_SKILL_CLOSE = "</loaded-skill>"
+# Bounded attributes: an unbounded one would scan to the end of the text for
+# each malformed opening tag.
+_SKILL_BLOCK = re.compile(
+    r'<loaded-skill name="([^"]{1,200})"[^>]{0,200}>.*?</loaded-skill>', re.S
+)
+# Where skills are installed (SandboxLayout.SKILLS_DIR); a project's own
+# skills/<x>/SKILL.md is not skill <x>.
+_SKILL_MD = re.compile(r"(?:^|/)\.agents/skills/([^/]+)/SKILL\.md$")
 
 
-def _skill_call(call: Any) -> tuple[str, str] | None:
-    """(skill, path read) for a call that brings a skill's body into context."""
+def _skill_call(call: Any, *, excerpts: bool) -> tuple[str, str] | None:
+    """(skill, path read) for a call that brings a skill's body into context,
+    or only part of it with ``excerpts``."""
     name = call.get("name") if isinstance(call, dict) else getattr(call, "name", None)
     args = (
         call.get("args") if isinstance(call, dict) else getattr(call, "args", None)
     ) or {}
     if name == "Read":
+        if not excerpts and not _whole_read(args):
+            return None
         path = str(args.get("file_path") or "")
         match = _SKILL_MD.search(path)
         return (match.group(1), path) if match else None
@@ -356,7 +368,16 @@ def _skill_call(call: Any) -> tuple[str, str] | None:
     return None
 
 
-def skills_with_bodies(messages: Any) -> list[str]:
+def _whole_read(args: Mapping[str, Any]) -> bool:
+    """A read from the top at least as long as Read's default, which every
+    SKILL.md fits in; models often pass that default explicitly."""
+    from ptc_agent.agent.backends.read_window import DEFAULT_READ_LINES
+
+    offset, limit = args.get("offset"), args.get("limit")
+    return not offset and (not limit or (isinstance(limit, int) and limit >= DEFAULT_READ_LINES))
+
+
+def skills_with_bodies(messages: Any, *, excerpts: bool = False) -> list[str]:
     """Skills whose SKILL.md body these messages carry, first seen first.
 
     Three carriers, one per way a body arrives: a ``<loaded-skill>`` block
@@ -365,6 +386,10 @@ def skills_with_bodies(messages: Any) -> list[str]:
     failed, or that Tier 1 replaced with a marker, carries nothing. Both the
     injection dedup and the compaction hand-back read this one rule, so a body
     the agent re-read after a summary is never pasted in again.
+
+    A Read counts only when it covers the whole file, unless ``excerpts``: an
+    excerpt still in view must not stand in for the procedure, while a skill
+    read in pages and then summarized away was still being followed.
     """
     from ptc_agent.agent.middleware.compaction.utils import read_offload_marker
 
@@ -383,7 +408,7 @@ def skills_with_bodies(messages: Any) -> list[str]:
                 found.setdefault(call[0])
             continue
         for tool_call in _field(message, "tool_calls") or ():
-            skill = _skill_call(tool_call)
+            skill = _skill_call(tool_call, excerpts=excerpts)
             call_id = tool_call.get("id") if isinstance(tool_call, dict) else None
             if skill is not None and call_id:
                 calls[call_id] = skill
@@ -433,10 +458,36 @@ def compute_already_loaded(
     return loaded_set & set(skills_with_bodies(effective))
 
 
+def skill_blocks_as_names(text: str) -> str:
+    """``text`` with each ``<loaded-skill>`` body cut down to the skill's
+    name, for a one-line preview of the message the body was appended to.
+
+    Only the text up to the last closing tag is searched: an opening tag with
+    no close after it would send the lazy match to the end of the text once
+    per tag, and a message full of them would stall the worker.
+    """
+    end = text.rfind(_SKILL_CLOSE)
+    if end < 0:
+        return text
+    end += len(_SKILL_CLOSE)
+    names = _SKILL_BLOCK.sub(lambda m: f"[skill: {m.group(1)}]", text[:end])
+    return names + text[end:]
+
+
 def compacted_skills(summarized: Any, kept: Any) -> list[str]:
-    """Skills whose body a summary replaces and no kept message still carries."""
+    """Skills whose body a summary replaces and no kept message still carries.
+
+    An earlier summary in ``summarized`` carries no body, only the names its
+    note listed, and those skills are still out of context unless a kept
+    message has read one again; dropping them would lose them for good.
+    """
+    from ptc_agent.agent.middleware.compaction.utils import listed_skills
+
     still = set(skills_with_bodies(kept))
-    return [name for name in skills_with_bodies(summarized) if name not in still]
+    names = dict.fromkeys(
+        [*listed_skills(summarized), *skills_with_bodies(summarized, excerpts=True)]
+    )
+    return [name for name in names if name not in still]
 
 
 def skill_reload_note(names: list[str], *, files: bool) -> str:

@@ -18,16 +18,17 @@ from ptc_agent.agent.middleware.compaction.types import CompactionEvent
 from ptc_agent.agent.middleware.compaction.summary_request import (
     DEFAULT_SUMMARY_PROMPT,
     build_summary_request,
+    trim_for_summary,
 )
 from ptc_agent.agent.middleware.compaction.utils import (
     build_summary_event,
+    count_tokens_tiktoken,
     find_group_safe_cutoff,
     get_effective_messages,
     partition_at_cutoff,
 )
 from ptc_agent.agent.middleware.compaction.model import (
     summary_trim_budget,
-    trim_for_summary,
 )
 from src.llms import maybe_disable_streaming
 from ptc_agent.agent.middleware.compaction.offloading import (
@@ -52,6 +53,7 @@ async def compact_messages(
     compaction_config: CompactionConfig | None = None,
     llm_client: BaseChatModel | None = None,
     thread_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
     """Summarize all but the last ``keep_messages`` effective messages.
 
@@ -70,6 +72,8 @@ async def compact_messages(
         llm_client: Pre-built OAuth/BYOK client. When None, built from model_name.
         thread_id: The thread being compacted. This runs outside the graph, so
             without it the transcript pointer has no thread.
+        workspace_id: The thread's workspace, whose folder must reach the
+            transcript before the summary points at it.
 
     Returns:
         Dict with:
@@ -107,8 +111,13 @@ async def compact_messages(
 
     messages_to_summarize, preserved = partition_at_cutoff(effective, cutoff_index)
 
-    # ---- Tier 2: Summarize, pointing at the transcript once its save lands ----
-    transcript = transcript_target(backend, thread_id)
+    # ---- Tier 2: Summarize, citing the transcript only once it is readable ----
+    transcript = await aexport_transcript(
+        backend,
+        transcript_target(backend, thread_id),
+        messages,
+        workspace_id=workspace_id,
+    )
     to_summarize = messages_to_summarize
 
     if llm_client is not None:
@@ -119,12 +128,10 @@ async def compact_messages(
 
     token_threshold = config.get("token_threshold", 120000)
     messages_to_summarize = trim_for_summary(
-        messages_to_summarize, summary_trim_budget(compaction_model, token_threshold)
+        messages_to_summarize,
+        summary_trim_budget(compaction_model, token_threshold),
+        count_tokens_tiktoken,
     )
-    if not messages_to_summarize:
-        raise RuntimeError(
-            "Nothing since the last summary fits the compaction model's budget"
-        )
 
     # Strip base64 blobs before sending to LLM
     request_messages = await aoffload_base64_content(
@@ -141,18 +148,15 @@ async def compact_messages(
     # except below re-raises -> HTTP 500. The timeout lives on the call, not on
     # a flat admission-side 409 clock.
     try:
-        response, transcript = await asyncio.gather(
-            asyncio.wait_for(
-                compaction_model.ainvoke(
-                    build_summary_request(
-                        DEFAULT_SUMMARY_PROMPT,
-                        request_messages,
-                        TranscriptTurns.of(transcript, messages) if transcript else None,
-                    )
-                ),
-                timeout=get_compaction_timeout(),
+        response = await asyncio.wait_for(
+            compaction_model.ainvoke(
+                build_summary_request(
+                    DEFAULT_SUMMARY_PROMPT,
+                    request_messages,
+                    TranscriptTurns.of(transcript, messages) if transcript else None,
+                )
             ),
-            aexport_transcript(backend, transcript, messages),
+            timeout=get_compaction_timeout(),
         )
     except Exception as e:
         logger.error(f"[Compaction] manual compact LLM call failed: {e}")
@@ -194,6 +198,7 @@ async def offload_tool_args(
     already_offloaded_reads: set[str] | None = None,
     thread_id: str | None = None,
     previous_event: CompactionEvent | None = None,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
     """Choose the large tool args and stale Read results to hide (Tier 1 only).
 
@@ -202,7 +207,8 @@ async def offload_tool_args(
     is the full checkpoint list, which the transcript is saved from; the
     cutoff is taken over the view after ``previous_event``, as the middleware
     takes it. An argument is hidden only once the transcript holding it is
-    saved, since that is then its only copy the agent can read.
+    saved and ``workspace_id``'s folder can read it, since that is then its
+    only copy the agent can read.
 
     Returns:
         Dict with "offloaded_arg_ids" and "offloaded_read_ids" (new ids
@@ -244,11 +250,18 @@ async def offload_tool_args(
         transcript = transcript_target(backend, thread_id)
         if transcript is None:
             arg_ids = set()
-        elif await aexport_transcript(backend, transcript, messages) is None:
+        elif (
+            await aexport_transcript(
+                backend, transcript, messages, workspace_id=workspace_id
+            )
+            is None
+        ):
             if not read_ids:
                 # A failure to retry, not "nothing to offload": the caller
                 # turns this into a 500 and records nothing.
-                raise RuntimeError("Could not save the transcript the arguments are kept in")
+                raise RuntimeError(
+                    "Could not save the transcript the arguments are kept in"
+                )
             arg_ids = set()
         if not arg_ids and not read_ids:
             raise ValueError("Nothing to offload at the current threshold")

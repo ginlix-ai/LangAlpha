@@ -253,9 +253,19 @@ def _args_checksum(args: Any) -> str:
 
 def message_turns(messages: Iterable[AnyMessage]) -> dict[str, int]:
     """The turn each message belongs to, by message id."""
-    return {
-        message.id: number
-        for number, run in enumerate(split_runs(messages), start=1)
-        for message in run
-        if message.id
-    }
+    return turn_map(messages)[0]
+
+
+def turn_map(messages: Iterable[AnyMessage]) -> tuple[dict[str, int], dict[int, str]]:
+    """The turn each message belongs to, by message id, and the text of the
+    user message that opened each turn, by turn number."""
+    turns: dict[str, int] = {}
+    requests: dict[int, str] = {}
+    for number, run in enumerate(split_runs(messages), start=1):
+        for message in run:
+            if message.id:
+                turns[message.id] = number
+        opener = next((m for m in run if is_run_boundary_message(m)), None)
+        if opener is not None:
+            requests[number] = _text(opener.content)
+    return turns, requests

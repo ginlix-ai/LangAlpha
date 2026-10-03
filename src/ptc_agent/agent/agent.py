@@ -679,7 +679,11 @@ class PTCAgent:
         client = resolve_compaction_client(self.config)
         if client is not None:
             compaction_config["_llm_client"] = client
-        compaction = CompactionMiddleware.from_config(config=compaction_config, backend=backend)
+        compaction = CompactionMiddleware.from_config(
+            config=compaction_config,
+            backend=backend,
+            workspace_id=workspace_id_for_memory,
+        )
 
         model_resilience = [build_model_resilience_middleware(self.config, turn)]
 

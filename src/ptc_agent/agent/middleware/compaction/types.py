@@ -98,6 +98,7 @@ TokenCounter = Callable[[Iterable[MessageLikeRepresentation]], int]
 
 _DEFAULT_MESSAGES_TO_KEEP = 20
 _DEFAULT_TRIM_TOKEN_LIMIT = 4000
+_DEFAULT_FALLBACK_MESSAGE_COUNT = 15
 
 ContextFraction = tuple[Literal["fraction"], float]
 ContextTokens = tuple[Literal["tokens"], int]

@@ -21,8 +21,10 @@ from langchain_core.messages.utils import convert_to_messages
 
 from ptc_agent.agent.middleware._message_utils import message_id
 from ptc_agent.agent.transcript import TranscriptTarget
+from ptc_agent.agent.transcript.classify import is_summary_message
 from ptc_agent.agent.transcript.pointer import (
     SummarySpan,
+    TranscriptTurns,
     summary_span,
     transcript_note,
 )
@@ -750,18 +752,9 @@ _LEGACY_FILE_NOTE = "\n\nFull conversation history saved to `"
 _SUMMARY_SOURCE = "summarization"
 
 
-def is_summary_message(message: Any) -> bool:
-    """Whether ``message`` is a summary ``build_summary_message`` wrote."""
-    if not isinstance(message, HumanMessage):
-        return False
-    if (message.additional_kwargs or {}).get("lc_source") == _SUMMARY_SOURCE:
-        return True
-    content = message.content
-    return isinstance(content, str) and content.startswith(CONTEXT_SUMMARY_PREFIX)
-
-
-def _after_summary(messages: Sequence[AnyMessage]) -> Sequence[AnyMessage]:
-    return messages[1:] if messages and is_summary_message(messages[0]) else messages
+#: What a summary message stands in for, read back when the next compaction
+#: summarizes it: the span of turns, and the skills its note listed.
+SUMMARIZED_KEY = "summarized"
 
 
 def build_summary_message(
@@ -770,19 +763,24 @@ def build_summary_message(
     original_message_count: int = 0,
     *,
     span: SummarySpan | None = None,
-    skills_note: str = "",
+    index: Sequence[str] = (),
+    skills: Sequence[str] = (),
+    skill_files: bool = False,
 ) -> HumanMessage:
     """Build the summary HumanMessage, pointing at the transcript when there is one.
 
     Tags with lc_source='summarization' for chain filtering, and stamps the
     emit-time ``context_window`` summarize fields into ``additional_kwargs``
     so checkpoint-sourced replay re-emits the event without the stored SSE
-    stream.
+    stream. ``skills`` are listed for the agent to reload (see
+    ``skill_reload_note``).
     """
+    from ptc_agent.agent.middleware.skills.content import skill_reload_note
+
     content = f"{CONTEXT_SUMMARY_PREFIX}{summary}"
     if transcript is not None:
-        content += transcript_note(transcript, span)
-    content += skills_note
+        content += transcript_note(transcript, span, index)
+    content += skill_reload_note(list(skills), files=skill_files)
 
     return HumanMessage(
         content=content,
@@ -793,8 +791,43 @@ def build_summary_message(
                 "summary_length": len(summary),
                 "original_message_count": original_message_count,
             },
+            SUMMARIZED_KEY: {
+                "span": [span.first, span.last] if span is not None else None,
+                "gap": list(span.gap) if span is not None and span.gap is not None else None,
+                "skills": list(skills),
+            },
         },
     )
+
+
+def _summarized(message: Any) -> Mapping[str, Any]:
+    stamp = (getattr(message, "additional_kwargs", None) or {}).get(SUMMARIZED_KEY)
+    return stamp if isinstance(stamp, dict) else {}
+
+
+def summarized_span(message: Any) -> SummarySpan | None:
+    """The turns an earlier summary stood in for, and those it left out,
+    when it recorded them."""
+    stamp = _summarized(message)
+    span, gap = stamp.get("span"), stamp.get("gap")
+    if not _turn_pair(span):
+        return None
+    return SummarySpan(span[0], span[1], (gap[0], gap[1]) if _turn_pair(gap) else None)
+
+
+def _turn_pair(value: Any) -> bool:
+    return isinstance(value, list) and len(value) == 2 and all(isinstance(n, int) for n in value)
+
+
+def listed_skills(messages: Iterable[Any]) -> list[str]:
+    """The skills earlier summaries among ``messages`` listed for reloading."""
+    return [
+        name
+        for message in messages
+        if is_summary_message(message)
+        for name in _summarized(message).get("skills") or ()
+        if isinstance(name, str)
+    ]
 
 
 def build_summary_event(
@@ -818,25 +851,28 @@ def build_summary_event(
     agent mid-procedure needs every one to reload. ``skill_files`` says how
     the agent reloads one (see ``skill_reload_note``).
     """
-    from ptc_agent.agent.middleware.skills.content import (
-        compacted_skills,
-        skill_reload_note,
-    )
+    from ptc_agent.agent.middleware.skills.content import compacted_skills
 
+    # A summary of an earlier summary alone stands in for the same turns.
+    earlier = summarized_span(to_summarize[0]) if to_summarize else None
+    span = (
+        summary_span(raw_messages, to_summarize, summarized, earlier) or earlier
+        if transcript is not None
+        else None
+    )
+    index = (
+        TranscriptTurns.of(transcript, raw_messages).index(span.last)
+        if transcript is not None and span is not None
+        else ()
+    )
     summary_message = build_summary_message(
         summary,
         transcript,
         original_message_count,
-        span=(
-            summary_span(
-                raw_messages, _after_summary(to_summarize), _after_summary(summarized)
-            )
-            if transcript is not None
-            else None
-        ),
-        skills_note=skill_reload_note(
-            compacted_skills(to_summarize, preserved_messages), files=skill_files
-        ),
+        span=span,
+        index=index,
+        skills=compacted_skills(to_summarize, preserved_messages),
+        skill_files=skill_files,
     )
     return build_compaction_event(
         raw_messages=raw_messages,
