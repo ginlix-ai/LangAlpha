@@ -637,7 +637,11 @@ class CompactionMiddleware(AgentMiddleware):
         raw_messages: list[AnyMessage],
     ) -> list[AnyMessage]:
         turns = None
-        if arg_ids and self._backend is not None:
+        if self._backend is not None and self._backend.livefs is None:
+            # No mount serves the transcript a marker would name, so the
+            # arguments stay whole until one does.
+            arg_ids = set()
+        elif arg_ids and self._backend is not None:
             try:
                 configurable = get_config().get("configurable", {})
             except RuntimeError:

@@ -117,9 +117,10 @@ def apply_recorded_offloads(
     arg id never blanks a result and a read id only replaces a Read result.
 
     A cut argument points at its call in the transcript file of its turn
-    (``turns``), whether or not a mount serves that file right now: the text
-    has to be the same on every call. Without ``turns`` it reads
-    ``truncation_text``, as ids recorded where no transcript was kept did.
+    (``turns``), which the caller passes only while a mount serves that file;
+    where none does it does not cut arguments at all. Without ``turns`` it
+    reads ``truncation_text``, as ids recorded where no transcript was kept
+    did.
     """
     if not arg_ids and not read_ids:
         return messages
