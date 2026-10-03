@@ -130,6 +130,7 @@ class TestTheToolsExistOnlyWithAGateway:
             "files",
             "target",
             "reply",
+            "new_thread",
         }
         assert set(flash.model_json_schema()["properties"]) == {
             "text",
@@ -137,6 +138,7 @@ class TestTheToolsExistOnlyWithAGateway:
             "workspace_id",
             "target",
             "reply",
+            "new_thread",
         }
 
     @pytest.mark.usefixtures("configured")
@@ -265,6 +267,7 @@ class TestTheSendRequest:
             "text": "Here is the model.",
             "files": [{"path": "results/model.xlsx", "workspace_id": None}],
             "reply": True,
+            "new_thread": False,
         }
 
     @pytest.mark.asyncio
@@ -275,6 +278,19 @@ class TestTheSendRequest:
         assert body["target"] is None
         assert body["files"] == []
         assert body["reply"] is False
+        assert body["new_thread"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("has_workspace_files", [True, False])
+    async def test_a_new_thread_is_asked_for_by_name(
+        self, gateway, has_workspace_files
+    ):
+        await _call(
+            _tool("send_message", has_workspace_files=has_workspace_files),
+            {"text": "hi", "target": "slack:T1/C2", "new_thread": True},
+        )
+
+        assert json.loads(gateway.requests[0].content)["new_thread"] is True
 
     @pytest.mark.asyncio
     async def test_a_turn_in_no_conversation_sends_a_null_surface(self, gateway):
@@ -697,7 +713,7 @@ class TestTheDeliveryArtifact:
     ):
         tool = _tool("send_message", has_workspace_files=has_workspace_files)
 
-        expected = {"text", "files", "target", "reply"}
+        expected = {"text", "files", "target", "reply", "new_thread"}
         if not has_workspace_files:
             expected.add("workspace_id")
         assert set(tool.args) == expected
@@ -819,3 +835,83 @@ class TestTheTargetsResult:
             "This turn is not in a messaging conversation, so every send needs a target.",
             "Targets: none.",
         ]
+
+
+NOW = 1_800_000_000
+
+
+class TestTheThreadNote:
+    @pytest.fixture(autouse=True)
+    def _clock(self, monkeypatch):
+        monkeypatch.setattr(messaging, "_now", lambda: float(NOW))
+
+    async def _listing(self, gateway, targets):
+        gateway.reply = httpx.Response(200, json={"current": None, "targets": targets})
+        return (await _call(_tool("list_message_targets"), {})).splitlines()[2:]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("ago", "phrase"),
+        [
+            (0, "just now"),
+            (59, "just now"),
+            (60, "1m ago"),
+            (3599, "59m ago"),
+            (3600, "1h ago"),
+            (3 * 3600 + 5, "3h ago"),
+            (48 * 3600 - 1, "47h ago"),
+            (48 * 3600, "2d ago"),
+            (10 * 86400 + 99, "10d ago"),
+            (-500, "just now"),
+        ],
+    )
+    async def test_each_age_bucket(self, gateway, ago, phrase):
+        lines = await self._listing(
+            gateway,
+            [
+                {
+                    "address": "slack:T1/C2",
+                    "kind": "channel",
+                    "name": "#research",
+                    "thread": {"last_used_at": NOW - ago},
+                }
+            ],
+        )
+
+        assert lines == [
+            "- slack:T1/C2 (channel): #research; this conversation's thread is here, "
+            f"last used {phrase}"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_target_without_a_thread_is_unchanged(self, gateway):
+        lines = await self._listing(
+            gateway,
+            [
+                {"address": "slack:T1", "kind": "dm", "name": "DM", "thread": None},
+                {"address": "slack:T1/C9", "kind": "channel", "name": "#a"},
+            ],
+        )
+
+        assert lines == ["- slack:T1 (dm): DM", "- slack:T1/C9 (channel): #a"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "thread",
+        [
+            "junk",
+            [],
+            {},
+            {"last_used_at": None},
+            {"last_used_at": "yesterday"},
+            {"last_used_at": True},
+            {"last_used_at": 1.5},
+        ],
+    )
+    async def test_a_malformed_thread_leaves_the_line_alone(self, gateway, thread):
+        lines = await self._listing(
+            gateway,
+            [{"address": "slack:T1", "kind": "dm", "name": "DM", "thread": thread}],
+        )
+
+        assert lines == ["- slack:T1 (dm): DM"]

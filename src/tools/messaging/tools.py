@@ -13,6 +13,7 @@ model has to know whether anything went out before it tells the user so.
 
 import logging
 import os
+import time
 from typing import Annotated, Any
 
 import httpx
@@ -154,6 +155,25 @@ def format_send_result(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _now() -> float:
+    """The clock the listing's ages are read against; tests replace it."""
+    return time.time()
+
+
+def _age(epoch: Any) -> str | None:
+    """How long ago an epoch-seconds time was, or None when it is not one."""
+    if isinstance(epoch, bool) or not isinstance(epoch, int):
+        return None
+    seconds = max(0, int(_now()) - epoch)
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 48 * 3600:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86400}d ago"
+
+
 def format_targets_result(data: dict[str, Any]) -> str:
     """The gateway's list of reachable addresses, as the model reads it."""
     if _listing_failed(data):
@@ -177,7 +197,12 @@ def format_targets_result(data: dict[str, Any]) -> str:
         for target in targets:
             kind = f" ({target['kind']})" if target.get("kind") else ""
             name = f": {target['name']}" if target.get("name") else ""
-            lines.append(f"- {target.get('address')}{kind}{name}")
+            thread = target.get("thread")
+            age = _age(thread.get("last_used_at")) if isinstance(thread, dict) else None
+            note = (
+                f"; this conversation's thread is here, last used {age}" if age else ""
+            )
+            lines.append(f"- {target.get('address')}{kind}{name}{note}")
     else:
         lines.append("Targets: none.")
     unavailable = [u for u in data.get("unavailable") or [] if isinstance(u, dict)]
@@ -304,6 +329,7 @@ async def _send(
     files: list[str] | None,
     target: str | None,
     reply: bool,
+    new_thread: bool,
     files_workspace_id: str | None,
     config: RunnableConfig | None,
     tool_call_id: str,
@@ -354,6 +380,7 @@ async def _send(
         "text": text,
         "files": [{"path": p, "workspace_id": files_workspace_id} for p in paths],
         "reply": bool(reply),
+        "new_thread": bool(new_thread),
     }
     try:
         data = await _call(
@@ -385,13 +412,21 @@ _TARGET_ARG = Annotated[
     str | None,
     "An address from list_message_targets. Omit it to send into the conversation this "
     "turn is in, which exists only when the turn arrived from a messaging app. Address "
-    "a channel or chat, never a thread: related messages are grouped into threads for "
-    "you, and the result says where each one landed.",
+    "a channel or chat, never a thread: this conversation's messages to a chat go in "
+    "its thread there (made on the first send, or the one the user started), and the "
+    "result says where each one landed.",
 ]
 _REPLY_ARG = Annotated[
     bool,
     "True to reply to the user's message that started this turn, where the app "
     "supports it. Applies only to the conversation this turn is in.",
+]
+_NEW_THREAD_ARG = Annotated[
+    bool,
+    "True to start a new thread in that chat (a new topic on Telegram) instead of "
+    "continuing this conversation's thread there; it then becomes this conversation's "
+    "thread. Use it for an unrelated update, or when list_message_targets shows the "
+    "thread was last used long ago. Has no effect where the chat has no threads.",
 ]
 
 
@@ -404,6 +439,7 @@ async def _send_from_workspace(
     ] = None,
     target: _TARGET_ARG = None,
     reply: _REPLY_ARG = False,
+    new_thread: _NEW_THREAD_ARG = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> tuple[str, dict[str, Any]]:
     return await _send(
@@ -411,6 +447,7 @@ async def _send_from_workspace(
         files=files,
         target=target,
         reply=reply,
+        new_thread=new_thread,
         files_workspace_id=None,
         config=config,
         tool_call_id=tool_call_id,
@@ -433,6 +470,7 @@ async def _send_without_workspace(
     ] = None,
     target: _TARGET_ARG = None,
     reply: _REPLY_ARG = False,
+    new_thread: _NEW_THREAD_ARG = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> tuple[str, dict[str, Any]]:
     return await _send(
@@ -440,6 +478,7 @@ async def _send_without_workspace(
         files=files,
         target=target,
         reply=reply,
+        new_thread=new_thread,
         files_workspace_id=workspace_id,
         config=config,
         tool_call_id=tool_call_id,

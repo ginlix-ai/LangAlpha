@@ -132,11 +132,13 @@ which each attempt records on its run row: a channel turn's retry sends the chan
 turn's sends none, whatever the thread is bound to.
 
 - `GET {base}/agent/targets?thread_id=&run_id=&turn_platform=` answers `current` (the
-  conversation this turn is in, or null), `targets` (`address`, `platform`, `kind`, `name`),
+  conversation this turn is in, or null), `targets` (`address`, `platform`, `kind`, `name`, and
+  `thread.last_used_at`, epoch seconds, when this conversation already has a thread in that chat),
   `unavailable` (`platform`, `reason`, `message`) and `settings_url`.
 - `POST {base}/agent/send` takes `thread_id`, `run_id`, `tool_call_id`, `turn_platform`,
   `workspace_id`, `target` (null for the conversation this turn is in), `text`, `files`
-  (`[{"path", "workspace_id"}]`, a null `workspace_id` meaning the request's) and `reply`. Every
+  (`[{"path", "workspace_id"}]`, a null `workspace_id` meaning the request's) and `reply` and `new_thread` (true
+  starts a fresh thread in the chat instead of continuing this conversation's; always sent). Every
   delivery outcome is a 200 carrying `status` (`sent`, `partial`, `failed`), `code`, `message`,
   `address`, `current`, `duplicate` and per-file `files` (`path`, `status`, `reason`). The same
   `tool_call_id` twice is the graph replaying a tool step after a resume, and must not send
