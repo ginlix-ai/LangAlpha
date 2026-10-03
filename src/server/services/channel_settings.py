@@ -203,6 +203,14 @@ def _workspace_ids(settings: dict[str, Any]) -> list[tuple[tuple[Any, ...], str]
     return out
 
 
+def _place(path: tuple[Any, ...], ws: str) -> tuple[Any, ...]:
+    """Where in the settings ``ws`` sits, and which workspace it is."""
+    canonical = normalize_uuid(ws) or ws
+    if path[-1] == "workspace_id":
+        return (*path, canonical)
+    return (*path[:-1], canonical)  # an automation_output key
+
+
 def _labelled(binding: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
     """``binding`` with its workspace's name beside its id, as this server
     knows it: null when the id is no longer one of the user's workspaces."""
@@ -298,9 +306,15 @@ def _removed(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
     return out
 
 
-class ChannelsFile(
-    _GatewayFile[Snapshot, dict[str, Any], tuple[str, dict[str, Any]] | None]
-):
+class Written(NamedTuple):
+    # The settings as the PUT carries them.
+    settings: dict[str, Any]
+    # Each workspace id, with its field path, that is not one of the user's
+    # live workspaces.
+    unknown: list[tuple[tuple[Any, ...], str]]
+
+
+class ChannelsFile(_GatewayFile[Snapshot, Written, tuple[str, dict[str, Any]] | None]):
     """``channels.json``: one save is one PUT of the whole settings."""
 
     unchanged = f"No changes: {CHANNELS_FILE} already matches the saved settings"
@@ -323,52 +337,56 @@ class ChannelsFile(
 
     async def parse(
         self, user_id: str, call: CallContext, content: str, served: str | None
-    ) -> dict[str, Any]:
+    ) -> Written:
         value = parse_json(content, CHANNELS_FILE)
         if not isinstance(value, dict):
             raise _refused([("", "the file must be one JSON object, as Read shows it")])
         models, problems = _validate(value)
-        named = _workspace_ids(value) if not problems else []
-        # Checked even when unchanged, so a save never carries an id that is
-        # not one of the user's workspaces.
+        if problems:
+            raise _refused(problems)
+        named = _workspace_ids(value)
         names = (
             await workspace_db.get_workspace_names(user_id, [ws for _, ws in named])
             if named
             else {}
         )
-        for path, ws in named:
-            if normalize_uuid(ws) not in names:
-                problems.append(
-                    (
-                        _field(*path),
-                        f"{ws!r} is not one of your workspaces; use a workspace_id from {AVAILABLE_FILE}",
-                    )
-                )
-        if problems:
-            raise _refused(problems)
-        return _stored(models, names)
+        unknown = [(path, ws) for path, ws in named if normalize_uuid(ws) not in names]
+        return Written(_stored(models, names), unknown)
 
     def plan(
-        self, call: CallContext, parsed: dict[str, Any], rows: Snapshot
+        self, call: CallContext, parsed: Written, rows: Snapshot
     ) -> Plan[tuple[str, dict[str, Any]] | None]:
+        settings = parsed.settings
         apps = sorted(k for k in rows.settings if k != _DEFAULT)
         listing = ", ".join(apps) or "no apps"
         problems = [
             (_field(key), f"not a connected app here; the connected apps are {listing}")
-            for key in parsed
+            for key in settings
             if key not in rows.settings
         ]
         problems += [
             (_field(key), "missing; keep every key the file had")
             for key in rows.settings
-            if key not in parsed
+            if key not in settings
+        ]
+        # Only an id the save sets or moves must be the user's: one the
+        # settings already hold at that place passes as it is, so a binding
+        # left on a deleted workspace doesn't block an unrelated edit.
+        held = {_place(path, ws) for path, ws in _workspace_ids(rows.settings)}
+        problems += [
+            (
+                _field(*path),
+                f"{ws!r} is not one of your workspaces; use a workspace_id from {AVAILABLE_FILE}",
+            )
+            for path, ws in parsed.unknown
+            if _place(path, ws) not in held
         ]
         if problems:
             raise _refused(problems)
         models, malformed = _validate(rows.settings)
-        if not malformed and _stored(models, rows.names) == parsed:
+        if not malformed and _stored(models, rows.names) == settings:
             return Plan(None)
-        return Plan((rows.version, parsed), _removed(rows.settings, parsed))
+        return Plan((rows.version, settings), _removed(rows.settings, settings))
 
     async def commit(
         self, user_id: str, changes: tuple[str, dict[str, Any]] | None, conn: Any

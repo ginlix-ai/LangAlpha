@@ -170,10 +170,12 @@ gateway holds both, with the same two headers:
 - `PUT {base}/agent/settings` takes `{"version", "settings"}` and answers 200
   `{"version", "settings", "changes"}`, 409 `{"code": "version_conflict"}` when the settings moved
   since `version`, 400 `{"code": "invalid", "message", "problems": [{"field", "message"}]}` or 503
-  `{"code": "unavailable"}`. langalpha checks the shape first and that every workspace id (in
-  `default`, `chats` and the `automation_output` keys) is one of the user's non-flash workspaces,
-  and fills each binding's `workspace` with that workspace's name. On a read it renders the names
-  from its own workspaces, since the gateway's copy may be stale.
+  `{"code": "unavailable"}`. langalpha checks the shape first and that every workspace id the
+  save sets or moves (in `default`, `chats` and the `automation_output` keys) is one of the user's
+  non-flash workspaces; an id the settings already hold at that place passes as it is, so a binding
+  left on a deleted workspace doesn't block other edits. It fills each binding's `workspace` with
+  that workspace's name, null when it no longer exists. On a read it renders the names from its
+  own workspaces, since the gateway's copy may be stale.
 - `GET {base}/agent/settings/available` answers `{"apps": {app: {"chats": [{"address", "name",
   "kind"}], "complete", "error"}}}`. `available.json` adds the user's workspaces by id and name.
 - `POST {base}/agent/check-target` takes `{"address", "purpose": "automation"}` and answers

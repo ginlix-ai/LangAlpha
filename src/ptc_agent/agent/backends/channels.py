@@ -60,8 +60,10 @@ seen is refused.
 | `<app>.automation_output` | Per workspace id: the chat that automation results from that workspace go to on this app. |
 | `<app>.agent_messages` | `enabled`: whether you may message the user on this app at all. `allowed`: the shared chats you may send to, besides the conversation you are in and the user's direct messages. |
 
-`workspace` and `name` are labels, ignored on save. A workspace id must be one
-of the user's workspaces in `available.json`.
+`workspace` and `name` are labels, ignored on save. A workspace id you set
+must be one of the user's workspaces in `available.json`. A `workspace` of
+`null` means that workspace no longer exists: point the binding at another
+one or remove it. Left as it is, it doesn't stop other changes saving.
 
 An automation that delivers to an app posts to the chat it names, else to its
 workspace's `automation_output` on that app, else to the app's `preferred`,

@@ -41,6 +41,8 @@ RESEARCH = "9f2c0000-0000-4000-8000-000000000001"
 MACRO = "9f2c0000-0000-4000-8000-000000000002"
 FLASH = "9f2c0000-0000-4000-8000-000000000003"
 STRANGERS = "9f2c0000-0000-4000-8000-000000000004"
+# One of the user's workspaces, since deleted.
+GONE = "9f2c0000-0000-4000-8000-000000000005"
 # The user's live workspaces as langalpha's own table names them.
 NAMES = {RESEARCH: "Research", MACRO: "Macro"}
 
@@ -329,10 +331,16 @@ class TestSave:
         }
 
     @pytest.mark.asyncio
-    async def test_every_workspace_id_must_be_the_users(self, backend, gateway):
+    async def test_every_workspace_id_a_save_sets_must_be_the_users(
+        self, backend, gateway
+    ):
         def change(settings):
             settings["default"]["workspace_id"] = FLASH
             settings["slack"]["chats"]["slack:T1/C0456"]["workspace_id"] = STRANGERS
+            settings["slack"]["chats"]["slack:T1/C0789"] = {
+                "mode": "ptc",
+                "workspace_id": GONE,
+            }
             settings["slack"]["automation_output"] = {"not-a-uuid": "slack:T1/C0123"}
 
         exc = await _refused(backend, change)
@@ -341,10 +349,51 @@ class TestSave:
         assert [path for path, _ in exc.problems] == [
             "default.workspace_id",
             'slack.chats["slack:T1/C0456"].workspace_id',
+            'slack.chats["slack:T1/C0789"].workspace_id',
             'slack.automation_output["not-a-uuid"]',
         ]
         assert all("not one of your workspaces" in msg for _, msg in exc.problems)
         assert f"See {README}" in exc.message
+        assert gateway.puts == []
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_workspace_left_in_place_does_not_block_a_save(
+        self, backend, gateway
+    ):
+        gateway.settings["default"]["workspace_id"] = GONE
+        gateway.settings["slack"]["chats"]["slack:T1/C0456"]["workspace_id"] = GONE
+        gateway.settings["slack"]["automation_output"] = {GONE: "slack:T1/C0123"}
+
+        def change(settings):
+            assert settings["default"]["workspace"] is None
+            assert settings["slack"]["chats"]["slack:T1/C0456"]["workspace"] is None
+            settings["slack"]["agent_messages"]["enabled"] = False
+
+        await _write(backend, change)
+
+        (put,) = gateway.puts
+        assert put["settings"]["default"] == {
+            "mode": "ptc",
+            "workspace_id": GONE,
+            "workspace": None,
+        }
+        slack = put["settings"]["slack"]
+        assert slack["chats"]["slack:T1/C0456"]["workspace_id"] == GONE
+        assert slack["automation_output"] == {GONE: "slack:T1/C0123"}
+        assert slack["agent_messages"]["enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_workspace_moved_elsewhere_is_refused(
+        self, backend, gateway
+    ):
+        gateway.settings["slack"]["chats"]["slack:T1/C0456"]["workspace_id"] = GONE
+
+        def change(settings):
+            settings["default"]["workspace_id"] = GONE.upper()
+
+        exc = await _refused(backend, change)
+
+        assert [path for path, _ in exc.problems] == ["default.workspace_id"]
         assert gateway.puts == []
 
     @pytest.mark.asyncio
