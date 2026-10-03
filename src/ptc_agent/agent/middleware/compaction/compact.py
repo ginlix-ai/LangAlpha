@@ -1,7 +1,8 @@
 """Standalone functions for manual compaction and offloading triggers."""
 
-import asyncio
 import logging
+import time
+from collections.abc import Callable
 from typing import Any
 
 from langchain_core.messages import AnyMessage
@@ -9,7 +10,6 @@ from langchain_core.messages import AnyMessage
 from langchain.chat_models import BaseChatModel
 
 from src.config.settings import get_compaction_timeout
-from src.llms.content_utils import format_llm_content
 from ptc_agent.config.agent import CompactionConfig
 from src.llms import get_llm_by_type
 
@@ -18,7 +18,11 @@ from ptc_agent.agent.middleware.compaction.types import CompactionEvent
 from ptc_agent.agent.middleware.compaction.summary_request import (
     DEFAULT_SUMMARY_PROMPT,
     build_summary_request,
-    trim_for_summary,
+)
+from ptc_agent.agent.middleware.compaction.summarize import (
+    awrite_summary,
+    preparer,
+    server_summary,
 )
 from ptc_agent.agent.middleware.compaction.utils import (
     build_summary_event,
@@ -26,9 +30,6 @@ from ptc_agent.agent.middleware.compaction.utils import (
     find_group_safe_cutoff,
     get_effective_messages,
     partition_at_cutoff,
-)
-from ptc_agent.agent.middleware.compaction.model import (
-    summary_trim_budget,
 )
 from src.llms import maybe_disable_streaming
 from ptc_agent.agent.middleware.compaction.offloading import (
@@ -54,6 +55,7 @@ async def compact_messages(
     llm_client: BaseChatModel | None = None,
     thread_id: str | None = None,
     workspace_id: str | None = None,
+    fallback_client: Callable[[], BaseChatModel] | None = None,
 ) -> dict[str, Any]:
     """Summarize all but the last ``keep_messages`` effective messages.
 
@@ -74,12 +76,15 @@ async def compact_messages(
             without it the transcript pointer has no thread.
         workspace_id: The thread's workspace, whose folder must reach the
             transcript before the summary points at it.
+        fallback_client: Resolves the main model, tried when the summary
+            model fails. Not copied unless it is used.
 
     Returns:
         Dict with:
         - "event": CompactionEvent to write to state (under preserved
           ``_summarization_event`` key)
         - "summary_text": The generated summary text
+        - "summary_source": "model", "fallback" or "server" (see ``summarize``)
         - "original_count": Number of effective messages before compaction
         - "preserved_count": Number of preserved messages + summary message
 
@@ -112,82 +117,75 @@ async def compact_messages(
     messages_to_summarize, preserved = partition_at_cutoff(effective, cutoff_index)
 
     # ---- Tier 2: Summarize, citing the transcript only once it is readable ----
+    # Admission holds the next turn for about the compaction timeout, so the
+    # save counts against it too.
+    started = time.monotonic()
     transcript = await aexport_transcript(
         backend,
         transcript_target(backend, thread_id),
         messages,
         workspace_id=workspace_id,
     )
-    to_summarize = messages_to_summarize
-
     if llm_client is not None:
         compaction_model: BaseChatModel = llm_client
     else:
         compaction_model = get_llm_by_type(model_name)
     maybe_disable_streaming(compaction_model)
 
-    token_threshold = config.get("token_threshold", 120000)
-    messages_to_summarize = trim_for_summary(
-        messages_to_summarize,
-        summary_trim_budget(compaction_model, token_threshold),
-        count_tokens_tiktoken,
+    turns = TranscriptTurns.of(transcript, messages) if transcript else None
+
+    async def render(trimmed: list[AnyMessage]) -> list[AnyMessage]:
+        # Strip base64 blobs before sending to LLM
+        request_messages = await aoffload_base64_content(backend, trimmed, thread_id=thread_id)
+        return build_summary_request(DEFAULT_SUMMARY_PROMPT, request_messages, turns)
+
+    # Ends in a summary even when no model answers, so /compact does what it
+    # was asked; a server summary says so in its first line and its source.
+    summary = await awrite_summary(
+        model=compaction_model,
+        fallback=_main_client(fallback_client),
+        prepare=preparer(
+            messages_to_summarize,
+            limit=config.get("token_threshold", 120000) + 50000,
+            counter=count_tokens_tiktoken,
+            render=render,
+        ),
+        server=lambda: server_summary(
+            messages_to_summarize, preserved, raw_messages=messages, turns=turns
+        ),
+        budget=get_compaction_timeout() - (time.monotonic() - started),
     )
-
-    # Strip base64 blobs before sending to LLM
-    request_messages = await aoffload_base64_content(
-        backend, messages_to_summarize, thread_id=thread_id
-    )
-
-    # Manual /compact MUST fail loudly on LLM error. Swallowing the exception
-    # and fabricating a fake summary would corrupt state (a "compacted" cutoff
-    # with garbage summary text) while reporting HTTP 200 to the client.
-    # trigger_compaction's outer except converts the raise into HTTP 500.
-    #
-    # The call carries its own wall-clock budget: a hung summarize raises
-    # TimeoutError here (rather than blocking the thread forever), which the
-    # except below re-raises -> HTTP 500. The timeout lives on the call, not on
-    # a flat admission-side 409 clock.
-    try:
-        response = await asyncio.wait_for(
-            compaction_model.ainvoke(
-                build_summary_request(
-                    DEFAULT_SUMMARY_PROMPT,
-                    request_messages,
-                    TranscriptTurns.of(transcript, messages) if transcript else None,
-                )
-            ),
-            timeout=get_compaction_timeout(),
-        )
-    except Exception as e:
-        logger.error(f"[Compaction] manual compact LLM call failed: {e}")
-        raise
-
-    content = response.content if hasattr(response, "content") else response
-    additional_kwargs = getattr(response, "additional_kwargs", None)
-    formatted = format_llm_content(content, additional_kwargs)
-    summary_text = formatted.get("text", "").strip()
-
-    if not summary_text:
-        raise RuntimeError("Compaction LLM returned empty summary")
 
     # Build the event with an id anchor (cutoff grounded in the raw list)
     event = build_summary_event(
-        summary_text,
+        summary.text,
         transcript,
         raw_messages=messages,
-        to_summarize=to_summarize,
-        summarized=messages_to_summarize,
+        to_summarize=messages_to_summarize,
+        summarized=summary.covered,
         preserved_messages=preserved,
         original_message_count=len(effective),
         skill_files=backend is not None,
+        source=summary.source,
     )
 
     return {
         "event": event,
-        "summary_text": summary_text,
+        "summary_text": summary.text,
+        "summary_source": summary.source,
         "original_count": len(effective),
         "preserved_count": len(preserved) + 1,  # +1 for summary message
     }
+
+
+def _main_client(resolve: Callable[[], BaseChatModel] | None) -> BaseChatModel | None:
+    if resolve is None:
+        return None
+    try:
+        return resolve()
+    except Exception as e:
+        logger.warning("[Compaction] no fallback model for /compact (%s)", type(e).__name__)
+        return None
 
 
 async def offload_tool_args(

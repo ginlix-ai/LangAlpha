@@ -300,7 +300,7 @@ def truncate_read_results(
 ) -> tuple[list[AnyMessage], bool, set[str]]:
     """Truncate duplicate and non-critical Read tool results in old messages.
 
-    Complements truncate_message_args (which handles AIMessage args) by targeting
+    Complements oversized_arg_calls (which picks AIMessage args) by targeting
     ToolMessage content for Read tool calls. Two patterns are handled:
 
     1. **Duplicate reads**: Same file read multiple times with identical
@@ -766,6 +766,7 @@ def build_summary_message(
     index: Sequence[str] = (),
     skills: Sequence[str] = (),
     skill_files: bool = False,
+    source: str = "model",
 ) -> HumanMessage:
     """Build the summary HumanMessage, pointing at the transcript when there is one.
 
@@ -773,7 +774,8 @@ def build_summary_message(
     emit-time ``context_window`` summarize fields into ``additional_kwargs``
     so checkpoint-sourced replay re-emits the event without the stored SSE
     stream. ``skills`` are listed for the agent to reload (see
-    ``skill_reload_note``).
+    ``skill_reload_note``). ``source`` says what wrote the summary (see
+    ``summarize``).
     """
     from ptc_agent.agent.middleware.skills.content import skill_reload_note
 
@@ -790,6 +792,7 @@ def build_summary_message(
             "summarize_complete": {
                 "summary_length": len(summary),
                 "original_message_count": original_message_count,
+                "source": source,
             },
             SUMMARIZED_KEY: {
                 "span": [span.first, span.last] if span is not None else None,
@@ -840,6 +843,7 @@ def build_summary_event(
     to_summarize: Sequence[AnyMessage] = (),
     summarized: Sequence[AnyMessage] = (),
     skill_files: bool = False,
+    source: str = "model",
 ) -> CompactionEvent:
     """The event putting ``summary`` in place of ``to_summarize``, pointing
     at the transcript when there is one. ``summarized`` is what the model was
@@ -873,6 +877,7 @@ def build_summary_event(
         index=index,
         skills=compacted_skills(to_summarize, preserved_messages),
         skill_files=skill_files,
+        source=source,
     )
     return build_compaction_event(
         raw_messages=raw_messages,

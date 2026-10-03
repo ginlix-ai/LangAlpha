@@ -4,15 +4,16 @@ Based on deepagent's SummarizationMiddleware but modified to:
 - Emit unified 'context_window' SSE events (discriminated by action field)
 - Use get_stream_writer() for lifecycle signaling
 - Use wrap_model_call for non-destructive context management (preserves checkpoint)
-- Two-tier context management: tool arg truncation + LLM summarization
+- Two-tier context management: at an idle turn start, large tool args are
+  cut to a pointer at the transcript file that keeps them; LLM summarization
+  when the context nears its limit
 
 Actions emitted via context_window events (values preserved as wire protocol):
 - token_usage: after each model call (input/output/total tokens)
 - summarize: start/complete/error signals during LLM summarization
-- offload: complete signal after Tier 1 tool arg truncation
+- offload: complete signal after Tier 1 cuts tool args and stale Read results
 """
 
-import asyncio
 import time
 import warnings
 import logging
@@ -34,7 +35,6 @@ from langchain.agents.middleware.types import (
 from langchain.chat_models import BaseChatModel, init_chat_model
 
 from src.config.settings import get_compaction_timeout
-from src.llms.content_utils import format_llm_content
 from src.llms.token_counter import extract_token_usage
 from ptc_agent.config.agent import CompactionConfig
 from src.llms import get_llm_by_type, maybe_disable_streaming
@@ -47,13 +47,19 @@ from ptc_agent.agent.middleware.compaction.types import (
     TruncateArgsSettings,
     TokenCounter,
     _DEFAULT_MESSAGES_TO_KEEP,
-    _DEFAULT_FALLBACK_MESSAGE_COUNT,
     _DEFAULT_TRIM_TOKEN_LIMIT,
 )
 from ptc_agent.agent.middleware.compaction.summary_request import (
     DEFAULT_SUMMARY_PROMPT,
     build_summary_request,
-    trim_for_summary,
+)
+from ptc_agent.agent.middleware.compaction.summarize import (
+    Summary,
+    awrite_summary,
+    preparer,
+    preparer_sync,
+    server_summary,
+    write_summary,
 )
 from ptc_agent.agent.middleware.compaction.utils import (
     build_summary_event,
@@ -65,7 +71,6 @@ from ptc_agent.agent.middleware.compaction.utils import (
 )
 from ptc_agent.agent.middleware.compaction.model import (
     max_input_tokens,
-    summary_trim_budget,
 )
 from ptc_agent.agent.middleware.compaction.offloading import (
     aoffload_base64_content,
@@ -185,11 +190,6 @@ class CompactionMiddleware(AgentMiddleware):
         self.token_counter = token_counter
         self.summary_prompt = summary_prompt
         self.trim_tokens_to_summarize = trim_tokens_to_summarize
-        # One failed summary stops summarizing for the life of this instance,
-        # which is one turn: the agent is built per turn and its subagents
-        # share it. A hung summary model would otherwise hold every later call
-        # over the threshold for the whole timeout.
-        self._summary_failed = False
 
         # Backend for offloading conversation history to sandbox (immutable config)
         self._backend = backend
@@ -295,9 +295,6 @@ class CompactionMiddleware(AgentMiddleware):
                     ),
                 )
             except ContextOverflowError:
-                if self._summary_failed:
-                    # The fallback is the summary that already failed this turn.
-                    raise
                 # Fall through to summarization as emergency fallback
                 logger.warning(
                     "[Compaction] ContextOverflowError caught, triggering emergency summarization"
@@ -328,49 +325,26 @@ class CompactionMiddleware(AgentMiddleware):
         cached_input_tokens = 0
         cached_output_tokens = 0
 
-        # Bring the transcript up to date first: the summary cites its turn
-        # files and ends pointing at it only if that save lands and the
-        # workspace can read it, and a save takes milliseconds beside the
-        # summary call. Summarizing emits SSE start/complete/error signals.
-        transcript = await self._export_transcript(request.messages)
-        summarized = self._trim_messages_for_summary(messages_to_summarize)
-        summary = await self._acreate_summary(
+        # Summarizing emits SSE start/complete/error signals.
+        summary, transcript = await self._acreate_summary(
             messages_to_summarize,
+            preserved=preserved_messages,
+            raw_messages=request.messages,
+            fallback=request.model,
             original_count=len(truncated_messages),
-            trimmed=summarized,
-            turns=TranscriptTurns.of(transcript, request.messages) if transcript else None,
         )
-        if summary is None:
-            # A failed summary must not stand in for the history it was to
-            # replace, so this compaction is dropped and the next turn retries
-            # it on the same history.
-            self._summary_failed = True
-            logger.warning(
-                "[Compaction] Summary failed, no further compaction this turn"
-            )
-            response = await handler(request.override(messages=truncated_messages))
-            cached_input_tokens, cached_output_tokens = self._extract_token_usage(
-                response
-            )
-            return ExtendedModelResponse(
-                model_response=response,
-                command=Command(
-                    update=self._build_state_update(
-                        cached_input_tokens, cached_output_tokens
-                    )
-                ),
-            )
 
         # Create summarization event with an id anchor (cutoff grounded in raw list)
         new_event = build_summary_event(
-            summary,
+            summary.text,
             transcript,
             raw_messages=request.messages,
             to_summarize=messages_to_summarize,
-            summarized=summarized,
+            summarized=summary.covered,
             preserved_messages=preserved_messages,
             original_message_count=len(truncated_messages),
             skill_files=self._backend is not None,
+            source=summary.source,
         )
         summary_message = new_event["summary_message"]
 
@@ -453,8 +427,6 @@ class CompactionMiddleware(AgentMiddleware):
                     ),
                 )
             except ContextOverflowError:
-                if self._summary_failed:
-                    raise
                 logger.warning(
                     "[Compaction] ContextOverflowError caught, triggering emergency summarization"
                 )
@@ -486,34 +458,21 @@ class CompactionMiddleware(AgentMiddleware):
         # _acreate_summary, which carries the compaction_timeout); a blocking
         # invoke() can't be bounded by asyncio.wait_for, so no timeout here.
         summary = self._create_summary(
-            messages_to_summarize, original_count=len(truncated_messages)
+            messages_to_summarize,
+            preserved=preserved_messages,
+            raw_messages=request.messages,
+            fallback=request.model,
+            original_count=len(truncated_messages),
         )
-        if summary is None:
-            # Dropped like the async path's: the next turn retries it.
-            self._summary_failed = True
-            logger.warning(
-                "[Compaction] Summary failed, no further compaction this turn"
-            )
-            response = handler(request.override(messages=truncated_messages))
-            cached_input_tokens, cached_output_tokens = self._extract_token_usage(
-                response
-            )
-            return ExtendedModelResponse(
-                model_response=response,
-                command=Command(
-                    update=self._build_state_update(
-                        cached_input_tokens, cached_output_tokens
-                    )
-                ),
-            )
         new_event = build_summary_event(
-            summary,
+            summary.text,
             None,
             raw_messages=request.messages,
             to_summarize=messages_to_summarize,
             preserved_messages=preserved_messages,
             original_message_count=len(truncated_messages),
             skill_files=self._backend is not None,
+            source=summary.source,
         )
         summary_message = new_event["summary_message"]
 
@@ -703,7 +662,7 @@ class CompactionMiddleware(AgentMiddleware):
 
     def _should_summarize(self, messages: list[AnyMessage], total_tokens: int) -> bool:
         """Determine whether summarization should run for the current token usage."""
-        if not self._trigger_conditions or self._summary_failed:
+        if not self._trigger_conditions:
             return False
 
         for kind, value in self._trigger_conditions:
@@ -805,29 +764,6 @@ class CompactionMiddleware(AgentMiddleware):
     # Summary generation
     # =========================================================================
 
-    def _extract_summary_text(self, response: Any) -> str:
-        """Extract text content from LLM response, discarding reasoning/thinking.
-
-        Args:
-            response: The LLM response object
-
-        Returns:
-            Extracted text content, stripped
-        """
-        content = response.content if hasattr(response, "content") else response
-        additional_kwargs = getattr(response, "additional_kwargs", None)
-        formatted = format_llm_content(content, additional_kwargs)
-        summary = formatted.get("text", "")
-
-        # Log if reasoning was discarded
-        if formatted.get("reasoning"):
-            logger.debug(
-                f"[Compaction] Discarded reasoning content "
-                f"(length={len(formatted.get('reasoning', ''))})"
-            )
-
-        return summary.strip()
-
     def _emit_context_signal(self, action: str, signal: str, **kwargs: Any) -> None:
         """Emit a context_window event via stream writer.
 
@@ -905,140 +841,97 @@ class CompactionMiddleware(AgentMiddleware):
         return find_group_safe_cutoff(messages, target_cutoff)
 
     def _create_summary(
-        self, messages_to_summarize: list[AnyMessage], *, original_count: int = 0
-    ) -> str | None:
-        """Generate summary for the given messages (sync version).
+        self,
+        to_summarize: list[AnyMessage],
+        *,
+        preserved: list[AnyMessage],
+        raw_messages: list[AnyMessage],
+        fallback: Any | None = None,
+        original_count: int = 0,
+    ) -> Summary:
+        """``_acreate_summary`` for the sync path, with no transcript."""
 
-        None means the call failed or came back empty, as in the async version.
-        """
-        if not messages_to_summarize:
-            return "No previous conversation history."
+        def render(trimmed: list[AnyMessage]) -> list[AnyMessage]:
+            return build_summary_request(self.summary_prompt, strip_base64_from_messages(trimmed))
 
-        trimmed_messages = self._trim_messages_for_summary(messages_to_summarize)
-        if not trimmed_messages:
-            # Nothing new fits the summary budget: a failed summary.
-            return None
-
-        # Strip base64 blobs so the summarization LLM doesn't receive them
-        trimmed_messages = strip_base64_from_messages(trimmed_messages)
-
-        # Start is outside the try: if it fails, the window was never opened
-        # so nothing needs closing. Inside the try we catch BaseException (not
-        # just Exception) so CancelledError also closes the window before
-        # propagating — otherwise a cancelled stream would leave an orphan
-        # start event with no terminator.
         self._emit_context_signal("summarize", "start")
         try:
-            response = self.model.invoke(
-                build_summary_request(self.summary_prompt, trimmed_messages)
+            summary = write_summary(
+                model=self.model,
+                fallback=fallback,
+                prepare=preparer_sync(
+                    to_summarize,
+                    limit=self.trim_tokens_to_summarize,
+                    counter=self.token_counter,
+                    render=render,
+                ),
+                server=lambda: server_summary(
+                    to_summarize, preserved, raw_messages=raw_messages, turns=None
+                ),
             )
-            summary = self._extract_summary_text(response)
-            if not summary:
-                raise RuntimeError("Compaction LLM returned empty summary")
         except BaseException as e:
             self._emit_context_signal("summarize", "error", error=str(e))
-            if isinstance(e, Exception):
-                return None
             raise
-
-        self._emit_context_signal(
-            "summarize",
-            "complete",
-            summary_length=len(summary),
-            original_message_count=original_count,
-            summary_text=summary,
-        )
-        return summary
+        return self._summarized(summary, original_count)
 
     async def _acreate_summary(
         self,
-        messages_to_summarize: list[AnyMessage],
+        to_summarize: list[AnyMessage],
         *,
+        preserved: list[AnyMessage],
+        raw_messages: list[AnyMessage],
+        fallback: Any | None = None,
         original_count: int = 0,
-        trimmed: list[AnyMessage] | None = None,
-        turns: TranscriptTurns | None = None,
-    ) -> str | None:
-        """Generate summary for the given messages (async version with custom events).
+    ) -> tuple[Summary, TranscriptTarget | None]:
+        """The summary replacing ``to_summarize``, from the summary model, the
+        turn's own model (``fallback``) or the server (see ``summarize``), and
+        the transcript it cites.
 
-        ``trimmed`` is the already-trimmed list, for a caller that also needs
-        to know what trimming dropped. ``turns`` heads each turn of the history
-        with its transcript file, for the summary to cite. None means the call
-        failed or came back empty, as manual compaction treats it, and its
-        error signal is out.
+        The transcript is saved first: the summary cites its turn files and
+        ends pointing at it only if that save lands and the workspace can read
+        it. Start is outside the try, so a start that fails opened no window. A
+        cancellation still emits error before it propagates: otherwise the
+        stream would keep an orphan start and its compaction window open.
         """
-        if not messages_to_summarize:
-            return "No previous conversation history."
-
-        trimmed_messages = (
-            trimmed
-            if trimmed is not None
-            else self._trim_messages_for_summary(messages_to_summarize)
-        )
-        if not trimmed_messages:
-            # Nothing new fits the summary budget: a failed summary.
-            return None
-
-        # Offload base64 blobs to sandbox (or strip if no backend)
-        trimmed_messages = await aoffload_base64_content(
-            self._backend, trimmed_messages
-        )
-
-        # Start is outside the try: if it fails, the window was never opened
-        # so nothing needs closing. Inside the try we catch BaseException (not
-        # just Exception) so CancelledError also closes the window before
-        # propagating — otherwise a cancelled stream would leave an orphan
-        # start event with no terminator.
         self._emit_context_signal("summarize", "start")
         try:
-            # Use ainvoke (non-streaming) to avoid duplicate events.
-            # The model should have streaming=False set in factory.
-            # The bracketing context_window summarize start/complete/error
-            # events tell the SSE handler to re-route chunks emitted between
-            # them to the compaction_chunk channel.
-            #
-            # Wall-clock budget: a hung summarize raises TimeoutError, which the
-            # except below treats like any LLM failure — emits the error signal
-            # (closing the window so the admission guard releases) and returns
-            # None. The timeout lives on the call so it fails naturally instead
-            # of blocking the in-flight turn forever.
-            response = await asyncio.wait_for(
-                self.model.ainvoke(
-                    build_summary_request(self.summary_prompt, trimmed_messages, turns)
+            started = time.monotonic()
+            transcript = await self._export_transcript(raw_messages)
+            turns = TranscriptTurns.of(transcript, raw_messages) if transcript else None
+
+            async def render(trimmed: list[AnyMessage]) -> list[AnyMessage]:
+                trimmed = await aoffload_base64_content(self._backend, trimmed)
+                return build_summary_request(self.summary_prompt, trimmed, turns)
+
+            summary = await awrite_summary(
+                model=self.model,
+                fallback=fallback,
+                prepare=preparer(
+                    to_summarize,
+                    limit=self.trim_tokens_to_summarize,
+                    counter=self.token_counter,
+                    render=render,
                 ),
-                timeout=get_compaction_timeout(),
+                server=lambda: server_summary(
+                    to_summarize, preserved, raw_messages=raw_messages, turns=turns
+                ),
+                budget=get_compaction_timeout() - (time.monotonic() - started),
             )
-            summary = self._extract_summary_text(response)
-            if not summary:
-                raise RuntimeError("Compaction LLM returned empty summary")
         except BaseException as e:
             self._emit_context_signal("summarize", "error", error=str(e))
-            if isinstance(e, Exception):
-                return None
             raise
+        return self._summarized(summary, original_count), transcript
 
+    def _summarized(self, summary: Summary, original_count: int) -> Summary:
         self._emit_context_signal(
             "summarize",
             "complete",
-            summary_length=len(summary),
+            summary_length=len(summary.text),
             original_message_count=original_count,
-            summary_text=summary,
+            summary_text=summary.text,
+            source=summary.source,
         )
         return summary
-
-    def _trim_messages_for_summary(
-        self, messages: list[AnyMessage]
-    ) -> list[AnyMessage]:
-        """Trim messages to fit within summary generation limits."""
-        if self.trim_tokens_to_summarize is None:
-            return messages
-
-        try:
-            return trim_for_summary(
-                messages, self.trim_tokens_to_summarize, self.token_counter
-            )
-        except Exception as e:
-            logger.warning(f"[Compaction] trim_messages failed: {e}, using fallback")
-            return messages[-_DEFAULT_FALLBACK_MESSAGE_COUNT:]
 
     # =========================================================================
     # Factory
@@ -1097,7 +990,7 @@ class CompactionMiddleware(AgentMiddleware):
             model=compaction_model,
             trigger=("tokens", token_threshold),
             keep=("messages", keep_messages),
-            trim_tokens_to_summarize=summary_trim_budget(compaction_model, token_threshold),
+            trim_tokens_to_summarize=token_threshold + 50000,
             summary_prompt=DEFAULT_SUMMARY_PROMPT,
             backend=backend,
             truncate_args_settings=truncate_args_settings,

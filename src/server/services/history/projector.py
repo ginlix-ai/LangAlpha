@@ -260,6 +260,7 @@ def _project_human_message(message: HumanMessage, agent: str) -> list[HistoryEve
                     "summary_length": stamped.get("summary_length", len(summary_text)),
                     "summary_text": summary_text,
                     "original_message_count": stamped.get("original_message_count", 0),
+                    **({"source": stamped["source"]} if "source" in stamped else {}),
                 },
             )
         ]

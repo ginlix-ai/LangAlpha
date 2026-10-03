@@ -705,7 +705,7 @@ class RunSSEProducer:
                             # Forward all relevant fields from middleware payload
                             for key in ("action", "signal", "input_tokens", "output_tokens",
                                         "total_tokens", "summary_length", "summary_text",
-                                        "original_message_count",
+                                        "original_message_count", "source",
                                         "truncated_count", "error",
                                         "kind", "offloaded_args", "offloaded_reads"):
                                 if key in event_data:

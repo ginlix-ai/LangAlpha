@@ -258,8 +258,6 @@ async def trigger_compaction(
                 checkpointer=mutation.saver, user_id=user_id, held=held,
             )
 
-            original_count = len(messages)
-
             compaction_cfg = agent_cfg.compaction if agent_cfg else None
             model_name = (agent_cfg.llm.compaction_name or "") if agent_cfg and agent_cfg.llm else ""
 
@@ -287,6 +285,8 @@ async def trigger_compaction(
                     llm_client=compaction_client,
                     thread_id=thread_id,
                     workspace_id=workspace_id,
+                    # The user's main model, should the summary model fail.
+                    fallback_client=agent_cfg.get_llm_client if agent_cfg is not None else None,
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
@@ -300,9 +300,13 @@ async def trigger_compaction(
                 "compact",
             )
 
+            # The view that was compacted, as automatic compaction counts it,
+            # not every message the checkpoint has kept since the thread began.
+            original_count = result["original_count"]
             new_message_count = result["preserved_count"]
             summary_text = result.get("summary_text", "")
             summary_length = len(summary_text)
+            summary_source = result.get("summary_source", "model")
 
             logger.info(
                 f"Manual compaction completed for thread {thread_id}: "
@@ -322,6 +326,7 @@ async def trigger_compaction(
                     "new_message_count": new_message_count,
                     "summary_length": summary_length,
                     "summary_text": summary_text,
+                    "source": summary_source,
                 },
             )
 
@@ -332,6 +337,7 @@ async def trigger_compaction(
                 "new_message_count": new_message_count,
                 "summary_length": summary_length,
                 "summary_text": summary_text,
+                "source": summary_source,
             }
 
     except HTTPException:
