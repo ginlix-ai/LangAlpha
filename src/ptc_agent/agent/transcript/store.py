@@ -62,6 +62,11 @@ class TranscriptTarget:
         return cls(thread_id)
 
     @property
+    def checkpoint_ns(self) -> str:
+        """The namespace this agent's checkpoints are written in."""
+        return f"task:{self.task_id}" if self.task_id else ""
+
+    @property
     def unit(self) -> str:
         return "run" if self.task_id else "turn"
 

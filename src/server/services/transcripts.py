@@ -510,14 +510,19 @@ async def save_live(transcript: TranscriptTarget, messages: Sequence[AnyMessage]
     stored = (await load_stored([thread_id], prefix)).get(thread_id, {}).get(prefix)
     held = load_manifest(stored.manifest) if stored is not None else {}
     header = {k: v for k, v in held.items() if k not in ("schema", "segments")}
+    reader = CheckpointHistoryReader.get_instance()
     if transcript.task_id is None:
         header["thread_id"] = thread_id
-        latest = await get_thread_checkpoint_id(thread_id)
+        # A first turn has no stamp yet, and a copy labelled with none is
+        # replaced by any render, one that read the checkpoint before this
+        # compaction included. The tip is the label then. Not later: a label
+        # past the stamp would stand the turn end's render down with it.
+        latest = await get_thread_checkpoint_id(
+            thread_id
+        ) or await reader.alatest_checkpoint_id(thread_id)
     else:
         header["task_id"] = transcript.task_id
-        latest = await CheckpointHistoryReader.get_instance().alatest_task_checkpoint_id(
-            thread_id, transcript.task_id
-        )
+        latest = await reader.alatest_checkpoint_id(thread_id, transcript.checkpoint_ns)
     held_at = stored.checkpoint_id if stored is not None else None
     checkpoint_id = max(filter(None, (held_at, latest)), default=None)
     job = _Job(
