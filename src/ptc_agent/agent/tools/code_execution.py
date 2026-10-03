@@ -40,6 +40,14 @@ _FILES_ROUTE_ERROR = (
 )
 
 
+# A directory only the file tools reach, mounted or not.
+_FILE_TOOLS_ONLY_ERROR = (
+    "ERROR: {dir}/ is reachable only through the file tools. Read a file with the "
+    "Read tool and pass the content in if your code needs it; change them with Edit "
+    "and Write."
+)
+
+
 def create_execute_code_tool(
     backend: SandboxBackend,
     mcp_registry: Any,
@@ -47,6 +55,7 @@ def create_execute_code_tool(
     *,
     session: Any = None,
     call_context: livefs_mount.CallContext | None = None,
+    file_tools_only: tuple[str, ...] = (),
 ) -> BaseTool:
     """Factory function to create execute_code tool with injected dependencies.
 
@@ -59,6 +68,8 @@ def create_execute_code_tool(
             callers with no notion of a computer, which skips admission.
         call_context: Who the code runs for, which a save through the file
             mount reads its defaults from
+        file_tools_only: Directories under the sandbox root only the file
+            tools reach; a program naming one is refused before it runs
 
     Returns:
         Configured execute_code tool function
@@ -95,6 +106,8 @@ def create_execute_code_tool(
             lambda call_id: _run(code, call_id),
             memory_error=_MEMORY_ROUTE_ERROR,
             files_error=_FILES_ROUTE_ERROR,
+            file_tools_only=file_tools_only,
+            file_tools_error=_FILE_TOOLS_ONLY_ERROR,
             blocked_event="Blocked execute_code referencing a store-backed path",
             code_length=len(code),
         )

@@ -201,6 +201,9 @@ class BaselineContextMiddleware(AgentMiddleware):
             a build whose prompt says nothing about the mount.
         role: The role the agent runs in, for the wording of the blocks that
             differ by role. Fixed per build, so the block stays deterministic.
+        channels_enabled: Whether the agent has the chat-app settings folder,
+            which a rebuild freezes for the block to state. None for a build
+            whose block says nothing about it.
     """
 
     def __init__(
@@ -222,11 +225,13 @@ class BaselineContextMiddleware(AgentMiddleware):
         read_timeout_s: float = _READ_TIMEOUT_S,
         files_mounted: bool | None = None,
         role: AgentRole = "analyst",
+        channels_enabled: bool | None = None,
     ) -> None:
         super().__init__()
         self._session = session
         self._role = role
         self._files_mounted = files_mounted
+        self._channels_enabled = channels_enabled
         # None is a read that did not answer (or a build with no workspace);
         # an empty string is a workspace with no name. Only the first is kept
         # out of change detection, and ``sandbox_enabled`` below tells the two
@@ -388,6 +393,7 @@ class BaselineContextMiddleware(AgentMiddleware):
             workspace_available=self._workspace_available,
             workspace_configured=self._sandbox_enabled,
             files_mounted=self._files_mounted,
+            channels_enabled=self._channels_enabled,
         )
 
     async def _read_sources(self, state: Any) -> list[SourceRead]:
@@ -555,7 +561,7 @@ class BaselineContextMiddleware(AgentMiddleware):
         parts: list[str] = []
 
         parts.append(_workspace_block(epoch.workspace))
-        parts.append(self._user_profile_block(epoch.profile))
+        parts.append(self._user_profile_block(epoch.profile, epoch.channels_enabled))
 
         identity = epoch.identity or self._identity()
         parts.append(
@@ -613,15 +619,20 @@ class BaselineContextMiddleware(AgentMiddleware):
 
         return "\n\n".join(p for p in parts if p)
 
-    def _user_profile_block(self, frozen: ProfileSnapshot | None) -> str:
+    def _user_profile_block(
+        self, frozen: ProfileSnapshot | None, channels: bool | None = None
+    ) -> str:
         """The ``<user_profile>`` component: identity plus the steering it carries.
 
         Rendered from the epoch's frozen snapshot so the block never moves
         inside an epoch. A preference or count that changes mid-thread reaches
         the model as a `profile_changed` row on the next turn. An epoch frozen
-        before profiles were captured falls back to this turn's snapshot.
+        before profiles were captured falls back to this turn's snapshot, and
+        one that froze no ``channels`` to this build's.
         """
         snapshot = frozen if frozen is not None else self._profile_snapshot()
+        if channels is None:
+            channels = self._channels_enabled
         if not snapshot.user_profile and not snapshot.user_data_counts:
             return ""
         try:
@@ -631,6 +642,7 @@ class BaselineContextMiddleware(AgentMiddleware):
                 user_data_counts=snapshot.user_data_counts or None,
                 sandbox_enabled=self._sandbox_enabled,
                 profile_files=self._sandbox_enabled,
+                channels_enabled=bool(channels),
             )
         except Exception:  # noqa: BLE001 - one component is not the whole block
             logger.warning("[Baseline] user_profile render failed", exc_info=True)

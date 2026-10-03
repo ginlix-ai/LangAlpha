@@ -26,6 +26,7 @@ from ptc_agent.agent.backends import (
     workflow_namespace,
 )
 from ptc_agent.agent.backends.automations import AutomationsBackend
+from ptc_agent.agent.backends.channels import ChannelsBackend
 from ptc_agent.agent.backends.db_json_route import DbJsonRoute
 from ptc_agent.agent.backends.user_data import UserDataBackend
 from ptc_agent.agent.middleware.background_subagent.workflow.prebuilt import (
@@ -78,6 +79,9 @@ class IdentityGates:
     workflow: bool
     workflow_fs: bool
     workflow_tool: bool
+    # The user's chat-app settings, for the file tools only: the mount never
+    # asks for them, so they are no mount tier.
+    channels: bool = False
 
     @property
     def memory(self) -> bool:
@@ -90,6 +94,7 @@ def resolve_identity_gates(
     user_id: str | None,
     workspace_id: str | None,
     disable_subagents: bool,
+    channels: bool = False,
 ) -> IdentityGates:
     from src.config.settings import get_workflow_orchestration_config
 
@@ -110,6 +115,8 @@ def resolve_identity_gates(
         # advertising a skill whose tool this build never registers strands
         # the agent.
         workflow_tool=workflow and not disable_subagents,
+        # Asked for by a build whose deployment has the channel gateway.
+        channels=channels and bool(user_id),
     )
 
 
@@ -137,7 +144,11 @@ def build_filesystem_backend(
     and this clock, else the user's own.
     """
     if not (
-        gates.memory or gates.memo or gates.user_data or gates.workflow
+        gates.memory
+        or gates.memo
+        or gates.user_data
+        or gates.workflow
+        or gates.channels
     ):
         return backend, None
 
@@ -258,6 +269,16 @@ def build_filesystem_backend(
                 root_prefix=f"{sandbox_root}/{route.directory}/",
             )
             for route in USER_DATA_ROUTES
+        )
+
+    if gates.channels:
+        routes.append(
+            ChannelsBackend(
+                user_id=user_id,
+                call=call or CallContext(),
+                sandbox_backend=backend,
+                root_prefix=f"{sandbox_root}/{ChannelsBackend.directory}/",
+            )
         )
 
     if not routes:

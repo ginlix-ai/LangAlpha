@@ -16,7 +16,7 @@ import structlog
 from langchain.agents import create_agent
 
 from ptc_agent.agent.backends import SandboxBackend
-from ptc_agent.core.paths import WorkspaceLayout
+from ptc_agent.core.paths import SandboxLayout, WorkspaceLayout
 from ptc_agent.core.project_context import ProjectContext
 from ptc_agent.agent.middleware import SubAgentMiddleware
 from ptc_agent.agent.main_state import MainAgentState
@@ -129,7 +129,7 @@ from src.tools.market_data.tool import (
 )
 from src.tools.market_watch import watch_market
 from src.tools.chart_annotation import CHART_ANNOTATION_TOOLS
-from src.tools.messaging import build_messaging_tools
+from src.tools.messaging import build_messaging_tools, messaging_enabled
 from ptc_agent.config import AgentConfig
 from ptc_agent.core.mcp_registry import MCPRegistry
 from ptc_agent.core.sandbox import PTCSandbox
@@ -330,6 +330,7 @@ class PTCAgent:
             user_id=user_id,
             workspace_id=workspace_id_for_memory,
             disable_subagents=disable_subagents,
+            channels=messaging_enabled(),
         )
         if store is not None and not gates.memory:
             logger.warning(
@@ -355,6 +356,9 @@ class PTCAgent:
             call=call_context,
         )
 
+        # The folders only the file tools reach, which Bash and code refuse.
+        file_tools_only = (SandboxLayout.CHANNELS_DIR,) if gates.channels else ()
+
         # Create the execute_code tool for MCP invocation
         execute_code_tool = create_execute_code_tool(
             backend,
@@ -362,11 +366,15 @@ class PTCAgent:
             thread_id=short_thread_id,
             session=session,
             call_context=call_context,
+            file_tools_only=file_tools_only,
         )
 
         # Create the Bash tool for shell command execution
         bash_tool = create_execute_bash_tool(
-            backend, thread_id=short_thread_id, call_context=call_context
+            backend,
+            thread_id=short_thread_id,
+            call_context=call_context,
+            file_tools_only=file_tools_only,
         )
         bash_output_tool = create_bash_output_tool(backend, call_context=call_context)
 
@@ -802,6 +810,7 @@ class PTCAgent:
             workspace_description=workspace_description,
             sources=baseline_store_sources,
             files_mounted=files_mounted,
+            channels_enabled=gates.channels,
             blocks={
                 "mcp_servers": lambda _state: tool_summary,
                 "skills": lambda state: skill_loader_middleware.build_manifest(state)

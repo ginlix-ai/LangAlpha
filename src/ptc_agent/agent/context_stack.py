@@ -60,6 +60,7 @@ def build_context_middleware(
     user_data_counts: dict[str, Any] | None = None,
     files_mounted: bool | None = None,
     role: AgentRole = "analyst",
+    channels_enabled: bool | None = None,
 ) -> ContextMiddleware:
     """Wire the turn row, the per-thread baseline and the tail envelope.
 
@@ -111,6 +112,7 @@ def build_context_middleware(
             model_name=model_name,
             files_mounted=files_mounted,
             role=role,
+            channels_enabled=channels_enabled,
         ),
         tail=TailEnvelopeMiddleware(
             now=now,

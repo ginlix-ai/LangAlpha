@@ -20,10 +20,16 @@ async def run_guarded(
     memory_error: str,
     files_error: str,
     blocked_event: str,
+    file_tools_only: tuple[str, ...] = (),
+    file_tools_error: str = "",
     **blocked_fields: Any,
 ) -> tuple[str, dict[str, Any]]:
-    """Refuse ``text`` if it names a store-backed tree no mount serves, else
-    run it through the mount."""
+    """Refuse ``text`` if it names a directory only the file tools reach, or
+    a store-backed tree no mount serves, else run it through the mount."""
+    only = next((d for d in file_tools_only if d in text), None)
+    if only is not None:
+        logger.info(blocked_event, tree=only, **blocked_fields)
+        return file_tools_error.format(dir=only), {"mcp_trace": []}
     mount = await backend.settled_livefs(
         call_context.workspace_id if call_context is not None else None
     )

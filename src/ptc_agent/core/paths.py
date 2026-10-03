@@ -85,6 +85,10 @@ class SandboxLayout:
     MEMO_USER_DIR: ClassVar[str] = ".agents/user/memo"
     USER_PROFILE_DIR: ClassVar[str] = ".agents/user/profile"
     AUTOMATIONS_DIR: ClassVar[str] = ".agents/user/automations"
+    # The user's chat-app settings, kept by the channel gateway. Only the file
+    # tools reach it: it is no mount tier and no user data dir, and Bash and
+    # code are refused a command that names it.
+    CHANNELS_DIR: ClassVar[str] = ".agents/user/channels"
     WORKFLOWS_DIR: ClassVar[str] = ".agents/workflows"
     TMP_DIR: ClassVar[str] = ".agents/tmp"
 
