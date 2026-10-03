@@ -14,7 +14,7 @@ model has to know whether anything went out before it tells the user so.
 import logging
 import os
 import time
-from typing import Annotated, Any
+from typing import Annotated, Any, NamedTuple
 
 import httpx
 from langchain_core.runnables import RunnableConfig
@@ -199,9 +199,9 @@ def format_targets_result(data: dict[str, Any]) -> str:
             name = f": {target['name']}" if target.get("name") else ""
             thread = target.get("thread")
             age = _age(thread.get("last_used_at")) if isinstance(thread, dict) else None
-            note = (
-                f"; this conversation's thread is here, last used {age}" if age else ""
-            )
+            note = "; preferred" if target.get("preferred") is True else ""
+            if age:
+                note += f"; this conversation's thread is here, last used {age}"
             lines.append(f"- {target.get('address')}{kind}{name}{note}")
     else:
         lines.append("Targets: none.")
@@ -231,7 +231,7 @@ def _listing_failed(data: dict[str, Any]) -> bool:
 # -- transport ----------------------------------------------------------------
 
 
-class _GatewayError(Exception):
+class GatewayError(Exception):
     """A call that produced no answer the model can act on.
 
     ``delivered_unknown`` is True when the request may have reached the
@@ -244,7 +244,14 @@ class _GatewayError(Exception):
         self.delivered_unknown = delivered_unknown
 
 
-async def _call(
+class GatewayAnswer(NamedTuple):
+    status: int
+    #: The JSON object answered, or None when the body is not one.
+    data: dict[str, Any] | None
+    text: str
+
+
+async def gateway_request(
     method: str,
     path: str,
     *,
@@ -252,7 +259,11 @@ async def _call(
     timeout: httpx.Timeout,
     params: dict[str, Any] | None = None,
     body: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> GatewayAnswer:
+    """One call to the gateway for ``user_id``, and its answer whatever the
+    status, so a caller with statuses of its own (a version conflict, a list
+    of problems) reads them. Raises ``GatewayError`` when no answer came back
+    or the gateway refused this server's token."""
     headers = {"X-Service-Token": _service_token(), "X-User-Id": str(user_id)}
     url = f"{env.CHANNEL_GATEWAY_URL}{path}"
     try:
@@ -262,62 +273,74 @@ async def _call(
             )
     except (httpx.ConnectError, httpx.ConnectTimeout) as e:
         logger.warning("[messaging] gateway unreachable for %s: %r", path, e)
-        raise _GatewayError(
+        raise GatewayError(
             "The messaging service could not be reached.", delivered_unknown=False
         ) from e
     except httpx.TimeoutException as e:
         logger.warning("[messaging] gateway timed out for %s: %r", path, e)
-        raise _GatewayError(
+        raise GatewayError(
             "The messaging service did not answer in time.", delivered_unknown=True
         ) from e
     except httpx.HTTPError as e:
         logger.warning("[messaging] gateway call failed for %s: %r", path, e)
-        raise _GatewayError(
+        raise GatewayError(
             "The connection to the messaging service broke.", delivered_unknown=True
         ) from e
-
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
     if response.status_code in (401, 403):
         logger.error(
             "[messaging] gateway refused this server's service token (%s) on %s",
             response.status_code,
             path,
         )
-        raise _GatewayError(
+        raise GatewayError(
             "The messaging service refused this server's credentials.",
             delivered_unknown=False,
         )
-    if response.status_code == 422:
-        raise _GatewayError(
-            f"The messaging service rejected the request: {_detail(response)}",
+    return GatewayAnswer(
+        response.status_code, data if isinstance(data, dict) else None, response.text
+    )
+
+
+async def _call(
+    method: str,
+    path: str,
+    *,
+    user_id: str,
+    timeout: httpx.Timeout,
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    answer = await gateway_request(
+        method, path, user_id=user_id, timeout=timeout, params=params, body=body
+    )
+    if answer.status == 422:
+        raise GatewayError(
+            f"The messaging service rejected the request: {_detail(answer)}",
             delivered_unknown=False,
         )
-    if response.status_code != 200:
-        logger.warning(
-            "[messaging] gateway answered %s on %s", response.status_code, path
+    if answer.status != 200:
+        logger.warning("[messaging] gateway answered %s on %s", answer.status, path)
+        raise GatewayError(
+            f"The messaging service failed ({answer.status}).",
+            # No such route there: nothing acted on the request.
+            delivered_unknown=answer.status not in (404, 405),
         )
-        raise _GatewayError(
-            f"The messaging service failed ({response.status_code}).",
-            delivered_unknown=True,
-        )
-    try:
-        data = response.json()
-    except ValueError:
-        data = None
-    if not isinstance(data, dict):
-        raise _GatewayError(
+    if answer.data is None:
+        raise GatewayError(
             "The messaging service sent an answer that could not be read.",
             delivered_unknown=True,
         )
-    return data
+    return answer.data
 
 
-def _detail(response: httpx.Response) -> str:
-    try:
-        detail = response.json().get("detail")
-    except (ValueError, AttributeError):
-        detail = None
+def _detail(answer: GatewayAnswer) -> str:
+    detail = (answer.data or {}).get("detail")
     text = detail if isinstance(detail, str) else (str(detail) if detail else "")
-    return (text or response.text or "malformed request")[:300]
+    return (text or answer.text or "malformed request")[:300]
 
 
 # -- the tools ----------------------------------------------------------------
@@ -390,7 +413,7 @@ async def _send(
             timeout=_SEND_TIMEOUT,
             body=body,
         )
-    except _GatewayError as e:
+    except GatewayError as e:
         if e.delivered_unknown:
             return _refusal(
                 "unknown",
@@ -507,20 +530,20 @@ async def _list_message_targets(config: RunnableConfig) -> str:
             timeout=_TARGETS_TIMEOUT,
             params=params,
         )
-    except _GatewayError as e:
+    except GatewayError as e:
         return f"{e.message} Where you can send is unknown right now."
     return format_targets_result(data)
 
 
 SEND_MESSAGE_DESCRIPTION = """Send a message to the user on a messaging app connected to their account, with files attached if needed. Use it when the user asks for something to be sent to them or to a chat, or when this conversation's delivery rules say to reply through it.
-Reaches only the conversation this turn is in, the user's own direct messages, and the shared chats they allowed.
+Reaches only the conversation this turn is in, the user's own direct messages, and the shared chats they allowed. When the user names only an app, send to that app's preferred chat.
 
 Returns:
     The delivery status (sent, partial, failed or unknown), where it went, and each file's outcome.
 
 Tell the user something was sent only when the status is sent. On partial the text went and the files not marked sent or linked did not."""
 
-LIST_MESSAGE_TARGETS_DESCRIPTION = """List where send_message can deliver for this user: the conversation this turn is in, if any, then their direct messages and allowed shared chats on each connected messaging app, and the apps that are unavailable with the reason.
+LIST_MESSAGE_TARGETS_DESCRIPTION = """List where send_message can deliver for this user: the conversation this turn is in, if any, then their direct messages and allowed shared chats on each connected messaging app with each app's preferred chat marked, and the apps that are unavailable with the reason.
 
 Returns:
     Addresses to pass as send_message's target, and a link to the settings where the user allows more."""

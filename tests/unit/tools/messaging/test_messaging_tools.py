@@ -532,6 +532,16 @@ class TestNoAnswerIsStillAResult:
         assert "text too long" in content
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [404, 405])
+    async def test_a_missing_route_sent_nothing(self, gateway, status):
+        gateway.reply = httpx.Response(status, json={"detail": "Not Found"})
+
+        content = await _call(_tool("send_message"), {"text": "hi"})
+
+        assert content.startswith("status: failed\ncode: unavailable")
+        assert f"failed ({status}). Nothing was sent." in content
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "reply",
         [
@@ -915,3 +925,67 @@ class TestTheThreadNote:
         )
 
         assert lines == ["- slack:T1 (dm): DM"]
+
+
+class TestThePreferredMark:
+    @pytest.fixture(autouse=True)
+    def _clock(self, monkeypatch):
+        monkeypatch.setattr(messaging, "_now", lambda: float(NOW))
+
+    async def _listing(self, gateway, targets):
+        gateway.reply = httpx.Response(200, json={"current": None, "targets": targets})
+        return (await _call(_tool("list_message_targets"), {})).splitlines()[2:]
+
+    @pytest.mark.asyncio
+    async def test_the_preferred_chat_is_marked(self, gateway):
+        lines = await self._listing(
+            gateway,
+            [
+                {"address": "slack:T1", "kind": "dm", "name": "DM", "preferred": False},
+                {
+                    "address": "slack:T1/C2",
+                    "kind": "channel",
+                    "name": "#research",
+                    "preferred": True,
+                },
+            ],
+        )
+
+        assert lines == [
+            "- slack:T1 (dm): DM",
+            "- slack:T1/C2 (channel): #research; preferred",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_preferred_goes_before_the_thread_note(self, gateway):
+        lines = await self._listing(
+            gateway,
+            [
+                {
+                    "address": "slack:T1/C2",
+                    "kind": "channel",
+                    "name": "#research",
+                    "preferred": True,
+                    "thread": {"last_used_at": NOW - 3 * 3600},
+                }
+            ],
+        )
+
+        assert lines == [
+            "- slack:T1/C2 (channel): #research; preferred; "
+            "this conversation's thread is here, last used 3h ago"
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["true", 1, None, {}])
+    async def test_only_true_marks_it(self, gateway, value):
+        lines = await self._listing(
+            gateway,
+            [{"address": "slack:T1", "kind": "dm", "name": "DM", "preferred": value}],
+        )
+
+        assert lines == ["- slack:T1 (dm): DM"]
+
+    def test_the_descriptions_name_the_preferred_chat(self):
+        assert "that app's preferred chat" in messaging.SEND_MESSAGE_DESCRIPTION
+        assert "preferred chat marked" in messaging.LIST_MESSAGE_TARGETS_DESCRIPTION
