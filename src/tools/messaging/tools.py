@@ -105,9 +105,17 @@ def send_artifact(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _refusal(status: str, code: str | None, message: str) -> tuple[str, dict[str, Any]]:
-    """A send that got no gateway answer: what the model reads, and the artifact."""
-    artifact = send_artifact({"status": status, "code": code, "message": message})
+def _refusal(
+    status: str, code: str | None, message: str, *, shown: str | None = None
+) -> tuple[str, dict[str, Any]]:
+    """A send that got no gateway answer: what the model reads, and the artifact.
+
+    ``shown`` replaces ``message`` in the artifact when the model's sentence
+    carries an instruction meant only for the model.
+    """
+    artifact = send_artifact(
+        {"status": status, "code": code, "message": shown or message}
+    )
     return _result(status, code, message), artifact
 
 
@@ -360,8 +368,9 @@ async def _send(
             return _refusal(
                 "unknown",
                 "unavailable",
-                f"{e.message} Whether the message went out is unknown; do not tell "
-                "the user it was sent.",
+                f"{e.message} Whether the message went out is unknown. Do not send it "
+                "again, and tell the user delivery couldn't be confirmed.",
+                shown=f"{e.message} Whether the message went out is unknown.",
             )
         return _refusal("failed", "unavailable", f"{e.message} Nothing was sent.")
     return send_result(data)

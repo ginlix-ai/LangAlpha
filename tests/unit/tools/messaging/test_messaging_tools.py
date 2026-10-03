@@ -484,7 +484,9 @@ class TestNoAnswerIsStillAResult:
         content = await _call(_tool("send_message"), {"text": "hi"})
 
         assert content.startswith("status: unknown\ncode: unavailable")
-        assert "do not tell the user it was sent" in content
+        # It may yet land, so a second send could post it twice.
+        assert "Do not send it again" in content
+        assert "tell the user delivery couldn't be confirmed" in content
 
     @pytest.mark.asyncio
     async def test_a_broken_connection_leaves_delivery_unknown(self, gateway):
@@ -645,11 +647,18 @@ class TestTheDeliveryArtifact:
     async def test_a_timeout_is_unknown(self, gateway):
         gateway.reply = httpx.ReadTimeout("slow")
 
-        artifact = (await _message(_tool("send_message"), {"text": "hi"})).artifact
+        message = await _message(_tool("send_message"), {"text": "hi"})
+        artifact = message.artifact
 
         assert artifact["status"] == "unknown"
         assert artifact["code"] == "unavailable"
         assert artifact["files"] == []
+        # The model is told not to send again; the person reading the card is not.
+        assert "Do not send it again" in message.content
+        assert artifact["message"] == (
+            "The messaging service did not answer in time. "
+            "Whether the message went out is unknown."
+        )
 
     @pytest.mark.asyncio
     async def test_a_local_refusal_never_reaches_the_gateway(self, gateway):
