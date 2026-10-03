@@ -385,7 +385,7 @@
     "compactionProfile": "Compaction Profile",
     "compactionProfileDesc": "Bundled preset for compaction trigger and retention. Leave on system default and each model gets the preset that fits its context window.",
     "compactionProfileUseDefault": "Use system default",
-    "compactionProfilePreset": "{{tokens}}k tokens · keep {{keep}} · trim@{{trim}}",
+    "compactionProfilePreset": "{{tokens}}k tokens · keep {{keep}}",
     "compactionProfiles": {
       "aggressive": {
         "label": "Aggressive",
@@ -1777,7 +1777,7 @@
       "subagentDesc": "Use subagents to complete this task",
       "compactName": "compact",
       "compactDesc": "Compact conversation context to free up token space",
-      "offloadDesc": "Offload large tool arguments to sandbox filesystem",
+      "offloadDesc": "Trim large tool arguments and stale file reads in older messages",
       "noMatching": "No matching commands",
       "comps-analysisDesc": "Comparable company analysis: operating metrics, valuation multiples, peer benchmarking",
       "dcf-modelDesc": "DCF valuation: free cash flow projections, WACC, terminal value, sensitivity analysis",
