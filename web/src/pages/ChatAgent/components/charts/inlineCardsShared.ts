@@ -121,6 +121,9 @@ export function extendedHoursLabel(
 export interface InlineCardProps {
   artifact: Record<string, unknown> | null | undefined;
   onClick?: () => void;
+  /** The call's own arguments, for a card whose result does not restate its
+   *  input: a delivery receipt carries the outcome, not the message sent. */
+  toolArgs?: Record<string, unknown>;
 }
 
 // ─── market_overview unwrap ─────────────────────────────────────────

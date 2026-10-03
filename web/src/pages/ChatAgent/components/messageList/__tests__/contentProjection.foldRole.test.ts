@@ -10,7 +10,7 @@ import { projectMessageContent } from '../contentProjection';
 import { INLINE_ARTIFACT_MAP } from '../../charts/InlineArtifactCards';
 import type { MessageRecord } from '../types';
 
-const RETAINED = ['preview_url', 'chart_annotation', 'order_receipt'];
+const RETAINED = ['preview_url', 'chart_annotation', 'order_receipt', 'message_delivery'];
 
 /** A settled turn whose only non-text block is one inline artifact card. */
 function roleOf(artifactType: string): string | undefined {

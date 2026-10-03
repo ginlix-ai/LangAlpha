@@ -15,6 +15,7 @@ import { InlinePreviewCard } from './InlinePreviewCard';
 import { InlineChartAnnotationCard } from './InlineChartAnnotationCard';
 import { InlineQuoteCard } from './InlineQuoteCard';
 import { OrderReceiptCard } from '../mcp/OrderReceiptCard';
+import { MessageDeliveryCard } from '../messaging/MessageDeliveryCard';
 import {
   GREEN,
   RED,
@@ -1061,11 +1062,17 @@ export function InlineWebSearchCard({ artifact, onClick }: InlineCardProps): Rea
  * Maps an artifact `type` to its inline card component. Single source of truth
  * for both the activity timeline (ActivityBlock) and the message list
  * (MessageList), a new inline card is registered here (plus its tool-name gate
- * in INLINE_ARTIFACT_TOOLS) rather than in each surface separately.
+ * in INLINE_ARTIFACT_TOOLS) rather than in each surface separately. Both
+ * surfaces pass the call's arguments as `toolArgs`; a card that needs only its
+ * artifact ignores them.
  */
 export const INLINE_ARTIFACT_MAP: Record<
   string,
-  React.ComponentType<{ artifact: Record<string, unknown>; onClick?: () => void }>
+  React.ComponentType<{
+    artifact: Record<string, unknown>;
+    onClick?: () => void;
+    toolArgs?: Record<string, unknown>;
+  }>
 > = {
   stock_prices: InlineStockPriceCard,
   company_overview: InlineCompanyOverviewCard,
@@ -1080,6 +1087,7 @@ export const INLINE_ARTIFACT_MAP: Record<
   web_search: InlineWebSearchCard,
   chart_annotation: InlineChartAnnotationCard,
   order_receipt: OrderReceiptCard,
+  message_delivery: MessageDeliveryCard,
 };
 
 /**

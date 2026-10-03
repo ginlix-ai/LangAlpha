@@ -169,6 +169,9 @@ html {
   --color-btn-danger-pressed: #991b1b;
   --color-icon-danger: #f87171;
   --color-danger-hover-bg: rgba(239, 68, 68, 0.2);
+  /* Resting tint behind a danger glyph and its words (a failed status pill).
+     Failure, not P&L: --color-loss-soft stays with the market. */
+  --color-danger-soft: rgba(248, 113, 113, 0.12);
 
   --color-status-modified: rgba(216, 176, 76, 0.7);
   --color-status-modified-border: rgba(216, 176, 76, 0.5);
@@ -346,6 +349,7 @@ html {
   --color-btn-danger-pressed: #b91c1c;
   --color-icon-danger: #dc2626;
   --color-danger-hover-bg: rgba(220, 38, 38, 0.08);
+  --color-danger-soft: rgba(220, 38, 38, 0.07);
 
   --color-status-modified: rgba(180, 83, 9, 0.7);
   --color-status-modified-border: rgba(180, 83, 9, 0.3);

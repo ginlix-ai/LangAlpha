@@ -41,15 +41,16 @@ const RETAINED_TYPES = new Set<RenderBlock['type']>([
  *  turn produced, and an inline card the answer restates in a sentence is part
  *  of the working, not part of the result: a research turn that consulted a
  *  dozen tools would otherwise collapse to a stack of a dozen cards and the
- *  fold would buy nothing. These three are not lookups. A preview is a
- *  deliverable, an annotated chart is a thing the reader works with, and the
+ *  fold would buy nothing. These four are not lookups. A preview is a
+ *  deliverable, an annotated chart is a thing the reader works with, the
  *  approval only records consent while the receipt owns the order outcome and
- *  the link to its ledger entry.
+ *  the link to its ledger entry, and a sent message has already left for
+ *  another app, where the turn cannot take it back.
  *
  *  Every other entry in `INLINE_ARTIFACT_MAP` is a lookup and folds. Adding a
  *  card type here is a product decision, so `contentProjection.foldRole.test.ts`
  *  pins the split rather than letting it drift with the map. */
-const RETAINED_ARTIFACTS = new Set(['preview_url', 'chart_annotation', 'order_receipt']);
+const RETAINED_ARTIFACTS = new Set(['preview_url', 'chart_annotation', 'order_receipt', 'message_delivery']);
 
 function foldRole(block: RenderBlock): FoldRole {
   if (block.type === 'text') return 'text';

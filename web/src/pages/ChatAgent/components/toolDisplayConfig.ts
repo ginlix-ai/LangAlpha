@@ -3,7 +3,7 @@ import {
   TrendingUp, Building2, BarChart3, PieChart, Search, Globe,
   FilePlus, FileText, FilePen, FolderSearch, SquareChevronRight, Wrench,
   Newspaper, Brain, User, FileBarChart, Clock, ClipboardList, Zap, Settings, Terminal,
-  Sparkles, BookText, BookMarked, BookPlus, PenLine, Eye, Plug,
+  Sparkles, BookText, BookMarked, BookPlus, PenLine, Eye, Plug, Send, Contact,
 } from 'lucide-react';
 import {
   classifyAgentPath, topicFromMemoryKey, type AgentPathInfo, type UserDataEntity,
@@ -11,6 +11,7 @@ import {
 import { directToolDisplayName, parseDirectToolName, summarizeDirectToolArgs } from '../utils/directTools';
 import { INTERVAL_LABEL } from '@/lib/bars';
 import { LARGE_TOOL_RESULTS_PREFIX } from './filePanel/fileMeta';
+import { messagingAppName, platformOf } from './messaging/messageDelivery';
 
 /** Translation function signature compatible with i18next's t() */
 type TFn = (key: string, opts?: Record<string, unknown>) => string;
@@ -104,6 +105,9 @@ export const TOOL_DISPLAY_CONFIG: Record<string, ToolDisplayEntry> = {
   // Chart annotation
   draw_chart_annotation:    { displayName: 'Annotate Chart',       i18nKey: 'annotateChart',       icon: PenLine },
   manage_chart_annotations: { displayName: 'Manage Annotations',   i18nKey: 'manageAnnotations',   icon: Settings },
+  // Messaging
+  send_message:             { displayName: 'Send Message',         i18nKey: 'sendMessage',         icon: Send },
+  list_message_targets:     { displayName: 'Message Targets',      i18nKey: 'messageTargets',      icon: Contact },
 };
 
 // Single source of truth for "what tool name indicates a file
@@ -373,6 +377,14 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
       return tr?.('annotatingChart') ?? 'annotating chart...';
     case 'manage_chart_annotations':
       return tr?.('updatingAnnotations') ?? 'updating annotations...';
+    case 'send_message': {
+      const app = messagingAppName(platformOf(args?.target));
+      return app
+        ? (tr?.('sendingTo', { app }) ?? `sending to ${app}...`)
+        : (tr?.('sendingMessage') ?? 'sending message...');
+    }
+    case 'list_message_targets':
+      return tr?.('listingMessageTargets') ?? 'listing message targets...';
     default:
       return tr?.('processing') ?? 'processing...';
   }
@@ -419,6 +431,9 @@ export function getCompletedSummary(toolName: string, toolCall: ToolCall | undef
   }
   // Direct MCP tools: the collapsed line masks account ids; the detail view does not.
   if (parseDirectToolName(toolName)) return summarizeDirectToolArgs(args);
+  // The app a send was addressed to. With no target it went to the turn's own
+  // conversation, which the call alone does not name.
+  if (toolName === 'send_message') return messagingAppName(platformOf(args.target));
   if (args.description) return args.description;
   if (args.symbol) return args.symbol;
   if (args.query) return args.query;
@@ -597,6 +612,10 @@ export function getPreparingText(toolName: string, argsLength: number, t?: TFn):
       return tr?.('preparingRequest') ?? 'preparing request...';
     case 'Grep':
       return tr?.('buildingSearchPattern') ?? 'building search pattern...';
+    case 'send_message':
+      return tr?.('composingMessage', { size: sizeLabel }) ?? `composing message${sizeLabel}...`;
+    case 'list_message_targets':
+      return tr?.('preparingRequest') ?? 'preparing request...';
     default:
       return tr?.('generating', { size: sizeLabel }) ?? `generating${sizeLabel}...`;
   }

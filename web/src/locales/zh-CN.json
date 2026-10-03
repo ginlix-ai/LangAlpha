@@ -2733,7 +2733,9 @@
       "portfolio": "持仓",
       "watchlist": "自选股",
       "preference": "偏好",
-      "user": "账号"
+      "user": "账号",
+      "sendMessage": "发送消息",
+      "messageTargets": "发送目标"
     },
     "completed": {
       "activatedSkill": "已激活技能",
@@ -2823,6 +2825,9 @@
       "managingAutomation": "管理自动化...",
       "annotatingChart": "正在标注图表...",
       "updatingAnnotations": "正在更新标注...",
+      "sendingTo": "发送到 {{app}}...",
+      "sendingMessage": "发送消息...",
+      "listingMessageTargets": "获取发送目标...",
       "processing": "处理中..."
     },
     "preparing": {
@@ -2833,6 +2838,7 @@
       "craftingSearch": "构建搜索...",
       "preparingRequest": "准备请求...",
       "buildingSearchPattern": "构建搜索模式...",
+      "composingMessage": "撰写消息{{size}}...",
       "generating": "生成中{{size}}..."
     },
     "nChars": "~{{count}} 字符",
@@ -2971,6 +2977,24 @@
         "viewInOrders": "在订单页查看",
         "openAt": "在 {{vendor}} 中打开"
       }
+    },
+    "messageDelivery": {
+      "status": {
+        "sent": "已发送",
+        "partial": "部分发送",
+        "failed": "未发送",
+        "unknown": "未知"
+      },
+      "file": {
+        "sent": "已发送",
+        "linked": "链接",
+        "failed": "失败",
+        "notSent": "未发送"
+      },
+      "thisConversation": "当前对话",
+      "message": "消息",
+      "files": "附件",
+      "sentEarlier": "此前已发送"
     }
   },
   "setup": {

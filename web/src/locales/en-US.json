@@ -2757,7 +2757,9 @@
       "portfolio": "Portfolio",
       "watchlist": "Watchlist",
       "preference": "Preferences",
-      "user": "Account"
+      "user": "Account",
+      "sendMessage": "Send Message",
+      "messageTargets": "Message Targets"
     },
     "completed": {
       "activatedSkill": "Activated skill",
@@ -2847,6 +2849,9 @@
       "managingAutomation": "managing automation...",
       "annotatingChart": "annotating chart...",
       "updatingAnnotations": "updating annotations...",
+      "sendingTo": "sending to {{app}}...",
+      "sendingMessage": "sending message...",
+      "listingMessageTargets": "listing message targets...",
       "processing": "processing..."
     },
     "preparing": {
@@ -2857,6 +2862,7 @@
       "craftingSearch": "crafting search...",
       "preparingRequest": "preparing request...",
       "buildingSearchPattern": "building search pattern...",
+      "composingMessage": "composing message{{size}}...",
       "generating": "generating{{size}}..."
     },
     "nChars": "~{{count}} chars",
@@ -3004,6 +3010,24 @@
         "viewInOrders": "View in Orders",
         "openAt": "Open in {{vendor}}"
       }
+    },
+    "messageDelivery": {
+      "status": {
+        "sent": "Sent",
+        "partial": "Partly sent",
+        "failed": "Not sent",
+        "unknown": "Unknown"
+      },
+      "file": {
+        "sent": "Sent",
+        "linked": "Link",
+        "failed": "Failed",
+        "notSent": "Not sent"
+      },
+      "thisConversation": "This conversation",
+      "message": "Message",
+      "files": "Files",
+      "sentEarlier": "Sent earlier"
     }
   },
   "setup": {

@@ -6,12 +6,14 @@
  * regression letting the agent mutate memos doesn't render as "Read memo".
  */
 import { describe, it, expect } from 'vitest';
-import { Clock, User } from 'lucide-react';
+import { Clock, Contact, Send, User, Wrench } from 'lucide-react';
 import {
   categorizeTool,
   getCompletedRowTitle,
   getCompletedSummary,
+  getDisplayName,
   getInProgressText,
+  getPreparingText,
   getToolIcon,
 } from '../toolDisplayConfig';
 
@@ -258,5 +260,50 @@ describe('automations: entity-aware labels for an automation file', () => {
   it('falls back to English without a translator', () => {
     expect(getCompletedRowTitle('Read', call)).toBe('Read automations');
     expect(getInProgressText('Write', call)).toBe('updating automations...');
+  });
+});
+
+describe('messaging tools: a named step, not a bare wrench', () => {
+  const send = (args: Record<string, unknown>) => ({ args: { text: 'hi', ...args } });
+
+  it('draws each tool with its own icon', () => {
+    expect(getToolIcon('send_message')).toBe(Send);
+    expect(getToolIcon('list_message_targets')).toBe(Contact);
+    expect(getToolIcon('send_message')).not.toBe(Wrench);
+    expect(getToolIcon('list_message_targets')).not.toBe(Wrench);
+  });
+
+  it('names both tools, translated and not', () => {
+    expect(getDisplayName('send_message', tIdentity)).toBe('toolArtifact.tool.sendMessage');
+    expect(getDisplayName('list_message_targets', tIdentity)).toBe('toolArtifact.tool.messageTargets');
+    expect(getDisplayName('send_message')).toBe('Send Message');
+    expect(getCompletedRowTitle('list_message_targets', { args: {} })).toBe('Message Targets');
+  });
+
+  it('summarizes a send by the app its target names', () => {
+    expect(getCompletedSummary('send_message', send({ target: 'telegram:-100123' }))).toBe('Telegram');
+    expect(getCompletedSummary('send_message', send({ target: 'slack:T1/C2' }))).toBe('Slack');
+    expect(getCompletedSummary('send_message', send({ target: 'imessage' }))).toBe('iMessage');
+    expect(getCompletedSummary('send_message', send({ target: 'Discord:G/C' }))).toBe('Discord');
+    expect(getCompletedSummary('send_message', send({ target: 'matrix:!room' }))).toBe('Matrix');
+  });
+
+  it('carries no summary for a send to the turn\'s own conversation', () => {
+    expect(getCompletedSummary('send_message', send({}))).toBeNull();
+    expect(getCompletedSummary('send_message', send({ target: '' }))).toBeNull();
+  });
+
+  it('says where a send is going while it runs', () => {
+    expect(getInProgressText('send_message', send({ target: 'discord:G/C' }))).toBe('sending to Discord...');
+    expect(getInProgressText('send_message', send({}))).toBe('sending message...');
+    expect(getInProgressText('send_message', send({ target: 'slack:T/C' }), tIdentity)).toBe('toolArtifact.inProgress.sendingTo');
+    expect(getInProgressText('list_message_targets', { args: {} })).toBe('listing message targets...');
+    expect(getInProgressText('list_message_targets', { args: {} }, tIdentity)).toBe('toolArtifact.inProgress.listingMessageTargets');
+  });
+
+  it('says what is being prepared before the call is written', () => {
+    expect(getPreparingText('send_message', 10)).toBe('composing message...');
+    expect(getPreparingText('send_message', 2400)).toBe('composing message (~2.4 KB)...');
+    expect(getPreparingText('list_message_targets', 0)).toBe('preparing request...');
   });
 });

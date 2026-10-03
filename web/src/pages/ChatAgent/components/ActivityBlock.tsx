@@ -103,7 +103,7 @@ const ActivityBlock = memo(function ActivityBlock({
       if (item.type !== 'tool_call') return null;
       const artifact = item.toolCallResult?.artifact;
       const Chart = artifact && INLINE_ARTIFACT_MAP[artifact.type as string];
-      return Chart ? <div key={item.id} className="mb-1.5"><Chart artifact={artifact} onClick={() => openCardTarget(artifact, onOpenChart, () => onToolCallClick?.(item))} /></div> : null;
+      return Chart ? <div key={item.id} className="mb-1.5"><Chart artifact={artifact} toolArgs={item.toolCall?.args} onClick={() => openCardTarget(artifact, onOpenChart, () => onToolCallClick?.(item))} /></div> : null;
     })}
     <AnimatePresence initial={false}>
       {showSummary && <motion.div key="summary" className="clips-focus-ring"

@@ -270,6 +270,7 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
             <div key={block.key}>
               <ChartComponent
                 artifact={artifact!}
+                toolArgs={(block as CompactArtifactRenderBlock).proc.toolCall?.args}
                 onClick={() => openCardTarget(artifact, onOpenChart, () => onToolCallDetailClick?.((block as CompactArtifactRenderBlock).toolCallId))}
               />
             </div>
