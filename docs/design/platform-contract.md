@@ -137,8 +137,9 @@ turn's sends none, whatever the thread is bound to.
   `unavailable` (`platform`, `reason`, `message`) and `settings_url`.
 - `POST {base}/agent/send` takes `thread_id`, `run_id`, `tool_call_id`, `turn_platform`,
   `workspace_id`, `target` (null for the conversation this turn is in), `text`, `files`
-  (`[{"path", "workspace_id"}]`, a null `workspace_id` meaning the request's) and `reply` and `new_thread` (true
-  starts a fresh thread in the chat instead of continuing this conversation's; always sent). Every
+  (`[{"path", "workspace_id"}]`, a null `workspace_id` meaning the request's), `reply` and
+  `new_thread` (true starts a fresh thread in the chat instead of continuing this conversation's;
+  always sent). Every
   delivery outcome is a 200 carrying `status` (`sent`, `partial`, `failed`), `code`, `message`,
   `address`, `current`, `duplicate` and per-file `files` (`path`, `status`, `reason`). The same
   `tool_call_id` twice is the graph replaying a tool step after a resume, and must not send
