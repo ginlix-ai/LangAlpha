@@ -18,19 +18,21 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from market_protocol import served_display_unit
-from src.data_client.normalize import publisher_lineage
+from src.data_client.normalize import series_lineage
 from market_protocol import (
     OHLCV_SCHEMAS,
     AssetClass,
+    InstrumentRef,
     OhlcvBar,
     Series,
     SeriesHeader,
-    display_decimals_for,
+    served_display_decimals,
+    served_display_unit,
     to_canonical,
     to_legacy_api,
 )
 from market_protocol.intervals import is_intraday_schema, legacy_for_schema
+from src.data_client.freshness import measure_bars, measure_daily
 from src.data_client.instrument_clock import clock_for
 from src.server.services.cache.daily_cache_service import DailyCacheService
 from src.server.services.cache.intraday_cache_service import IntradayCacheService
@@ -60,6 +62,18 @@ _WIRE_EXCLUDE = {
     },
     "records": {"__all__": {"vwap", "trades"}},
 }
+
+
+def resolve_instrument(instrument: str, asset_class: Optional[AssetClass] = None) -> InstrumentRef:
+    """Canonical ref for a route's instrument, answering a refused spelling with a 422.
+
+    The protocol raises ValueError for every spelling it refuses, so any other
+    failure is the server's and stays a 500.
+    """
+    try:
+        return to_canonical(instrument, asset_class=asset_class)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid instrument: {instrument!r}") from None
 
 
 def _bar_time(bar: dict[str, Any]) -> int:
@@ -122,11 +136,12 @@ def _series_header(ref, schema: str, env_header: dict[str, Any], result) -> Seri
     """Protocol Series header: lineage from the fetched envelope, currency from
     the InstrumentRef, ``schema`` as the requested id.
 
-    Lineage falls back through :func:`publisher_lineage` for a known-but-partial
+    Lineage falls back through :func:`series_lineage` for a known-but-partial
     publisher, and to its neutral default only when the header is truly absent.
-    ``display_unit`` describes the served (major-unit) values.
+    ``display_unit`` and ``display_decimals`` describe the served (major-unit)
+    values, as ``build_series`` stamps them.
     """
-    treatment, tier = publisher_lineage(env_header.get("publisher"))
+    treatment, tier = series_lineage(env_header.get("publisher"), ref)
     return SeriesHeader(
         instrument_key=ref.instrument_key,
         schema_id=schema,
@@ -135,7 +150,7 @@ def _series_header(ref, schema: str, env_header: dict[str, Any], result) -> Seri
         tier=env_header.get("tier") or tier,
         feed_scope=env_header.get("feed_scope", "composite"),
         price_currency=ref.price_currency,
-        display_decimals=display_decimals_for(ref.price_currency, ref.asset_class),
+        display_decimals=served_display_decimals(ref),
         display_unit=served_display_unit(ref.display_unit),
         latest_trading_date=env_header.get("latest_trading_date"),
         revision=env_header.get("revision", 0),
@@ -224,15 +239,12 @@ async def get_bars(
         )
     index_hint = ac_hint == "index"
     equity_hint = ac_hint in ("equity", "stock")
-    try:
-        hint = (
-            AssetClass.INDEX if index_hint
-            else AssetClass.EQUITY if equity_hint
-            else None
-        )
-        ref = to_canonical(instrument, asset_class=hint)
-    except Exception:
-        raise HTTPException(status_code=422, detail=f"Invalid instrument: {instrument!r}") from None
+    hint = (
+        AssetClass.INDEX if index_hint
+        else AssetClass.EQUITY if equity_hint
+        else None
+    )
+    ref = resolve_instrument(instrument, hint)
     is_index = ref.asset_class is AssetClass.INDEX
     legacy_symbol = to_legacy_api(ref)
 
@@ -286,6 +298,22 @@ async def get_bars(
     else:
         page = {"next_cursor": None, "has_more": False}
 
+    # Measured over the whole live series, not the delta slice: an `after=`
+    # poll that returns nothing new still has a newest bar to measure. A
+    # history page says nothing about how current the chart is, so it has none.
+    freshness = None
+    if mode != "before":
+        source = env_header.get("publisher") or None
+        measured = (
+            measure_bars(
+                legacy_symbol, interval, result.data or [], is_index=is_index,
+                source=source, tier=header.tier,
+            )
+            if intraday
+            else measure_daily(legacy_symbol, result.data or [], is_index=is_index, source=source)
+        )
+        freshness = measured.model_dump(mode="json")
+
     return {
         "series": series,
         "page": page,
@@ -299,5 +327,6 @@ async def get_bars(
             "cache_key": result.cache_key,
             "market_phase": phase,
             "next_change_at": clock.next_phase_change_ms(),
+            "freshness": freshness,
         },
     }

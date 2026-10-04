@@ -191,6 +191,64 @@ async def test_header_defaults_when_envelope_absent(client):
     assert header["watermark"] == _MS  # falls back to the FetchResult watermark
 
 
+async def test_pence_listing_declares_the_decimals_build_series_serves(client):
+    # Served in pounds, a pence price keeps its own places: 54.32p is 0.5432.
+    with _stub(intraday_result=_intraday_result([_bar(_MS)], symbol="VOD.L")):
+        resp = await client.get("/api/v1/market-data/bars/VOD.L?schema=ohlcv-1m")
+    header = resp.json()["series"]["header"]
+    assert header["price_currency"] == "GBP"
+    assert header["display_unit"] is None
+    assert header["display_decimals"] == 4
+
+
+# ---------------------------------------------------------------------------
+# Measured freshness (the cache block, like the legacy bars routes' field)
+# ---------------------------------------------------------------------------
+
+async def test_intraday_freshness_measures_the_live_series(client):
+    bars = [_bar(_MS), _bar(_MS + 60_000)]
+    with _stub(intraday_result=_intraday_result(bars, phase="open")):
+        resp = await client.get("/api/v1/market-data/bars/AAPL?schema=ohlcv-1m")
+
+    freshness = resp.json()["cache"]["freshness"]
+    # Same shape the legacy intraday route returns: a measured Freshness dump.
+    assert freshness["measured"] is True
+    assert freshness["actual_latest"] == _MS + 60_000
+    assert freshness["interval"] == "1min"
+    assert freshness["source"] == "stub-pub"
+    assert freshness["label"] in {"live", "delayed", "stale", "incomplete"}
+
+
+async def test_delta_poll_with_no_new_bars_still_measures(client):
+    # The client re-reads freshness on every delta poll; an empty slice must not
+    # read as unknown while the series itself has a newest bar.
+    bars = [_bar(_MS)]
+    with _stub(intraday_result=_intraday_result(bars, phase="open")):
+        resp = await client.get(f"/api/v1/market-data/bars/AAPL?schema=ohlcv-1m&after={_MS + 60_000}")
+
+    body = resp.json()
+    assert body["series"]["records"] == []
+    assert body["cache"]["freshness"]["actual_latest"] == _MS
+
+
+async def test_daily_freshness_counts_trading_days(client):
+    bars = [_bar(_MS)]
+    with _stub(daily_result=_daily_result(bars)):
+        resp = await client.get("/api/v1/market-data/bars/AAPL?schema=ohlcv-1d")
+
+    freshness = resp.json()["cache"]["freshness"]
+    assert freshness["interval"] == "1day"
+    assert freshness["actual_latest"] == _MS
+    assert freshness["measured"] is True
+
+
+async def test_history_page_carries_no_freshness(client):
+    with _stub(intraday_result=_intraday_result([_bar(_MS)], cache_key="hist")):
+        resp = await client.get("/api/v1/market-data/bars/AAPL?schema=ohlcv-1m&before=2026-06-29")
+
+    assert resp.json()["cache"]["freshness"] is None
+
+
 # ---------------------------------------------------------------------------
 # after= delta poll
 # ---------------------------------------------------------------------------
@@ -246,6 +304,19 @@ async def test_after_behind_server_watermark_excludes_stale_head(client):
         resp = await client.get(f"/api/v1/market-data/bars/AAPL?schema=ohlcv-1m&after={_MS + 60_000}")
 
     assert resp.json()["series"]["records"] == []
+
+
+async def test_after_carries_the_series_revision_and_basis(client):
+    # A rebuilt series answers `after=` with its new tail only; the header's
+    # revision and price_treatment are how a live chart knows not to splice it.
+    bars = [_bar(_MS), _bar(_MS + 60_000)]
+    header = _v4_envelope(bars, revision=4, price_treatment="raw")["header"]
+    with _stub(intraday_result=_intraday_result(bars, header=header)):
+        resp = await client.get(f"/api/v1/market-data/bars/AAPL?schema=ohlcv-1m&after={_MS + 60_000}")
+
+    served = resp.json()["series"]["header"]
+    assert served["revision"] == 4
+    assert served["price_treatment"] == "raw"
 
 
 async def test_after_non_int_is_422(client):

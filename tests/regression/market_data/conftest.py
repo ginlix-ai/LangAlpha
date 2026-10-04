@@ -24,6 +24,14 @@ from pathlib import Path
 import httpx
 import pytest
 
+from src.server.models.market_data import (
+    CacheMetadata,
+    DailyResponse,
+    IntradayDataPoint,
+    IntradayResponse,
+    SnapshotData,
+)
+
 REPO_ROOT = Path(__file__).parents[3]
 
 BASE_URL = os.getenv("REGRESSION_BASE_URL", "http://localhost:8000")
@@ -39,16 +47,13 @@ US_INDEX = "GSPC"
 US_INDEX_2 = "IXIC"
 UNKNOWN_SYMBOL = "ZZZZFAKE1"
 
-STOCK_SNAPSHOT_FIELDS = {
-    "symbol", "name", "price", "change", "change_percent", "previous_close",
-    "open", "high", "low", "volume", "market_status", "regular_trading_change",
-    "early_trading_change_percent", "late_trading_change_percent", "source",
-}
-BAR_FIELDS = {"time", "open", "high", "low", "close", "volume"}
-CACHE_META_FIELDS = {
-    "cached", "cache_key", "ttl_remaining", "refreshed_in_background",
-    "watermark", "complete", "market_phase", "truncated",
-}
+# Key sets come from the response models: every field serializes, null or not,
+# so the wire carries exactly these. A hand-kept copy went stale silently.
+STOCK_SNAPSHOT_FIELDS = set(SnapshotData.model_fields)
+BAR_FIELDS = set(IntradayDataPoint.model_fields)
+CACHE_META_FIELDS = set(CacheMetadata.model_fields)
+INTRADAY_FIELDS = set(IntradayResponse.model_fields)
+DAILY_FIELDS = set(DailyResponse.model_fields)
 
 _EPOCH_2000_MS = 946_684_800_000
 
@@ -135,7 +140,7 @@ def assert_cache_meta(meta: dict, *, context: str = "") -> None:
 
 def assert_ohlcv_response(payload: dict, *, symbol: str, expect_interval: str | None = None) -> None:
     # Intraday responses carry "interval"; daily responses do not — both pinned.
-    expected_keys = {"symbol", "interval", "data", "count", "cache"} if expect_interval else {"symbol", "data", "count", "cache"}
+    expected_keys = INTRADAY_FIELDS if expect_interval else DAILY_FIELDS
     assert set(payload.keys()) == expected_keys, f"{symbol}: response keys drifted: {sorted(payload.keys())}"
     assert payload["symbol"] == symbol
     if expect_interval is not None:
