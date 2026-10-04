@@ -366,3 +366,21 @@ async def test_delete_watchlist_item_not_found(wl_mock_db, mock_cursor):
 
     result = await delete_watchlist_item("nonexistent", "user-1")
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_create_watchlist_item_insert_race_is_a_duplicate(wl_mock_db, mock_cursor):
+    """The profile lock serializes a user's adds, so the unique index is the
+    backstop: a violation there must still read as "already exists", not a 500."""
+    from psycopg.errors import UniqueViolation
+
+    from src.server.database.watchlist import create_watchlist_item
+
+    mock_cursor.fetchone.side_effect = [{"watchlist_id": "wl-1"}, None]
+    # Profile lock, watchlist check, duplicate check, then the INSERT.
+    mock_cursor.execute.side_effect = [None, None, None, UniqueViolation()]
+
+    with pytest.raises(ValueError, match="already exists"):
+        await create_watchlist_item(
+            user_id="user-1", watchlist_id="wl-1", symbol="0700.HK", instrument_type="stock",
+        )

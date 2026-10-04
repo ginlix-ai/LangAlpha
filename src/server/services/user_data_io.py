@@ -395,7 +395,7 @@ def parse_portfolio(content: str) -> list[dict[str, Any]]:
             "name": _coerce_str(item.get("name"), file, f"holdings[{idx}].name", required=False),
             "quantity": quantity,
             "average_cost": average_cost,
-            "currency": _coerce_str(item.get("currency"), file, f"holdings[{idx}].currency", required=False) or "USD",
+            "currency": _coerce_str(item.get("currency"), file, f"holdings[{idx}].currency", required=False) or None,
             "account_name": account_name,
             "notes": _coerce_str(item.get("notes"), file, f"holdings[{idx}].notes", required=False),
             "first_purchased_at": _coerce_str(item.get("first_purchased_at"), file, f"holdings[{idx}].first_purchased_at", required=False),
@@ -427,6 +427,13 @@ def diff_portfolio(
             (normalized["symbol"], normalized["instrument_type"], normalized["account_name"])
         )
 
+        # A row without a currency keeps the one it is held in, else takes its
+        # listing's, as the holding upsert does.
+        if normalized["currency"] is None:
+            held_in = existing.get("currency") if existing else None
+            normalized = {**normalized, "currency": held_in or portfolio_db.default_holding_currency(
+                normalized["symbol"], normalized["instrument_type"]
+            )}
         if existing is None:
             diff.inserts.append(normalized)
             continue
@@ -491,7 +498,7 @@ async def write_portfolio_diff(cur: Any, diff: PortfolioDiff, user_id: str) -> N
                     row.get("id") or str(uuid4()),
                     user_id, row["symbol"], row["instrument_type"],
                     row.get("exchange"), row.get("name"), row["quantity"],
-                    row.get("average_cost"), row.get("currency") or "USD",
+                    row.get("average_cost"), row["currency"],
                     row.get("account_name"), row.get("notes"),
                     Json({}), row.get("first_purchased_at"),
                 )
@@ -513,7 +520,7 @@ async def write_portfolio_diff(cur: Any, diff: PortfolioDiff, user_id: str) -> N
                 (
                     row["symbol"], row["instrument_type"], row.get("exchange"),
                     row.get("name"), row["quantity"], row.get("average_cost"),
-                    row.get("currency") or "USD", row.get("account_name"),
+                    row["currency"], row.get("account_name"),
                     row.get("notes"), row.get("first_purchased_at"),
                     row["id"], user_id,
                 )

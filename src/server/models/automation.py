@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
 from croniter import croniter
+from market_protocol import display_spelling
 from pydantic import (
     BaseModel,
     Field,
@@ -107,15 +108,17 @@ class PriceTriggerConfig(BaseModel):
     @field_validator("symbol")
     @classmethod
     def validate_bare_symbol(cls, v: str) -> str:
-        """Reject prefixed symbols and normalize display aliases."""
-        if v.startswith("I:"):
-            bare = v[2:]
-            raise ValueError(f"Use bare symbol (e.g. '{bare}', not '{v}')")
-        if v.startswith("^"):
-            bare = v[1:]
-            raise ValueError(f"Use bare symbol (e.g. '{bare}', not '{v}')")
-        upper = v.upper()
-        return _DISPLAY_ALIASES.get(upper, upper)
+        """Reject prefixed symbols and normalize display aliases.
+
+        Spelled first, so a padded or full-width entry (" ^GSPC", "＾GSPC",
+        "GSPC ") meets the same checks and aliases as its plain form.
+        """
+        spelled = display_spelling(v)
+        for prefix in ("I:", "^"):
+            if spelled.startswith(prefix):
+                bare = spelled[len(prefix):]
+                raise ValueError(f"Use bare symbol (e.g. '{bare}', not '{spelled}')")
+        return _DISPLAY_ALIASES.get(spelled, spelled)
 
     @model_validator(mode="after")
     def infer_market_from_symbol(self):
@@ -260,9 +263,9 @@ SCHEDULE_FIELD: Dict[str, str] = {
     "price": "trigger_config",
 }
 
-# The monitor watches the US stock and index feeds, where a pair or futures
-# symbol is saved as a stock that never quotes. Bare bases stay allowed:
-# BTC and ETH are also US-listed fund tickers.
+# A crypto, currency or futures symbol is refused: the monitor has no feed
+# for any of them, so it would be saved as a stock that never quotes. Bare
+# bases stay allowed: BTC and ETH are also US-listed fund tickers.
 _PAIR_QUOTES = ("USD", "USDT", "USDC", "EUR", "GBP", "JPY")
 _CRYPTO_BASES = ("BTC", "ETH", "SOL", "XRP", "DOGE", "ADA", "LTC", "BNB", "AVAX", "DOT", "LINK", "SHIB")
 
@@ -344,7 +347,8 @@ class _ScheduleFields(BaseModel):
     ) -> Optional[Dict[str, Any]]:
         # The monitor skips a config it cannot parse without a word, so one
         # stored unchecked leaves an alert that reads as watching and never
-        # fires. The config is stored as sent: the monitor parses it again.
+        # fires. The config is stored as sent, the monitor parses it again;
+        # only the symbol is stored as the monitor reads it (600519.SH, SPX).
         if v is not None:
             try:
                 config = PriceTriggerConfig(**v)
@@ -353,8 +357,9 @@ class _ScheduleFields(BaseModel):
             if _is_pair_symbol(config.symbol):
                 raise ValueError(
                     f"Invalid price trigger config: '{config.symbol}' is a crypto, currency or futures "
-                    "symbol; price alerts watch US stocks and indices only"
+                    "symbol; price alerts cannot watch those"
                 )
+            v = {**v, "symbol": config.symbol}
         return v
 
     @field_validator("timezone")

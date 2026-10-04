@@ -132,6 +132,44 @@ class TestPortfolioParseAndDiff:
         assert diff.updates == []
         assert diff.deletes == []
 
+    def test_a_new_holding_without_a_currency_is_in_its_listings(self):
+        payload = self._make_payload("v1", [{
+            "symbol": "600519.SH", "instrument_type": "stock", "quantity": "100",
+        }])
+        diff = _diff_portfolio(payload, [])
+        assert diff.inserts[0]["currency"] == "CNY"
+
+    def test_a_held_row_without_a_currency_keeps_the_one_it_is_held_in(self):
+        existing = _portfolio_row(symbol="600519.SH", currency="CNY", exchange=None, name=None)
+        payload = self._make_payload("v1", [{
+            "symbol": "600519.SH", "instrument_type": "stock", "quantity": "200",
+            "average_cost": "150.25", "account_name": "Main", "notes": "Long-term hold",
+        }])
+        diff = _diff_portfolio(payload, [existing])
+        assert diff.updates[0]["currency"] == "CNY"
+
+    def test_a_blank_currency_is_the_same_as_none(self):
+        payload = self._make_payload("v1", [{
+            "symbol": "600519.SH", "instrument_type": "stock", "quantity": "100",
+            "currency": "",
+        }])
+        assert _diff_portfolio(payload, []).inserts[0]["currency"] == "CNY"
+        existing = _portfolio_row(symbol="600519.SH", currency="CNY", exchange=None, name=None)
+        payload = self._make_payload("v1", [{
+            "symbol": "600519.SH", "instrument_type": "stock", "quantity": "200",
+            "account_name": "Main", "currency": "",
+        }])
+        assert _diff_portfolio(payload, [existing]).updates[0]["currency"] == "CNY"
+
+    def test_a_held_row_with_no_currency_on_record_takes_its_listings(self):
+        existing = _portfolio_row(symbol="600519.SH", currency=None, exchange=None, name=None)
+        payload = self._make_payload("v1", [{
+            "symbol": "600519.SH", "instrument_type": "stock", "quantity": "200",
+            "account_name": "Main",
+        }])
+        diff = _diff_portfolio(payload, [existing])
+        assert diff.updates[0]["currency"] == "CNY"
+
     def test_update_existing_by_unique_key(self):
         existing = _portfolio_row()
         payload = self._make_payload("v1", [{

@@ -9,11 +9,13 @@ import logging
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from src.server.database.pool import get_db_connection
 from src.server.database.user_lock import lock_user_profile
+from src.server.models.user import normalize_symbol
 from src.server.utils.db import UpdateQueryBuilder
 
 logger = logging.getLogger(__name__)
@@ -410,6 +412,7 @@ async def create_watchlist_item(
         ValueError: If watchlist doesn't exist or doesn't belong to user
     """
     watchlist_item_id = str(uuid4())
+    symbol = normalize_symbol(symbol)
 
     async with get_db_connection() as conn, conn.transaction():
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -436,8 +439,11 @@ async def create_watchlist_item(
                     f"Item already exists in watchlist for {symbol} ({instrument_type})"
                 )
 
-            # Insert new watchlist item
-            await cur.execute("""
+            # Insert new watchlist item. The SELECT above is not a lock, so two
+            # concurrent adds can both pass it; the unique index is the
+            # arbiter and its violation is the same "already exists" answer.
+            try:
+                await cur.execute("""
                 INSERT INTO watchlist_items (
                     watchlist_item_id, watchlist_id, user_id, symbol, instrument_type,
                     exchange, name, notes, alert_settings, metadata,
@@ -448,12 +454,16 @@ async def create_watchlist_item(
                     watchlist_item_id, watchlist_id, user_id, symbol, instrument_type,
                     exchange, name, notes, alert_settings, metadata,
                     created_at, updated_at
-            """, (
-                watchlist_item_id, watchlist_id, user_id, symbol, instrument_type,
-                exchange, name, notes,
-                Json(alert_settings or {}),
-                Json(metadata or {}),
-            ))
+                """, (
+                    watchlist_item_id, watchlist_id, user_id, symbol, instrument_type,
+                    exchange, name, notes,
+                    Json(alert_settings or {}),
+                    Json(metadata or {}),
+                ))
+            except UniqueViolation:
+                raise ValueError(
+                    f"Item already exists in watchlist for {symbol} ({instrument_type})"
+                ) from None
 
             result = await cur.fetchone()
             logger.info(

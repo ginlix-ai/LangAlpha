@@ -51,6 +51,16 @@ async def test_remove_specific_and_clear():
 
 
 @pytest.mark.asyncio
+async def test_remove_finds_a_listing_stored_in_the_vendor_spelling():
+    """A list written before Shanghai was stored as ``.SH`` still holds
+    ``600519.SS``; unwatching either spelling removes it."""
+    for asked in ("600519.SH", "600519.ss"):
+        cache = _fake_cache(["600519.SS", "NVDA"])
+        with patch(f"{_MOD}.get_cache_client", return_value=cache):
+            assert await remove_symbols("t-1", [asked]) == ["NVDA"]
+
+
+@pytest.mark.asyncio
 async def test_redis_disabled_reports_unavailable():
     """Mutations distinguish "cache unavailable" (None) from an empty list."""
     cache = _fake_cache()
