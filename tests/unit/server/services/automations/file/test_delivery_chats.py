@@ -169,3 +169,43 @@ class TestDeliveryChats:
 
         assert report.startswith('Saved new.json: created "A"')
         assert db.rows[CREATED]["delivery_config"] == {"methods": ["slack"]}
+
+
+class TestTheLimits:
+    """At most 20 entries of at most 256 characters: the count the messaging
+    service takes when a run hands it the delivery, and the length it checks."""
+
+    @pytest.mark.asyncio
+    async def test_twenty_entries_save(self, db, backend, no_gateway):
+        delivery = [f"app{i}" for i in range(20)]
+
+        await _create(backend, {**NEW, "delivery": delivery})
+
+        assert db.rows[CREATED]["delivery_config"] == {"methods": delivery}
+
+    @pytest.mark.asyncio
+    async def test_twenty_one_entries_are_refused(self, db, backend, no_gateway):
+        error = await _refusal(
+            backend,
+            db,
+            {**NEW, "delivery": [f"app{i}" for i in range(21)]},
+            path=f"{backend.root_prefix}new.json",
+        )
+
+        assert error.problems == [("delivery", "'app20': past the limit of 20 entries")]
+
+    @pytest.mark.asyncio
+    async def test_an_overlong_entry_is_refused(self, db, backend, gateway):
+        entry = "slack:" + "C" * 251
+
+        error = await _refusal(
+            backend,
+            db,
+            {**NEW, "delivery": ["slack", entry]},
+            path=f"{backend.root_prefix}new.json",
+        )
+
+        assert error.problems == [
+            ("delivery", f"{entry[:39] + '…'!r}: longer than 256 characters")
+        ]
+        assert gateway.asked == []

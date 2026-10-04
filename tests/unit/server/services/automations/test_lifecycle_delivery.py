@@ -151,6 +151,76 @@ class TestCheckDelivery:
         ]
 
 
+class TestTheLimits:
+    """The messaging service takes at most 20 entries when a run hands it the
+    delivery, refusing the whole run past that, and checks a chat of at most
+    256 characters, so a save refuses past either first."""
+
+    @pytest.mark.asyncio
+    async def test_twenty_entries_save(self, no_gateway):
+        methods = [f"app{i}" for i in range(20)]
+
+        assert await check_delivery(OWNER, methods) == methods
+
+    @pytest.mark.asyncio
+    async def test_each_entry_past_twenty_is_refused(self, check_target):
+        methods = [f"app{i}" for i in range(22)]
+
+        with pytest.raises(DeliveryRefused) as exc:
+            await check_delivery(OWNER, methods)
+
+        assert exc.value.refusals == [
+            ("app20", "past the limit of 20 entries"),
+            ("app21", "past the limit of 20 entries"),
+        ]
+        # Refused before the messaging service is asked anything.
+        assert check_target.asked == []
+
+    @pytest.mark.asyncio
+    async def test_an_entry_longer_than_256_characters_is_refused(self, check_target):
+        longest = "slack:" + "C" * 250
+        too_long = longest + "C"
+
+        assert await check_delivery(OWNER, [longest], stored=[longest]) == [longest]
+        with pytest.raises(DeliveryRefused) as exc:
+            await check_delivery(OWNER, ["slack", too_long])
+
+        assert exc.value.refusals == [(too_long, "longer than 256 characters")]
+        # Refused here, not read back as a check that failed.
+        assert check_target.asked == []
+
+    @pytest.mark.asyncio
+    async def test_stored_entries_count_too(self, check_target):
+        """The run hands the service the whole list, however much of it was
+        saved before."""
+        stored = [f"app{i}" for i in range(20)]
+
+        with pytest.raises(DeliveryRefused):
+            await check_delivery(OWNER, [*stored, "slack"], stored=stored)
+
+    @pytest.mark.asyncio
+    @patch(f"{_LIFECYCLE}.auto_db")
+    async def test_a_create_past_the_limit_writes_nothing(self, mock_auto_db, no_gateway):
+        with pytest.raises(DeliveryRefused):
+            await create_automation(OWNER, _create_data([f"app{i}" for i in range(21)]))
+
+        mock_auto_db.create_automation.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch(f"{_LIFECYCLE}.auto_db")
+    async def test_an_update_past_the_limit_writes_nothing(self, mock_auto_db, no_gateway):
+        mock_auto_db.get_automation = AsyncMock(return_value=_row(["slack"]))
+
+        with pytest.raises(DeliveryRefused):
+            await update_automation(
+                AUTOMATION_ID,
+                OWNER,
+                {"delivery_config": {"methods": [f"app{i}" for i in range(21)]}},
+            )
+
+        mock_auto_db.update_automation.assert_not_called()
+
+
 class TestThroughTheLifecycle:
     @pytest.mark.asyncio
     @patch(f"{_LIFECYCLE}.auto_db")

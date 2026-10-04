@@ -1063,3 +1063,54 @@ async def test_update_refused_for_its_delivery_names_each_entry(client):
 
     assert resp.status_code == 409
     assert resp.json() == {"detail": _JOINED, "problems": _PROBLEMS}
+
+
+# The messaging service takes at most 20 entries when a run hands it the
+# delivery, and checks a chat of at most 256 characters, so a save refuses more.
+_TWENTY_ONE = [f"app{i}" for i in range(21)]
+_PAST_THE_LIMIT = {
+    "detail": "'app20': past the limit of 20 entries",
+    "problems": [{"entry": "app20", "message": "past the limit of 20 entries"}],
+}
+
+
+@pytest.mark.asyncio
+async def test_create_with_too_many_delivery_entries_is_refused(client):
+    with patch(f"{HANDLER_DB}.create_automation", new_callable=AsyncMock) as create:
+        resp = await client.post(
+            "/api/v1/automations",
+            json={
+                "name": "Brief",
+                "trigger_type": "cron",
+                "cron_expression": "0 8 * * *",
+                "instruction": "test",
+                "delivery_config": {"methods": _TWENTY_ONE},
+            },
+        )
+
+    assert resp.status_code == 409
+    assert resp.json() == _PAST_THE_LIMIT
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_with_an_overlong_delivery_entry_is_refused(client):
+    entry = "slack:" + "C" * 300
+    with (
+        patch(
+            f"{HANDLER_DB}.get_automation",
+            new_callable=AsyncMock,
+            return_value=_automation(delivery_config={"methods": ["slack"]}),
+        ),
+        patch(f"{HANDLER_DB}.update_automation", new_callable=AsyncMock) as update,
+    ):
+        resp = await client.patch(
+            f"/api/v1/automations/{AUTO_ID}",
+            json={"delivery_config": {"methods": ["slack", entry]}},
+        )
+
+    assert resp.status_code == 409
+    assert resp.json()["problems"] == [
+        {"entry": entry, "message": "longer than 256 characters"}
+    ]
+    update.assert_not_awaited()

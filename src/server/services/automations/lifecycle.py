@@ -29,6 +29,7 @@ from src.server.models.automation import (
     AutomationCreate,
     AutomationUpdate,
     DeliveryConfig,
+    delivery_overflow,
     on_clock,
 )
 from src.server.services.automation_scheduler import AutomationScheduler
@@ -192,11 +193,16 @@ async def check_delivery(
     ``stored``, which was checked when it was saved. With a messaging
     service, a new app name is checked too, so one the user hasn't linked is
     refused; it still follows the app's chain, so it is never replaced by the
-    chat the service answers.
+    chat the service answers. Entries past the limits (``delivery_overflow``)
+    are refused before anything is asked, stored ones included, since a run
+    hands the service the whole list.
 
     Raises:
         DeliveryRefused: naming every entry that can't be used, and why
     """
+    overflow = delivery_overflow(list(methods))
+    if overflow:
+        raise DeliveryRefused(overflow)
     fresh = [m for m in dict.fromkeys(methods) if checks_entry(m) and m not in stored]
     if not fresh:
         return list(methods)

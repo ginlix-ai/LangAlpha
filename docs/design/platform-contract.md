@@ -192,7 +192,10 @@ gateway holds both, with the same two headers:
   address is stored as the canonical `address`, and an app name (`"slack"`) is kept as written,
   refused while the user hasn't linked that app. An entry the automation already holds is not
   checked again. Without a gateway, an address entry is refused, while an app name saves
-  unchecked. The gateway resolves an app name to the workspace's `automation_output`, else the
+  unchecked. An automation holds at most 20 entries, what `automation-runs` takes below, of at
+  most 256 characters each, what this check takes: every save refuses an entry past either
+  limit before anything is checked, as REST's 409 `problems`, a tool's error or a problem on the file's `delivery`.
+  The gateway resolves an app name to the workspace's `automation_output`, else the
   app's `preferred`, else the user's direct messages; an address, `<app>:@me` included, posts to
   that chat.
 
