@@ -141,6 +141,23 @@
   margin-top: 0;
 }
 
+.automation-history-error .automation-run-error + .automation-run-error {
+  margin-top: 2px;
+}
+
+/* A run can land in several chats: one line each, wrapping rather than
+   widening the table. */
+.automation-history td.automation-history-delivery {
+  white-space: normal;
+  min-width: 10rem;
+}
+
+.automation-history-attempt {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .automation-details {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
