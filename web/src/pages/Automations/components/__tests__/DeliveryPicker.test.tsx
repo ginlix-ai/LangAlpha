@@ -181,10 +181,11 @@ describe('the delivery picker', () => {
   });
 
   it('shows an app’s error quietly', async () => {
-    serve({ ...OPTIONS, apps: { ...OPTIONS.apps, telegram: { chats: [], default: null, error: 'Telegram is not responding.' } } });
+    serve({ ...OPTIONS, apps: { ...OPTIONS.apps, telegram: { chats: [], default: null, error: 'list_failed' } } });
     renderPicker();
 
-    expect(await screen.findByText('Telegram: Telegram is not responding.')).toBeInTheDocument();
+    expect(await screen.findByText("Telegram: Couldn't load chats")).toBeInTheDocument();
+    expect(screen.queryByText(/list_failed/)).not.toBeInTheDocument();
   });
 
   it('offers the apps alone where no messaging service is connected', async () => {

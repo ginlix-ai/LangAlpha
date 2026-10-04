@@ -271,9 +271,10 @@ export default function DeliveryPicker({
         </Select>
       )}
 
-      {appErrors.map(([app, data]) => (
+      {/* The service names what failed with a code, not words for the reader. */}
+      {appErrors.map(([app]) => (
         <p key={app} className="automation-form-readout mt-0">
-          {t('automation.deliveryNamedProblem', { name: messagingAppName(app), message: data.error })}
+          {t('automation.deliveryNamedProblem', { name: messagingAppName(app), message: t('automation.deliveryOptionsUnavailable') })}
         </p>
       ))}
       {defaultError && (
