@@ -23,7 +23,9 @@ from src.server.handlers.chat.admission_gate import (
     ADMISSION_CONFLICT_CODES,
     admission_conflict_detail,
 )
+from src.server.services import automation_delivery
 from src.server.services import automation_executor as executor_mod
+from src.server.services.automation_delivery import Target
 from src.server.services.automation_executor import AutomationExecutor
 from src.server.services.automation_settlement import INTERRUPTED_ERROR
 from src.server.services.runs.admission import BUSY_STATES
@@ -345,6 +347,125 @@ async def test_a_stop_before_admission_interrupts_the_firing():
     assert _settled(fx)["to"] == "failed"
     assert _settled(fx)["error_message"] == INTERRUPTED_ERROR
     assert _settled(fx)["conversation_response_id"] is None
+
+
+# ─── Delivery through the messaging service ──────────────────────────
+
+_HELD = [Target(entry="slack:T/C", address="slack:T/C", name="#demo", ok=True)]
+_DELIVERING = {"delivery_config": {"methods": ["slack:T/C"]}}
+
+
+@contextmanager
+def _delivery(targets):
+    """The messaging service's start, answering ``targets`` (None: the run
+    delivers through the webhook), and its finish."""
+    fx = SimpleNamespace(
+        start=AsyncMock(return_value=targets),
+        finish=AsyncMock(return_value=[{"method": "slack:T/C", "success": False}]),
+    )
+    with (
+        patch(f"{_MOD}.automation_delivery.start_run", new=fx.start),
+        patch(
+            "src.server.services.automation_settlement.automation_delivery.finish_run",
+            new=fx.finish,
+        ),
+    ):
+        yield fx
+
+
+def _turn_args(fx):
+    return fx.astream.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_a_held_run_tells_its_agent_where_to_send():
+    automation = _automation(
+        **_DELIVERING, additional_context=[{"type": "directive", "content": "Be brief."}]
+    )
+    with _firing([_streams]) as fx, _delivery(_HELD) as dx:
+        await AutomationExecutor().execute(automation, _EXEC)
+
+    dx.start.assert_awaited_once_with(automation, _EXEC, "ws-1")
+    args = _turn_args(fx)
+    contexts = [(c.type, c.content) for c in args["request"].additional_context]
+    assert contexts == [
+        ("directive", "Be brief."),
+        ("directive", automation_delivery.reminder(_HELD)),
+    ]
+    # Its sends name the firing, and its run row says how it delivers.
+    assert args["extra_configurable"] == {"automation_execution_id": _EXEC}
+    assert args["run_metadata"] == {
+        "automation_execution_id": _EXEC,
+        "automation_id": "auto-1",
+        **automation_delivery.run_metadata(_HELD),
+    }
+    # Its agent sends the result; nothing announces the start.
+    fx.started.assert_not_awaited()
+    assert _left_to_run(fx) == fx.run_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_a_run_the_messaging_service_did_not_take_runs_as_before():
+    with _firing([_streams]) as fx, _delivery(None) as dx:
+        await AutomationExecutor().execute(_automation(**_DELIVERING), _EXEC)
+
+    dx.start.assert_awaited_once()
+    args = _turn_args(fx)
+    assert args["request"].additional_context is None
+    assert args["extra_configurable"] is None
+    assert args["run_metadata"] == {"automation_execution_id": _EXEC, "automation_id": "auto-1"}
+    fx.started.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_held_run_that_fails_before_admission_ends_with_the_service():
+    with (
+        _firing([_loses(WriterGuardUnavailable("budget"))], runs={0: None}) as fx,
+        _delivery(_HELD) as dx,
+    ):
+        await AutomationExecutor().execute(_automation(**_DELIVERING), _EXEC)
+
+    assert _settled(fx)["to"] == "failed"
+    dx.finish.assert_awaited_once()
+    assert dx.finish.await_args.args[2] == "failed"
+    assert dx.finish.await_args.kwargs["targets"] == _HELD
+    fx.settled_webhook.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_held_run_stopped_before_admission_ends_with_the_service():
+    with (
+        _firing([_held_turn(admitted=False)], runs={0: None}) as fx,
+        _delivery(_HELD) as dx,
+    ):
+        task = asyncio.create_task(
+            AutomationExecutor().execute(_automation(**_DELIVERING), _EXEC)
+        )
+        while not fx.astream.call_count:
+            await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert _settled(fx)["error_message"] == INTERRUPTED_ERROR
+    dx.finish.assert_awaited_once()
+    assert dx.finish.await_args.args[2] == "failed"
+    assert dx.finish.await_args.kwargs["targets"] == _HELD
+    fx.settled_webhook.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_firing_settled_before_its_turn_hands_nothing_over():
+    with _firing([_streams]) as fx, _delivery(_HELD) as dx:
+        fx.db.transition_execution.side_effect = [
+            {"conversation_thread_id": None},  # pending -> running
+            None,  # the thread could not be recorded: settled elsewhere
+        ]
+        await AutomationExecutor().execute(_automation(**_DELIVERING), _EXEC)
+
+    dx.start.assert_not_awaited()
+    fx.astream.assert_not_called()
 
 
 @pytest.mark.asyncio

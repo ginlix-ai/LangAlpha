@@ -1,7 +1,9 @@
-"""The head of an automation run's answer, flattened to one line.
+"""An automation run's answer, and its head flattened to one line.
 
-The automation list and the run feed lead with it, so it is read from the
-checkpoint once, as the run completes, and kept on the execution row.
+The automation list and the run feed lead with the head, so the answer is
+read from the checkpoint once, as the run completes, and the head kept on the
+execution row; the whole answer goes to the chats a delivering run's agent
+didn't reach.
 """
 
 import html
@@ -67,15 +69,16 @@ def plain_excerpt(answer: str) -> str:
     return cut.rstrip(" ,;:-") + "…" if cut else ""
 
 
-async def read_run_excerpt(thread_id: str, run_id: str) -> Optional[str]:
-    """The run's final answer as an excerpt, or None when it has no text.
+async def read_run_answer(thread_id: str, run_id: str) -> Optional[str]:
+    """The run's final answer, the last text its agent wrote, or None when it
+    has none.
 
     Called as the run completes, while its turn is still the thread's newest,
     so only that turn is materialized; a later read that finds a newer turn
     leaves none. Background subagents checkpoint under their own ``task:``
-    namespaces, so these messages are the agent's own. An excerpt only
-    decorates a list: a failed read leaves none rather than failing the
-    execution.
+    namespaces, so these messages are the agent's own. The answer only
+    decorates a list and stands in for a delivery the agent didn't make: a
+    failed read leaves none rather than failing the execution.
     """
     from src.server.services.history.projector import split_content_blocks
     from src.server.services.history.reader import CheckpointHistoryReader
@@ -97,5 +100,5 @@ async def read_run_excerpt(thread_id: str, run_id: str) -> Optional[str]:
             continue
         text, _, _ = split_content_blocks(message.content)
         if text and text.strip():
-            return plain_excerpt(text) or None
+            return text
     return None

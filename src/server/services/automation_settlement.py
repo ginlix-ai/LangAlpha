@@ -3,10 +3,11 @@ Settlement: the one place an automation firing ends.
 
 A firing ends once. ``settle`` ends the row in one transaction with what the
 firing leaves on its automation (the strike or its reset, and the schedule),
-and only the writer whose transaction lands goes on to the webhook, the wait
-notice and the metric. The executor, a user's skip, the run's finalize hook
-and the scheduler's sweep can race to end the same firing; the loser finds it
-settled and leaves it as it is.
+and only the writer whose transaction lands goes on to the delivery (the
+webhook, or the messaging service's finish), the wait notice and the metric.
+The executor, a user's skip, the run's finalize hook and the scheduler's
+sweep can race to end the same firing; the loser finds it settled and leaves
+it as it is.
 
 Once a firing's turn reached the run ledger, the run's finalize settles it
 through the hook outbox, on whichever worker drains the job, as the run's
@@ -32,7 +33,8 @@ from src.server.models.automation import (
     RetriggerMode,
     SkipReason,
 )
-from src.server.services.automation_excerpt import read_run_excerpt
+from src.server.services import automation_delivery
+from src.server.services.automation_excerpt import plain_excerpt, read_run_answer
 from src.server.services.thread_lifecycle_feed import publish_automation_wait
 from src.server.services.webhook_client import WebhookClient
 from src.server.utils.error_sanitization import sanitize_error_text
@@ -93,6 +95,10 @@ class _Policy:
     # "rearm_price": a price alert goes back to watching; nothing else moves.
     schedule: Optional[Literal["close", "close_alert", "rearm_price"]] = None
     webhook: Optional[str] = None
+    # How a run delivering through the messaging service ends there, in
+    # place of the webhook: its answer to the chats the agent didn't reach,
+    # or a notice to every chat.
+    finish: Optional[automation_delivery.FinishStatus] = None
     error: Optional[str] = None
     skip_reason: Optional[SkipReason] = None
     failure_reason: Optional[FailureReason] = None
@@ -106,6 +112,7 @@ _POLICIES: Dict[Outcome, _Policy] = {
         strike="reset",
         schedule="close",
         webhook="automation.completed",
+        finish="completed",
     ),
     Outcome.FAILED: _Policy(
         status="failed",
@@ -114,6 +121,7 @@ _POLICIES: Dict[Outcome, _Policy] = {
         strike="count",
         schedule="rearm_price",
         webhook="automation.failed",
+        finish="failed",
     ),
     Outcome.KEY_REJECTED: _Policy(
         status="failed",
@@ -122,6 +130,7 @@ _POLICIES: Dict[Outcome, _Policy] = {
         strike="fuse",
         schedule="rearm_price",
         webhook="automation.failed",
+        finish="failed",
         failure_reason="provider_auth",
     ),
     Outcome.LIMITED: _Policy(
@@ -130,6 +139,7 @@ _POLICIES: Dict[Outcome, _Policy] = {
         metric="limited",
         schedule="close_alert",
         webhook="automation.failed",
+        finish="failed",
         failure_reason="usage_limit",
     ),
     Outcome.FAILED_OURS: _Policy(
@@ -138,6 +148,7 @@ _POLICIES: Dict[Outcome, _Policy] = {
         metric="failure",
         schedule="rearm_price",
         webhook="automation.failed",
+        finish="failed",
         failure_reason="server_error",
     ),
     # A wait the server stopped is skipped by its own wait loop, or by the
@@ -148,6 +159,7 @@ _POLICIES: Dict[Outcome, _Policy] = {
         metric="interrupted",
         schedule="rearm_price",
         webhook="automation.failed",
+        finish="failed",
         error=INTERRUPTED_ERROR,
         failure_reason="interrupted",
     ),
@@ -157,6 +169,7 @@ _POLICIES: Dict[Outcome, _Policy] = {
         metric="stopped",
         schedule="close",
         webhook="automation.failed",
+        finish="stopped",
         error=STOPPED_ERROR,
         skip_reason="user",
     ),
@@ -304,6 +317,8 @@ async def settle(
     skip_reason: Optional[SkipReason] = None,
     excerpt: Optional[str] = None,
     quiet_for: Optional[int] = None,
+    delivery: Optional[list[automation_delivery.Target]] = None,
+    final_text: Optional[str] = None,
 ) -> bool:
     """End a firing as ``outcome``; False when it was no longer in a state
     that outcome can end, because someone else settled it first.
@@ -311,7 +326,10 @@ async def settle(
     The execution must belong to ``automation``, which keeps the skip
     endpoint to its own automation's firings. ``quiet_for`` is the sweep's:
     settle only while the heartbeat is still that many seconds quiet.
-    What follows the settled row never raises.
+    ``delivery`` is the targets of a firing the messaging service holds,
+    which it ends there instead of firing the webhook; ``final_text`` is the
+    answer a completed one hands over. What follows the settled row never
+    raises.
     """
     policy = _POLICIES[outcome]
     error = error or policy.error
@@ -351,7 +369,8 @@ async def settle(
     # send, since no later sweep finds the row to send it again.
     tail = asyncio.create_task(
         _after_settling(outcome, automation, execution_id, row,
-                        thread_id, run_id, workspace_id, error),
+                        thread_id, run_id, workspace_id, error,
+                        delivery, final_text),
         name=f"settle_tail_{execution_id}",
     )
     _tails.add(tail)
@@ -394,14 +413,22 @@ async def _after_settling(
     run_id: Optional[str],
     workspace_id: Optional[str],
     error: Optional[str],
+    delivery: Optional[list[automation_delivery.Target]],
+    final_text: Optional[str],
 ) -> None:
-    """The webhook, the chat's wait line and the metric a settle sets off."""
+    """The delivery, the chat's wait line and the metric a settle sets off."""
     policy = _POLICIES[outcome]
     if policy.webhook and not _repeats_a_refusal(policy.failure_reason, run_id, row):
-        delivery_result = await WebhookClient().fire_event(
-            policy.webhook, automation, execution_id, thread_id, workspace_id,
-            error=error, run_id=run_id, failure_reason=policy.failure_reason,
-        )
+        if delivery is not None and policy.finish is not None:
+            delivery_result = await automation_delivery.finish_run(
+                automation, execution_id, policy.finish,
+                targets=delivery, final_text=final_text,
+            )
+        else:
+            delivery_result = await WebhookClient().fire_event(
+                policy.webhook, automation, execution_id, thread_id, workspace_id,
+                error=error, run_id=run_id, failure_reason=policy.failure_reason,
+            )
         if delivery_result is not None:
             try:
                 await exec_db.record_delivery(execution_id, delivery_result)
@@ -464,7 +491,8 @@ async def settle_by_run(
 
     The row decides, not the stream the executor drained (v4 2.4), and a run
     that failed says why in its own words. No row at all is a run the server
-    lost.
+    lost. The row also says whether the messaging service holds the run's
+    delivery, which a completed run hands its final answer to.
     """
     outcome = ledger_outcome(run)
     if outcome is None:
@@ -473,7 +501,7 @@ async def settle_by_run(
             f"execution_id={execution_id} run_id={run_id}"
         )
         return None
-    error = excerpt = None
+    error = excerpt = answer = None
     if outcome in RUN_FAILURES:
         error = run_failure_message(run)
         log = logger.warning if outcome is Outcome.LIMITED else logger.error
@@ -483,11 +511,13 @@ async def settle_by_run(
         )
     elif outcome is Outcome.COMPLETED and thread_id:
         # Read now, while this run is still the thread's newest turn.
-        excerpt = await read_run_excerpt(thread_id, run_id)
+        answer = await read_run_answer(thread_id, run_id)
+        excerpt = (plain_excerpt(answer) or None) if answer else None
     settled = await settle(
         automation, execution_id, outcome,
         thread_id=thread_id, run_id=run_id, workspace_id=workspace_id,
         error=error, excerpt=excerpt, quiet_for=quiet_for,
+        delivery=automation_delivery.targets_of_run(run), final_text=answer,
     )
     return outcome if settled else None
 

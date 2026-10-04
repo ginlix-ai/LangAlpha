@@ -25,6 +25,7 @@ from src.server.database.oauth_tokens import has_any_oauth_token
 from src.server.database.runs import lifecycle as tl_db
 from src.server.dependencies.usage_limits import enforce_credit_limit
 from src.server.models.chat import ChatMessage, ChatRequest, ThreadOrigin
+from src.server.services import automation_delivery
 from src.server.services.automation_settlement import (
     Outcome,
     clean_error_text,
@@ -79,6 +80,10 @@ class _Firing:
     # The run ledger holds ``run_id`` and the firing records it: the turn went
     # ahead, and the firing now ends however that run ends.
     admitted: bool = False
+    # The targets of a firing whose run the messaging service holds, which
+    # its agent sends to and its settle ends there; None while it delivers
+    # through the webhook.
+    delivery: Optional[list[automation_delivery.Target]] = None
 
     @property
     def workspace_id(self) -> Optional[str]:
@@ -446,6 +451,8 @@ class AutomationExecutor:
         notice leaves from the run's settle job, possibly on another worker,
         and a start landing after it would leave a channel showing a run
         that already ended. This narrows that window; it does not close it.
+        A run the messaging service holds announces nothing: its agent sends
+        the result itself.
         """
         try:
             run = await tl_db.get_run(firing.run_id)
@@ -456,6 +463,7 @@ class AutomationExecutor:
             if (
                 await _link_run(execution_id, firing.run_id)
                 and run["status"] == "in_progress"
+                and firing.delivery is None
             ):
                 await WebhookClient().fire_event(
                     "automation.started", firing.automation, execution_id,
@@ -539,12 +547,30 @@ class AutomationExecutor:
             automation = firing.automation
             user_id = automation["user_id"]
             instruction = automation["instruction"]
+            additional_context = automation.get("additional_context")
+            run_metadata = {
+                "automation_execution_id": execution_id,
+                "automation_id": str(automation["automation_id"]),
+            }
+            # Tools read the turn from the graph's config: ``send_message``
+            # names the firing, so its sends reach the run's targets.
+            extra_configurable = None
+            if firing.delivery is not None:
+                additional_context = [
+                    *(additional_context or []),
+                    {
+                        "type": "directive",
+                        "content": automation_delivery.reminder(firing.delivery),
+                    },
+                ]
+                run_metadata.update(automation_delivery.run_metadata(firing.delivery))
+                extra_configurable = {"automation_execution_id": execution_id}
             request = ChatRequest(
                 agent_mode=firing.route.agent,
                 workspace_id=firing.workspace_id,
                 messages=[ChatMessage(role="user", content=instruction)],
                 llm_model=automation.get("llm_model"),
-                additional_context=automation.get("additional_context"),
+                additional_context=additional_context,
                 origin=ThreadOrigin(
                     type="automation", id=str(automation["automation_id"])
                 ),
@@ -563,11 +589,10 @@ class AutomationExecutor:
                 is_byok=has_byok,
                 steerable=False,
                 # Stamped on the run at START, so its finalize settles this
-                # firing whichever worker is left to drain the job.
-                run_metadata={
-                    "automation_execution_id": execution_id,
-                    "automation_id": str(automation["automation_id"]),
-                },
+                # firing whichever worker is left to drain the job, and
+                # delivers the way its start chose.
+                run_metadata=run_metadata,
+                extra_configurable=extra_configurable,
             )
             if firing.route.agent == "flash":
                 turn = astream_flash_workflow(
@@ -705,6 +730,14 @@ class AutomationExecutor:
                 _exec_span.set_attribute("status", "settled_elsewhere")
                 return
 
+            # ─── Hand delivery to the messaging service ───────────
+            # Before the turn, so its agent is told where to send. Without
+            # the service, or when it won't take the run, the webhook
+            # delivers as before.
+            firing.delivery = await automation_delivery.start_run(
+                firing.automation, execution_id, firing.workspace_id
+            )
+
             # ─── Run the turn ─────────────────────────────────────
             if not await self._run_turn(
                 execution_id, firing, has_byok=has_byok, deadline=wait_deadline
@@ -749,7 +782,7 @@ class AutomationExecutor:
             settled = await settle(
                 firing.automation, execution_id, outcome,
                 thread_id=firing.thread_id, workspace_id=firing.workspace_id,
-                error=error_msg,
+                error=error_msg, delivery=firing.delivery,
             )
             _exec_span.set_attribute(
                 "status",
@@ -767,6 +800,7 @@ class AutomationExecutor:
                         firing.automation, execution_id, Outcome.INTERRUPTED,
                         thread_id=firing.thread_id,
                         workspace_id=firing.workspace_id,
+                        delivery=firing.delivery,
                     )
             except Exception as e:
                 # The sweep settles it once the heartbeat stops.
