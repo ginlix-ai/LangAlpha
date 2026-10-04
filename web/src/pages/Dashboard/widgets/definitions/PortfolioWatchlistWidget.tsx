@@ -15,7 +15,7 @@ import { PortfolioWatchlistConfigSchema } from '../framework/configSchemas';
 import { RowAttachButton } from '../../components/RowAttachButton';
 import type { WidgetRenderProps } from '../types';
 import type { PortfolioRow } from '../../hooks/usePortfolioData';
-import type { WatchlistRow } from '../../hooks/useWatchlistData';
+import { watchlistQuoteRow } from '../../hooks/useWatchlistData';
 import {
   HoldingsAddButton,
   HoldingsSkeleton,
@@ -32,16 +32,6 @@ type PortfolioWatchlistConfig = {
   defaultTab?: PWTabKey;
   valuesHidden?: boolean;
 };
-
-function watchlistRowToQuote(r: WatchlistRow) {
-  const hasQuote = r.quoteAvailable !== false;
-  return {
-    symbol: r.symbol,
-    price: hasQuote ? r.price : undefined,
-    change: hasQuote ? r.change : undefined,
-    changePercent: hasQuote ? r.changePercent : undefined,
-  };
-}
 
 function portfolioRowToQuote(r: PortfolioRow) {
   const hasQuote = r.quoteAvailable !== false;
@@ -78,7 +68,7 @@ function PortfolioWatchlistWidget({
   useWidgetContextExport(instance.id, {
     full: () => {
       if (activeTab === 'watchlist') {
-        const rows = watchlist.rows.map(watchlistRowToQuote);
+        const rows = watchlist.rows.map(watchlistQuoteRow);
         const body = serializeQuoteRowsToMarkdown(rows);
         const text = wrapWidgetContext(
           'personal.portfolioWatchlist',
@@ -120,7 +110,7 @@ function PortfolioWatchlistWidget({
       if (activeTab === 'watchlist') {
         const row = watchlist.rows.find((r) => (r.watchlist_item_id ?? r.symbol) === rowId);
         if (!row) return null;
-        const quote = watchlistRowToQuote(row);
+        const quote = watchlistQuoteRow(row);
         const body = serializeQuoteRowToMarkdown(quote);
         const text = wrapWidgetContext(
           'personal.portfolioWatchlist/row',

@@ -13,7 +13,8 @@ import {
 import { MiniChartGridConfigSchema } from '../framework/configSchemas';
 import {
   currencyForSymbol,
-  currencySymbol,
+  formatMoney,
+  quoteCurrency,
   dedupeMergeByTime,
   fetchBarsDelta,
   fetchStockData,
@@ -339,7 +340,7 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
                       className="text-[0.6875rem] dashboard-mono"
                       style={{ color: 'var(--color-text-secondary)' }}
                     >
-                      {currencySymbol(cell.currency)}{grouped2(cell.last, locale)}
+                      {formatMoney(cell.last, quoteCurrency(cell.currency, cell.symbol), locale)}
                     </span>
                     <MiniSparkline cell={cell} />
                   </div>

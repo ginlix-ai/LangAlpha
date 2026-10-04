@@ -12,6 +12,7 @@ import {
 } from '../framework/snapshotSerializers';
 import { RowAttachButton } from '../../components/RowAttachButton';
 import type { WidgetRenderProps } from '../types';
+import { watchlistQuoteRow } from '../../hooks/useWatchlistData';
 import {
   HoldingsAddButton,
   HoldingsSkeleton,
@@ -28,12 +29,7 @@ function WatchlistWidget({ instance }: WidgetRenderProps<WatchlistConfig>) {
   // Register snapshot exporters: full table + per-row.
   useWidgetContextExport(instance.id, {
     full: () => {
-      const rows = watchlist.rows.map((r) => ({
-        symbol: r.symbol,
-        price: r.quoteAvailable !== false ? r.price : undefined,
-        change: r.quoteAvailable !== false ? r.change : undefined,
-        changePercent: r.quoteAvailable !== false ? r.changePercent : undefined,
-      }));
+      const rows = watchlist.rows.map(watchlistQuoteRow);
       const body = serializeQuoteRowsToMarkdown(rows);
       const text = wrapWidgetContext('watchlist.list', { count: rows.length }, body);
       return {
@@ -55,12 +51,7 @@ function WatchlistWidget({ instance }: WidgetRenderProps<WatchlistConfig>) {
       // previousClose under the preMarket key would label yesterday's close
       // as the pre-market price in the agent's view. Adding correct ext-
       // hours info would need marketStatus + getExtendedHoursInfo here.
-      const cleaned = {
-        symbol: row.symbol,
-        price: row.quoteAvailable !== false ? row.price : undefined,
-        change: row.quoteAvailable !== false ? row.change : undefined,
-        changePercent: row.quoteAvailable !== false ? row.changePercent : undefined,
-      };
+      const cleaned = watchlistQuoteRow(row);
       const body = serializeQuoteRowToMarkdown(cleaned);
       const text = wrapWidgetContext('watchlist.list/row', { symbol: row.symbol }, body);
       return {

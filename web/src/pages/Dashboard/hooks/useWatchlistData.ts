@@ -8,6 +8,8 @@ import {
   listWatchlistItems,
 } from '../utils/api';
 import { useQuotes, snapshotToStockPrice } from '@/lib/quotes';
+import { quoteCurrency } from '@/lib/bars/exchanges';
+import type { QuoteRow } from '../widgets/framework/snapshotSerializers';
 import { registerAuthReset } from '@/lib/authResets';
 import type { StockPrice } from '@/types/market';
 
@@ -22,7 +24,24 @@ export interface WatchlistRow {
   previousClose: number | null;
   earlyTradingChangePercent: number | null;
   lateTradingChangePercent: number | null;
+  /** ISO code the snapshot was quoted in; null on a payload that predates it. */
+  currency: string | null;
+  /** The snapshot's asset class: an `index` row prints a level, not a price. */
+  assetClass: string | null;
   [key: string]: unknown;
+}
+
+/** A row as the agent reads it: the figures the user sees, in the currency
+ *  the user sees them in, so a CN¥ price never reaches the agent as dollars. */
+export function watchlistQuoteRow(r: WatchlistRow): QuoteRow {
+  const hasQuote = r.quoteAvailable !== false;
+  return {
+    symbol: r.symbol,
+    price: hasQuote ? r.price : undefined,
+    change: hasQuote ? r.change : undefined,
+    changePercent: hasQuote ? r.changePercent : undefined,
+    currency: quoteCurrency(r.currency, r.symbol, r.assetClass),
+  };
 }
 
 interface WatchlistItem {
@@ -159,6 +178,8 @@ export function useWatchlistData() {
         previousClose: p.previousClose ?? null,
         earlyTradingChangePercent: p.earlyTradingChangePercent ?? null,
         lateTradingChangePercent: p.lateTradingChangePercent ?? null,
+        currency: p.currency ?? null,
+        assetClass: quotes[sym]?.asset_class ?? null,
       };
     });
   }, [items, symbols, quotes]);

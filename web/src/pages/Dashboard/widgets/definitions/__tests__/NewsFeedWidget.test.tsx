@@ -125,6 +125,35 @@ describe('NewsFeedWidget', () => {
     expect(snapshot.text).toContain(`| CNBC | ${publishedAt} |`);
   });
 
+  it('Market tab reads its own paging state (spinner while fetching next page)', () => {
+    ctx = baseCtx({
+      dashboard: {
+        curatedItems: [],
+        curatedLoading: false,
+        newsItems: [makeItem('m1', 'Market headline', 'CNBC')],
+        newsLoading: false,
+        newsIsFetchingNextPage: true,
+      },
+    });
+    renderWidget({ source: 'market' });
+    expect(screen.getByRole('status')).toBeInTheDocument();
+  });
+
+  it('portfolio tab never pages (no spinner even with paging flags set)', () => {
+    ctx = baseCtx({
+      dashboard: {
+        curatedItems: [],
+        curatedLoading: false,
+        curatedIsFetchingNextPage: true,
+        newsItems: [],
+        newsLoading: false,
+        newsIsFetchingNextPage: true,
+      },
+    });
+    renderWidget({ source: 'portfolio' });
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
   it('exposes "top" in the Zod source enum and the default config round-trips', () => {
     const def = getWidget('news.feed')!;
     expect(def.configSchema!.safeParse({ source: 'top', limit: 50 }).success).toBe(true);

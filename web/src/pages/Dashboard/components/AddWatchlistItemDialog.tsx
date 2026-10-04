@@ -8,7 +8,7 @@ import { getStockPrices } from '../utils/api';
 import type { StockSearchHit } from '@/lib/marketUtils';
 import { useSymbolSearch } from '@/hooks/useSymbolSearch';
 import { useLocale } from '@/hooks/useLocale';
-import { grouped2 } from '@/lib/format';
+import { formatMoney, quoteCurrency } from '@/lib/bars';
 
 interface WatchlistItemData {
   symbol: string;
@@ -25,7 +25,7 @@ interface WatchlistItemData {
 interface AddWatchlistItemDialogProps {
   open?: boolean;
   onClose?: () => void;
-  onAdd: (itemData: WatchlistItemData, watchlistId?: string) => void;
+  onAdd: (itemData: WatchlistItemData, watchlistId?: string) => void | Promise<void>;
   watchlistId?: string;
 }
 
@@ -47,7 +47,9 @@ function AddWatchlistItemDialog({
   const { hits: searchResults, loading: searchLoading } = useSymbolSearch(searchQuery, 50, { enabled: open && page === 1 });
   const [selectedStock, setSelectedStock] = useState<StockSearchHit | null>(null);
   const [currentPrice, setCurrentPrice] = useState<number | null>(null);
+  const [priceCurrency, setPriceCurrency] = useState<string | null>(null);
   const [priceLoading, setPriceLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   // Form fields for page 2
   const [notes, setNotes] = useState('');
@@ -63,8 +65,10 @@ function AddWatchlistItemDialog({
           const priceData = prices?.[0];
           if (priceData && priceData.quoteAvailable !== false) {
             setCurrentPrice(priceData.price);
+            setPriceCurrency(priceData.currency ?? null);
           } else {
             setCurrentPrice(null);
+            setPriceCurrency(null);
           }
         })
         .catch((error) => {
@@ -105,7 +109,7 @@ function AddWatchlistItemDialog({
   };
 
   const handleAdd = () => {
-    if (!selectedStock) return;
+    if (!selectedStock || submitting) return;
 
     const priceAboveNum = priceAbove.trim() ? parseFloat(priceAbove) : null;
     const priceBelowNum = priceBelow.trim() ? parseFloat(priceBelow) : null;
@@ -129,8 +133,16 @@ function AddWatchlistItemDialog({
         : undefined,
     };
 
-    onAdd(itemData, watchlistId);
+    // The parent's handler is async and closes the dialog on success; hold
+    // the button while it runs so a double-click cannot post the row twice.
+    setSubmitting(true);
+    Promise.resolve(onAdd(itemData, watchlistId)).finally(() => setSubmitting(false));
   };
+
+  // Prefer the currency the quote was served in; the search result's listing
+  // currency, then the ticker suffix, cover the wait and older payloads. An
+  // index level prints bare.
+  const cur = quoteCurrency(priceCurrency || selectedStock?.currency, selectedStock?.symbol);
 
   const exchange = selectedStock?.exchangeShortName || selectedStock?.stockExchange || '';
 
@@ -248,7 +260,7 @@ function AddWatchlistItemDialog({
                         <div className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>...</div>
                       ) : currentPrice !== null ? (
                         <div className="text-lg font-bold tabular-nums" style={{ color: 'var(--color-text-primary)' }}>
-                          ${grouped2(currentPrice, locale)}
+                          {formatMoney(currentPrice, cur, locale)}
                         </div>
                       ) : (
                         <div className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t('dashboard.addWatchlistDialog.priceNA')}</div>
@@ -313,7 +325,8 @@ function AddWatchlistItemDialog({
                 <button
                   type="button"
                   onClick={handleAdd}
-                  className="w-full px-4 py-3 rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
+                  disabled={submitting}
+                  className="w-full px-4 py-3 rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-60"
                   style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
                 >
                   {t('dashboard.addWatchlistDialog.addButton')}

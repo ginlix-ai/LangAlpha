@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { StockSearchHit } from '@/lib/marketUtils';
 import { useSymbolSearch } from '@/hooks/useSymbolSearch';
+import { resolveDualName } from '@/lib/displayName';
 import { useNavigate } from 'react-router';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { buildMarketViewUrl } from '@/pages/MarketView/utils/marketRoute';
@@ -181,17 +182,28 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onScrollToTop, layout
                     {t('dashboard.noResults')}
                   </div>
                 ) : (
-                  searchResults.map((stock, index) => (
-                    <button
-                      key={`${stock.symbol}-${index}`}
-                      type="button"
-                      className="dashboard-search-dropdown-item"
-                      onClick={() => handleSelectStock(stock)}
-                    >
-                      <span className="dashboard-search-dropdown-symbol">{stock.symbol}</span>
-                      <span className="dashboard-search-dropdown-name">{stock.name || stock.symbol}</span>
-                    </button>
-                  ))
+                  searchResults.map((stock, index) => {
+                    const dualName = resolveDualName(
+                      { name: stock.name, nameLocal: stock.nameLocal, nameEn: stock.nameEn },
+                      stock.symbol,
+                    );
+                    return (
+                      <button
+                        key={`${stock.symbol}-${index}`}
+                        type="button"
+                        className="dashboard-search-dropdown-item"
+                        onClick={() => handleSelectStock(stock)}
+                      >
+                        <span className="dashboard-search-dropdown-symbol">{stock.symbol}</span>
+                        <span className="dashboard-search-dropdown-name">
+                          {dualName.primary}
+                          {dualName.secondary && (
+                            <span className="dashboard-search-dropdown-name-secondary">{dualName.secondary}</span>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })
                 )}
               </div>
             )}

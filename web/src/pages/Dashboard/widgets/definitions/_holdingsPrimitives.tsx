@@ -16,6 +16,7 @@ import {
 import { getExtendedHoursInfo } from '@/lib/marketUtils';
 import { createFormatter, grouped2, integer } from '@/lib/format';
 import { useLocale } from '@/hooks/useLocale';
+import { formatMoney, quoteCurrency } from '@/lib/bars';
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -49,6 +50,10 @@ export function WatchlistRowItem({ item, index, marketStatus, onDelete }: Watchl
   const pos = hasQuote ? item.isPositive ?? true : true;
   const pctStr = hasQuote ? (pos ? '+' : '') + grouped2(Number(item.changePercent), locale) + '%' : 'N/A';
   const hasId = !!item.watchlist_item_id;
+  // A watchlist mixes venues: prefer the currency the snapshot was quoted in,
+  // with the row's own listing suffix as the fallback for older payloads. An
+  // index level prints bare.
+  const code = quoteCurrency(item.currency, item.symbol, item.assetClass);
 
   const { extPct, extType } = getExtendedHoursInfo(marketStatus, item, { shortLabels: true });
   const extColor = extType === 'pre' ? '#fbbf24' : '#3b82f6';
@@ -58,7 +63,7 @@ export function WatchlistRowItem({ item, index, marketStatus, onDelete }: Watchl
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: Math.min(index, 8) * 0.05 }}
-      className="flex items-center justify-between p-3 rounded-xl border border-transparent transition-all cursor-pointer"
+      className="flex items-center gap-2 p-3 rounded-xl border border-transparent transition-all cursor-pointer"
       onClick={() => navigate(`/market?symbol=${encodeURIComponent(item.symbol)}`)}
       onMouseEnter={(e) => {
         e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)';
@@ -69,22 +74,26 @@ export function WatchlistRowItem({ item, index, marketStatus, onDelete }: Watchl
         e.currentTarget.style.borderColor = 'transparent';
       }}
     >
-      <div>
-        <div className="font-bold text-sm" style={{ color: 'var(--color-text-primary)' }}>
+      {/* The ticker is the row's identity and never truncates at a width a card
+          actually takes; the cap only catches a pathological symbol. */}
+      <div className="min-w-0 max-w-[50%] flex-none">
+        <div className="font-bold text-sm truncate" style={{ color: 'var(--color-text-primary)' }} title={item.symbol}>
           {item.symbol}
         </div>
-        <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+        <div className="text-xs truncate" style={{ color: 'var(--color-text-secondary)' }}>
           {t('dashboard.widgets.holdings.stock')}
         </div>
       </div>
-      <div className="flex items-center gap-4">
-        <div className="text-right">
+      {/* A CN¥ price is wide enough that price and badge stop fitting side by
+          side in a narrow card. They wrap rather than run past its edge. */}
+      <div className="flex flex-1 min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
+        <div className="text-right whitespace-nowrap">
           <div
             className="text-sm font-medium dashboard-mono"
             style={{ color: 'var(--color-text-primary)' }}
           >
             {hasQuote
-              ? grouped2(Number(extType && item.previousClose != null ? item.previousClose : item.price), locale)
+              ? formatMoney(Number(extType && item.previousClose != null ? item.previousClose : item.price), code, locale)
               : 'N/A'}
           </div>
           <div
@@ -95,12 +104,12 @@ export function WatchlistRowItem({ item, index, marketStatus, onDelete }: Watchl
                 : 'var(--color-text-secondary)',
             }}
           >
-            {hasQuote ? (pos ? '+' : '') + grouped2(Number(item.change), locale) : 'N/A'}
+            {hasQuote ? formatMoney(Number(item.change), code, locale, { signed: true }) : 'N/A'}
           </div>
         </div>
-        <div className="text-right">
+        <div className="text-right shrink-0">
           <div
-            className="w-16 py-1 rounded-lg text-center text-xs font-bold"
+            className="min-w-16 px-2 py-1 rounded-lg text-center text-xs font-bold whitespace-nowrap"
             style={{
               backgroundColor: hasQuote
                 ? pos ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)'
@@ -114,11 +123,11 @@ export function WatchlistRowItem({ item, index, marketStatus, onDelete }: Watchl
           </div>
           {hasQuote && extType && extPct != null && (
             <div
-              className="text-[0.625rem] mt-0.5 text-center flex items-center justify-center gap-0.5"
+              className="text-[0.625rem] mt-0.5 text-center flex items-center justify-center gap-0.5 whitespace-nowrap"
               style={{ color: extColor }}
             >
               {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
-              {grouped2(Number(item.price), locale)} {extPct >= 0 ? '+' : ''}
+              {formatMoney(Number(item.price), code, locale)} {extPct >= 0 ? '+' : ''}
               {grouped2(extPct, locale)}%
             </div>
           )}
@@ -192,7 +201,7 @@ export function PortfolioRowItem({
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: Math.min(index, 8) * 0.05 }}
-      className="flex items-center justify-between p-3 rounded-xl border border-transparent transition-all cursor-pointer"
+      className="flex items-center gap-2 p-3 rounded-xl border border-transparent transition-all cursor-pointer"
       onClick={() => navigate(`/market?symbol=${encodeURIComponent(item.symbol)}`)}
       onMouseEnter={(e) => {
         e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)';
@@ -203,11 +212,11 @@ export function PortfolioRowItem({
         e.currentTarget.style.borderColor = 'transparent';
       }}
     >
-      <div>
-        <div className="font-bold text-sm" style={{ color: 'var(--color-text-primary)' }}>
+      <div className="min-w-0 max-w-[50%] flex-none">
+        <div className="font-bold text-sm truncate" style={{ color: 'var(--color-text-primary)' }} title={item.symbol}>
           {item.symbol}
         </div>
-        <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+        <div className="text-xs truncate" style={{ color: 'var(--color-text-secondary)' }}>
           {valuesHidden
             ? t('dashboard.widgets.holdings.sharesHidden')
             : item.quantity != null
@@ -215,8 +224,8 @@ export function PortfolioRowItem({
               : ''}
         </div>
       </div>
-      <div className="flex items-center gap-4">
-        <div className="text-right">
+      <div className="flex flex-1 min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
+        <div className="text-right whitespace-nowrap">
           <div
             className="text-sm font-medium dashboard-mono"
             style={{ color: 'var(--color-text-primary)' }}
@@ -231,9 +240,9 @@ export function PortfolioRowItem({
               : displayPrice}
           </div>
         </div>
-        <div className="text-right">
+        <div className="text-right shrink-0">
           <div
-            className="w-16 py-1 rounded-lg text-center text-xs font-bold"
+            className="min-w-16 px-2 py-1 rounded-lg text-center text-xs font-bold whitespace-nowrap"
             style={{
               backgroundColor: hasQuote
                 ? pos ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)'
@@ -247,7 +256,7 @@ export function PortfolioRowItem({
           </div>
           {hasQuote && extType && extPct != null && (
             <div
-              className="text-[0.625rem] mt-0.5 text-center flex items-center justify-center gap-0.5"
+              className="text-[0.625rem] mt-0.5 text-center flex items-center justify-center gap-0.5 whitespace-nowrap"
               style={{ color: extColor }}
             >
               {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
