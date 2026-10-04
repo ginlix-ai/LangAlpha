@@ -238,12 +238,17 @@ class GatewayError(Exception):
 
     ``delivered_unknown`` is True when the request may have reached the
     gateway and been acted on, so a send cannot be called either way.
+    ``status`` is the status of an answer that refused this server's token;
+    None when no answer came back at all.
     """
 
-    def __init__(self, message: str, *, delivered_unknown: bool) -> None:
+    def __init__(
+        self, message: str, *, delivered_unknown: bool, status: int | None = None
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.delivered_unknown = delivered_unknown
+        self.status = status
 
 
 class GatewayAnswer(NamedTuple):
@@ -301,6 +306,7 @@ async def gateway_request(
         raise GatewayError(
             "The messaging service refused this server's credentials.",
             delivered_unknown=False,
+            status=response.status_code,
         )
     return GatewayAnswer(
         response.status_code, data if isinstance(data, dict) else None, response.text

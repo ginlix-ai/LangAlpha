@@ -6,7 +6,10 @@ to one chat and holds the run; the agent is told where to send and does so
 with ``send_message``. When the run settles, the service posts the final
 answer to every chat the agent didn't reach, or a short notice to all of them
 when the run failed or was stopped, and answers where each one landed, which
-becomes the execution's ``delivery_result``.
+becomes the execution's ``delivery_result``. A finish that got no answer, or
+found the service briefly unavailable, is worth asking again
+(``Finish.retry``): the service ends a run once and answers the same record
+to every later ask.
 
 A run the service never took (no service, no entries, the start failed, or
 no entry resolved) delivers through the webhook (``webhook_client``) instead,
@@ -44,6 +47,13 @@ _FINISH_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
 # What a fallback carries: the same cap ``send_message`` puts on a message.
 _FINAL_TEXT_CHARS = messaging.MAX_TEXT_CHARS
+
+#: The wait before each further ask after a finish worth retrying: three
+#: asks in all.
+FINISH_RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0)
+# The service, or the proxy in front of it, unavailable for a moment. Any
+# other status is an answer, and asking again would get the same one.
+_PASSING_STATUSES = frozenset({502, 503, 504})
 
 _APP_NAMES = {
     "slack": "Slack",
@@ -210,6 +220,15 @@ def reminder(targets: list[Target]) -> str:
 # -- finish -----------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class Finish:
+    """One ask to end a run: the ``delivery_result`` it gives, one item per
+    target, and whether asking again may land where this one didn't."""
+
+    result: list[Dict[str, Any]]
+    retry: bool = False
+
+
 def _attempt(data: Dict[str, Any]) -> Dict[str, Any]:
     """One target of the finish's answer as a ``delivery_result`` item."""
     via = data.get("via") if data.get("via") in _VIAS else None
@@ -252,15 +271,16 @@ async def finish_run(
     *,
     targets: list[Target],
     final_text: Optional[str] = None,
-) -> list[Dict[str, Any]]:
-    """End the run with the messaging service; the execution's
-    ``delivery_result``, one item per target.
+) -> Finish:
+    """Ask the messaging service to end the run, once.
 
     A completed run hands over its final answer, which the service posts to
     every target the agent didn't reach; a failed or stopped one has a short
     notice posted to every target. Ending a run twice posts nothing more. A
     finish that gets no readable answer records every target as failed,
-    since where the run landed can't be told.
+    since where the run landed can't be told; one that got no answer at all,
+    or a passing 502, 503 or 504, is marked worth asking again. A refused
+    token, a run the service doesn't know or any other refusal is not.
     """
     body: Dict[str, Any] = {"status": status}
     if status == "completed" and final_text and final_text.strip():
@@ -280,12 +300,13 @@ async def finish_run(
             f"[AUTOMATION_DELIVERY] Finish failed: execution_id={execution_id} "
             f"error={e.message}"
         )
-        return _unconfirmed(automation, targets, e.message)
+        # No answer came back, unless the service refused the token.
+        return Finish(_unconfirmed(automation, targets, e.message), retry=e.status is None)
     except Exception as e:
         logger.error(
             f"[AUTOMATION_DELIVERY] Finish failed: execution_id={execution_id} error={e!r}"
         )
-        return _unconfirmed(automation, targets, "The finish could not be sent.")
+        return Finish(_unconfirmed(automation, targets, "The finish could not be sent."))
     raw = (answer.data or {}).get("targets")
     if answer.status == 404:
         why = "The messaging service has no record of this run."
@@ -294,9 +315,12 @@ async def finish_run(
     elif not isinstance(raw, list):
         why = "The messaging service sent an answer that could not be read."
     else:
-        return [_attempt(t) for t in raw if isinstance(t, dict)]
+        return Finish([_attempt(t) for t in raw if isinstance(t, dict)])
     logger.warning(
         f"[AUTOMATION_DELIVERY] Finish answered {answer.status}: "
         f"execution_id={execution_id}"
     )
-    return _unconfirmed(automation, targets, why)
+    return Finish(
+        _unconfirmed(automation, targets, why),
+        retry=answer.status in _PASSING_STATUSES,
+    )

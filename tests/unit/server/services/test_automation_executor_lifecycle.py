@@ -361,7 +361,9 @@ def _delivery(targets):
     delivers through the webhook), and its finish."""
     fx = SimpleNamespace(
         start=AsyncMock(return_value=targets),
-        finish=AsyncMock(return_value=[{"method": "slack:T/C", "success": False}]),
+        finish=AsyncMock(
+            return_value=automation_delivery.Finish([{"method": "slack:T/C", "success": False}])
+        ),
     )
     with (
         patch(f"{_MOD}.automation_delivery.start_run", new=fx.start),

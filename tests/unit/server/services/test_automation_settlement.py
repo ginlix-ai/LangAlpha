@@ -11,14 +11,15 @@ settles a firing whose process went away.
 """
 
 import asyncio
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
 from src.server.services import automation_delivery
-from src.server.services.automation_delivery import Target
+from src.server.services import automation_settlement as settlement_mod
+from src.server.services.automation_delivery import Finish, Target
 from src.server.services.automation_settlement import (
     INTERRUPTED_ERROR,
     RUN_FAILURES,
@@ -100,7 +101,7 @@ def _settlement(row):
             record_delivery=AsyncMock(),
         ),
         fire=AsyncMock(return_value=[{"method": "slack", "success": True}]),
-        finish=AsyncMock(return_value=_LANDED),
+        finish=AsyncMock(return_value=Finish(_LANDED)),
         announce=AsyncMock(),
         metric=MagicMock(),
     )
@@ -223,27 +224,65 @@ async def test_a_repeated_refusal_of_a_held_run_is_not_announced_again():
     fx.fire.assert_not_awaited()
 
 
+_GatewayError = automation_delivery.messaging.GatewayError
+_UNREACHABLE = _GatewayError(
+    "The messaging service could not be reached.", delivered_unknown=False
+)
+_UNAVAILABLE = automation_delivery.messaging.GatewayAnswer(
+    503, {"code": "unavailable", "message": "Try later."}, ""
+)
+_FINISHED = automation_delivery.messaging.GatewayAnswer(
+    200,
+    {"targets": [{"entry": "slack:T/C", "address": "slack:T/C", "name": "#demo",
+                  "reached": True, "via": "agent", "error": None}]},
+    "",
+)
+
+
+@contextmanager
+def _asking(*answers, delays=(0.0, 0.0)):
+    """The real finish, against a messaging service that answers each ask
+    with the next of ``answers`` (an exception is raised), retrying after
+    ``delays``."""
+    ask = AsyncMock(side_effect=list(answers))
+    with (
+        patch(f"{_MOD}.automation_delivery.finish_run", new=_FINISH_RUN),
+        patch.object(automation_delivery.messaging, "gateway_request", new=ask),
+        patch.object(
+            automation_delivery,
+            "FINISH_RETRY_DELAYS",
+            automation_delivery.FINISH_RETRY_DELAYS if delays is None else delays,
+        ),
+    ):
+        yield ask
+
+
+def _errors(recorded):
+    return [(d["method"], d["success"], d["error"]) for d in recorded]
+
+
 @pytest.mark.asyncio
-async def test_a_finish_that_gets_no_answer_records_every_target_failed():
-    """The real finish against a messaging service that can't be reached:
-    the settle goes through, and the run says delivery couldn't be told."""
-    unreachable = AsyncMock(
-        side_effect=automation_delivery.messaging.GatewayError(
-            "The messaging service could not be reached.", delivered_unknown=False
-        )
-    )
+async def test_a_finish_never_answered_records_every_target_failed():
+    """Asked three times, 2s and then 5s apart, none answered: the settle
+    went through, and the record the first ask made says delivery couldn't
+    be told."""
+    slept = AsyncMock()
     with (
         _settlement(_row()) as fx,
-        patch(f"{_MOD}.automation_delivery.finish_run", new=_FINISH_RUN),
-        patch.object(automation_delivery.messaging, "gateway_request", new=unreachable),
+        _asking(_UNREACHABLE, _UNAVAILABLE, _UNAVAILABLE, delays=None) as ask,
+        patch.object(settlement_mod.asyncio, "sleep", new=slept),
     ):
         assert await settle(
             _automation(), _EID, Outcome.COMPLETED, delivery=_TARGETS, final_text="x"
         )
+        await drain_tails()
 
+    assert ask.await_count == 3
+    assert slept.await_args_list == [call(2.0), call(5.0)]
+    fx.db.record_delivery.assert_awaited_once()
     (execution_id, recorded), _ = fx.db.record_delivery.await_args
     assert execution_id == _EID
-    assert [(d["method"], d["success"], d["error"]) for d in recorded] == [
+    assert _errors(recorded) == [
         (
             "slack:T/C",
             False,
@@ -253,6 +292,87 @@ async def test_a_finish_that_gets_no_answer_records_every_target_failed():
     ]
     fx.fire.assert_not_awaited()
     fx.metric.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_a_finish_asked_again_records_the_answer_that_lands():
+    with _settlement(_row()) as fx, _asking(_UNREACHABLE, _FINISHED, _FINISHED) as ask:
+        assert await settle(
+            _automation(), _EID, Outcome.COMPLETED, delivery=_TARGETS, final_text="x"
+        )
+        await drain_tails()
+
+    # The same finish each time, which the service answers once; nothing
+    # more is asked once it has.
+    assert ask.await_count == 2
+    assert ask.await_args_list[0] == ask.await_args_list[1]
+    first, landed = [c.args for c in fx.db.record_delivery.await_args_list]
+    assert not any(d["success"] for d in first[1])
+    assert landed == (
+        _EID,
+        [{"method": "slack:T/C", "address": "slack:T/C", "name": "#demo",
+          "success": True, "via": "agent", "error": None}],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "refusal, why",
+    [
+        (
+            _GatewayError(
+                "The messaging service refused this server's credentials.",
+                delivered_unknown=False, status=401,
+            ),
+            "The messaging service refused this server's credentials.",
+        ),
+        (
+            automation_delivery.messaging.GatewayAnswer(404, {"detail": "Not Found"}, ""),
+            "The messaging service has no record of this run.",
+        ),
+        (
+            automation_delivery.messaging.GatewayAnswer(400, {"detail": "bad"}, ""),
+            "The messaging service failed (400).",
+        ),
+    ],
+    ids=["401", "404", "400"],
+)
+async def test_a_refused_finish_is_not_asked_again(refusal, why):
+    with _settlement(_row()) as fx, _asking(refusal, _FINISHED) as ask:
+        assert await settle(
+            _automation(), _EID, Outcome.FAILED, delivery=_TARGETS, error="boom"
+        )
+        await drain_tails()
+
+    assert ask.await_count == 1
+    fx.db.record_delivery.assert_awaited_once()
+    assert _errors(fx.db.record_delivery.await_args.args[1])[0] == (
+        "slack:T/C", False, f"Delivery couldn't be confirmed. {why}",
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_settle_does_not_wait_for_a_finish_to_be_asked_again():
+    """A run's finalize job and the executor wait on the settle, so the
+    retries run beside it, held for shutdown to drain."""
+    with (
+        _settlement(_row()) as fx,
+        _asking(_UNREACHABLE, _FINISHED, delays=(3600.0,)) as ask,
+    ):
+        assert await asyncio.wait_for(
+            settle(_automation(), _EID, Outcome.COMPLETED, delivery=_TARGETS), timeout=5
+        )
+        fx.db.record_delivery.assert_awaited_once()
+        fx.metric.assert_called_once()
+        (retry,) = [
+            t for t in settlement_mod._tails if t.get_name() == f"settle_finish_{_EID}"
+        ]
+        assert not retry.done()
+        retry.cancel()
+        with suppress(asyncio.CancelledError):
+            await retry
+
+    assert ask.await_count == 1
 
 
 @pytest.mark.asyncio

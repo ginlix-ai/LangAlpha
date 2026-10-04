@@ -367,21 +367,26 @@ async def settle(
     # Shielded: a cancel landing after the commit, such as shutdown stopping
     # the sweep, must not drop the notice the commit made this writer's to
     # send, since no later sweep finds the row to send it again.
-    tail = asyncio.create_task(
+    tail = _hold(asyncio.create_task(
         _after_settling(outcome, automation, execution_id, row,
                         thread_id, run_id, workspace_id, error,
                         delivery, final_text),
         name=f"settle_tail_{execution_id}",
-    )
-    _tails.add(tail)
-    tail.add_done_callback(_tails.discard)
+    ))
     await asyncio.shield(tail)
     return True
 
 
 # Held so a tail a cancel left running is not collected mid-webhook, and so
-# shutdown can wait for it (``drain_tails``).
+# shutdown can wait for it (``drain_tails``). A finish's retries are held the
+# same way.
 _tails: set[asyncio.Task] = set()
+
+
+def _hold(task: asyncio.Task) -> asyncio.Task:
+    _tails.add(task)
+    task.add_done_callback(_tails.discard)
+    return task
 
 # One webhook's timeout (``WebhookClient.fire``) plus the writes after it.
 TAIL_DRAIN_SECONDS = 20.0
@@ -391,7 +396,8 @@ async def drain_tails(timeout: float = TAIL_DRAIN_SECONDS) -> None:
     """Wait, up to ``timeout``, for this process's tails still running.
 
     A tail cut off by shutdown is lost: its row is already settled, so no
-    sweep finds it to send the webhook or the notice again.
+    sweep finds it to send the webhook or the notice again. A finish's
+    retries cut off leave the record its first ask made.
     """
     if not _tails:
         return
@@ -420,23 +426,27 @@ async def _after_settling(
     policy = _POLICIES[outcome]
     if policy.webhook and not _repeats_a_refusal(policy.failure_reason, run_id, row):
         if delivery is not None and policy.finish is not None:
-            delivery_result = await automation_delivery.finish_run(
+            finish = await automation_delivery.finish_run(
                 automation, execution_id, policy.finish,
                 targets=delivery, final_text=final_text,
             )
+            await _record_delivery(execution_id, finish.result)
+            if finish.retry:
+                # Off the settle's path, which a run's finalize job and the
+                # executor wait on; the record just made stands until a
+                # retry lands.
+                _hold(asyncio.create_task(
+                    _finish_again(automation, execution_id, policy.finish,
+                                  delivery, final_text),
+                    name=f"settle_finish_{execution_id}",
+                ))
         else:
             delivery_result = await WebhookClient().fire_event(
                 policy.webhook, automation, execution_id, thread_id, workspace_id,
                 error=error, run_id=run_id, failure_reason=policy.failure_reason,
             )
-        if delivery_result is not None:
-            try:
-                await exec_db.record_delivery(execution_id, delivery_result)
-            except Exception as e:
-                logger.error(
-                    f"[AUTOMATION_SETTLE] Recording delivery failed: "
-                    f"execution_id={execution_id} error={e}"
-                )
+            if delivery_result is not None:
+                await _record_delivery(execution_id, delivery_result)
     if row["settled_from"] == "waiting" and thread_id:
         await publish_automation_wait(
             user_id=automation["user_id"],
@@ -448,6 +458,42 @@ async def _after_settling(
         automation_executions,
         1,
         {"status": policy.metric, "trigger": automation.get("trigger_type") or "unknown"},
+    )
+
+
+async def _record_delivery(execution_id: str, delivery_result: list) -> None:
+    try:
+        await exec_db.record_delivery(execution_id, delivery_result)
+    except Exception as e:
+        logger.error(
+            f"[AUTOMATION_SETTLE] Recording delivery failed: "
+            f"execution_id={execution_id} error={e}"
+        )
+
+
+async def _finish_again(
+    automation: Dict[str, Any],
+    execution_id: str,
+    status: automation_delivery.FinishStatus,
+    targets: list[automation_delivery.Target],
+    final_text: Optional[str],
+) -> None:
+    """Ask the messaging service again to end a run whose finish got no
+    answer, or found it briefly unavailable. The service ends a run once and
+    answers the same record to every ask, so asking again posts nothing
+    twice. The first answer replaces the run's record; when every ask goes
+    unanswered, the record the first one made stands."""
+    for delay in automation_delivery.FINISH_RETRY_DELAYS:
+        await asyncio.sleep(delay)
+        finish = await automation_delivery.finish_run(
+            automation, execution_id, status, targets=targets, final_text=final_text,
+        )
+        if not finish.retry:
+            await _record_delivery(execution_id, finish.result)
+            return
+    logger.warning(
+        f"[AUTOMATION_SETTLE] Finish never answered, delivery left unconfirmed: "
+        f"execution_id={execution_id}"
     )
 
 

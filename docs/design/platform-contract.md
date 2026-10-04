@@ -218,7 +218,9 @@ events such a run fires. Same two headers:
   record of. Each target becomes a `delivery_result` item `{"method", "address", "name",
   "success", "via", "error"}`, `method` being the entry and `success` meaning reached or posted
   to; a finish with no readable answer records every target as failed, saying delivery couldn't
-  be confirmed. A run
+  be confirmed. A finish that got no answer, or a 502, 503 or 504, is asked again up to twice,
+  2s and then 5s later, beside the settle rather than in its way; the first answer replaces that
+  record. A refused token (401/403), a 404 or any other answer is not asked again. A run
   skipped while it waited, or a repeat of a refusal already announced, is not finished.
 - `GET {base}/agent/automation-targets?workspace_id=` answers `{"apps": {app: {"chats":
   [{"address", "name", "kind"}], "default": {"address", "name", "via"} | null, "error"}}}`,

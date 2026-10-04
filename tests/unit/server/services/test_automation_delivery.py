@@ -288,7 +288,7 @@ class TestTheDeliveryResult:
             ),
         )
 
-        result = await _finish()
+        result = (await _finish()).result
 
         assert result == [
             {
@@ -331,7 +331,7 @@ class TestTheDeliveryResult:
             _landed("slack:T/C", "slack:T/C", "#demo", reached=True, via=None)
         )
 
-        (attempt,) = await _finish()
+        (attempt,) = (await _finish()).result
 
         assert attempt["success"] is True
 
@@ -341,7 +341,7 @@ class TestTheDeliveryResult:
             _landed("slack:T/C", "slack:T/C", "#demo", reached=False, via="carrier pigeon")
         )
 
-        (attempt,) = await _finish()
+        (attempt,) = (await _finish()).result
 
         assert attempt["via"] is None
         assert attempt["success"] is False
@@ -352,7 +352,7 @@ class TestTheDeliveryResult:
             "junk", _landed("discord", "discord:@me", None, reached=True, via="agent")
         )
 
-        result = await _finish()
+        result = (await _finish()).result
 
         assert [a["method"] for a in result] == ["discord"]
 
@@ -379,7 +379,7 @@ class TestAFinishWithNoAnswer:
     async def test_every_target_is_recorded_as_failed(self, service, reply, why):
         service.reply = reply
 
-        result = await _finish(targets=(DEMO, DISCORD_DM, UNLINKED))
+        result = (await _finish(targets=(DEMO, DISCORD_DM, UNLINKED))).result
 
         error = f"Delivery couldn't be confirmed. {why}"
         assert result == [
@@ -414,7 +414,7 @@ class TestAFinishWithNoAnswer:
     async def test_with_no_targets_held_each_entry_is_recorded(self, service):
         service.reply = httpx.ConnectError("refused")
 
-        result = await _finish(targets=())
+        result = (await _finish(targets=())).result
 
         assert [(a["method"], a["success"], a["address"]) for a in result] == [
             ("slack:T/C", False, None),
@@ -422,3 +422,59 @@ class TestAFinishWithNoAnswer:
             ("telegram", False, None),
         ]
         assert all(a["error"].startswith("Delivery couldn't be confirmed.") for a in result)
+
+
+class TestWhichFinishIsWorthAskingAgain:
+    """The service ends a run once and answers the same record to every ask,
+    so only a finish that got no answer, or a passing unavailable one, is
+    asked again; any other answer would come back the same."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            httpx.ConnectError("refused"),
+            httpx.ReadTimeout("slow"),
+            httpx.RemoteProtocolError("reset"),
+            httpx.Response(503, json={"code": "unavailable", "message": "down"}),
+            httpx.Response(502, text="bad gateway"),
+            httpx.Response(504, text="gateway timeout"),
+        ],
+        ids=["unreachable", "timeout", "broken", "503", "502", "504"],
+    )
+    async def test_no_answer_or_a_passing_one_is_asked_again(self, service, reply):
+        service.reply = reply
+
+        finish = await _finish()
+
+        assert finish.retry is True
+        assert not any(a["success"] for a in finish.result)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            httpx.Response(401, json={}),
+            httpx.Response(403, json={}),
+            httpx.Response(404, json={"detail": "Not Found"}),
+            httpx.Response(400, json={"detail": "bad"}),
+            httpx.Response(409, json={"detail": "conflict"}),
+            httpx.Response(422, json={"detail": []}),
+            httpx.Response(500, text="boom"),
+            httpx.Response(200, json={"targets": None}),
+            RuntimeError("anything else"),
+        ],
+        ids=["401", "403", "404", "400", "409", "422", "500", "unreadable", "unexpected"],
+    )
+    async def test_a_refusal_is_not_asked_again(self, service, reply):
+        service.reply = reply
+
+        assert (await _finish()).retry is False
+
+    @pytest.mark.asyncio
+    async def test_an_answer_is_not_asked_again(self, service):
+        service.reply = _finished(
+            _landed("slack:T/C", "slack:T/C", "#demo", reached=True, via="agent")
+        )
+
+        assert (await _finish()).retry is False
