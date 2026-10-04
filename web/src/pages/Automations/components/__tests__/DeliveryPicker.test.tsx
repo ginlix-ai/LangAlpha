@@ -349,9 +349,9 @@ describe('the workspace default across a workspace switch', () => {
   }
 
   it('offers no default, pin or default name while another workspace’s chats show', async () => {
-    let release: (v: unknown) => void = () => {};
+    let release: (v: never) => void = () => {};
     vi.mocked(api.getDeliveryOptions).mockImplementation(async (id: string) =>
-      id === 'ws-1' ? ({ data: OPTIONS } as never) : new Promise((r) => (release = r)),
+      id === 'ws-1' ? ({ data: OPTIONS } as never) : new Promise<never>((r) => (release = r)),
     );
     renderWithProviders(<Switcher methods={['slack', 'slack:T1/C1']} />);
     await waitFor(() => expect(chips().map((c) => c.textContent)).toEqual(['Slack (#demo)', '#demo']));
@@ -365,14 +365,14 @@ describe('the workspace default across a workspace switch', () => {
     expect(document.querySelector('.automation-delivery-chip svg.lucide-pin')).toBeNull();
     for (const c of chips()) expect(within(c).getAllByRole('button')).toHaveLength(1);
 
-    release({ data: OTHER });
+    release({ data: OTHER } as never);
     await waitFor(() => expect(chips().map((c) => c.textContent)).toEqual(['Slack (#research)', '#demo']));
   });
 
   it('invalidates the workspace the change was made for when it lands after a switch', async () => {
-    let finish: (v: unknown) => void = () => {};
+    let finish: (v: never) => void = () => {};
     serve();
-    vi.mocked(api.setDeliveryDefault).mockImplementation(() => new Promise((r) => (finish = r)));
+    vi.mocked(api.setDeliveryDefault).mockImplementation(() => new Promise<never>((r) => (finish = r)));
     const { queryClient } = renderWithProviders(<Switcher methods={['slack:T1/C2']} />);
     fireEvent.click(await screen.findByRole('button', { name: '#research' }));
     fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: label('automation.deliveryUseAsDefault') }));
@@ -382,7 +382,7 @@ describe('the workspace default across a workspace switch', () => {
     fireEvent.click(screen.getByText('switch'));
     await waitFor(() => expect(api.getDeliveryOptions).toHaveBeenCalledWith('ws-2'));
     const spy = vi.spyOn(queryClient, 'invalidateQueries');
-    finish({ data: { address: 'slack:T1/C2', name: '#research' } });
+    finish({ data: { address: 'slack:T1/C2', name: '#research' } } as never);
 
     await waitFor(() => expect(spy).toHaveBeenCalled());
     expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.automationDelivery.options('ws-1') });
