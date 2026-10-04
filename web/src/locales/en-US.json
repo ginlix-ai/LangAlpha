@@ -2542,6 +2542,8 @@
     "low": "L",
     "vol": "Vol",
     "liveQuotes": "Live Quotes",
+    "quotes": "Quotes",
+    "retrievedAt": "Retrieved {{time}}",
     "extendedHours": {
       "preMarket": {
         "long": "Pre-Mkt",
@@ -2557,6 +2559,12 @@
       "open": "Regular",
       "late_trading": "After-Hours",
       "closed": "Closed"
+    },
+    "marketStatusDetail": {
+      "early_trading": "Pre-Market",
+      "open": "Regular Hours",
+      "late_trading": "After-Hours",
+      "closed": "Market Closed"
     },
     "marketIndices": "Market Indices",
     "marketOverview": "Market Overview",
@@ -2595,6 +2603,16 @@
     "nResults": "{{count}} result",
     "nResults_other": "{{count}} results",
     "nRatings": "{{count}} ratings",
+    "peRatio": "P/E",
+    "eps": "EPS",
+    "closeLabel": "Close",
+    "ratings": {
+      "strongBuy": "Strong Buy",
+      "buy": "Buy",
+      "hold": "Hold",
+      "sell": "Sell",
+      "strongSell": "Strong Sell"
+    },
     "nMoreStocks": "+{{count}} more stock",
     "nMoreStocks_other": "+{{count}} more stocks",
     "noPriceData": "No price data available",
@@ -3213,15 +3231,21 @@
       "prevClose": "Prev Close",
       "open": "Open",
       "openHint": "Values are aggregated from intraday data and may differ slightly from daily figures shown on the chart.",
-      "low": "Low",
-      "high": "High",
-      "high52w": "52 wk high",
-      "low52w": "52 wk low",
-      "avgVolume3m": "Avg Vol (3M)",
-      "volume": "Volume",
-      "dayRange": "Day Range",
-      "changePct": "Change %",
-      "changePctExt": "Change % incl. ext",
+      "statusRealtime": "Realtime",
+      "statusDelayed15m": "Delayed 15 min",
+      "statusLastClose": "Last close",
+      "statusStale": "Stale",
+      "statusIncomplete": "Incomplete",
+      "statusDelayedMin": "Delayed {{minutes}} min",
+      "quote": "Quote",
+      "quoteUnknownTier": "Freshness not declared",
+      "chart": "Chart",
+      "chartLastBar": "last bar {{time}}",
+      "chartLive": "live",
+      "chartDelayedMin": "delayed {{minutes}} min",
+      "chartShortOfClose": "{{minutes}} min short of close",
+      "source": "Source",
+      "sourceDaily": "Daily bars",
       "ws": {
         "label": "WebSocket: {{status}}",
         "connectedSecond": "Connected (second-level)",
@@ -3231,6 +3255,15 @@
         "reconnecting": "Reconnecting",
         "disconnected": "Disconnected"
       },
+      "low": "Low",
+      "high": "High",
+      "high52w": "52 wk high",
+      "low52w": "52 wk low",
+      "avgVolume3m": "Avg Vol (3M)",
+      "volume": "Volume",
+      "dayRange": "Day Range",
+      "changePct": "Change %",
+      "changePctExt": "Change % incl. ext",
       "range52w": "52W Range",
       "marketCap": "Market Cap"
     },
@@ -3271,6 +3304,11 @@
       "clearAnnotationsTitle": "Clear annotations from the chart (kept in chat — click the artifact to restore)",
       "modeLabel": "Mode",
       "newsEventAria": "News event: {{title}}",
+      "light": "Light",
+      "advanced": "Advanced",
+      "log": "Log",
+      "more": "More",
+      "fourHourNeedsProvider": "4H data requires FMP or Ginlix Data provider",
       "overlay": "Overlay",
       "toolPercentScale": "Percentage scale",
       "toolMagnet": "Magnet mode",
@@ -3324,11 +3362,12 @@
       "previewDrawBack": "The agent can analyze this and draw its read back onto the same region of the chart.",
       "editChip": "Edit note",
       "chipRegion": "Region · {{symbol}} {{timeframe}}",
-      "chipPriceLevel": "Price ${{price}} · {{symbol}} {{timeframe}}",
+      "chipPriceLevel": "Price {{price}} · {{symbol}} {{timeframe}}",
       "removeChip": "Remove selection"
     },
     "overview": {
-      "noData": "No data available"
+      "noData": "No data available",
+      "indexNoFundamentals": "Fundamentals, earnings and analyst data apply to companies, not to an index."
     },
     "sidebar": {
       "remove": "Remove",

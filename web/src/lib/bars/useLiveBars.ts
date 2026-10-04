@@ -8,6 +8,7 @@ import {
 } from './chartDataLoaders';
 import { DELTA_POLL_CADENCE_MS, INTERVAL_SECONDS } from './chartConstants';
 import type { ChartBar, LoaderMeta } from './marketProtocol';
+import type { Freshness } from '@/types/market';
 
 /** Currency/watermark surfaced by a delta poll, forwarded to `onMeta`. */
 export interface LiveBarsMeta {
@@ -16,6 +17,35 @@ export interface LiveBarsMeta {
   watermark?: number | null;
   marketPhase?: string | null;
   nextChangeAt?: number | null;
+  freshness?: Freshness | null;
+}
+
+/** What a served series is on: a new revision or adjustment basis means the
+ *  server rebuilt its history rather than extending it. */
+interface SeriesBasis {
+  revision?: number;
+  priceTreatment?: string;
+}
+
+function basisOf(meta: Partial<LoaderMeta>): SeriesBasis {
+  return { revision: meta.revision, priceTreatment: meta.priceTreatment };
+}
+
+function differs<T>(a: T | undefined, b: T | undefined): boolean {
+  return a != null && b != null && a !== b;
+}
+
+/** A side that does not say proves nothing: an older backend's load carries no revision. */
+function isRebuilt(known: SeriesBasis, served: SeriesBasis): boolean {
+  return differs(known.revision, served.revision) || differs(known.priceTreatment, served.priceTreatment);
+}
+
+/** *primary* where it says, *fallback* where it does not. */
+function fillBasis(primary: SeriesBasis, fallback: SeriesBasis): SeriesBasis {
+  return {
+    revision: primary.revision ?? fallback.revision,
+    priceTreatment: primary.priceTreatment ?? fallback.priceTreatment,
+  };
 }
 
 export interface UseLiveBarsOptions {
@@ -53,15 +83,39 @@ export interface UseLiveBarsOptions {
    * header badge).
    */
   onPhase?: (phase: string) => void;
+  /**
+   * Measured freshness of the served series from the loader seed or a delta
+   * poll — which provider filled these bars and how far behind they are.
+   * Travels the same path as `onPhase`; drives the header's Chart tooltip line.
+   * Null on a symbol or interval change: the last label measured another series.
+   */
+  onFreshness?: (freshness: Freshness | null) => void;
+  /**
+   * A poll found the series rebuilt server-side (a new revision or adjustment
+   * basis), so the bars on screen and the ones it brought are on different
+   * bases and must not be spliced. Reload the full history through the
+   * initial loader; polls hold until its `seedMeta`, and a reload reported
+   * through `loadFailed` is asked for again on the next tick.
+   */
+  onRebuilt: () => void;
 }
 
 export interface LiveBarsController {
   /**
-   * Seed the delta-poll watermark + currency from the initial loader's
-   * metadata. No-op on `undefined`; only overwrites the watermark when the meta
-   * carries one, and forwards currency to `onMeta` whenever meta is present.
+   * Seed the delta-poll watermark, currency and series basis from the initial
+   * loader's metadata. No-op on `undefined`; only overwrites the watermark when
+   * the meta carries one, and forwards currency to `onMeta` whenever meta is
+   * present.
    */
   seedMeta: (meta: LoaderMeta | LiveBarsMeta | null | undefined) => void;
+  /**
+   * The initial loader came back without bars, from an error or an empty
+   * answer alike: a provider miss mid-rebuild can be either. The reload a
+   * rebuild asked for cleared the chart, so the polls would hold for good on
+   * a blank one; instead the next tick asks for it again. A no-op when no
+   * rebuild is pending.
+   */
+  loadFailed: () => void;
 }
 
 /**
@@ -83,7 +137,7 @@ export interface LiveBarsController {
 export function useLiveBars(
   symbol: string,
   interval: string,
-  { enabled, dataRef, lastWsTickRef, onBars, onMeta, onPhase }: UseLiveBarsOptions,
+  { enabled, dataRef, lastWsTickRef, onBars, onMeta, onPhase, onFreshness, onRebuilt }: UseLiveBarsOptions,
 ): LiveBarsController {
   // Backend epoch-ms high-water mark for delta polls (`after=`).
   const watermarkRef = useRef<number | null>(null);
@@ -110,6 +164,18 @@ export function useLiveBars(
   onMetaRef.current = onMeta;
   const onPhaseRef = useRef(onPhase);
   onPhaseRef.current = onPhase;
+  const onFreshnessRef = useRef(onFreshness);
+  onFreshnessRef.current = onFreshness;
+  const emitRebuilt = useEffectEvent(onRebuilt);
+  // The basis the bars on screen were served on, and the one a poll found the
+  // series rebuilt to while the component reloads; polls hold while it is set.
+  const basisRef = useRef<SeriesBasis>({});
+  const rebuiltToRef = useRef<SeriesBasis | null>(null);
+  // The basis the last reload was sent for, kept until a poll agrees with the
+  // screen again.
+  const reloadedForRef = useRef<SeriesBasis | null>(null);
+  // That reload came back without bars; the next tick sends it again.
+  const reloadFailedRef = useRef(false);
 
   // Reset the delta cursor when the symbol/interval changes — independent of
   // `enabled` so a chart-mode toggle neither strands nor resets it. The initial
@@ -118,21 +184,38 @@ export function useLiveBars(
   useEffect(() => {
     watermarkRef.current = null;
     nextChangeAtRef.current = null;
+    basisRef.current = {};
+    rebuiltToRef.current = null;
+    reloadedForRef.current = null;
+    reloadFailedRef.current = false;
+    onFreshnessRef.current?.(null);
   }, [symbol, interval]);
 
   const seedMeta = useCallback((meta: LoaderMeta | LiveBarsMeta | null | undefined) => {
     if (!meta) return;
     if (meta.watermark != null) watermarkRef.current = meta.watermark;
+    // The basis is what the bars on screen were loaded on, so the load's own
+    // word wins; the basis a poll saw only fills what the load does not say
+    // (the legacy route omits a revision the cached series never recorded).
+    const seeded = basisOf(meta);
+    basisRef.current = rebuiltToRef.current ? fillBasis(seeded, rebuiltToRef.current) : seeded;
+    rebuiltToRef.current = null;
+    reloadFailedRef.current = false;
     onMetaRef.current?.({
       currency: meta.currency,
       displayDecimals: meta.displayDecimals,
       watermark: meta.watermark,
     });
     if (meta.marketPhase) onPhaseRef.current?.(meta.marketPhase);
+    if (meta.freshness) onFreshnessRef.current?.(meta.freshness);
     if (meta.nextChangeAt != null) {
       nextChangeAtRef.current = meta.nextChangeAt;
       armBoundaryRef.current?.();
     }
+  }, []);
+
+  const loadFailed = useCallback(() => {
+    if (rebuiltToRef.current) reloadFailedRef.current = true;
   }, []);
 
   useEffect(() => {
@@ -141,14 +224,25 @@ export function useLiveBars(
 
     const poll = async () => {
       if (aborted) return;
+      // The reload after a rebuild owns the next render, so the poll holds
+      // while it is out. One that failed left the chart blank, and nothing
+      // else would send it again: send it on this tick, ahead of the WS skip,
+      // since a feed folding into no bars covers nothing.
+      if (rebuiltToRef.current) {
+        if (reloadFailedRef.current) {
+          reloadFailedRef.current = false;
+          emitRebuilt();
+        }
+        return;
+      }
       const now = Date.now();
       // Skip while WS drives the forming bar — except the periodic reconcile
       // (WS_RECONCILE_POLL_MS), which always gets through as the authoritative
       // correction.
       if (shouldSkipPollWhileWsHealthy(lastWsTickRef.current, lastReconcileRef.current, now)) return;
-      // The initial loader owns first render; the poll never seeds from an empty
-      // series. Bail BEFORE stamping the reconcile so an empty tick doesn't
-      // consume the reconcile budget.
+      // The initial loader owns first render; the poll never seeds from an
+      // empty series. Bail BEFORE stamping the reconcile so a skipped tick
+      // doesn't consume its budget.
       if (dataRef.current.length === 0) return;
       lastReconcileRef.current = now;
 
@@ -167,6 +261,24 @@ export function useLiveBars(
         // symbol/interval and that cleanup running.
         if (liveSymbol() !== sym || liveInterval() !== iv) return;
 
+        // A rebuilt series answers `after=` with its new tail only; merged, it
+        // would sit next to history on the old basis and corrupt returns and
+        // indicators. Hand it to a full reload instead.
+        const served = basisOf(delta.meta);
+        if (isRebuilt(basisRef.current, served)) {
+          // A reload for this very basis came back on another: the loader and
+          // the poll read different series. Reloading again would loop and
+          // merging would mix the two, so the polls hold until either moves.
+          if (reloadedForRef.current && !isRebuilt(reloadedForRef.current, served)) return;
+          rebuiltToRef.current = served;
+          reloadedForRef.current = served;
+          watermarkRef.current = null;
+          emitRebuilt();
+          return;
+        }
+        reloadedForRef.current = null;
+        basisRef.current = fillBasis(basisRef.current, served);
+
         // Forward-only against jitter, but a watermark a full bucket older means
         // the server envelope was rebuilt — adopt it or the cursor strands past
         // every server bar (see advanceWatermark).
@@ -181,6 +293,7 @@ export function useLiveBars(
           });
         }
         if (delta.meta.marketPhase) onPhaseRef.current?.(delta.meta.marketPhase);
+        if (delta.meta.freshness) onFreshnessRef.current?.(delta.meta.freshness);
         if (delta.meta.nextChangeAt != null) {
           nextChangeAtRef.current = delta.meta.nextChangeAt;
           armBoundaryRef.current?.();
@@ -265,5 +378,5 @@ export function useLiveBars(
     };
   }, [symbol, interval, enabled, dataRef, lastWsTickRef]);
 
-  return { seedMeta };
+  return { seedMeta, loadFailed };
 }

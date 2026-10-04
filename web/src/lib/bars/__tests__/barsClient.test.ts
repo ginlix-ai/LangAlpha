@@ -163,4 +163,20 @@ describe('headerToMeta', () => {
       headerToMeta({ watermark: 1 }, { cached: false, cache_key: null, next_change_at: null }).nextChangeAt,
     ).toBeNull();
   });
+
+  it('carries the revision and adjustment basis a live chart checks each poll against', () => {
+    const meta = headerToMeta({ watermark: 1, revision: 4, price_treatment: 'split_adjusted' });
+    expect(meta.revision).toBe(4);
+    expect(meta.priceTreatment).toBe('split_adjusted');
+    expect(headerToMeta({ watermark: 1 }).priceTreatment).toBeUndefined();
+  });
+
+  it('carries the measured freshness from the cache block, so a delta poll re-labels the chart', () => {
+    const freshness = {
+      expected_latest: 1_800_000_060_000, actual_latest: 1_800_000_000_000, lag_s: 60,
+      label: 'delayed', measured: true, source: 'stub-pub', interval: '1min', closed: false,
+    } as const;
+    expect(headerToMeta({ watermark: 1 }, { cached: false, cache_key: null, freshness }).freshness).toEqual(freshness);
+    expect(headerToMeta({ watermark: 1 }, { cached: false, cache_key: null }).freshness).toBeNull();
+  });
 });

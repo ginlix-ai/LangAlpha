@@ -2,6 +2,7 @@
  * Shared market utilities used across Dashboard and MarketView.
  */
 import { api } from '@/api/client';
+import { displaySpelling } from '@/lib/bars/exchanges';
 
 interface MarketStatusData {
   market?: string;
@@ -47,6 +48,10 @@ interface ExtendedHoursInfo {
 export interface StockSearchHit {
   symbol: string;
   name?: string;
+  // CN/HK listings carry both spellings; `name` stays the single-name fallback
+  // so callers that do not resolve a dual name are unaffected.
+  nameLocal?: string;
+  nameEn?: string;
   exchangeShortName?: string;
   stockExchange?: string;
   currency?: string;
@@ -152,16 +157,18 @@ export function getExtendedHoursInfo(
  */
 const TICKER_RE = /^[A-Za-z0-9.^=:-]{1,16}$/;
 
-/** Every symbol field hands over the same shape: trimmed, uppercase, never blank. */
+/** Every symbol field hands over the same shape: the display spelling
+ *  (trimmed, uppercase, `.SH` for Shanghai), never blank. */
 export function normalizeSymbolInput(raw: string): string | null {
-  const sym = raw.trim().toUpperCase();
+  const sym = displaySpelling(raw);
   return sym ? sym : null;
 }
 
-/** The typed text as a ticker, or null when it reads as a company name. */
+/** The typed text as a ticker in its display spelling, or null when it reads as a company name.
+ *  Tested after the fold, so a code typed through a Chinese IME (`６００５１９。ＳＨ`) reads as one. */
 export function readTypedTicker(raw: string): string | null {
-  const trimmed = raw.trim();
-  return TICKER_RE.test(trimmed) ? trimmed.toUpperCase() : null;
+  const sym = displaySpelling(raw);
+  return TICKER_RE.test(sym) ? sym : null;
 }
 
 export async function searchStocks(

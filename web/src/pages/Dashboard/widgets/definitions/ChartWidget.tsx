@@ -510,6 +510,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
     dataRef: allDataRef,
     lastWsTickRef: lastLiveTickTimeRef,
     onMeta: onCurrencyMeta,
+    onRebuilt: () => {},
     onBars: (merged) => {
       updateSeriesData(merged);
       const latest = merged[merged.length - 1];

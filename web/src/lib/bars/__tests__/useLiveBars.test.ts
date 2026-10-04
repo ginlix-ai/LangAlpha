@@ -29,6 +29,8 @@ function delta(
     displayDecimals?: number;
     marketPhase?: string | null;
     nextChangeAt?: number | null;
+    revision?: number;
+    priceTreatment?: string;
   } = {},
 ): BarsDeltaResult {
   return {
@@ -40,6 +42,8 @@ function delta(
       nextChangeAt: extra.nextChangeAt ?? null,
       currency: extra.currency,
       displayDecimals: extra.displayDecimals,
+      revision: extra.revision,
+      priceTreatment: extra.priceTreatment,
     },
     source: 'protocol',
   };
@@ -51,12 +55,13 @@ function setup(overrides: Partial<{ symbol: string; interval: string; enabled: b
   const onBars = vi.fn();
   const onMeta = vi.fn();
   const onPhase = vi.fn();
+  const onRebuilt = vi.fn();
   const view = renderHook(
     ({ symbol, interval, enabled }) =>
-      useLiveBars(symbol, interval, { enabled, dataRef, lastWsTickRef, onBars, onMeta, onPhase }),
+      useLiveBars(symbol, interval, { enabled, dataRef, lastWsTickRef, onBars, onMeta, onPhase, onRebuilt }),
     { initialProps: { symbol: 'AAPL', interval: '5min', enabled: true, ...overrides } },
   );
-  return { dataRef, lastWsTickRef, onBars, onMeta, onPhase, ...view };
+  return { dataRef, lastWsTickRef, onBars, onMeta, onPhase, onRebuilt, ...view };
 }
 
 async function tick(ms = POLL_MS) {
@@ -160,6 +165,166 @@ describe('useLiveBars', () => {
     mockFetch.mockResolvedValue(delta([bar(100)], { marketPhase: 'closed' }));
     await tick();
     expect(onPhase).toHaveBeenCalledWith('closed');
+  });
+
+  it('re-labels the chart from a poll that brings no new bars', async () => {
+    const onFreshness = vi.fn();
+    const dataRef = { current: [bar(100)] };
+    renderHook(() => useLiveBars('AAPL', '5min', {
+      enabled: true, dataRef, lastWsTickRef: { current: 0 }, onBars: vi.fn(), onFreshness, onRebuilt: vi.fn(),
+    }));
+    const freshness = { label: 'stale' as const, measured: true, lag_s: 1800, interval: '5min' };
+    const empty = delta([]);
+    mockFetch.mockResolvedValue({ ...empty, meta: { ...empty.meta, freshness } });
+    await tick();
+    expect(onFreshness).toHaveBeenCalledWith(freshness);
+  });
+
+  it('clears the label on a symbol or interval change, before the new series seeds it', () => {
+    const onFreshness = vi.fn();
+    const opts = {
+      enabled: true, dataRef: { current: [] as ChartBar[] }, lastWsTickRef: { current: 0 },
+      onBars: vi.fn(), onFreshness, onRebuilt: vi.fn(),
+    };
+    const { result, rerender } = renderHook(
+      ({ symbol, interval }) => useLiveBars(symbol, interval, opts),
+      { initialProps: { symbol: 'AAPL', interval: '5min' } },
+    );
+    const freshness = { label: 'delayed' as const, measured: true, lag_s: 900, interval: '5min' };
+    act(() => result.current.seedMeta({ watermark: 1, freshness }));
+    expect(onFreshness).toHaveBeenLastCalledWith(freshness);
+
+    rerender({ symbol: 'AAPL', interval: '1hour' });
+    expect(onFreshness).toHaveBeenLastCalledWith(null);
+
+    act(() => result.current.seedMeta({ watermark: 1, freshness }));
+    rerender({ symbol: '600519.SH', interval: '1hour' });
+    expect(onFreshness).toHaveBeenLastCalledWith(null);
+  });
+
+  describe('a series rebuilt server-side', () => {
+    const SEED = { watermark: 100_000, complete: true, marketPhase: 'open', revision: 3, priceTreatment: 'split_adjusted' };
+
+    it('is reloaded, not spliced, when a poll brings a new revision', async () => {
+      const { dataRef, onBars, onRebuilt, result } = setup();
+      dataRef.current = [bar(100, { close: 50 })];
+      act(() => result.current.seedMeta(SEED));
+      mockFetch.mockResolvedValue(delta([bar(200, { close: 100 })], { revision: 4, priceTreatment: 'split_adjusted' }));
+      await tick();
+      expect(onRebuilt).toHaveBeenCalledTimes(1);
+      expect(onBars).not.toHaveBeenCalled();
+      expect(dataRef.current.map((b) => b.time)).toEqual([100]);
+    });
+
+    it('is reloaded when the adjustment basis changes, though the initial load named no revision', async () => {
+      const { dataRef, onBars, onRebuilt, result } = setup();
+      dataRef.current = [bar(100)];
+      act(() => result.current.seedMeta({ ...SEED, revision: undefined }));
+      mockFetch.mockResolvedValue(delta([bar(200)], { revision: 0, priceTreatment: 'raw' }));
+      await tick();
+      expect(onRebuilt).toHaveBeenCalledTimes(1);
+      expect(onBars).not.toHaveBeenCalled();
+    });
+
+    it('takes its revision from the first poll when the initial load named none', async () => {
+      const { dataRef, onBars, onRebuilt, result } = setup();
+      dataRef.current = [bar(100)];
+      act(() => result.current.seedMeta({ ...SEED, revision: undefined }));
+      mockFetch.mockResolvedValue(delta([bar(200)], { revision: 3, priceTreatment: 'split_adjusted' }));
+      await tick();
+      expect(onRebuilt).not.toHaveBeenCalled();
+      expect(onBars).toHaveBeenCalledTimes(1);
+
+      mockFetch.mockResolvedValue(delta([bar(300)], { revision: 4, priceTreatment: 'split_adjusted' }));
+      await tick();
+      expect(onRebuilt).toHaveBeenCalledTimes(1);
+      expect(dataRef.current.map((b) => b.time)).toEqual([100, 200]);
+    });
+
+    it('holds the polls until the reload seeds, then polls from the rebuilt series', async () => {
+      const { dataRef, onBars, onRebuilt, result } = setup();
+      dataRef.current = [bar(100)];
+      act(() => result.current.seedMeta(SEED));
+      mockFetch.mockResolvedValue(delta([bar(200)], { revision: 4, priceTreatment: 'split_adjusted' }));
+      await tick();
+      expect(onRebuilt).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenLastCalledWith('AAPL', '5min', 100_000);
+
+      await tick();
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+
+      // The reload lands: the rebuilt history and its own watermark.
+      dataRef.current = [bar(100, { close: 2 }), bar(200, { close: 2 })];
+      act(() => result.current.seedMeta({ ...SEED, watermark: 200_000, revision: 4 }));
+      mockFetch.mockResolvedValue(delta([bar(300)], { revision: 4, priceTreatment: 'split_adjusted' }));
+      await tick();
+      expect(mockFetch).toHaveBeenLastCalledWith('AAPL', '5min', 200_000);
+      expect(onRebuilt).toHaveBeenCalledTimes(1);
+      expect(dataRef.current.map((b) => b.time)).toEqual([100, 200, 300]);
+      expect(onBars).toHaveBeenCalledTimes(1);
+    });
+
+    it('holds rather than reloading in a loop or merging when the loader still reports the old basis', async () => {
+      const { dataRef, onBars, onRebuilt, result } = setup();
+      dataRef.current = [bar(100)];
+      act(() => result.current.seedMeta({ ...SEED, revision: undefined }));
+      mockFetch.mockResolvedValue(delta([bar(200)], { revision: 0, priceTreatment: 'raw' }));
+      await tick();
+      expect(onRebuilt).toHaveBeenCalledTimes(1);
+
+      // A reload whose route still says split_adjusted: the bars on screen are
+      // on that basis, so the raw tail must not be merged onto them.
+      act(() => result.current.seedMeta({ ...SEED, revision: undefined }));
+      await tick();
+      await tick();
+      expect(onRebuilt).toHaveBeenCalledTimes(1);
+      expect(onBars).not.toHaveBeenCalled();
+      expect(dataRef.current.map((b) => b.time)).toEqual([100]);
+
+      // The poll moves on to yet another basis: that one is worth a reload.
+      mockFetch.mockResolvedValue(delta([bar(300)], { revision: 1, priceTreatment: 'raw' }));
+      await tick();
+      expect(onRebuilt).toHaveBeenCalledTimes(2);
+    });
+
+    it('asks for the reload again on the cadence when it failed, rather than holding for good', async () => {
+      const { dataRef, onRebuilt, result } = setup();
+      dataRef.current = [bar(100)];
+      act(() => result.current.seedMeta(SEED));
+      mockFetch.mockResolvedValue(delta([bar(200)], { revision: 4, priceTreatment: 'split_adjusted' }));
+      await tick();
+      expect(onRebuilt).toHaveBeenCalledTimes(1);
+
+      // The reload clears the chart; while it is in flight the polls hold.
+      dataRef.current = [];
+      await tick();
+      expect(onRebuilt).toHaveBeenCalledTimes(1);
+
+      // It comes back with an error (a 503): the next tick asks again.
+      act(() => result.current.loadFailed());
+      await tick();
+      expect(onRebuilt).toHaveBeenCalledTimes(2);
+      await tick();
+      expect(onRebuilt).toHaveBeenCalledTimes(2);
+
+      // The retry lands, and the polls resume from the rebuilt series.
+      dataRef.current = [bar(100), bar(200)];
+      act(() => result.current.seedMeta({ ...SEED, watermark: 200_000, revision: 4 }));
+      await tick();
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch).toHaveBeenLastCalledWith('AAPL', '5min', 200_000);
+      expect(onRebuilt).toHaveBeenCalledTimes(2);
+    });
+
+    it('starts over on a symbol change, so the next symbol\'s revision is no rebuild', async () => {
+      const { dataRef, onRebuilt, result, rerender } = setup();
+      dataRef.current = [bar(100)];
+      act(() => result.current.seedMeta(SEED));
+      rerender({ symbol: 'MSFT', interval: '5min', enabled: true });
+      mockFetch.mockResolvedValue(delta([bar(200)], { revision: 0, priceTreatment: 'raw' }));
+      await tick();
+      expect(onRebuilt).not.toHaveBeenCalled();
+    });
   });
 
   it('resets the watermark when the symbol changes', async () => {

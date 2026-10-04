@@ -163,7 +163,7 @@ export async function getIndex(symbol: string, _opts: Record<string, unknown> = 
  *  SnapshotEntry and the quote layer's QuoteRow (whose price is nullable). */
 interface IndexSnapshotLike {
   symbol?: string;
-  name?: string;
+  name?: string | null;
   price?: number | null;
   change?: number | null;
   change_percent?: number | null;

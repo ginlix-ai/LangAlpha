@@ -1208,6 +1208,7 @@ const MarketChart = React.memo(function MarketChart({
     dataRef: allDataRef,
     lastWsTickRef: lastLiveTickTimeRef,
     onMeta: onCurrencyMeta,
+    onRebuilt: () => {},
     onPhase: (phase) => {
       // Ref first: the imperative data paths must read the fresh phase
       // before React commits the state update.
@@ -2341,7 +2342,7 @@ const MarketChart = React.memo(function MarketChart({
               <CrosshairTooltipLayer
                 store={tooltipStore}
                 containerRef={chartContainerRef}
-                currency={displayCurrency.code}
+                currency={displayCurrency.code ?? undefined}
                 decimals={displayCurrency.decimals}
               />
               {effectiveChartMode === 'custom' && (
