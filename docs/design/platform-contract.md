@@ -142,7 +142,8 @@ turn's sends none, whatever the thread is bound to.
   user's direct messages there), `text`, `files`
   (`[{"path", "workspace_id"}]`, a null `workspace_id` meaning the request's), `reply` and
   `new_thread` (true starts a fresh thread in the chat instead of continuing this conversation's;
-  always sent). Every
+  always sent), plus `automation_execution_id` on an automation's turn whose delivery the
+  messaging service holds (see Automation delivery), and only then. Every
   delivery outcome is a 200 carrying `status` (`sent`, `partial`, `failed`), `code`, `message`,
   `address`, `current`, `duplicate` and per-file `files` (`path`, `status`, `reason`). The same
   `tool_call_id` twice is the graph replaying a tool step after a resume, and must not send
@@ -187,11 +188,54 @@ gateway holds both, with the same two headers:
   `available.json` adds the user's workspaces by id and name.
 - `POST {base}/agent/check-target` takes `{"address", "purpose": "automation"}` and answers
   `{"ok", "address", "name", "message"}`, with `<app>:@me` back as sent. Every save of an
-  automation's `delivery` (file, REST or tool) checks each chat address it newly names here and
-  stores the canonical `address`; without a gateway, an address entry is refused, while an app
-  name (`"slack"`) saves as before. The gateway resolves an app name to the workspace's
-  `automation_output`, else the app's `preferred`, else the user's direct messages; an address,
-  `<app>:@me` included, posts to that chat.
+  automation's `delivery` (file, REST or tool) checks each entry it newly names here: a chat
+  address is stored as the canonical `address`, and an app name (`"slack"`) is kept as written,
+  refused while the user hasn't linked that app. An entry the automation already holds is not
+  checked again. Without a gateway, an address entry is refused, while an app name saves
+  unchecked. The gateway resolves an app name to the workspace's `automation_output`, else the
+  app's `preferred`, else the user's direct messages; an address, `<app>:@me` included, posts to
+  that chat.
+
+### Automation delivery
+
+With the same configuration, an automation run delivers through the messaging service (the
+gateway above) instead of the automation webhook (`AUTOMATION_WEBHOOK_URL`), none of whose
+events such a run fires. Same two headers:
+
+- `POST {base}/agent/automation-runs` takes `{"execution_id", "workspace_id",
+  "automation_name", "entries"}` before the run's turn starts, and answers `{"targets":
+  [{"entry", "address", "name", "ok", "message"}]}`; a refused entry has `ok` false and a null
+  `address`. The same `execution_id` again answers the same run. When the call fails or no entry
+  is `ok`, the run delivers by webhook as before. Otherwise the run's agent is told the `ok`
+  targets, its `send_message` calls carry `automation_execution_id`, and the targets are stamped
+  on the run row, so the settle ends the run the same way on whichever worker drains it.
+- `POST {base}/agent/automation-runs/{execution_id}/finish` takes `{"status", "final_text"}` as
+  the run settles. `status` is `completed`, `failed` (an error, a refused key, a usage limit, a
+  server fault, an interrupted run) or `stopped` (the user stopped it); `final_text`, the run's
+  last answer cut to 20,000 characters, rides only on `completed`. It answers `{"targets":
+  [{"entry", "address", "name", "reached", "via", "error"}]}` with `via` one of `agent`,
+  `fallback`, `notice` or null; a second finish posts nothing more, and 404 is a run it has no
+  record of. Each target becomes a `delivery_result` item `{"method", "address", "name",
+  "success", "via", "error"}`, `method` being the entry and `success` meaning reached or posted
+  to; a finish with no readable answer records every target as failed, saying delivery couldn't
+  be confirmed. A run
+  skipped while it waited, or a repeat of a refusal already announced, is not finished.
+- `GET {base}/agent/automation-targets?workspace_id=` answers `{"apps": {app: {"chats":
+  [{"address", "name", "kind"}], "default": {"address", "name", "via"} | null, "error"}}}`,
+  `via` one of `workspace`, `preferred` or `dm`: the chat an entry naming only the app reaches.
+  langalpha serves it as `GET /api/v1/automations/delivery-options?workspace_id=`, which adds
+  `enabled` (false, with no apps, without a messaging service) and answers 503 `{"detail"}` when
+  the service fails.
+- `PUT {base}/agent/automation-output` takes `{"workspace_id", "platform", "address"}` (a null
+  `address` clears it) and answers 200 `{"address", "name"}`, 400 `{"code": "invalid",
+  "message", "problems": [{"field", "message"}]}`, 409 `{"code": "busy", "message"}` or 503
+  `{"code": "unavailable", "message"}`. langalpha serves it as
+  `PUT /api/v1/automations/delivery-default`: 400 `{"detail", "problems"}`, 409 and 503
+  `{"detail"}`, and 404 without a messaging service. Both routes refuse a workspace that isn't
+  the caller's.
+
+A create or update refused for its delivery stays a 409 whose `detail` is the joined sentence,
+and adds `problems: [{"entry", "message"}]`, one per refused entry.
 
 ## Adding a surface
 
@@ -221,3 +265,4 @@ matters.
 | Built-in rules prose, and where caller rules land | `templates/envelope/surface_rules.md.j2` |
 | When the rules ride | `runtime_context/turn.py` (`rules_key`, `_rules_already_stated`) |
 | Messaging tools, and the surface they name | `src/tools/messaging/tools.py`; `turn_surface` in `src/server/handlers/chat/request_prep.py` |
+| Automation delivery | `src/server/services/automation_delivery.py`; its routes in `src/server/app/automations.py` |
