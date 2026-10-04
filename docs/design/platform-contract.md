@@ -203,25 +203,34 @@ gateway above) instead of the automation webhook (`AUTOMATION_WEBHOOK_URL`), non
 events such a run fires. Same two headers:
 
 - `POST {base}/agent/automation-runs` takes `{"execution_id", "workspace_id",
-  "automation_name", "entries"}` before the run's turn starts, and answers `{"targets":
+  "automation_name", "entries", "thread_id"}` before the run's turn starts, `thread_id` being
+  the run's thread, already resolved (both calls send it, so what the service posts links back
+  to the thread and a reply there continues it), and answers `{"targets":
   [{"entry", "address", "name", "ok", "message"}]}`; a refused entry has `ok` false and a null
   `address`. The same `execution_id` again answers the same run. When the call fails or no entry
   is `ok`, the run delivers by webhook as before. Otherwise the run's agent is told the `ok`
   targets, its `send_message` calls carry `automation_execution_id`, and the targets are stamped
   on the run row, so the settle ends the run the same way on whichever worker drains it.
-- `POST {base}/agent/automation-runs/{execution_id}/finish` takes `{"status", "final_text"}` as
-  the run settles. `status` is `completed`, `failed` (an error, a refused key, a usage limit, a
-  server fault, an interrupted run) or `stopped` (the user stopped it); `final_text`, the run's
-  last answer cut to 20,000 characters, rides only on `completed`. It answers `{"targets":
+- `POST {base}/agent/automation-runs/{execution_id}/finish` takes `{"status", "final_text",
+  "thread_id"}` as the run settles. `status` is `completed`, `failed` (an error, a refused key,
+  a usage limit, a server fault, an interrupted run) or `stopped` (the user stopped it);
+  `final_text`, the run's last answer cut to 20,000 characters, rides only on `completed`. It
+  answers `{"targets":
   [{"entry", "address", "name", "reached", "via", "error"}]}` with `via` one of `agent`,
   `fallback`, `notice` or null; a second finish posts nothing more, and 404 is a run it has no
   record of. Each target becomes a `delivery_result` item `{"method", "address", "name",
   "success", "via", "error"}`, `method` being the entry and `success` meaning reached or posted
-  to; a finish with no readable answer records every target as failed, saying delivery couldn't
-  be confirmed. A finish that got no answer, or a 502, 503 or 504, is asked again up to twice,
-  2s and then 5s later, beside the settle rather than in its way; the first answer replaces that
-  record. A refused token (401/403), a 404 or any other answer is not asked again. A run
-  skipped while it waited, or a repeat of a refusal already announced, is not finished.
+  to. `address` is where the post landed, possibly a thread (`slack:T1/C9/1800.000001`) where
+  the start named the chat, so an item is matched to its target by `method`. A finish with no
+  readable answer records every target as failed, saying delivery couldn't be confirmed. A
+  finish answered while another finish for the run is mid-post carries rows still being posted
+  (`reached` false, `via` and `error` null; a final row that didn't land always has an
+  error): those read as unconfirmed, never as landed, until an answer says where they landed.
+  A finish that got no answer, a 502, 503 or 504, or rows still being posted is asked again up
+  to twice, 2s and then 5s later, beside the settle rather than in its way. Each answer
+  replaces the record, and a refusal replaces only one no answer made. A refused token
+  (401/403), a 404 or any other answer is not asked again. A run skipped while it waited, or a
+  repeat of a refusal already announced, is not finished.
 - `GET {base}/agent/automation-targets?workspace_id=` answers `{"apps": {app: {"chats":
   [{"address", "name", "kind"}], "default": {"address", "name", "via"} | null, "error"}}}`,
   `via` one of `workspace`, `preferred` or `dm`: the chat an entry naming only the app reaches.

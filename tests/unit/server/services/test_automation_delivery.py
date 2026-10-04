@@ -82,7 +82,9 @@ class TestStart:
     async def test_it_hands_the_run_over_and_answers_every_target(self, service):
         service.reply = _started(DEMO, DISCORD_DM, UNLINKED)
 
-        targets = await delivery.start_run(AUTOMATION, EXECUTION_ID, "ws-1")
+        targets = await delivery.start_run(
+            AUTOMATION, EXECUTION_ID, "ws-1", thread_id="thread-1"
+        )
 
         assert targets == [DEMO, DISCORD_DM, UNLINKED]
         (request,) = service.requests
@@ -95,7 +97,16 @@ class TestStart:
             "workspace_id": "ws-1",
             "automation_name": "Morning brief",
             "entries": ["slack:T/C", "discord", "telegram"],
+            "thread_id": "thread-1",
         }
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_no_thread_names_none(self, service):
+        service.reply = _started(DEMO)
+
+        await delivery.start_run(AUTOMATION, EXECUTION_ID, "ws-1")
+
+        assert "thread_id" not in service.body
 
     @pytest.mark.asyncio
     async def test_no_entries_asks_nothing(self, service):
@@ -218,9 +229,12 @@ def _landed(entry, address, name, *, reached, via, error=None) -> dict:
     }
 
 
-async def _finish(status="completed", *, targets=(DEMO, DISCORD_DM), final_text="The brief."):
+async def _finish(
+    status="completed", *, targets=(DEMO, DISCORD_DM), final_text="The brief.", thread_id=None
+):
     return await delivery.finish_run(
-        AUTOMATION, EXECUTION_ID, status, targets=list(targets), final_text=final_text
+        AUTOMATION, EXECUTION_ID, status,
+        targets=list(targets), final_text=final_text, thread_id=thread_id,
     )
 
 
@@ -229,13 +243,17 @@ class TestTheFinishRequest:
     async def test_a_completed_run_hands_over_its_answer(self, service):
         service.reply = _finished()
 
-        await _finish("completed", final_text="The brief.")
+        await _finish("completed", final_text="The brief.", thread_id="thread-1")
 
         (request,) = service.requests
         assert request.method == "POST"
         assert str(request.url) == f"{SERVICE}/agent/automation-runs/{EXECUTION_ID}/finish"
         assert request.headers["X-User-Id"] == "user-1"
-        assert service.body == {"status": "completed", "final_text": "The brief."}
+        assert service.body == {
+            "status": "completed",
+            "final_text": "The brief.",
+            "thread_id": "thread-1",
+        }
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", ["failed", "stopped"])
@@ -478,3 +496,58 @@ class TestWhichFinishIsWorthAskingAgain:
         )
 
         assert (await _finish()).retry is False
+
+
+class TestAnAnswerStillBeingPosted:
+    """When another finish for the run is mid-post, the service answers the
+    record as it stands: a row still being posted is neither reached nor
+    posted and has no error, which a row that didn't land always has."""
+
+    @pytest.mark.asyncio
+    async def test_it_is_asked_again_and_never_reads_as_landed(self, service):
+        service.reply = _finished(
+            _landed("slack:T/C", "slack:T/C/1800.000001", "#demo", reached=True, via="agent"),
+            _landed("discord", "discord:@me", None, reached=False, via=None),
+        )
+
+        finish = await _finish()
+
+        assert finish.retry is True
+        assert finish.answered is True
+        landed, posting = finish.result
+        # What landed stands, at the thread it landed in.
+        assert landed["success"] is True
+        assert landed["address"] == "slack:T/C/1800.000001"
+        assert posting == {
+            "method": "discord",
+            "address": "discord:@me",
+            "name": None,
+            "success": False,
+            "via": None,
+            "error": "Delivery couldn't be confirmed.",
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "row",
+        [
+            _landed("discord", "discord:@me", None, reached=False, via=None, error="Bot removed"),
+            _landed("discord", "discord:@me", None, reached=False, via="fallback"),
+            _landed("discord", "discord:@me", None, reached=True, via=None),
+        ],
+        ids=["failed", "posted", "reached"],
+    )
+    async def test_a_final_row_is_not_still_posting(self, service, row):
+        service.reply = _finished(row)
+
+        finish = await _finish()
+
+        assert finish.retry is False
+        assert finish.answered is True
+        assert finish.result[0]["error"] in (None, "Bot removed")
+
+    @pytest.mark.asyncio
+    async def test_no_answer_is_not_an_answer(self, service):
+        service.reply = httpx.ConnectError("refused")
+
+        assert (await _finish()).answered is False

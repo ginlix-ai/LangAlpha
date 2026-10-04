@@ -387,8 +387,10 @@ async def test_a_held_run_tells_its_agent_where_to_send():
     with _firing([_streams]) as fx, _delivery(_HELD) as dx:
         await AutomationExecutor().execute(automation, _EXEC)
 
-    dx.start.assert_awaited_once_with(automation, _EXEC, "ws-1")
     args = _turn_args(fx)
+    # The thread the run goes on, resolved before the start.
+    assert args["thread_id"]
+    dx.start.assert_awaited_once_with(automation, _EXEC, "ws-1", thread_id=args["thread_id"])
     contexts = [(c.type, c.content) for c in args["request"].additional_context]
     assert contexts == [
         ("directive", "Be brief."),

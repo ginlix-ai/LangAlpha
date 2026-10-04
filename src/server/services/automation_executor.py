@@ -735,7 +735,8 @@ class AutomationExecutor:
             # the service, or when it won't take the run, the webhook
             # delivers as before.
             firing.delivery = await automation_delivery.start_run(
-                firing.automation, execution_id, firing.workspace_id
+                firing.automation, execution_id, firing.workspace_id,
+                thread_id=firing.thread_id,
             )
 
             # ─── Run the turn ─────────────────────────────────────

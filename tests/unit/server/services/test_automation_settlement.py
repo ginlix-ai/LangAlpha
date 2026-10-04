@@ -193,9 +193,10 @@ async def test_a_held_run_ends_with_the_messaging_service(outcome):
             delivery=_TARGETS, final_text="The brief.",
         )
 
+    # The run's thread, as its row records it, so the posts link back to it.
     fx.finish.assert_awaited_once_with(
         _automation(), _EID, FINISHES[outcome],
-        targets=_TARGETS, final_text="The brief.",
+        targets=_TARGETS, final_text="The brief.", thread_id=_THREAD,
     )
     # In place of the webhook, and recorded the same way.
     fx.fire.assert_not_awaited()
@@ -237,6 +238,25 @@ _FINISHED = automation_delivery.messaging.GatewayAnswer(
                   "reached": True, "via": "agent", "error": None}]},
     "",
 )
+
+
+# Another finish for the run is mid-post: #demo landed, the DM is still
+# being posted.
+_STILL_POSTING = automation_delivery.messaging.GatewayAnswer(
+    200,
+    {"targets": [
+        {"entry": "slack:T/C", "address": "slack:T/C/1800.000001", "name": "#demo",
+         "reached": True, "via": "agent", "error": None},
+        {"entry": "discord", "address": "discord:@me", "name": None,
+         "reached": False, "via": None, "error": None},
+    ]},
+    "",
+)
+_POSTING_RECORD = [
+    ("slack:T/C", True, None),
+    ("discord", False, "Delivery couldn't be confirmed."),
+]
+_NOT_FOUND = automation_delivery.messaging.GatewayAnswer(404, {"detail": "Not Found"}, "")
 
 
 @contextmanager
@@ -306,6 +326,7 @@ async def test_a_finish_asked_again_records_the_answer_that_lands():
     # more is asked once it has.
     assert ask.await_count == 2
     assert ask.await_args_list[0] == ask.await_args_list[1]
+    assert ask.await_args_list[1].kwargs["body"]["thread_id"] == _THREAD
     first, landed = [c.args for c in fx.db.record_delivery.await_args_list]
     assert not any(d["success"] for d in first[1])
     assert landed == (
@@ -348,6 +369,74 @@ async def test_a_refused_finish_is_not_asked_again(refusal, why):
     fx.db.record_delivery.assert_awaited_once()
     assert _errors(fx.db.record_delivery.await_args.args[1])[0] == (
         "slack:T/C", False, f"Delivery couldn't be confirmed. {why}",
+    )
+
+
+def _records(fx):
+    return [_errors(c.args[1]) for c in fx.db.record_delivery.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_a_record_still_being_posted_stands_until_the_final_one():
+    with _settlement(_row()) as fx, _asking(_STILL_POSTING, _FINISHED, _FINISHED) as ask:
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_TARGETS)
+        await drain_tails()
+
+    assert ask.await_count == 2
+    assert _records(fx) == [_POSTING_RECORD, [("slack:T/C", True, None)]]
+
+
+@pytest.mark.asyncio
+async def test_rows_still_being_posted_when_the_asks_run_out_are_unconfirmed():
+    with (
+        _settlement(_row()) as fx,
+        _asking(_STILL_POSTING, _STILL_POSTING, _STILL_POSTING) as ask,
+    ):
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_TARGETS)
+        await drain_tails()
+
+    assert ask.await_count == 3
+    # Each answer is recorded as it stands, the DM never as landed.
+    assert _records(fx) == [_POSTING_RECORD] * 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "later",
+    [(_UNREACHABLE, _UNAVAILABLE), (_NOT_FOUND, _FINISHED), (_UNREACHABLE, _NOT_FOUND)],
+    ids=["unanswered", "refused", "unanswered-then-refused"],
+)
+async def test_an_answer_still_being_posted_outranks_a_later_failure(later):
+    with _settlement(_row()) as fx, _asking(_STILL_POSTING, *later) as ask:
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_TARGETS)
+        await drain_tails()
+
+    assert ask.await_count == (3 if later[0] is _UNREACHABLE else 2)
+    assert _records(fx) == [_POSTING_RECORD]
+
+
+@pytest.mark.asyncio
+async def test_a_retry_answered_still_posting_outranks_a_later_refusal():
+    with _settlement(_row()) as fx, _asking(_UNREACHABLE, _STILL_POSTING, _NOT_FOUND) as ask:
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_TARGETS)
+        await drain_tails()
+
+    assert ask.await_count == 3
+    unanswered, posting = _records(fx)
+    assert posting == _POSTING_RECORD
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_outranks_a_record_no_answer_made():
+    with _settlement(_row()) as fx, _asking(_UNREACHABLE, _NOT_FOUND, _FINISHED) as ask:
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_TARGETS)
+        await drain_tails()
+
+    assert ask.await_count == 2
+    first, refused = _records(fx)
+    assert refused[0] == (
+        "slack:T/C", False,
+        "Delivery couldn't be confirmed. The messaging service has no record of this run.",
     )
 
 
@@ -735,6 +824,7 @@ async def test_a_finished_held_run_hands_its_answer_to_the_messaging_service():
     fx.finish.assert_awaited_once_with(
         _automation("cron"), _EID, "completed",
         targets=_TARGETS, final_text="**Markets** rose.\n\nDetails follow.",
+        thread_id=_THREAD,
     )
     assert fx.db.settle_execution.await_args.kwargs["result_excerpt"] == (
         "Markets rose. Details follow."
@@ -759,7 +849,8 @@ async def test_a_held_run_that_did_not_complete_hands_over_no_answer(run, status
 
     fx.excerpt.assert_not_awaited()
     fx.finish.assert_awaited_once_with(
-        _automation("cron"), _EID, status, targets=_TARGETS, final_text=None
+        _automation("cron"), _EID, status, targets=_TARGETS, final_text=None,
+        thread_id=_THREAD,
     )
     fx.fire.assert_not_awaited()
 

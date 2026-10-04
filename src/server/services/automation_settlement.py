@@ -16,7 +16,9 @@ a job that never ran.
 """
 
 import asyncio
+import functools
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -426,18 +428,18 @@ async def _after_settling(
     policy = _POLICIES[outcome]
     if policy.webhook and not _repeats_a_refusal(policy.failure_reason, run_id, row):
         if delivery is not None and policy.finish is not None:
-            finish = await automation_delivery.finish_run(
-                automation, execution_id, policy.finish,
-                targets=delivery, final_text=final_text,
+            ask = functools.partial(
+                automation_delivery.finish_run, automation, execution_id, policy.finish,
+                targets=delivery, final_text=final_text, thread_id=thread_id,
             )
+            finish = await ask()
             await _record_delivery(execution_id, finish.result)
             if finish.retry:
                 # Off the settle's path, which a run's finalize job and the
                 # executor wait on; the record just made stands until a
-                # retry lands.
+                # retry says more.
                 _hold(asyncio.create_task(
-                    _finish_again(automation, execution_id, policy.finish,
-                                  delivery, final_text),
+                    _finish_again(ask, execution_id, answered=finish.answered),
                     name=f"settle_finish_{execution_id}",
                 ))
         else:
@@ -472,27 +474,30 @@ async def _record_delivery(execution_id: str, delivery_result: list) -> None:
 
 
 async def _finish_again(
-    automation: Dict[str, Any],
+    ask: Callable[[], Awaitable[automation_delivery.Finish]],
     execution_id: str,
-    status: automation_delivery.FinishStatus,
-    targets: list[automation_delivery.Target],
-    final_text: Optional[str],
+    *,
+    answered: bool,
 ) -> None:
     """Ask the messaging service again to end a run whose finish got no
-    answer, or found it briefly unavailable. The service ends a run once and
-    answers the same record to every ask, so asking again posts nothing
-    twice. The first answer replaces the run's record; when every ask goes
-    unanswered, the record the first one made stands."""
+    answer, found it briefly unavailable, or got rows it was still posting
+    (``answered``). The service ends a run once and answers the same record
+    to every ask, so asking again posts nothing twice.
+
+    Each record the service answers replaces the run's, until a final one
+    ends the asking. A refusal replaces only a record no answer made, which
+    says less than any answer. When the asks run out, the last record
+    stands, rows still being posted reading as unconfirmed."""
     for delay in automation_delivery.FINISH_RETRY_DELAYS:
         await asyncio.sleep(delay)
-        finish = await automation_delivery.finish_run(
-            automation, execution_id, status, targets=targets, final_text=final_text,
-        )
-        if not finish.retry:
+        finish = await ask()
+        if finish.answered or not (answered or finish.retry):
             await _record_delivery(execution_id, finish.result)
+        answered = answered or finish.answered
+        if not finish.retry:
             return
     logger.warning(
-        f"[AUTOMATION_SETTLE] Finish never answered, delivery left unconfirmed: "
+        f"[AUTOMATION_SETTLE] Finish asks ran out, delivery left unconfirmed: "
         f"execution_id={execution_id}"
     )
 

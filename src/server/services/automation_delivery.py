@@ -6,10 +6,12 @@ to one chat and holds the run; the agent is told where to send and does so
 with ``send_message``. When the run settles, the service posts the final
 answer to every chat the agent didn't reach, or a short notice to all of them
 when the run failed or was stopped, and answers where each one landed, which
-becomes the execution's ``delivery_result``. A finish that got no answer, or
-found the service briefly unavailable, is worth asking again
-(``Finish.retry``): the service ends a run once and answers the same record
-to every later ask.
+becomes the execution's ``delivery_result``. A finish that got no answer,
+found the service briefly unavailable, or got a record still being posted is
+worth asking again (``Finish.retry``): the service ends a run once and
+answers the same record to every later ask. Both calls name the run's
+thread, so what the service posts links back to it and a reply there
+continues it.
 
 A run the service never took (no service, no entries, the start failed, or
 no entry resolved) delivers through the webhook (``webhook_client``) instead,
@@ -63,6 +65,7 @@ _APP_NAMES = {
     "feishu": "Feishu",
 }
 _VIAS = frozenset({"agent", "fallback", "notice"})
+_UNCONFIRMED = "Delivery couldn't be confirmed."
 
 
 @dataclass(frozen=True)
@@ -111,7 +114,10 @@ def _entries(automation: Dict[str, Any]) -> list[str]:
 
 
 async def start_run(
-    automation: Dict[str, Any], execution_id: str, workspace_id: Optional[str]
+    automation: Dict[str, Any],
+    execution_id: str,
+    workspace_id: Optional[str],
+    thread_id: Optional[str] = None,
 ) -> Optional[list[Target]]:
     """The run's targets once the messaging service holds the run; None when
     the run delivers through the webhook instead.
@@ -124,18 +130,21 @@ async def start_run(
     entries = _entries(automation)
     if not entries or not messaging.messaging_enabled():
         return None
+    body: Dict[str, Any] = {
+        "execution_id": execution_id,
+        "workspace_id": workspace_id,
+        "automation_name": automation.get("name") or "",
+        "entries": entries,
+    }
+    if thread_id:
+        body["thread_id"] = str(thread_id)
     try:
         answer = await messaging.gateway_request(
             "POST",
             "/agent/automation-runs",
             user_id=automation["user_id"],
             timeout=_START_TIMEOUT,
-            body={
-                "execution_id": execution_id,
-                "workspace_id": workspace_id,
-                "automation_name": automation.get("name") or "",
-                "entries": entries,
-            },
+            body=body,
         )
     except messaging.GatewayError as e:
         logger.warning(
@@ -227,10 +236,20 @@ class Finish:
 
     result: list[Dict[str, Any]]
     retry: bool = False
+    #: The service answered with the run's record, final or still posting.
+    answered: bool = False
+
+
+def _still_posting(item: Dict[str, Any]) -> bool:
+    """A row the service hasn't finished posting: neither reached nor
+    posted, and no error, which a row that didn't land always has."""
+    return not item["success"] and item["error"] is None
 
 
 def _attempt(data: Dict[str, Any]) -> Dict[str, Any]:
-    """One target of the finish's answer as a ``delivery_result`` item."""
+    """One row of the finish's answer as a ``delivery_result`` item. Its
+    ``address`` is where the post landed, possibly a thread, so a row is
+    matched to its target by ``method``, the entry."""
     via = data.get("via") if data.get("via") in _VIAS else None
     return {
         "method": str(data.get("entry") or ""),
@@ -247,7 +266,7 @@ def _unconfirmed(
     automation: Dict[str, Any], targets: list[Target], why: str
 ) -> list[Dict[str, Any]]:
     """Every target as failed, for a finish that gave no answer to read."""
-    error = f"Delivery couldn't be confirmed. {why}"
+    error = f"{_UNCONFIRMED} {why}"
     if not targets:
         targets = [Target(entry=e, address=None, name=None, ok=True) for e in _entries(automation)]
     return [
@@ -271,6 +290,7 @@ async def finish_run(
     *,
     targets: list[Target],
     final_text: Optional[str] = None,
+    thread_id: Optional[str] = None,
 ) -> Finish:
     """Ask the messaging service to end the run, once.
 
@@ -280,9 +300,15 @@ async def finish_run(
     finish that gets no readable answer records every target as failed,
     since where the run landed can't be told; one that got no answer at all,
     or a passing 502, 503 or 504, is marked worth asking again. A refused
-    token, a run the service doesn't know or any other refusal is not.
+    token, a run the service doesn't know or any other refusal is not. An
+    answer with rows still being posted, which the service gives when
+    another finish for the run is mid-post, is worth asking again too; its
+    rows that have landed stand, and the ones still being posted read as
+    unconfirmed until an answer says where they landed.
     """
     body: Dict[str, Any] = {"status": status}
+    if thread_id:
+        body["thread_id"] = str(thread_id)
     if status == "completed" and final_text and final_text.strip():
         if len(final_text) > _FINAL_TEXT_CHARS:
             final_text = final_text[: _FINAL_TEXT_CHARS - 1] + "…"
@@ -315,7 +341,11 @@ async def finish_run(
     elif not isinstance(raw, list):
         why = "The messaging service sent an answer that could not be read."
     else:
-        return Finish([_attempt(t) for t in raw if isinstance(t, dict)])
+        rows = [_attempt(t) for t in raw if isinstance(t, dict)]
+        posting = any(_still_posting(row) for row in rows)
+        if posting:
+            rows = [{**row, "error": _UNCONFIRMED} if _still_posting(row) else row for row in rows]
+        return Finish(rows, retry=posting, answered=True)
     logger.warning(
         f"[AUTOMATION_DELIVERY] Finish answered {answer.status}: "
         f"execution_id={execution_id}"
