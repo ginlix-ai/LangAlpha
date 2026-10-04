@@ -89,9 +89,25 @@ class NewsRefreshService:
             logger.info("[NewsRefresh] no feeds configured — not starting")
             return
 
+        # A named source this server cannot build fails the same way every
+        # tick, so drop it once here instead of logging it every interval.
+        from src.data_client.registry import news_source_available
+
+        feeds, dropped = [], []
+        for feed in cfg.feeds:
+            ok = feed.provider is None or news_source_available(feed.provider)
+            (feeds if ok else dropped).append(feed)
+        if dropped:
+            logger.info(
+                "[NewsRefresh] skipping feed(s) whose source is unavailable: %s",
+                ", ".join(f.provider for f in dropped),
+            )
+        if not feeds:
+            return
+
         self._interval = cfg.interval_seconds
         self._max_items = cfg.max_items
-        self._feeds = list(cfg.feeds)
+        self._feeds = feeds
         self._shutdown_event.clear()
         self._task = asyncio.create_task(self._poll_loop(), name="news_refresh_poll")
         logger.info(

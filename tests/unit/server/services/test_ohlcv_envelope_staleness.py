@@ -15,23 +15,26 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-_SUFFIX_MAP = dict.fromkeys(
-    ("HK", "SS", "SZ", "L", "T", "TO", "AX", "PA", "DE", "AS",
-     "MI", "MC", "SW", "KS", "KQ", "TW", "SI", "BO", "NS")
-)
-from src.server.services.cache._instrument_clock import (
+from market_protocol.enums import Tier
+
+from src.data_client.market_data_provider import symbol_market
+from src.data_client.instrument_clock import (
     _US_CLASS_SUFFIXES,
     CalendarClock,
-    UsClock,
     clock_for,
 )
 from src.server.services.cache._ohlcv_envelope import (
     _is_stale_date,
+    is_settled_complete,
     is_watermark_stale,
 )
-from src.utils.market_hours import expected_latest_bar_ms
-
 ET = ZoneInfo("America/New_York")
+
+expected_latest_bar_ms = clock_for(None).expected_latest_bar_ms
+
+
+def _is_us_clock(clock) -> bool:
+    return isinstance(clock, CalendarClock) and clock.tz == ET
 
 
 def _env(data_date: str, watermark_ms: int = 0) -> dict:
@@ -365,6 +368,14 @@ class TestDailyWatermarkStale:
         env = self._daily_env(datetime(2026, 5, 21), data_date="2026-05-26")
         assert is_watermark_stale(env, "1day", now=tue_open, symbol="XYZIDX", is_index=True) is False
 
+    def test_home_venue_index_uses_its_own_calendar(self):
+        # HSI carries a home venue (XHKG), so it is judged on the HK calendar:
+        # at 11:00 ET Tuesday the HK session for 05-26 is over and a 05-21
+        # watermark is stale.
+        tue_open = datetime(2026, 5, 26, 11, 0, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 5, 21), data_date="2026-05-26")
+        assert is_watermark_stale(env, "1day", now=tue_open, symbol="HSI", is_index=True) is True
+
     def test_us_symbol_and_index_keep_backstop(self):
         tue_open = datetime(2026, 5, 26, 11, 0, tzinfo=ET)
         env = self._daily_env(datetime(2026, 5, 21), data_date="2026-05-26")
@@ -407,11 +418,19 @@ class TestDailyPostCloseSettle:
     """
 
     @staticmethod
-    def _daily_env(bar_date: datetime, *, stored_phase: str | None, fetched_at: float = 0) -> dict:
-        wm = int(datetime(bar_date.year, bar_date.month, bar_date.day, 0, 0, tzinfo=ET).timestamp() * 1000)
-        env = {"watermark": wm, "bars": [{"time": wm}], "market_phase": stored_phase}
+    def _daily_env(
+        bar_date: datetime, *, stored_phase: str | None, fetched_at: float = 0,
+        complete: bool = False, tz: ZoneInfo = ET, tier: str | None = None,
+    ) -> dict:
+        wm = int(datetime(bar_date.year, bar_date.month, bar_date.day, 0, 0, tzinfo=tz).timestamp() * 1000)
+        env = {
+            "watermark": wm, "bars": [{"time": wm}], "market_phase": stored_phase,
+            "complete": complete,
+        }
         if fetched_at:
             env["fetched_at"] = fetched_at
+        if tier:
+            env["header"] = {"tier": tier}
         return env
 
     # Tue 2026-05-26 is a regular XNYS session.
@@ -441,8 +460,51 @@ class TestDailyPostCloseSettle:
 
     def test_closed_envelope_stays_byte_stable_on_weekend(self):
         saturday = datetime(2026, 5, 30, 10, 0, tzinfo=ET)
-        env = self._daily_env(datetime(2026, 5, 29), stored_phase="closed")
+        env = self._daily_env(datetime(2026, 5, 29), stored_phase="closed", complete=True)
         assert is_watermark_stale(env, "1day", now=saturday, symbol="AAPL") is False
+
+    # -- closed but not yet final -----------------------------------------
+    # A venue with no post phase, and a regular-only index clock, goes from
+    # open straight to closed. A fetch in the minutes after the close is stored
+    # closed but incomplete, and no rung change follows to revisit it: the
+    # provisional head bar was served until the soft TTL (~14h).
+
+    def test_an_index_fetched_at_the_bell_resettles_after_the_grace(self):
+        env = self._daily_env(datetime(2026, 5, 26), stored_phase="closed", tier="realtime")
+        assert is_watermark_stale(
+            env, "1day", now=datetime(2026, 5, 26, 16, 14, tzinfo=ET), symbol="GSPC", is_index=True,
+        ) is False
+        assert is_watermark_stale(
+            env, "1day", now=datetime(2026, 5, 26, 16, 16, tzinfo=ET), symbol="GSPC", is_index=True,
+        ) is True
+
+    def test_a_venue_without_post_hours_resettles_after_the_feed_delay(self):
+        hkt = ZoneInfo("Asia/Hong_Kong")
+        env = self._daily_env(
+            datetime(2026, 5, 26), stored_phase="closed", tz=hkt, tier="delayed_15m",
+        )
+        assert is_watermark_stale(
+            env, "1day", now=datetime(2026, 5, 26, 16, 29, tzinfo=hkt), symbol="0700.HK",
+        ) is False
+        assert is_watermark_stale(
+            env, "1day", now=datetime(2026, 5, 26, 16, 31, tzinfo=hkt), symbol="0700.HK",
+        ) is True
+
+    def test_a_settled_closed_envelope_is_not_refetched(self):
+        env = self._daily_env(
+            datetime(2026, 5, 26), stored_phase="closed", complete=True, tier="realtime",
+        )
+        assert is_watermark_stale(
+            env, "1day", now=datetime(2026, 5, 26, 16, 6, tzinfo=ET), symbol="GSPC", is_index=True,
+        ) is False
+
+    def test_the_settle_refetch_respects_the_cooldown(self):
+        env = self._daily_env(
+            datetime(2026, 5, 26), stored_phase="closed", tier="realtime", fetched_at=time.time(),
+        )
+        assert is_watermark_stale(
+            env, "1day", now=datetime(2026, 5, 26, 16, 6, tzinfo=ET), symbol="GSPC", is_index=True,
+        ) is False
 
     def test_closed_envelope_next_premarket_is_fresh(self):
         # Descending rung (closed → pre) must not refetch; the date-level
@@ -474,26 +536,27 @@ class TestDailyPostCloseSettle:
 # ---------------------------------------------------------------------------
 
 class TestClockClassification:
-    def test_us_class_suffixes_disjoint_from_foreign_suffix_map(self):
+    def test_us_class_suffixes_are_not_region_suffixes(self):
         # Trusting the class-share suffixes as US-calendar is safe only while
-        # none of them doubles as a foreign region suffix in _SUFFIX_MAP
-        # (which already carries single-letter codes like L/T). A future
-        # addition must fail here, not silently misclassify foreign symbols.
-        assert _US_CLASS_SUFFIXES.isdisjoint(_SUFFIX_MAP)
+        # none of them doubles as a foreign region suffix (the venue table
+        # already carries single-letter codes like L/T). A future addition
+        # must fail here, not silently misclassify foreign symbols.
+        for suffix in _US_CLASS_SUFFIXES:
+            assert symbol_market(f"X.{suffix}") == "other", suffix
 
     def test_bare_us_ticker_gets_us_clock_with_backstop(self):
         clock = clock_for("AAPL")
-        assert isinstance(clock, UsClock) and clock.daily_backstop is True
+        assert _is_us_clock(clock) and clock.daily_backstop is True
         assert clock_for("AAPL.US").daily_backstop is True
 
     def test_us_dotted_class_shares_keep_backstop(self):
         for sym in ("BRK.B", "BF.B", "HEI.A"):
             clock = clock_for(sym)
-            assert isinstance(clock, UsClock) and clock.daily_backstop is True, sym
+            assert _is_us_clock(clock) and clock.daily_backstop is True, sym
 
     def test_unknown_dotted_suffix_fails_closed(self):
         clock = clock_for("FOO.XYZ")
-        assert isinstance(clock, UsClock) and clock.daily_backstop is False
+        assert _is_us_clock(clock) and clock.daily_backstop is False
 
     def test_foreign_suffixes_get_their_calendar(self):
         cases = {
@@ -513,9 +576,12 @@ class TestClockClassification:
         assert clock_for("^SOX", True).daily_backstop is True
         assert clock_for("I:SPX", True).daily_backstop is True
         assert clock_for("XYZIDX", True).daily_backstop is False
+        # A family with a home venue is not on the US clock at all.
+        assert not _is_us_clock(clock_for("HSI", True))
+        assert not _is_us_clock(clock_for("000001.SS", True))
 
     def test_none_symbol_is_us_parity(self):
-        assert isinstance(clock_for(None), UsClock)
+        assert _is_us_clock(clock_for(None))
 
 
 # ---------------------------------------------------------------------------
@@ -551,7 +617,7 @@ class TestDiscardEnvelopeScreenshotScenario:
 
         march_30 = datetime(2026, 3, 30, 15, 0, tzinfo=ET)
         now = datetime(2026, 4, 22, 20, 49, tzinfo=ET)
-        monkeypatch.setattr("src.utils.market_hours.datetime", _FrozenDatetime(now))
+        _freeze(monkeypatch, now)
 
         env = self._screenshot_envelope(march_30)
         assert ic._should_discard_envelope(env, interval="5min") is True
@@ -561,7 +627,7 @@ class TestDiscardEnvelopeScreenshotScenario:
 
         march_1 = datetime(2026, 3, 1, 15, 0, tzinfo=ET)
         now = datetime(2026, 4, 22, 20, 49, tzinfo=ET)
-        monkeypatch.setattr("src.utils.market_hours.datetime", _FrozenDatetime(now))
+        _freeze(monkeypatch, now)
 
         env = self._screenshot_envelope(march_1)
         assert ic._should_discard_envelope(env, interval="15min") is True
@@ -571,7 +637,7 @@ class TestDiscardEnvelopeScreenshotScenario:
 
         march_31 = datetime(2026, 3, 31, 15, 0, tzinfo=ET)
         now = datetime(2026, 4, 22, 20, 49, tzinfo=ET)
-        monkeypatch.setattr("src.utils.market_hours.datetime", _FrozenDatetime(now))
+        _freeze(monkeypatch, now)
 
         env = self._screenshot_envelope(march_31)
         assert ic._should_discard_envelope(env, interval="1hour") is True
@@ -586,7 +652,7 @@ class TestDiscardEnvelopeScreenshotScenario:
         # Historical envelope: bars from March 2026, read on April 22
         march_30 = datetime(2026, 3, 30, 15, 0, tzinfo=ET)
         now = datetime(2026, 4, 22, 20, 49, tzinfo=ET)
-        monkeypatch.setattr("src.utils.market_hours.datetime", _FrozenDatetime(now))
+        _freeze(monkeypatch, now)
 
         watermark = int(march_30.timestamp() * 1000)
         env = {
@@ -613,7 +679,7 @@ class TestDiscardEnvelopeScreenshotScenario:
         from src.server.services.cache import intraday_cache_service as ic
 
         now = datetime(2026, 4, 22, 20, 49, tzinfo=ET)
-        monkeypatch.setattr("src.utils.market_hours.datetime", _FrozenDatetime(now))
+        _freeze(monkeypatch, now)
 
         # Empty-bars envelope (no data for the symbol/window)
         env = {
@@ -639,7 +705,7 @@ class TestDiscardEnvelopeScreenshotScenario:
         now = datetime(2026, 4, 22, 20, 49, tzinfo=ET)
         open_dt = datetime(2026, 4, 22, 9, 30, tzinfo=ET)
         close_dt = datetime(2026, 4, 22, 16, 0, tzinfo=ET)
-        monkeypatch.setattr("src.utils.market_hours.datetime", _FrozenDatetime(now))
+        _freeze(monkeypatch, now)
 
         env = {
             "v": 3,
@@ -658,8 +724,13 @@ class TestDiscardEnvelopeScreenshotScenario:
         assert ic._should_discard_envelope(env, interval="1min") is False
 
 
+def _freeze(monkeypatch, now: datetime) -> None:
+    for module in ("src.utils.market_hours", "src.data_client.instrument_clock"):
+        monkeypatch.setattr(f"{module}.datetime", _FrozenDatetime(now))
+
+
 class _FrozenDatetime:
-    """Minimal ``datetime`` shim so market_hours' ``datetime.now(ET)`` returns
+    """Minimal ``datetime`` shim so the clocks' ``datetime.now(tz)`` returns
     a fixed moment under monkeypatch. Using ``freezegun`` would be cleaner but
     isn't already a dep here; this stub is enough for two call sites."""
 
@@ -680,3 +751,61 @@ class _FrozenDatetime:
         from datetime import datetime as _dt
 
         return _dt.fromtimestamp(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# is_settled_complete
+# ---------------------------------------------------------------------------
+
+
+def test_a_delayed_feed_is_not_final_until_its_delay_runs_past_the_close():
+    """Marking complete on the first post-close fetch froze a 15-minute feed at
+    14:44 until the next open, since complete envelopes never refresh."""
+    cst = ZoneInfo("Asia/Shanghai")
+    clock = clock_for("600000.SH")
+    bars = [{"time": 1}]
+
+    def settled(h, m, tier=Tier.DELAYED_15M):
+        now = datetime(2026, 9, 23, h, m, tzinfo=cst)
+        return is_settled_complete(clock.market_phase(now), bars, clock, tier, now=now)
+
+    assert settled(15, 1) is False
+    assert settled(15, 29) is False
+    assert settled(15, 30) is True
+    assert settled(14, 30) is False  # still in session
+    assert settled(15, 15, Tier.REALTIME) is True  # realtime settles after the grace alone
+    assert is_settled_complete("closed", [], clock, Tier.DELAYED_15M) is False
+
+
+def test_a_realtime_hk_series_waits_out_the_closing_auction():
+    """HKEX's closing auction prints until 16:10, past the 16:00 close the
+    calendar knows. A realtime series read at 16:06 was stored final on its
+    pre-auction close and kept it until the next open."""
+    hkt = ZoneInfo("Asia/Hong_Kong")
+    clock = clock_for("0700.HK")
+
+    def settled(h, m):
+        now = datetime(2026, 10, 7, h, m, tzinfo=hkt)
+        return is_settled_complete(clock.market_phase(now), [{"time": 1}], clock, Tier.REALTIME, now=now)
+
+    assert settled(16, 6) is False
+    assert settled(16, 10) is False
+    assert settled(16, 15) is True
+
+
+def test_an_intraday_series_that_stopped_printing_is_not_refetched_per_read():
+    """A suspended stock's watermark stays on its last session, so every read
+    judged it stale and refetched it blocking, on every worker, all day."""
+    cst = ZoneInfo("Asia/Shanghai")
+    clock = clock_for("600000.SH")
+    last = int(datetime(2026, 9, 18, 15, 0, tzinfo=cst).timestamp() * 1000)
+
+    def stale(*, fetched_ago, complete=False, at=datetime(2026, 9, 23, 10, 30, tzinfo=cst)):
+        env = {"watermark": last, "bars": [{"time": last}], "complete": complete,
+               "fetched_at": time.time() - fetched_ago}
+        return is_watermark_stale(env, "1min", now=at, clock=clock)
+
+    assert stale(fetched_ago=10) is False  # just refetched: the cooldown holds
+    assert stale(fetched_ago=600) is True  # past it, stagnation is still caught
+    # The session's final form, read after the close, waits for the next open.
+    assert stale(fetched_ago=600, complete=True, at=datetime(2026, 9, 23, 20, 0, tzinfo=cst)) is False

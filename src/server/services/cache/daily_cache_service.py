@@ -20,14 +20,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.config.settings import get_ohlcv_ttl
 from src.data_client import get_market_data_provider
-from src.server.services.cache._instrument_clock import clock_for
+from src.data_client.instrument_clock import clock_for
 from src.server.services.cache._ohlcv_envelope import (
-    _EMPTY_RESULT_TTL,
-    _build_envelope,
     _is_stale_date,
     _needs_refresh,
     is_watermark_stale,
-    series_identity,
 )
 from src.server.services.cache._series_cache_core import (
     _SeriesCacheCore,
@@ -281,38 +278,21 @@ class DailyCacheService(_SeriesCacheCore):
             ):
                 return self._cached_result(normalized, envelope, cache_key, phase)
 
-            cache = get_cache_client()
             try:
-                data, source, truncated = await self._pinned_fetch(
-                    normalized, "1day", from_date, to_date, is_index, user_id,
-                )
                 cache_key = self._build_key(normalized, "1day", from_date, to_date, is_index, live=live)
-
-                closed = phase == "closed"
-                complete = closed and len(data) > 0
-                eff_ttl = self._effective_ttl(base_ttl, complete, clock)
-                if not data:
-                    eff_ttl = _EMPTY_RESULT_TTL
-                instrument_key, schema = series_identity(normalized, "1day", is_index)
-                env = _build_envelope(
-                    data, phase, complete, stored_ttl=eff_ttl, truncated=truncated,
-                    data_date=clock.current_trading_date(),
-                    instrument_key=instrument_key, schema=schema, publisher=source,
+                data, truncated, env = await self._fetch_and_store(
+                    cache_key, normalized, "1day", from_date, to_date, is_index, user_id,
+                    phase=phase, clock=clock, base_ttl=base_ttl,
                 )
-
-                await cache.set(cache_key, env, ttl=eff_ttl)
-                if source and data:
-                    await self._write_pin(normalized, "1day", is_index, source)
-
                 return DailyFetchResult(
                     symbol=normalized,
                     data=data,
                     cached=False,
-                    ttl_remaining=eff_ttl,
+                    ttl_remaining=env["stored_ttl"],
                     background_refresh_triggered=False,
                     cache_key=cache_key,
                     watermark=env["header"]["watermark"],
-                    complete=complete,
+                    complete=env["complete"],
                     market_phase=phase,
                     truncated=truncated,
                     header=env["header"],

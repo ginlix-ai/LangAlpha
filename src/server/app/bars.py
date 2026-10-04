@@ -31,7 +31,7 @@ from market_protocol import (
     to_legacy_api,
 )
 from market_protocol.intervals import is_intraday_schema, legacy_for_schema
-from src.server.services.cache._instrument_clock import clock_for
+from src.data_client.instrument_clock import clock_for
 from src.server.services.cache.daily_cache_service import DailyCacheService
 from src.server.services.cache.intraday_cache_service import IntradayCacheService
 from src.server.utils.api import CurrentUserId
