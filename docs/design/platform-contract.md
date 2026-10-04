@@ -215,9 +215,17 @@ events such a run fires. Same two headers:
   service's own `message`, else why the call failed (`The messaging service could not be
   reached.`, `... failed (503).`). With no `AUTOMATION_WEBHOOK_URL` either, the settle records
   each entry as a failed `delivery_result` item with that reason as its `error`, rather than
-  nothing. Otherwise the run's agent is told the `ok`
-  targets, its `send_message` calls carry `automation_execution_id`, and the targets are stamped
-  on the run row, so the settle ends the run the same way on whichever worker drains it.
+  nothing. Otherwise the run's agent is told the `ok` targets, its `send_message` calls carry
+  `automation_execution_id` (the id the run is filed under), and that id and the targets are
+  stamped on the run row, so the settle ends the run the same way on whichever worker drains it.
+  The id is the execution's own, except for a run that lost its thread to another turn, waited,
+  and found its automation's entries changed meanwhile: it starts again under
+  `<execution_id>.<n>`, which its sends and its finish then name, so it runs with the delivery
+  the automation has now. The start made for the old entries is never finished, so the service
+  lets it lapse and posts nothing to the chats the user took off. A firing that ends before its
+  turn could start (a usage limit, a workspace or thread it couldn't have) makes its start then,
+  `thread_id` null when it has no thread, so a run the service takes ends with a `failed`
+  finish like any other, never by webhook.
 - `POST {base}/agent/automation-runs/{execution_id}/finish` takes `{"status", "final_text",
   "thread_id"}` as the run settles. `status` is `completed`, `failed` (an error, a refused key,
   a usage limit, a server fault, an interrupted run) or `stopped` (the user stopped it);

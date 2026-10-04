@@ -495,6 +495,58 @@ async def test_a_held_run_stopped_before_admission_ends_with_the_service():
     fx.settled_webhook.assert_not_awaited()
 
 
+_LIMIT = HTTPException(status_code=429, detail={"type": "credit_limit", "message": "Limit."})
+
+
+@pytest.mark.asyncio
+async def test_a_credit_refusal_before_the_turn_ends_with_the_service():
+    """Refused before its delivery was handed over, the run still ends where
+    it would have delivered: its targets get the failure notice, and no
+    webhook event fires."""
+    with _firing([_streams]) as fx, _delivery(_HELD) as dx:
+        fx.credit.side_effect = _LIMIT
+        await AutomationExecutor().execute(_automation(**_DELIVERING), _EXEC)
+
+    fx.astream.assert_not_called()
+    assert _settled(fx)["failure_reason"] == "usage_limit"
+    dx.start.assert_awaited_once()
+    assert dx.start.await_args.kwargs["thread_id"] is None
+    dx.finish.assert_awaited_once()
+    assert dx.finish.await_args.args[1:3] == (_EXEC, "failed")
+    assert dx.finish.await_args.kwargs["targets"] == _HELD.targets
+    fx.settled_webhook.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_analysts_refusal_names_its_workspace_to_the_service():
+    workspace = {"workspace_id": "ws-9", "user_id": _USER, "status": "running"}
+    automation = _automation(**_DELIVERING, agent_mode="ptc", workspace_id="ws-9")
+    with (
+        _firing([_streams]) as fx,
+        _delivery(_HELD) as dx,
+        patch(
+            "src.server.database.workspace.get_workspace",
+            new=AsyncMock(return_value=workspace),
+        ),
+    ):
+        fx.credit.side_effect = _LIMIT
+        await AutomationExecutor().execute(automation, _EXEC)
+
+    dx.start.assert_awaited_once_with(automation, _EXEC, "ws-9", thread_id=None)
+    dx.finish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_with_nowhere_to_deliver_fires_the_webhook():
+    with _firing([_streams]) as fx, _delivery(None) as dx:
+        fx.credit.side_effect = _LIMIT
+        await AutomationExecutor().execute(_automation(**_DELIVERING), _EXEC)
+
+    dx.start.assert_awaited_once()
+    dx.finish.assert_not_awaited()
+    fx.settled_webhook.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 async def test_a_firing_settled_before_its_turn_hands_nothing_over():
     with _firing([_streams]) as fx, _delivery(_HELD) as dx:
@@ -506,6 +558,107 @@ async def test_a_firing_settled_before_its_turn_hands_nothing_over():
 
     dx.start.assert_not_awaited()
     fx.astream.assert_not_called()
+
+
+# ─── Delivery changed while the firing waited ─────────────────────────
+
+_LOST = HTTPException(status_code=409, detail=admission_conflict_detail("running"))
+_MOVED = {"delivery_config": {"methods": ["telegram:-100"]}}
+# The start made again for the entries the automation has after the wait,
+# filed under an id of its own.
+_RESTARTED = Delivery(
+    f"{_EXEC}.2",
+    [Target(entry="telegram:-100", address="telegram:-100", name="Desk", ok=True)],
+)
+
+
+def _starts(dx):
+    return [(c.args[0]["delivery_config"], c.args[1]) for c in dx.start.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_a_wait_that_outlasts_a_delivery_change_runs_with_the_new_one():
+    """The run is reminded of, sends to and is stamped with the targets the
+    automation has after the wait. The start made for the old entries is
+    never finished, so nothing posts to a chat the user took off."""
+    fresh = _automation(**_MOVED)
+    with (
+        _firing([_loses(_LOST), _streams], fresh=fresh) as fx,
+        _delivery(_HELD, _RESTARTED) as dx,
+    ):
+        await AutomationExecutor().execute(_automation(**_DELIVERING), _EXEC)
+
+    assert _starts(dx) == [
+        (_DELIVERING["delivery_config"], _EXEC),
+        (_MOVED["delivery_config"], f"{_EXEC}.2"),
+    ]
+    # On the same thread as the first.
+    first, second = (c.kwargs["thread_id"] for c in dx.start.await_args_list)
+    assert first == second == _turn_args(fx)["thread_id"]
+    args = _turn_args(fx)
+    assert [c.content for c in args["request"].additional_context] == [
+        automation_delivery.reminder(_RESTARTED.targets)
+    ]
+    assert args["extra_configurable"] == {"automation_execution_id": f"{_EXEC}.2"}
+    assert args["run_metadata"] == {
+        "automation_execution_id": _EXEC,
+        "automation_id": "auto-1",
+        **automation_delivery.run_metadata(_RESTARTED),
+    }
+    dx.finish.assert_not_awaited()
+    assert _left_to_run(fx) == fx.run_ids[1]
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_after_a_delivery_change_ends_only_the_new_start():
+    """A failed finish posts a notice to every target, so it goes to the
+    targets the run had at its end, never the ones the user took off."""
+    limit = HTTPException(status_code=429, detail={"type": "credit_limit", "message": "Limit."})
+    with (
+        _firing([_loses(_LOST)], fresh=_automation(**_MOVED)) as fx,
+        _delivery(_HELD, _RESTARTED) as dx,
+    ):
+        fx.credit.side_effect = [None, limit]
+        await AutomationExecutor().execute(_automation(**_DELIVERING), _EXEC)
+
+    assert _settled(fx)["failure_reason"] == "usage_limit"
+    dx.finish.assert_awaited_once()
+    assert dx.finish.await_args.args[1:3] == (f"{_EXEC}.2", "failed")
+    assert dx.finish.await_args.kwargs["targets"] == _RESTARTED.targets
+
+
+@pytest.mark.asyncio
+async def test_a_delivery_taken_off_during_the_wait_ends_nothing_with_the_service():
+    """The run now delivers nowhere through the service, and the start made
+    before the wait is left to lapse."""
+    with (
+        _firing([_loses(_LOST), _loses(WriterGuardUnavailable("budget"))],
+                runs={1: None}, fresh=_automation()) as fx,
+        _delivery(_HELD, None) as dx,
+    ):
+        await AutomationExecutor().execute(_automation(**_DELIVERING), _EXEC)
+
+    args = _turn_args(fx)
+    assert args["request"].additional_context is None
+    assert args["extra_configurable"] is None
+    assert _settled(fx)["to"] == "failed"
+    dx.finish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_wait_with_the_same_delivery_keeps_its_start():
+    fresh = _automation(**_DELIVERING, instruction="Summarize the week")
+    with (
+        _firing([_loses(_LOST), _streams], fresh=fresh) as fx,
+        _delivery(_HELD) as dx,
+    ):
+        await AutomationExecutor().execute(_automation(**_DELIVERING), _EXEC)
+
+    dx.start.assert_awaited_once()
+    args = _turn_args(fx)
+    assert args["user_input"] == "Summarize the week"
+    assert args["extra_configurable"] == {"automation_execution_id": _EXEC}
+    assert args["run_metadata"][automation_delivery.DELIVERY_KEY]["id"] == _EXEC
 
 
 @pytest.mark.asyncio

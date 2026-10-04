@@ -206,6 +206,21 @@ async def test_a_held_run_ends_with_the_messaging_service(outcome):
 
 
 @pytest.mark.asyncio
+async def test_a_run_started_again_after_a_wait_ends_under_its_own_id():
+    """A wait that outlasted a delivery change started the run again under
+    an id of its own: the finish names that one, the record stays the
+    execution's, and the start made before the wait is never finished."""
+    restarted = Delivery(f"{_EID}.2", _TARGETS)
+    run = _ended("completed", **automation_delivery.run_metadata(restarted))
+    with _finished(run, _automation("cron")) as fx:
+        await _settle_finished_run(_finalize_job())
+
+    fx.finish.assert_awaited_once()
+    assert fx.finish.await_args.args[1] == f"{_EID}.2"
+    fx.db.record_delivery.assert_awaited_once_with(_EID, _LANDED)
+
+
+@pytest.mark.asyncio
 async def test_a_held_run_skipped_in_its_wait_ends_nowhere():
     with _settlement(_row(settled_from="waiting")) as fx:
         assert await settle(_automation(), _EID, Outcome.SKIPPED, delivery=_HELD)

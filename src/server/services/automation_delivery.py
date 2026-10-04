@@ -17,9 +17,10 @@ A run the service never took (no service, no entries, the start failed, or
 no entry resolved) delivers through the webhook (``webhook_client``) instead,
 exactly as before; when the webhook has nowhere to post either, a start that
 failed records each entry as undelivered, with why (``unsent``). Which way a
-run delivers is decided once, at its start, and stamped on its run row
+run delivers is decided at its start, and stamped on its run row
 (``DELIVERY_KEY``), so the settle, which may run on another worker, follows
-the same way.
+the same way. A run that waited for its thread starts again, under an id of
+its own, when its entries changed meanwhile (``Delivery.id``).
 
 Nothing here raises: a delivery problem is never worth failing a run or a
 settle for, and each failure falls back or is recorded as one.
@@ -107,7 +108,8 @@ def _text(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
 
-def _entries(automation: Dict[str, Any]) -> list[str]:
+def entries_of(automation: Dict[str, Any]) -> list[str]:
+    """The automation's delivery entries, as a run's start hands them over."""
     config = automation.get("delivery_config")
     methods = config.get("methods") if isinstance(config, dict) else None
     return [m for m in methods or [] if isinstance(m, str) and m]
@@ -169,10 +171,10 @@ async def start_run(
     Only a run with delivery entries on a server with a messaging service
     asks. A start that fails, or one that resolved no entry to a chat, is
     left to the webhook, with each entry's reason. The service files the run
-    under ``execution_id``, so asking again for the same firing answers the
-    targets it already holds.
+    under ``execution_id``, so asking again under the same id answers the
+    targets it already holds, whatever the entries say now.
     """
-    entries = _entries(automation)
+    entries = entries_of(automation)
     if not entries or not messaging.messaging_enabled():
         return None
     body: Dict[str, Any] = {
@@ -370,7 +372,7 @@ def _unconfirmed(
     """Every target as failed, for a finish that gave no answer to read."""
     error = f"{_UNCONFIRMED} {why}"
     if not targets:
-        targets = [Target(entry=e, address=None, name=None, ok=True) for e in _entries(automation)]
+        targets = [Target(entry=e, address=None, name=None, ok=True) for e in entries_of(automation)]
     return [
         {
             "method": t.entry,
