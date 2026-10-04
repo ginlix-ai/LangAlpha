@@ -89,7 +89,7 @@ function CrosshairTooltip({ visible, x, y, data, containerWidth, containerHeight
           {Object.entries(data.maValues).map(([period, val]: [string, number]) => (
             <div className="crosshair-tooltip-row" key={period}>
               <span className="crosshair-tooltip-label">MA{period}</span>
-              <span>{val != null ? val.toFixed(2) : '\u2014'}</span>
+              <span>{formatPrice(val)}</span>
             </div>
           ))}
         </div>

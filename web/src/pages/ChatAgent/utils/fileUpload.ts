@@ -1,3 +1,4 @@
+import { selectionPriceBounds } from './selectionBounds';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import type { ChartSelection } from '@/pages/MarketView/stores/chartSelectionStore';
 
@@ -138,7 +139,7 @@ interface ChartSelectionImageItem {
 
 /** Caption for a region's cropped screenshot — the structured item holds the exact values. */
 export function describeSelectionImage(sel: ChartSelection): string {
-  const range = `$${sel.priceLow}–$${sel.priceHigh}`;
+  const range = selectionPriceBounds(sel, 'en-US');
   const span = sel.timeStart && sel.timeEnd ? `, ${sel.timeStart} → ${sel.timeEnd}` : '';
   return `Cropped chart image of ${sel.symbol} ${sel.timeframe} (price ${range}${span})`;
 }

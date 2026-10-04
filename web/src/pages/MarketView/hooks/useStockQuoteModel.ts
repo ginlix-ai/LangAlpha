@@ -7,33 +7,31 @@
  */
 
 import { useMemo } from 'react';
+import type { TFunction } from 'i18next';
 import { fixed2 } from '@/lib/format';
 import { getExtendedHoursInfo } from '@/lib/marketUtils';
+import { quoteCurrency } from '@/lib/bars';
+import { resolveDualName, type SymbolDisplayOverride } from '@/lib/displayName';
+import { providerLabel } from '@/lib/providerLabels';
+import { FRESHNESS_TONE, freshnessSpecText, isLiveRow, resolveFreshnessBadge, type FreshnessSpec } from '@/lib/freshness';
 import { isUSEquity } from '../utils/chartConstants';
 import type { StockInfo, RealTimePrice, SnapshotData } from '@/types/market';
 import type { PriceUpdate, ConnectionStatus } from './useMarketDataWS';
-
-export interface QuoteFields {
-  previousClose?: number;
-  open?: number;
-  yearHigh?: number;
-  yearLow?: number;
-  avgVolume?: number;
-  [key: string]: unknown;
-}
+import type { OverviewQuote } from '@/lib/quotes/overview';
 
 export interface StockQuoteInputs {
   symbol: string;
   stockInfo: StockInfo | null;
   realTimePrice: PriceUpdate | RealTimePrice | null;
-  quoteData: QuoteFields | null;
+  quoteData: OverviewQuote | null;
   snapshot: SnapshotData | null;
   marketStatus: Record<string, unknown> | null;
   wsStatus: ConnectionStatus;
   wsHasData?: boolean;
   /** Venue market phase (`pre|open|post|closed`) from the chart's bars responses; null until known. */
   marketPhase?: string | null;
-  displayOverride?: { name?: string; exchange?: string } | null;
+  /** A clicked search hit: a complete name source, never mixed with a stockInfo that may still hold the previous symbol. */
+  displayOverride?: SymbolDisplayOverride | null;
 }
 
 /** The placeholder a quote figure prints while it has no value. */
@@ -74,9 +72,22 @@ export interface StockQuoteModel {
   shownVolume: number | null;
   /** True when `shownVolume` is the average, so the reader labels it as such. */
   volumeIsAverage: boolean;
+  /** Local-script name first for a CN/HK listing; the other name rides in `displaySecondaryName`. */
   displayName: string;
+  displaySecondaryName: string | null;
+  /** False when no source named the listing: the fallback is the symbol, already shown beside it. */
+  hasName: boolean;
   displayExchange: string;
-  dataSourceLabel: string;
+  /** Raw provider ids behind the quote; `quoteSourceText` names them. Empty when nothing is known. */
+  dataSources: string[];
+  /** ISO code the figures are quoted in: the row's own, else the listing venue's. Null for an index, whose level is points. */
+  currency: string | null;
+  /** How current the quote row is, decided by lib/freshness; null when the row states nothing. */
+  quoteBadge: FreshnessSpec | null;
+  /** A REST print that is current: the session dot reads steady green rather than delayed. */
+  quoteIsFresh: boolean;
+  /** When the quote row's price printed, epoch ms. */
+  asOf: number | null;
   /** Extended-hours session, when the venue is in one and the row carries it. */
   ext: {
     type: 'pre' | 'post';
@@ -90,8 +101,6 @@ export interface StockQuoteModel {
     settledTone: ChangeTone;
   } | null;
 }
-
-const PROVIDER_LABELS: Record<string, string> = { 'ginlix-data': 'Ginlix Data', fmp: 'FMP', yfinance: 'yfinance' };
 
 function toneOf(n: number | null | undefined): ChangeTone {
   if (n == null || n === 0) return '';
@@ -143,12 +152,15 @@ export function deriveStockQuote({
   const status: QuoteStatus = isLive ? 'live' : marketPhase === 'closed' ? 'closed' : 'delayed';
   const providers = (marketStatus?.providers ?? []) as string[];
   const activeSource = isLive ? 'ginlix-data' : (snapshot?.source ?? null);
-  const dataSourceLabel = activeSource
-    ? (PROVIDER_LABELS[activeSource] ?? activeSource)
-    : (providers.map((p) => PROVIDER_LABELS[p] ?? p).join(', ') || 'REST');
+  const dataSources = activeSource ? [activeSource] : providers;
 
   const averageVolume = quoteData?.avgVolume ?? stockInfo?.AverageVolume ?? null;
   const volume = stockInfo?.Volume ?? null;
+
+  const nameSource = displayOverride ?? { name: stockInfo?.Name, nameLocal: stockInfo?.NameLocal, nameEn: stockInfo?.NameEn };
+  const { primary: displayName, secondary: displaySecondaryName, named: hasName } = resolveDualName(nameSource, symbol);
+  const quoteFreshness = snapshot?.freshness ?? null;
+  const quoteFields = { tier: snapshot?.tier, freshness: quoteFreshness };
 
   return {
     price,
@@ -168,11 +180,44 @@ export function deriveStockQuote({
     volume,
     shownVolume: volume ?? averageVolume,
     volumeIsAverage: volume == null && averageVolume != null,
-    displayName: displayOverride?.name ?? stockInfo?.Name ?? `${symbol} Corp`,
+    displayName,
+    displaySecondaryName,
+    hasName,
     displayExchange: displayOverride?.exchange ?? stockInfo?.Exchange ?? '',
-    dataSourceLabel,
+    dataSources,
+    currency: quoteCurrency(snapshot?.currency, symbol, snapshot?.asset_class),
+    quoteBadge: resolveFreshnessBadge(quoteFields),
+    quoteIsFresh: isLiveRow(quoteFields),
+    asOf: snapshot?.as_of ?? quoteFreshness?.actual_latest ?? null,
     ext,
   };
+}
+
+/**
+ * The session word both presentations print. Live and closed belong to the
+ * feed and the venue; otherwise the quote row's own freshness decides, and
+ * with nothing stated it reads delayed, never realtime.
+ */
+export function quoteSessionText(t: TFunction, q: StockQuoteModel): string {
+  if (q.status === 'live') return t('marketView.quote.live');
+  if (q.status === 'closed') return t('marketView.quote.closed');
+  return freshnessSpecText(t, q.quoteBadge) ?? t('marketView.quote.delayed');
+}
+
+/** Where the quote comes from, in the app's language; "REST" when no provider is named. */
+export function quoteSourceText(t: TFunction, q: StockQuoteModel): string {
+  return q.dataSources.map((s) => providerLabel(s, t)).join(', ') || 'REST';
+}
+
+/**
+ * The session dot: the pulse is the socket's, a current REST print is steady
+ * green, and otherwise the quote's freshness tone decides, the same table the
+ * inline badge reads, so a stale row warns in both and a delay warns in neither.
+ */
+export function quoteDotState(q: StockQuoteModel): QuoteStatus | 'realtime' | 'warning' {
+  if (q.status !== 'delayed') return q.status;
+  if (q.quoteIsFresh) return 'realtime';
+  return q.quoteBadge && FRESHNESS_TONE[q.quoteBadge.state] === 'warning' ? 'warning' : 'delayed';
 }
 
 /**

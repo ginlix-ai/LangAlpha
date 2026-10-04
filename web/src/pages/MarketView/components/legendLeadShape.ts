@@ -15,5 +15,5 @@ export function legendLeadShapeKey(symbol: string, q: StockQuoteModel, locale: s
   const ext = q.ext
     ? `${fmt(q.ext.price, locale).length}:${q.ext.change != null ? signedFixed2(q.ext.change, locale).length : 0}:${signedFixed2(q.ext.pct, locale).length}`
     : '';
-  return `${locale}|${symbol}|${fmt(q.headline.price, locale).length}|${headlineChange(q.headline, locale).length}|${ext}|${q.status}`;
+  return `${locale}|${symbol}|${fmt(q.headline.price, locale).length}|${q.currency}|${headlineChange(q.headline, locale).length}|${ext}|${q.status}|${q.quoteBadge?.key ?? ''}:${q.quoteBadge?.minutes ?? ''}`;
 }

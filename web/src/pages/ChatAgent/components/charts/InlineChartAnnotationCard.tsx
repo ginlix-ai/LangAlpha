@@ -20,7 +20,7 @@ import {
   makeChartId,
   useDisplayCleared,
 } from '@/pages/MarketView/stores/chartAnnotationStore';
-import { INTERVAL_LABEL } from '@/lib/bars';
+import { INTERVAL_LABEL, displaySpelling } from '@/lib/bars';
 import { annotationLabel } from '@/pages/MarketView/utils/annotationGeometry';
 
 import { useWorkspaceId } from '../../contexts/WorkspaceContext';
@@ -46,7 +46,9 @@ export function InlineChartAnnotationCard({
   const ctxWorkspaceId = useWorkspaceId();
   const { chartPresent, activeSymbol, activeTimeframe, onJumpToChart } = useChartSurface();
 
-  const symbol = ((artifact?.symbol as string) || '').toUpperCase();
+  // An artifact from an older thread may spell Shanghai `.SS`; the chart, its
+  // annotation keys and the tab all use the display spelling.
+  const symbol = displaySpelling((artifact?.symbol as string) || '');
   const timeframe = (artifact?.timeframe as string) || '1day';
   const annotations = useMemo(
     () => (artifact?.annotations as StoredAnnotation[] | undefined) ?? [],

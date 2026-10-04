@@ -7,13 +7,14 @@ import {
   PieChart, Pie, Cell, Legend, LabelList,
   LineChart, Line, ReferenceLine,
 } from 'recharts';
-import { fetchStockData } from '@/lib/bars';
+import { fetchStockData, formatMoney, quoteCurrency, resolveCurrency, timezoneForSymbol } from '@/lib/bars';
 import { utcMsToChartSec } from '@/lib/utils';
 import { Sunrise, Sunset } from 'lucide-react';
 import { useTheme } from '../../../../contexts/ThemeContext';
 import { createThemeResolver, useThemeTokens } from '@/lib/themeTokens';
 import { useTranslation } from 'react-i18next';
-import { grouped, grouped2 } from '@/lib/format';
+import { compactNumberFixed2, grouped, grouped2, signedFixed2 } from '@/lib/format';
+import { deriveOverviewQuote, type CompanyOverviewArtifact, type ShortInterest } from '@/lib/quotes/overview';
 import { useLocale } from '@/hooks/useLocale';
 import { buildMarketViewUrl } from '@/pages/MarketView/utils/marketRoute';
 import { useRouteLeaveGuard } from '../../contexts/RouteLeaveGuardContext';
@@ -74,22 +75,13 @@ const MA_ORANGE = '#f59e0b';
 
 const PIE_COLORS = ['var(--color-accent-primary)', 'var(--color-profit)', '#f59e0b', 'var(--color-loss)', '#3b82f6', '#ec4899', '#8b5cf6', '#14b8a6'];
 const ANALYST_COLORS: Record<string, string> = {
-  'Strong Buy': 'var(--color-profit)',
-  'Buy': '#34d399',
-  'Hold': '#f59e0b',
-  'Sell': '#f87171',
-  'Strong Sell': 'var(--color-loss)',
+  strongBuy: 'var(--color-profit)',
+  buy: '#34d399',
+  hold: '#f59e0b',
+  sell: '#f87171',
+  strongSell: 'var(--color-loss)',
 };
 
-
-const formatNumber = (num: number | null | undefined): string => {
-  if (num == null) return 'N/A';
-  if (Math.abs(num) >= 1e12) return `$${(num / 1e12).toFixed(2)}T`;
-  if (Math.abs(num) >= 1e9) return `$${(num / 1e9).toFixed(2)}B`;
-  if (Math.abs(num) >= 1e6) return `$${(num / 1e6).toFixed(2)}M`;
-  if (Math.abs(num) >= 1e3) return `$${(num / 1e3).toFixed(1)}K`;
-  return typeof num === 'number' ? `$${num.toFixed(2)}` : String(num);
-};
 
 const formatPct = (val: number | null | undefined): string => {
   if (val == null) return 'N/A';
@@ -102,9 +94,11 @@ const formatPct = (val: number | null | undefined): string => {
  * Daily dates ("2024-01-15") -> kept as string (business day format).
  * Intraday datetimes ("2024-01-15 09:30:00") -> UNIX timestamp (seconds).
  */
-const toChartTime = (val: unknown): Time => {
+const toChartTime = (val: unknown, tz?: string): Time => {
   if (val == null) return val as unknown as Time;
-  if (typeof val === 'number') return utcMsToChartSec(val) as unknown as Time; // Unix ms -> ET chart seconds
+  // Unix ms -> venue-local chart seconds. Every path for one symbol must pass
+  // the same tz or merge-by-time silently splits the series.
+  if (typeof val === 'number') return utcMsToChartSec(val, tz) as unknown as Time;
   // Intraday datetime string "YYYY-MM-DD HH:MM:SS" -> Unix seconds
   if (typeof val === 'string' && (val.includes(' ') || val.includes('T'))) {
     return Math.floor(new Date(val + 'Z').getTime() / 1000) as unknown as Time;
@@ -223,6 +217,10 @@ export function StockPriceChart({ data }: DataProps): React.ReactElement {
   const initialOhlcv = chartOhlcv && chartOhlcv.length > 0 ? chartOhlcv : dailyOhlcv;
   const chartInterval = (data?.chart_interval as string) || 'daily';
   const symbol = data?.symbol as string | undefined;
+  // The tool stamps price_currency on the artifact; older payloads fall back
+  // to the exchange-suffix heuristic. An index level is points, printed bare.
+  const currency = quoteCurrency(data?.price_currency as string | undefined, symbol);
+  const venueTz = timezoneForSymbol(symbol);
 
   // Scroll-load state (refs for stable closures)
   const allDataRef = useRef<ChartDataPoint[]>([]);
@@ -360,7 +358,7 @@ export function StockPriceChart({ data }: DataProps): React.ReactElement {
 
     // Convert initial OHLCV to lightweight-charts format
     const chartData: ChartDataPoint[] = initialOhlcv.map((d) => ({
-      time: toChartTime((d as Record<string, unknown>).time ?? (d as Record<string, unknown>).date),
+      time: toChartTime((d as Record<string, unknown>).time ?? (d as Record<string, unknown>).date, venueTz),
       open: (d as Record<string, unknown>).open as number,
       high: (d as Record<string, unknown>).high as number,
       low: (d as Record<string, unknown>).low as number,
@@ -448,7 +446,7 @@ export function StockPriceChart({ data }: DataProps): React.ReactElement {
         <OpenInMarketLink symbol={data.symbol as string} />
       </div>
       <div ref={containerRef} style={{ width: '100%', height: 360 }} />
-      <StockStatsCard stats={data.stats as Record<string, unknown> | undefined} />
+      <StockStatsCard stats={data.stats as Record<string, unknown> | undefined} currency={currency} />
     </div>
   );
 }
@@ -457,20 +455,23 @@ export function StockPriceChart({ data }: DataProps): React.ReactElement {
 
 interface StockStatsCardProps {
   stats: Record<string, unknown> | undefined;
+  /** ISO code of the price-valued stats. */
+  currency: string | null;
 }
 
-function StockStatsCard({ stats }: StockStatsCardProps): React.ReactElement | null {
+function StockStatsCard({ stats, currency }: StockStatsCardProps): React.ReactElement | null {
+  const locale = useLocale();
   const { t } = useTranslation();
   if (!stats) return null;
 
   const items = [
     { label: t('toolArtifact.periodChange'), value: (stats.period_change_pct as number | undefined) != null ? formatPct(stats.period_change_pct as number) : null, color: (stats.period_change_pct as number) >= 0 ? GREEN : RED },
-    { label: t('toolArtifact.periodHigh'), value: (stats.period_high as number | undefined) != null ? `$${(stats.period_high as number).toFixed(2)}` : null },
-    { label: t('toolArtifact.periodLow'), value: (stats.period_low as number | undefined) != null ? `$${(stats.period_low as number).toFixed(2)}` : null },
-    { label: t('toolArtifact.avgVolume'), value: (stats.avg_volume as number | undefined) != null ? formatNumber(stats.avg_volume as number).replace('$', '') : null },
+    { label: t('toolArtifact.periodHigh'), value: (stats.period_high as number | undefined) != null ? formatMoney(stats.period_high as number, currency, locale) : null },
+    { label: t('toolArtifact.periodLow'), value: (stats.period_low as number | undefined) != null ? formatMoney(stats.period_low as number, currency, locale) : null },
+    { label: t('toolArtifact.avgVolume'), value: (stats.avg_volume as number | undefined) != null ? compactNumberFixed2(stats.avg_volume as number, locale) : null },
     { label: t('toolArtifact.volatility'), value: (stats.volatility as number | undefined) != null ? `${((stats.volatility as number) * 100).toFixed(1)}%` : null },
-    { label: 'MA 20', value: (stats.ma_20 as number | undefined) != null ? `$${(stats.ma_20 as number).toFixed(2)}` : null, labelColor: MA_BLUE },
-    { label: 'MA 50', value: (stats.ma_50 as number | undefined) != null ? `$${(stats.ma_50 as number).toFixed(2)}` : null, labelColor: MA_ORANGE },
+    { label: 'MA 20', value: (stats.ma_20 as number | undefined) != null ? formatMoney(stats.ma_20 as number, currency, locale) : null, labelColor: MA_BLUE },
+    { label: 'MA 50', value: (stats.ma_50 as number | undefined) != null ? formatMoney(stats.ma_50 as number, currency, locale) : null, labelColor: MA_ORANGE },
   ].filter((i) => i.value != null);
 
   if (items.length === 0) return null;
@@ -630,14 +631,14 @@ export const AnalystRatingsChart = memo(function AnalystRatingsChart({ ratings }
   const { chartData, total } = useMemo(() => {
     if (!ratings) return { chartData: [], total: 0 };
     const cd = [
-      { name: 'Strong Buy', value: (ratings.strongBuy as number) || 0 },
-      { name: 'Buy', value: (ratings.buy as number) || 0 },
-      { name: 'Hold', value: (ratings.hold as number) || 0 },
-      { name: 'Sell', value: (ratings.sell as number) || 0 },
-      { name: 'Strong Sell', value: (ratings.strongSell as number) || 0 },
+      { key: 'strongBuy', name: t('toolArtifact.ratings.strongBuy'), value: (ratings.strongBuy as number) || 0 },
+      { key: 'buy', name: t('toolArtifact.ratings.buy'), value: (ratings.buy as number) || 0 },
+      { key: 'hold', name: t('toolArtifact.ratings.hold'), value: (ratings.hold as number) || 0 },
+      { key: 'sell', name: t('toolArtifact.ratings.sell'), value: (ratings.sell as number) || 0 },
+      { key: 'strongSell', name: t('toolArtifact.ratings.strongSell'), value: (ratings.strongSell as number) || 0 },
     ].filter((d) => d.value > 0);
     return { chartData: cd, total: cd.reduce((s, d) => s + d.value, 0) };
-  }, [ratings]);
+  }, [ratings, t]);
 
   if (!ratings || chartData.length === 0) return null;
 
@@ -658,7 +659,7 @@ export const AnalystRatingsChart = memo(function AnalystRatingsChart({ ratings }
             stroke="none"
           >
             {chartData.map((entry) => (
-              <Cell key={entry.name} fill={ANALYST_COLORS[entry.name] || 'var(--color-icon-muted)'} />
+              <Cell key={entry.key} fill={ANALYST_COLORS[entry.key] || 'var(--color-icon-muted)'} />
             ))}
           </Pie>
           <Legend
@@ -692,6 +693,8 @@ export const AnalystRatingsChart = memo(function AnalystRatingsChart({ ratings }
 interface RevenueBreakdownChartProps {
   revenueByProduct: Record<string, number> | undefined;
   revenueByGeo: Record<string, number> | undefined;
+  /** ISO code of the slice values. */
+  currency: string;
 }
 
 const buildPieData = (obj: Record<string, number>) => {
@@ -700,7 +703,8 @@ const buildPieData = (obj: Record<string, number>) => {
     .sort((a, b) => b.value - a.value);
 };
 
-export const RevenueBreakdownChart = memo(function RevenueBreakdownChart({ revenueByProduct, revenueByGeo }: RevenueBreakdownChartProps): React.ReactElement | null {
+export const RevenueBreakdownChart = memo(function RevenueBreakdownChart({ revenueByProduct, revenueByGeo, currency }: RevenueBreakdownChartProps): React.ReactElement | null {
+  const locale = useLocale();
   const { t } = useTranslation();
   const hasProduct = revenueByProduct && Object.keys(revenueByProduct).length > 0;
   const hasGeo = revenueByGeo && Object.keys(revenueByGeo).length > 0;
@@ -733,7 +737,7 @@ export const RevenueBreakdownChart = memo(function RevenueBreakdownChart({ reven
             formatter={(val: string) => <span style={{ color: TEXT_COLOR }}>{val}</span>}
           />
           <Tooltip
-            content={<DarkTooltip formatter={(v: number) => `${formatNumber(v)} (${((v / total) * 100).toFixed(1)}%)`} />}
+            content={<DarkTooltip formatter={(v: number) => `${formatMoney(v, currency, locale, { compact: true })} (${((v / total) * 100).toFixed(1)}%)`} />}
           />
         </PieChart>
       </div>
@@ -757,9 +761,13 @@ export const RevenueBreakdownChart = memo(function RevenueBreakdownChart({ reven
 
 interface ChartArrayDataProps {
   data: Record<string, unknown>[] | undefined;
+  /** ISO code of money-valued axes and tooltips; required so a forgotten
+   *  prop cannot silently read as USD. */
+  currency: string;
 }
 
-export const QuarterlyRevenueChart = memo(function QuarterlyRevenueChart({ data }: ChartArrayDataProps): React.ReactElement | null {
+export const QuarterlyRevenueChart = memo(function QuarterlyRevenueChart({ data, currency }: ChartArrayDataProps): React.ReactElement | null {
+  const locale = useLocale();
   const { t } = useTranslation();
   if (!data?.length) return null;
 
@@ -771,8 +779,8 @@ export const QuarterlyRevenueChart = memo(function QuarterlyRevenueChart({ data 
       <BarChart responsive width="100%" height={220} data={data} margin={{ left: 0, right: 10 }}>
         <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
         <XAxis dataKey="period" tick={{ fill: TEXT_COLOR, fontSize: 10 }} axisLine={{ stroke: GRID_COLOR }} />
-        <YAxis width="auto" tick={{ fill: TEXT_COLOR, fontSize: 11 }} axisLine={{ stroke: GRID_COLOR }} tickFormatter={(v: number) => formatNumber(v).replace('$', '')} />
-        <Tooltip content={<DarkTooltip formatter={(v: number) => formatNumber(v)} />} />
+        <YAxis width="auto" tick={{ fill: TEXT_COLOR, fontSize: 11 }} axisLine={{ stroke: GRID_COLOR }} tickFormatter={(v: number) => formatMoney(v, currency, locale, { compact: true })} />
+        <Tooltip content={<DarkTooltip formatter={(v: number) => formatMoney(v, currency, locale, { compact: true })} />} />
         <Legend wrapperStyle={{ fontSize: 11, color: TEXT_COLOR }} formatter={(val: string) => <span style={{ color: TEXT_COLOR }}>{val}</span>} />
         <Bar dataKey="revenue" name={t('toolArtifact.revenue')} fill="var(--color-accent-primary)" radius={[4, 4, 0, 0]} />
         <Bar dataKey="netIncome" name={t('toolArtifact.netIncome')} fill={GREEN} radius={[4, 4, 0, 0]} />
@@ -783,7 +791,7 @@ export const QuarterlyRevenueChart = memo(function QuarterlyRevenueChart({ data 
 
 // ─── MarginsChart ───────────────────────────────────────────────────
 
-export const MarginsChart = memo(function MarginsChart({ data }: ChartArrayDataProps): React.ReactElement | null {
+export const MarginsChart = memo(function MarginsChart({ data }: Pick<ChartArrayDataProps, 'data'>): React.ReactElement | null {
   const { t } = useTranslation();
 
   const chartData = useMemo(() => {
@@ -819,7 +827,8 @@ export const MarginsChart = memo(function MarginsChart({ data }: ChartArrayDataP
 
 // ─── EarningsSurpriseChart ──────────────────────────────────────────
 
-export const EarningsSurpriseChart = memo(function EarningsSurpriseChart({ data }: ChartArrayDataProps): React.ReactElement | null {
+export const EarningsSurpriseChart = memo(function EarningsSurpriseChart({ data, currency }: ChartArrayDataProps): React.ReactElement | null {
+  const locale = useLocale();
   const { t } = useTranslation();
   if (!data?.length) return null;
 
@@ -831,8 +840,8 @@ export const EarningsSurpriseChart = memo(function EarningsSurpriseChart({ data 
       <BarChart responsive width="100%" height={220} data={data} margin={{ left: 0, right: 10 }}>
         <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
         <XAxis dataKey="period" tick={{ fill: TEXT_COLOR, fontSize: 10 }} axisLine={{ stroke: GRID_COLOR }} />
-        <YAxis width="auto" tick={{ fill: TEXT_COLOR, fontSize: 11 }} axisLine={{ stroke: GRID_COLOR }} tickFormatter={(v: number) => `$${v.toFixed(2)}`} />
-        <Tooltip content={<DarkTooltip formatter={(v: number) => `$${v?.toFixed(2)}`} />} />
+        <YAxis width="auto" tick={{ fill: TEXT_COLOR, fontSize: 11 }} axisLine={{ stroke: GRID_COLOR }} tickFormatter={(v: number) => formatMoney(v, currency, locale)} />
+        <Tooltip content={<DarkTooltip formatter={(v: number) => formatMoney(v, currency, locale)} />} />
         <Legend wrapperStyle={{ fontSize: 11, color: TEXT_COLOR }} formatter={(val: string) => <span style={{ color: TEXT_COLOR }}>{val}</span>} />
         <Bar dataKey="epsActual" name={t('toolArtifact.epsActual')} fill={GREEN} radius={[4, 4, 0, 0]} />
         <Bar dataKey="epsEstimate" name={t('toolArtifact.epsEstimate')} fill="var(--color-icon-muted)" radius={[4, 4, 0, 0]} />
@@ -843,7 +852,8 @@ export const EarningsSurpriseChart = memo(function EarningsSurpriseChart({ data 
 
 // ─── CashFlowChart ──────────────────────────────────────────────────
 
-export const CashFlowChart = memo(function CashFlowChart({ data }: ChartArrayDataProps): React.ReactElement | null {
+export const CashFlowChart = memo(function CashFlowChart({ data, currency }: ChartArrayDataProps): React.ReactElement | null {
+  const locale = useLocale();
   const { t } = useTranslation();
   if (!data?.length) return null;
 
@@ -855,8 +865,8 @@ export const CashFlowChart = memo(function CashFlowChart({ data }: ChartArrayDat
       <BarChart responsive width="100%" height={220} data={data} margin={{ left: 0, right: 10 }}>
         <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
         <XAxis dataKey="period" tick={{ fill: TEXT_COLOR, fontSize: 10 }} axisLine={{ stroke: GRID_COLOR }} />
-        <YAxis width="auto" tick={{ fill: TEXT_COLOR, fontSize: 11 }} axisLine={{ stroke: GRID_COLOR }} tickFormatter={(v: number) => formatNumber(v).replace('$', '')} />
-        <Tooltip content={<DarkTooltip formatter={(v: number) => formatNumber(v)} />} />
+        <YAxis width="auto" tick={{ fill: TEXT_COLOR, fontSize: 11 }} axisLine={{ stroke: GRID_COLOR }} tickFormatter={(v: number) => formatMoney(v, currency, locale, { compact: true })} />
+        <Tooltip content={<DarkTooltip formatter={(v: number) => formatMoney(v, currency, locale, { compact: true })} />} />
         <Legend wrapperStyle={{ fontSize: 11, color: TEXT_COLOR }} formatter={(val: string) => <span style={{ color: TEXT_COLOR }}>{val}</span>} />
         <ReferenceLine y={0} stroke={GRID_COLOR} />
         <Bar dataKey="operatingCashFlow" name={t('toolArtifact.operatingCF')} fill="var(--color-accent-primary)" radius={[4, 4, 0, 0]} />
@@ -872,12 +882,6 @@ export const CashFlowChart = memo(function CashFlowChart({ data }: ChartArrayDat
 const DETAIL_STATUS_ICONS: Record<string, typeof Sunrise | typeof Sunset> = {
   early_trading: Sunrise,
   late_trading: Sunset,
-};
-const DETAIL_STATUS_LABELS: Record<string, string> = {
-  early_trading: 'Pre-Market',
-  open: 'Regular Hours',
-  late_trading: 'After-Hours',
-  closed: 'Market Closed',
 };
 const DETAIL_STATUS_COLORS: Record<string, string> = {
   early_trading: '#f59e0b',
@@ -907,56 +911,55 @@ function LazyChart({ height, children, root }: { height: number; children: React
   return <>{children}</>;
 }
 
-export const CompanyOverviewCard = memo(function CompanyOverviewCard({ data, scrollContainerRef }: DataProps & { scrollContainerRef?: React.RefObject<HTMLDivElement | null> }): React.ReactElement {
+interface CompanyOverviewCardProps {
+  data: CompanyOverviewArtifact;
+  scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
+}
+
+export const CompanyOverviewCard = memo(function CompanyOverviewCard({ data, scrollContainerRef }: CompanyOverviewCardProps): React.ReactElement {
   const { t } = useTranslation();
   const locale = useLocale();
   const {
-    symbol, name, quote, performance, analystRatings,
+    quote, performance, analystRatings,
     revenueByProduct, revenueByGeo,
     quarterlyFundamentals, earningsSurprises, cashFlow,
-    float: floatData, shortInterest, shortVolume,
-  } = (data || {}) as Record<string, unknown>;
+    float: floatObj, shortInterest, shortVolume: shortVolumeObj,
+  } = data;
+  const symbol = data.symbol || '';
 
-  const quoteObj = quote as Record<string, unknown> | undefined;
-
-  // Resolve display price: snapshot -> regularClose, FMP fallback -> price
-  const displayPrice = (quoteObj?.regularClose ?? quoteObj?.price) as number | undefined;
-  const displayChange = (quoteObj?.regularChange ?? quoteObj?.change) as number | undefined;
-  const displayChangePct = (quoteObj?.regularChangePct ?? quoteObj?.changePct) as number | undefined;
+  const {
+    displayPrice, displayChange, displayChangePct,
+    marketStatus, extPrice, extDiff, extDiffPct, hasExtPrice,
+    currency, statementCurrency, earningsCurrency, dualName,
+  } = deriveOverviewQuote(data, symbol);
+  const money = (n: number | null | undefined): string => formatMoney(n, currency, locale);
   const changeColor = (displayChange ?? 0) >= 0 ? GREEN : RED;
 
-  // Extended hours
-  const marketStatus = quoteObj?.marketStatus as string | undefined;
-  const isExtended = marketStatus === 'early_trading' || marketStatus === 'late_trading';
-  const extPrice = quoteObj?.lastTradePrice as number | undefined;
-  const hasExtPrice = isExtended && extPrice != null && displayPrice != null && extPrice !== displayPrice;
-  const extDiff = hasExtPrice ? extPrice - displayPrice : 0;
-  const extDiffPct = hasExtPrice && displayPrice ? (extDiff / displayPrice * 100) : 0;
-
   // Float / short interest / short volume
-  const floatObj = floatData as Record<string, unknown> | undefined;
-  const hasFloat = floatObj && typeof floatObj === 'object' && (floatObj.free_float as number | undefined) != null;
+  const hasFloat = floatObj && typeof floatObj === 'object' && floatObj.free_float != null;
   // shortInterest: single object (new) or array (legacy backward compat)
-  const latestSI = Array.isArray(shortInterest)
-    ? ((shortInterest as Record<string, unknown>[]).length ? (shortInterest as Record<string, unknown>[])[(shortInterest as Record<string, unknown>[]).length - 1] : null)
-    : ((shortInterest as Record<string, unknown>) || null);
-  const hasSI = latestSI && (latestSI.short_interest as number | undefined) != null;
-  const siPctOfFloat = (hasSI && hasFloat && (floatObj!.free_float as number))
-    ? ((latestSI!.short_interest as number) / (floatObj!.free_float as number) * 100) : null;
-  const shortVolumeObj = shortVolume as Record<string, unknown> | undefined;
-  const hasSV = shortVolumeObj && typeof shortVolumeObj === 'object' && (shortVolumeObj.short_volume_ratio as number | undefined) != null;
+  const latestSI: ShortInterest | null = Array.isArray(shortInterest)
+    ? (shortInterest.length ? shortInterest[shortInterest.length - 1] : null)
+    : (shortInterest || null);
+  const hasSI = latestSI && latestSI.short_interest != null;
+  const siPctOfFloat = (hasSI && hasFloat && floatObj!.free_float)
+    ? (latestSI!.short_interest! / floatObj!.free_float * 100) : null;
+  const hasSV = shortVolumeObj && typeof shortVolumeObj === 'object' && shortVolumeObj.short_volume_ratio != null;
 
   return (
     <div className="space-y-5">
       {/* Quote summary */}
-      {quoteObj && (
+      {quote && (
         <div>
           <div className="flex items-baseline gap-3 mb-3 flex-wrap">
             <span style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--color-text-primary)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
-              {(name as string) || (symbol as string)}
+              {dualName.primary}
             </span>
-            <span style={{ fontSize: '0.875rem', color: TEXT_COLOR, flexShrink: 0 }}>{symbol as string}</span>
-            <OpenInMarketLink symbol={symbol as string} />
+            {dualName.secondary && (
+              <span style={{ fontSize: '0.875rem', color: TEXT_COLOR, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dualName.secondary}</span>
+            )}
+            {dualName.named && <span style={{ fontSize: '0.875rem', color: TEXT_COLOR, flexShrink: 0 }}>{symbol}</span>}
+            <OpenInMarketLink symbol={data.symbol} />
             {marketStatus && (() => {
               const StatusIcon = DETAIL_STATUS_ICONS[marketStatus];
               return (
@@ -968,7 +971,7 @@ export const CompanyOverviewCard = memo(function CompanyOverviewCard({ data, scr
                   whiteSpace: 'nowrap',
                 }}>
                   {StatusIcon && <StatusIcon size={11} />}
-                  {DETAIL_STATUS_LABELS[marketStatus] || marketStatus}
+                  {t(`toolArtifact.marketStatusDetail.${marketStatus}`, marketStatus)}
                 </span>
               );
             })()}
@@ -977,15 +980,16 @@ export const CompanyOverviewCard = memo(function CompanyOverviewCard({ data, scr
           {/* Regular close price */}
           <div className="flex items-baseline gap-3 mb-1">
             <span style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
-              ${displayPrice?.toFixed(2) || 'N/A'}
+              {money(displayPrice)}
             </span>
             {displayChange != null && (
               <span style={{ fontSize: '0.875rem', color: changeColor }}>
-                {displayChange >= 0 ? '+' : ''}{displayChange?.toFixed(2)} ({displayChangePct?.toFixed(2)}%)
+                {formatMoney(displayChange, currency, locale, { signed: true })}
+                {displayChangePct != null && ` (${signedFixed2(displayChangePct, locale)}%)`}
               </span>
             )}
             {marketStatus && hasExtPrice && (
-              <span style={{ fontSize: '0.6875rem', color: TEXT_COLOR }}>Close</span>
+              <span style={{ fontSize: '0.6875rem', color: TEXT_COLOR }}>{t('toolArtifact.closeLabel')}</span>
             )}
           </div>
 
@@ -996,10 +1000,10 @@ export const CompanyOverviewCard = memo(function CompanyOverviewCard({ data, scr
                 {marketStatus === 'early_trading' ? <Sunrise size={14} /> : <Sunset size={14} />}
               </span>
               <span style={{ fontWeight: 600, color: 'var(--color-text-primary)' }}>
-                ${extPrice.toFixed(2)}
+                {money(extPrice)}
               </span>
               <span style={{ color: extDiff >= 0 ? GREEN : RED, fontWeight: 500 }}>
-                {extDiff >= 0 ? '+' : ''}{extDiff.toFixed(2)} ({extDiffPct >= 0 ? '+' : ''}{extDiffPct.toFixed(2)}%)
+                {formatMoney(extDiff, currency, locale, { signed: true })} ({signedFixed2(extDiffPct, locale)}%)
               </span>
             </div>
           )}
@@ -1010,16 +1014,16 @@ export const CompanyOverviewCard = memo(function CompanyOverviewCard({ data, scr
             className="grid grid-cols-2 gap-x-6 gap-y-1"
             style={{ fontSize: '0.75rem', color: TEXT_COLOR }}
           >
-            {(quoteObj.open as number | undefined) != null && <QuoteStat label={t('toolArtifact.open')} value={`$${(quoteObj.open as number).toFixed(2)}`} />}
-            {(quoteObj.previousClose as number | undefined) != null && <QuoteStat label={t('toolArtifact.prevClose')} value={`$${(quoteObj.previousClose as number).toFixed(2)}`} />}
-            {(quoteObj.dayLow as number | undefined) != null && (quoteObj.dayHigh as number | undefined) != null && (
-              <QuoteStat label={t('toolArtifact.dayRange')} value={`$${(quoteObj.dayLow as number).toFixed(2)} - $${(quoteObj.dayHigh as number).toFixed(2)}`} />
+            {quote.open != null && <QuoteStat label={t('toolArtifact.open')} value={money(quote.open)} />}
+            {quote.previousClose != null && <QuoteStat label={t('toolArtifact.prevClose')} value={money(quote.previousClose)} />}
+            {quote.dayLow != null && quote.dayHigh != null && (
+              <QuoteStat label={t('toolArtifact.dayRange')} value={`${money(quote.dayLow)} - ${money(quote.dayHigh)}`} />
             )}
-            {(quoteObj.yearLow as number | undefined) != null && (quoteObj.yearHigh as number | undefined) != null && (
-              <QuoteStat label={t('toolArtifact.52wRange')} value={`$${(quoteObj.yearLow as number).toFixed(2)} - $${(quoteObj.yearHigh as number).toFixed(2)}`} />
+            {quote.yearLow != null && quote.yearHigh != null && (
+              <QuoteStat label={t('toolArtifact.52wRange')} value={`${money(quote.yearLow)} - ${money(quote.yearHigh)}`} />
             )}
-            {(quoteObj.volume as number | undefined) != null && <QuoteStat label={t('toolArtifact.volume')} value={formatNumber(quoteObj.volume as number).replace('$', '')} />}
-            {(quoteObj.marketCap as number | undefined) != null && <QuoteStat label={t('toolArtifact.marketCap')} value={formatNumber(quoteObj.marketCap as number)} />}
+            {quote.volume != null && <QuoteStat label={t('toolArtifact.volume')} value={compactNumberFixed2(quote.volume, locale)} />}
+            {quote.marketCap != null && <QuoteStat label={t('toolArtifact.marketCap')} value={formatMoney(quote.marketCap, currency, locale, { compact: true })} />}
           </div>
         </div>
       )}
@@ -1035,27 +1039,27 @@ export const CompanyOverviewCard = memo(function CompanyOverviewCard({ data, scr
             style={{ fontSize: '0.75rem', color: TEXT_COLOR }}
           >
             {hasFloat && (
-              <QuoteStat label={t('toolArtifact.float', 'Float')} value={formatNumber(floatObj!.free_float as number).replace('$', '')} />
+              <QuoteStat label={t('toolArtifact.float', 'Float')} value={compactNumberFixed2(floatObj!.free_float!, locale)} />
             )}
-            {hasFloat && (floatObj!.free_float_percent as number | undefined) != null && (
-              <QuoteStat label={t('toolArtifact.floatPct', 'Float %')} value={`${(floatObj!.free_float_percent as number).toFixed(1)}%`} />
+            {hasFloat && floatObj!.free_float_percent != null && (
+              <QuoteStat label={t('toolArtifact.floatPct', 'Float %')} value={`${floatObj!.free_float_percent.toFixed(1)}%`} />
             )}
             {hasSI && (
               <QuoteStat
-                label={`${t('toolArtifact.shortInterest', 'Short Interest')}${(latestSI!.settlement_date as string | undefined) ? ` (${latestSI!.settlement_date as string})` : ''}`}
-                value={grouped(latestSI!.short_interest as number, locale)}
+                label={`${t('toolArtifact.shortInterest', 'Short Interest')}${latestSI!.settlement_date ? ` (${latestSI!.settlement_date})` : ''}`}
+                value={grouped(latestSI!.short_interest!, locale)}
               />
             )}
             {siPctOfFloat != null && (
               <QuoteStat label={t('toolArtifact.shortPctFloat', 'SI % of Float')} value={`${siPctOfFloat.toFixed(2)}%`} />
             )}
-            {(latestSI?.days_to_cover as number | undefined) != null && (
-              <QuoteStat label={t('toolArtifact.daysToCover', 'Days to Cover')} value={(latestSI!.days_to_cover as number).toFixed(2)} />
+            {latestSI?.days_to_cover != null && (
+              <QuoteStat label={t('toolArtifact.daysToCover', 'Days to Cover')} value={latestSI.days_to_cover.toFixed(2)} />
             )}
             {hasSV && (
               <QuoteStat
-                label={`${t('toolArtifact.shortVolRatio', 'Short Vol Ratio')}${(shortVolumeObj!.date as string | undefined) ? ` (${shortVolumeObj!.date as string})` : ''}`}
-                value={`${(shortVolumeObj!.short_volume_ratio as number).toFixed(1)}%`}
+                label={`${t('toolArtifact.shortVolRatio', 'Short Vol Ratio')}${shortVolumeObj!.date ? ` (${shortVolumeObj!.date})` : ''}`}
+                value={`${shortVolumeObj!.short_volume_ratio!.toFixed(1)}%`}
               />
             )}
           </div>
@@ -1063,42 +1067,42 @@ export const CompanyOverviewCard = memo(function CompanyOverviewCard({ data, scr
       )}
 
       {/* Performance */}
-      <PerformanceBarChart performance={performance as Record<string, number> | undefined} />
+      <PerformanceBarChart performance={performance} />
 
       {/* Analyst Ratings */}
-      <AnalystRatingsChart ratings={analystRatings as Record<string, unknown> | undefined} />
+      <AnalystRatingsChart ratings={analystRatings} />
 
       {/* Quarterly Revenue & Net Income + Profit Margins (same data source) */}
-      {(quarterlyFundamentals as unknown[])?.length > 0 && (
+      {!!quarterlyFundamentals?.length && (
         <>
           <LazyChart height={250} root={scrollContainerRef}>
-            <QuarterlyRevenueChart data={quarterlyFundamentals as Record<string, unknown>[] | undefined} />
+            <QuarterlyRevenueChart data={quarterlyFundamentals} currency={statementCurrency} />
           </LazyChart>
           <LazyChart height={250} root={scrollContainerRef}>
-            <MarginsChart data={quarterlyFundamentals as Record<string, unknown>[] | undefined} />
+            <MarginsChart data={quarterlyFundamentals} />
           </LazyChart>
         </>
       )}
 
       {/* EPS Actual vs Estimate */}
-      {(earningsSurprises as unknown[])?.length > 0 && (
+      {!!earningsSurprises?.length && (
         <LazyChart height={250} root={scrollContainerRef}>
-          <EarningsSurpriseChart data={earningsSurprises as Record<string, unknown>[] | undefined} />
+          <EarningsSurpriseChart data={earningsSurprises} currency={earningsCurrency} />
         </LazyChart>
       )}
 
       {/* Cash Flow */}
-      {(cashFlow as unknown[])?.length > 0 && (
+      {!!cashFlow?.length && (
         <LazyChart height={250} root={scrollContainerRef}>
-          <CashFlowChart data={cashFlow as Record<string, unknown>[] | undefined} />
+          <CashFlowChart data={cashFlow} currency={statementCurrency} />
         </LazyChart>
       )}
 
       {/* Revenue Breakdown */}
-      {((revenueByProduct as Record<string, number> | undefined) && Object.keys(revenueByProduct as Record<string, number>).length > 0) ||
-       ((revenueByGeo as Record<string, number> | undefined) && Object.keys(revenueByGeo as Record<string, number>).length > 0) ? (
+      {(revenueByProduct && Object.keys(revenueByProduct).length > 0) ||
+       (revenueByGeo && Object.keys(revenueByGeo).length > 0) ? (
         <LazyChart height={220} root={scrollContainerRef}>
-          <RevenueBreakdownChart revenueByProduct={revenueByProduct as Record<string, number> | undefined} revenueByGeo={revenueByGeo as Record<string, number> | undefined} />
+          <RevenueBreakdownChart revenueByProduct={revenueByProduct} revenueByGeo={revenueByGeo} currency={statementCurrency} />
         </LazyChart>
       ) : null}
     </div>
@@ -1180,6 +1184,7 @@ export function MarketIndicesChart({ data }: DataProps): React.ReactElement {
             <MiniCandlestick
               ohlcv={((indexData.chart_ohlcv as Record<string, unknown>[] | undefined)?.length ?? 0) > 0 ? indexData.chart_ohlcv as Record<string, unknown>[] : indexData.ohlcv as Record<string, unknown>[] | undefined}
               height={160}
+              symbol={symbol}
             />
           </div>
         );
@@ -1191,6 +1196,7 @@ export function MarketIndicesChart({ data }: DataProps): React.ReactElement {
 // ─── StockScreenerTable ──────────────────────────────────────────────
 
 export function StockScreenerTable({ data }: DataProps): React.ReactElement {
+  const locale = useLocale();
   const { t } = useTranslation();
   const { results = [], filters = {}, count = 0 } = (data || {}) as {
     results?: Record<string, unknown>[];
@@ -1228,24 +1234,28 @@ export function StockScreenerTable({ data }: DataProps): React.ReactElement {
 
   const filterTags = Object.entries(filters as Record<string, unknown>).map(([k, v]) => `${k}: ${v}`);
 
+  /** A screener can mix venues, so money columns resolve per row. */
+  const rowCurrency = (row: Record<string, unknown>): string =>
+    resolveCurrency(null, row.symbol as string | undefined);
+
   interface Column {
     key: string;
     label: string;
     width: number;
-    format?: (v: unknown) => string;
+    format?: (v: unknown, row: Record<string, unknown>) => string;
     color?: (v: unknown) => string;
   }
 
   const columns: Column[] = [
     { key: 'symbol', label: t('toolArtifact.symbol'), width: 70 },
     { key: 'companyName', label: t('toolArtifact.company'), width: 160 },
-    { key: 'price', label: t('toolArtifact.price'), width: 70, format: (v) => v != null ? `$${(v as number).toFixed(2)}` : 'N/A' },
-    { key: 'marketCap', label: t('toolArtifact.mktCap'), width: 80, format: (v) => formatNumber(v as number) },
+    { key: 'price', label: t('toolArtifact.price'), width: 70, format: (v, row) => formatMoney(v as number | null, rowCurrency(row), locale) },
+    { key: 'marketCap', label: t('toolArtifact.mktCap'), width: 80, format: (v, row) => formatMoney(v as number | null, rowCurrency(row), locale, { compact: true }) },
     { key: 'sector', label: t('toolArtifact.sector'), width: 110 },
     { key: 'industry', label: t('toolArtifact.industry'), width: 120 },
     { key: 'beta', label: t('toolArtifact.beta'), width: 55, format: (v) => v != null ? (v as number).toFixed(2) : 'N/A' },
-    { key: 'volume', label: t('toolArtifact.volume'), width: 75, format: (v) => v != null ? formatNumber(v as number).replace('$', '') : 'N/A' },
-    { key: 'lastAnnualDividend', label: t('toolArtifact.dividend'), width: 65, format: (v) => v != null ? `$${(v as number).toFixed(2)}` : 'N/A' },
+    { key: 'volume', label: t('toolArtifact.volume'), width: 75, format: (v) => (v == null ? 'N/A' : compactNumberFixed2(v as number, locale)) },
+    { key: 'lastAnnualDividend', label: t('toolArtifact.dividend'), width: 65, format: (v, row) => formatMoney(v as number | null, rowCurrency(row), locale) },
     { key: 'exchangeShortName', label: t('toolArtifact.exchange'), width: 70 },
     { key: 'country', label: t('toolArtifact.country'), width: 55 },
     { key: 'change', label: t('toolArtifact.changePct'), width: 70, format: (v) => v != null ? formatPct(v as number) : 'N/A', color: (v) => v != null ? ((v as number) >= 0 ? GREEN : RED) : TEXT_COLOR },
@@ -1324,7 +1334,7 @@ export function StockScreenerTable({ data }: DataProps): React.ReactElement {
               >
                 {columns.map((col) => {
                   const raw = stock[col.key];
-                  const display = col.format ? col.format(raw) : ((raw as string) ?? 'N/A');
+                  const display = col.format ? col.format(raw, stock) : ((raw as string) ?? 'N/A');
                   const cellColor = col.color ? col.color(raw) : (col.key === 'symbol' ? 'var(--color-text-primary)' : TEXT_COLOR);
                   return (
                     <td
@@ -1355,9 +1365,11 @@ export function StockScreenerTable({ data }: DataProps): React.ReactElement {
 interface MiniCandlestickProps {
   ohlcv: Record<string, unknown>[] | undefined;
   height?: number;
+  /** Drives the venue timezone the bars are rendered in. */
+  symbol?: string;
 }
 
-function MiniCandlestick({ ohlcv, height = 180 }: MiniCandlestickProps): React.ReactElement | null {
+function MiniCandlestick({ ohlcv, height = 180, symbol }: MiniCandlestickProps): React.ReactElement | null {
   const { theme } = useTheme();
   const ct = useThemeTokens(resolveCanvasTheme, theme);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1402,7 +1414,7 @@ function MiniCandlestick({ ohlcv, height = 180 }: MiniCandlestickProps): React.R
     });
     series.setData(
       ohlcv.map((d) => ({
-        time: toChartTime((d as Record<string, unknown>).time ?? (d as Record<string, unknown>).date),
+        time: toChartTime((d as Record<string, unknown>).time ?? (d as Record<string, unknown>).date, timezoneForSymbol(symbol)),
         open: (d as Record<string, unknown>).open as number,
         high: (d as Record<string, unknown>).high as number,
         low: (d as Record<string, unknown>).low as number,

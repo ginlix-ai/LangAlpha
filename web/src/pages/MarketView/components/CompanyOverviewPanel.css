@@ -62,6 +62,13 @@
   gap: 8px;
 }
 
+.company-overview-note {
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  text-align: center;
+  padding: 24px 20px;
+}
+
 .company-overview-error {
   display: flex;
   align-items: center;

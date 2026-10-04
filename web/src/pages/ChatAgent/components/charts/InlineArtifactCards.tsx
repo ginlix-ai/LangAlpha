@@ -4,10 +4,12 @@ import {
   LabelList,
 } from 'recharts';
 import { useTranslation } from 'react-i18next';
-import { utcMsToETDate } from '@/lib/utils';
+import { dateStrInTz } from '@/lib/utils';
+import { formatMoney, quoteCurrency, resolveCurrency, timezoneForSymbol } from '@/lib/bars';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useLocale } from '@/hooks/useLocale';
-import { grouped, grouped2 } from '@/lib/format';
+import { grouped2, signedFixed2 } from '@/lib/format';
+import { deriveOverviewQuote, type CompanyOverviewArtifact } from '@/lib/quotes/overview';
 import { InlineAutomationCard } from './InlineAutomationCards';
 import { InlinePreviewCard } from './InlinePreviewCard';
 import { InlineChartAnnotationCard } from './InlineChartAnnotationCard';
@@ -31,6 +33,9 @@ import {
   type InlineCardProps,
 } from './inlineCardsShared';
 import { readTypedTicker } from '@/lib/marketUtils';
+import { FreshnessBadge } from './FreshnessBadge';
+import { asQuoteTier } from '@/lib/freshness';
+import type { Freshness } from '@/types/market';
 
 export const INLINE_ARTIFACT_TOOLS = new Set([
   'get_daily_prices',
@@ -97,24 +102,35 @@ const NO_KEYBOARD_LAYER = false;
 
 export function InlineStockPriceCard({ artifact, onClick }: InlineCardProps): React.ReactElement | null {
   const { t } = useTranslation();
+  const locale = useLocale();
   const isMobile = useIsMobile();
   const sz = isMobile ? SIZES_MOBILE : SIZES_DESKTOP;
-  const { symbol, ohlcv, stats } = (artifact || {}) as {
+  const { symbol, ohlcv, stats, source, freshness, price_currency: priceCurrency } = (artifact || {}) as {
     symbol?: string;
     ohlcv?: Record<string, unknown>[];
     stats?: Record<string, unknown>;
+    /** ISO currency of the series; older artifacts fall back to the suffix. */
+    price_currency?: string;
+    /** Provider that filled `ohlcv`; absent on pre-contract artifacts. */
+    source?: string;
+    /** Measured freshness of `ohlcv`, the series this card draws. */
+    freshness?: Freshness;
   };
 
   const sparkData = useMemo(() => {
     if (!ohlcv?.length) return [];
     return (downsample(ohlcv) as Record<string, unknown>[]).map((d) => ({ close: d.close as number }));
   }, [ohlcv]);
+  const code = quoteCurrency(priceCurrency, symbol);
 
   if (!ohlcv?.length) return null;
 
   const lastClose = ohlcv[ohlcv.length - 1]?.close as number | undefined;
+  // On the venue's calendar: a Shanghai or Hong Kong daily bar is stamped at
+  // local midnight, which is the previous afternoon in New York.
+  const venueTz = timezoneForSymbol(symbol);
   const formatDateLabel = (val: unknown): string => {
-    if (typeof val === 'number') return utcMsToETDate(val);
+    if (typeof val === 'number') return dateStrInTz(val, venueTz);
     return (val as string) || '';
   };
   const firstDate = formatDateLabel(ohlcv[0]?.time ?? ohlcv[0]?.date);
@@ -127,6 +143,7 @@ export function InlineStockPriceCard({ artifact, onClick }: InlineCardProps): Re
   // Period label from date range
   const periodLabel = firstDate && lastDate ? `${firstDate}, ${lastDate}` : '';
 
+
   return (
     <div
       style={isMobile ? mobileCardStyle : cardStyle}
@@ -134,17 +151,21 @@ export function InlineStockPriceCard({ artifact, onClick }: InlineCardProps): Re
       onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
       onMouseLeave={(e) => (e.currentTarget.style.borderColor = CARD_BORDER)}
     >
-      {/* Header row: symbol + price + change */}
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: sz.gap, marginBottom: 2 }}>
+      {/* Header row: symbol + price + change. Wraps at phone width, where a
+          CN¥ price, the badge and the period outgrow one line. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', columnGap: sz.gap, rowGap: 2, marginBottom: 2 }}>
         <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: isMobile ? '0.8125rem' : '0.9375rem' }}>{symbol}</span>
         {lastClose != null && (
-          <span style={{ color: 'var(--color-text-primary)', fontSize: isMobile ? '0.8125rem' : '0.9375rem', fontWeight: 600 }}>${lastClose.toFixed(2)}</span>
+          <span style={{ color: 'var(--color-text-primary)', fontSize: isMobile ? '0.8125rem' : '0.9375rem', fontWeight: 600 }}>{formatMoney(lastClose, code, locale)}</span>
         )}
         {changePct != null && (
           <span style={{ color, fontSize: isMobile ? '0.6875rem' : '0.8125rem', fontWeight: 600 }}>
             {formatPct(changePct)}
           </span>
         )}
+        {/* Publisher and lag of the plotted series live behind this pill; the
+            caption it replaces read as a second stats row. */}
+        {freshness && <FreshnessBadge freshness={freshness} source={source} chartSymbol={symbol ?? ''} />}
         <span style={{ marginLeft: 'auto', fontSize: sz.labelFs, color: TEXT_COLOR }}>
           {periodLabel}
         </span>
@@ -190,10 +211,10 @@ export function InlineStockPriceCard({ artifact, onClick }: InlineCardProps): Re
           }}
         >
           {(stats.period_high as number | undefined) != null && (
-            <span>{t('toolArtifact.high')}: ${(stats.period_high as number).toFixed(2)}</span>
+            <span>{t('toolArtifact.high')}: {formatMoney(stats.period_high as number, code, locale)}</span>
           )}
           {(stats.period_low as number | undefined) != null && (
-            <span>{t('toolArtifact.low')}: ${(stats.period_low as number).toFixed(2)}</span>
+            <span>{t('toolArtifact.low')}: {formatMoney(stats.period_low as number, code, locale)}</span>
           )}
           {(stats.avg_volume as number | undefined) != null && (
             <span>{t('toolArtifact.vol')}: {formatCompactNumber(stats.avg_volume as number)}</span>
@@ -206,39 +227,23 @@ export function InlineStockPriceCard({ artifact, onClick }: InlineCardProps): Re
 
 // ─── InlineCompanyOverviewCard ───────────────────────────────────────
 
-function formatMarketCap(num: number | null | undefined, locale: string): string {
-  if (num == null) return 'N/A';
-  if (Math.abs(num) >= 1e12) return `$${(num / 1e12).toFixed(2)}T`;
-  if (Math.abs(num) >= 1e9) return `$${(num / 1e9).toFixed(2)}B`;
-  if (Math.abs(num) >= 1e6) return `$${(num / 1e6).toFixed(2)}M`;
-  return `$${grouped(num, locale)}`;
-}
-
 export function InlineCompanyOverviewCard({ artifact, onClick }: InlineCardProps): React.ReactElement | null {
   const { t } = useTranslation();
   const locale = useLocale();
   const isMobile = useIsMobile();
   const sz = isMobile ? SIZES_MOBILE : SIZES_DESKTOP;
-  const { symbol, name, quote } = (artifact || {}) as {
-    symbol?: string;
-    name?: string;
-    quote?: Record<string, unknown>;
-  };
+  const overview = (artifact || {}) as CompanyOverviewArtifact;
+  const { quote } = overview;
   if (!quote) return null;
 
-  // Resolve display price: snapshot -> regularClose, FMP fallback -> price
-  const displayPrice = (quote.regularClose ?? quote.price) as number | undefined;
-  const displayChange = (quote.regularChange ?? quote.change) as number | undefined;
-  const displayChangePct = (quote.regularChangePct ?? quote.changePct) as number | undefined;
+  const symbol = overview.symbol || '';
+  const {
+    displayPrice, displayChange, displayChangePct,
+    marketStatus, extPrice, extDiff, extDiffPct, hasExtPrice,
+    currency, dualName,
+  } = deriveOverviewQuote(overview, symbol);
+  const money = (n: number | null | undefined): string => formatMoney(n, currency, locale);
   const changeColor = (displayChange ?? 0) >= 0 ? GREEN : RED;
-
-  // Extended hours
-  const marketStatus = quote.marketStatus as string | undefined;
-  const isExtended = marketStatus === 'early_trading' || marketStatus === 'late_trading';
-  const extPrice = quote.lastTradePrice as number | undefined;
-  const hasExtPrice = isExtended && extPrice != null && displayPrice != null && extPrice !== displayPrice;
-  const extDiff = hasExtPrice ? extPrice - displayPrice : 0;
-  const extDiffPct = hasExtPrice && displayPrice ? (extDiff / displayPrice * 100) : 0;
 
   return (
     <div
@@ -250,9 +255,13 @@ export function InlineCompanyOverviewCard({ artifact, onClick }: InlineCardProps
       {/* Company name + symbol + market status */}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: sz.gap, marginBottom: sz.sectionMb, flexWrap: 'wrap' }}>
         <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: isMobile ? '0.875rem' : '1rem', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {name || symbol}
+          {dualName.primary}
         </span>
-        {name && (
+        {/* The second spelling only where the row has room, as the quote card does. */}
+        {dualName.secondary && !isMobile && (
+          <span style={{ fontSize: '0.8125rem', color: TEXT_COLOR, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dualName.secondary}</span>
+        )}
+        {dualName.named && (
           <span style={{ fontSize: isMobile ? '0.6875rem' : '0.8125rem', color: TEXT_COLOR, flexShrink: 0 }}>{symbol}</span>
         )}
         {marketStatus && (
@@ -267,31 +276,40 @@ export function InlineCompanyOverviewCard({ artifact, onClick }: InlineCardProps
         )}
       </div>
 
-      {/* Regular close price + change */}
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: isMobile ? 8 : 10, marginBottom: hasExtPrice ? 2 : sz.filingMb }}>
+      {/* Regular close price + change; wraps as the quote hero does, so a narrow
+          card moves the badge down a line instead of overflowing. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', columnGap: isMobile ? 8 : 10, rowGap: 2, marginBottom: hasExtPrice ? 2 : sz.filingMb }}>
         {displayPrice != null && (
           <span style={{ fontSize: isMobile ? '1.125rem' : '1.375rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
-            ${displayPrice.toFixed(2)}
+            {money(displayPrice)}
           </span>
         )}
         {displayChange != null && (
           <span style={{ fontSize: isMobile ? '0.75rem' : '0.875rem', color: changeColor, fontWeight: 500 }}>
-            {displayChange >= 0 ? '+' : ''}{displayChange.toFixed(2)} ({displayChangePct?.toFixed(2)}%)
+            {formatMoney(displayChange, currency, locale, { signed: true })}
+            {displayChangePct != null && ` (${signedFixed2(displayChangePct, locale)}%)`}
           </span>
         )}
+        <FreshnessBadge
+          tier={asQuoteTier(quote.tier)}
+          freshness={quote.freshness}
+          source={quote.source}
+          asOfLocal={quote.as_of_local}
+          printed={quote.printed}
+        />
       </div>
 
       {/* Extended-hours price */}
       {hasExtPrice && (
         <div style={{ display: 'flex', alignItems: 'baseline', gap: sz.gap, marginBottom: sz.filingMb, fontSize: isMobile ? '0.6875rem' : '0.8125rem' }}>
           <span style={{ color: TEXT_COLOR }}>
-            {extendedHoursLabel(t, marketStatus, 'long')}
+            {extendedHoursLabel(t, marketStatus ?? undefined, 'long')}
           </span>
           <span style={{ fontWeight: 600, color: 'var(--color-text-primary)' }}>
-            ${extPrice.toFixed(2)}
+            {money(extPrice)}
           </span>
           <span style={{ color: extDiff >= 0 ? GREEN : RED, fontWeight: 500 }}>
-            {extDiff >= 0 ? '+' : ''}{extDiff.toFixed(2)} ({extDiffPct >= 0 ? '+' : ''}{extDiffPct.toFixed(2)}%)
+            {formatMoney(extDiff, currency, locale, { signed: true })} ({signedFixed2(extDiffPct, locale)}%)
           </span>
         </div>
       )}
@@ -306,23 +324,23 @@ export function InlineCompanyOverviewCard({ artifact, onClick }: InlineCardProps
           color: TEXT_COLOR,
         }}
       >
-        {(quote.open as number | undefined) != null && (
-          <QuoteRow label={t('toolArtifact.open')} value={`$${(quote.open as number).toFixed(2)}`} />
+        {quote.open != null && (
+          <QuoteRow label={t('toolArtifact.open')} value={money(quote.open)} />
         )}
-        {(quote.previousClose as number | undefined) != null && (
-          <QuoteRow label={t('toolArtifact.prevClose')} value={`$${(quote.previousClose as number).toFixed(2)}`} />
+        {quote.previousClose != null && (
+          <QuoteRow label={t('toolArtifact.prevClose')} value={money(quote.previousClose)} />
         )}
-        {(quote.dayLow as number | undefined) != null && (quote.dayHigh as number | undefined) != null && (
-          <QuoteRow label={t('toolArtifact.dayRange')} value={`$${(quote.dayLow as number).toFixed(2)} - $${(quote.dayHigh as number).toFixed(2)}`} />
+        {quote.dayLow != null && quote.dayHigh != null && (
+          <QuoteRow label={t('toolArtifact.dayRange')} value={`${money(quote.dayLow)} - ${money(quote.dayHigh)}`} />
         )}
-        {(quote.yearLow as number | undefined) != null && (quote.yearHigh as number | undefined) != null && (
-          <QuoteRow label={t('toolArtifact.52wRange')} value={`$${(quote.yearLow as number).toFixed(2)} - $${(quote.yearHigh as number).toFixed(2)}`} />
+        {quote.yearLow != null && quote.yearHigh != null && (
+          <QuoteRow label={t('toolArtifact.52wRange')} value={`${money(quote.yearLow)} - ${money(quote.yearHigh)}`} />
         )}
-        {(quote.volume as number | undefined) != null && (
-          <QuoteRow label={t('toolArtifact.volume')} value={formatCompactNumber(quote.volume as number)} />
+        {quote.volume != null && (
+          <QuoteRow label={t('toolArtifact.volume')} value={formatCompactNumber(quote.volume)} />
         )}
-        {(quote.marketCap as number | undefined) != null && (
-          <QuoteRow label={t('toolArtifact.marketCap')} value={formatMarketCap(quote.marketCap as number, locale)} />
+        {quote.marketCap != null && (
+          <QuoteRow label={t('toolArtifact.marketCap')} value={formatMoney(quote.marketCap, currency, locale, { compact: true })} />
         )}
       </div>
     </div>
@@ -382,7 +400,15 @@ export function InlineMarketIndicesCard({ artifact, onClick }: InlineCardProps):
                 fontSize: sz.rowFs,
               }}
             >
-              <span style={{ color: TEXT_COLOR, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{(data.name as string) || sym}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: sz.gap, minWidth: 0 }}>
+                <FreshnessBadge
+                  tier={asQuoteTier(data.tier)}
+                  freshness={data.freshness as Freshness | undefined}
+                  source={data.source as string | undefined}
+                  compact
+                />
+                <span style={{ color: TEXT_COLOR, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{(data.name as string) || sym}</span>
+              </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: sz.gap, flexShrink: 0 }}>
                 {lastClose != null && (
                   <span style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}>
@@ -523,6 +549,7 @@ export function InlineMarketOverviewCard({ artifact, onClick }: InlineCardProps)
 
 export function InlineStockScreenerCard({ artifact, onClick }: InlineCardProps): React.ReactElement | null {
   const { t } = useTranslation();
+  const locale = useLocale();
   const isMobile = useIsMobile();
   const sz = isMobile ? SIZES_MOBILE : SIZES_DESKTOP;
   const { results = [], filters = {}, count = 0 } = (artifact || {}) as {
@@ -619,7 +646,9 @@ export function InlineStockScreenerCard({ artifact, onClick }: InlineCardProps):
                 {stock.companyName as string}
               </span>
               <span style={{ color: 'var(--color-text-primary)', fontWeight: 500, flexShrink: 0 }}>
-                {(stock.price as number | undefined) != null ? `$${(stock.price as number).toFixed(2)}` : 'N/A'}
+                {(stock.price as number | undefined) != null
+                  ? formatMoney(stock.price as number, resolveCurrency(null, stock.symbol as string | undefined), locale)
+                  : 'N/A'}
               </span>
               {!isMobile && (
                 <span style={{ color: TEXT_COLOR, fontSize: '0.6875rem', flexShrink: 0, textAlign: 'right' }}>

@@ -3230,9 +3230,7 @@
       "volume": "成交量",
       "dayRange": "日内区间",
       "changePct": "涨跌幅",
-      "changePctExt": "涨跌幅（含盘前盘后）",
-      "range52w": "52 周区间",
-      "marketCap": "市值"
+      "changePctExt": "涨跌幅（含盘前盘后）"
     },
     "symbolSearch": {
       "switchSymbol": "切换标的，当前为 {{symbol}}",

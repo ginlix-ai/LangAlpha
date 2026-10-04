@@ -12,6 +12,9 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { StockSearchHit } from '@/lib/marketUtils';
+import type { Freshness } from '@/types/market';
+import { displayOverrideFromHit, type SymbolDisplayOverride } from '@/lib/displayName';
+import { displaySpelling } from '@/lib/bars/exchanges';
 
 import { useLocale } from '@/hooks/useLocale';
 import StockHeader from './StockHeader';
@@ -23,12 +26,6 @@ import { MarketDataWSProvider, useMarketDataWSContext } from '../contexts/Market
 import { useStockData } from '../hooks/useStockData';
 import { useChartAnnotationSync } from '../hooks/useChartAnnotationSync';
 import { useStockQuoteModel } from '../hooks/useStockQuoteModel';
-
-interface OverviewData {
-  quote?: Record<string, unknown>;
-  earningsSurprises?: unknown;
-  [key: string]: unknown;
-}
 
 interface MarketChartSurfaceProps {
   symbol: string;
@@ -129,41 +126,29 @@ function MarketChartSurfaceInner({
 
   // The header pick names the company before its quote lands, the way the
   // MarketView page does; it is kept only while the symbol it named is up.
-  const [picked, setPicked] = useState<{ symbol: string; name: string; exchange: string } | null>(null);
+  const [picked, setPicked] = useState<{ symbol: string; display: SymbolDisplayOverride } | null>(null);
   const handleSwitchSymbol = useCallback((next: string, hit?: StockSearchHit) => {
-    setPicked(hit ? {
-      symbol: next.trim().toUpperCase(),
-      name: hit.name || hit.symbol,
-      exchange: hit.exchangeShortName || hit.stockExchange || '',
-    } : null);
+    setPicked(hit ? { symbol: displaySpelling(next), display: displayOverrideFromHit(hit) } : null);
     onSwitchSymbol?.(next, hit);
   }, [onSwitchSymbol]);
 
-  // Prefer the live WS price; fall back to REST (guard against a stale
-  // cross-symbol value when switching tickers).
-  const realTimePriceMatch = realTimePrice?.symbol === symbol ? realTimePrice : null;
-  const displayPrice = wsPrices.get(symbol) || realTimePriceMatch;
-  // The quote hook keeps the previous symbol's rows until the new quote
-  // resolves, so on an in-place switch the header and chart would show the
-  // last company's price and range under the new ticker. Rows are shown only
-  // for the symbol they describe; the header renders dashes meanwhile.
-  const symbolUpper = symbol.trim().toUpperCase();
-  const stockInfoMatch = stockInfo?.Symbol === symbolUpper ? stockInfo : null;
-  const snapshotMatch = snapshotData?.symbol?.toUpperCase() === symbolUpper ? snapshotData : null;
-  const displayOverride = useMemo(
-    () => (picked && picked.symbol === symbolUpper ? { name: picked.name, exchange: picked.exchange } : null),
-    [picked, symbolUpper],
-  );
-  const quote = (overviewData as OverviewData | null)?.quote || null;
+  // useStockData returns only the rows of the symbol on screen, so on an
+  // in-place switch the header renders dashes until the new quote lands.
+  // Prefer the live WS price; fall back to REST.
+  const displayPrice = wsPrices.get(symbol) || realTimePrice;
+  const displayOverride = picked && picked.symbol === symbol.trim().toUpperCase() ? picked.display : null;
+  const quote = overviewData?.quote || null;
   const wsHasData = !!wsPrices.get(symbol);
+  // The chart's own bars, measured apart from the quote: the header shows both.
+  const [chartFreshness, setChartFreshness] = useState<Freshness | null>(null);
 
   // Derived once; the header or the two strips only print it.
   const q = useStockQuoteModel({
     symbol,
-    stockInfo: stockInfoMatch,
+    stockInfo,
     realTimePrice: displayPrice,
     quoteData: quote,
-    snapshot: snapshotMatch,
+    snapshot: snapshotData,
     marketStatus,
     wsStatus,
     wsHasData,
@@ -205,6 +190,7 @@ function MarketChartSurfaceInner({
         ginlixDataEnabled={ginlixDataEnabled}
         onSwitchSymbol={handleSwitchSymbol}
         headerActions={headerActions}
+        chartFreshness={chartFreshness}
       />}
       <div style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex', padding: compact ? COMPACT_PADDING : 0 }}>
         {showOverview && (
@@ -212,7 +198,7 @@ function MarketChartSurfaceInner({
             symbol={symbol}
             visible={showOverview}
             onClose={() => setShowOverview(false)}
-            data={overviewData as OverviewData | null}
+            data={overviewData}
             loading={overviewLoading}
           />
         )}
@@ -223,11 +209,12 @@ function MarketChartSurfaceInner({
           onIntervalChange={handleIntervalChange}
           onStockMeta={handleStockMeta}
           onMarketPhase={setMarketPhase}
+          onChartFreshness={setChartFreshness}
           quoteData={quote}
-          earningsData={(overviewData as OverviewData | null)?.earningsSurprises || null}
+          earningsData={overviewData?.earningsSurprises || null}
           overlayData={overlayData as Record<string, unknown> | null}
           stockMeta={chartMeta}
-          snapshot={snapshotMatch}
+          snapshot={snapshotData}
           liveTick={wsPrices.get(symbol)?.barData || null}
           wsStatus={wsStatus}
           marketStatus={marketStatus}

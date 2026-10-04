@@ -59,6 +59,11 @@ describe('makeChartId / normalizeTimeframe', () => {
     expect(makeChartId(' aapl ', '1hour')).toBe('AAPL:1hour');
   });
 
+  it('makeChartId keys Shanghai in its display spelling, as the server does', () => {
+    expect(makeChartId('600519.ss', '1day')).toBe('600519.SH:1day');
+    expect(makeChartId('600519.SH', '1day')).toBe('600519.SH:1day');
+  });
+
   it('normalizeTimeframe passes valid intervals through', () => {
     for (const tf of VALID_TIMEFRAMES) {
       expect(normalizeTimeframe(tf)).toBe(tf);
@@ -322,6 +327,16 @@ describe('applyAnnotationArtifact', () => {
     const bucket = chartAnnotationStore.getState().byChart[storeKey(WS, 'NVDA:1day')];
     expect(bucket).toBeDefined();
     expect((bucket!.ann_1 as PriceLineAnnotation).price).toBe(205);
+  });
+
+  it('files a chart_id spelled with the old Shanghai suffix under the chart it draws on', () => {
+    applyAnnotationArtifact('chart_annotation', {
+      op: 'add',
+      workspace_id: WS,
+      chart_id: '600519.SS:1day',
+      annotation: { annotation_id: 'ann_1', symbol: '600519.SS', type: 'price_line', price: 1500 },
+    });
+    expect(chartAnnotationStore.getState().byChart[storeKey(WS, '600519.SH:1day')]?.ann_1).toBeDefined();
   });
 
   it('derives chart_id from symbol + timeframe when chart_id is absent', () => {

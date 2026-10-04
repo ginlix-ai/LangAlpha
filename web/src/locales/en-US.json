@@ -3263,9 +3263,7 @@
       "volume": "Volume",
       "dayRange": "Day Range",
       "changePct": "Change %",
-      "changePctExt": "Change % incl. ext",
-      "range52w": "52W Range",
-      "marketCap": "Market Cap"
+      "changePctExt": "Change % incl. ext"
     },
     "symbolSearch": {
       "switchSymbol": "Change symbol, currently {{symbol}}",

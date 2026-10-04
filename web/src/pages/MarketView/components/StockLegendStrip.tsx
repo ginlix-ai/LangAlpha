@@ -11,7 +11,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { SymbolSwitcher } from './SymbolSwitcher';
 import { ExtendedHoursPair } from './ExtendedHoursPair';
-import { DASH, fixed2OrDash as fmt, type StockQuoteModel } from '../hooks/useStockQuoteModel';
+import { DASH, fixed2OrDash as fmt, quoteDotState, quoteSessionText, quoteSourceText, type StockQuoteModel } from '../hooks/useStockQuoteModel';
 import { headlineChange } from './legendLeadShape';
 import { compactNumberFixed2, signedFixed2 } from '@/lib/format';
 import { useLocale } from '@/hooks/useLocale';
@@ -28,23 +28,24 @@ export interface LegendLeadProps {
 export function LegendLead({ symbol, quote: q, onSwitchSymbol }: LegendLeadProps): React.ReactElement {
   const { t } = useTranslation();
   const locale = useLocale();
-  const { headline, status } = q;
+  const { headline } = q;
 
   // Inline content on purpose: the chart's lead slot lays it on one line and
   // cuts it with an ellipsis when the row is short of room.
   return (
-    <span className="legend-lead" title={q.displayName}>
+    <span className="legend-lead" title={[q.displayName, q.displaySecondaryName].filter(Boolean).join(' ')}>
       {onSwitchSymbol ? (
         <SymbolSwitcher symbol={symbol} onPick={onSwitchSymbol} />
       ) : (
         <span className="legend-lead-symbol">{symbol}</span>
       )}
       <span className={`legend-lead-price ${headline.tone}`}>{fmt(headline.price, locale)}</span>
+      {headline.price != null && q.currency && <span className="legend-lead-currency">{q.currency}</span>}
       <span className={`legend-lead-change ${headline.tone}`}>{headlineChange(headline, locale)}</span>
       {q.ext && <ExtendedHoursPair ext={q.ext} iconSize={11} className="legend-lead-ext" />}
-      <span className={`legend-lead-status legend-lead-status--${status}`} title={t('marketView.quote.source', { label: q.dataSourceLabel })}>
+      <span className={`legend-lead-status legend-lead-status--${quoteDotState(q)}`} title={t('marketView.quote.source', { label: quoteSourceText(t, q) })}>
         <span className="legend-lead-dot" />
-        {t(`marketView.quote.${status}`)}
+        {quoteSessionText(t, q)}
       </span>
     </span>
   );

@@ -19,6 +19,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
+import { selectionPriceBounds } from '../utils/selectionBounds';
 
 interface PreviewBar {
   time: string;
@@ -91,9 +92,8 @@ export function SelectionContextPreview({
 
   const bars = useMemo(() => selection?.bars ?? [], [selection]);
   const shown = useMemo(() => bars.slice(0, MAX_TABLE_ROWS), [bars]);
-  const price = isRegion
-    ? `$${fmtPrice(selection?.priceLow)} – $${fmtPrice(selection?.priceHigh)}`
-    : `$${fmtPrice(selection?.priceLow)}`;
+  // en-US on purpose: this previews the context text the agent receives.
+  const price = selection ? selectionPriceBounds(selection, 'en-US') : '';
 
   // Prefer the explicit bounds; fall back to the first/last candle of the
   // selected region when an older snapshot lacks them. Hide the row entirely

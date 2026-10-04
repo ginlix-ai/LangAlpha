@@ -5,7 +5,11 @@
 import { api } from '@/api/client';
 import { getAuthHeaders } from '@/lib/authToken';
 import { normalizeIndexKey } from '@/lib/marketUtils';
+import { isIndexFamilySpelling } from '@/lib/bars/exchanges';
 import type { Workspace, WorkspacesResponse } from '@/types/api';
+import type { RealTimePrice, SnapshotData, StockInfo, StockQuoteResult } from '@/types/market';
+import { quoteDecimals, roundQuote } from '@/lib/quotes/quoteAdapters';
+import type { CompanyOverviewArtifact } from '@/lib/quotes/overview';
 
 // Legacy full-window bar loader now lives in lib/bars (so lib/ never imports a
 // page); re-exported for page-internal callers that still import it from here.
@@ -28,20 +32,6 @@ export function getMarketDataWSUrl(market: string = 'stock', interval: string = 
   return `${wsBase}/ws/v1/market-data/aggregates/${market}?interval=${interval}`;
 }
 
-interface SnapshotData {
-  symbol: string;
-  name?: string;
-  price: number;
-  previous_close?: number;
-  change?: number;
-  change_percent?: number;
-  open?: number;
-  high?: number;
-  low?: number;
-  volume?: number;
-  [key: string]: unknown;
-}
-
 /**
  * GET /api/v1/market-data/snapshots/stocks/{symbol} — single stock snapshot
  * Returns snapshot data with name, price, change, previous_close, open, high, low, volume, etc.
@@ -49,7 +39,7 @@ interface SnapshotData {
 export async function fetchSnapshot(symbol: string, { signal }: { signal?: AbortSignal } = {}): Promise<SnapshotData | null> {
   if (!symbol || !symbol.trim()) throw new Error('Symbol is required');
   const symbolUpper = symbol.trim().toUpperCase();
-  const isIndex = symbolUpper.startsWith('^');
+  const isIndex = isIndexFamilySpelling(symbolUpper);
   const norm = normalizeIndexKey(symbolUpper);
   const endpoint = isIndex
     ? `/api/v1/market-data/snapshots/indexes?symbols=${encodeURIComponent(norm)}`
@@ -71,41 +61,6 @@ export async function fetchSnapshot(symbol: string, { signal }: { signal?: Abort
   }
 }
 
-interface StockInfo {
-  Symbol: string;
-  Name: string;
-  Exchange: string;
-  Price: number;
-  Open: number;
-  High: number;
-  Low: number;
-  Volume?: number;
-  '52WeekHigh': number | null;
-  '52WeekLow': number | null;
-  AverageVolume: number | null;
-  SharesOutstanding: number | null;
-  MarketCapitalization: number | null;
-  DividendYield: number | null;
-}
-
-interface RealTimePrice {
-  symbol: string;
-  price: number;
-  open: number;
-  high: number;
-  low: number;
-  change: number;
-  changePercent: number;
-  volume: number;
-  previousClose: number;
-}
-
-interface StockQuoteResult {
-  stockInfo: StockInfo;
-  realTimePrice: RealTimePrice | null;
-  snapshot: SnapshotData | null;
-}
-
 /**
  * Pure transform: raw snapshot row → { stockInfo, realTimePrice, snapshot }.
  * A null/price-less snapshot yields the fallback shape (no realTimePrice). Kept
@@ -114,11 +69,12 @@ interface StockQuoteResult {
  */
 export function mapSnapshotToStockQuote(symbol: string, snap: SnapshotData | null): StockQuoteResult {
   const symbolUpper = symbol.trim().toUpperCase();
-  const isIndex = symbolUpper.startsWith('^');
   const fallbackInfo: StockInfo = {
     Symbol: symbolUpper,
-    Name: `${symbolUpper} Corp`,
-    Exchange: isIndex ? '' : 'NASDAQ',
+    // No name and no exchange yet: invent neither a company name nor a venue
+    // (a CN or HK listing is not on NASDAQ).
+    Name: null,
+    Exchange: '',
     Price: 0,
     Open: 0,
     High: 0,
@@ -144,7 +100,9 @@ export function mapSnapshotToStockQuote(symbol: string, snap: SnapshotData | nul
 
   const stockInfo: StockInfo = {
     Symbol: symbolUpper,
-    Name: snap.name || `${symbolUpper} Corp`,
+    Name: snap.name || null,
+    NameLocal: snap.name_local,
+    NameEn: snap.name_en,
     Exchange: '',
     Price: price,
     Open: snap.open ?? 0,
@@ -159,16 +117,17 @@ export function mapSnapshotToStockQuote(symbol: string, snap: SnapshotData | nul
     DividendYield: null,
   };
 
+  const dp = quoteDecimals(snap);
   const realTimePrice: RealTimePrice = {
     symbol: symbolUpper,
-    price: Math.round(price * 100) / 100,
-    open: Math.round((snap.open ?? 0) * 100) / 100,
-    high: Math.round((snap.high ?? 0) * 100) / 100,
-    low: Math.round((snap.low ?? 0) * 100) / 100,
-    change: Math.round(change * 100) / 100,
+    price: roundQuote(price, dp),
+    open: roundQuote(snap.open ?? 0, dp),
+    high: roundQuote(snap.high ?? 0, dp),
+    low: roundQuote(snap.low ?? 0, dp),
+    change: roundQuote(change, dp),
     changePercent: changePct,
     volume: snap.volume ?? 0,
-    previousClose: Math.round(previousClose * 100) / 100,
+    previousClose: roundQuote(previousClose, dp),
   };
 
   return { stockInfo, realTimePrice, snapshot: snap };
@@ -205,7 +164,7 @@ export async function fetchStockQuote(symbol: string, { signal }: { signal?: Abo
  * @param {AbortSignal} [options.signal] - AbortController signal for cancellation
  * @returns {Promise<Object>} Company overview data
  */
-export async function fetchCompanyOverview(symbol: string, { signal }: { signal?: AbortSignal } = {}): Promise<unknown> {
+export async function fetchCompanyOverview(symbol: string, { signal }: { signal?: AbortSignal } = {}): Promise<CompanyOverviewArtifact> {
   if (!symbol || !symbol.trim()) {
     throw new Error('Symbol is required');
   }
