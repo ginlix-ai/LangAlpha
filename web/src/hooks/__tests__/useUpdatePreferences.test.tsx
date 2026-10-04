@@ -98,3 +98,62 @@ describe('useUpdatePreferences optimistic merge', () => {
     expect(queryClient.getQueryData(queryKeys.user.preferences())).toEqual(previous);
   });
 });
+
+describe('useUpdatePreferences one-shot fields', () => {
+  beforeEach(() => {
+    mockUpdate.mockReset();
+  });
+
+  it('never predicts a default change answer into the cached row', async () => {
+    inFlight();
+    const queryClient = seeded({ model_preference: { preferred_model: 'old' } });
+    const { result } = renderHookWithProviders(() => useUpdatePreferences(), { queryClient });
+
+    await act(async () => {
+      result.current.mutate({
+        model_preference: { preferred_model: 'new' },
+        apply_default_to: 'existing_threads',
+      });
+    });
+
+    const row = queryClient.getQueryData(queryKeys.user.preferences()) as Record<string, unknown>;
+    expect(modelPrefs(row).preferred_model).toBe('new');
+    expect(row).not.toHaveProperty('apply_default_to');
+  });
+});
+
+describe('useUpdatePreferences moved threads', () => {
+  beforeEach(() => {
+    mockUpdate.mockReset();
+  });
+
+  it('rereads the threads a write moved, whichever surface made it', async () => {
+    // Each open thread reads its model back from its row, and a stale row
+    // would name the old model on its next send and move the thread back.
+    const queryClient = seeded({ model_preference: { preferred_model: 'old' } });
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    const { result } = renderHookWithProviders(() => useUpdatePreferences(), { queryClient });
+
+    mockUpdate.mockResolvedValue({ threads_reassigned: 0 });
+    await act(async () => { await result.current.mutateAsync({ model_preference: { preferred_model: 'new' } }); });
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.all });
+
+    mockUpdate.mockResolvedValue({ threads_reassigned: 2 });
+    await act(async () => { await result.current.mutateAsync({ model_preference: { preferred_model: null } }); });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.threads.all });
+  });
+
+  it('rereads them after a failed write, which may have committed with its answer lost', async () => {
+    const queryClient = seeded({ model_preference: { preferred_model: 'old' } });
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    const { result } = renderHookWithProviders(() => useUpdatePreferences(), { queryClient });
+
+    mockUpdate.mockRejectedValue(new Error('Network Error'));
+    await act(async () => {
+      await result.current
+        .mutateAsync({ model_preference: { preferred_model: 'new' }, apply_default_to: 'existing_threads' })
+        .catch(() => {});
+    });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.threads.all });
+  });
+});

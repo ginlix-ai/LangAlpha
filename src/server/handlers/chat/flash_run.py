@@ -60,6 +60,7 @@ from .request_prep import (
     build_graph_config,
     build_turn_context,
     ensure_thread,
+    keep_named_model,
     init_tracking,
     inject_inline_reminders,
     logger,
@@ -84,6 +85,7 @@ from .attachments import attach_flash_request_files
 from .error_handling import handle_workflow_error
 from src.server.services.llm.clients import is_own_key_turn
 from src.server.services.llm.config import resolve_llm_config
+from src.server.services.llm.thread_model import NamedModel
 from .steering import (
     drain_steering_return_event,
     steer_thread,
@@ -122,12 +124,14 @@ async def astream_flash_workflow(
     flash_workspace: dict | None = None,
     steerable: bool = True,
     run_metadata: dict | None = None,
+    named_model: NamedModel | None = None,
 ):
     """Async generator that streams Flash agent workflow events.
 
     Flash mode: no sandbox, no MCP, external tools only (web search, market
     data, SEC filings). State keyed by ``(thread_id, run_id)``; same
-    contract as PTC, ``steerable`` and ``run_metadata`` included.
+    contract as PTC, ``steerable``, ``run_metadata`` and ``named_model``
+    included.
     """
     start_time = time.time()
     handler = None
@@ -338,6 +342,8 @@ async def astream_flash_workflow(
             # generator and returns its 200 response only once the START txn
             # above has committed. The marker never reaches the SSE stream.
             yield DISPATCH_STARTED_MARKER
+
+        await keep_named_model(thread_id, named_model)
 
         # =================================================================
         # Token and Tool Tracking

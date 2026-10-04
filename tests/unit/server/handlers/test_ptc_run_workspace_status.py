@@ -112,7 +112,9 @@ def _make_workspace_manager(
     return wm
 
 
-async def _run_to_sentinel(request, workspace_manager, stamps=None):
+async def _run_to_sentinel(
+    request, workspace_manager, stamps=None, *, named_model=None, begin_run_error=None, keep=None
+):
     """``stamps``, when given, gets each event's delay from the first pull.
 
     Timing the events rather than the whole call keeps the lazy app import
@@ -150,12 +152,15 @@ async def _run_to_sentinel(request, workspace_manager, stamps=None):
         patch(f"{PTC}._fire_and_forget"),
         patch(f"{PTC}.update_workspace_activity"),
         patch(f"{PTC}.BackgroundRegistryStore") as mock_reg_store_cls,
+        patch(f"{PTC}.keep_named_model", new=keep or AsyncMock()),
     ):
         mock_setup.agent_config = MagicMock()
         mock_wm_cls.get_instance.return_value = workspace_manager
         mock_reg_store_cls.get_instance.return_value = sentinel_registry_store
         run_handle = MagicMock(run_id="r-1", turn_index=1, finalized=False)
         mock_begin_run.return_value = run_handle
+        if begin_run_error is not None:
+            mock_begin_run.side_effect = begin_run_error
 
         gen = astream_ptc_workflow(
             request=request,
@@ -166,6 +171,7 @@ async def _run_to_sentinel(request, workspace_manager, stamps=None):
             workspace_id="ws-1",
             is_byok=False,
             config=_make_config(),
+            named_model=named_model,
         )
 
         collected: list[str] = []
@@ -325,3 +331,26 @@ async def test_refinement_fires_before_session_completes():
     # Expected order: starting → starting(archived) → ready
     assert statuses == ["starting", "starting", "ready"]
     assert sandbox_states == [None, "archived", None]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("admitted", [True, False])
+async def test_a_named_model_is_kept_only_once_the_turn_is_admitted(admitted):
+    """A send refused at START leaves the thread on the model it had."""
+    from src.server.services.llm.thread_model import NamedModel
+
+    keep = AsyncMock()
+    named = NamedModel("m-a", seen="m-pin")
+    wm = _make_workspace_manager(has_ready=True, observed_state=None)
+    await _run_to_sentinel(
+        _make_request(),
+        wm,
+        named_model=named,
+        begin_run_error=None if admitted else RuntimeError("refused at START"),
+        keep=keep,
+    )
+
+    if admitted:
+        keep.assert_awaited_once_with("t-1", named)
+    else:
+        keep.assert_not_awaited()

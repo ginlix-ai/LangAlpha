@@ -44,6 +44,11 @@ class WorkspaceThreadListItem(BaseModel):
         description="When the thread was archived; NULL = active. Archived "
         "threads are excluded from listings unless explicitly requested.",
     )
+    llm_model: Optional[str] = Field(
+        None,
+        description="The model this thread runs: the last one a client named "
+        "for it. NULL = follows the account default for its mode.",
+    )
     turn_count: Optional[int] = Field(
         None,
         description="Number of turns (user queries) in the thread; only the "
@@ -258,7 +263,7 @@ class ThreadCreateResponse(BaseModel):
 
 
 class ThreadUpdateRequest(BaseModel):
-    """Request model for updating a thread (title, pin, archive).
+    """Request model for updating a thread (title, pin, archive, model).
 
     Only fields explicitly present in the request are applied — the endpoint
     reads ``model_fields_set``, so ``{"is_pinned": true}`` cannot clear the
@@ -270,6 +275,14 @@ class ThreadUpdateRequest(BaseModel):
     )
     archived: Optional[bool] = Field(
         None, description="Archive (true) or unarchive (false) the thread"
+    )
+    llm_model: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=255,
+        description="The model this thread runs from its next turn. null "
+        "returns it to the account default. A name this user cannot run is "
+        "refused with a 400 of type 'model_unavailable'.",
     )
 
     model_config = ConfigDict(json_schema_extra={

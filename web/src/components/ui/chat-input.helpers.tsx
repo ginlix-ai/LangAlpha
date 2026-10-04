@@ -85,24 +85,3 @@ export function getModelDisplayName(key: string | null, metadata?: Record<string
     .replace(/\b\w/g, (c: string) => c.toUpperCase());
   return name;
 }
-
-/**
- * What a model pick should persist, or `null` when the pick changes nothing.
- *
- * Flash inherits the primary model when it has none of its own, so "did this
- * change anything" is asked against the resolved value while `previous` stays
- * the raw stored one. Undoing then restores the inheritance instead of
- * freezing today's inherited value in place.
- */
-export function modelPickWrite(
-  mode: 'fast' | 'ptc' | undefined,
-  model: string,
-  preferredModel: string | null,
-  preferredFlashModel: string | null,
-): { key: 'preferred_model' | 'preferred_flash_model'; previous: string | null } | null {
-  const resolved = mode === 'fast' ? (preferredFlashModel || preferredModel) : preferredModel;
-  if (model === resolved) return null;
-  return mode === 'fast'
-    ? { key: 'preferred_flash_model', previous: preferredFlashModel }
-    : { key: 'preferred_model', previous: preferredModel };
-}

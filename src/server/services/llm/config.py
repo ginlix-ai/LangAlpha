@@ -42,14 +42,45 @@ _MODE_MODEL_MAP = {
 }
 
 # Saved models a turn reaches besides its own. The flash key is one only on a
-# PTC turn, whose compaction and fetch inherit it; a flash turn never reads the
-# PTC key at all.
+# PTC turn, whose compaction and fetch inherit it. With no flash default saved,
+# the flash slot is the PTC key on either turn (``saved_default_model``), and
+# that is the turn's own model either way, so never a role.
 _ROLE_PREF_KEYS = {
     "ptc": tuple(k for k in _MODEL_PREF_KEYS if k != "preferred_model"),
     "flash": tuple(
         k for k in _MODEL_PREF_KEYS if k not in ("preferred_model", "preferred_flash_model")
     ),
 }
+
+
+#: Values of ``model_preference.flash_follows``: what an unset flash default
+#: runs. Absent is ``primary``.
+FLASH_FOLLOWS = frozenset({"primary", "deployment"})
+
+
+def saved_default_model(model_pref: dict, mode: str) -> str | None:
+    """The default the user saved for ``mode``; None runs the deployment's.
+
+    An unset flash default is the primary one, as Settings says ("Same as
+    Primary model"), unless the user chose Auto for flash, which keeps the
+    deployment's flash model even beside a saved primary.
+    """
+    saved = model_pref.get(_MODE_MODEL_MAP[mode][1])
+    if saved or mode != "flash" or model_pref.get("flash_follows") == "deployment":
+        return saved or None
+    return model_pref.get("preferred_model") or None
+
+
+def system_default_models() -> dict[str, str]:
+    """The deployment's default models, as the models API publishes them."""
+    from src.server.app import setup
+
+    llm = setup.agent_config.llm if setup.agent_config and setup.agent_config.llm else None
+    return {
+        "default_model": llm.name if llm else "",
+        "flash_model": (llm.flash or "") if llm else "",
+    }
+
 
 # ---------------------------------------------------------------------------
 # Resolution stages. ``resolve_llm_config`` sequences these; each owns one
@@ -76,11 +107,12 @@ def select_model(
     from ptc_agent.config import LLMConfig
 
     model_field, pref_key = _MODE_MODEL_MAP[mode]
+    saved = saved_default_model(model_pref, mode)
 
     if config.llm is None:
         # Bootstrap when agent_config.yaml has llm: null. The user must have
         # configured a model via the UI or a per-request param.
-        resolved_name = request_model or model_pref.get(pref_key)
+        resolved_name = request_model or saved
         if not resolved_name:
             raise ValueError(
                 "No model configured. Set llm in agent_config.yaml or select a model in Settings."
@@ -102,21 +134,20 @@ def select_model(
         setattr(config.llm, model_field, request_model)
         config.llm_client = None
         logger.debug(f"[CHAT] Using per-request LLM model: {request_model}")
+    elif saved:
+        setattr(config.llm, model_field, saved)
+        config.llm_client = None
+        logger.debug(f"[CHAT] Using the saved {mode} default: {saved}")
     else:
-        preferred = model_pref.get(pref_key)
-        if preferred:
-            setattr(config.llm, model_field, preferred)
-            config.llm_client = None
-            logger.debug(f"[CHAT] Using {pref_key}: {preferred}")
-        else:
-            logger.debug(
-                f"[CHAT] No {pref_key} set, using system default: {getattr(config.llm, model_field, None) or config.llm.name}"
-            )
+        logger.debug(
+            f"[CHAT] No {pref_key} set, using system default: {getattr(config.llm, model_field, None) or config.llm.name}"
+        )
 
-    # A PTC turn never runs the flash model, but the fetch role still defaults
-    # to it, so the user's flash choice has to reach ``llm.flash`` here too.
-    if mode != "flash" and model_pref.get("preferred_flash_model"):
-        config.llm.flash = model_pref["preferred_flash_model"]
+    # A PTC turn never runs the flash model, but compaction and fetch default to
+    # it, so the user's flash default reaches ``llm.flash`` here too, by the
+    # rule a flash turn runs on: an unset one is the saved primary.
+    if mode != "flash" and (flash_default := saved_default_model(model_pref, "flash")):
+        config.llm.flash = flash_default
 
     # Both "compaction_model" (new) and "summarization_model" (legacy) map to
     # the renamed ``compaction`` field; legacy is read so existing rows keep

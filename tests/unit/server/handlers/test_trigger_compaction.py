@@ -204,6 +204,82 @@ async def test_manual_compact_uses_user_compaction_model(base_config):
     assert stub_resolve.captured_user_id == "user-1"
 
 
+THREAD_MODEL = "src.server.services.llm.thread_model"
+
+
+async def _compact_on_thread_model(base_config, resolve_stub, msg_type="ptc"):
+    """Run a manual /compact on a thread holding ``m-thread``; returns the
+    ``(model, mode)`` pairs ``resolve_llm_config`` was asked for, in order."""
+    from src.server.handlers.thread_maintenance import trigger_compaction
+
+    asked: list = []
+
+    async def _resolve(base_cfg, user_id, request_model, is_byok, mode="ptc", **kwargs):
+        asked.append((request_model, mode))
+        return await resolve_stub(base_cfg, request_model)
+
+    compact_mock = AsyncMock(return_value={
+        "event": {"summary_text": "ok"}, "summary_text": "ok", "original_count": 2,
+        "preserved_count": 1, "offloaded_arg_ids": set(), "offloaded_read_ids": set(),
+    })
+    with (
+        patch("src.server.app.setup.agent_config", base_config),
+        patch(f"{HANDLER}._resolve_graph_and_state", new=_stub_resolve_graph_and_state()),
+        patch(f"{HANDLER}._persist_context_window_event", new=_noop_persist),
+        patch("ptc_agent.agent.middleware.compaction.compact_messages", new=compact_mock),
+        patch("src.server.database.api_keys.is_byok_active", new_callable=AsyncMock, return_value=False),
+        patch(
+            "src.server.database.conversation.get_thread_auth_meta",
+            new_callable=AsyncMock,
+            return_value={"llm_model": "m-thread", "msg_type": msg_type},
+        ),
+        patch(f"{THREAD_MODEL}.turn_model", new_callable=AsyncMock, side_effect=lambda *a, held, **k: held),
+        patch(f"{LLM_HANDLER}.resolve_llm_config", new=_resolve),
+    ):
+        await trigger_compaction("thread-1", keep_messages=5, user_id="user-1")
+    compact_mock.assert_awaited_once()
+    return asked
+
+
+@pytest.mark.asyncio
+async def test_manual_compact_runs_the_threads_own_model(base_config):
+    """A thread that holds a model compacts on it, as its turns run, not on the
+    account default: another model would bring another credential and preset."""
+
+    async def _resolve(base_cfg, model):
+        return base_cfg.model_copy(deep=True)
+
+    assert await _compact_on_thread_model(base_config, _resolve) == [("m-thread", "ptc")]
+
+
+@pytest.mark.asyncio
+async def test_manual_compact_resolves_a_flash_thread_in_flash_mode(base_config):
+    """A flash thread's model sits in the flash slot, which the compaction model
+    falls back to; PTC mode would summarize on the account's flash default
+    while automatic compaction ran on the thread's model."""
+
+    async def _resolve(base_cfg, model):
+        return base_cfg.model_copy(deep=True)
+
+    asked = await _compact_on_thread_model(base_config, _resolve, msg_type="flash")
+    assert asked == [("m-thread", "flash")]
+
+
+@pytest.mark.asyncio
+async def test_manual_compact_runs_the_default_when_the_threads_model_cannot_run(base_config):
+    """A lapsed connection behind the thread's model does not block a compaction
+    the user asked for; a summary changes no answer, so it runs on the default."""
+
+    async def _resolve(base_cfg, model):
+        if model == "m-thread":
+            raise HTTPException(status_code=400, detail={"type": "oauth_required"})
+        return base_cfg.model_copy(deep=True)
+
+    assert await _compact_on_thread_model(base_config, _resolve) == [
+        ("m-thread", "ptc"), (None, "ptc"),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_manual_compact_without_user_id_uses_base_config(base_config):
     """No user_id → no resolve_llm_config call; base YAML compaction model is used."""

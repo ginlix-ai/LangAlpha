@@ -8,9 +8,10 @@ get_current_auth_info (a different dependency not overridden in create_test_app)
 """
 
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import ANY, AsyncMock, patch
 
 import httpx
 import pytest
@@ -73,6 +74,18 @@ async def client():
 
 
 DB = "src.server.app.users"
+
+
+@pytest.fixture(autouse=True)
+def _preferences_transaction():
+    """The preferences PUT writes in one transaction; each test stubs the
+    statements in it, so the connection only has to open and close."""
+    conn = SimpleNamespace(transaction=nullcontext)
+    with (
+        patch(f"{DB}.get_db_connection", lambda: nullcontext(conn)),
+        patch(f"{DB}.db_lock_user_preferences", new_callable=AsyncMock, return_value=None),
+    ):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -870,4 +883,158 @@ async def test_deleting_a_provider_a_stored_model_still_needs_is_rejected(client
 
     assert resp.status_code == 400
     assert "my-gw" in resp.json()["detail"]
+    upsert.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# PUT /users/me/preferences: a changed default model and existing threads
+# ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def _default_change(moved=0):
+    """The PUT with the reassignment stubbed; the before and after views come
+    from the row read under the profile lock and the row the upsert returns."""
+    carry = AsyncMock(return_value=moved)
+    async with _prefs_endpoint() as upsert:
+        upsert.return_value = {
+            **_prefs(),
+            "model_preference": {"preferred_model": "m-b"},
+        }
+        with (
+            patch(
+                f"{DB}.db_lock_user_preferences",
+                new_callable=AsyncMock,
+                return_value={"model_preference": {"preferred_model": "m-a"}},
+            ),
+            patch(f"{DB}.carry_default_change", new=carry),
+        ):
+            yield upsert, carry
+
+
+@pytest.mark.asyncio
+async def test_a_default_change_reports_the_threads_it_moved(client):
+    async with _default_change(moved=3) as (upsert, carry):
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={
+                "model_preference": {"preferred_model": "m-b"},
+                "apply_default_to": "existing_threads",
+            },
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["threads_reassigned"] == 3
+    carry.assert_awaited_once_with(
+        "test-user-123",
+        before={"preferred_model": "m-a"},
+        after={"preferred_model": "m-b"},
+        apply_to="existing_threads",
+        conn=ANY,
+    )
+    # A one-shot answer, never stored.
+    assert "apply_default_to" not in upsert.await_args.kwargs
+    assert "apply_default_to" not in upsert.await_args.kwargs["model_preference"]
+
+
+@pytest.mark.asyncio
+async def test_a_write_naming_no_default_moves_no_threads(client):
+    async with _default_change() as (_upsert, carry):
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={
+                "model_preference": {"default_model_scope": "existing_threads"},
+                "apply_default_to": "existing_threads",
+            },
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["threads_reassigned"] == 0
+    carry.assert_not_awaited()
+
+
+@pytest.mark.parametrize("scope", ["ask", "new_threads", "existing_threads", None])
+@pytest.mark.asyncio
+async def test_a_known_default_model_scope_is_saved(client, scope):
+    async with _default_change() as (upsert, _carry):
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={"model_preference": {"default_model_scope": scope}},
+        )
+
+    assert resp.status_code == 200
+    assert upsert.await_args.kwargs["model_preference"] == {"default_model_scope": scope}
+
+
+@pytest.mark.parametrize("scope", ["always", 1, ["existing_threads"]])
+@pytest.mark.asyncio
+async def test_an_unknown_default_model_scope_is_rejected(client, scope):
+    async with _default_change() as (upsert, _carry):
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={"model_preference": {"default_model_scope": scope}},
+        )
+
+    assert resp.status_code == 400
+    assert "default_model_scope" in resp.json()["detail"]
+    upsert.assert_not_awaited()
+
+
+@pytest.mark.parametrize("follows", ["primary", "deployment", None])
+@pytest.mark.asyncio
+async def test_a_known_flash_follows_is_saved(client, follows):
+    async with _default_change() as (upsert, _carry):
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={"model_preference": {"flash_follows": follows}},
+        )
+
+    assert resp.status_code == 200
+    assert upsert.await_args.kwargs["model_preference"] == {"flash_follows": follows}
+
+
+@pytest.mark.parametrize("follows", ["auto", 1, ["deployment"]])
+@pytest.mark.asyncio
+async def test_an_unknown_flash_follows_is_rejected(client, follows):
+    async with _default_change() as (upsert, _carry):
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={"model_preference": {"flash_follows": follows}},
+        )
+
+    assert resp.status_code == 400
+    assert "flash_follows" in resp.json()["detail"]
+    upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_choosing_auto_for_flash_is_a_default_change(client):
+    """Auto moves what an unset flash default runs, so threads on the old one
+    move with it like any other default change."""
+    async with _default_change(moved=2) as (_upsert, carry):
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={
+                "model_preference": {"flash_follows": "deployment"},
+                "apply_default_to": "existing_threads",
+            },
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["threads_reassigned"] == 2
+    carry.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_apply_default_to_is_422(client):
+    async with _default_change() as (upsert, _carry):
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={
+                "model_preference": {"preferred_model": "m-b"},
+                "apply_default_to": "ask",
+            },
+        )
+
+    assert resp.status_code == 422
     upsert.assert_not_awaited()

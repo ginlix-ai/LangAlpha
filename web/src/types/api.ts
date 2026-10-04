@@ -270,6 +270,8 @@ export interface Thread {
   is_pinned?: boolean;
   /** Archive stamp; null/absent = active. Archived rows only appear when explicitly requested. */
   archived_at?: string | null;
+  /** The model this thread runs on; null follows the account default for its mode. */
+  llm_model?: string | null;
   /** Turn count (list responses only). */
   turn_count?: number;
   created_at?: string;

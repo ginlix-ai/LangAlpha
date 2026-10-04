@@ -546,6 +546,7 @@ async def upsert_user_preferences(
     other_preference: Optional[Dict[str, Any]] = None,
     model_preference: Optional[Dict[str, Any]] = None,
     replace: bool = False,
+    conn=None,
 ) -> Dict[str, Any]:
     """Create or update a user's preferences, merging each column that is passed.
 
@@ -594,7 +595,7 @@ async def upsert_user_preferences(
         RETURNING {_PREF_RETURNING}
     """
 
-    async with get_db_connection() as conn, conn.transaction():
+    async with get_db_connection(conn) as conn, conn.transaction():
         async with conn.cursor(row_factory=dict_row) as cur:
             await lock_user_profile(cur, user_id)
             await cur.execute(
@@ -603,6 +604,22 @@ async def upsert_user_preferences(
             result = await cur.fetchone()
             logger.info(f"[user_db] upsert_user_preferences user_id={user_id} replace={replace}")
             return dict(result)
+
+
+async def lock_user_preferences(user_id: str, *, conn) -> Optional[Dict[str, Any]]:
+    """Take the profile lock in the caller's transaction and read the row under it.
+
+    For a write that acts on the value it replaces: the cached read can be
+    stale, and a read before the lock can be overtaken by another write.
+    """
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await lock_user_profile(cur, user_id)
+        await cur.execute(
+            f"SELECT {_PREF_RETURNING} FROM user_preferences WHERE user_id = %s",
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
 
 
 async def delete_user_preferences(user_id: str) -> bool:

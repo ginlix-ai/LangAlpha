@@ -207,6 +207,31 @@ class TestModeModelField:
             )
         assert config.llm.flash == "gpt-4o"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "pref, expected",
+        [
+            # No flash default saved: flash runs the saved primary.
+            ({"preferred_model": "gpt-4o"}, "gpt-4o"),
+            ({"preferred_model": "gpt-4o", "flash_follows": "primary"}, "gpt-4o"),
+            # Auto for flash: the deployment's flash model, primary or not.
+            ({"preferred_model": "gpt-4o", "flash_follows": "deployment"}, "system-flash-model"),
+        ],
+    )
+    async def test_flash_mode_unset_default(self, base_config, pref, expected):
+        from src.server.services.llm.config import resolve_llm_config
+
+        mock_mc = _mock_model_config()
+        with (
+            patch(f"{USER_MODELS}.get_model_preference", new_callable=AsyncMock, return_value=pref),
+            patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            config = await resolve_llm_config(
+                base_config, "user-1", None, False, mode="flash"
+            )
+        assert config.llm.flash == expected
+
 
 # ---------------------------------------------------------------------------
 # User preference overrides for other model fields
@@ -1332,12 +1357,22 @@ class TestBlankFetchFollowsFlash:
         assert config.subsidiary_llm_clients["fetch"]._extract_mock_name() == "oauth:flash-oauth"
 
     @pytest.mark.asyncio
-    async def test_flash_without_oauth_falls_back_to_main_client(self):
-        """The deployment's flash is a bare name no OAuth account can serve, so
-        the fetch role takes a copy of the user's main client instead of
-        leaving web_fetch on a server key.
-        """
+    async def test_ptc_turn_with_only_a_primary_runs_its_roles_on_it(self):
+        """An unset flash default is the saved primary on a PTC turn too, as on a
+        flash turn and as Settings says, so compaction and fetch follow it."""
         config = await self._resolve({"preferred_model": "main-oauth"})
+
+        assert config.llm.flash == "main-oauth"
+        assert config.llm.compaction_name == "main-oauth"
+        assert config.llm.fetch_name == "main-oauth"
+
+    @pytest.mark.asyncio
+    async def test_flash_without_oauth_falls_back_to_main_client(self):
+        """With Auto for flash the roles keep the deployment's flash, a bare name
+        no OAuth account can serve, so the fetch role takes a copy of the user's
+        main client instead of leaving web_fetch on a server key.
+        """
+        config = await self._resolve({"preferred_model": "main-oauth", "flash_follows": "deployment"})
 
         assert config.llm.flash == "system-flash-model"
         assert config.subsidiary_llm_clients["fetch"] is config.llm_client.model_copy.return_value
@@ -1712,10 +1747,11 @@ class TestStaleModelPreference:
             "ptc",
         )
 
+        # Never set, an unset flash default is the saved primary.
         assert config.llm.name == "gpt-4o"
-        assert config.llm.flash == "system-flash-model"
-        assert config.llm.compaction_name == "system-flash-model"
-        assert config.llm.fetch_name == "system-flash-model"
+        assert config.llm.flash == "gpt-4o"
+        assert config.llm.compaction_name == "gpt-4o"
+        assert config.llm.fetch_name == "gpt-4o"
         mock_upsert.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1756,7 +1792,7 @@ class TestStaleModelPreference:
             "ptc",
         )
 
-        assert config.llm.fetch_name == "system-flash-model"
+        assert config.llm.fetch_name == "gpt-4o"
         assert config.llm.fallback == ["gpt-4o"]
 
     @pytest.mark.asyncio
@@ -1794,7 +1830,8 @@ class TestStaleModelPreference:
             user_facing=False,
         )
 
-        assert config.llm.flash == "system-flash-model"
+        # Read as unset, so flash runs the saved primary.
+        assert config.llm.flash == "gpt-4o"
         mock_upsert.assert_not_awaited()
 
 # ---------------------------------------------------------------------------

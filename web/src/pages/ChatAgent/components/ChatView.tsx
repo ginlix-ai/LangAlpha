@@ -15,11 +15,9 @@ import {
   TranscriptDisplayContext,
   type TranscriptDisplay,
 } from '@/lib/transcriptDisplay';
-import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
 import { useFeatureEnabled } from '@/hooks/useFeatures';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
-import { modelPrefs } from '@/lib/modelPreferences';
 import { updateCurrentUser } from '../../Dashboard/utils/api';
 import { cardDownloadKey, trackPending } from '../utils/downloadNotice';
 import { summarizeThread, offloadThread, cancelSubagentTask, triggerFileDownload, resolveWorkspaceFile } from '../utils/api';
@@ -27,6 +25,7 @@ import { downloadTarget } from '../utils/fileRefResolver';
 import { toast } from '@/components/ui/use-toast';
 import { mergeWarmingDisplay } from '../utils/warmWorkspace';
 import { useChatMessages } from '../hooks/useChatMessages';
+import { useThreadModel } from '../hooks/useThreadModel';
 import { useForeignRunCatchUp } from '../hooks/useForeignRunCatchUp';
 import { QueuedAutomationNotice } from './QueuedAutomationNotice';
 import { saveChatSession, getChatSession, clearChatSession } from '../hooks/utils/chatSessionRestore';
@@ -83,6 +82,7 @@ import type {
 import SubagentStatusIndicator from './chatView/SubagentStatusIndicator';
 import { ModelStatusPill } from './chatView/ModelStatusPill';
 import { FallbackSuggestionPill } from './chatView/FallbackSuggestionPill';
+import { ThreadModelNotices } from './chatView/ThreadModelNotices';
 import { ChatDiskWarning } from './chatView/ChatDiskWarning';
 import { useToolCallAnnouncer } from './chatView/useToolCallAnnouncer';
 import { useNavPanel } from './chatView/useNavPanel';
@@ -105,7 +105,6 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const location = useLocation();
   const navigate = useNavigate();
   const { preferences } = usePreferences();
-  const { mutateAsync: updatePreferencesAsync } = useUpdatePreferences();
   const marketWatchEnabled = useFeatureEnabled('market_watch');
   const queryClient = useQueryClient();
   const initialMessageSentRef = useRef(false);
@@ -136,14 +135,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const agentMode = navMode.agentMode || (workspaceRecord?.status === 'flash' ? 'flash' : 'ptc');
   const isFlashMode = agentMode === 'flash' || navMode.isFlash;
 
-  // The mode's currently-configured model — fallback initializer for the
-  // suggestion pill's nextSendModel, mirroring ChatInput's own modePreferredModel.
-  const modelPreference = modelPrefs(preferences);
-  const activePreferredModel = isFlashMode
-    ? ((modelPreference.preferred_flash_model as string | undefined) || (modelPreference.preferred_model as string | undefined) || null)
-    : ((modelPreference.preferred_model as string | undefined) || null);
-  // Live model selection reported by ChatInput (null until it reports in).
-  const [inputModel, setInputModel] = useState<string | null>(null);
+  // The model a navigation's first message goes out with, frozen for the same
+  // reason as navMode; the auto-send below clears the route state.
+  const [navModel] = useState(() => (typeof state?.model === 'string' && state.model ? state.model : null));
   // Cross-workspace file panel: in flash mode, files live in PTC workspaces.
   // This tracks which workspace the file panel should fetch from.
   const [filePanelWorkspaceId, setFilePanelWorkspaceId] = useState<string | null>(null);
@@ -316,21 +310,23 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     sendSubagentInstruction,
   } = chat;
 
-  // Fallback-suggestion pill action: adopt the model that actually answered —
-  // immediately for this thread's next send (chat input selection) and
-  // durably in preferences under the mode-appropriate key.
-  const handleSwitchModel = useCallback(async (model: string) => {
-    chatInputRef.current?.setModel(model);
-    try {
-      await updatePreferencesAsync({
-        model_preference: isFlashMode ? { preferred_flash_model: model } : { preferred_model: model },
-      });
-      clearFallbackSuggestion();
-      toast({ description: t('chat.modelSwitched', { model }) });
-    } catch {
-      toast({ description: t('chat.modelSwitchFailed'), variant: 'destructive' });
-    }
-  }, [isFlashMode, updatePreferencesAsync, clearFallbackSuggestion, t]);
+  const composerMode = isFlashMode ? 'fast' : 'ptc';
+  const threadModel = useThreadModel({
+    threadId: currentThreadId,
+    mode: composerMode,
+    isLoading,
+    initialModel: navModel,
+  });
+  const { pickModel: pickThreadModel } = threadModel;
+
+  // Fallback-suggestion pill action: adopt the model that actually answered,
+  // for this thread only. Making it the default is the banner's offer, which
+  // the pick raises like any other.
+  const handleSwitchModel = useCallback((model: string) => {
+    void pickThreadModel(model).then((saved) => {
+      if (saved) clearFallbackSuggestion();
+    });
+  }, [pickThreadModel, clearFallbackSuggestion]);
 
   // Spinner state merges the in-conversation signal (chat SSE `workspace_status`
   // events, set when this client's message owns the start) with the entry-time
@@ -1574,10 +1570,15 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                     <FallbackSuggestionPill
                       fallbackSuggestion={fallbackSuggestion}
                       isLoading={isLoading}
-                      inputModel={inputModel}
-                      activePreferredModel={activePreferredModel}
+                      composerModel={threadModel.model}
                       onSwitchModel={handleSwitchModel}
                       onDismiss={clearFallbackSuggestion}
+                    />
+                    <ThreadModelNotices
+                      retired={threadModel.retired}
+                      offer={threadModel.offer}
+                      mode={composerMode}
+                      onDismiss={threadModel.dismissOffer}
                     />
                     {/* Report-back pending: a follow-up turn will land here —
                         a flash summary of dispatched PTC thread(s), or a PTC
@@ -1661,9 +1662,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       files={workspaceFiles}
                       tokenUsage={tokenUsage}
                       onAction={handleAction}
-                      onModelChange={setInputModel}
+                      model={threadModel.model}
+                      onPickModel={pickThreadModel}
                       threadModels={threadModels}
-                      mode={isFlashMode ? 'fast' : 'ptc'}
+                      mode={composerMode}
                       selectedWorkspaceId={workspaceId}
                     />
                     {/* Floats above the composer instead of sitting in it: a

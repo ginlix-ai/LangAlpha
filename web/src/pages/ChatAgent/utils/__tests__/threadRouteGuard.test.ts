@@ -14,18 +14,28 @@ import { shouldLeaveThreadRoute } from '../threadRouteGuard';
 
 describe('shouldLeaveThreadRoute', () => {
   it('ignores an error parked on a lookup this route never requested', () => {
-    expect(shouldLeaveThreadRoute(false, new Error('Thread ID is required'), false)).toBe(false);
+    expect(shouldLeaveThreadRoute(false, new Error('Thread ID is required'), false, false)).toBe(false);
   });
 
   it('leaves the route when the lookup we asked for actually failed', () => {
-    expect(shouldLeaveThreadRoute(true, new Error('not found'), false)).toBe(true);
+    expect(shouldLeaveThreadRoute(true, new Error('not found'), false, false)).toBe(true);
   });
 
   it('stays put on 403 so the access-denied surface can render', () => {
-    expect(shouldLeaveThreadRoute(true, new Error('forbidden'), true)).toBe(false);
+    expect(shouldLeaveThreadRoute(true, new Error('forbidden'), true, false)).toBe(false);
   });
 
   it('stays put when the lookup succeeded', () => {
-    expect(shouldLeaveThreadRoute(true, null, false)).toBe(false);
+    expect(shouldLeaveThreadRoute(true, null, false, true)).toBe(false);
+  });
+
+  it('stays put when a refetch of a thread already read fails', () => {
+    const blip = Object.assign(new Error('Network Error'), { response: undefined });
+    expect(shouldLeaveThreadRoute(true, blip, false, true)).toBe(false);
+  });
+
+  it('leaves once a thread already read is gone', () => {
+    const gone = Object.assign(new Error('not found'), { response: { status: 404 } });
+    expect(shouldLeaveThreadRoute(true, gone, false, true)).toBe(true);
   });
 });

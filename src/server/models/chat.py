@@ -347,10 +347,16 @@ class ChatRequest(BaseModel):
         description="Additional context to be included. Supports: skills (skill instructions)",
     )
 
-    # LLM selection (optional - defaults to agent_config.yaml setting)
+    # LLM selection (optional)
     llm_model: Optional[str] = Field(
         default=None,
-        description="LLM model name from models.json (e.g., 'minimax-m3', 'claude-sonnet-4-5')",
+        description=(
+            "Model name from models.json or the user's own models (e.g., "
+            "'minimax-m3', 'claude-sonnet-4-5'). Omitted, the turn runs the "
+            "thread's llm_model, else the account default, else the deployment "
+            "default. A named model is stored on the thread once the turn is "
+            "admitted, so later turns keep it."
+        ),
     )
 
     # Reasoning effort override (optional - defaults to model's configured level)

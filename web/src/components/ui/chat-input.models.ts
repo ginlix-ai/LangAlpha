@@ -15,6 +15,28 @@ export function isModelAvailable(model: string, validModelNames: Set<string>): b
   return validModelNames.size === 0 || validModelNames.has(model);
 }
 
+/**
+ * The model a composer opens on: the thread's own while the catalog still
+ * carries it, else the mode's default.
+ *
+ * `retired` names a thread model the catalog dropped, so the host can say why
+ * the composer moved off it instead of switching silently. A send then names
+ * the default, which is also what the server runs for a dead model. Judged on
+ * the catalog, not on reach: a model behind a lapsed connection is still the
+ * thread's, and its send gets the server's own reason it cannot run. An empty
+ * catalog is one not loaded yet, under which nothing is called retired.
+ */
+export function resolveComposerModel(
+  threadModel: string | null | undefined,
+  modeDefault: string | null,
+  catalogModelNames: Set<string>,
+): { seed: string | null; retired: string | null } {
+  if (threadModel && isModelAvailable(threadModel, catalogModelNames)) {
+    return { seed: threadModel, retired: null };
+  }
+  return { seed: modeDefault, retired: threadModel || null };
+}
+
 export interface PrimaryModelsParams {
   selectedModel: string | null;
   /** Models this thread has already used, from replayed turn metadata. */
@@ -40,41 +62,4 @@ export function derivePrimaryModels({
     (m) => typeof m === 'string' && m.length > 0 && isModelAvailable(m, validModelNames),
   );
   return [...new Set([...reachable, selectedModel].filter((m): m is string => !!m))];
-}
-
-export interface QuickAccessParams {
-  preferredModel: string | null;
-  preferredFlashModel: string | null;
-  starredModels: string[];
-  validModelNames: Set<string>;
-  /** Models already shown in the menu's primary section; excluded to avoid duplicate rows. */
-  excludeModels?: string[];
-}
-
-/**
- * Quick-access models for the chat model menu — the current primary + flash
- * defaults unioned with the user's manual stars, gated by availability (drops
- * removed/revoked models). Derived per-render so switching a default never
- * leaves a stale pin behind.
- */
-export function deriveQuickAccessModels({
-  preferredModel,
-  preferredFlashModel,
-  starredModels,
-  validModelNames,
-  excludeModels = [],
-}: QuickAccessParams): string[] {
-  const exclude = new Set(excludeModels);
-  const union = [...new Set(
-    // typeof check (not just `!!m`) so a malformed pref with non-string entries
-    // can't reach getModelDisplayName's `key.startsWith` and crash the composer.
-    [preferredModel, preferredFlashModel, ...starredModels].filter(
-      (m): m is string => typeof m === 'string' && m.length > 0,
-    ),
-  )];
-  return union.filter((m) => {
-    // Already rendered in the primary section (selected + thread models).
-    if (exclude.has(m)) return false;
-    return isModelAvailable(m, validModelNames);
-  });
 }

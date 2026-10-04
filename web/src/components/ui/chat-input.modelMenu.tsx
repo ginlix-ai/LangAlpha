@@ -218,8 +218,8 @@ export function ChatInputModelMenu({
   /** Mobile portals into the composer so the menu can't escape the sheet. */
   container: HTMLElement | null;
   /** Until the model list arrives every thread model reads as reachable, and a
-   *  pick is saved to the account, so an unreachable one would become every
-   *  composer's default. */
+   *  pick is saved on the thread, so an unreachable one would become the
+   *  model every later turn of that thread asks for. */
   disabled?: boolean;
 }) {
   const { t } = useTranslation();

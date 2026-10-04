@@ -11,13 +11,16 @@ import { ModelSelector } from '@/components/model/ModelSelector';
 import { FallbackModelsPicker } from '@/components/model/FallbackModelsPicker';
 import { PerModelMatrix } from '@/components/model/PerModelMatrix';
 import { AccountTuningDefaults } from '@/components/model/AccountTuningDefaults';
+import { DefaultModelScopeChoice } from '@/components/model/DefaultModelScopeChoice';
+import { useDefaultModelChange } from '@/hooks/useDefaultModelChange';
 import { useAllModels } from '@/hooks/useAllModels';
+import { useQuickAccessModels } from '@/hooks/useQuickAccessModels';
 import { modelLabel, modelMatches } from '@/lib/modelLabel';
 import { isPlatformMode } from '@/config/hostMode';
 import { useTranslation } from 'react-i18next';
 import { ConnectedAccounts } from './ConnectedAccounts';
-import { modelPrefs, splitPreferenceWrite } from '@/lib/modelPreferences';
-import type { PreferencePatch, PreferencesLike } from '@/lib/modelPreferences';
+import { FLASH_AUTO, flashDefaultChoice, modelPrefs, readDefaultModelScope, splitPreferenceWrite } from '@/lib/modelPreferences';
+import type { ComposerMode, DefaultModelScope, PreferencePatch, PreferencesLike } from '@/lib/modelPreferences';
 
 type ModelTabMode = 'simple' | 'advanced';
 
@@ -67,6 +70,18 @@ export function ModelTab() {
     [mutate],
   );
 
+  // The two defaults change through the flow the chat banner uses, which may
+  // ask about the threads on the old default before it writes. ModelTierConfig
+  // stays a plain controlled pair because Setup shares it, and a first-run
+  // pick has no threads to ask about.
+  const label = useCallback((model: string) => modelLabel(model, modelMetadata), [modelMetadata]);
+  const {
+    question: defaultQuestion,
+    draft: draftDefaults,
+    request: requestDefault,
+    clear: clearDefault,
+  } = useDefaultModelChange(label);
+
   const [mode, setMode] = useState<ModelTabMode>(readStoredMode);
   const isAdvanced = mode === 'advanced';
   const changeMode = (next: ModelTabMode) => {
@@ -78,11 +93,11 @@ export function ModelTab() {
   const [modelPickerSearch, setModelPickerSearch] = useState('');
   const modelPickerRef = useRef<HTMLDivElement>(null);
 
-  // Model routing/tuning lives in model_preference; starred_models and the
-  // search prefs below stayed in other_preference.
+  // Model routing/tuning lives in model_preference; the search prefs below
+  // stayed in other_preference.
   const mPref = modelPrefs(prefsData);
   const otherPref = (prefsData as PreferencesLike | null)?.other_preference ?? {};
-  const starredModels = Array.isArray(otherPref.starred_models) ? otherPref.starred_models as string[] : [];
+  const quickAccess = useQuickAccessModels();
   // Every name the catalog still carries, access aside. A fallback the user
   // temporarily cannot reach is still configured; one the manifest dropped is
   // not, and _resolve_fallback_clients skips it without saying so, leaving the
@@ -99,7 +114,25 @@ export function ModelTab() {
   const fallbackModels = modelsLoading || catalogNames.size === 0
     ? storedFallbacks
     : storedFallbacks.filter((m) => catalogNames.has(m));
-  const setStarred = (next: string[]) => write({ starred_models: next.length > 0 ? next : null });
+
+  // While the question is open each select shows the model the answer would
+  // write, and a cancel puts both back on the saved ones.
+  const shownDefault = (agent: ComposerMode) => draftDefaults?.[agent]
+    ?? (agent === 'fast' ? flashDefaultChoice(mPref) : mPref.preferred_model ?? '');
+  const setDefault = (agent: ComposerMode) => (model: string) => {
+    if (model === FLASH_AUTO) clearDefault(agent, 'deployment');
+    else if (model) requestDefault({ [agent]: model });
+    else clearDefault(agent);
+  };
+  // What each slot runs on Auto. A deployment with no flash model runs flash
+  // on its primary one.
+  const deploymentPrimary = hookSystemDefaults?.default_model || undefined;
+  const deploymentFlash = hookSystemDefaults?.flash_model || deploymentPrimary;
+  const autoModels = {
+    primary: deploymentPrimary && label(deploymentPrimary),
+    flash: deploymentFlash && label(deploymentFlash),
+  };
+  const defaultModelScope = readDefaultModelScope(prefsData);
 
   // Close starred-model picker on click outside
   useEffect(() => {
@@ -187,12 +220,32 @@ export function ModelTab() {
           <ModelTierConfig
             models={visibleModels}
             metadata={modelMetadata}
-            primaryModel={mPref.preferred_model ?? ''}
-            onPrimaryModelChange={(v) => write({ preferred_model: v || null })}
-            flashModel={mPref.preferred_flash_model ?? ''}
-            onFlashModelChange={(v) => write({ preferred_flash_model: v || null })}
+            primaryModel={shownDefault('ptc')}
+            onPrimaryModelChange={setDefault('ptc')}
+            flashModel={shownDefault('fast')}
+            onFlashModelChange={setDefault('fast')}
             modelAccess={modelAccessMap}
+            auto={autoModels}
           />
+          {defaultQuestion && <DefaultModelScopeChoice className="mt-4" {...defaultQuestion} />}
+
+          <div className="flex flex-col gap-1.5" style={{ marginTop: '16px' }}>
+            <label htmlFor="default-model-scope" className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
+              {t('settings.defaultModelChange.scopeLabel')}
+            </label>
+            <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+              {t('settings.defaultModelChange.scopeDesc')}
+            </p>
+            <Select
+              id="default-model-scope"
+              value={defaultModelScope}
+              onChange={(e) => write({ default_model_scope: e.target.value as DefaultModelScope })}
+            >
+              <option value="ask">{t('settings.defaultModelChange.scopeAsk')}</option>
+              <option value="new_threads">{t('settings.defaultModelChange.newThreads')}</option>
+              <option value="existing_threads">{t('settings.defaultModelChange.scopeExistingThreads')}</option>
+            </Select>
+          </div>
 
           {/* Quick-access models — compact strip */}
           <div ref={modelPickerRef} style={{ marginTop: '16px' }}>
@@ -204,7 +257,7 @@ export function ModelTab() {
               {t('settings.starredModelsDesc')}
             </p>
             <div className="flex flex-wrap items-center gap-1.5">
-              {starredModels.filter(m => validModelNames.has(m)).map((key) => (
+              {quickAccess.models.map((key) => (
                 <span
                   key={key}
                   className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs"
@@ -217,7 +270,7 @@ export function ModelTab() {
                   {modelLabel(key, modelMetadata)}
                   <button
                     type="button"
-                    onClick={() => setStarred(starredModels.filter(k => k !== key))}
+                    onClick={() => quickAccess.remove(key)}
                     className="ml-0.5 hover:opacity-70"
                     style={{ color: 'var(--color-text-tertiary)' }}
                     aria-label={t('settings.removeModel', { model: modelLabel(key, modelMetadata) })}
@@ -279,14 +332,12 @@ export function ModelTab() {
                         {displayName}
                       </div>
                       {filtered.map((m) => {
-                        const isStarred = starredModels.includes(m);
+                        const isStarred = quickAccess.models.includes(m);
                         return (
                           <button
                             key={m}
                             type="button"
-                            onClick={() => setStarred(
-                              isStarred ? starredModels.filter(k => k !== m) : [...starredModels, m]
-                            )}
+                            onClick={() => (isStarred ? quickAccess.remove(m) : quickAccess.add(m))}
                             className="w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs transition-colors"
                             style={{
                               color: isStarred ? 'var(--color-accent-light)' : 'var(--color-text-primary)',

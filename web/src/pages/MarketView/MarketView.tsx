@@ -16,6 +16,8 @@ import { useWorkspaces } from '@/hooks/useWorkspaces';
 import type { Workspace } from '@/types/api';
 import type { StockSearchHit } from '@/lib/marketUtils';
 import { attachmentsToContexts } from '../ChatAgent/utils/fileUpload';
+import { useThreadModel } from '../ChatAgent/hooks/useThreadModel';
+import { ThreadModelNotices } from '../ChatAgent/components/chatView/ThreadModelNotices';
 import { motion, AnimatePresence } from '@/lib/framer';
 import CompanyOverviewPanel from './components/CompanyOverviewPanel';
 import { MobileBottomSheet } from '../../components/ui/mobile-bottom-sheet';
@@ -219,7 +221,17 @@ function MarketViewInner() {
 
   // Mobile FAB still uses the legacy useMarketChat (no persistence). Desktop
   // chat lives in MarketChatPanel which drives its own useChatMessages.
-  const { isLoading, handleSendMessage: handleFastModeSend } = useMarketChat();
+  const { isLoading, threadId: flashThreadId, handleSendMessage: handleFastModeSend } = useMarketChat();
+
+  // The FAB unmounts its composer after every send, and a composer holding
+  // its own model would reseed from the account default on the next expand,
+  // then store that over the thread's model with the follow-up. So the models
+  // live here, which outlives the FAB, one per mode so a pick never rides to
+  // the other mode's send. Only Fast has a thread behind it: a PTC send opens
+  // a new thread in the chat view, and its pick goes with that navigation.
+  const flashThreadModel = useThreadModel({ threadId: flashThreadId, mode: 'fast', isLoading });
+  const ptcThreadModel = useThreadModel({ threadId: null, mode: 'ptc', isLoading });
+  const threadModel = mode === 'fast' ? flashThreadModel : ptcThreadModel;
 
   // Resolve the user's flash workspace id once so we can scope chart
   // annotations to the workspace the chat is actually running in.
@@ -653,10 +665,27 @@ function MarketViewInner() {
             onCollapse={() => setChatExpanded(false)}
             className="market-mobile-chat-float"
           >
+            {(threadModel.retired || threadModel.offer) && (
+              // A card of its own: the retired notice is transparent, and the
+              // FAB floats over the chart.
+              <div
+                className="flex flex-col gap-1.5 mb-1.5 p-1.5 rounded-2xl border"
+                style={{ backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-border-muted)' }}
+              >
+                <ThreadModelNotices
+                  retired={threadModel.retired}
+                  offer={threadModel.offer}
+                  mode={mode}
+                  onDismiss={threadModel.dismissOffer}
+                />
+              </div>
+            )}
             <ChatInput
               onSend={(...args: any[]) => { (handleSendMessage as any)(...args); setChatExpanded(false); }}
               isLoading={isLoading}
               mode={mode}
+              model={threadModel.model}
+              onPickModel={threadModel.pickModel}
               onModeChange={setMode as any}
               workspaces={selectableWorkspaces}
               selectedWorkspaceId={selectedWorkspaceId}

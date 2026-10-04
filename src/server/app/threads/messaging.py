@@ -21,6 +21,7 @@ from src.server.utils.api import (
 from src.server.models.chat import ChatRequest
 from src.server.models.workflow import RetryRequest
 from src.server.database.conversation import (
+    get_thread_auth_meta,
     get_thread_by_id,
     get_thread_owner_id,
     lookup_thread_by_external_id,
@@ -331,19 +332,19 @@ async def _handle_send_message(
 
         # IDOR guard: an existing thread must belong to the caller. A brand-new
         # thread_id has no owner yet -> creation proceeds. The internal report-back
-        # dispatch sets X-User-Id to the owner, so it passes.
-        owner_id = await get_thread_owner_id(thread_id) if thread_id else None
+        # dispatch sets X-User-Id to the owner, so it passes. The same row also
+        # gives the workspace when the request names none, and the thread's model.
+        thread_meta = await get_thread_auth_meta(thread_id) if thread_id else None
+        owner_id = thread_meta["user_id"] if thread_meta else None
         if owner_id is not None and owner_id != user_id:
             raise HTTPException(status_code=403, detail="Forbidden")
 
         # Resolve workspace_id from thread if not provided
-        if not workspace_id and thread_id:
-            thread_record = await get_thread_by_id(thread_id)
-            if thread_record:
-                workspace_id = str(thread_record["workspace_id"])
-                logger.debug(
-                    f"[CHAT] Resolved workspace_id={workspace_id} from thread_id={thread_id}"
-                )
+        if not workspace_id and thread_meta:
+            workspace_id = str(thread_meta["workspace_id"])
+            logger.debug(
+                f"[CHAT] Resolved workspace_id={workspace_id} from thread_id={thread_id}"
+            )
 
         # Validate that agent_config is initialized
         if not hasattr(setup, "agent_config") or setup.agent_config is None:
@@ -412,21 +413,52 @@ async def _handle_send_message(
         )
 
         # Resolve LLM config eagerly — credit check must happen before SSE stream starts
+        from src.server.services.llm import thread_model
         from src.server.services.llm.config import resolve_llm_config
         from src.server.dependencies.usage_limits import enforce_credit_limit
         from ptc_agent.config.agent import CredentialSource
 
-        config = await resolve_llm_config(
-            setup.agent_config,
+        # A turn naming no model runs the thread's own, the last one a client
+        # named for it. Read here rather than in the resolver so automation
+        # turns, which never pass through this route, keep their own model.
+        requested_model = request.llm_model or None
+        held_model = thread_meta.get("llm_model") if thread_meta else None
+        named_model = (
+            thread_model.NamedModel(requested_model, seen=held_model)
+            if requested_model
+            else None
+        )
+
+        async def resolve(model: str | None):
+            return await resolve_llm_config(
+                setup.agent_config,
+                user_id,
+                model,
+                is_byok,
+                mode=agent_mode,
+                reasoning_effort=getattr(request, "reasoning_effort", None),
+                fast_mode=getattr(request, "fast_mode", None),
+                thread_id=thread_id,
+                enabled_subagents=request.subagents_enabled,
+                workspace_id=workspace_id,
+            )
+
+        # A report-back or a channel message has nobody at a client to
+        # reconnect an account, and a refusal would drop it. A person's send
+        # names no model while its client has not read the thread yet, and
+        # gets the refusal rather than an answer from a model it never chose.
+        from_service = service_token_matches(_req_token, _svc_token) or bool(
+            is_internal
+            and raw_request
+            and raw_request.headers.get("X-Dispatch") == "background"
+        )
+        config = await thread_model.resolve_turn_config(
             user_id,
-            request.llm_model,
-            is_byok,
-            mode=agent_mode,
-            reasoning_effort=getattr(request, "reasoning_effort", None),
-            fast_mode=getattr(request, "fast_mode", None),
-            thread_id=thread_id,
-            enabled_subagents=request.subagents_enabled,
-            workspace_id=workspace_id,
+            thread_id,
+            named=requested_model,
+            held=held_model,
+            fall_back=from_service,
+            resolve=resolve,
         )
 
         # is_byok is True only when the stamped credential_source confirms the user
@@ -496,6 +528,7 @@ async def _handle_send_message(
             config=config,
             dispatched=is_flash_dispatch,
             flash_workspace=flash_workspace,
+            named_model=named_model,
         )
 
         if is_flash_dispatch:
@@ -656,6 +689,7 @@ async def _handle_send_message(
         is_byok=is_byok,
         config=config,
         dispatched=is_ptc_dispatch,
+        named_model=named_model,
     )
 
     if is_ptc_dispatch:

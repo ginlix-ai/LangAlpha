@@ -2,6 +2,7 @@
  * Thread CRUD, sharing and compaction endpoints.
  */
 import { api } from '@/api/client';
+import type { Thread } from '@/types/api';
 
 export interface ThreadCreatedInfo {
   thread_id: string;
@@ -46,9 +47,9 @@ export async function createThreadWithTitle(opts: {
  * @param {string} threadId - The thread ID
  * @returns {Promise<Object>} Thread object with workspace_id, thread_id, title, etc.
  */
-export async function getThread(threadId: string) {
+export async function getThread(threadId: string): Promise<Thread> {
   if (!threadId) throw new Error('Thread ID is required');
-  const { data } = await api.get(`/api/v1/threads/${threadId}`);
+  const { data } = await api.get<Thread>(`/api/v1/threads/${threadId}`);
   return data;
 }
 
@@ -118,15 +119,18 @@ export interface ThreadUpdates {
   title?: string | null;
   is_pinned?: boolean;
   archived?: boolean;
+  /** `null` returns the thread to the account default. A name the server
+   *  cannot resolve is refused with a 400. */
+  llm_model?: string | null;
 }
 
 /**
- * Update user-editable thread fields (title, pin, archive) via PATCH.
+ * Update user-editable thread fields (title, pin, archive, model) via PATCH.
  * Only the keys present in `updates` are applied server-side.
  */
-export async function updateThread(threadId: string, updates: ThreadUpdates) {
+export async function updateThread(threadId: string, updates: ThreadUpdates): Promise<Thread> {
   if (!threadId) throw new Error('Thread ID is required');
-  const { data } = await api.patch(`/api/v1/threads/${threadId}`, updates);
+  const { data } = await api.patch<Thread>(`/api/v1/threads/${threadId}`, updates);
   return data;
 }
 

@@ -242,6 +242,101 @@ async def test_update_thread_fields_pin_skips_updated_at(
 
 
 @pytest.mark.asyncio
+async def test_update_thread_fields_model_skips_updated_at(
+    mock_db_connection, mock_cursor
+):
+    """Changing a thread's model must not reorder the thread lists."""
+    from src.server.database.conversation import update_thread_fields
+
+    mock_cursor.fetchone.return_value = _thread_row()
+
+    await update_thread_fields("t-1", llm_model=None)
+
+    sql, params = mock_cursor.execute.call_args[0]
+    assert "llm_model = %s" in sql
+    assert "updated_at" not in sql.split("RETURNING")[0]
+    assert params == (None, "t-1")
+
+
+@pytest.mark.asyncio
+async def test_thread_model_writers_never_touch_updated_at(
+    mock_db_connection, mock_cursor
+):
+    """Recording, clearing and moving a thread's model are not activity; a
+    clear is conditional on the name read, so a newer pick survives it."""
+    from src.server.database.conversation.threads_write import (
+        clear_thread_llm_model,
+        remember_thread_llm_model,
+    )
+
+    mock_cursor.rowcount = 1
+    assert await remember_thread_llm_model("t-1", "m-a", seen=None) is True
+    sql, params = mock_cursor.execute.call_args[0]
+    assert "updated_at" not in sql
+    assert "llm_model IS DISTINCT FROM %s" in sql
+    assert "llm_model IS NOT DISTINCT FROM %s" in sql
+    assert params == ("m-a", "t-1", "m-a", None)
+
+    mock_cursor.rowcount = 0
+    assert await clear_thread_llm_model("t-1", "m-a") is False
+    sql, params = mock_cursor.execute.call_args[0]
+    assert "updated_at" not in sql
+    assert "SET llm_model = NULL" in sql
+    assert "llm_model = %s" in sql.split("WHERE")[1]
+    assert params == ("t-1", "m-a")
+
+
+@pytest.mark.asyncio
+async def test_reassign_thread_models_moves_each_mode_off_its_old_default(
+    mock_db_connection, mock_cursor
+):
+    """One statement for both modes: a flash thread is ``msg_type = 'flash'``;
+    anything else (including NULL) runs PTC turns. Only threads on exactly the
+    old name move, and a mode with no move compares against NULL."""
+    from src.server.database.conversation.threads_write import (
+        reassign_thread_llm_models,
+    )
+
+    mock_cursor.rowcount = 4
+    moved = await reassign_thread_llm_models(
+        "u-1", {"ptc": ("m-a", "m-b"), "flash": ("m-f", None)}
+    )
+
+    assert moved == 4
+    mock_cursor.execute.assert_called_once()
+    sql, params = mock_cursor.execute.call_args[0]
+    assert params == {
+        "user_id": "u-1",
+        "ptc_old": "m-a",
+        "ptc_new": "m-b",
+        "flash_old": "m-f",
+        "flash_new": None,
+    }
+    assert "WHEN t.msg_type = 'flash'" in sql
+    assert "t.llm_model = %(flash_old)s" in sql
+    assert "t.llm_model = %(ptc_old)s" in sql
+    assert "w.user_id = %(user_id)s" in sql
+    assert "w.status != 'deleted'" in sql
+    assert "updated_at" not in sql
+
+    await reassign_thread_llm_models("u-1", {"ptc": ("m-a", "m-b")})
+    _, params = mock_cursor.execute.call_args[0]
+    assert params["flash_old"] is None and params["flash_new"] is None
+
+
+@pytest.mark.asyncio
+async def test_reassign_thread_models_with_no_moves_touches_nothing(
+    mock_db_connection, mock_cursor
+):
+    from src.server.database.conversation.threads_write import (
+        reassign_thread_llm_models,
+    )
+
+    assert await reassign_thread_llm_models("u-1", {}) == 0
+    mock_cursor.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_update_thread_fields_not_found(mock_db_connection, mock_cursor):
     """update_thread_fields returns None when thread not found."""
     from src.server.database.conversation import update_thread_fields

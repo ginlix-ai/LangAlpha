@@ -7,6 +7,7 @@ from fastapi import HTTPException, Query
 from pydantic import BaseModel, Field
 
 from src.server.services.features import user_feature_enabled
+from src.server.services.llm.thread_model import require_selectable_model
 from src.server.services.thread_lifecycle import project_lifecycle
 from src.server.services.thread_lifecycle_feed import (
     publish_thread_archived,
@@ -133,6 +134,7 @@ async def list_threads(
                 is_shared=bool(thread.get("is_shared", False)),
                 is_pinned=bool(thread.get("is_pinned", False)),
                 archived_at=thread.get("archived_at"),
+                llm_model=thread.get("llm_model"),
                 turn_count=thread.get("turn_count"),
                 created_at=thread["created_at"],
                 updated_at=thread["updated_at"],
@@ -320,6 +322,7 @@ def _thread_list_item(row: dict) -> WorkspaceThreadListItem:
         is_shared=bool(row.get("is_shared", False)),
         is_pinned=bool(row.get("is_pinned", False)),
         archived_at=row.get("archived_at"),
+        llm_model=row.get("llm_model"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -329,7 +332,7 @@ def _thread_list_item(row: dict) -> WorkspaceThreadListItem:
 async def update_thread_endpoint(
     thread_id: str, request: ThreadUpdateRequest, x_user_id: CurrentUserId
 ):
-    """Update user-editable thread fields: title, pin, archive.
+    """Update user-editable thread fields: title, pin, archive, model.
 
     Applies only the fields explicitly present in the request body
     (``model_fields_set``) — a pin toggle can't clear the title.
@@ -346,6 +349,14 @@ async def update_thread_endpoint(
             updates["is_pinned"] = request.is_pinned
         if "archived" in provided and request.archived is not None:
             updates["archived"] = request.archived
+        if "llm_model" in provided:
+            # null returns the thread to the account default; a name has to
+            # resolve to a model, in the catalog or the user's own, or every
+            # later turn would fail on it. Whether a connection can serve it
+            # is the turn's question, since a lapsed one comes back.
+            if request.llm_model is not None:
+                await require_selectable_model(x_user_id, request.llm_model)
+            updates["llm_model"] = request.llm_model
         if not updates:
             raise HTTPException(
                 status_code=400, detail="No updatable fields provided"

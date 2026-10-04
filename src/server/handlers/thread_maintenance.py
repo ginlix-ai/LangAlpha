@@ -184,8 +184,9 @@ async def trigger_compaction(
 ) -> dict:
     """Manually trigger context compaction for a thread.
 
-    When ``user_id`` is set, applies that user's compaction_model + profile
-    so manual /compact matches the auto path.
+    When ``user_id`` is set, applies that user's compaction_model + profile,
+    resolved against the thread's own model as its turns are, so manual
+    /compact matches the auto path.
     """
     try:
         from ptc_agent.agent.middleware.compaction import (
@@ -208,16 +209,36 @@ async def trigger_compaction(
             if user_id and agent_cfg is not None:
                 try:
                     from src.server.database.api_keys import is_byok_active
+                    from src.server.database.conversation import get_thread_auth_meta
+                    from src.server.services.llm import thread_model
                     from src.server.services.llm.config import resolve_llm_config
 
                     is_byok = await is_byok_active(user_id)
-                    agent_cfg = await resolve_llm_config(
-                        setup.agent_config,
+                    meta = await get_thread_auth_meta(thread_id)
+                    # The thread's own mode: a flash thread keeps its model in
+                    # the flash slot, which the compaction model falls back to,
+                    # so PTC mode would summarize on the account's flash default.
+                    mode = "flash" if meta and meta.get("msg_type") == "flash" else "ptc"
+
+                    async def resolve(model: str | None):
+                        return await resolve_llm_config(
+                            setup.agent_config,
+                            user_id,
+                            request_model=model,
+                            is_byok=is_byok,
+                            mode=mode,
+                            thread_id=thread_id,
+                        )
+
+                    agent_cfg = await thread_model.resolve_turn_config(
                         user_id,
-                        request_model=None,
-                        is_byok=is_byok,
-                        mode="ptc",
-                        thread_id=thread_id,
+                        thread_id,
+                        named=None,
+                        held=meta.get("llm_model") if meta else None,
+                        # A summary changes no answer, so it runs on the
+                        # default rather than waiting on a reconnect.
+                        fall_back=True,
+                        resolve=resolve,
                     )
                 except HTTPException:
                     # 402 insufficient credits, 403 revoked key, etc. are intentional

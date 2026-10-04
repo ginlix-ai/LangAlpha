@@ -99,8 +99,10 @@ def _stub_workflow(release_burst=None, admit=None):
 
     with (
         patch(
-            f"{THREADS_MOD}.get_thread_owner_id",
-            new=AsyncMock(return_value=USER),
+            f"{THREADS_MOD}.get_thread_auth_meta",
+            new=AsyncMock(
+                return_value={"user_id": USER, "workspace_id": "ws-placeholder", "llm_model": None}
+            ),
         ),
         patch(
             "src.server.database.workspace.get_workspace",

@@ -62,6 +62,12 @@ export interface UseAllModelsResult {
   customModels: CustomModelEntry[];
   /** Flat set of all model names in the filtered result. */
   validModelNames: Set<string>;
+  /** Every model the catalog carries, access aside, custom models and custom
+   *  provider names included: what the server's "does this model still
+   *  exist" test (`model_resolves`) reads. Empty until
+   *  the catalog and the custom models have both loaded, so a name missing
+   *  from it means gone, never not loaded yet. */
+  catalogModelNames: Set<string>;
   /** Compaction profile catalog from the models API (name → preset values). */
   compactionProfiles: CompactionProfileCatalog | null;
   /** Web-search provider catalog from the models API (name → tiers + depths). */
@@ -81,7 +87,7 @@ export interface UseAllModelsResult {
  */
 export function useAllModels(): UseAllModelsResult {
   const { models: modelsData, isLoading: modelsLoading } = useModels();
-  const { preferences, isLoading: prefsLoading } = usePreferences();
+  const { preferences, isLoading: prefsLoading, isLoaded: prefsLoaded } = usePreferences();
   const { platform: rawPlatform, isLoading: platformLoading } = usePlatformModels();
   const { providers: configuredProviders, isLoading: configuredLoading } = useConfiguredProviders();
 
@@ -166,6 +172,21 @@ export function useAllModels(): UseAllModelsResult {
     );
   }, [modelsData, customModels, providerCatalog, platform, configuredProviders]);
 
+  const catalogModelNames = useMemo(() => {
+    const names = new Set<string>();
+    if (!prefsLoaded) return names;
+    for (const data of Object.values(visible.rawModels)) {
+      for (const m of data.models ?? []) names.add(m);
+    }
+    // The server runs a custom provider's own name as a model too, through
+    // the user's key for that provider, so it stays a live model here.
+    const customProviders = preferences ? modelPrefs(preferences).custom_providers : null;
+    for (const cp of Array.isArray(customProviders) ? customProviders : []) {
+      if (typeof cp?.name === 'string' && cp.name) names.add(cp.name);
+    }
+    return names;
+  }, [visible.rawModels, prefsLoaded, preferences]);
+
   const modelAccessMap = useModelAccessMap(
     visible.models,
     visible.metadata,
@@ -182,6 +203,7 @@ export function useAllModels(): UseAllModelsResult {
     systemDefaults,
     customModels,
     validModelNames: visible.validModelNames,
+    catalogModelNames,
     compactionProfiles,
     searchProviders,
     rawApiResponse: modelsData ? (modelsData as Record<string, unknown>) : null,

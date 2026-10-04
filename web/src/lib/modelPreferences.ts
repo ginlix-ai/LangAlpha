@@ -15,6 +15,19 @@ export interface PreferencesLike {
   model_preference?: Record<string, unknown> | null;
 }
 
+/**
+ * What a change of the default model does to existing threads: `ask` puts the
+ * question to the user each time, the other two answer it in advance.
+ */
+export type DefaultModelScope = 'ask' | 'new_threads' | 'existing_threads';
+
+/** The answer one write carries (`apply_default_to`), never stored itself. */
+export type ApplyDefaultTo = Exclude<DefaultModelScope, 'ask'>;
+
+/** What flash runs with no flash default saved: the primary default, or the
+ *  deployment's flash model (Auto). Absent reads as `primary`. */
+export type FlashFollows = 'primary' | 'deployment';
+
 /** A sub-provider the user defined, as stored. */
 export interface CustomProviderEntry {
   name: string;
@@ -42,6 +55,9 @@ export interface ModelPreferences extends ModelProfile {
   // the server applies (`profiles[<model>]: None`), so the value side is
   // nullable as well as the whole map.
   profiles?: Record<string, ModelProfile | null> | null;
+  /** Absent reads as `ask`. */
+  default_model_scope?: DefaultModelScope | null;
+  flash_follows?: FlashFollows | null;
 }
 
 /**
@@ -79,11 +95,14 @@ export const MOVED_MODEL_KEYS: ReadonlySet<string> = new Set<string>(MOVED_KEYS)
  */
 export const MODEL_PREF_KEYS: ReadonlySet<string> = new Set<string>([
   ...MOVED_KEYS,
-  // Neither ever lived in `other_preference`: `profiles` is new, and
-  // `prompt_guidance` appears there only if 034's downgrade puts it back. They
-  // route to the model column without having a copy to read underneath.
+  // None ever lived in `other_preference`: `profiles`, `default_model_scope`
+  // and `flash_follows` are new, and `prompt_guidance` appears there only if
+  // 034's downgrade puts it back. They route to the model column without
+  // having a copy to read underneath.
   'profiles',
   'prompt_guidance',
+  'default_model_scope',
+  'flash_follows',
 ]);
 
 /**
@@ -151,4 +170,67 @@ export function splitPreferenceWrite(patch: PreferencePatch): {
     ...(Object.keys(model).length > 0 ? { model_preference: model } : {}),
     ...(Object.keys(other).length > 0 ? { other_preference: other } : {}),
   };
+}
+
+/** The composer's two agent modes; anything else is read as PTC. */
+export type ComposerMode = 'fast' | 'ptc';
+
+/** The deployment's defaults, as the models endpoint reports them. A
+ *  deployment that names no flash model reports it as "". */
+export interface DeploymentModelDefaults {
+  default_model?: string;
+  flash_model?: string;
+}
+
+/** The preference key that holds the default for `mode`. */
+export function defaultModelKey(mode: ComposerMode | undefined): 'preferred_model' | 'preferred_flash_model' {
+  return mode === 'fast' ? 'preferred_flash_model' : 'preferred_model';
+}
+
+/**
+ * The model a thread with none of its own runs in `mode`.
+ *
+ * The same rule the server runs a turn on and uses to decide which threads sit
+ * on the old default when the default moves, so "your default" names one model
+ * on both sides. Flash inherits the primary choice unless the user chose Auto
+ * for it, then the deployment's flash model, and a deployment without one runs
+ * flash on its primary model.
+ */
+export function modeDefaultModel(
+  prefs: ModelPreferences,
+  deployment: DeploymentModelDefaults | null | undefined,
+  mode: ComposerMode | undefined,
+): string | null {
+  if (mode === 'fast') {
+    const primary = prefs.flash_follows === 'deployment' ? null : prefs.preferred_model;
+    return prefs.preferred_flash_model || primary
+      || deployment?.flash_model || deployment?.default_model || null;
+  }
+  return prefs.preferred_model || deployment?.default_model || null;
+}
+
+/** The flash default control's value for Auto. Not a model name, which an
+ *  option value could not otherwise be told apart from. */
+export const FLASH_AUTO = '__auto__';
+
+/** What the flash default control shows: the saved model, Auto, or '' for
+ *  the primary. Auto beside an unset primary runs what '' does, so it shows
+ *  as ''. */
+export function flashDefaultChoice(prefs: ModelPreferences): string {
+  if (prefs.preferred_flash_model) return prefs.preferred_flash_model;
+  return prefs.flash_follows === 'deployment' && prefs.preferred_model ? FLASH_AUTO : '';
+}
+
+/** The threads a write moved off the old default; undefined from a server
+ *  that does not count them. */
+export function threadsMoved(result: unknown): number | undefined {
+  const count = (result as { threads_reassigned?: unknown } | undefined)?.threads_reassigned;
+  return typeof count === 'number' ? count : undefined;
+}
+
+/** The saved answer to "do existing threads follow a new default", `ask` when
+ *  none is saved or the stored value is not one this client knows. */
+export function readDefaultModelScope(prefs: unknown): DefaultModelScope {
+  const scope = modelPrefs(prefs).default_model_scope;
+  return scope === 'new_threads' || scope === 'existing_threads' ? scope : 'ask';
 }

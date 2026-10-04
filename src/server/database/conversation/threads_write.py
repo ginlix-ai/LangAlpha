@@ -224,7 +224,7 @@ async def update_thread_external_id(
                     UPDATE conversation_threads
                     SET platform = %s, external_id = %s, updated_at = NOW()
                     WHERE conversation_thread_id = %s
-                    RETURNING conversation_thread_id, workspace_id, current_status, msg_type, thread_index, title, platform, metadata, is_shared, is_pinned, archived_at, created_at, updated_at
+                    RETURNING conversation_thread_id, workspace_id, current_status, msg_type, thread_index, title, platform, metadata, is_shared, is_pinned, archived_at, llm_model, created_at, updated_at
                 """,
                     (platform, external_id, thread_id),
                 )
@@ -629,10 +629,11 @@ async def update_thread_fields(
     title: Any = _UNSET,
     is_pinned: Any = _UNSET,
     archived: Any = _UNSET,
+    llm_model: Any = _UNSET,
 ) -> Optional[Dict[str, Any]]:
-    """Dynamic update of user-editable thread fields (title, pin, archive).
+    """Dynamic update of user-editable thread fields (title, pin, archive, model).
 
-    Only title bumps ``updated_at`` — pin/archive must not reorder the
+    Only title bumps ``updated_at``: pin, archive and model must not reorder the
     recency sort (same reasoning as ``stamp_thread_seen``). Archiving also
     advances the seen cursor in the SAME statement (see ``_ARCHIVE_SEEN_STAMP``).
     Returns the updated row, or None when the thread doesn't exist / nothing
@@ -654,6 +655,9 @@ async def update_thread_fields(
             params.append(conversation_thread_id)
         else:
             sets.append("archived_at = NULL")
+    if llm_model is not _UNSET:
+        sets.append("llm_model = %s")
+        params.append(llm_model)
     if not sets:
         return None
 
@@ -665,7 +669,7 @@ async def update_thread_fields(
                     UPDATE conversation_threads
                     SET {", ".join(sets)}
                     WHERE conversation_thread_id = %s
-                    RETURNING conversation_thread_id, workspace_id, current_status, msg_type, thread_index, title, platform, metadata, is_shared, is_pinned, archived_at, last_seen_run_seq, created_at, updated_at
+                    RETURNING conversation_thread_id, workspace_id, current_status, msg_type, thread_index, title, platform, metadata, is_shared, is_pinned, archived_at, last_seen_run_seq, llm_model, created_at, updated_at
                 """,
                     (*params, conversation_thread_id),
                 )
@@ -681,6 +685,90 @@ async def update_thread_fields(
     except Exception as e:
         logger.error(f"Error updating thread fields: {e}")
         raise
+
+
+async def remember_thread_llm_model(
+    conversation_thread_id: str, llm_model: str, *, seen: Optional[str]
+) -> bool:
+    """Record the model a client named for this thread; True when it changed.
+
+    Only while the thread still holds ``seen``, the model the send read: a
+    pick saved since is newer than the send. Leaves ``updated_at`` alone:
+    picking a model is not activity, and the thread lists sort on it.
+    """
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE conversation_threads
+                SET llm_model = %s
+                WHERE conversation_thread_id = %s
+                  AND llm_model IS DISTINCT FROM %s
+                  AND llm_model IS NOT DISTINCT FROM %s
+                """,
+                (llm_model, conversation_thread_id, llm_model, seen),
+            )
+            return cur.rowcount > 0
+
+
+async def clear_thread_llm_model(conversation_thread_id: str, llm_model: str) -> bool:
+    """Forget the thread's model, only while it is still ``llm_model``.
+
+    Conditional so a model named after the dead one was read is never lost.
+    """
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE conversation_threads
+                SET llm_model = NULL
+                WHERE conversation_thread_id = %s AND llm_model = %s
+                """,
+                (conversation_thread_id, llm_model),
+            )
+            return cur.rowcount > 0
+
+
+async def reassign_thread_llm_models(
+    user_id: str, moves: Dict[str, tuple[str, Optional[str]]], *, conn=None
+) -> int:
+    """Move the user's threads still on a mode's old default to its new one.
+
+    ``moves`` maps a mode (``ptc`` / ``flash``) to ``(old, new)``. A thread is
+    a flash thread when its ``msg_type`` is ``flash``; every other value runs
+    PTC turns, as the send route defaults to. Only threads on exactly the old
+    name move, so one the user pointed elsewhere keeps its model; a mode absent
+    from ``moves`` compares against NULL, which matches nothing. Returns the
+    number of threads moved; ``updated_at`` is left alone.
+    """
+    if not moves:
+        return 0
+    ptc_old, ptc_new = moves.get("ptc", (None, None))
+    flash_old, flash_new = moves.get("flash", (None, None))
+    async with pool.get_db_connection(conn) as conn, conn.transaction():
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE conversation_threads t
+                SET llm_model = CASE WHEN t.msg_type = 'flash'
+                                     THEN %(flash_new)s ELSE %(ptc_new)s END
+                FROM workspaces w
+                WHERE w.workspace_id = t.workspace_id
+                  AND w.user_id = %(user_id)s
+                  AND w.status != 'deleted'
+                  AND CASE WHEN t.msg_type = 'flash'
+                           THEN t.llm_model = %(flash_old)s
+                           ELSE t.llm_model = %(ptc_old)s END
+                """,
+                {
+                    "user_id": user_id,
+                    "ptc_old": ptc_old,
+                    "ptc_new": ptc_new,
+                    "flash_old": flash_old,
+                    "flash_new": flash_new,
+                },
+            )
+            return cur.rowcount
 
 
 async def update_thread_title_cas(

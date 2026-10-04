@@ -28,6 +28,8 @@ export interface ModelSelectorProps {
   filterProviders?: string[]
   /** Placeholder text when nothing selected */
   placeholder?: string
+  /** An option beside the placeholder that names a choice rather than a model */
+  autoOption?: { value: string; label: string }
   /** Required field indicator */
   required?: boolean
   /** Optional access map: model name → access type. When set, shows badge in option text. */
@@ -44,6 +46,7 @@ export function ModelSelector({
   models,
   filterProviders,
   placeholder,
+  autoOption,
   required = false,
   modelAccess,
   metadata,
@@ -115,6 +118,7 @@ export function ModelSelector({
           required={required}
         >
           <option value="">{placeholder ?? t("settings.selectModel")}</option>
+          {autoOption && <option value={autoOption.value}>{autoOption.label}</option>}
           {Object.entries(filteredModels).map(([provider, providerData]) => {
             const modelList = providerData.models ?? []
             if (modelList.length === 0) return null

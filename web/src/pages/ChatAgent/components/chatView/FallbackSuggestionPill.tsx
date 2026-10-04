@@ -5,31 +5,25 @@ import type { FallbackSuggestion } from '../../session/types';
 
 /* Model-fallback suggestion: the model the user sent with
    had trouble and a fallback answered the last turn. Offer
-   adopting the working model. Persistent (survives
-   stream end + reload) until dismissed, switched, or a
-   new turn starts. Gated on nextSendModel, the input's
-   live selection, because that is what the next send
-   uses. */
+   adopting the working model for this thread. Persistent
+   (survives stream end + reload) until dismissed, switched,
+   or a new turn starts. Gated on composerModel, the model the
+   composer shows, because that is what the next send names. */
 export function FallbackSuggestionPill({
   fallbackSuggestion,
   isLoading,
-  inputModel,
-  activePreferredModel,
+  composerModel,
   onSwitchModel,
   onDismiss,
 }: {
   fallbackSuggestion: FallbackSuggestion | null;
   isLoading: boolean;
-  inputModel: string | null;
-  activePreferredModel: string | null;
+  composerModel: string | null;
   onSwitchModel: (model: string) => void;
   onDismiss: () => void;
 }): React.ReactElement | null {
   const { t } = useTranslation();
-  // The input seeds from and follows the mode's preferred model, so that
-  // stands in until the input reports its selection.
-  const nextSendModel = inputModel ?? activePreferredModel;
-  if (!(fallbackSuggestion && !isLoading && fallbackSuggestion.toModel !== nextSendModel)) {
+  if (!(fallbackSuggestion && !isLoading && fallbackSuggestion.toModel !== composerModel)) {
     return null;
   }
   return (

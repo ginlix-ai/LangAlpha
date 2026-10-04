@@ -13,6 +13,7 @@ import { usePreferences } from '@/hooks/usePreferences';
 import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
 import { useTranslation } from 'react-i18next';
 import { modelPrefs, splitPreferenceWrite } from '@/lib/modelPreferences';
+import { suggestFlashModel } from './suggestFlashModel';
 
 // ---------------------------------------------------------------------------
 // DefaultsStep — Step 5: Set default primary + flash models
@@ -49,6 +50,13 @@ export default function DefaultsStep() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // A first run fills both defaults, so an empty flash slot takes a model to
+  // go with the primary, set during render so the slot never paints empty.
+  // The fill is a pick like any other: it stays when the primary changes, and
+  // nothing is saved before Continue.
+  const flashFill = !flashModel && primaryModel ? suggestFlashModel(models, primaryModel) : undefined;
+  if (flashFill) setFlashModel(flashFill);
 
   const canContinue = Boolean(primaryModel && flashModel);
 

@@ -178,7 +178,7 @@ async def get_workspace_threads(
                         SELECT
                             conversation_thread_id, workspace_id, current_status,
                             msg_type, thread_index, title, platform, metadata,
-                            is_shared, is_pinned, archived_at,
+                            is_shared, is_pinned, archived_at, llm_model,
                             last_seen_run_seq, created_at, updated_at
                         FROM conversation_threads
                         WHERE workspace_id = %s{archived_filter}{where_extra}
@@ -262,7 +262,7 @@ async def get_threads_for_user(
                             t.conversation_thread_id, t.workspace_id,
                             t.current_status, t.msg_type, t.thread_index,
                             t.title, t.platform, t.metadata, t.is_shared,
-                            t.is_pinned, t.archived_at,
+                            t.is_pinned, t.archived_at, t.llm_model,
                             t.last_seen_run_seq, t.created_at, t.updated_at
                         FROM conversation_threads t
                         JOIN workspaces w ON t.workspace_id = w.workspace_id
@@ -535,7 +535,7 @@ async def get_thread_by_id(conversation_thread_id: str) -> Optional[Dict[str, An
                     SELECT conversation_thread_id, workspace_id, current_status,
                            msg_type, thread_index, title, platform, metadata,
                            share_token, is_shared, share_permissions, shared_at,
-                           is_pinned, archived_at, created_at, updated_at
+                           is_pinned, archived_at, llm_model, created_at, updated_at
                     FROM conversation_threads
                     WHERE conversation_thread_id = %s
                 """,
@@ -561,11 +561,14 @@ async def get_thread_owner_id(thread_id: str, *, conn=None) -> Optional[str]:
 
 
 async def get_thread_auth_meta(thread_id: str, *, conn=None) -> Optional[Dict[str, Any]]:
-    """Owner ``user_id`` + ``is_shared`` + ``msg_type`` in one query.
+    """Owner ``user_id`` + ``is_shared`` + ``msg_type`` + ``workspace_id`` +
+    ``llm_model`` in one query.
 
     Lets ``/status`` authorize the caller, read share state, and pick the
     report-back read model (flash watch set vs PTC task outbox) from a
-    single round-trip. Returns ``None`` if the thread doesn't exist.
+    single round-trip, and lets a send authorize, find its workspace and read
+    the thread's model from the same one. Returns ``None`` if the thread
+    doesn't exist.
     """
     # Same UUID normalization as get_thread_owner_id: a non-UUID id can't match
     # the column, so treat it as not-found (clean 404) rather than risk a 500.
@@ -577,7 +580,8 @@ async def get_thread_auth_meta(thread_id: str, *, conn=None) -> Optional[Dict[st
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
-                    SELECT w.user_id, t.is_shared, t.msg_type
+                    SELECT w.user_id, t.is_shared, t.msg_type, t.workspace_id,
+                           t.llm_model
                     FROM conversation_threads t
                     JOIN workspaces w ON w.workspace_id = t.workspace_id
                     WHERE t.conversation_thread_id = %s

@@ -151,10 +151,10 @@ function ChatAgent(): React.ReactElement | null {
   }, [resolvedThread]);
 
   useEffect(() => {
-    if (shouldLeaveThreadRoute(needsThreadLookup, threadError, accessDenied)) {
+    if (shouldLeaveThreadRoute(needsThreadLookup, threadError, accessDenied, !!resolvedThread)) {
       navigate('/chat', { replace: true });
     }
-  }, [needsThreadLookup, threadError, accessDenied, navigate]);
+  }, [needsThreadLookup, threadError, accessDenied, resolvedThread, navigate]);
 
   // __default__ with lost state — redirect
   useEffect(() => {

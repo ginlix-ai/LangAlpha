@@ -463,8 +463,9 @@ class RetryRequest(BaseModel):
     )
     llm_model: Optional[str] = Field(
         None,
-        description="Model override for the retry attempt (the chat input's "
-        "current selection); None = per-user default.",
+        description="Model for the retry attempt (the chat input's current "
+        "selection). Omitted, the thread's llm_model, else the account default; "
+        "a named model is stored on the thread as a send's is.",
     )
     reasoning_effort: Optional[ReasoningLevel] = Field(None)
     fast_mode: Optional[bool] = Field(None)

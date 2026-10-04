@@ -417,3 +417,79 @@ async def test_patch_title_service_no_user_is_401():
     assert resp.status_code == 401
     owner.assert_not_awaited()
     title.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Model path: PATCH /threads/{id} {llm_model}
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_patch_model_keeps_a_runnable_model():
+    app = _title_app()
+    row = _thread_row(llm_model="m-a")
+    with (
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
+        patch(f"{THREADS_MOD}.require_selectable_model", new=AsyncMock()) as check,
+        patch(
+            f"{THREADS_MOD}.update_thread_fields", new=AsyncMock(return_value=row)
+        ) as update,
+    ):
+        resp = await _patch(app, {"llm_model": "m-a"})
+
+    assert resp.status_code == 200
+    assert resp.json()["llm_model"] == "m-a"
+    check.assert_awaited_once_with(USER, "m-a")
+    update.assert_awaited_once_with("t-1", llm_model="m-a")
+
+
+@pytest.mark.asyncio
+async def test_patch_model_refuses_an_unknown_model_before_writing():
+    from src.server.services.llm.availability import raise_model_unavailable
+
+    app = _title_app()
+    with (
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
+        patch(
+            f"{THREADS_MOD}.require_selectable_model",
+            new=AsyncMock(side_effect=lambda _u, name: raise_model_unavailable(name)),
+        ),
+        patch(f"{THREADS_MOD}.update_thread_fields", new=AsyncMock()) as update,
+    ):
+        resp = await _patch(app, {"llm_model": "not-a-model"})
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["type"] == "model_unavailable"
+    update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_patch_model_null_returns_the_thread_to_the_default():
+    app = _title_app()
+    with (
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
+        patch(f"{THREADS_MOD}.require_selectable_model", new=AsyncMock()) as check,
+        patch(
+            f"{THREADS_MOD}.update_thread_fields",
+            new=AsyncMock(return_value=_thread_row(llm_model=None)),
+        ) as update,
+    ):
+        resp = await _patch(app, {"llm_model": None})
+
+    assert resp.status_code == 200
+    assert resp.json()["llm_model"] is None
+    check.assert_not_awaited()
+    update.assert_awaited_once_with("t-1", llm_model=None)
+
+
+@pytest.mark.asyncio
+async def test_patch_model_empty_name_is_422():
+    app = _title_app()
+    with (
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
+        patch(f"{THREADS_MOD}.update_thread_fields", new=AsyncMock()) as update,
+    ):
+        resp = await _patch(app, {"llm_model": ""})
+
+    assert resp.status_code == 422
+    update.assert_not_awaited()

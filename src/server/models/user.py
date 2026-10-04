@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -221,7 +221,13 @@ class UserPreferencesCreate(UserPreferencesBase):
 class UserPreferencesUpdate(UserPreferencesBase):
     """Request model for updating user preferences."""
 
-    pass
+    apply_default_to: Optional[Literal["new_threads", "existing_threads"]] = Field(
+        None,
+        description="This write's answer to what a changed default model does "
+        "to existing threads: 'existing_threads' moves the threads still on the "
+        "old default to the new one, 'new_threads' leaves them. Never stored; "
+        "absent, model_preference.default_model_scope decides.",
+    )
 
 
 class UserPreferencesResponse(UserPreferencesBase):
@@ -233,6 +239,16 @@ class UserPreferencesResponse(UserPreferencesBase):
     updated_at: datetime = Field(description="Last update timestamp")
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class UserPreferencesUpdateResponse(UserPreferencesResponse):
+    """Response model for a preferences write."""
+
+    threads_reassigned: int = Field(
+        0,
+        description="Threads this write moved from the old default model to "
+        "the new one (see apply_default_to).",
+    )
 
 
 # =============================================================================

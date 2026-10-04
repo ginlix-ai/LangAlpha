@@ -10,7 +10,16 @@
  * dropped.
  */
 import { describe, it, expect } from 'vitest';
-import { MODEL_PREF_KEYS, modelPrefs, modelProfile, splitPreferenceWrite } from '../modelPreferences';
+import {
+  MODEL_PREF_KEYS,
+  FLASH_AUTO,
+  flashDefaultChoice,
+  modeDefaultModel,
+  modelPrefs,
+  modelProfile,
+  readDefaultModelScope,
+  splitPreferenceWrite,
+} from '../modelPreferences';
 
 describe('modelPrefs', () => {
   it('prefers the new column over the legacy one', () => {
@@ -123,5 +132,56 @@ describe('splitPreferenceWrite', () => {
     for (const key of ['starred_models', 'search_provider', 'search_depth']) {
       expect(MODEL_PREF_KEYS.has(key)).toBe(false);
     }
+  });
+});
+
+describe('modeDefaultModel', () => {
+  const deployment = { default_model: 'deploy-default', flash_model: 'deploy-flash' };
+
+  it("resolves PTC to the user's primary, then the deployment's", () => {
+    expect(modeDefaultModel({ preferred_model: 'mine' }, deployment, 'ptc')).toBe('mine');
+    expect(modeDefaultModel({}, deployment, 'ptc')).toBe('deploy-default');
+  });
+
+  it("resolves fast through the user's flash and primary before the deployment's", () => {
+    expect(modeDefaultModel({ preferred_flash_model: 'flash', preferred_model: 'mine' }, deployment, 'fast')).toBe('flash');
+    expect(modeDefaultModel({ preferred_model: 'mine' }, deployment, 'fast')).toBe('mine');
+    expect(modeDefaultModel({}, deployment, 'fast')).toBe('deploy-flash');
+    // A deployment naming no flash model reports it as "".
+    expect(modeDefaultModel({}, { default_model: 'deploy-default', flash_model: '' }, 'fast')).toBe('deploy-default');
+  });
+
+  it('resolves fast past the primary when flash is on Auto', () => {
+    expect(modeDefaultModel({ preferred_model: 'mine', flash_follows: 'deployment' }, deployment, 'fast')).toBe('deploy-flash');
+    expect(modeDefaultModel(
+      { preferred_flash_model: 'flash', preferred_model: 'mine', flash_follows: 'deployment' }, deployment, 'fast',
+    )).toBe('flash');
+  });
+
+  it('is null with nothing saved and no deployment defaults loaded', () => {
+    expect(modeDefaultModel({}, null, 'ptc')).toBeNull();
+  });
+});
+
+describe('flashDefaultChoice', () => {
+  it('shows a saved flash model, else Auto beside a saved primary, else the primary', () => {
+    expect(flashDefaultChoice({ preferred_flash_model: 'flash', flash_follows: 'deployment' })).toBe('flash');
+    expect(flashDefaultChoice({ preferred_model: 'mine', flash_follows: 'deployment' })).toBe(FLASH_AUTO);
+    expect(flashDefaultChoice({ preferred_model: 'mine' })).toBe('');
+    // With no primary saved, Auto and following the primary run one model.
+    expect(flashDefaultChoice({ flash_follows: 'deployment' })).toBe('');
+  });
+});
+
+describe('readDefaultModelScope', () => {
+  it('reads an absent or unknown scope as ask', () => {
+    expect(readDefaultModelScope(null)).toBe('ask');
+    expect(readDefaultModelScope({ model_preference: {} })).toBe('ask');
+    expect(readDefaultModelScope({ model_preference: { default_model_scope: 'bogus' } })).toBe('ask');
+  });
+
+  it('returns a saved answer', () => {
+    expect(readDefaultModelScope({ model_preference: { default_model_scope: 'existing_threads' } })).toBe('existing_threads');
+    expect(readDefaultModelScope({ model_preference: { default_model_scope: 'new_threads' } })).toBe('new_threads');
   });
 });

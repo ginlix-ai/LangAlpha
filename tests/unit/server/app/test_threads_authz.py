@@ -74,8 +74,14 @@ def _stub_downstream(owner_id, ws_owner=CALLER):
 
     with (
         patch(
-            f"{THREADS_MOD}.get_thread_owner_id",
-            new=AsyncMock(return_value=owner_id),
+            f"{THREADS_MOD}.get_thread_auth_meta",
+            new=AsyncMock(
+                return_value=(
+                    {"user_id": owner_id, "workspace_id": "ws-placeholder", "llm_model": None}
+                    if owner_id is not None
+                    else None
+                )
+            ),
         ),
         # Workspace IDOR guard reads the workspace owner via get_workspace.
         patch(
@@ -157,7 +163,7 @@ async def test_post_existing_thread_owned_by_caller_proceeds():
 
 @pytest.mark.asyncio
 async def test_post_new_thread_no_owner_proceeds():
-    """Brand-new thread (get_thread_owner_id -> None) -> guard passes, 200.
+    """Brand-new thread (get_thread_auth_meta -> None) -> guard passes, 200.
 
     Uses the new-thread route, which mints a fresh uuid before the guard runs.
     """

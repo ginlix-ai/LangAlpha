@@ -17,8 +17,9 @@ from src.llms.preferences import custom_model, resolve_tuning_field
 _NEVER_MOVED = ("feature_overrides", "search_provider", "search_depth")
 
 
-async def get_model_preference(user_id: str) -> dict:
-    """Settings that drive model resolution — never ``agent_preference``, which is dumped to agent context.
+def model_preference_of(prefs: dict | None) -> dict:
+    """Settings that drive model resolution, read from a preferences row; never
+    ``agent_preference``, which is dumped to agent context.
 
     The model keys have their own column. ``other_preference`` is read
     underneath it for two unrelated reasons: a rollback window for rows written
@@ -33,9 +34,7 @@ async def get_model_preference(user_id: str) -> dict:
     again every turn.
     """
     from src.llms.preferences import MOVED_MODEL_KEYS
-    from src.server.database.user import get_user_preferences
 
-    prefs = await get_user_preferences(user_id)
     if not prefs:
         return {}
     legacy = prefs.get("other_preference") or {}
@@ -49,6 +48,13 @@ async def get_model_preference(user_id: str) -> dict:
     }
     merged.update({k: v for k, v in current.items() if v is not None})
     return merged
+
+
+async def get_model_preference(user_id: str) -> dict:
+    """This user's model settings, merged as ``model_preference_of`` reads a row."""
+    from src.server.database.user import get_user_preferences
+
+    return model_preference_of(await get_user_preferences(user_id))
 
 
 def model_entry(model_pref: dict, name: str | None) -> dict[str, Any] | None:

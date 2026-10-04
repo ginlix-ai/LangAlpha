@@ -18,6 +18,8 @@ import { SubagentTelemetryContext } from '../../ChatAgent/components/SubagentTel
 import { ChartSurfaceContext, type ChartSurface } from '../../ChatAgent/contexts/ChartSurfaceContext';
 import { WorkspaceProvider } from '../../ChatAgent/contexts/WorkspaceContext';
 import { useChatMessages } from '../../ChatAgent/hooks/useChatMessages';
+import { useThreadModel } from '../../ChatAgent/hooks/useThreadModel';
+import { ThreadModelNotices } from '../../ChatAgent/components/chatView/ThreadModelNotices';
 import { DispatchStatusProvider } from '../../ChatAgent/hooks/usePTCDispatchStatus';
 import { useStreamFollow } from '../../ChatAgent/components/chatView/streamFollow';
 import { useTranscriptFollow } from '../../ChatAgent/components/chatView/useTranscriptFollow';
@@ -455,6 +457,8 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   // The market panel's thread is what the user is looking at — same active
   // contract as ChatAgent (no unseen dot for watched finishes, seen on open).
   useActiveThreadPublisher(threadId);
+
+  const threadModel = useThreadModel({ threadId, mode, isLoading });
 
   // Subagent telemetry resolver — feeds ActivityBlock's live token counts.
   // MarketView has no floating cards layer, so we resolve through history only.
@@ -897,7 +901,9 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
       {(pendingRejection
         || (hasActiveSubagents && !isLoading)
         || workspaceStarting
-        || isCompacting) && (
+        || isCompacting
+        || threadModel.retired
+        || threadModel.offer) && (
         <div style={{ padding: '0 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
           {pendingRejection && (
             <div style={bannerStyle('var(--color-bg-surface)')}>
@@ -930,6 +936,12 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
               <span>{t(isCompacting === 'offload' ? 'chat.offloading' : 'chat.compacting')}</span>
             </div>
           )}
+          <ThreadModelNotices
+            retired={threadModel.retired}
+            offer={threadModel.offer}
+            mode={mode}
+            onDismiss={threadModel.dismissOffer}
+          />
         </div>
       )}
 
@@ -945,6 +957,8 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         onAction={handleAction}
         isLoading={isLoading}
         mode={mode}
+        model={threadModel.model}
+        onPickModel={threadModel.pickModel}
         onModeChange={onModeChange}
         ptcDisabledReason={ptcDisabledReason}
         workspaces={ptcWorkspaces}

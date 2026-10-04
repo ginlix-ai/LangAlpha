@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useState } from "react"
 import { useTranslation } from "react-i18next"
 import { motion, AnimatePresence } from "@/lib/framer"
 import { ChevronRight, Lightbulb } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { FLASH_AUTO } from "@/lib/modelPreferences"
 import { ModelSelector } from "./ModelSelector"
 import type { ProviderModelsData } from "./types"
 import type { ModelAccess } from "@/types/platform"
@@ -25,6 +26,13 @@ export interface ModelTierConfigProps {
   modelAccess?: Record<string, ModelAccess>
   /** Optional model metadata, for display names */
   metadata?: Record<string, ModelMetadataEntry>
+  /** Settings, where both slots are account defaults and may stay unset: the
+   *  models Auto runs, the deployment's primary and flash, each as printed and
+   *  absent when the deployment names none. An unset primary is Auto; an unset
+   *  flash follows the primary once one is saved, with Auto (`FLASH_AUTO`)
+   *  beside it, and is Auto before. Setup leaves this off: a first run fills
+   *  both. */
+  auto?: { primary?: string; flash?: string }
 }
 
 // ---------------------------------------------------------------------------
@@ -41,62 +49,14 @@ export function ModelTierConfig({
   showExplainer = false,
   modelAccess,
   metadata,
+  auto,
 }: ModelTierConfigProps) {
   const { t } = useTranslation()
   const [explainerOpen, setExplainerOpen] = useState(true)
-
-  // Auto-default flash model: pick the first model from the same provider as
-  // the primary model, or the first model in the list if provider doesn't match.
-  const autoDefaultFlashModel = useMemo(() => {
-    if (flashModel) return undefined // Already set, no auto-default needed
-
-    // Find which provider the primary model belongs to
-    let primaryProvider: string | null = null
-    for (const [provider, pd] of Object.entries(models)) {
-      if (filterProviders && !filterProviders.includes(provider)) continue
-      if (pd.models?.includes(primaryModel)) {
-        primaryProvider = provider
-        break
-      }
-    }
-
-    // Try same provider first
-    if (primaryProvider) {
-      const providerModels = models[primaryProvider]?.models ?? []
-      // Pick first model that isn't the primary (or just the first one)
-      const candidate =
-        providerModels.find((m) => m !== primaryModel) ?? providerModels[0]
-      if (candidate) return candidate
-    }
-
-    // Fallback: first model from any available provider
-    const entries = Object.entries(models)
-    for (const [provider, pd] of entries) {
-      if (filterProviders && !filterProviders.includes(provider)) continue
-      if (pd.models && pd.models.length > 0) return pd.models[0]
-    }
-    return undefined
-  }, [flashModel, primaryModel, models, filterProviders])
-
-  // When primary model changes, if flash is empty, suggest auto-default
-  const handlePrimaryChange = useCallback(
-    (model: string) => {
-      onPrimaryModelChange(model)
-      // If flash model is empty and we can auto-default, do so
-      if (!flashModel && autoDefaultFlashModel) {
-        // We'll let the parent decide via the auto-default mechanism
-      }
-    },
-    [onPrimaryModelChange, flashModel, autoDefaultFlashModel],
-  )
-
-  // When flash model is empty but we have an auto-default, apply it
-  // on first render or when conditions change
-  useEffect(() => {
-    if (!flashModel && autoDefaultFlashModel && primaryModel) {
-      onFlashModelChange(autoDefaultFlashModel)
-    }
-  }, [autoDefaultFlashModel, primaryModel, flashModel, onFlashModelChange])
+  const autoLabel = (model: string | undefined) =>
+    model ? t("settings.autoModel", { model }) : undefined
+  const primaryAuto = autoLabel(auto?.primary)
+  const flashAuto = autoLabel(auto?.flash)
 
   return (
     <div className="flex flex-col" style={{ gap: "24px" }}>
@@ -185,11 +145,11 @@ export function ModelTierConfig({
         label={t("setup.primaryModel")}
         description={t("setup.primaryDescription")}
         value={primaryModel}
-        onChange={handlePrimaryChange}
+        onChange={onPrimaryModelChange}
         models={models}
         filterProviders={filterProviders}
-        placeholder={t("setup.primaryPlaceholder")}
-        required
+        placeholder={primaryAuto ?? t("setup.primaryPlaceholder")}
+        required={!primaryAuto}
         modelAccess={modelAccess}
         metadata={metadata}
       />
@@ -202,8 +162,13 @@ export function ModelTierConfig({
         onChange={onFlashModelChange}
         models={models}
         filterProviders={filterProviders}
-        placeholder={t("setup.flashPlaceholder")}
-        required
+        placeholder={auto && primaryModel
+          ? t("setup.flashSameAsPrimary")
+          : (auto && flashAuto) || t("setup.flashPlaceholder")}
+        autoOption={auto && primaryModel && flashAuto
+          ? { value: FLASH_AUTO, label: flashAuto }
+          : undefined}
+        required={!auto}
         modelAccess={modelAccess}
         metadata={metadata}
       />

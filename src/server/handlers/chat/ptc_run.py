@@ -72,6 +72,7 @@ from .request_prep import (
     build_turn_context,
     read_disk_notice,
     ensure_thread,
+    keep_named_model,
     init_tracking,
     inject_inline_reminders,
     logger,
@@ -96,6 +97,7 @@ from .attachments import attach_request_files
 from .error_handling import handle_workflow_error
 from src.server.services.llm.clients import is_own_key_turn
 from src.server.services.llm.config import resolve_llm_config
+from src.server.services.llm.thread_model import NamedModel
 from .steering import drain_steering_return_event
 from .run_stream_reader import stream_from_log
 from .detached import fire_and_forget as _fire_and_forget
@@ -166,6 +168,7 @@ async def astream_ptc_workflow(
     dispatched: bool = False,
     steerable: bool = True,
     run_metadata: dict | None = None,
+    named_model: NamedModel | None = None,
 ):
     """Async generator that streams PTC agent workflow events.
 
@@ -179,6 +182,8 @@ async def astream_ptc_workflow(
     and ``steerable=False`` all make a running turn a 409 instead of a
     steer; see ``steer_allowed``. ``run_metadata`` is the caller's own START
     stamp on the run row, which the run's finalize hooks read.
+    ``named_model`` is the model a client named for this thread, kept on it
+    once the turn is admitted; automations never pass one.
     """
     start_time = time.time()
     handler = None
@@ -411,6 +416,8 @@ async def astream_ptc_workflow(
             # generator and returns its 200 response only once the START txn
             # above has committed. The marker never reaches the SSE stream.
             yield DISPATCH_STARTED_MARKER
+
+        await keep_named_model(thread_id, named_model)
 
         # =====================================================================
         # Token and Tool Tracking

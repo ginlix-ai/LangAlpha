@@ -57,7 +57,7 @@ const ml = vi.hoisted(() => ({
 const ci = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
 
 vi.mock('@/hooks/usePreferences', () => ({
-  usePreferences: () => ({ preferences: h.preferences, isLoading: false }),
+  usePreferences: () => ({ preferences: h.preferences, isLoading: false, isLoaded: true }),
 }));
 
 vi.mock('@/pages/ChatAgent/hooks/useChatMessages', () => ({

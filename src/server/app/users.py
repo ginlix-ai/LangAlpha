@@ -18,6 +18,7 @@ from src.llms.preferences import (
 from src.utils.storage import get_public_url, upload_bytes
 
 from src.server.auth.jwt_bearer import get_current_auth_info, AuthInfo
+from src.server.database.pool import get_db_connection
 from src.server.database.user import (
     create_user as db_create_user,
     create_user_from_auth,
@@ -25,6 +26,7 @@ from src.server.database.user import (
     find_user_by_email,
     get_user as db_get_user,
     get_user_preferences as db_get_user_preferences,
+    lock_user_preferences as db_lock_user_preferences,
     get_user_with_preferences,
     invalidate_user_prefs_cache,
     migrate_user_id,
@@ -32,11 +34,19 @@ from src.server.database.user import (
     upsert_user_preferences,
 )
 from ptc_agent.agent.graph import invalidate_user_profile_cache
+from src.server.services.llm.config import FLASH_FOLLOWS
+from src.server.services.llm.thread_model import (
+    DEFAULT_MODEL_KEYS,
+    DEFAULT_MODEL_SCOPES,
+    carry_default_change,
+)
+from src.server.services.llm.user_models import model_preference_of
 from src.server.services.onboarding import maybe_complete_onboarding
 from src.server.models.user import (
     UserBase,
     UserPreferencesResponse,
     UserPreferencesUpdate,
+    UserPreferencesUpdateResponse,
     UserResponse,
     UserUpdate,
     UserWithPreferencesResponse,
@@ -569,6 +579,20 @@ def _clear_unhonored_efforts(
         patch[model] = {**(patch.get(model) or {}), "reasoning_effort": None}
 
 
+def _validate_default_model_choices(model_pref: dict) -> None:
+    """Refuse a ``default_model_scope`` or ``flash_follows`` no reader acts on.
+    None = key deletion."""
+    for key, allowed in (
+        ("default_model_scope", DEFAULT_MODEL_SCOPES),
+        ("flash_follows", FLASH_FOLLOWS),
+    ):
+        value = model_pref.get(key)
+        if value is not None and (not isinstance(value, str) or value not in allowed):
+            raise HTTPException(
+                status_code=400, detail=f"{key} must be one of {sorted(allowed)}"
+            )
+
+
 def _validate_agent_preference(agent_pref: dict) -> None:
     """Validate agent_preference before persisting. Raises HTTPException 400 on invalid data."""
     # output_format may be absent or None (delete/default); else must be a
@@ -583,13 +607,18 @@ def _validate_agent_preference(agent_pref: dict) -> None:
             )
 
 
-@router.put("/users/me/preferences", response_model=UserPreferencesResponse)
+@router.put("/users/me/preferences", response_model=UserPreferencesUpdateResponse)
 @handle_api_exceptions("update preferences", logger)
 async def update_preferences(
     request: UserPreferencesUpdate,
     user_id: CurrentUserId,
 ):
-    """Update user preferences (partial, JSONB merge). Raises 404 if user not found."""
+    """Update user preferences (partial, JSONB merge). Raises 404 if user not found.
+
+    A write that changes the default model also moves the threads still on the
+    old one when ``apply_default_to`` (or, without it, the saved
+    ``default_model_scope``) says ``existing_threads``; the response counts them.
+    """
     user = await db_get_user(user_id)
     if not user:
         raise_not_found("User")
@@ -631,6 +660,7 @@ async def update_preferences(
             )
 
         _validate_model_tuning(model_pref, effective)
+        _validate_default_model_choices(model_pref)
 
         # After validation, so a bad level in the patch still gets its 400 and
         # only levels already in the row are cleared.
@@ -681,15 +711,35 @@ async def update_preferences(
     if agent_pref:
         _validate_agent_preference(agent_pref)
 
+    # Only a write naming a default key can move threads off the old default.
+    changes_default = bool(model_pref) and any(
+        key in model_pref for key in DEFAULT_MODEL_KEYS
+    )
+
+    # One transaction under the profile lock: the default a write replaces is
+    # read where no other write can move it, and the threads move with the
+    # write or not at all, so a failed move leaves nothing a retry cannot redo.
+    threads_reassigned = 0
     try:
-        preferences = await upsert_user_preferences(
-            user_id=user_id,
-            risk_preference=risk_pref,
-            investment_preference=investment_pref,
-            agent_preference=agent_pref,
-            other_preference=other_pref,
-            model_preference=model_pref,
-        )
+        async with get_db_connection() as conn, conn.transaction():
+            before = await db_lock_user_preferences(user_id, conn=conn) if changes_default else None
+            preferences = await upsert_user_preferences(
+                user_id=user_id,
+                risk_preference=risk_pref,
+                investment_preference=investment_pref,
+                agent_preference=agent_pref,
+                other_preference=other_pref,
+                model_preference=model_pref,
+                conn=conn,
+            )
+            if changes_default:
+                threads_reassigned = await carry_default_change(
+                    user_id,
+                    before=model_preference_of(before),
+                    after=model_preference_of(preferences),
+                    apply_to=request.apply_default_to,
+                    conn=conn,
+                )
     except TuningError as exc:
         raise _tuning_400(exc) from exc
 
@@ -699,7 +749,9 @@ async def update_preferences(
     await maybe_complete_onboarding(user_id)
 
     logger.info(f"Updated preferences for user {user_id}")
-    return UserPreferencesResponse.model_validate(preferences)
+    return UserPreferencesUpdateResponse.model_validate(
+        {**preferences, "threads_reassigned": threads_reassigned}
+    )
 
 @router.delete("/users/me/preferences", status_code=200)
 @handle_api_exceptions("delete preferences", logger)

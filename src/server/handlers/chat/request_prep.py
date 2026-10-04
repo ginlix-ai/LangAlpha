@@ -25,6 +25,8 @@ from src.config.settings import (
 )
 from src.server.app import setup
 from src.server.database import conversation as qr_db
+from src.server.database.conversation.threads_write import remember_thread_llm_model
+from src.server.services.llm.thread_model import NamedModel
 from src.server.database.runs import lifecycle as tl_db
 from src.server.models.chat import summarize_hitl_response_map
 from src.server.utils.skill_context import (
@@ -481,6 +483,20 @@ async def ensure_thread(
         )
 
     return prior
+
+
+async def keep_named_model(thread_id: str, named_model: NamedModel | None) -> None:
+    """Keep the model a client named on its thread, once the turn is admitted.
+
+    Called after START commits and the run is attached, so a send refused
+    before admission, or a steer that never ran on the model it carried,
+    leaves the thread as it was, and the committed run always has an owner
+    when this waits on the database.
+    """
+    if named_model:
+        await remember_thread_llm_model(
+            thread_id, named_model.name, seen=named_model.seen
+        )
 
 
 def build_turn_context(

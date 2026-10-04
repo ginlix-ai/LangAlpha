@@ -49,6 +49,26 @@ describe('ModelSelector', () => {
     expect(screen.getByText('The primary model for analysis')).toBeInTheDocument();
   });
 
+  it('offers a choice beside the placeholder that is not a model', () => {
+    const onChange = vi.fn();
+    render(
+      <ModelSelector
+        {...defaultProps}
+        onChange={onChange}
+        placeholder="Same as Primary model"
+        autoOption={{ value: '__auto__', label: 'Auto (gpt-4o-mini)' }}
+      />,
+    );
+
+    const select = document.querySelector('select')!;
+    expect([...select.options].slice(0, 2).map((o) => o.textContent)).toEqual([
+      'Same as Primary model',
+      'Auto (gpt-4o-mini)',
+    ]);
+    fireEvent.change(select, { target: { value: '__auto__' } });
+    expect(onChange).toHaveBeenCalledWith('__auto__');
+  });
+
   it('fires onChange with selected model', () => {
     const onChange = vi.fn();
     render(<ModelSelector {...defaultProps} onChange={onChange} />);

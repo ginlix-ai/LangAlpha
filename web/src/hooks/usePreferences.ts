@@ -19,5 +19,7 @@ export function usePreferences() {
     staleTime: PREFS_STALE_TIME_MS,
     retry: false,
   });
-  return { preferences: data ?? null, isLoading };
+  // `preferences` is null both for a user with no row yet and for a read that
+  // failed; `isLoaded` tells them apart, for a writer that replaces a value whole.
+  return { preferences: data ?? null, isLoading, isLoaded: data !== undefined };
 }

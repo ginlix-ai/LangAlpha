@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { MOVED_MODEL_KEYS } from '../lib/modelPreferences';
+import { MOVED_MODEL_KEYS, threadsMoved } from '../lib/modelPreferences';
 import { queryKeys } from '../lib/queryKeys';
 import { updatePreferences } from '../pages/Dashboard/utils/api';
 import type { UserPreferences } from '../types/api';
@@ -65,6 +65,11 @@ function withMovedDeletes(patch: Partial<UserPreferences>): Partial<UserPreferen
   };
 }
 
+/** Request options that ride a write without being columns of the row.
+ *  `apply_default_to` answers one default change and is never stored, so
+ *  predicting it into the cache would show a setting nobody saved. */
+const ONE_SHOT_KEYS = new Set(['apply_default_to']);
+
 /** What the row will look like once the server has applied this patch. */
 function mergePreferences(
   previous: UserPreferences,
@@ -72,6 +77,7 @@ function mergePreferences(
 ): UserPreferences {
   const next = { ...previous } as Record<string, unknown>;
   for (const [column, value] of Object.entries(withMovedDeletes(patch))) {
+    if (ONE_SHOT_KEYS.has(column)) continue;
     if (!isObject(value)) {
       next[column] = value;
       continue;
@@ -108,14 +114,22 @@ export function useUpdatePreferences() {
       if (previous) queryClient.setQueryData(key, mergePreferences(previous, patch));
       return { previous };
     },
-    // Deliberately no onSuccess write. `scope` serializes the requests but not
+    // Deliberately no write of the response over the entry. `scope` serializes the requests but not
     // `onMutate`, so every queued write has already moved the cache by the time
     // the first response lands; writing that response over the entry drops the
     // later patches until each one lands in turn. A list-valued control that
     // recomputes from the cache inside that window (fallback models, starred)
     // would send a list with the newer edit missing, which is a permanent loss
     // rather than a flicker.
-    onSettled: () => {
+    onSettled: (result, error) => {
+      // A moved thread may be open in a view kept alive behind this one, and
+      // each reads its model back from its thread row: a stale row would name
+      // the old model on its next send and move the thread back. Every write
+      // can move them (a cleared default, onboarding), so the refresh is here,
+      // and a failed one too, which may have committed with its response lost.
+      if (error || (threadsMoved(result) ?? 0) > 0) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.all });
+      }
       // Only the last write in flight can know the cache and the row agree.
       // Inside onSettled this mutation is still counted, so 1 means it is last.
       if (queryClient.isMutating({ mutationKey: PREFERENCE_MUTATION_KEY }) === 1) {

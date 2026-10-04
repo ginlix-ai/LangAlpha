@@ -83,6 +83,8 @@ export interface UseMarketChatReturn {
   messages: MarketChatMessage[];
   isLoading: boolean;
   error: string | StructuredError | null;
+  /** `__default__` until the first send's stream names the thread it created. */
+  threadId: string;
   handleSendMessage: (message: string, additionalContext?: unknown, attachmentMeta?: AttachmentMeta[] | null, model?: string | null) => Promise<void>;
 }
 
@@ -137,7 +139,10 @@ export function useMarketChat(): UseMarketChatReturn {
   const [messages, setMessages] = useState<MarketChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | StructuredError | null>(null);
+  // The ref is what a send in flight reads; the state is for the host, which
+  // keys the thread's model on it.
   const threadIdRef = useRef('__default__');
+  const [threadId, setThreadId] = useState('__default__');
   const contentOrderCounterRef = useRef(0);
   const currentReasoningIdRef = useRef<string | null>(null);
   // Track the active run_id for this thread. Populated from the SSE
@@ -446,6 +451,7 @@ export function useMarketChat(): UseMarketChatReturn {
           // Update thread_id if provided in the event
           if (event.thread_id && event.thread_id !== threadIdRef.current && event.thread_id !== '__default__') {
             threadIdRef.current = event.thread_id as string;
+            setThreadId(event.thread_id as string);
           }
 
           // The ``metadata`` event is the first event of every workflow
@@ -659,6 +665,7 @@ export function useMarketChat(): UseMarketChatReturn {
     messages,
     isLoading,
     error,
+    threadId,
     handleSendMessage,
   };
 }

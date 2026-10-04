@@ -340,3 +340,25 @@ async def test_a_stop_before_admission_interrupts_the_firing():
     assert _settled(fx)["to"] == "failed"
     assert _settled(fx)["error_message"] == INTERRUPTED_ERROR
     assert _settled(fx)["conversation_response_id"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("llm_model", ["m-auto", None])
+async def test_an_automation_turn_runs_its_own_model_not_the_threads(llm_model):
+    """An automation on a thread runs the model it was set up with (null: the
+    account default) and leaves the thread's own model as it found it. It calls
+    the run generators directly, past the send route that reads and keeps one."""
+    pinned = _automation(
+        thread_strategy="continue", conversation_thread_id="thread-1", llm_model=llm_model
+    )
+    turn_model = AsyncMock(return_value="m-thread")
+    with (
+        _firing([_streams], fresh=pinned) as fx,
+        patch("src.server.services.llm.thread_model.turn_model", new=turn_model),
+    ):
+        await AutomationExecutor().execute(pinned, _EXEC)
+
+    kwargs = fx.astream.call_args.kwargs
+    assert kwargs["request"].llm_model == llm_model
+    assert kwargs.get("named_model") is None
+    turn_model.assert_not_awaited()

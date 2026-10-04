@@ -1,29 +1,27 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo, useImperativeHandle } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useImperativeHandle } from 'react';
 import {
   Plus, ArrowUp, X, FileText, Archive, Square, ClipboardList,
   ChartCandlestick, TextSelect, MoreHorizontal, Mic, MicOff,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useQueryClient } from '@tanstack/react-query';
 import { TokenUsageRing, type TokenUsageData } from './token-usage-ring';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuSeparator,
 } from './dropdown-menu';
 import { Loader } from './loader';
 import { usePreferences } from '@/hooks/usePreferences';
-import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
-import { toast } from './use-toast';
-import { ToastAction } from './toast';
+import { useModeDefaultModel } from '@/hooks/useModeDefaultModel';
 import { useEffectiveTuning, useModelProfileWriter } from '@/hooks/useModelProfile';
 import { useFeatureEnabled } from '@/hooks/useFeatures';
 import { useAllModels } from '@/hooks/useAllModels';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { deriveQuickAccessModels } from './chat-input.models';
+import { useQuickAccessModels } from '@/hooks/useQuickAccessModels';
+import { useSeededModel } from '@/hooks/useSeededModel';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import './chat-input.css';
 import type { ModelOptions, ReadyAttachment, SlashCommand, Workspace } from './chat-input.types';
-import { getSlashCommandIcon, isLargePaste, getModelDisplayName, modelPickWrite } from './chat-input.helpers';
+import { getSlashCommandIcon, isLargePaste, getModelDisplayName } from './chat-input.helpers';
 import { effortLabelFor } from '@/lib/modelTuning';
 import type { ModelProfile } from '@/lib/modelTuning';
 import {
@@ -38,16 +36,11 @@ import { useMentions } from './chat-input.useMentions';
 import { useSlashCommands } from './chat-input.useSlashCommands';
 import { speechSupported, useVoiceInput } from './chat-input.useVoiceInput';
 import { useFileAttachments } from './chat-input.useFileAttachments';
-import { modelPrefs, modelProfile } from '@/lib/modelPreferences';
-import { queryKeys } from '@/lib/queryKeys';
+import { modelProfile } from '@/lib/modelPreferences';
 import { formatContextBlock } from './chat-input.contextBlocks';
 
 /** Autosize cap for the composer textarea; past this the box scrolls. */
 const MAX_TEXTAREA_HEIGHT = 200;
-
-/** Long enough to read the line and reach the undo; the 3s default is not. */
-const MODEL_SWITCH_TOAST_MS = 8000;
-
 
 export interface ChatInputHandle {
   getModelOptions: () => ModelOptions;
@@ -61,9 +54,6 @@ export interface ChatInputHandle {
    */
   addWidgetSnapshot: (snapshot: WidgetContextSnapshot) => void;
   setValue: (text: string) => void;
-  /** Imperatively change the selected model (e.g. the model-fallback
-   *  "Switch to X" action) so the next send uses it. */
-  setModel: (model: string) => void;
 }
 
 
@@ -101,8 +91,15 @@ export interface ChatInputProps {
   hasExternalContext?: boolean;
   tokenUsage?: TokenUsageData | null;
   onAction?: ((cmd: SlashCommand) => void) | null;
-  /** Reports the live model selection (fires on mount and every change). */
-  onModelChange?: ((model: string | null) => void) | null;
+  /**
+   * The model the pill shows and a send names, owned by the host's thread
+   * (`useThreadModel`), which also receives each pick through `onPickModel`.
+   * A composer with no thread behind it leaves both unset: it then holds the
+   * pick itself, seeded from the mode default, and the pick rides the next
+   * send, which is how such a composer starts its thread on the chosen model.
+   */
+  model?: string | null;
+  onPickModel?: ((model: string) => void) | null;
   threadModels?: string[];
   dropdownDirection?: 'up' | 'down';
   minRows?: number;
@@ -140,7 +137,8 @@ function ChatInput({
   // Action commands (e.g. /compact) — dispatched on send, not on selection
   onAction = null,
   // Model selector
-  onModelChange = null,
+  model: hostModel,
+  onPickModel = null,
   // All models used in this thread (shown in primary menu)
   threadModels: threadModelsProp = [],
   // Dropdown direction: 'up' (default, for bottom-positioned inputs) or 'down' (for mid-page inputs like ThreadGallery)
@@ -152,19 +150,9 @@ function ChatInput({
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const { preferences } = usePreferences();
-  const { mutateAsync: updatePreferencesAsync } = useUpdatePreferences();
-  const queryClient = useQueryClient();
   const marketWatchEnabled = useFeatureEnabled('market_watch');
-  const { validModelNames, metadata: modelMetadata, isLoading: modelsLoading, systemDefaults } = useAllModels();
+  const { validModelNames, metadata: modelMetadata, isLoading: modelsLoading } = useAllModels();
   const otherPref = (preferences as Record<string, Record<string, unknown>> | null)?.other_preference;
-  const starredModels = Array.isArray(otherPref?.starred_models)
-    ? (otherPref.starred_models as unknown[]).filter((m): m is string => typeof m === 'string')
-    : [];
-  // Model routing moved to its own bucket; starred_models above did not,
-  // so the two reads deliberately differ.
-  const mPref = modelPrefs(preferences);
-  const preferredModel = mPref.preferred_model || null;
-  const preferredFlashModel = mPref.preferred_flash_model || null;
   const [message, setMessage] = useState('');
   const { attachedFiles, setAttachedFiles, isDragging, handleFiles, removeFile, onDragOver, onDragLeave, onDrop, handlePaste } = useFileAttachments({ mode });
   const [planMode, setPlanMode] = useState(false);
@@ -174,24 +162,13 @@ function ChatInput({
   // value — a watch flipped on in PTC must never ride a flash send.
   const effectiveMarketWatch = watchMode && marketWatchEnabled && mode !== 'fast';
 
-  // Model selector state — use flash model preference when in flash mode
-  const modePreferredModel = mode === 'fast' ? (preferredFlashModel || preferredModel) : preferredModel;
-  // Every thread opens on the account's current preference, never on the model
-  // its last turn happened to use. That is what lets a retired model disappear
-  // without rewriting a single conversation, and it is why a pick below writes
-  // the preference instead of parking a model name on the thread.
-  const [selectedModel, setSelectedModel] = useState<string | null>(modePreferredModel);
-  // With nothing saved, a send carries no model and the server runs the
-  // deployment's default for the mode. The pill names that model instead of
-  // disappearing, and its tuning controls are that model's. Flash has its own
-  // default rather than the primary one, and a deployment that names none
-  // (reported as "") runs flash turns on the primary. Only once the preference
-  // is known: until then the server may run a stored model this composer
-  // cannot name, and the default's tuning would ride along on it.
-  const systemDefaultModel = (mode === 'fast' && systemDefaults?.flash_model)
-    || systemDefaults?.default_model
-    || null;
-  const pillModel = selectedModel || (preferences ? systemDefaultModel : null);
+  // The model a send names. A thread host owns it. Without one the composer
+  // holds it, starting on the account default for this mode, which with
+  // nothing saved is the deployment's (see useModeDefaultModel for why it
+  // waits on the preference), and following the default when it changes.
+  const defaultModel = useModeDefaultModel(mode);
+  const [ownModel, setOwnModel] = useSeededModel(defaultModel);
+  const pillModel = hostModel === undefined ? ownModel : hostModel;
 
   // Per-model tuning is an account preference, not a device one: the server
   // resolves ``profiles[<model>]`` for turns this input never starts (schedules,
@@ -219,79 +196,12 @@ function ChatInput({
   const resolvedEffort = effective.reasoning_effort;
   const resolvedFastMode = effective.fast_mode;
 
-  // Follow the preference when it moves, which includes the optimistic write a
-  // pick (or its undo) makes below, and its rollback. A preference that goes
-  // back to unset is followed too: holding the old selection would keep
-  // sending a model the account never kept. Adjusted during render, so the
-  // pill never commits a frame behind the preference.
-  const [followedPreference, setFollowedPreference] = useState(modePreferredModel);
-  if (followedPreference !== modePreferredModel) {
-    setFollowedPreference(modePreferredModel);
-    setSelectedModel(modePreferredModel);
-  }
-
-  // Mirror the live selection to the host (ChatView gates the fallback
-  // suggestion pill on the model the next send will actually use).
-  useEffect(() => {
-    onModelChange?.(selectedModel);
-  }, [selectedModel, onModelChange]);
-
-  // A pick answers "which model do I want", not "which model does this one
-  // message run on", so it writes the account preference and every thread
-  // follows. Keeping the answer in one place is what makes a retirement a
-  // single sweep. The toast is what makes a global effect legible from a
-  // control that looks local, so it carries the undo rather than a confirm
-  // step standing between the user and send.
-  const switchToastRef = useRef<ReturnType<typeof toast> | null>(null);
-  const pickSeqRef = useRef(0);
   const handlePickModel = useCallback((model: string) => {
-    // The checked row is the model the composer already runs, saved or not.
-    // Writing it would pin today's deployment default in place of following it.
+    // The checked row is the model the composer already runs.
     if (model === pillModel) return;
-    setSelectedModel(model);
-    // Without a loaded preference (its request failed) there is no known value
-    // for an undo to restore, and an unset one would delete a choice the
-    // account does hold. The pick then applies to this composer only.
-    if (!preferences) return;
-    const write = modelPickWrite(mode, model, preferredModel, preferredFlashModel);
-    if (!write) return;
-    const { key, previous } = write;
-    // A newer pick makes every older undo stale: restoring its value would
-    // overwrite the model the user just chose. An older write's failure is
-    // stale too, and its toast would replace the newer pick's undo.
-    const seq = ++pickSeqRef.current;
-    switchToastRef.current?.dismiss();
-    switchToastRef.current = null;
-    const failed = () => {
-      if (seq !== pickSeqRef.current) return;
-      toast({ description: t('chat.modelSwitchFailed'), variant: 'destructive' });
-    };
-    // `null` deletes the key, which is the only faithful undo for someone who
-    // had never chosen a model: writing today's default back would record a
-    // choice they never made. The composer follows the restored preference
-    // through the sync effect; set directly, it would take the pick's mode
-    // along and put a Flash model on the PTC composer.
-    const restore = () => {
-      // The toast outlives this composer, so Settings may have saved a newer
-      // choice since. The undo only reverts a preference that still holds
-      // this pick.
-      const current = modelPrefs(queryClient.getQueryData(queryKeys.user.preferences()))[key];
-      if (current !== model) return;
-      updatePreferencesAsync({ model_preference: { [key]: previous } }).catch(failed);
-    };
-    updatePreferencesAsync({ model_preference: { [key]: model } }).then(() => {
-      if (seq !== pickSeqRef.current) return;
-      switchToastRef.current = toast({
-        description: t('chat.modelSwitched', { model: getModelDisplayName(model, modelMetadata) }),
-        duration: MODEL_SWITCH_TOAST_MS,
-        action: (
-          <ToastAction altText={t('chat.undoModelSwitch')} onClick={restore}>
-            {t('chat.undo')}
-          </ToastAction>
-        ),
-      });
-    }).catch(failed);
-  }, [pillModel, preferences, mode, preferredModel, preferredFlashModel, updatePreferencesAsync, queryClient, modelMetadata, t]);
+    if (hostModel === undefined) setOwnModel(model);
+    else onPickModel?.(model);
+  }, [pillModel, hostModel, setOwnModel, onPickModel]);
 
   const isCodexModel = pillModel ? modelMetadata[pillModel]?.sdk === 'codex' : false;
 
@@ -343,7 +253,7 @@ function ChatInput({
   useImperativeHandle(ref, () => ({
     getModelOptions() {
       return {
-        model: selectedModel,
+        model: pillModel,
         reasoningEffort: resolvedEffort,
         fastMode: resolvedFastMode,
         marketWatch: effectiveMarketWatch,
@@ -383,10 +293,7 @@ function ChatInput({
       setMessage(text);
       setTimeout(() => textareaRef.current?.focus(), 0);
     },
-    setModel(model) {
-      if (model) setSelectedModel(model);
-    },
-  }), [selectedModel, resolvedEffort, resolvedFastMode, effectiveMarketWatch, setMentionedFiles]);
+  }), [pillModel, resolvedEffort, resolvedFastMode, effectiveMarketWatch, setMentionedFiles]);
 
   // Subscribe to ContextBus so this input mirrors the global widget-context
   // deck. Multiple chat inputs can be visible simultaneously (hero card +
@@ -585,7 +492,7 @@ function ChatInput({
       finalMessage = finalMessage.trimEnd() + '\n' + blocks.join('\n');
     }
     onSend(finalMessage, planMode, readyAttachments, slashCommands, {
-      model: selectedModel,
+      model: pillModel,
       reasoningEffort: resolvedEffort,
       fastMode: resolvedFastMode,
       marketWatch: effectiveMarketWatch,
@@ -608,7 +515,7 @@ function ChatInput({
     }
   }, [hasContent, disabled, message, planMode, effectiveMarketWatch, attachedFiles, setAttachedFiles, onSend, onAction,
     mentionedFiles, resetMentions, slashCommands, resetSlash,
-    selectedModel, resolvedEffort, resolvedFastMode, widgetSnapshots, t]);
+    pillModel, resolvedEffort, resolvedFastMode, widgetSnapshots, t]);
 
   // --- Keyboard & Language Detection ---
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -683,14 +590,10 @@ function ChatInput({
   const inlineItems = toolbarItems.filter((i) => fold.inline.has(i.id));
   const foldedItems = toolbarItems.filter((i) => fold.folded.includes(i.id));
 
-  /** Quick-access models for both the desktop submenu and mobile inline expand */
-  const moreModelsItems = useMemo(
-    () => deriveQuickAccessModels({
-      preferredModel, preferredFlashModel, starredModels, validModelNames,
-      // Don't repeat models already shown in the primary (selected + thread) section.
-      excludeModels: [pillModel, ...threadModelsProp].filter((m): m is string => !!m),
-    }),
-    [preferredModel, preferredFlashModel, starredModels, validModelNames, pillModel, threadModelsProp],
+  /** Quick-access models for both the desktop submenu and mobile inline expand.
+   *  Models already in the primary (selected + thread) section are not repeated. */
+  const { models: moreModelsItems, starred: starredModels } = useQuickAccessModels(
+    [pillModel, ...threadModelsProp].filter((m): m is string => !!m),
   );
 
   return (

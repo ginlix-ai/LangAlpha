@@ -46,7 +46,7 @@ def executed():
     conn.transaction = _transaction
 
     @asynccontextmanager
-    async def _conn():
+    async def _conn(_caller=None):
         yield conn
 
     with patch("src.server.database.user.get_db_connection", new=_conn):

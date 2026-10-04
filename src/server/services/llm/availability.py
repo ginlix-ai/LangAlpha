@@ -94,6 +94,29 @@ def _resolver(pref: dict) -> Callable[[str | None], bool] | None:
     return resolvable
 
 
+def model_resolves(model_pref: dict, name: str) -> bool:
+    """Whether ``name`` names a model this user can still select.
+
+    True when the manifest failed to load, for the reason ``_resolver`` gives:
+    judging against nothing would call every name dead.
+    """
+    resolvable = _resolver(model_pref)
+    return True if resolvable is None else resolvable(name)
+
+
+def raise_model_unavailable(model_name: str) -> NoReturn:
+    """Raise the 400 for a model a client asked to keep that this user cannot run."""
+    from fastapi import HTTPException
+
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "message": f"Model '{model_name}' is not available. Pick one from the model list.",
+            "type": "model_unavailable",
+        },
+    )
+
+
 def drop_dead_models(
     model_pref: dict, keys: Iterable[str]
 ) -> tuple[dict, list[tuple[str, str]]]:
