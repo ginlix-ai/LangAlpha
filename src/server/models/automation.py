@@ -141,6 +141,15 @@ class DeliveryConfig(BaseModel):
     )
 
 
+class DeliveryDefaultUpdate(BaseModel):
+    """A workspace's default chat on one app, where an entry naming only the
+    app delivers. A null address clears it."""
+
+    workspace_id: UUID
+    platform: str = Field(..., min_length=1, max_length=32)
+    address: Optional[str] = Field(None, max_length=500)
+
+
 def parse_delivery(value: Any) -> Dict[str, List[str]]:
     """Delivery as the agent writes it, a list or a comma-separated string, as
     the stored ``delivery_config``."""

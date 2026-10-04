@@ -8,6 +8,8 @@ Endpoints (/api/v1/automations):
 - POST   /automations                              - Create automation
 - GET    /automations                              - List automations
 - GET    /automations/executions                   - Run feed across automations
+- GET    /automations/delivery-options             - Chats a workspace's runs can reach
+- PUT    /automations/delivery-default             - Set a workspace's default chat
 - GET    /automations/{automation_id}              - Get automation
 - PATCH  /automations/{automation_id}              - Update automation
 - DELETE /automations/{automation_id}              - Delete automation
@@ -22,15 +24,17 @@ Endpoints (/api/v1/automations):
 """
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
 from src.server.database import automation as auto_db
 from src.server.database import automation_executions as exec_db
+from src.server.database.workspace import get_workspace
 from src.server.services.automations import lifecycle as handler
 from src.server.models.automation import (
     AutomationCreate,
@@ -39,9 +43,16 @@ from src.server.models.automation import (
     AutomationRunsListResponse,
     AutomationsListResponse,
     AutomationUpdate,
+    DeliveryDefaultUpdate,
     ExecutionStatus,
 )
-from src.server.utils.api import CurrentUserId, handle_api_exceptions, raise_not_found
+from src.server.utils.api import (
+    CurrentUserId,
+    handle_api_exceptions,
+    raise_not_found,
+    require_workspace_owner,
+)
+from src.tools.messaging import tools as messaging
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +71,10 @@ async def create_automation(
     user_id: CurrentUserId,
 ):
     """Create a new scheduled automation."""
-    automation = await handler.create_automation(user_id=user_id, data=request)
+    try:
+        automation = await handler.create_automation(user_id=user_id, data=request)
+    except handler.DeliveryRefused as e:
+        return _delivery_refused(e)
     return AutomationResponse.model_validate(automation)
 
 
@@ -103,6 +117,123 @@ async def list_automation_runs(
     )
 
 
+# =============================================================================
+# Delivery through the messaging service
+# =============================================================================
+
+# Listing the chats asks each linked app; saving a default checks the chat.
+_DELIVERY_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
+
+
+def _delivery_refused(e: handler.DeliveryRefused) -> JSONResponse:
+    """A write refused for its delivery: the 409 it has always been, with the
+    sentence in ``detail`` and each entry's reason in ``problems``."""
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": str(e),
+            "problems": [{"entry": entry, "message": why} for entry, why in e.refusals],
+        },
+    )
+
+
+def _service_message(answer: messaging.GatewayAnswer, fallback: str) -> str:
+    message = (answer.data or {}).get("message")
+    return message if isinstance(message, str) and message else fallback
+
+
+def _unavailable(detail: str) -> HTTPException:
+    return HTTPException(status_code=503, detail=detail)
+
+
+# Declared before /automations/{automation_id}, which would otherwise capture
+# the path as an id.
+@router.get("/automations/delivery-options")
+@handle_api_exceptions("list delivery options", logger)
+async def get_delivery_options(
+    user_id: CurrentUserId,
+    workspace_id: UUID = Query(...),
+) -> dict[str, Any]:
+    """The chats each linked app offers a workspace's automations, and the
+    one an entry naming only the app reaches. ``enabled`` is false, with no
+    apps, on a server with no messaging service."""
+    require_workspace_owner(await get_workspace(str(workspace_id)), user_id=user_id)
+    if not messaging.messaging_enabled():
+        return {"enabled": False, "apps": {}}
+    try:
+        answer = await messaging.gateway_request(
+            "GET",
+            "/agent/automation-targets",
+            user_id=user_id,
+            timeout=_DELIVERY_TIMEOUT,
+            params={"workspace_id": str(workspace_id)},
+        )
+    except messaging.GatewayError as e:
+        raise _unavailable(e.message)
+    if answer.status != 200:
+        logger.warning(f"[AUTOMATIONS] Delivery options answered {answer.status}")
+        raise _unavailable(
+            _service_message(answer, f"The messaging service failed ({answer.status}).")
+        )
+    apps = (answer.data or {}).get("apps")
+    if not isinstance(apps, dict):
+        raise _unavailable("The messaging service sent an answer that could not be read.")
+    return {"enabled": True, "apps": apps}
+
+
+@router.put("/automations/delivery-default")
+@handle_api_exceptions("set delivery default", logger)
+async def set_delivery_default(
+    request: DeliveryDefaultUpdate,
+    user_id: CurrentUserId,
+):
+    """Set the chat on one app that a workspace's automations deliver to when
+    an entry names only the app, or clear it with a null address. Answers
+    the chat as saved."""
+    require_workspace_owner(await get_workspace(str(request.workspace_id)), user_id=user_id)
+    if not messaging.messaging_enabled():
+        raise HTTPException(status_code=404, detail="No messaging service is configured.")
+    try:
+        answer = await messaging.gateway_request(
+            "PUT",
+            "/agent/automation-output",
+            user_id=user_id,
+            timeout=_DELIVERY_TIMEOUT,
+            body={
+                "workspace_id": str(request.workspace_id),
+                "platform": request.platform,
+                "address": request.address,
+            },
+        )
+    except messaging.GatewayError as e:
+        raise _unavailable(e.message)
+    data = answer.data or {}
+    if answer.status == 200 and answer.data is not None:
+        return {"address": data.get("address"), "name": data.get("name")}
+    if answer.status == 400:
+        problems = data.get("problems")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": _service_message(answer, "The default was not saved."),
+                "problems": problems if isinstance(problems, list) else [],
+            },
+        )
+    if answer.status == 409:
+        raise HTTPException(
+            status_code=409,
+            detail=_service_message(
+                answer, "The default is being changed elsewhere. Try again."
+            ),
+        )
+    logger.warning(f"[AUTOMATIONS] Delivery default answered {answer.status}")
+    if answer.status == 200:
+        raise _unavailable("The messaging service sent an answer that could not be read.")
+    raise _unavailable(
+        _service_message(answer, f"The messaging service failed ({answer.status}).")
+    )
+
+
 @router.get("/automations/{automation_id}", response_model=AutomationResponse)
 @handle_api_exceptions("get automation", logger)
 async def get_automation(
@@ -130,6 +261,8 @@ async def update_automation(
             user_id=user_id,
             fields=request.model_dump(exclude_none=True),
         )
+    except handler.DeliveryRefused as e:
+        return _delivery_refused(e)
     except ValidationError as e:
         # The body parsed, then failed against the stored kind of trigger:
         # a 422 shaped like the one FastAPI answers a bad body with.

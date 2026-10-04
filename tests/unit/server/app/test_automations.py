@@ -1,13 +1,16 @@
 """
 Tests for the Automations API router (src/server/app/automations.py).
 
-Covers CRUD, control actions (trigger/pause/resume), and execution history.
+Covers CRUD, control actions (trigger/pause/resume), execution history, and
+delivery through the messaging service.
 """
 
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -753,3 +756,310 @@ async def test_dismiss_on_another_users_automation_writes_nothing(client):
 
     assert resp.status_code == 404
     execs.dismiss_execution.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Delivery through the messaging service
+# ---------------------------------------------------------------------------
+
+SERVICE = "http://messaging.test/api/prefix"
+WS_ID = str(uuid.uuid4())
+OPTIONS_URL = f"/api/v1/automations/delivery-options?workspace_id={WS_ID}"
+DEFAULT_URL = "/api/v1/automations/delivery-default"
+APPS = {
+    "slack": {
+        "chats": [{"address": "slack:T1/C1", "name": "#demo", "kind": "channel"}],
+        "default": {"address": "slack:T1/C1", "name": "#demo", "via": "workspace"},
+        "error": None,
+    },
+    "telegram": {"chats": [], "default": None, "error": "Telegram isn't linked"},
+}
+
+
+class _MessagingService:
+    """Answers ``reply`` (a response, or an exception to raise) and keeps
+    every request."""
+
+    def __init__(self):
+        self.requests: list[httpx.Request] = []
+        self.reply: httpx.Response | Exception = httpx.Response(200, json={})
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return self.reply
+
+
+@pytest.fixture
+def no_messaging(monkeypatch):
+    from src.config import env
+
+    monkeypatch.setattr(env, "CHANNEL_GATEWAY_URL", "")
+    monkeypatch.delenv("INTERNAL_SERVICE_TOKEN", raising=False)
+
+
+@pytest.fixture
+def messaging_service(monkeypatch):
+    from src.config import env
+    from src.tools.messaging import tools as messaging
+
+    fake = _MessagingService()
+    transport = httpx.MockTransport(fake.handle)
+    monkeypatch.setattr(env, "CHANNEL_GATEWAY_URL", SERVICE)
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", "svc-token")
+    monkeypatch.setattr(
+        messaging,
+        "_client",
+        lambda timeout: httpx.AsyncClient(transport=transport, timeout=timeout),
+    )
+    return fake
+
+
+@pytest.fixture
+def workspace():
+    """The workspace the request names; set ``.return_value`` to change its
+    owner, or to None for one that doesn't exist."""
+    with patch(
+        "src.server.app.automations.get_workspace",
+        new=AsyncMock(return_value={"workspace_id": WS_ID, "user_id": "test-user-123"}),
+    ) as found:
+        yield found
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("workspace", "no_messaging")
+async def test_delivery_options_without_a_messaging_service(client):
+    resp = await client.get(OPTIONS_URL)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"enabled": False, "apps": {}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("workspace")
+async def test_delivery_options_lists_each_apps_chats(client, messaging_service):
+    messaging_service.reply = httpx.Response(200, json={"apps": APPS})
+
+    resp = await client.get(OPTIONS_URL)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"enabled": True, "apps": APPS}
+    (request,) = messaging_service.requests
+    assert request.method == "GET"
+    assert request.url.path == "/api/prefix/agent/automation-targets"
+    assert dict(request.url.params) == {"workspace_id": WS_ID}
+    assert request.headers["X-User-Id"] == "test-user-123"
+    assert request.headers["X-Service-Token"] == "svc-token"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("workspace")
+@pytest.mark.parametrize(
+    "reply, detail",
+    [
+        (httpx.ConnectError("refused"), "The messaging service could not be reached."),
+        (
+            httpx.Response(503, json={"code": "unavailable", "message": "Slack is down."}),
+            "Slack is down.",
+        ),
+        (httpx.Response(500, text="boom"), "The messaging service failed (500)."),
+        (
+            httpx.Response(200, json={"apps": []}),
+            "The messaging service sent an answer that could not be read.",
+        ),
+    ],
+)
+async def test_delivery_options_unavailable(client, messaging_service, reply, detail):
+    messaging_service.reply = reply
+
+    resp = await client.get(OPTIONS_URL)
+
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": detail}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "found, status",
+    [(None, 404), ({"workspace_id": WS_ID, "user_id": "someone-else"}, 403)],
+    ids=["missing", "not_theirs"],
+)
+async def test_delivery_options_only_for_the_users_workspace(
+    client, messaging_service, workspace, found, status
+):
+    workspace.return_value = found
+
+    resp = await client.get(OPTIONS_URL)
+
+    assert resp.status_code == status
+    assert messaging_service.requests == []
+    workspace.assert_awaited_once_with(WS_ID)
+
+
+@pytest.mark.asyncio
+async def test_delivery_options_needs_a_workspace(client):
+    resp = await client.get("/api/v1/automations/delivery-options")
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("workspace")
+@pytest.mark.parametrize("address", ["slack:T1/C1", None], ids=["set", "clear"])
+async def test_delivery_default_saves_the_chat(client, messaging_service, address):
+    messaging_service.reply = httpx.Response(
+        200, json={"address": address, "name": "#demo" if address else None}
+    )
+
+    resp = await client.put(
+        DEFAULT_URL, json={"workspace_id": WS_ID, "platform": "slack", "address": address}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"address": address, "name": "#demo" if address else None}
+    (request,) = messaging_service.requests
+    assert request.method == "PUT"
+    assert request.url.path == "/api/prefix/agent/automation-output"
+    assert request.headers["X-User-Id"] == "test-user-123"
+    assert json.loads(request.content) == {
+        "workspace_id": WS_ID,
+        "platform": "slack",
+        "address": address,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("workspace")
+async def test_delivery_default_refused_says_why(client, messaging_service):
+    problems = [{"field": "address", "message": "The bot is not in #ops."}]
+    messaging_service.reply = httpx.Response(
+        400, json={"code": "invalid", "message": "Not saved.", "problems": problems}
+    )
+
+    resp = await client.put(
+        DEFAULT_URL, json={"workspace_id": WS_ID, "platform": "slack", "address": "slack:T1/C9"}
+    )
+
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "Not saved.", "problems": problems}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("workspace")
+@pytest.mark.parametrize(
+    "reply, status, detail",
+    [
+        (
+            httpx.Response(409, json={"code": "busy", "message": "Saving already."}),
+            409,
+            "Saving already.",
+        ),
+        (
+            httpx.Response(503, json={"code": "unavailable", "message": "Try later."}),
+            503,
+            "Try later.",
+        ),
+        (httpx.ConnectError("refused"), 503, "The messaging service could not be reached."),
+        (httpx.Response(500, text="boom"), 503, "The messaging service failed (500)."),
+        (
+            httpx.Response(200, text="not json"),
+            503,
+            "The messaging service sent an answer that could not be read.",
+        ),
+    ],
+)
+async def test_delivery_default_not_saved(client, messaging_service, reply, status, detail):
+    messaging_service.reply = reply
+
+    resp = await client.put(
+        DEFAULT_URL, json={"workspace_id": WS_ID, "platform": "slack", "address": "slack:T1/C1"}
+    )
+
+    assert resp.status_code == status
+    assert resp.json() == {"detail": detail}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("workspace", "no_messaging")
+async def test_delivery_default_without_a_messaging_service(client):
+    resp = await client.put(
+        DEFAULT_URL, json={"workspace_id": WS_ID, "platform": "slack", "address": None}
+    )
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "found, status",
+    [(None, 404), ({"workspace_id": WS_ID, "user_id": "someone-else"}, 403)],
+    ids=["missing", "not_theirs"],
+)
+async def test_delivery_default_only_for_the_users_workspace(
+    client, messaging_service, workspace, found, status
+):
+    workspace.return_value = found
+
+    resp = await client.put(
+        DEFAULT_URL, json={"workspace_id": WS_ID, "platform": "slack", "address": "slack:T1/C1"}
+    )
+
+    assert resp.status_code == status
+    assert messaging_service.requests == []
+
+
+_REFUSALS = [
+    ("slack:T1/C9", "the bot is not in that channel"),
+    ("telegram", "Telegram isn't linked to your account"),
+]
+_JOINED = (
+    "'slack:T1/C9': the bot is not in that channel; "
+    "'telegram': Telegram isn't linked to your account"
+)
+_PROBLEMS = [
+    {"entry": "slack:T1/C9", "message": "the bot is not in that channel"},
+    {"entry": "telegram", "message": "Telegram isn't linked to your account"},
+]
+
+
+@pytest.mark.asyncio
+async def test_create_refused_for_its_delivery_names_each_entry(client):
+    from src.server.services.automations.lifecycle import DeliveryRefused
+
+    with patch(
+        f"{HANDLER}.create_automation",
+        new_callable=AsyncMock,
+        side_effect=DeliveryRefused(_REFUSALS),
+    ):
+        resp = await client.post(
+            "/api/v1/automations",
+            json={
+                "name": "Brief",
+                "trigger_type": "cron",
+                "cron_expression": "0 8 * * *",
+                "instruction": "test",
+                "delivery_config": {"methods": ["slack:T1/C9", "telegram"]},
+            },
+        )
+
+    assert resp.status_code == 409
+    assert resp.json() == {"detail": _JOINED, "problems": _PROBLEMS}
+
+
+@pytest.mark.asyncio
+async def test_update_refused_for_its_delivery_names_each_entry(client):
+    from src.server.services.automations.lifecycle import DeliveryRefused
+
+    with patch(
+        f"{HANDLER}.update_automation",
+        new_callable=AsyncMock,
+        side_effect=DeliveryRefused(_REFUSALS),
+    ):
+        resp = await client.patch(
+            f"/api/v1/automations/{AUTO_ID}",
+            json={"delivery_config": {"methods": ["slack:T1/C9", "telegram"]}},
+        )
+
+    assert resp.status_code == 409
+    assert resp.json() == {"detail": _JOINED, "problems": _PROBLEMS}
