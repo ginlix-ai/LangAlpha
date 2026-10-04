@@ -100,7 +100,7 @@ def get_income_statement(
     profitability and top-line trends.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
         quarterly: Quarterly if True, else annual.
 
     Returns:
@@ -145,7 +145,7 @@ def get_balance_sheet(ticker: str, quarterly: bool = True) -> _OUT_GET_BALANCE_S
     and capital-structure analysis.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
         quarterly: Quarterly if True, else annual.
 
     Returns:
@@ -190,7 +190,7 @@ def get_cash_flow(ticker: str, quarterly: bool = True) -> _OUT_GET_CASH_FLOW:
     generation and capex analysis.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
         quarterly: Quarterly if True, else annual.
 
     Returns:
@@ -230,7 +230,7 @@ def get_company_info(ticker: str) -> _OUT_GET_COMPANY_INFO:
     valuation ratios, and business summary.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, currency?, count, data, source}. data is one Yahoo-native
@@ -285,7 +285,7 @@ def get_earnings_dates(ticker: str) -> _OUT_GET_EARNINGS_DATES:
     earnings schedule and recent surprises.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
@@ -321,7 +321,7 @@ def get_earnings_data(ticker: str) -> _OUT_GET_EARNINGS_DATA:
     beats/misses. Same data as get_earnings_history (analysis server).
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
