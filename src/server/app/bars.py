@@ -19,7 +19,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from src.data_client.normalize import publisher_lineage, served_display_unit
-from src.market_protocol import (
+from market_protocol import (
     OHLCV_SCHEMAS,
     AssetClass,
     OhlcvBar,
@@ -29,7 +29,7 @@ from src.market_protocol import (
     to_canonical,
     to_legacy_api,
 )
-from src.market_protocol.intervals import is_intraday_schema, legacy_for_schema
+from market_protocol.intervals import is_intraday_schema, legacy_for_schema
 from src.server.services.cache._instrument_clock import clock_for
 from src.server.services.cache.daily_cache_service import DailyCacheService
 from src.server.services.cache.intraday_cache_service import IntradayCacheService

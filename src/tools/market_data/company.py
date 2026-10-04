@@ -18,7 +18,7 @@ from .display import (
 from .quote_format import build_live_stamp
 from .utils import format_number, format_percentage, get_market_session
 from src.data_client import get_financial_data_provider, get_market_data_provider
-from src.market_protocol import to_legacy_api
+from market_protocol import to_legacy_api
 
 from ._shared import _fmp_request, _get_user_id, _safe_result
 

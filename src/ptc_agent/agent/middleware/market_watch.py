@@ -50,8 +50,8 @@ from ptc_agent.agent.provenance.types import (
 )
 from src.config.settings import get_market_watch_min_interval
 from src.data_client.registry import get_market_data_provider
-from src.market_protocol import MarketPhase
-from src.market_protocol.calendars import get_calendar
+from market_protocol import MarketPhase
+from market_protocol.calendars import get_calendar
 from src.tools.market_data.display import resolve_ref
 from src.tools.market_data.quote_format import current_price, format_quote_block
 from src.utils.market_watch import get_watchlist

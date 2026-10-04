@@ -12,9 +12,9 @@ from zoneinfo import ZoneInfo
 
 from src.config.core import get_infrastructure_config
 from src.data_client.normalize import publisher_lineage
-from src.market_protocol import to_canonical
-from src.market_protocol.enums import AssetClass, Tier
-from src.market_protocol.intervals import schema_for_legacy
+from market_protocol import to_canonical
+from market_protocol.enums import AssetClass, Tier
+from market_protocol.intervals import schema_for_legacy
 from src.server.services.cache._instrument_clock import UsClock, clock_for
 from src.utils.market_hours import current_trading_date, interval_seconds
 

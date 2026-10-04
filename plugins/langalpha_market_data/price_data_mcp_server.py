@@ -14,7 +14,7 @@ Tools:
 - get_asset_data: stock/commodity/crypto/forex OHLCV
 - get_short_data: short interest (bi-monthly) and short volume (daily)
 
-Symbols are resolved at the boundary through src.market_protocol (canonical
+Symbols are resolved at the boundary through market_protocol (canonical
 identity, currency, timezone); prices are returned in major currency units
 (GBX/pence venues converted to pounds).
 """
@@ -42,8 +42,8 @@ from data_client.ginlix_data import (
     get_ginlix_mcp_client,
 )
 from data_client.normalize import minor_unit_scale, normalize_bars, scale_price
-from src.market_protocol import to_canonical, to_display, to_legacy_api
-from src.market_protocol.enums import AssetClass
+from market_protocol import to_canonical, to_display, to_legacy_api
+from market_protocol.enums import AssetClass
 
 try:
     from _envelope import (

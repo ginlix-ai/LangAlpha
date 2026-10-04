@@ -14,7 +14,6 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional
 
-from src.market_protocol.symbology import index_legacy_to_polygon
 from src.server.models.automation import (
     MarketType,
     PriceConditionType,
@@ -22,6 +21,11 @@ from src.server.models.automation import (
     RetriggerMode,
 )
 from src.server.services.market_data_feed import MarketDataFeed
+
+
+def index_legacy_to_polygon() -> dict[str, str]:
+    return {"GSPC": "I:SPX", "DJI": "I:DJI", "IXIC": "I:COMP",
+            "NDX": "I:NDX", "RUT": "I:RUT", "VIX": "I:VIX"}
 
 logger = logging.getLogger(__name__)
 

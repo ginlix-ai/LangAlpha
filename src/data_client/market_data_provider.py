@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from src.market_protocol import CARET_INDEX_REGIONS, to_canonical
+from market_protocol import CARET_INDEX_REGIONS, to_canonical
 
 from .base import FetchResult, MarketDataSource
 

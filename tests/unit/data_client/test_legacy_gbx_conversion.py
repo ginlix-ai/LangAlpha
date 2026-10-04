@@ -20,7 +20,7 @@ from src.data_client.fmp.data_source import normalize_series as fmp_normalize_se
 from src.data_client.normalize import minor_unit_scale
 from src.data_client.yfinance.data_source import YFinanceDataSource, _normalize_bar
 from src.data_client.yfinance.data_source import normalize_series as yf_normalize_series
-from src.market_protocol import to_canonical
+from market_protocol import to_canonical
 
 LSE = "VOD.L"   # XLON — quotes GBX (pence)
 US = "AAPL"     # XNAS — quotes USD (major units)

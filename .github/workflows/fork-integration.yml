@@ -4,11 +4,11 @@ name: Fork Integration Tests
 #
 # SECURITY: pull_request_target runs in the base-repo context (so DAYTONA_API_KEY
 # is available) and this job checks out and executes the fork's UNTRUSTED code.
-# `uv sync` builds the root project from fork-controlled source and reads
-# libs/ptc-cli to check the lock (a fork can turn that into a build), so fork
-# build hooks (pyproject.toml / hatch hooks / uv.lock / conftest.py) auto-run
-# BEFORE pytest, with the key in the env. The reviewer MUST audit build config
-# + lockfile + libs/, not just the test files.
+# `uv sync` builds the root project AND the editable libs/market-protocol from
+# fork-controlled source, and reads libs/ptc-cli to check the lock (a fork can
+# turn that into a build), so fork build hooks (pyproject.toml / hatch hooks /
+# uv.lock / conftest.py) auto-run BEFORE pytest, with the key in the env. The
+# reviewer MUST audit build config + lockfile + libs/, not just the test files.
 # This is only safe because:
 #   1. the `fork-ci` environment requires a maintainer to approve each run, and
 #      the gate re-fires on every push (synchronize);

@@ -8,10 +8,14 @@ from typing import Any
 
 from src.data_client.base import FetchResult
 from src.data_client.normalize import build_series
-from src.market_protocol import InstrumentRef, Series
-from src.market_protocol.symbology import index_legacy_to_polygon
+from market_protocol import InstrumentRef, Series
 
 from .client import GinlixDataClient
+
+
+def index_legacy_to_polygon() -> dict[str, str]:
+    return {"GSPC": "I:SPX", "DJI": "I:DJI", "IXIC": "I:COMP",
+            "NDX": "I:NDX", "RUT": "I:RUT", "VIX": "I:VIX"}
 
 logger = logging.getLogger(__name__)
 

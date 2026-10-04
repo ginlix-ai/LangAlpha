@@ -16,7 +16,7 @@ from .quote_format import format_quote_block, venue_clock
 from .utils import get_market_session
 from src.data_client import get_financial_data_provider, get_market_data_provider
 from src.data_client.ginlix_data.pagination import paginate_cursor
-from src.market_protocol import to_legacy_api
+from market_protocol import to_legacy_api
 
 from ._shared import _get_user_id
 

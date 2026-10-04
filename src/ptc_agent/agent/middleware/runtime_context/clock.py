@@ -235,7 +235,7 @@ class TableCalendar:
 # dates, nth-weekday rules, Good Friday (lunar) and weekend-observance shifts,
 # and a wrong generated date is worse than an absent one.
 #
-# TODO: swap for ``src.market_protocol.calendars.get_calendar("XNYS")``, which
+# TODO: swap for ``market_protocol.calendars.get_calendar("XNYS")``, which
 # already answers this exactly (and covers early closes, which this does not).
 # It is not used here because building an ``exchange_calendars`` calendar costs
 # real time on first touch, and the envelope renders on the model-call path in

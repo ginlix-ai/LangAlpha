@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 import yfinance as yf
 
 from src.data_client.normalize import build_series, minor_unit_scale, scale_snapshot_prices
-from src.market_protocol import InstrumentRef, Series
+from market_protocol import InstrumentRef, Series
 
 logger = logging.getLogger(__name__)
 

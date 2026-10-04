@@ -25,7 +25,7 @@ from src.data_client.normalize import (
     scale_price,
     scale_snapshot_prices,
 )
-from src.market_protocol import InstrumentRef, Series
+from market_protocol import InstrumentRef, Series
 
 from .fmp_client import FMPClient
 

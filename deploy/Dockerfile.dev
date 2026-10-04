@@ -20,6 +20,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 # Copied but not installed; see the note in Dockerfile.backend.
 COPY libs/ptc-cli/ libs/ptc-cli/
+COPY libs/market-protocol/ libs/market-protocol/
 
 # Install dependencies (frozen = use lockfile exactly).
 ARG INSTALL_OBSERVABILITY=false

@@ -11,14 +11,14 @@ from datetime import datetime, timezone
 from typing import Dict, Optional
 from zoneinfo import ZoneInfo
 
-from src.market_protocol import (
+from market_protocol import (
     AssetClass,
     InstrumentRef,
     MarketPhase,
     display_decimals_for,
     to_canonical,
 )
-from src.market_protocol.calendars import get_calendar
+from market_protocol.calendars import get_calendar
 
 from .currency import DisplaySpec
 

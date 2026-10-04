@@ -360,7 +360,7 @@ class TestDailyWatermarkStale:
         # closed (no backstop) rather than guessing a calendar.
         tue_open = datetime(2026, 5, 26, 11, 0, tzinfo=ET)
         env = self._daily_env(datetime(2026, 5, 21), data_date="2026-05-26")
-        assert is_watermark_stale(env, "1day", now=tue_open, symbol="HSI", is_index=True) is False
+        assert is_watermark_stale(env, "1day", now=tue_open, symbol="XYZIDX", is_index=True) is False
 
     def test_us_symbol_and_index_keep_backstop(self):
         tue_open = datetime(2026, 5, 26, 11, 0, tzinfo=ET)
@@ -509,7 +509,7 @@ class TestClockClassification:
         assert clock_for("GSPC", True).daily_backstop is True
         assert clock_for("^SOX", True).daily_backstop is True
         assert clock_for("I:SPX", True).daily_backstop is True
-        assert clock_for("HSI", True).daily_backstop is False
+        assert clock_for("XYZIDX", True).daily_backstop is False
 
     def test_none_symbol_is_us_parity(self):
         assert isinstance(clock_for(None), UsClock)

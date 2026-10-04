@@ -23,11 +23,16 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
-from src.market_protocol import InstrumentRef, to_canonical
-from src.market_protocol.calendars import MarketCalendar, get_calendar, session_bounds
-from src.market_protocol.enums import AssetClass, MarketPhase
-from src.market_protocol.symbology import UNKNOWN_MIC, index_legacy_to_polygon
+from market_protocol import InstrumentRef, to_canonical
+from market_protocol.calendars import MarketCalendar, get_calendar, session_bounds
+from market_protocol.enums import AssetClass, MarketPhase
+from market_protocol.symbology import UNKNOWN_MIC
 from src.utils import market_hours
+
+
+def index_legacy_to_polygon() -> dict[str, str]:
+    return {"GSPC": "I:SPX", "DJI": "I:DJI", "IXIC": "I:COMP",
+            "NDX": "I:NDX", "RUT": "I:RUT", "VIX": "I:VIX"}
 
 logger = logging.getLogger(__name__)
 

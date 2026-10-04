@@ -13,6 +13,7 @@ on:
       - src/server/services/workspace_manager.py
       - src/server/services/platform_secret_rollout.py
       - Dockerfile.sandbox
+      - libs/market-protocol/**
       - docker-compose.yml
       - tests/integration/sandbox/**
   push:
@@ -22,6 +23,7 @@ on:
       - src/ptc_agent/agent/backends/**
       - src/server/services/platform_secret_rollout.py
       - Dockerfile.sandbox
+      - libs/market-protocol/**
       - tests/integration/sandbox/**
   workflow_dispatch:
     inputs:
@@ -60,6 +62,7 @@ jobs:
           filters: |
             docker:
               - Dockerfile.sandbox
+              - libs/market-protocol/**
               - src/ptc_agent/core/sandbox/providers/docker.py
               - src/ptc_agent/core/sandbox/providers/_chart_capture.py
               - tests/integration/sandbox/providers/**

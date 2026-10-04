@@ -25,7 +25,7 @@ from src.tools.market_data.prices import (
 )
 from src.tools.market_data.screener import fetch_stock_screener
 from src.tools.market_data.utils import format_number
-from src.market_protocol import to_canonical
+from market_protocol import to_canonical
 
 _SCREEN_MOD = "src.tools.market_data.screener"
 

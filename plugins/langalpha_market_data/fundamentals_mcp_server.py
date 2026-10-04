@@ -44,7 +44,7 @@ from mcp_servers._schemas import (
     envelope_schema,
     output_model,
 )
-from src.market_protocol.symbology import to_canonical, to_display
+from market_protocol.symbology import to_canonical, to_display
 
 
 mcp = MCPServer("FundamentalsMCP", lifespan=fmp_lifespan)

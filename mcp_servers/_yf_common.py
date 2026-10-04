@@ -1,7 +1,7 @@
 """Shared helpers for the yfinance MCP servers.
 
 Synced into sandboxes as a sibling module — keep imports limited to stdlib,
-pandas, and src.market_protocol.
+pandas, and market_protocol.
 """
 
 from __future__ import annotations
@@ -11,7 +11,23 @@ from typing import Optional
 
 import pandas as pd
 
-from src.market_protocol import to_canonical, to_display, to_provider
+from market_protocol import (
+    AssetClass,
+    InstrumentRef,
+    is_family_index,
+    to_canonical,
+    to_display,
+    vendor_symbol,
+)
+
+
+def yfinance_symbol(ref: InstrumentRef) -> str:
+    """Yahoo's spelling: ``^GSPC`` for a family index, ``600519.SS``, ``EURUSD=X`` for FX."""
+    if is_family_index(ref):
+        return f"^{vendor_symbol(ref)}"
+    if ref.asset_class is AssetClass.FX:
+        return f"{ref.symbol.replace('-', '')}=X"
+    return vendor_symbol(ref)
 
 
 def boundary(ticker: str) -> tuple[str, str, Optional[str]]:
@@ -22,7 +38,7 @@ def boundary(ticker: str) -> tuple[str, str, Optional[str]]:
     """
     try:
         ref = to_canonical(ticker)
-        return to_display(ref), to_provider(ref, "yfinance"), ref.price_currency
+        return to_display(ref), yfinance_symbol(ref), ref.price_currency
     except Exception:  # noqa: BLE001
         cleaned = (ticker or "").strip().upper()
         return cleaned, cleaned, None

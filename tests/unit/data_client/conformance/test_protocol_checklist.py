@@ -8,7 +8,7 @@ at the cache-key layer from Phase 3.
 import pytest
 from pydantic import ValidationError
 
-from src.market_protocol import (
+from market_protocol import (
     OhlcvBar,
     PriceTreatment,
     Series,

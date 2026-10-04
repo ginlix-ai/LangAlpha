@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from src.market_protocol import to_canonical
+from market_protocol import to_canonical
 from src.server.services.cache import quote_cache_service as qcs
 from src.server.services.cache.quote_cache_service import QuoteCacheService, _quote_ttl
 

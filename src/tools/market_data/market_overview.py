@@ -11,7 +11,7 @@ from langchain_core.runnables import RunnableConfig
 from .currency import fmt_count
 from .quote_format import build_live_stamp
 from src.data_client import get_financial_data_provider, get_market_data_provider
-from src.market_protocol import CARET_INDEX_REGIONS
+from market_protocol import CARET_INDEX_REGIONS
 
 from ._shared import _get_user_id, _normalize_market_bars
 from .prices import _calculate_price_statistics

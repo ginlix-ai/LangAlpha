@@ -20,7 +20,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ptc_agent.agent.middleware.market_watch import MarketWatchMiddleware
 from ptc_agent.agent.middleware.runtime_context import REQUEST_CALL_UPDATES
-from src.market_protocol import MarketPhase
+from market_protocol import MarketPhase
 
 
 @pytest.fixture(autouse=True)

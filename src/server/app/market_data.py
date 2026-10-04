@@ -38,8 +38,8 @@ from src.server.services.cache.daily_cache_service import (
     DailyCacheService,
 )
 from src.server.services.cache.quote_cache_service import QuoteCacheService
-from src.market_protocol import to_canonical, to_legacy_api
-from src.market_protocol.enums import AssetClass
+from market_protocol import to_canonical, to_legacy_api
+from market_protocol.enums import AssetClass
 
 logger = logging.getLogger(__name__)
 

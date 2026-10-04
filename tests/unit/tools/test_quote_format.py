@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytz
 
-from src.market_protocol import MarketPhase
+from market_protocol import MarketPhase
 from src.tools.market_data.quote_format import (
     build_live_stamp,
     current_price,

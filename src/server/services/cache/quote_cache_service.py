@@ -13,9 +13,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from src.data_client import get_market_data_provider
-from src.market_protocol import InstrumentRef, to_canonical, to_legacy_api
-from src.market_protocol.calendars import get_calendar
-from src.market_protocol.enums import AssetClass, MarketPhase
+from market_protocol import InstrumentRef, to_canonical, to_legacy_api
+from market_protocol.calendars import get_calendar
+from market_protocol.enums import AssetClass, MarketPhase
 from src.utils.cache.redis_cache import get_cache_client
 
 logger = logging.getLogger(__name__)

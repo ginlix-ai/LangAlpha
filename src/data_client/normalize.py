@@ -19,7 +19,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from src.market_protocol import (
+from market_protocol import (
     InstrumentRef,
     OhlcvBar,
     Series,
@@ -27,7 +27,7 @@ from src.market_protocol import (
     display_decimals_for,
     to_canonical,
 )
-from src.market_protocol.enums import PriceTreatment, Tier
+from market_protocol.enums import PriceTreatment, Tier
 
 from .market_data_provider import symbol_timezone
 

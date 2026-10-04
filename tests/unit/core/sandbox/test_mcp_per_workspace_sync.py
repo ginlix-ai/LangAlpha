@@ -435,7 +435,7 @@ class TestManifestRegression:
 
     @pytest.mark.asyncio
     async def test_manifest_ships_internal_packages_with_data_seed(self):
-        """The builtin MCP servers import ``src.data_client``/``src.market_protocol``
+        """The builtin MCP servers import ``src.data_client``/``market_protocol``
         at the sandbox boundary, so both are mirrored into ``_internal/src`` and
         hashed as one all-or-nothing manifest module — every file, data seeds
         included. An unsynced package crashes every server on import."""

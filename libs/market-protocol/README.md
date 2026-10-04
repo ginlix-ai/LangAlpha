@@ -24,7 +24,11 @@ named.
   keyed by calendar id (`InstrumentRef.calendar_id`, not the MIC: XNAS trades
   on the XNYS calendar), session bounds, lunch breaks, early closes, the
   market phase (pre, regular, lunch, post, closed) at any instant, and the
-  next and previous session.
+  next and previous session. FX trades on UTC weekdays, Monday 00:00 to
+  Saturday 00:00 UTC, so that a session is one trade date of the vendors' UTC
+  daily bars; the real market opens about 17:00 New York on Sunday and closes
+  at the same hour on Friday, so the phase reads closed for Sunday evening
+  and open for late Friday.
 - **Bar, quote and series types** (`market_protocol.models`): `OhlcvBar`,
   `Quote`, `Series`, `SeriesHeader`, `Coverage`, `Gap` and `InstrumentRef`, with
   timestamps in Unix milliseconds UTC. A bar is stamped at the open of its

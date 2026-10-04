@@ -11,7 +11,7 @@ in tool-output paths and the market-watch middleware).
 from datetime import datetime
 from typing import Any, Optional
 
-from src.market_protocol import MarketPhase
+from market_protocol import MarketPhase
 
 from .currency import fmt_price
 from .display import (

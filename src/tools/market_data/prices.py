@@ -18,7 +18,7 @@ from .display import (
 from .quote_format import build_live_stamp
 from .utils import finite_or_none, format_percentage
 from src.data_client import get_market_data_provider
-from src.market_protocol import AssetClass, to_legacy_api
+from market_protocol import AssetClass, to_legacy_api
 
 from ._shared import _get_user_id, _normalize_market_bars
 
