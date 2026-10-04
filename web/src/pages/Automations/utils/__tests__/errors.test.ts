@@ -96,6 +96,16 @@ describe('mutationErrorMessage', () => {
     );
   });
 
+  it('reads the whole sentence of a refusal that names each entry', () => {
+    const problems = [{ entry: 'slack:T1/C2', message: "the bot isn't in the channel" }];
+    expect(
+      mutationErrorMessage(refused(409, { detail: { message: "'slack:T1/C2': the bot isn't in the channel", problems } }), 'fallback'),
+    ).toBe("'slack:T1/C2': the bot isn't in the channel");
+    expect(
+      mutationErrorMessage(refused(409, { detail: { detail: "'slack:T1/C2': the bot isn't in the channel", problems } }), 'fallback'),
+    ).toBe("'slack:T1/C2': the bot isn't in the channel");
+  });
+
   it("reads the client's own message when no body came back, and falls back when there is none", () => {
     expect(mutationErrorMessage(new ApiError('Network Error', 'ERR_NETWORK'), 'fallback')).toBe('Network Error');
     expect(mutationErrorMessage(new Error(''), 'Something went wrong')).toBe('Something went wrong');

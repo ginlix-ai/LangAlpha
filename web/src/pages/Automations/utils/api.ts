@@ -5,6 +5,7 @@ import type {
   AutomationPayload,
   AutomationRun,
   AutomationUpdatePayload,
+  DeliveryOptions,
 } from '@/types/automation';
 
 export interface AutomationList {
@@ -59,3 +60,21 @@ export const skipRun = (automationId: string, executionId: string): Promise<ApiR
  *  attention until a newer run fails. */
 export const dismissRun = (automationId: string, executionId: string): Promise<ApiResponse<Automation>> =>
   api.post(`/api/v1/automations/${automationId}/executions/${executionId}/dismiss`);
+
+/** The chats each linked app offers an automation in this workspace, and
+ *  where its bare entry lands now. */
+export const getDeliveryOptions = (workspaceId: string): Promise<ApiResponse<DeliveryOptions>> =>
+  api.get('/api/v1/automations/delivery-options', { params: { workspace_id: workspaceId } });
+
+export interface DeliveryDefaultPayload {
+  workspace_id: string;
+  platform: string;
+  /** null clears the workspace's default for the app. */
+  address: string | null;
+}
+
+/** Set or clear the chat an app's bare entry lands in for one workspace. */
+export const setDeliveryDefault = (
+  data: DeliveryDefaultPayload,
+): Promise<ApiResponse<{ address: string | null; name: string | null }>> =>
+  api.put('/api/v1/automations/delivery-default', data);
