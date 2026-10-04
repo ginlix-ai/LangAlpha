@@ -7,6 +7,7 @@ service tokens on the host).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -17,7 +18,8 @@ import httpx
 
 from ..market_data_provider import is_us_symbol
 from ..normalize import normalize_bars
-from .pagination import paginate_cursor
+from .pagination import follow_cursor, paginate_cursor, unique_by_time
+from .v2_routes import GinlixDataV2Routes, path_segment
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +132,7 @@ def _save_tokens(tokens: dict) -> None:
 _MAX_PAGES = 10  # Up to 500k bars (10 × 50k)
 
 
-class GinlixMCPClient:
+class GinlixMCPClient(GinlixDataV2Routes):
     """Sandbox-side ginlix-data client with OAuth token-file auth.
 
     Lazily initializes on first use.  Re-reads the token file until
@@ -140,6 +142,9 @@ class GinlixMCPClient:
 
     def __init__(self) -> None:
         self._http: httpx.AsyncClient | None = None
+        # The auth service rotates the refresh token on use, so two refreshes
+        # racing on one expiry spend it twice and the loser fails.
+        self._refresh_lock = asyncio.Lock()
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -193,13 +198,29 @@ class GinlixMCPClient:
         if not await self.ensure():
             raise RuntimeError("ginlix-data client not initialized")
         assert self._http is not None
+        sent = self._http.headers.get("Authorization")
         resp = await self._http.request(method, url, **kwargs)
-        if resp.status_code == 401:
-            new_token = await self._refresh_access_token()
-            if new_token:
-                self._http.headers["Authorization"] = f"Bearer {new_token}"
-                resp = await self._http.request(method, url, **kwargs)
+        if resp.status_code != 401:
+            return resp
+        async with self._refresh_lock:
+            # A caller that waited here finds the token another one refreshed.
+            if self._http.headers.get("Authorization") == sent:
+                new_token = await self._refresh_access_token()
+                if new_token:
+                    self._http.headers["Authorization"] = f"Bearer {new_token}"
+            current = self._http.headers.get("Authorization")
+        if current != sent:
+            resp = await self._http.request(method, url, **kwargs)
         return resp
+
+    async def _v2_get(
+        self, path: str, params: dict[str, Any] | None = None, *, user_id: str | None = None
+    ) -> httpx.Response:
+        # The sandbox token already names the user; ``user_id`` is a host header.
+        if not await self.ensure():
+            # A transport error, so v2 callers' soft-miss handling covers it.
+            raise httpx.TransportError("ginlix-data client not configured")
+        return await self.request("GET", path, params=params)
 
     async def _refresh_access_token(self) -> str | None:
         """Refresh access token via OAuth2.  Persists new tokens to file."""
@@ -252,25 +273,19 @@ class GinlixMCPClient:
     async def _fetch_paginated_bars(
         self, url: str, params: dict[str, Any],
     ) -> list[dict]:
-        """Cursor-based pagination loop for aggregate bar endpoints."""
-        all_bars: list[dict] = []
-        multiplier = params["multiplier"]
-        timespan = params["timespan"]
-        for _page in range(_MAX_PAGES):
-            resp = await self.request("GET", url, params=params)
+        """Every bar of an aggregates cursor walk, one per timestamp.
+
+        Later pages keep the first page's params: the route requires ``from``
+        and ``to`` on every call, so a cursor alone is rejected.
+        """
+
+        async def fetch_page(page_params: dict[str, Any]) -> dict[str, Any]:
+            resp = await self.request("GET", url, params=page_params)
             resp.raise_for_status()
-            body = resp.json()
-            all_bars.extend(body.get("results", []))
-            next_cursor = body.get("next_cursor")
-            if not next_cursor:
-                break
-            params = {
-                "multiplier": multiplier,
-                "timespan": timespan,
-                "limit": 50000,
-                "cursor": next_cursor,
-            }
-        return all_bars
+            return resp.json()
+
+        bars, _ = await follow_cursor(fetch_page, params, max_pages=_MAX_PAGES, label=url)
+        return unique_by_time(bars)
 
     # -- data fetching -------------------------------------------------------
 
@@ -322,7 +337,7 @@ class GinlixMCPClient:
 
         try:
             all_bars = await self._fetch_paginated_bars(
-                f"/api/v1/data/aggregates/stock/{symbol}", params,
+                f"/api/v1/data/aggregates/stock/{path_segment(symbol)}", params,
             )
             normalized = normalize_bars(all_bars, symbol, intraday=intraday)
             if intraday:
@@ -422,7 +437,7 @@ class GinlixMCPClient:
 
         try:
             all_bars = await self._fetch_paginated_bars(
-                f"/api/v1/data/aggregates/option/{options_ticker}", params,
+                f"/api/v1/data/aggregates/option/{path_segment(options_ticker)}", params,
             )
             intraday = interval_lower not in DAILY_INTERVALS
             normalized = normalize_bars(all_bars, options_ticker, intraday=intraday)

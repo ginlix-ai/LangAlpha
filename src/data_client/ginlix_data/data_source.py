@@ -9,15 +9,24 @@ from typing import Any
 from src.data_client.base import FetchResult
 from src.data_client.normalize import build_series
 from market_protocol import InstrumentRef, Series
+from market_protocol import index_families, to_legacy_api
 
 from .client import GinlixDataClient
 
-
-def index_legacy_to_polygon() -> dict[str, str]:
-    return {"GSPC": "I:SPX", "DJI": "I:DJI", "IXIC": "I:COMP",
-            "NDX": "I:NDX", "RUT": "I:RUT", "VIX": "I:VIX"}
-
 logger = logging.getLogger(__name__)
+
+
+def _epoch_ms(value: Any) -> int | None:
+    """Unix ms from a vendor epoch in s / ms / µs / ns (Massive stamps trades in ns)."""
+    if not isinstance(value, (int, float)) or value <= 0:
+        return None
+    if value >= 1e17:
+        return int(value // 1_000_000)
+    if value >= 1e14:
+        return int(value // 1_000)
+    if value >= 1e11:
+        return int(value)
+    return int(value * 1000)
 
 
 def normalize_series(rows: list[dict], *, ref: InstrumentRef, schema: str) -> Series:
@@ -38,10 +47,24 @@ INTERVAL_MAP: dict[str, tuple[str, int]] = {
     "4hour": ("hour", 4),
 }
 
-# Legacy bare index symbol → Polygon wire spelling, from the protocol symbology
-# (single source of truth); reverse for snapshot response → bare lookup.
-_INDEX_SYMBOL_MAP: dict[str, str] = index_legacy_to_polygon()
-_REVERSE_INDEX_SYMBOL_MAP: dict[str, str] = {v: k for k, v in _INDEX_SYMBOL_MAP.items()}
+# Legacy bare index symbol → ginlix-data's wire spelling, which is Polygon's:
+# the family behind an ``I:`` prefix (``GSPC`` → ``I:SPX``). Reverse for
+# snapshot response → bare lookup.
+INDEX_TICKERS: dict[str, str] = {
+    to_legacy_api(ref): f"I:{ref.index_family}" for ref in index_families()
+}
+_REVERSE_INDEX_TICKERS: dict[str, str] = {v: k for k, v in INDEX_TICKERS.items()}
+
+
+def index_ticker(symbol: str) -> str:
+    """ginlix-data spelling of a Yahoo/FMP-style or bare index symbol.
+
+    An index the protocol has no family for keeps its own name (``I:{bare}``).
+    """
+    if symbol.startswith("I:"):
+        return symbol
+    bare = symbol.lstrip("^").upper()
+    return INDEX_TICKERS.get(bare, f"I:{bare}")
 
 
 class GinlixDataSource:
@@ -73,14 +96,6 @@ class GinlixDataSource:
         return cls._LOOKBACK_BY_INTERVAL.get(interval, 7)
 
     @staticmethod
-    def _index_symbol(symbol: str) -> str:
-        """Convert a Yahoo/FMP-style index symbol to ginlix-data format."""
-        if symbol.startswith("I:"):
-            return symbol
-        bare = symbol.lstrip("^").upper()
-        return _INDEX_SYMBOL_MAP.get(bare, f"I:{bare}")
-
-    @staticmethod
     def _default_dates(
         from_date: str | None, to_date: str | None, lookback_days: int
     ) -> tuple[str, str]:
@@ -101,7 +116,7 @@ class GinlixDataSource:
         user_id: str | None = None,
     ) -> FetchResult:
         market = "index" if is_index else "stock"
-        api_symbol = self._index_symbol(symbol) if is_index else symbol
+        api_symbol = index_ticker(symbol) if is_index else symbol
         if interval not in INTERVAL_MAP:
             raise ValueError(f"Unsupported interval: {interval}")
         timespan, multiplier = INTERVAL_MAP[interval]
@@ -141,7 +156,7 @@ class GinlixDataSource:
         user_id: str | None = None,
     ) -> FetchResult:
         market = "index" if is_index else "stock"
-        api_symbol = self._index_symbol(symbol) if is_index else symbol
+        api_symbol = index_ticker(symbol) if is_index else symbol
         from_date, to_date = self._default_dates(
             from_date, to_date, self._DAILY_LOOKBACK_DAYS
         )
@@ -178,7 +193,7 @@ class GinlixDataSource:
     ) -> list[dict[str, Any]]:
         """Fetch batch snapshots, converting index symbols as needed."""
         if asset_type == "indices":
-            api_symbols = [self._index_symbol(s) for s in symbols]
+            api_symbols = [index_ticker(s) for s in symbols]
         else:
             api_symbols = symbols
         raw = await self.client.get_snapshots(asset_type, api_symbols, user_id=user_id)
@@ -200,7 +215,7 @@ class GinlixDataSource:
         ticker = raw.get("ticker", "")
         # For indices, reverse-map I:SPX → GSPC etc.
         if asset_type == "indices":
-            ticker = _REVERSE_INDEX_SYMBOL_MAP.get(ticker, ticker.removeprefix("I:"))
+            ticker = _REVERSE_INDEX_TICKERS.get(ticker, ticker.removeprefix("I:"))
         return {
             "symbol": ticker,
             "name": raw.get("name"),
@@ -214,6 +229,19 @@ class GinlixDataSource:
             "volume": int(session["volume"]) if session.get("volume") is not None else None,
             "market_status": raw.get("market_status"),
             "last_trade_price": last_trade.get("price") if last_trade else None,
+            # The feed's newest stamp, not the last trade's alone: a thin name on a
+            # realtime feed can go minutes without a print while its quote keeps
+            # moving, and that is not a delay. An index has only its own stamp.
+            "as_of": max(
+                (
+                    ms for ms in (
+                        _epoch_ms((last_trade or {}).get("last_updated")),
+                        _epoch_ms((raw.get("last_quote") or {}).get("last_updated")),
+                        _epoch_ms(raw.get("last_updated")),
+                    ) if ms
+                ),
+                default=None,
+            ),
             # Close of the most recent minute aggregate — the consolidated last
             # sale. Unlike last_trade (and the session change fields derived
             # from it), it excludes odd-lot prints that don't update the
