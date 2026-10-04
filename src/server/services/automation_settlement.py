@@ -543,7 +543,8 @@ async def settle_by_run(
     The row decides, not the stream the executor drained (v4 2.4), and a run
     that failed says why in its own words. No row at all is a run the server
     lost. The row also says whether the messaging service holds the run's
-    delivery, which a completed run hands its final answer to.
+    delivery, which a completed run hands its result to: the text of its
+    last send that went out, else its final answer.
     """
     outcome = ledger_outcome(run)
     if outcome is None:
@@ -552,7 +553,7 @@ async def settle_by_run(
             f"execution_id={execution_id} run_id={run_id}"
         )
         return None
-    error = excerpt = answer = None
+    error = excerpt = final_text = None
     if outcome in RUN_FAILURES:
         error = run_failure_message(run)
         log = logger.warning if outcome is Outcome.LIMITED else logger.error
@@ -561,14 +562,17 @@ async def settle_by_run(
             f"execution_id={execution_id} run_id={run_id} error={error}"
         )
     elif outcome is Outcome.COMPLETED and thread_id:
-        # Read now, while this run is still the thread's newest turn.
+        # The run's own turn, however many the thread has taken since.
         answer = await read_run_answer(thread_id, run_id)
-        excerpt = (plain_excerpt(answer) or None) if answer else None
+        excerpt = (plain_excerpt(answer.text) or None) if answer.text else None
+        # A run that sent its result last wrote something else, such as
+        # where it sent it: the chats it didn't reach get what it sent.
+        final_text = answer.sent or answer.text
     settled = await settle(
         automation, execution_id, outcome,
         thread_id=thread_id, run_id=run_id, workspace_id=workspace_id,
         error=error, excerpt=excerpt, quiet_for=quiet_for,
-        delivery=automation_delivery.targets_of_run(run), final_text=answer,
+        delivery=automation_delivery.targets_of_run(run), final_text=final_text,
     )
     return outcome if settled else None
 

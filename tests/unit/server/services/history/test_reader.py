@@ -681,6 +681,25 @@ async def test_turn_slices_from_anchors_match_the_full_walk():
     assert [shape(t) for t in picked] == [shape(every[1]), shape(every[3])]
 
 
+async def test_a_runs_turn_is_read_by_its_run():
+    """Wherever the run's turn stands, it is read as the full history slices
+    it, without materializing the rest."""
+    saver = InMemorySaver()
+    graph = _echo_graph(saver)
+    await _run_turns(graph, 3)
+
+    reader = CheckpointHistoryReader(saver)
+    history = await _history(reader)
+
+    for i in range(3):
+        assert await reader.aget_run_turn(THREAD, f"run-{i}") == history.turns[i]
+    assert await reader.aget_run_turn(THREAD, "run-9") is None
+    # A run that has already ended its turn is still found after later
+    # turns start, not taken from the newest.
+    assert (await reader.aget_run_turn(THREAD, "run-0")).anchor.turn_ordinal == 0
+    assert await CheckpointHistoryReader(InMemorySaver()).aget_run_turn(THREAD, "run-0") is None
+
+
 async def test_task_runs_slice_by_their_own_boundaries():
     """Each run is the diff between its own boundary and the next run's, so a
     later run that compacts the namespace does not erase an earlier run, and

@@ -20,6 +20,7 @@ import pytest
 from src.server.services import automation_delivery
 from src.server.services import automation_settlement as settlement_mod
 from src.server.services.automation_delivery import Finish, Target
+from src.server.services.automation_excerpt import RunAnswer
 from src.server.services.automation_settlement import (
     INTERRUPTED_ERROR,
     RUN_FAILURES,
@@ -764,7 +765,7 @@ def _finished(run, automation=None):
     with _settlement(_row()) as fx:
         fx.db.get_automation = AsyncMock(return_value=automation)
         fx.db.get_settling_run = AsyncMock(return_value=run)
-        fx.excerpt = AsyncMock(return_value="Markets rose")
+        fx.excerpt = AsyncMock(return_value=RunAnswer("Markets rose"))
         with patch(f"{_MOD}.read_run_answer", new=fx.excerpt):
             yield fx
 
@@ -817,7 +818,7 @@ async def test_a_finished_run_settles_the_firing_it_ran_for(run, to, strike, fai
 async def test_a_finished_held_run_hands_its_answer_to_the_messaging_service():
     run = _ended("completed", **automation_delivery.run_metadata(_TARGETS))
     with _finished(run, _automation("cron")) as fx:
-        fx.excerpt.return_value = "**Markets** rose.\n\nDetails follow."
+        fx.excerpt.return_value = RunAnswer("**Markets** rose.\n\nDetails follow.")
         await _settle_finished_run(_finalize_job())
 
     # The whole answer for the chats, its head for the list.
@@ -831,6 +832,23 @@ async def test_a_finished_held_run_hands_its_answer_to_the_messaging_service():
     )
     fx.fire.assert_not_awaited()
     fx.db.record_delivery.assert_awaited_once_with(_EID, _LANDED)
+
+
+@pytest.mark.asyncio
+async def test_a_held_run_that_sent_its_result_hands_over_what_it_sent():
+    """Its last words are a sign-off saying where it sent the result; a chat
+    it didn't reach gets the result."""
+    run = _ended("completed", **automation_delivery.run_metadata(_TARGETS))
+    with _finished(run, _automation("cron")) as fx:
+        fx.excerpt.return_value = RunAnswer(
+            "Sent the brief to #demo.", sent="**Markets** rose."
+        )
+        await _settle_finished_run(_finalize_job())
+
+    assert fx.finish.await_args.kwargs["final_text"] == "**Markets** rose."
+    assert fx.db.settle_execution.await_args.kwargs["result_excerpt"] == (
+        "Sent the brief to #demo."
+    )
 
 
 @pytest.mark.asyncio
@@ -899,7 +917,7 @@ def _sweep(run_row):
     fx = SimpleNamespace(
         settle=AsyncMock(return_value=True),
         get_run=AsyncMock(return_value=run_row),
-        excerpt=AsyncMock(return_value="The answer"),
+        excerpt=AsyncMock(return_value=RunAnswer("The answer")),
     )
     with (
         patch(f"{_MOD}.settle", new=fx.settle),

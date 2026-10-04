@@ -217,8 +217,9 @@ events such a run fires. Same two headers:
 - `POST {base}/agent/automation-runs/{execution_id}/finish` takes `{"status", "final_text",
   "thread_id"}` as the run settles. `status` is `completed`, `failed` (an error, a refused key,
   a usage limit, a server fault, an interrupted run) or `stopped` (the user stopped it);
-  `final_text`, the run's last answer cut to 20,000 characters, rides only on `completed`. It
-  answers `{"targets":
+  `final_text` rides only on `completed`, cut to 20,000 characters: the `text` of the run's last
+  `send_message` that went out (`sent` or `partial`) and had text, since a run that sends its
+  result writes a sign-off last, else the run's last answer. It answers `{"targets":
   [{"entry", "address", "name", "reached", "via", "error"}]}` with `via` one of `agent`,
   `fallback`, `notice` or null; a second finish posts nothing more, and 404 is a run it has no
   record of. Each target becomes a `delivery_result` item `{"method", "address", "name",
