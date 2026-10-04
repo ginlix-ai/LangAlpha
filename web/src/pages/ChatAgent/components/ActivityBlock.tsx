@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from '@/lib/framer';
 import { ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { INLINE_ARTIFACT_MAP, isInlineArtifactReady, openCardTarget } from './charts/InlineArtifactCards';
+import { PILL_ROW_CLASS, isPillArtifactType } from './charts/pillArtifacts';
 import { isUserDataReadmePath } from '../utils/agentPaths';
 import { announceAnchoredToggle } from '../utils/anchoredToggle';
 import { summarizeCompletedItems } from './messageList/activitySummary';
@@ -97,14 +98,26 @@ const ActivityBlock = memo(function ActivityBlock({
       : <PreparingTimelineRow tc={preparingToolCall} /> });
   }
 
+  // Consecutive pill cards share one wrapping row; any other card stands alone.
+  const chartGroups: Array<{ key: string; pill: boolean; cards: Array<{ key: string; node: React.ReactNode }> }> = [];
+  for (const item of charts) {
+    if (item.type !== 'tool_call') continue;
+    const artifact = item.toolCallResult?.artifact;
+    const Chart = artifact && INLINE_ARTIFACT_MAP[artifact.type as string];
+    if (!Chart) continue;
+    const pill = isPillArtifactType(artifact.type);
+    const node = <Chart artifact={artifact} toolArgs={item.toolCall?.args} onClick={() => openCardTarget(artifact, onOpenChart, () => onToolCallClick?.(item))} />;
+    const card = { key: item.id, node };
+    const last = chartGroups[chartGroups.length - 1];
+    if (pill && last?.pill) last.cards.push(card);
+    else chartGroups.push({ key: `pills-${item.id}`, pill, cards: [card] });
+  }
+
   if (timeline.length === 0 && charts.length === 0 && !preparingToolCall) return null;
   return <div>
-    {charts.map((item) => {
-      if (item.type !== 'tool_call') return null;
-      const artifact = item.toolCallResult?.artifact;
-      const Chart = artifact && INLINE_ARTIFACT_MAP[artifact.type as string];
-      return Chart ? <div key={item.id} className="mb-1.5"><Chart artifact={artifact} toolArgs={item.toolCall?.args} onClick={() => openCardTarget(artifact, onOpenChart, () => onToolCallClick?.(item))} /></div> : null;
-    })}
+    {chartGroups.map((group) => group.pill && group.cards.length > 1
+      ? <div key={group.key} data-pill-row className={`mb-1.5 ${PILL_ROW_CLASS}`}>{group.cards.map((c) => c.node)}</div>
+      : group.cards.map((c) => <div key={c.key} className="mb-1.5">{c.node}</div>))}
     <AnimatePresence initial={false}>
       {showSummary && <motion.div key="summary" className="clips-focus-ring"
         initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}

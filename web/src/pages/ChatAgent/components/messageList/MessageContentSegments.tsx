@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, memo } from 'react';
 import ActivityBlock from '../ActivityBlock';
 import type { ActivityItem } from './activityTypes';
 import { INLINE_ARTIFACT_MAP, openCardTarget } from '../charts/InlineArtifactCards';
+import { PILL_ROW_CLASS, isPillArtifactType } from '../charts/pillArtifacts';
 import type { OpenFileHandler } from '../../utils/fileLocation';
 import UserQuestionCard from '../UserQuestionCard';
 import CreateWorkspaceCard from '../CreateWorkspaceCard';
@@ -102,6 +103,13 @@ interface TextBlockProps {
 const HOLDS_FOR_PROSE = new Set<RenderBlock['type']>([
   'activity', 'subagent_task', 'html_widget', 'compact_artifact', 'notification',
 ]);
+
+/** A compact artifact whose card is a pill, which sits beside its neighbours. */
+function isPillBlock(block: RenderBlock): boolean {
+  if (block.type !== 'compact_artifact') return false;
+  const result = (block as CompactArtifactRenderBlock).proc.toolCallResult as Record<string, unknown> | undefined;
+  return isPillArtifactType((result?.artifact as Record<string, unknown> | undefined)?.type);
+}
 
 function TextBlock({ block, isStreaming, hasError, structuredError, isSubagentView, isReplyStart, onOpenFile, onRevealed }: TextBlockProps): React.ReactElement | null {
   const report = useCallback((done: boolean) => onRevealed?.(block.key, done), [onRevealed, block.key]);
@@ -466,21 +474,54 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
   // block after it, and a folded (hidden) panel must leave none behind.
   return (
     <div className="sibling-space-y-3">
-      {renderBlocks.map((block, blockIdx) => {
-        if (heldForProse[blockIdx]) return null;
-        const content = renderBlock(block, blockIdx);
-        // Missing artifact renderers and pending proposals must not leave a
-        // spaced fold shell behind when they have nothing to display.
-        if (content === null) return null;
-        if (blockFolds[blockIdx]) {
-          return (
-            <FoldPanel key={block.key} open={blockIsVisible[blockIdx]}>
-              {content}
-            </FoldPanel>
-          );
+      {(() => {
+        // One element per block, except that a run of consecutive pill blocks
+        // sharing a fold and visibility state is gathered into one wrapping row.
+        const wrap = (blockIdx: number, content: React.ReactElement) => {
+          const key = renderBlocks[blockIdx].key;
+          if (blockFolds[blockIdx]) {
+            return <FoldPanel key={key} open={blockIsVisible[blockIdx]}>{content}</FoldPanel>;
+          }
+          return blockIsVisible[blockIdx] ? content : null;
+        };
+        const out: React.ReactNode[] = [];
+        for (let blockIdx = 0; blockIdx < renderBlocks.length; blockIdx++) {
+          if (heldForProse[blockIdx]) continue;
+          const block = renderBlocks[blockIdx];
+          if (isPillBlock(block)) {
+            const run: number[] = [];
+            let j = blockIdx;
+            while (
+              j < renderBlocks.length
+              && isPillBlock(renderBlocks[j])
+              && !heldForProse[j]
+              && blockFolds[j] === blockFolds[blockIdx]
+              && blockIsVisible[j] === blockIsVisible[blockIdx]
+            ) {
+              run.push(j);
+              j++;
+            }
+            const members = run
+              .map((idx) => renderBlock(renderBlocks[idx], idx))
+              .filter((c): c is React.ReactElement => c !== null);
+            blockIdx = j - 1;
+            if (members.length === 0) continue;
+            // Keyed by the first member, so a pill joining the run later grows
+            // the row without remounting the ones already there.
+            const content = members.length === 1
+              ? members[0]
+              : <div key={`pills-${renderBlocks[run[0]].key}`} data-pill-row className={PILL_ROW_CLASS}>{members}</div>;
+            out.push(wrap(run[0], content));
+            continue;
+          }
+          const content = renderBlock(block, blockIdx);
+          // Missing artifact renderers and pending proposals must not leave a
+          // spaced fold shell behind when they have nothing to display.
+          if (content === null) continue;
+          out.push(wrap(blockIdx, content));
         }
-        return blockIsVisible[blockIdx] ? content : null;
-      })}
+        return out;
+      })()}
       {/* At the foot of the message, not beside the card that stopped. The
           agent's closing prose was written before the gate fired and still
           promises a result, so a notice above it is read first and contradicted
